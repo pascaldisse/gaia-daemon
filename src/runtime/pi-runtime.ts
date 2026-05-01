@@ -120,9 +120,9 @@ export class PiRuntime implements AgentRuntime {
   dispose(): void {}
 
   private async buildSystemPrompt(): Promise<string> {
-    const [soulText, appendSoulText, memory] = await Promise.all([
+    const [soulText, intentText, memory] = await Promise.all([
       readFile(this.agent.soulPath, "utf8"),
-      this.readOptional(this.agent.projectSoulAppendPath),
+      this.readOptional(this.agent.projectIntentPath),
       this.memoryStore.readState(this.agent.memoryPath),
     ]);
 
@@ -133,9 +133,9 @@ export class PiRuntime implements AgentRuntime {
       : "(no AGENTS.md files found)";
 
     return [
-      `# Agent Soul (${this.agent.soulSource})`,
+      "# Agent Soul",
       soulText.trim(),
-      appendSoulText ? `# Project Agent Soul Append\n\n${appendSoulText.trim()}` : "",
+      intentText ? `# Project Agent Intent\n\n${intentText.trim()}` : "",
       "# Project Context (AGENTS.md)",
       context,
       renderAgentMemory(memory),

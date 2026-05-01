@@ -8,14 +8,13 @@ Implemented now:
 - `GAIA_HOME` override for the global persona home
 - `gaia init` seeds global sample personas
 - project-local `AGENTS.md` for repo instructions
-- project-local `.gaia/config.yaml`
+- project-local `.gaia/config.json`
 - project-local room transcript at `.gaia/rooms/default/transcript.jsonl`
 - sample personas: `gaia`, `sidia`, `terry`
 - global per-agent `SOUL.md` and `MEMORY.md`
-- project-local agent overrides/appends:
-  - `.gaia/agents/<id>/SOUL.md`
-  - `.gaia/agents/<id>/APPEND_SOUL.md`
-  - `.gaia/agents/<id>/agent.yaml`
+- project-local agent additions/overrides:
+  - `.gaia/agents/<id>/INTENT.md`
+  - `.gaia/agents/<id>/agent.json`
 - default-agent routing
 - deterministic `@agent` mention routing
 - multiple mentions in first-mentioned order
@@ -37,7 +36,7 @@ Add coverage for:
 - global persona initialization
 - project workspace initialization
 - AGENTS.md discovery order
-- project-local soul override/append behavior
+- project-local agent intent behavior
 - agent config merge behavior
 - routing
 - transcript reads/writes

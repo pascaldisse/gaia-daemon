@@ -5,13 +5,13 @@
 Personas are global.
 Project context is local.
 
-That means Gaia, Sidia, and Terry live once under your GAIA home, like durable Hermes-style identities. Each project only adds instructions, room state, and optional local appends/overrides.
+That means Gaia, Sidia, and Terry live once under your GAIA home, like durable Hermes-style identities. Each project only adds instructions, room state, and optional local intent/config overrides.
 
 ## Current shape
 
 - global personas under `~/.gaia/agents/`
 - project-local `AGENTS.md` context, like Pi
-- project-local `.gaia/config.yaml`
+- project-local `.gaia/config.json`
 - project-local room transcript in `.gaia/rooms/default/transcript.jsonl`
 - deterministic `@agent` mention routing
 - multiple agents in first-mentioned order
@@ -48,15 +48,15 @@ It creates or verifies global personas:
 ~/.gaia/
   agents/
     gaia/
-      agent.yaml
+      agent.json
       SOUL.md
       MEMORY.md
     sidia/
-      agent.yaml
+      agent.json
       SOUL.md
       MEMORY.md
     terry/
-      agent.yaml
+      agent.json
       SOUL.md
       MEMORY.md
 ```
@@ -67,7 +67,7 @@ And it creates project-local room/context files:
 your-project/
   AGENTS.md
   .gaia/
-    config.yaml
+    config.json
     rooms/
       default/
         transcript.jsonl
@@ -101,11 +101,10 @@ What should we build next?
 Each agent turn gets:
 
 1. global agent `SOUL.md`
-2. optional project agent `SOUL.md` override
-3. optional project agent `APPEND_SOUL.md`
-4. project `AGENTS.md` files, discovered from parent dirs to current dir
-5. global agent `MEMORY.md`
-6. recent room transcript
+2. optional project agent `INTENT.md`
+3. project `AGENTS.md` files, discovered from parent dirs to current dir
+4. global agent `MEMORY.md`
+5. recent room transcript
 
 ## Project-local agent overrides
 
@@ -114,12 +113,11 @@ You can customize an agent for one project without changing the global persona.
 Examples:
 
 ```text
-.gaia/agents/gaia/APPEND_SOUL.md   # append local behavior
-.gaia/agents/gaia/SOUL.md          # replace global soul for this project
-.gaia/agents/gaia/agent.yaml       # override metadata/tools/model for this project
+.gaia/agents/gaia/INTENT.md     # append project-local intent/instructions
+.gaia/agents/gaia/agent.json    # override metadata/tools/model for this project
 ```
 
-Keep canonical identity and long-term memory global unless you have a clear reason not to.
+Keep canonical identity and long-term memory global. `SOUL.md` is never overridden per project.
 
 ## Workspace files
 
@@ -128,13 +126,15 @@ Keep canonical identity and long-term memory global unless you have a clear reas
 Project instructions.
 Use it for repo conventions, commands, constraints, safety notes, and preferences.
 
-### `.gaia/config.yaml`
+### `.gaia/config.json`
 
-```yaml
-defaultAgent: gaia
-room: default
-runtime: pi
-transcriptWindow: 20
+```json
+{
+  "defaultAgent": "gaia",
+  "room": "default",
+  "runtime": "pi",
+  "transcriptWindow": 20
+}
 ```
 
 ### `.gaia/rooms/default/transcript.jsonl`
@@ -148,3 +148,4 @@ Recent transcript is injected into each agent turn.
 - Agent messages do not auto-trigger more routing.
 - Pi is the only runtime right now.
 - Safety isolation, smarter routing, and tests are still future work.
+- ideas: agents can summon subagents. This is handled similarly to OpenCode. (We will not implement this yet though)

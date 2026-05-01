@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import YAML from "yaml";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
 import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
@@ -51,6 +50,10 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
   await writeFile(path, content, "utf8");
 }
 
+function json(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
 export function workspacePath(cwd: string): string {
   return join(cwd, WORKSPACE_DIRNAME);
 }
@@ -60,7 +63,7 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
   const agentsDir = globalAgentsPath();
 
   await ensureGlobalDefaultAgents(agentsDir);
-  await writeIfMissing(workspaceFile(cwd, "config.yaml"), YAML.stringify(defaultConfig()));
+  await writeIfMissing(workspaceFile(cwd, "config.json"), json(defaultConfig()));
   await writeIfMissing(
     join(cwd, "AGENTS.md"),
     `# Project Instructions\n\nThis file is project-local context for GAIA agents.\n\nAdd repo conventions, commands, constraints, and preferences here.\nCanonical agent identity lives in global personas under ~/.gaia/agents/.\n`,
@@ -74,7 +77,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   const dir = workspacePath(cwd);
   if (!existsSync(dir)) throw new Error(`Missing ${WORKSPACE_DIRNAME} workspace. Run \`gaia init\` first.`);
 
-  const configPath = workspaceFile(cwd, "config.yaml");
+  const configPath = workspaceFile(cwd, "config.json");
   const agentsOverrideDir = workspaceFile(cwd, "agents");
   const roomsDir = workspaceFile(cwd, "rooms");
   const globalAgentsDir = globalAgentsPath();
@@ -83,7 +86,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
 
   await ensureGlobalDefaultAgents(globalAgentsDir);
 
-  const config = mergeConfig(YAML.parse(await readFile(configPath, "utf8")));
+  const config = mergeConfig(JSON.parse(await readFile(configPath, "utf8")));
   const contextFiles = await discoverContextFiles(cwd);
   const agents = await loadAgentDefinitions(globalAgentsDir, agentsOverrideDir);
 

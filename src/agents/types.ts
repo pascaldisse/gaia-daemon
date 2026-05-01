@@ -21,6 +21,5 @@ export interface AgentDefinition {
   thinking?: ThinkingLevel;
   projectDir?: string;
   projectConfigPath?: string;
-  projectSoulAppendPath?: string;
-  soulSource: "global" | "project-override";
+  projectIntentPath?: string;
 }
