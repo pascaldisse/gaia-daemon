@@ -1,6 +1,23 @@
-# GAIA Pi Wrapper
+# GAIA
 
-`gaia` is a minimal standalone CLI agent wrapper around the Pi SDK. V1 focuses on three personas, mode switching, Pi coding tools, and bounded markdown memory.
+`gaia` is a local-first multi-agent workspace CLI built on the Pi SDK.
+
+It opens a shared room inside your project.
+One agent is the default.
+You can mention other agents with `@agent`.
+Each agent keeps its own `SOUL.md` and `MEMORY.md` inside `.gaia/`.
+
+## Current shape
+
+- project-local `.gaia/` workspace
+- default agent routing
+- deterministic `@agent` mention routing
+- multiple agents in mention order
+- per-agent markdown memory
+- shared room transcript in JSONL
+- Pi runtime for all agents
+- built-in sample agents: `@gaia`, `@sidia`, `@terry`
+- slash commands: `/help`, `/agents`, `/quit`
 
 ## Setup
 
@@ -8,10 +25,42 @@
 npm install
 npm run build
 npm link   # optional, exposes `gaia`
+```
+
+Configure Pi auth the same way you configure Pi itself.
+For example: `pi /login` or provider API-key environment variables.
+
+## Initialize a workspace
+
+Run this in your project:
+
+```bash
 gaia init
 ```
 
-Configure Pi auth/model settings the same way you configure Pi itself (`pi /login` or provider API-key environment variables). Optional GAIA config lives at `~/.gaia/config.yaml`.
+It creates:
+
+```text
+.gaia/
+  config.yaml
+  SYSTEM.md
+  agents/
+    gaia/
+      agent.yaml
+      SOUL.md
+      MEMORY.md
+    sidia/
+      agent.yaml
+      SOUL.md
+      MEMORY.md
+    terry/
+      agent.yaml
+      SOUL.md
+      MEMORY.md
+  rooms/
+    default/
+      transcript.jsonl
+```
 
 ## Run
 
@@ -19,26 +68,51 @@ Configure Pi auth/model settings the same way you configure Pi itself (`pi /logi
 gaia
 ```
 
-Slash commands:
+Examples:
 
-- `/gaia` — warm constructive Gaia mode
-- `/sidia` — skeptical critical Sidia mode
-- `/monad` — director mode that routes through Monad, then Gaia/Sidia
-- `/help` — command help
-- `/quit` — exit
+```text
+What should we build next?
+# routes to default agent, usually @gaia
 
-## Memory
+@sidia critique this plan
+# routes to Sidia
 
-Markdown memories live under `~/.gaia/memories/`:
+@gaia @terry compare options and implement the smallest step
+# Gaia responds, then Terry responds
+```
 
-- `USER.md` shared user profile/preferences
-- `GAIA.md` Gaia-specific notes
-- `SIDIA.md` Sidia-specific notes
+## Workspace files
 
-Memory is injected as a frozen snapshot when each persona session starts. Memory writes persist immediately through the `memory` tool, but active prompts refresh on the next run.
+### `.gaia/config.yaml`
 
-## Scope
+```yaml
+defaultAgent: gaia
+room: default
+runtime: pi
+transcriptWindow: 20
+```
 
-Implemented now: project skeleton, config, persona prompts/sessions, readline terminal UI, slash mode switching, markdown memory, simple Monad orchestration, Pi tools, and conservative safety confirmation for risky tool calls.
+### `.gaia/SYSTEM.md`
 
-Deferred: web search, Python science tools, generated HTML artifacts, richer subagents, external memory providers, gateway/background daemon, voice, and web UI.
+Shared workspace instructions for all agents.
+
+### `.gaia/agents/<agent>/SOUL.md`
+
+The identity and voice of one agent.
+
+### `.gaia/agents/<agent>/MEMORY.md`
+
+Local long-term memory for one agent.
+The `memory` tool writes here.
+
+### `.gaia/rooms/default/transcript.jsonl`
+
+Shared room history.
+Recent transcript is injected into each agent turn.
+
+## Notes
+
+- Unknown mentions fail loudly.
+- Agent messages do not auto-trigger more routing.
+- Pi is the only runtime right now.
+- Safety isolation, smarter routing, and tests are still future work.

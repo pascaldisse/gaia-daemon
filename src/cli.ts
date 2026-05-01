@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
-import { DEFAULT_CONFIG_PATH, ensureDefaultConfig, loadConfig, writeDefaultConfig } from "./config/config.js";
-import { MemoryStore } from "./memory/memory-store.js";
 import { GaiaApp } from "./app/gaia-app.js";
+import { MemoryStore } from "./memory/memory-store.js";
+import { initWorkspace, loadWorkspace, workspacePath } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — Pi SDK persona wrapper\n\nUsage:\n  gaia          start interactive GAIA\n  gaia init     create ~/.gaia/config.yaml and memory files\n  gaia --help   show help`);
+  console.log(`gaia — local-first multi-agent workspace\n\nUsage:\n  gaia          start the GAIA room in the current project\n  gaia init     create .gaia workspace files in the current project\n  gaia --help   show help`);
 }
 
 async function main(): Promise<void> {
@@ -16,20 +15,8 @@ async function main(): Promise<void> {
   }
 
   if (args[0] === "init") {
-    if (existsSync(DEFAULT_CONFIG_PATH)) {
-      await ensureDefaultConfig();
-      console.log(`Config already exists: ${DEFAULT_CONFIG_PATH}`);
-    } else {
-      await writeDefaultConfig();
-      console.log(`Created ${DEFAULT_CONFIG_PATH}`);
-    }
-    const config = await loadConfig();
-    const memory = new MemoryStore(config.memory.dir, {
-      user: config.memory.userLimit,
-      persona: config.memory.personaLimit,
-    });
-    await memory.init();
-    console.log(`Memory directory ready: ${config.memory.dir}`);
+    const dir = await initWorkspace(process.cwd());
+    console.log(`Workspace ready: ${dir}`);
     return;
   }
 
@@ -40,16 +27,14 @@ async function main(): Promise<void> {
   }
 
   try {
-    const config = await loadConfig();
-    const memory = new MemoryStore(config.memory.dir, {
-      user: config.memory.userLimit,
-      persona: config.memory.personaLimit,
-    });
-    await new GaiaApp(process.cwd(), config, memory).start();
+    const workspace = await loadWorkspace(process.cwd());
+    const memory = new MemoryStore();
+    await new GaiaApp(process.cwd(), workspace, memory).start();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`gaia: ${message}`);
-    console.error("Check Pi authentication/model configuration with `pi /login` or API-key environment variables.");
+    console.error(`Expected workspace: ${workspacePath(process.cwd())}`);
+    console.error("Run `gaia init` in your project to create the workspace.");
     process.exitCode = 1;
   }
 }

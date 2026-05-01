@@ -1,6 +1,5 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import type { Mode } from "../personas/types.js";
 import { renderStatusLine } from "./status-line.js";
 
 export class AppView {
@@ -10,9 +9,9 @@ export class AppView {
     this.rl = createInterface({ input, output });
   }
 
-  async prompt(mode: Mode, modelLabel: string): Promise<string> {
+  async prompt(roomId: string, defaultAgent: string): Promise<string> {
     if (!this.rl) this.start();
-    return this.rl!.question(`${renderStatusLine(mode, modelLabel)}\n> `);
+    return this.rl!.question(`${renderStatusLine(roomId, defaultAgent)}\n> `);
   }
 
   write(text: string): void {

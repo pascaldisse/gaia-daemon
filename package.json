@@ -1,13 +1,13 @@
 {
   "name": "gaia-pi-wrapper",
   "version": "0.1.0",
-  "description": "GAIA persona CLI wrapper built on the Pi SDK.",
+  "description": "GAIA local-first multi-agent workspace built on the Pi SDK.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts"

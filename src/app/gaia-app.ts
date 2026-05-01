@@ -1,93 +1,140 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import type { GaiaConfig } from "../config/types.js";
-import type { MemoryStore } from "../memory/memory-store.js";
-import type { PersonaId, Mode } from "../personas/types.js";
-import { GaiaSessionFactory, type PersonaSessionBundle } from "../pi/session-factory.js";
-import { HELP_TEXT, parseCommand } from "../tui/commands.js";
+import type { AgentDefinition } from "../agents/types.js";
+import { MemoryStore } from "../memory/memory-store.js";
+import { Room } from "../room/room.js";
+import { planMentionRoute } from "../router/mention-router.js";
+import { createAgentRuntime } from "../runtime/runtime-factory.js";
+import type { AgentRuntime } from "../runtime/types.js";
 import { AppView } from "../tui/app-view.js";
+import { HELP_TEXT, parseCommand } from "../tui/commands.js";
 import { assistantHeader, toolLine } from "../tui/message-renderer.js";
-import { routeMessage } from "./mode-router.js";
+import type { Workspace } from "../workspace/types.js";
 
 export class GaiaApp {
-  private mode: Mode = "gaia";
-  private sessions!: Record<PersonaId, PersonaSessionBundle>;
+  private readonly room: Room;
+  private readonly runtimes: Record<string, AgentRuntime>;
   private readonly view = new AppView();
 
   constructor(
     private readonly cwd: string,
-    private readonly config: GaiaConfig,
+    private readonly workspace: Workspace,
     private readonly memoryStore: MemoryStore,
-  ) {}
+  ) {
+    this.room = new Room(workspace);
+    this.runtimes = Object.fromEntries(
+      Object.values(workspace.agents).map((agent) => [
+        agent.id,
+        createAgentRuntime({ cwd: this.cwd, workspace: this.workspace, agent, memoryStore: this.memoryStore }),
+      ]),
+    );
+  }
 
   async start(): Promise<void> {
-    await this.memoryStore.init();
-    this.sessions = await new GaiaSessionFactory(this.cwd, this.config, this.memoryStore).createAll();
+    await Promise.all(
+      Object.values(this.workspace.agents).map((agent) => this.memoryStore.init(agent.memoryPath, `${agent.displayName} Memory`)),
+    );
+
     this.view.start();
-    this.view.line("GAIA Pi Wrapper — /help for commands, /quit to exit.");
+    this.view.line("GAIA workspace room — /help for commands, /quit to exit.");
+    this.view.line(this.renderAgentsLine());
 
     try {
       while (true) {
-        const input = await this.view.prompt(this.mode, this.sessions[this.mode].modelLabel);
+        const input = await this.view.prompt(this.workspace.config.room, this.workspace.config.defaultAgent);
         const command = parseCommand(input);
+
         if (command.type === "quit") break;
         if (command.type === "help") {
           this.view.line(HELP_TEXT);
+          continue;
+        }
+        if (command.type === "agents") {
+          this.view.line(this.renderAgentsList());
+          continue;
+        }
+        if (command.type === "legacy-mode") {
+          this.view.line(`Agent switching is gone. Use @${command.command} in your message instead.`);
           continue;
         }
         if (command.type === "unknown") {
           this.view.line(`Unknown command: /${command.command}. Try /help.`);
           continue;
         }
-        if (command.type === "mode") {
-          this.mode = command.mode;
-          this.view.line(`Switched to ${command.mode}.`);
+        if (!command.text.trim()) continue;
+
+        const route = planMentionRoute(
+          command.text,
+          Object.keys(this.workspace.agents),
+          this.workspace.config.defaultAgent,
+        );
+
+        if (!route.ok) {
+          this.view.line(
+            `Unknown agent: ${route.unknown.map((id) => `@${id}`).join(", ")}\nAvailable agents: ${Object.keys(this.workspace.agents)
+              .map((id) => `@${id}`)
+              .join(", ")}`,
+          );
           continue;
         }
-        if (!command.text.trim()) continue;
-        await routeMessage(this.mode, command.text, this.config, (persona, message) => this.sendToPersona(persona, message));
+
+        await this.room.addUserMessage(command.text, route.plan.targets);
+
+        for (const target of route.plan.targets) {
+          const agent = this.workspace.agents[target];
+          const runtime = this.runtimes[target];
+          const transcript = await this.room.recentEvents();
+          const reply = await this.sendToAgent(agent, runtime, command.text, transcript);
+          if (reply.trim()) await this.room.addAgentMessage(agent.id, reply.trim());
+        }
       }
     } finally {
       this.view.close();
-      for (const bundle of Object.values(this.sessions)) bundle.session.dispose();
+      Object.values(this.runtimes).forEach((runtime) => runtime.dispose());
     }
   }
 
-  private async sendToPersona(persona: PersonaId, message: string): Promise<string> {
-    const bundle = this.sessions[persona];
-    const session = bundle.session;
+  private async sendToAgent(
+    agent: AgentDefinition,
+    runtime: AgentRuntime,
+    message: string,
+    transcript: Awaited<ReturnType<Room["recentEvents"]>>,
+  ): Promise<string> {
     let collected = "";
-    this.view.write(assistantHeader(persona) + "\n");
-
-    const unsubscribe = this.subscribeForConsole(session, (delta) => {
-      collected += delta;
-      this.view.write(delta);
-    });
+    this.view.write(assistantHeader(agent) + "\n");
 
     try {
-      await session.prompt(message, { source: "interactive" });
+      for await (const event of runtime.send({ roomId: this.room.id, message, transcript })) {
+        if (event.type === "text-delta") {
+          collected += event.delta;
+          this.view.write(event.delta);
+          continue;
+        }
+        if (event.type === "tool-start") {
+          this.view.write(toolLine("start", event.toolName));
+          continue;
+        }
+        this.view.write(toolLine("end", event.toolName, event.isError ? "(error)" : "(ok)"));
+      }
       this.view.line("\n");
-      return collected.trim();
+      return collected;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.view.line(`\n[error] ${message}\n`);
-      return collected.trim();
-    } finally {
-      unsubscribe();
+      return collected;
     }
   }
 
-  private subscribeForConsole(session: AgentSession, onText: (delta: string) => void): () => void {
-    return session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        onText(event.assistantMessageEvent.delta);
-      }
-      if (!this.config.ui.showToolEvents) return;
-      if (event.type === "tool_execution_start") {
-        this.view.write(toolLine("start", event.toolName));
-      }
-      if (event.type === "tool_execution_end") {
-        this.view.write(toolLine("end", event.toolName, event.isError ? "(error)" : "(ok)"));
-      }
-    });
+  private renderAgentsLine(): string {
+    return `Agents: ${Object.values(this.workspace.agents)
+      .map((agent) => `${agent.icon} @${agent.id}`)
+      .join("  ")}`;
+  }
+
+  private renderAgentsList(): string {
+    return Object.values(this.workspace.agents)
+      .map((agent) => {
+        const defaultMark = agent.id === this.workspace.config.defaultAgent ? " (default)" : "";
+        return `${agent.icon} @${agent.id}${defaultMark} — ${agent.displayName} [tools: ${agent.tools.join(", ") || "none"}]`;
+      })
+      .join("\n");
   }
 }

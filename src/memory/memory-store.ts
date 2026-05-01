@@ -1,17 +1,9 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { PersonaId } from "../personas/types.js";
-import { PERSONAS } from "../personas/types.js";
+import { dirname } from "node:path";
 
-export type MemoryTarget = "user" | "persona";
 export type MemoryAction = "add" | "replace" | "remove";
-
-export interface MemoryLimits {
-  user: number;
-  persona: number;
-}
 
 export interface MemoryState {
   path: string;
@@ -27,6 +19,7 @@ export interface MemoryMutationResult {
   state: MemoryState;
 }
 
+const DEFAULT_LIMIT = 12_000;
 const DELIMITER = "§";
 const UNSAFE_PATTERNS = [
   /ignore (all )?(previous|prior) instructions/i,
@@ -36,50 +29,31 @@ const UNSAFE_PATTERNS = [
 ];
 
 export class MemoryStore {
-  constructor(
-    public readonly dir: string,
-    private readonly limits: MemoryLimits,
-  ) {}
+  constructor(private readonly defaultLimit = DEFAULT_LIMIT) {}
 
-  async init(): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    for (const file of ["USER.md", "GAIA.md", "SIDIA.md"]) {
-      const path = join(this.dir, file);
-      if (!existsSync(path)) await writeFile(path, `# ${file}\n\n`, "utf8");
-    }
+  async init(path: string, title = "Memory"): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+    if (!existsSync(path)) await writeFile(path, `# ${title}\n\n`, "utf8");
   }
 
-  fileFor(target: MemoryTarget, persona: PersonaId): string {
-    if (target === "user") return join(this.dir, "USER.md");
-    const memoryFile = PERSONAS[persona].memoryFile;
-    if (!memoryFile) return join(this.dir, "USER.md");
-    return join(this.dir, memoryFile);
-  }
-
-  limitFor(target: MemoryTarget): number {
-    return target === "user" ? this.limits.user : this.limits.persona;
-  }
-
-  async readState(target: MemoryTarget, persona: PersonaId): Promise<MemoryState> {
-    const path = this.fileFor(target, persona);
-    const limit = this.limitFor(target);
+  async readState(path: string, limit = this.defaultLimit): Promise<MemoryState> {
     const content = existsSync(path) ? await readFile(path, "utf8") : "";
-    return { path, chars: content.length, limit, usage: limit === 0 ? 0 : content.length / limit, content };
-  }
-
-  async snapshot(persona: PersonaId): Promise<{ user: MemoryState; persona?: MemoryState }> {
-    const user = await this.readState("user", persona);
-    const personaState = PERSONAS[persona].memoryFile ? await this.readState("persona", persona) : undefined;
-    return { user, persona: personaState };
+    return {
+      path,
+      chars: content.length,
+      limit,
+      usage: limit === 0 ? 0 : content.length / limit,
+      content,
+    };
   }
 
   async mutate(
-    persona: PersonaId,
-    target: MemoryTarget,
+    path: string,
     action: MemoryAction,
     options: { content?: string; oldText?: string },
+    limit = this.defaultLimit,
   ): Promise<MemoryMutationResult> {
-    const state = await this.readState(target, persona);
+    const state = await this.readState(path, limit);
     const content = (options.content ?? "").trim();
     const oldText = (options.oldText ?? "").trim();
 
@@ -104,16 +78,19 @@ export class MemoryStore {
       if (count !== 1) {
         return { ok: false, message: `old_text must match exactly one memory region; matched ${count}`, state };
       }
-      next = action === "replace" ? state.content.replace(oldText, content) : state.content.replace(oldText, "").replace(/\n{3,}/g, "\n\n");
+      next =
+        action === "replace"
+          ? state.content.replace(oldText, content)
+          : state.content.replace(oldText, "").replace(/\n{3,}/g, "\n\n");
     }
 
     if (next.length > state.limit) {
       return { ok: false, message: `memory limit exceeded (${next.length}/${state.limit} chars)`, state };
     }
 
-    await this.writeAtomic(state.path, next);
-    const updated = await this.readState(target, persona);
-    return { ok: true, message: `${basename(state.path)} ${action} complete`, state: updated };
+    await this.writeAtomic(path, next);
+    const updated = await this.readState(path, limit);
+    return { ok: true, message: `${action} complete`, state: updated };
   }
 
   private entries(content: string): string[] {
@@ -129,7 +106,7 @@ export class MemoryStore {
     let count = 0;
     let index = haystack.indexOf(needle);
     while (index !== -1) {
-      count++;
+      count += 1;
       index = haystack.indexOf(needle, index + needle.length);
     }
     return count;
