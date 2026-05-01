@@ -24,6 +24,7 @@ Implemented now:
 - memory tool writing to global agent `MEMORY.md`
 - simple runtime seam with Pi as the only runtime
 - slash commands trimmed to app control: `/help`, `/agents`, `/quit`
+- dynamic selectable `/` and `@` previews sourced from command/agent registries
 - README updated for global personas + project context
 - old hardcoded persona switching and Monad orchestration removed
 

@@ -19,6 +19,7 @@ That means Gaia, Sidia, and Terry live once under your GAIA home, like durable H
 - Pi runtime for all agents
 - sample global personas: `@gaia`, `@sidia`, `@terry`
 - slash commands: `/help`, `/agents`, `/quit`
+- dynamic selectable previews for `/` commands and `@` agents
 
 `GAIA_HOME` can override the global home path. Default: `~/.gaia`.
 
@@ -77,6 +78,10 @@ your-project/
 ```bash
 gaia
 ```
+
+Press `/` to open the command preview.
+Press `@` to open the agent preview.
+Use ↑/↓ to select, Tab/Enter to insert, and Esc to hide.
 
 Examples:
 
