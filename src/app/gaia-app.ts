@@ -5,7 +5,7 @@ import { planMentionRoute } from "../router/mention-router.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import { AppView } from "../tui/app-view.js";
-import { HELP_TEXT, parseCommand } from "../tui/commands.js";
+import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "../tui/commands.js";
 import { assistantHeader, toolLine } from "../tui/message-renderer.js";
 import type { Workspace } from "../workspace/types.js";
 
@@ -39,7 +39,7 @@ export class GaiaApp {
 
     try {
       while (true) {
-        const input = await this.view.prompt(this.workspace.config.room, this.workspace.config.defaultAgent);
+        const input = await this.view.prompt(this.workspace.config.room, this.workspace.config.defaultAgent, this.promptPreviews());
         const command = parseCommand(input);
 
         if (command.type === "quit") break;
@@ -49,10 +49,6 @@ export class GaiaApp {
         }
         if (command.type === "agents") {
           this.view.line(this.renderAgentsList());
-          continue;
-        }
-        if (command.type === "legacy-mode") {
-          this.view.line(`Agent switching is gone. Use @${command.command} in your message instead.`);
           continue;
         }
         if (command.type === "unknown") {
@@ -121,6 +117,20 @@ export class GaiaApp {
       this.view.line(`\n[error] ${message}\n`);
       return collected;
     }
+  }
+
+  private promptPreviews() {
+    return {
+      slashCommands: SLASH_COMMANDS.map((command) => ({ label: command.name, description: command.description })),
+      agents: Object.values(this.workspace.agents).map((agent) => {
+        const defaultMark = agent.id === this.workspace.config.defaultAgent ? "default" : undefined;
+        const tools = agent.tools.length > 0 ? `tools: ${agent.tools.join(", ")}` : "no tools";
+        return {
+          label: agent.id,
+          description: [agent.displayName, defaultMark, tools].filter(Boolean).join(" — "),
+        };
+      }),
+    };
   }
 
   private renderAgentsLine(): string {
