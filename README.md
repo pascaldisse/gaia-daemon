@@ -1,23 +1,26 @@
 # GAIA
 
-`gaia` is a local-first multi-agent workspace CLI built on the Pi SDK.
+`gaia` is a local-first multi-agent room built on the Pi SDK.
 
-It opens a shared room inside your project.
-One agent is the default.
-You can mention other agents with `@agent`.
-Each agent keeps its own `SOUL.md` and `MEMORY.md` inside `.gaia/`.
+Personas are global.
+Project context is local.
+
+That means Gaia, Sidia, and Terry live once under your GAIA home, like durable Hermes-style identities. Each project only adds instructions, room state, and optional local appends/overrides.
 
 ## Current shape
 
-- project-local `.gaia/` workspace
-- default agent routing
+- global personas under `~/.gaia/agents/`
+- project-local `AGENTS.md` context, like Pi
+- project-local `.gaia/config.yaml`
+- project-local room transcript in `.gaia/rooms/default/transcript.jsonl`
 - deterministic `@agent` mention routing
-- multiple agents in mention order
-- per-agent markdown memory
-- shared room transcript in JSONL
+- multiple agents in first-mentioned order
+- per-agent global markdown memory
 - Pi runtime for all agents
-- built-in sample agents: `@gaia`, `@sidia`, `@terry`
+- sample global personas: `@gaia`, `@sidia`, `@terry`
 - slash commands: `/help`, `/agents`, `/quit`
+
+`GAIA_HOME` can override the global home path. Default: `~/.gaia`.
 
 ## Setup
 
@@ -30,7 +33,7 @@ npm link   # optional, exposes `gaia`
 Configure Pi auth the same way you configure Pi itself.
 For example: `pi /login` or provider API-key environment variables.
 
-## Initialize a workspace
+## Initialize a project
 
 Run this in your project:
 
@@ -38,12 +41,10 @@ Run this in your project:
 gaia init
 ```
 
-It creates:
+It creates or verifies global personas:
 
 ```text
-.gaia/
-  config.yaml
-  SYSTEM.md
+~/.gaia/
   agents/
     gaia/
       agent.yaml
@@ -57,9 +58,18 @@ It creates:
       agent.yaml
       SOUL.md
       MEMORY.md
-  rooms/
-    default/
-      transcript.jsonl
+```
+
+And it creates project-local room/context files:
+
+```text
+your-project/
+  AGENTS.md
+  .gaia/
+    config.yaml
+    rooms/
+      default/
+        transcript.jsonl
 ```
 
 ## Run
@@ -81,7 +91,37 @@ What should we build next?
 # Gaia responds, then Terry responds
 ```
 
+## Prompt layering
+
+Each agent turn gets:
+
+1. global agent `SOUL.md`
+2. optional project agent `SOUL.md` override
+3. optional project agent `APPEND_SOUL.md`
+4. project `AGENTS.md` files, discovered from parent dirs to current dir
+5. global agent `MEMORY.md`
+6. recent room transcript
+
+## Project-local agent overrides
+
+You can customize an agent for one project without changing the global persona.
+
+Examples:
+
+```text
+.gaia/agents/gaia/APPEND_SOUL.md   # append local behavior
+.gaia/agents/gaia/SOUL.md          # replace global soul for this project
+.gaia/agents/gaia/agent.yaml       # override metadata/tools/model for this project
+```
+
+Keep canonical identity and long-term memory global unless you have a clear reason not to.
+
 ## Workspace files
+
+### `AGENTS.md`
+
+Project instructions.
+Use it for repo conventions, commands, constraints, safety notes, and preferences.
 
 ### `.gaia/config.yaml`
 
@@ -92,22 +132,9 @@ runtime: pi
 transcriptWindow: 20
 ```
 
-### `.gaia/SYSTEM.md`
-
-Shared workspace instructions for all agents.
-
-### `.gaia/agents/<agent>/SOUL.md`
-
-The identity and voice of one agent.
-
-### `.gaia/agents/<agent>/MEMORY.md`
-
-Local long-term memory for one agent.
-The `memory` tool writes here.
-
 ### `.gaia/rooms/default/transcript.jsonl`
 
-Shared room history.
+Shared room history for the project.
 Recent transcript is injected into each agent turn.
 
 ## Notes

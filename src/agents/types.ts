@@ -19,4 +19,8 @@ export interface AgentDefinition {
   skills: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  projectDir?: string;
+  projectConfigPath?: string;
+  projectSoulAppendPath?: string;
+  soulSource: "global" | "project-override";
 }

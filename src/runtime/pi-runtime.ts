@@ -120,20 +120,38 @@ export class PiRuntime implements AgentRuntime {
   dispose(): void {}
 
   private async buildSystemPrompt(): Promise<string> {
-    const [systemText, soulText, memory] = await Promise.all([
-      readFile(this.workspace.systemPath, "utf8"),
+    const [soulText, appendSoulText, memory] = await Promise.all([
       readFile(this.agent.soulPath, "utf8"),
+      this.readOptional(this.agent.projectSoulAppendPath),
       this.memoryStore.readState(this.agent.memoryPath),
     ]);
 
+    const context = this.workspace.contextFiles.length
+      ? this.workspace.contextFiles
+          .map((file) => `## ${file.path}\n\n${file.content.trim()}`)
+          .join("\n\n")
+      : "(no AGENTS.md files found)";
+
     return [
-      "# Workspace System",
-      systemText.trim(),
-      "# Agent Soul",
+      `# Agent Soul (${this.agent.soulSource})`,
       soulText.trim(),
+      appendSoulText ? `# Project Agent Soul Append\n\n${appendSoulText.trim()}` : "",
+      "# Project Context (AGENTS.md)",
+      context,
       renderAgentMemory(memory),
       "You are participating in a shared GAIA room. Reply only as the current agent.",
-    ].join("\n\n---\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n---\n\n");
+  }
+
+  private async readOptional(path: string | undefined): Promise<string> {
+    if (!path) return "";
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      return "";
+    }
   }
 
   private buildTurnPrompt(input: AgentInput): string {

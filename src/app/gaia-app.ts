@@ -34,7 +34,7 @@ export class GaiaApp {
     );
 
     this.view.start();
-    this.view.line("GAIA workspace room — /help for commands, /quit to exit.");
+    this.view.line("GAIA project room — /help for commands, /quit to exit.");
     this.view.line(this.renderAgentsLine());
 
     try {

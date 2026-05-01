@@ -7,7 +7,7 @@
     "gaia": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts"

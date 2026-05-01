@@ -7,13 +7,19 @@ export interface WorkspaceConfig {
   transcriptWindow: number;
 }
 
+export interface ContextFile {
+  path: string;
+  content: string;
+}
+
 export interface Workspace {
   rootDir: string;
   dir: string;
   configPath: string;
-  systemPath: string;
-  agentsDir: string;
+  agentsOverrideDir: string;
   roomsDir: string;
+  globalAgentsDir: string;
   config: WorkspaceConfig;
+  contextFiles: ContextFile[];
   agents: Record<string, AgentDefinition>;
 }
