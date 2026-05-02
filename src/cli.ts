@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { scaffoldGlobalAgent } from "./agents/scaffold.js";
 import { GaiaApp } from "./app/gaia-app.js";
 import { MemoryStore } from "./memory/memory-store.js";
 import { globalAgentsPath, initWorkspace, loadWorkspace, workspacePath } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia          start the GAIA room in the current project\n  gaia init     create project room files and seed global personas\n  gaia --help   show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA room in the current project\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
@@ -12,6 +13,30 @@ async function main(): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     usage();
     return;
+  }
+
+  if (args[0] === "agent" && args[1] === "create") {
+    const id = args[2];
+    const displayName = args.slice(3).join(" ").trim() || undefined;
+    if (!id) {
+      console.error("Usage: gaia agent create <id> [display name]");
+      process.exitCode = 1;
+      return;
+    }
+
+    try {
+      const result = await scaffoldGlobalAgent(globalAgentsPath(), id, { displayName });
+      console.log(`Agent created: ${result.agentDir}`);
+      console.log(`Config: ${result.configPath}`);
+      console.log(`Soul: ${result.soulPath}`);
+      console.log(`Memory: ${result.memoryPath}`);
+      console.log(`Roles: ${result.rolesDir}`);
+      return;
+    } catch (error) {
+      console.error(`gaia: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   if (args[0] === "init") {

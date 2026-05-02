@@ -153,7 +153,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     6. Reloaded sessions when prompts change and recreated sessions when skill paths change or reload fails.
     7. Preserved streaming event forwarding with persistent sessions.
 
-- unstarted: Task 9 — Add CLI Agent Scaffold Command
+- completed: Task 9 — Add CLI Agent Scaffold Command
   - Description: Add a simple CLI scaffold path for creating new agent-character folders, while leaving deep editing to files.
   - Dependencies: Task 2, Task 3, Task 4
   - Acceptance Criteria:
@@ -163,10 +163,10 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - `gaia --help` documents the command.
     - Tests cover non-overwrite behavior and generated file shape.
   - Steps:
-    1. Extend CLI argument handling without adding heavy dependencies.
-    2. Implement scaffold helpers reusing default write-if-missing behavior where safe.
-    3. Add starter role templates for brainstorm, research, and plan.
-    4. Print created paths so users can edit files directly.
+    1. Extended CLI argument handling without adding heavy dependencies.
+    2. Implemented scaffold helpers with explicit non-overwrite behavior.
+    3. Added starter role templates for brainstorm, research, and plan.
+    4. Printed created paths so users can edit files directly.
 
 - unstarted: Task 10 — Documentation and Migration Cleanup
   - Description: Update user-facing docs and internal plan notes to reflect the new architecture, remove stale claims, and document migration behavior.
