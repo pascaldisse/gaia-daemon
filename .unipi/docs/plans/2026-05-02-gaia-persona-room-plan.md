@@ -33,7 +33,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     3. Added reusable temp-directory helper for later workspace and GAIA_HOME tests.
     4. Verified with `npm run check` and `npm test`.
 
-- unstarted: Task 2 — Migrate Agent File Model to Agent-Owned Persona Folders
+- completed: Task 2 — Migrate Agent File Model to Agent-Owned Persona Folders
   - Description: Update global and project agent loading so each agent folder owns a `persona/` subfolder. Preserve compatibility with existing `SOUL.md`, `MEMORY.md`, and `INTENT.md` where possible.
   - Dependencies: Task 1
   - Acceptance Criteria:
@@ -43,12 +43,12 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Agent type definitions reflect hard-control fields and persona paths clearly.
     - Tests cover fresh init and legacy compatibility.
   - Steps:
-    1. Extend `AgentDefinition` with `personaDir`, `rolesDir`, and project persona paths.
-    2. Update default agent seeding to create the new folder structure.
-    3. Add non-destructive compatibility helpers for legacy global `SOUL.md` / `MEMORY.md`.
-    4. Update `loadAgentDefinitions()` to populate new paths.
-    5. Remove or defer misleading unused fields such as `public` and agent-level `skills` unless needed for compatibility.
-    6. Add temp-dir tests for global defaults and project override resolution.
+    1. Extended `AgentDefinition` with `personaDir`, `rolesDir`, and project persona paths.
+    2. Updated default agent seeding to create the new folder structure.
+    3. Added non-destructive compatibility helpers for legacy global `SOUL.md` / `MEMORY.md`.
+    4. Updated `loadAgentDefinitions()` to populate new paths.
+    5. Removed misleading unused `public` and agent-level `skills` fields from the loaded definition.
+    6. Added temp-dir tests for global defaults, legacy compatibility, project intent fallback, and `gaia init` with `GAIA_HOME`.
 
 - unstarted: Task 3 — Implement Role Parsing and Resolution
   - Description: Add role support as persona-level soft control. A role is markdown with optional frontmatter containing `skills`. Global role files provide the base prompt; project role files append overlays.

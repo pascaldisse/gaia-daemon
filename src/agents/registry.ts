@@ -7,10 +7,8 @@ interface RawAgentConfig {
   id?: string;
   displayName?: string;
   icon?: string;
-  public?: boolean;
   runtime?: string;
   tools?: unknown;
-  skills?: unknown;
   model?: AgentModelConfig;
   thinking?: AgentDefinition["thinking"];
 }
@@ -25,6 +23,20 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
   await writeFile(path, content, "utf8");
 }
 
+async function mkdirIfMissing(path: string): Promise<void> {
+  if (existsSync(path)) return;
+  await mkdir(path, { recursive: true });
+}
+
+async function writePersonaFileIfMissing(newPath: string, legacyPath: string, content: string): Promise<void> {
+  if (existsSync(newPath) || existsSync(legacyPath)) return;
+  await writeIfMissing(newPath, content);
+}
+
+function firstExisting(paths: string[]): string | undefined {
+  return paths.find((path) => existsSync(path));
+}
+
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -34,35 +46,58 @@ function agentJson(id: string, displayName: string, icon: string, tools: string[
     id,
     displayName,
     icon,
-    public: true,
     runtime: "pi",
     thinking: "medium",
     tools,
-    skills: [],
   });
 }
 
+async function ensureDefaultAgent(
+  agentsDir: string,
+  id: string,
+  displayName: string,
+  icon: string,
+  tools: string[],
+  soul: string,
+): Promise<void> {
+  const dir = join(agentsDir, id);
+  const personaDir = join(dir, "persona");
+  const legacySoulPath = join(dir, "SOUL.md");
+  const legacyMemoryPath = join(dir, "MEMORY.md");
+
+  await writeIfMissing(join(dir, "agent.json"), agentJson(id, displayName, icon, tools));
+  await writePersonaFileIfMissing(join(personaDir, "SOUL.md"), legacySoulPath, soul);
+  await writePersonaFileIfMissing(join(personaDir, "MEMORY.md"), legacyMemoryPath, `# ${displayName} Memory\n\n`);
+  await mkdirIfMissing(join(personaDir, "roles"));
+}
+
 export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void> {
-  await writeIfMissing(join(agentsDir, "gaia", "agent.json"), agentJson("gaia", "Gaia", "☀️", ["read", "write", "edit", "memory"]));
-  await writeIfMissing(
-    join(agentsDir, "gaia", "SOUL.md"),
+  await ensureDefaultAgent(
+    agentsDir,
+    "gaia",
+    "Gaia",
+    "☀️",
+    ["read", "write", "edit", "memory"],
     `# Gaia\n\nYou are warm, constructive, curious, and pattern-seeking.\n\nYou are good at:\n- shaping ideas\n- finding promising next steps\n- keeping momentum gentle and real\n\nVoice:\n- short, bright, grounded\n- encouraging without fluff\n- ask clear questions when needed\n\nAvoid:\n- fake certainty\n- empty praise\n- rambling\n`,
   );
-  await writeIfMissing(join(agentsDir, "gaia", "MEMORY.md"), "# Gaia Memory\n\n");
 
-  await writeIfMissing(join(agentsDir, "sidia", "agent.json"), agentJson("sidia", "Sidia", "◆", ["read", "write", "edit", "memory"]));
-  await writeIfMissing(
-    join(agentsDir, "sidia", "SOUL.md"),
+  await ensureDefaultAgent(
+    agentsDir,
+    "sidia",
+    "Sidia",
+    "◆",
+    ["read", "write", "edit", "memory"],
     `# Sidia\n\nYou are skeptical, precise, and crack-finding without cruelty.\n\nYou are good at:\n- stress-testing plans\n- naming weak assumptions\n- separating evidence from inference\n\nVoice:\n- direct\n- exact\n- critical, then constructive\n\nAvoid:\n- broad cynicism\n- vague objections\n- needless harshness\n`,
   );
-  await writeIfMissing(join(agentsDir, "sidia", "MEMORY.md"), "# Sidia Memory\n\n");
 
-  await writeIfMissing(join(agentsDir, "terry", "agent.json"), agentJson("terry", "Terry", "🐻", ["read", "write", "edit", "bash", "memory"]));
-  await writeIfMissing(
-    join(agentsDir, "terry", "SOUL.md"),
+  await ensureDefaultAgent(
+    agentsDir,
+    "terry",
+    "Terry",
+    "🐻",
+    ["read", "write", "edit", "bash", "memory"],
     `# Terry\n\nYou are a practical engineer. Smallest useful patch first.\n\nYou are good at:\n- implementation\n- cleanup\n- cutting scope\n\nVoice:\n- short\n- plain\n- no drama\n\nAvoid:\n- overdesign\n- speeches\n- speculative complexity\n`,
   );
-  await writeIfMissing(join(agentsDir, "terry", "MEMORY.md"), "# Terry Memory\n\n");
 }
 
 async function readJson(path: string): Promise<RawAgentConfig> {
@@ -94,39 +129,46 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
 
     const dir = join(globalAgentsDir, entry.name);
     const configPath = join(dir, "agent.json");
-    const soulPath = join(dir, "SOUL.md");
-    const memoryPath = join(dir, "MEMORY.md");
+    const personaDir = join(dir, "persona");
+    const rolesDir = join(personaDir, "roles");
+    const soulPath = firstExisting([join(personaDir, "SOUL.md"), join(dir, "SOUL.md")]);
+    const memoryPath = firstExisting([join(personaDir, "MEMORY.md"), join(dir, "MEMORY.md")]) ?? join(personaDir, "MEMORY.md");
 
     if (!existsSync(configPath)) continue;
-    if (!existsSync(soulPath)) throw new Error(`Missing global agent soul file: ${soulPath}`);
+    if (!soulPath) throw new Error(`Missing global agent soul file: ${join(personaDir, "SOUL.md")}`);
 
     const projectDir = join(projectAgentsDir, entry.name);
+    const projectPersonaDir = join(projectDir, "persona");
     const projectConfigPath = join(projectDir, "agent.json");
-    const projectIntentPath = join(projectDir, "INTENT.md");
+    const projectIntentPath = firstExisting([join(projectPersonaDir, "INTENT.md"), join(projectDir, "INTENT.md")]);
+    const projectRolesDir = join(projectPersonaDir, "roles");
 
     const raw = mergeAgentConfig(await readJson(configPath), await readJson(projectConfigPath));
     const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : entry.name;
     const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : id;
 
     await ensureMemoryFile(memoryPath, displayName);
+    await mkdirIfMissing(rolesDir);
 
     agents[id] = {
       id,
       displayName,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
-      public: raw.public ?? true,
       runtime: typeof raw.runtime === "string" && raw.runtime.trim() ? raw.runtime : "pi",
       dir,
       configPath,
+      personaDir,
+      rolesDir,
       soulPath,
       memoryPath,
       tools: stringList(raw.tools, []),
-      skills: stringList(raw.skills, []),
       model: raw.model,
       thinking: raw.thinking,
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
-      projectIntentPath: existsSync(projectIntentPath) ? projectIntentPath : undefined,
+      projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,
+      projectRolesDir: existsSync(projectRolesDir) ? projectRolesDir : undefined,
+      projectIntentPath,
     };
   }
 

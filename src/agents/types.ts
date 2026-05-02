@@ -9,17 +9,19 @@ export interface AgentDefinition {
   id: string;
   displayName: string;
   icon: string;
-  public: boolean;
   runtime: string;
   dir: string;
   configPath: string;
+  personaDir: string;
+  rolesDir: string;
   soulPath: string;
   memoryPath: string;
   tools: string[];
-  skills: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   projectDir?: string;
   projectConfigPath?: string;
+  projectPersonaDir?: string;
+  projectRolesDir?: string;
   projectIntentPath?: string;
 }
