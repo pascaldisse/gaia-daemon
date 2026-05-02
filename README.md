@@ -148,4 +148,6 @@ Recent transcript is injected into each agent turn.
 - Agent messages do not auto-trigger more routing.
 - Pi is the only runtime right now.
 - Safety isolation, smarter routing, and tests are still future work.
+- check how containers are handled in nano claw
 - ideas: agents can summon subagents. This is handled similarly to OpenCode. (We will not implement this yet though)
+- mode switching? Each persona has different modes with custom instructions, skills and tools. Like: brainstorming-mode, science mode, divine-mother (triggered when distressed), etc
