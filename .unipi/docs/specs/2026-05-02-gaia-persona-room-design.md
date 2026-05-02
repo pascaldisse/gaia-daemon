@@ -321,17 +321,17 @@ High-value coverage:
 
 ## Implementation Checklist
 
-- [ ] Define updated file model and migration strategy for agent-owned `persona/` folders.
-- [ ] Add role file parsing with optional `skills` frontmatter.
-- [ ] Add global + project skill resolution with project-wins collision behavior.
-- [ ] Add room-local `state.json` for active roles, transcript cursors, and Pi session metadata.
-- [ ] Refactor runtime around persistent `AgentRoomSession` per room-agent pair.
-- [ ] Connect active role skills to Pi `DefaultResourceLoader` via explicit skill paths or `skillsOverride`.
-- [ ] Implement role commands: `/roles <agent>`, `/role <agent> <role>`, `/role <agent> none`.
-- [ ] Update prompt assembly to use role overlays and room events since agent cursor.
-- [ ] Add CLI scaffold command for creating agents with persona folders and starter roles.
-- [ ] Add tests for routing, role parsing, skill resolution, room state, and runtime lifecycle.
-- [ ] Update README and plan docs to reflect hard-control vs soft-control architecture.
+- [x] Define updated file model and migration strategy for agent-owned `persona/` folders.
+- [x] Add role file parsing with optional `skills` frontmatter.
+- [x] Add global + project skill resolution with project-wins collision behavior.
+- [x] Add room-local `state.json` for active roles, transcript cursors, and Pi session metadata.
+- [x] Refactor runtime around persistent `AgentRoomSession` per room-agent pair.
+- [x] Connect active role skills to Pi `DefaultResourceLoader` via explicit skill paths or `skillsOverride`.
+- [x] Implement role commands: `/roles <agent>`, `/role <agent> <role>`, `/role <agent> none`.
+- [x] Update prompt assembly to use role overlays and room events since agent cursor.
+- [x] Add CLI scaffold command for creating agents with persona folders and starter roles.
+- [x] Add tests for routing, role parsing, skill resolution, room state, and runtime lifecycle.
+- [x] Update README and plan docs to reflect hard-control vs soft-control architecture.
 
 ## Open Questions
 
