@@ -50,7 +50,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     5. Removed misleading unused `public` and agent-level `skills` fields from the loaded definition.
     6. Added temp-dir tests for global defaults, legacy compatibility, project intent fallback, and `gaia init` with `GAIA_HOME`.
 
-- unstarted: Task 3 — Implement Role Parsing and Resolution
+- completed: Task 3 — Implement Role Parsing and Resolution
   - Description: Add role support as persona-level soft control. A role is markdown with optional frontmatter containing `skills`. Global role files provide the base prompt; project role files append overlays.
   - Dependencies: Task 2
   - Acceptance Criteria:
@@ -60,11 +60,11 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Invalid or absent frontmatter does not crash the app; the markdown body still loads and a warning can be surfaced.
     - Tests cover prompt merge order, missing roles, malformed frontmatter, and skill list parsing.
   - Steps:
-    1. Create a small role module with frontmatter parsing kept dependency-free.
-    2. Use simple YAML-like parsing only for `skills:` arrays, or define a stricter JSON/frontmatter subset.
-    3. Resolve role names from filenames.
-    4. Merge global role prompt before project overlay prompt.
-    5. Keep role skill lists deterministic and deduplicated in declaration order.
+    1. Created a small role module with dependency-free frontmatter parsing.
+    2. Supported simple `skills:` lists and inline arrays.
+    3. Resolved role names from safe markdown filenames.
+    4. Merged global role prompt before project overlay prompt.
+    5. Kept role skill lists deterministic and deduplicated in declaration order.
 
 - unstarted: Task 4 — Implement Central Skill Library Resolution
   - Description: Add GAIA skill-library lookup without implementing a new skill engine. Resolve role-declared skill names to concrete Pi skill paths.
