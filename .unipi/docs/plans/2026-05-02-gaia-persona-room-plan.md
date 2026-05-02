@@ -66,7 +66,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     4. Merged global role prompt before project overlay prompt.
     5. Kept role skill lists deterministic and deduplicated in declaration order.
 
-- unstarted: Task 4 — Implement Central Skill Library Resolution
+- completed: Task 4 — Implement Central Skill Library Resolution
   - Description: Add GAIA skill-library lookup without implementing a new skill engine. Resolve role-declared skill names to concrete Pi skill paths.
   - Dependencies: Task 3
   - Acceptance Criteria:
@@ -77,10 +77,10 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - The resolver returns explicit paths suitable for Pi `additionalSkillPaths` or `skillsOverride`.
     - Tests cover global-only, project-only, project-wins, unknown skill, and deterministic ordering.
   - Steps:
-    1. Add `globalSkillsPath()` and project skills path helpers.
-    2. Implement `resolveSkillRefs(workspace, skillNames)`.
-    3. Return both resolved paths and diagnostics.
-    4. Do not parse or execute skill content in GAIA; only resolve names to paths.
+    1. Added `globalSkillsPath()` and project skills path helpers.
+    2. Implemented `resolveSkillRefs(workspace, skillNames)`.
+    3. Returned both resolved paths and diagnostics.
+    4. Kept GAIA as a path resolver only; Pi still parses and executes skill behavior.
 
 - unstarted: Task 5 — Add Room State for Active Roles and Agent Cursors
   - Description: Add `.gaia/rooms/<room>/state.json` as room-local state for active roles, transcript cursors, and future Pi session metadata.
