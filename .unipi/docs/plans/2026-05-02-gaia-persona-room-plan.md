@@ -132,7 +132,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     4. Updated runtime input types to carry active role data cleanly.
     5. Added tests for prompt layer order and cursor behavior.
 
-- unstarted: Task 8 — Refactor Pi Runtime to Persistent AgentRoomSession
+- completed: Task 8 — Refactor Pi Runtime to Persistent AgentRoomSession
   - Description: Replace fresh Pi session creation per message with persistent Pi `AgentSession` instances keyed by room-agent pair. Connect active role skills to Pi's `DefaultResourceLoader`.
   - Dependencies: Task 4, Task 5, Task 7
   - Acceptance Criteria:
@@ -145,13 +145,13 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Tests use a mocked runtime/session seam; no real Pi auth is needed.
     - Manual verification shows two messages to the same agent reuse continuity and do not create a fresh session each turn.
   - Steps:
-    1. Inspect Pi `SessionManager` behavior enough to choose the durable room-agent session naming/storage approach.
-    2. Introduce a runtime session abstraction that can be mocked in tests.
-    3. Move `createAgentSession()` out of the per-message hot path.
-    4. Keep `DefaultResourceLoader` available and mutable/reloadable per agent session.
-    5. Wire role skill resolution into loader creation.
-    6. Add `refreshRole()` or equivalent for role switches.
-    7. Ensure streaming event forwarding still works with persistent sessions.
+    1. Chose durable room-agent session directories under `.gaia/rooms/<room>/pi-sessions/<agent>` using `SessionManager.continueRecent()`.
+    2. Introduced a runtime session abstraction and factory seam that can be mocked in tests.
+    3. Moved `createAgentSession()` out of the per-message hot path.
+    4. Kept `DefaultResourceLoader` available and reloadable per agent session.
+    5. Wired role skill resolution into loader creation through `additionalSkillPaths` with `noSkills: true`.
+    6. Reloaded sessions when prompts change and recreated sessions when skill paths change or reload fails.
+    7. Preserved streaming event forwarding with persistent sessions.
 
 - unstarted: Task 9 — Add CLI Agent Scaffold Command
   - Description: Add a simple CLI scaffold path for creating new agent-character folders, while leaving deep editing to files.
