@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
+import { defaultRoomState } from "../room/state.js";
 import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
@@ -69,6 +70,7 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
     `# Project Instructions\n\nThis file is project-local context for GAIA agents.\n\nAdd repo conventions, commands, constraints, and preferences here.\nCanonical agent identity lives in global personas under ~/.gaia/agents/.\n`,
   );
   await writeIfMissing(workspaceFile(cwd, "rooms", DEFAULT_ROOM, "transcript.jsonl"), "");
+  await writeIfMissing(workspaceFile(cwd, "rooms", DEFAULT_ROOM, "state.json"), json(defaultRoomState()));
 
   return { workspaceDir, globalAgentsDir: agentsDir };
 }
@@ -95,6 +97,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   }
 
   await writeIfMissing(join(roomsDir, config.room, "transcript.jsonl"), "");
+  await writeIfMissing(join(roomsDir, config.room, "state.json"), json(defaultRoomState()));
 
   return {
     rootDir: cwd,

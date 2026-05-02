@@ -82,7 +82,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     3. Returned both resolved paths and diagnostics.
     4. Kept GAIA as a path resolver only; Pi still parses and executes skill behavior.
 
-- unstarted: Task 5 — Add Room State for Active Roles and Agent Cursors
+- completed: Task 5 — Add Room State for Active Roles and Agent Cursors
   - Description: Add `.gaia/rooms/<room>/state.json` as room-local state for active roles, transcript cursors, and future Pi session metadata.
   - Dependencies: Task 1
   - Acceptance Criteria:
@@ -92,11 +92,11 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Writes are atomic or otherwise safe enough for a local single-process MVP.
     - Tests cover read defaults, write/read roundtrip, partial state merge, and malformed state handling.
   - Steps:
-    1. Add a `RoomState` type and store module.
-    2. Add path helper for room state next to `transcript.jsonl`.
-    3. Load state when constructing `Room` or `GaiaApp`.
-    4. Save active role changes and cursor updates.
-    5. Keep `piSessions` as a placeholder until Task 8 identifies the exact Pi persistence handle.
+    1. Added a `RoomState` type and store module.
+    2. Added path helper for room state next to `transcript.jsonl`.
+    3. Exposed state read/write through `Room` and create state during workspace init/load.
+    4. Prepared state fields for role changes and cursor updates.
+    5. Kept `piSessions` as a placeholder until Task 8 identifies the exact Pi persistence handle.
 
 - unstarted: Task 6 — Add Role Room Commands and Status Display
   - Description: Add in-room commands for inspecting and switching active roles, using room-local state.
