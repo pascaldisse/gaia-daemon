@@ -98,7 +98,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     4. Prepared state fields for role changes and cursor updates.
     5. Kept `piSessions` as a placeholder until Task 8 identifies the exact Pi persistence handle.
 
-- unstarted: Task 6 — Add Role Room Commands and Status Display
+- completed: Task 6 — Add Role Room Commands and Status Display
   - Description: Add in-room commands for inspecting and switching active roles, using room-local state.
   - Dependencies: Task 3, Task 5
   - Acceptance Criteria:
@@ -110,11 +110,11 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Agent previews or status line show active role when present.
     - Tests cover command parsing for role commands.
   - Steps:
-    1. Extend slash command parsing to support argument-bearing commands.
-    2. Add app-layer handlers for `/roles` and `/role`.
-    3. Persist role changes through room state.
-    4. Add a runtime invalidation/reload hook placeholder so Task 8 can refresh Pi sessions after role changes.
-    5. Update status rendering to show `@agent [role]`.
+    1. Extended slash command parsing to support argument-bearing commands.
+    2. Added app-layer handlers for `/roles` and `/role`.
+    3. Persisted role changes through room state.
+    4. Added a runtime invalidation/reload hook placeholder so Task 8 can refresh Pi sessions after role changes.
+    5. Updated agent previews and agent listings to show `@agent [role]`.
 
 - unstarted: Task 7 — Update Prompt Assembly for Persona, Role, Skills, and Cursor-Based Room Context
   - Description: Change prompt construction so role overlays are included and the turn prompt uses room events since the agent cursor instead of repeatedly injecting the whole recent transcript.

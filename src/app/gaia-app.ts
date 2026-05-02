@@ -1,7 +1,9 @@
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
+import { defaultRoomState, type RoomState } from "../room/state.js";
 import { planMentionRoute } from "../router/mention-router.js";
+import { listAgentRoles } from "../roles/roles.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import { AppView } from "../tui/app-view.js";
@@ -13,6 +15,7 @@ export class GaiaApp {
   private readonly room: Room;
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly view = new AppView();
+  private roomState: RoomState = defaultRoomState();
 
   constructor(
     private readonly cwd: string,
@@ -32,6 +35,7 @@ export class GaiaApp {
     await Promise.all(
       Object.values(this.workspace.agents).map((agent) => this.memoryStore.init(agent.memoryPath, `${agent.displayName} Memory`)),
     );
+    this.roomState = await this.room.readState();
 
     this.view.start();
     this.view.line("GAIA project room — /help for commands, /quit to exit.");
@@ -49,6 +53,14 @@ export class GaiaApp {
         }
         if (command.type === "agents") {
           this.view.line(this.renderAgentsList());
+          continue;
+        }
+        if (command.type === "roles") {
+          this.view.line(await this.renderRoles(command.agent));
+          continue;
+        }
+        if (command.type === "role") {
+          this.view.line(await this.setRole(command.agent, command.role));
           continue;
         }
         if (command.type === "unknown") {
@@ -119,15 +131,68 @@ export class GaiaApp {
     }
   }
 
+  private async renderRoles(agentId: string | undefined): Promise<string> {
+    if (!agentId) return "Usage: /roles <agent>";
+    const agent = this.workspace.agents[agentId];
+    if (!agent) return this.unknownAgentMessage(agentId);
+
+    const roles = await listAgentRoles(agent);
+    if (roles.length === 0) return `No roles found for @${agent.id}. Add files under ${agent.rolesDir}`;
+
+    const activeRole = this.roomState.activeRoles[agent.id];
+    return roles
+      .map((role) => `${role === activeRole ? "*" : "-"} ${role}${role === activeRole ? " (active)" : ""}`)
+      .join("\n");
+  }
+
+  private async setRole(agentId: string | undefined, role: string | undefined): Promise<string> {
+    if (!agentId || !role) return "Usage: /role <agent> <role|none>";
+    const agent = this.workspace.agents[agentId];
+    if (!agent) return this.unknownAgentMessage(agentId);
+
+    if (role === "none") {
+      delete this.roomState.activeRoles[agent.id];
+      await this.room.writeState(this.roomState);
+      await this.onRoleChanged(agent.id);
+      return `Cleared role for @${agent.id}.`;
+    }
+
+    const roles = await listAgentRoles(agent);
+    if (!roles.includes(role)) {
+      return `Unknown role for @${agent.id}: ${role}\nAvailable roles: ${roles.length > 0 ? roles.join(", ") : "none"}`;
+    }
+
+    this.roomState.activeRoles[agent.id] = role;
+    await this.room.writeState(this.roomState);
+    await this.onRoleChanged(agent.id);
+    return `Set @${agent.id} role to ${role}.`;
+  }
+
+  private async onRoleChanged(_agentId: string): Promise<void> {
+    // Placeholder seam for Task 8: refresh or recreate the affected persistent runtime session.
+  }
+
+  private unknownAgentMessage(agentId: string): string {
+    return `Unknown agent: @${agentId}\nAvailable agents: ${Object.keys(this.workspace.agents)
+      .map((id) => `@${id}`)
+      .join(", ")}`;
+  }
+
+  private activeRoleLabel(agentId: string): string | undefined {
+    const role = this.roomState.activeRoles[agentId];
+    return role ? `role: ${role}` : undefined;
+  }
+
   private promptPreviews() {
     return {
       slashCommands: SLASH_COMMANDS.map((command) => ({ label: command.name, description: command.description })),
       agents: Object.values(this.workspace.agents).map((agent) => {
         const defaultMark = agent.id === this.workspace.config.defaultAgent ? "default" : undefined;
+        const role = this.activeRoleLabel(agent.id);
         const tools = agent.tools.length > 0 ? `tools: ${agent.tools.join(", ")}` : "no tools";
         return {
           label: agent.id,
-          description: [agent.displayName, defaultMark, tools].filter(Boolean).join(" — "),
+          description: [agent.displayName, defaultMark, role, tools].filter(Boolean).join(" — "),
         };
       }),
     };
@@ -135,7 +200,7 @@ export class GaiaApp {
 
   private renderAgentsLine(): string {
     return `Agents: ${Object.values(this.workspace.agents)
-      .map((agent) => `${agent.icon} @${agent.id}`)
+      .map((agent) => `${agent.icon} @${agent.id}${this.roomState.activeRoles[agent.id] ? ` [${this.roomState.activeRoles[agent.id]}]` : ""}`)
       .join("  ")}`;
   }
 
@@ -143,7 +208,8 @@ export class GaiaApp {
     return Object.values(this.workspace.agents)
       .map((agent) => {
         const defaultMark = agent.id === this.workspace.config.defaultAgent ? " (default)" : "";
-        return `${agent.icon} @${agent.id}${defaultMark} — ${agent.displayName} [tools: ${agent.tools.join(", ") || "none"}]`;
+        const role = this.roomState.activeRoles[agent.id] ? ` [role: ${this.roomState.activeRoles[agent.id]}]` : "";
+        return `${agent.icon} @${agent.id}${defaultMark}${role} — ${agent.displayName} [tools: ${agent.tools.join(", ") || "none"}]`;
       })
       .join("\n");
   }
