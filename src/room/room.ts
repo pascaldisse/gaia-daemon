@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
 import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
-import { appendRoomEvent, readRecentRoomEvents, type RoomEvent } from "./transcript.js";
+import { appendRoomEvent, countRoomEventLines, readRecentRoomEvents, readRoomEventsAfterCursor, type RoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
@@ -33,6 +33,14 @@ export class Room {
 
   async recentEvents(): Promise<RoomEvent[]> {
     return readRecentRoomEvents(this.transcriptPath, this.workspace.config.transcriptWindow);
+  }
+
+  async eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }> {
+    return readRoomEventsAfterCursor(this.transcriptPath, cursor);
+  }
+
+  async eventCursor(): Promise<number> {
+    return countRoomEventLines(this.transcriptPath);
   }
 
   async readState(): Promise<RoomState> {

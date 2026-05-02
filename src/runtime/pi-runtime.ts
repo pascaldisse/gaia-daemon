@@ -11,8 +11,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import { renderAgentMemory } from "../memory/render.js";
-import { renderRoomTranscript } from "../room/room.js";
+import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import { createMemoryTool } from "../tools/memory-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -32,7 +31,7 @@ export class PiRuntime implements AgentRuntime {
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
-    const systemPrompt = await this.buildSystemPrompt();
+    const systemPrompt = await this.buildSystemPrompt(input);
     const model = this.resolveModel();
     const builtInTools = this.agent.tools.filter((tool) => tool !== "memory");
     const customTools = this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : [];
@@ -88,7 +87,7 @@ export class PiRuntime implements AgentRuntime {
       }
     });
 
-    const prompt = this.buildTurnPrompt(input);
+    const prompt = buildTurnPrompt({ roomId: input.roomId, agentId: this.agent.id, message: input.message, events: input.transcript });
     session
       .prompt(prompt, { source: "interactive" })
       .catch((cause) => {
@@ -119,30 +118,21 @@ export class PiRuntime implements AgentRuntime {
 
   dispose(): void {}
 
-  private async buildSystemPrompt(): Promise<string> {
+  private async buildSystemPrompt(input: AgentInput): Promise<string> {
     const [soulText, intentText, memory] = await Promise.all([
       readFile(this.agent.soulPath, "utf8"),
       this.readOptional(this.agent.projectIntentPath),
       this.memoryStore.readState(this.agent.memoryPath),
     ]);
 
-    const context = this.workspace.contextFiles.length
-      ? this.workspace.contextFiles
-          .map((file) => `## ${file.path}\n\n${file.content.trim()}`)
-          .join("\n\n")
-      : "(no AGENTS.md files found)";
-
-    return [
-      "# Agent Soul",
-      soulText.trim(),
-      intentText ? `# Project Agent Intent\n\n${intentText.trim()}` : "",
-      "# Project Context (AGENTS.md)",
-      context,
-      renderAgentMemory(memory),
-      "You are participating in a shared GAIA room. Reply only as the current agent.",
-    ]
-      .filter(Boolean)
-      .join("\n\n---\n\n");
+    return buildSystemPrompt({
+      agent: this.agent,
+      soulText,
+      role: input.activeRole,
+      intentText,
+      contextFiles: this.workspace.contextFiles,
+      memory,
+    });
   }
 
   private async readOptional(path: string | undefined): Promise<string> {
@@ -152,18 +142,6 @@ export class PiRuntime implements AgentRuntime {
     } catch {
       return "";
     }
-  }
-
-  private buildTurnPrompt(input: AgentInput): string {
-    return [
-      `Room: ${input.roomId}`,
-      `Current agent: @${this.agent.id}`,
-      "Recent room transcript:",
-      renderRoomTranscript(input.transcript),
-      "Newest user message:",
-      input.message,
-      "Respond to the newest user message in your own voice. Be concise and useful.",
-    ].join("\n\n");
   }
 
   private resolveModel(): Model<any> | undefined {
