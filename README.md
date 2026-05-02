@@ -1,24 +1,30 @@
 # GAIA
 
-`gaia` is a local-first multi-agent room built on the Pi SDK.
+`gaia` is a local-first terminal persona room built on the Pi SDK.
 
-Personas are global.
-Project context is local.
+Its main idea is simple:
 
-That means Gaia, Sidia, and Terry live once under your GAIA home, like durable Hermes-style identities. Each project only adds instructions, room state, and optional local intent/config overrides.
+- **Agent = hard control**: runtime, model, tools, and future sandbox policy.
+- **Persona = soft control**: identity, voice, memory, roles, and behavior.
+- **Room = shared place**: transcript, active roles, cursors, and runtime continuity.
+
+Personas are durable. Projects add local context.
 
 ## Current shape
 
-- global personas under `~/.gaia/agents/`
+- global agents under `~/.gaia/agents/`
+- agent-owned `persona/` folders
+- central skill libraries under `~/.gaia/skills/` and project `.gaia/skills/`
 - project-local `AGENTS.md` context, like Pi
 - project-local `.gaia/config.json`
-- project-local room transcript in `.gaia/rooms/default/transcript.jsonl`
+- project-local room state and transcript under `.gaia/rooms/default/`
+- room-local active roles via `/role`
 - deterministic `@agent` mention routing
 - multiple agents in first-mentioned order
 - per-agent global markdown memory
-- Pi runtime for all agents
-- sample global personas: `@gaia`, `@sidia`, `@terry`
-- slash commands: `/help`, `/agents`, `/quit`
+- persistent Pi session per room-agent pair
+- sample global agents: `@gaia`, `@sidia`, `@terry`
+- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/quit`
 - dynamic selectable previews for `/` commands and `@` agents
 
 `GAIA_HOME` can override the global home path. Default: `~/.gaia`.
@@ -42,23 +48,30 @@ Run this in your project:
 gaia init
 ```
 
-It creates or verifies global personas:
+It creates or verifies global agents:
 
 ```text
 ~/.gaia/
   agents/
     gaia/
       agent.json
-      SOUL.md
-      MEMORY.md
+      persona/
+        SOUL.md
+        MEMORY.md
+        roles/
     sidia/
       agent.json
-      SOUL.md
-      MEMORY.md
+      persona/
+        SOUL.md
+        MEMORY.md
+        roles/
     terry/
       agent.json
-      SOUL.md
-      MEMORY.md
+      persona/
+        SOUL.md
+        MEMORY.md
+        roles/
+  skills/
 ```
 
 And it creates project-local room/context files:
@@ -68,9 +81,13 @@ your-project/
   AGENTS.md
   .gaia/
     config.json
+    skills/
+    agents/
     rooms/
       default/
+        state.json
         transcript.jsonl
+        pi-sessions/
 ```
 
 ## Run
@@ -96,28 +113,126 @@ What should we build next?
 # Gaia responds, then Terry responds
 ```
 
+## Roles
+
+A role is a markdown prompt overlay for an agent.
+It can request Pi skills through frontmatter.
+
+Global role:
+
+```text
+~/.gaia/agents/gaia/persona/roles/brainstorm.md
+```
+
+Project overlay:
+
+```text
+.gaia/agents/gaia/persona/roles/brainstorm.md
+```
+
+If both exist, GAIA appends the project role body after the global role body.
+
+Example role:
+
+```md
+---
+skills:
+  - brainstorm
+  - web
+---
+# Brainstorm Role
+
+Explore options. Notice patterns. Ask crisp questions.
+```
+
+Room commands:
+
+```text
+/roles gaia              list Gaia's roles
+/role gaia brainstorm    set Gaia's active role in this room
+/role gaia none          clear Gaia's active role in this room
+```
+
+Active roles are stored in:
+
+```text
+.gaia/rooms/default/state.json
+```
+
+## Skills
+
+GAIA does not implement its own skill engine.
+It resolves role-declared skill names to Pi skill paths and lets Pi load them.
+
+Lookup order:
+
+1. `.gaia/skills/<name>/SKILL.md`
+2. `~/.gaia/skills/<name>/SKILL.md`
+
+Project skills win over global skills on name collision.
+
+Skills are soft workflow instructions.
+They do **not** grant tools. Tools stay in `agent.json` as hard control.
+
+## Create a new agent
+
+```bash
+gaia agent create luma "Luma"
+```
+
+This creates:
+
+```text
+~/.gaia/agents/luma/
+  agent.json
+  persona/
+    SOUL.md
+    MEMORY.md
+    roles/
+      brainstorm.md
+      research.md
+      plan.md
+```
+
+The command refuses to overwrite an existing agent.
+Edit the generated files directly.
+
 ## Prompt layering
 
 Each agent turn gets:
 
-1. global agent `SOUL.md`
-2. optional project agent `INTENT.md`
-3. project `AGENTS.md` files, discovered from parent dirs to current dir
-4. global agent `MEMORY.md`
-5. recent room transcript
+1. global agent `persona/SOUL.md`
+2. active role prompt, if set
+3. optional project agent `persona/INTENT.md`
+4. project `AGENTS.md` files, discovered from parent dirs to current dir
+5. global agent `persona/MEMORY.md`
+6. new room events since that agent's cursor
+7. newest user message
 
-## Project-local agent overrides
+The room cursor is a transcript line count for this MVP.
+It prevents injecting the same room events again and again.
+
+## Project-local agent overlays
 
 You can customize an agent for one project without changing the global persona.
 
 Examples:
 
 ```text
-.gaia/agents/gaia/INTENT.md     # append project-local intent/instructions
-.gaia/agents/gaia/agent.json    # override metadata/tools/model for this project
+.gaia/agents/gaia/persona/INTENT.md       # project-local intent/instructions
+.gaia/agents/gaia/persona/roles/plan.md   # project-local role overlay
+.gaia/agents/gaia/agent.json              # override metadata/tools/model for this project
 ```
 
-Keep canonical identity and long-term memory global. `SOUL.md` is never overridden per project.
+Legacy paths still load for compatibility:
+
+```text
+~/.gaia/agents/gaia/SOUL.md
+~/.gaia/agents/gaia/MEMORY.md
+.gaia/agents/gaia/INTENT.md
+```
+
+Prefer the new `persona/` paths for new work.
 
 ## Workspace files
 
@@ -140,14 +255,14 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
 ### `.gaia/rooms/default/transcript.jsonl`
 
 Shared room history for the project.
-Recent transcript is injected into each agent turn.
+
+### `.gaia/rooms/default/state.json`
+
+Room-local active roles, transcript cursors, and future Pi session metadata.
 
 ## Notes
 
 - Unknown mentions fail loudly.
 - Agent messages do not auto-trigger more routing.
 - Pi is the only runtime right now.
-- Safety isolation, smarter routing, and tests are still future work.
-- check how containers are handled in nano claw
-- ideas: agents can summon subagents. This is handled similarly to OpenCode. (We will not implement this yet though)
-- mode switching? Each persona has different modes with custom instructions, skills and tools. Like: brainstorming-mode, science mode, divine-mother (triggered when distressed), etc
+- Containers, subagents, and stronger isolation are future seams, not part of this MVP.

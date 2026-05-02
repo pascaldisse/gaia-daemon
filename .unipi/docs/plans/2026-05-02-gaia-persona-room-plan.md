@@ -168,7 +168,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     3. Added starter role templates for brainstorm, research, and plan.
     4. Printed created paths so users can edit files directly.
 
-- unstarted: Task 10 — Documentation and Migration Cleanup
+- completed: Task 10 — Documentation and Migration Cleanup
   - Description: Update user-facing docs and internal plan notes to reflect the new architecture, remove stale claims, and document migration behavior.
   - Dependencies: Tasks 2 through 9
   - Acceptance Criteria:
@@ -178,10 +178,10 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Any obsolete scratch notes are removed or moved to planning docs.
     - `npm run check` and `npm test` pass.
   - Steps:
-    1. Update README current-shape section after implementation stabilizes.
-    2. Update plan/future-work notes to keep containers/subagents clearly deferred.
-    3. Document legacy file compatibility and recommended migration path.
-    4. Run final verification commands.
+    1. Updated README current-shape section after implementation stabilized.
+    2. Kept containers/subagents clearly deferred as future seams.
+    3. Documented legacy file compatibility and recommended migration path.
+    4. Ran final verification commands.
 
 ## Sequencing
 
