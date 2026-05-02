@@ -1,14 +1,17 @@
 import { join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
+import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
 import { appendRoomEvent, readRecentRoomEvents, type RoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
   readonly transcriptPath: string;
+  readonly statePath: string;
 
   constructor(private readonly workspace: Workspace) {
     this.id = workspace.config.room;
     this.transcriptPath = join(workspace.roomsDir, this.id, "transcript.jsonl");
+    this.statePath = roomStatePath(workspace.roomsDir, this.id);
   }
 
   async addUserMessage(text: string, targets: string[]): Promise<void> {
@@ -30,6 +33,14 @@ export class Room {
 
   async recentEvents(): Promise<RoomEvent[]> {
     return readRecentRoomEvents(this.transcriptPath, this.workspace.config.transcriptWindow);
+  }
+
+  async readState(): Promise<RoomState> {
+    return readRoomState(this.statePath);
+  }
+
+  async writeState(state: RoomState): Promise<void> {
+    await writeRoomState(this.statePath, state);
   }
 }
 
