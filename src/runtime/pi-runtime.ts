@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
@@ -11,58 +12,72 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
+import { resolveSkillRefs } from "../skills/skill-resolver.js";
 import { createMemoryTool } from "../tools/memory-tool.js";
 import type { Workspace } from "../workspace/types.js";
+import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
+
+export interface PiSessionLike {
+  readonly sessionId: string;
+  readonly sessionFile: string | undefined;
+  subscribe(listener: (event: any) => void): () => void;
+  prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
+  reload(): Promise<void>;
+  dispose(): void;
+}
+
+export interface PiRuntimeSessionFactoryOptions {
+  cwd: string;
+  roomId: string;
+  agent: AgentDefinition;
+  loader: DefaultResourceLoader;
+  systemPromptRef: { current: string };
+  skillPaths: string[];
+  builtInTools: string[];
+  customTools: unknown[];
+  model: Model<any> | undefined;
+  sessionDir: string;
+}
+
+export type PiRuntimeSessionFactory = (
+  options: PiRuntimeSessionFactoryOptions,
+) => Promise<{ session: PiSessionLike; modelFallbackMessage?: string }>;
+
+interface ManagedPiSession {
+  session: PiSessionLike;
+  loader: DefaultResourceLoader;
+  systemPromptRef: { current: string };
+  skillPathsKey: string;
+}
+
+export function piRoomSessionDir(workspace: Pick<Workspace, "roomsDir">, roomId: string, agentId: string): string {
+  return join(workspace.roomsDir, roomId, "pi-sessions", agentId);
+}
+
+function skillPathsKey(paths: string[]): string {
+  return JSON.stringify(paths);
+}
 
 export class PiRuntime implements AgentRuntime {
   readonly modelLabel: string;
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
+  private readonly sessions = new Map<string, ManagedPiSession>();
 
   constructor(
     private readonly cwd: string,
     private readonly workspace: Workspace,
     readonly agent: AgentDefinition,
     private readonly memoryStore: MemoryStore,
+    private readonly sessionFactory?: PiRuntimeSessionFactory,
   ) {
     this.modelLabel = this.resolveModelLabel();
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
-    const systemPrompt = await this.buildSystemPrompt(input);
-    const model = this.resolveModel();
-    const builtInTools = this.agent.tools.filter((tool) => tool !== "memory");
-    const customTools = this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : [];
-
-    const loader = new DefaultResourceLoader({
-      cwd: this.cwd,
-      agentDir: getAgentDir(),
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      systemPromptOverride: () => systemPrompt,
-      appendSystemPromptOverride: () => [],
-    });
-    await loader.reload();
-
-    const { session, modelFallbackMessage } = await createAgentSession({
-      cwd: this.cwd,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
-      model,
-      thinkingLevel: this.agent.thinking,
-      tools: builtInTools,
-      customTools,
-      resourceLoader: loader,
-      sessionManager: SessionManager.create(this.cwd),
-      settingsManager: SettingsManager.create(this.cwd),
-    });
-
-    if (modelFallbackMessage) console.warn(modelFallbackMessage);
+    const managed = await this.ensureSession(input);
+    const session = managed.session;
 
     const queue: AgentEvent[] = [];
     let done = false;
@@ -96,7 +111,6 @@ export class PiRuntime implements AgentRuntime {
       .finally(() => {
         done = true;
         unsubscribe();
-        session.dispose();
         notify?.();
         notify = undefined;
       });
@@ -116,7 +130,98 @@ export class PiRuntime implements AgentRuntime {
     if (error) throw error;
   }
 
-  dispose(): void {}
+  dispose(): void {
+    for (const managed of this.sessions.values()) managed.session.dispose();
+    this.sessions.clear();
+  }
+
+  private async ensureSession(input: AgentInput): Promise<ManagedPiSession> {
+    const systemPrompt = await this.buildSystemPrompt(input);
+    const skillResolution = input.activeRole ? resolveSkillRefs(this.workspace, input.activeRole.skills) : { paths: [], diagnostics: [] };
+    for (const diagnostic of skillResolution.diagnostics) console.warn(diagnostic);
+
+    const key = skillPathsKey(skillResolution.paths);
+    const existing = this.sessions.get(input.roomId);
+
+    if (existing && existing.skillPathsKey === key) {
+      if (existing.systemPromptRef.current !== systemPrompt) {
+        existing.systemPromptRef.current = systemPrompt;
+        try {
+          await existing.loader.reload();
+          await existing.session.reload();
+        } catch {
+          existing.session.dispose();
+          this.sessions.delete(input.roomId);
+          const recreated = await this.createManagedSession(input.roomId, systemPrompt, skillResolution.paths, key);
+          this.sessions.set(input.roomId, recreated);
+          return recreated;
+        }
+      }
+      return existing;
+    }
+
+    if (existing) existing.session.dispose();
+    const managed = await this.createManagedSession(input.roomId, systemPrompt, skillResolution.paths, key);
+    this.sessions.set(input.roomId, managed);
+    return managed;
+  }
+
+  private async createManagedSession(roomId: string, systemPrompt: string, skillPaths: string[], key: string): Promise<ManagedPiSession> {
+    const model = this.resolveModel();
+    const builtInTools = this.agent.tools.filter((tool) => tool !== "memory");
+    const customTools = this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : [];
+    const systemPromptRef = { current: systemPrompt };
+
+    const loader = new DefaultResourceLoader({
+      cwd: this.cwd,
+      agentDir: getAgentDir(),
+      additionalSkillPaths: skillPaths,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPromptOverride: () => systemPromptRef.current,
+      appendSystemPromptOverride: () => [],
+    });
+    await loader.reload();
+
+    const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
+    const { session, modelFallbackMessage } = this.sessionFactory
+      ? await this.sessionFactory({
+          cwd: this.cwd,
+          roomId,
+          agent: this.agent,
+          loader,
+          systemPromptRef,
+          skillPaths,
+          builtInTools,
+          customTools,
+          model,
+          sessionDir,
+        })
+      : await createAgentSession({
+          cwd: this.cwd,
+          authStorage: this.authStorage,
+          modelRegistry: this.modelRegistry,
+          model,
+          thinkingLevel: this.agent.thinking,
+          tools: builtInTools,
+          customTools,
+          resourceLoader: loader,
+          sessionManager: SessionManager.continueRecent(this.cwd, sessionDir),
+          settingsManager: SettingsManager.create(this.cwd),
+        });
+
+    if (modelFallbackMessage) console.warn(modelFallbackMessage);
+
+    return {
+      session: session as PiSessionLike,
+      loader,
+      systemPromptRef,
+      skillPathsKey: key,
+    };
+  }
 
   private async buildSystemPrompt(input: AgentInput): Promise<string> {
     const [soulText, intentText, memory] = await Promise.all([
