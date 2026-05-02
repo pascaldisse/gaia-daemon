@@ -116,7 +116,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     4. Added a runtime invalidation/reload hook placeholder so Task 8 can refresh Pi sessions after role changes.
     5. Updated agent previews and agent listings to show `@agent [role]`.
 
-- unstarted: Task 7 — Update Prompt Assembly for Persona, Role, Skills, and Cursor-Based Room Context
+- completed: Task 7 — Update Prompt Assembly for Persona, Role, Skills, and Cursor-Based Room Context
   - Description: Change prompt construction so role overlays are included and the turn prompt uses room events since the agent cursor instead of repeatedly injecting the whole recent transcript.
   - Dependencies: Task 3, Task 5
   - Acceptance Criteria:
@@ -126,11 +126,11 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - Prompt assembly is testable without creating a real Pi session.
     - Tests verify no duplicate transcript injection across two turns with the same agent cursor.
   - Steps:
-    1. Extract prompt assembly into a pure or mostly pure service.
-    2. Add `readEventsAfterCursor()` or equivalent transcript helper; if transcript lacks sequence IDs, define cursor as line count for MVP.
-    3. Include role diagnostics in prompt or UI warnings, not as silent failures.
-    4. Update runtime input types to carry role/context/cursor data cleanly.
-    5. Add tests for prompt layer order and cursor behavior.
+    1. Extracted prompt assembly into a pure service.
+    2. Added `readRoomEventsAfterCursor()` with cursor as transcript line count for MVP.
+    3. Included role diagnostics in the prompt and UI warnings for missing active roles.
+    4. Updated runtime input types to carry active role data cleanly.
+    5. Added tests for prompt layer order and cursor behavior.
 
 - unstarted: Task 8 — Refactor Pi Runtime to Persistent AgentRoomSession
   - Description: Replace fresh Pi session creation per message with persistent Pi `AgentSession` instances keyed by room-agent pair. Connect active role skills to Pi's `DefaultResourceLoader`.

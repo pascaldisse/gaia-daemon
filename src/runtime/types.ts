@@ -1,10 +1,12 @@
 import type { AgentDefinition } from "../agents/types.js";
 import type { RoomEvent } from "../room/transcript.js";
+import type { ResolvedRole } from "../roles/roles.js";
 
 export interface AgentInput {
   roomId: string;
   message: string;
   transcript: RoomEvent[];
+  activeRole?: ResolvedRole;
 }
 
 export type AgentEvent =

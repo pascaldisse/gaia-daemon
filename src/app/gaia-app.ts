@@ -3,7 +3,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState } from "../room/state.js";
 import { planMentionRoute } from "../router/mention-router.js";
-import { listAgentRoles } from "../roles/roles.js";
+import { listAgentRoles, resolveAgentRole, type ResolvedRole } from "../roles/roles.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import { AppView } from "../tui/app-view.js";
@@ -89,9 +89,21 @@ export class GaiaApp {
         for (const target of route.plan.targets) {
           const agent = this.workspace.agents[target];
           const runtime = this.runtimes[target];
-          const transcript = await this.room.recentEvents();
-          const reply = await this.sendToAgent(agent, runtime, command.text, transcript);
+          const cursor = this.roomState.agentCursors[target] ?? 0;
+          const { events } = await this.room.eventsAfterCursor(cursor);
+          const activeRoleName = this.roomState.activeRoles[target];
+          const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
+          if (activeRoleName && !activeRole) {
+            this.view.line(`Active role not found for @${agent.id}: ${activeRoleName}`);
+          }
+
+          const reply = await this.sendToAgent(agent, runtime, command.text, events, activeRole);
           if (reply.trim()) await this.room.addAgentMessage(agent.id, reply.trim());
+
+          // Cursor is a transcript line count. Update after the turn finishes, including partial/error replies,
+          // so the same room events are not injected again on the next turn.
+          this.roomState.agentCursors[agent.id] = await this.room.eventCursor();
+          await this.room.writeState(this.roomState);
         }
       }
     } finally {
@@ -105,12 +117,13 @@ export class GaiaApp {
     runtime: AgentRuntime,
     message: string,
     transcript: Awaited<ReturnType<Room["recentEvents"]>>,
+    activeRole: ResolvedRole | undefined,
   ): Promise<string> {
     let collected = "";
     this.view.write(assistantHeader(agent) + "\n");
 
     try {
-      for await (const event of runtime.send({ roomId: this.room.id, message, transcript })) {
+      for await (const event of runtime.send({ roomId: this.room.id, message, transcript, activeRole })) {
         if (event.type === "text-delta") {
           collected += event.delta;
           this.view.write(event.delta);
