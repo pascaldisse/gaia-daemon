@@ -19,7 +19,7 @@ The implementation should proceed in thin vertical slices. Each slice should kee
 
 ## Tasks
 
-- unstarted: Task 1 — Add Test Harness and Baseline Fixtures
+- completed: Task 1 — Add Test Harness and Baseline Fixtures
   - Description: Add a minimal test setup using Node's built-in `node:test` and compiled JS or TypeScript execution, then create baseline fixtures for workspace, agent, role, skill, and room-state logic.
   - Dependencies: None
   - Acceptance Criteria:
@@ -28,10 +28,10 @@ The implementation should proceed in thin vertical slices. Each slice should kee
     - `npm test` runs at least one passing smoke test.
     - Tests do not require network access or real Pi auth.
   - Steps:
-    1. Choose test execution path: compiled JS after `npm run build`, or TypeScript via existing `tsx` dev dependency.
-    2. Add a tiny smoke test for an existing pure function, such as mention routing or command parsing.
-    3. Add reusable temp-directory helpers for later workspace and GAIA_HOME tests.
-    4. Document the local verification commands in the plan or README notes if needed.
+    1. Chose TypeScript test execution via existing `tsx` dev dependency.
+    2. Added smoke coverage for mention routing and slash command parsing.
+    3. Added reusable temp-directory helper for later workspace and GAIA_HOME tests.
+    4. Verified with `npm run check` and `npm test`.
 
 - unstarted: Task 2 — Migrate Agent File Model to Agent-Owned Persona Folders
   - Description: Update global and project agent loading so each agent folder owns a `persona/` subfolder. Preserve compatibility with existing `SOUL.md`, `MEMORY.md`, and `INTENT.md` where possible.
