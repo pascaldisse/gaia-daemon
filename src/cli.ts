@@ -2,10 +2,11 @@
 import { scaffoldGlobalAgent } from "./agents/scaffold.js";
 import { GaiaApp } from "./app/gaia-app.js";
 import { MemoryStore } from "./memory/memory-store.js";
+import { startWebServer } from "./web/server.js";
 import { globalAgentsPath, initWorkspace, loadWorkspace, workspacePath } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA room in the current project\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --help                  show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia tui                     start the legacy terminal UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
@@ -46,6 +47,22 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === "tui") {
+    try {
+      const workspace = await loadWorkspace(process.cwd());
+      const memory = new MemoryStore();
+      await new GaiaApp(process.cwd(), workspace, memory).start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`gaia: ${message}`);
+      console.error(`Expected project workspace: ${workspacePath(process.cwd())}`);
+      console.error(`Global personas directory: ${globalAgentsPath()}`);
+      console.error("Run `gaia init` in your project to prepare both layers.");
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (args.length > 0) {
     usage();
     process.exitCode = 1;
@@ -53,15 +70,21 @@ async function main(): Promise<void> {
   }
 
   try {
-    const workspace = await loadWorkspace(process.cwd());
-    const memory = new MemoryStore();
-    await new GaiaApp(process.cwd(), workspace, memory).start();
+    const server = await startWebServer({ cwd: process.cwd() });
+    console.log(`GAIA web UI: ${server.url}`);
+    console.log("Press Ctrl+C to stop.");
+    await new Promise<void>((resolve) => {
+      const stop = (): void => {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        void server.close().finally(resolve);
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`gaia: ${message}`);
-    console.error(`Expected project workspace: ${workspacePath(process.cwd())}`);
-    console.error(`Global personas directory: ${globalAgentsPath()}`);
-    console.error("Run `gaia init` in your project to prepare both layers.");
     process.exitCode = 1;
   }
 }

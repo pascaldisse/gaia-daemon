@@ -147,7 +147,7 @@ export class PiRuntime implements AgentRuntime {
       if (existing.systemPromptRef.current !== systemPrompt) {
         existing.systemPromptRef.current = systemPrompt;
         try {
-          await existing.loader.reload();
+          if (!this.sessionFactory) await existing.loader.reload();
           await existing.session.reload();
         } catch {
           existing.session.dispose();
@@ -184,7 +184,7 @@ export class PiRuntime implements AgentRuntime {
       systemPromptOverride: () => systemPromptRef.current,
       appendSystemPromptOverride: () => [],
     });
-    await loader.reload();
+    if (!this.sessionFactory) await loader.reload();
 
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
