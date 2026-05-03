@@ -96,6 +96,14 @@ your-project/
 gaia
 ```
 
+This starts the local web UI and prints the URL.
+
+The legacy terminal UI is still available:
+
+```bash
+gaia tui
+```
+
 Press `/` to open the command preview.
 Press `@` to open the agent preview.
 Use ↑/↓ to select, Tab/Enter to insert, and Esc to hide.

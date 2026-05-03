@@ -11,7 +11,9 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/**/*.test.ts",
     "start": "node dist/cli.js",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "web:dev": "vite --host 127.0.0.1 web",
+    "web:build": "vite build web"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.70.6",
