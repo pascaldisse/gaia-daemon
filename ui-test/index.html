@@ -1,0 +1,1876 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GAIA Web UI Prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #000400;
+        --panel: #031003;
+        --panel-2: #061806;
+        --line: #145018;
+        --line-strong: #7cff84;
+        --text: #d7ffcf;
+        --muted: #6aa66a;
+        --green: #3cff4e;
+        --amber: #e8da62;
+        --red: #ff5d4d;
+        --cyan: #66ffd9;
+        --violet: #d08cff;
+        --shadow: rgba(0, 0, 0, 0.62);
+        font-family:
+          "Perfect DOS VGA 437", "Px437 IBM VGA8", "Fixedsys", "Terminal",
+          "Monaco", "Courier New", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        font-size: 12px;
+        background:
+          radial-gradient(circle at 16% 18%, rgba(57, 255, 95, 0.1), transparent 24%),
+          linear-gradient(90deg, rgba(57, 255, 95, 0.035) 1px, transparent 1px),
+          linear-gradient(rgba(57, 255, 95, 0.05) 1px, transparent 1px),
+          var(--bg);
+        background-size: 100% 100%, 16px 16px, 16px 16px;
+        color: var(--text);
+        overflow: hidden;
+        text-shadow: 0 0 4px rgba(57, 255, 95, 0.42);
+        image-rendering: pixelated;
+        -webkit-font-smoothing: none;
+        font-smooth: never;
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          repeating-linear-gradient(
+            to bottom,
+            rgba(80, 255, 98, 0.075) 0,
+            rgba(80, 255, 98, 0.075) 1px,
+            transparent 1px,
+            transparent 3px
+          );
+        mix-blend-mode: screen;
+        opacity: 0.34;
+        z-index: 20;
+      }
+
+      button,
+      textarea,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        min-height: 30px;
+        border: 1px solid var(--line);
+        border-radius: 0;
+        background: #030803;
+        color: var(--text);
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0;
+        box-shadow:
+          inset 1px 1px 0 rgba(124, 255, 132, 0.22),
+          inset -1px -1px 0 rgba(0, 0, 0, 0.8);
+      }
+
+      button:hover,
+      button:focus-visible {
+        border-color: var(--green);
+        outline: none;
+        box-shadow:
+          0 0 0 1px rgba(60, 255, 78, 0.26),
+          0 0 14px rgba(60, 255, 78, 0.14),
+          inset 1px 1px 0 rgba(124, 255, 132, 0.24),
+          inset -1px -1px 0 rgba(0, 0, 0, 0.85);
+      }
+
+      button[aria-pressed="true"],
+      .workspace-card.active,
+      .room-link.active,
+      .tab.active,
+      .room-tab.active,
+      .agent.active {
+        border-color: var(--green);
+        color: var(--green);
+        background: #071b08;
+        box-shadow:
+          inset 0 0 0 1px rgba(57, 255, 95, 0.36),
+          0 0 12px rgba(57, 255, 95, 0.12);
+      }
+
+      .app {
+        height: 100%;
+        display: grid;
+        grid-template-rows: 36px 1fr 112px;
+        grid-template-columns: 258px minmax(0, 1fr) 380px;
+        grid-template-areas:
+          "nav top top"
+          "nav chat side"
+          "nav composer side";
+      }
+
+      .nav {
+        grid-area: nav;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-width: 0;
+        min-height: 0;
+        border-right: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(57, 255, 95, 0.05), transparent 32%),
+          rgba(3, 9, 3, 0.98);
+      }
+
+      .nav-head {
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav-title {
+        color: var(--green);
+        font-size: 18px;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      .nav-subtitle {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .nav-scroll {
+        min-height: 0;
+        overflow: auto;
+        padding: 10px;
+      }
+
+      .nav-section {
+        margin-bottom: 16px;
+      }
+
+      .nav-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .workspace-card,
+      .room-link {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 7px;
+        padding: 8px;
+        text-align: left;
+        text-transform: none;
+      }
+
+      .workspace-name,
+      .room-name {
+        display: block;
+        color: var(--text);
+      }
+
+      .workspace-path,
+      .room-meta {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .nav-foot {
+        display: grid;
+        gap: 8px;
+        padding: 10px;
+        border-top: 1px solid var(--line);
+      }
+
+      .topbar {
+        grid-area: top;
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        align-items: center;
+        gap: 12px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(2, 8, 2, 0.96);
+        box-shadow: 0 1px 0 rgba(57, 255, 95, 0.18);
+      }
+
+      .topbar,
+      .nav,
+      .side,
+      .composer {
+        box-shadow: inset 0 0 18px rgba(57, 255, 95, 0.035);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .prompt {
+        color: var(--green);
+        text-transform: uppercase;
+      }
+
+      .room {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 0;
+        color: var(--muted);
+        white-space: nowrap;
+        background: rgba(3, 12, 3, 0.72);
+      }
+
+      .chat {
+        grid-area: chat;
+        min-width: 0;
+        overflow: auto;
+        padding: 16px 18px 28px;
+        background:
+          linear-gradient(90deg, rgba(57, 255, 95, 0.025), transparent 18%),
+          rgba(2, 4, 2, 0.72);
+      }
+
+      .event {
+        display: grid;
+        grid-template-columns: 12px 116px minmax(0, 1fr);
+        gap: 14px;
+        padding: 11px 0;
+        border-bottom: 1px solid rgba(57, 255, 95, 0.18);
+      }
+
+      .event::before {
+        content: ">";
+        color: var(--green);
+        margin-left: -10px;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .author {
+        color: var(--text);
+      }
+
+      .author.user {
+        color: var(--cyan);
+      }
+
+      .author.agent-gaia {
+        color: var(--green);
+      }
+
+      .author.agent-sidia {
+        color: var(--violet);
+      }
+
+      .author.agent-terry {
+        color: var(--amber);
+      }
+
+      .content {
+        min-width: 0;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .tool-row {
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .tool {
+        border: 1px solid var(--line);
+        border-radius: 0;
+        padding: 3px 8px;
+        background: #030803;
+      }
+
+      .running {
+        color: var(--amber);
+      }
+
+      .side {
+        grid-area: side;
+        display: grid;
+        grid-template-rows: minmax(0, 42%) minmax(0, 58%);
+        min-width: 0;
+        border-left: 1px solid var(--line);
+        background: rgba(3, 9, 3, 0.98);
+      }
+
+      .side-block {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 0;
+        border-bottom: 1px solid var(--line);
+        min-width: 0;
+      }
+
+      .side-block:last-child {
+        border-bottom: 0;
+      }
+
+      .block-head {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 34px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--line);
+        background: #040d04;
+      }
+
+      .block-title {
+        color: var(--green);
+        text-transform: uppercase;
+      }
+
+      .block-meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .room-panel,
+      .workspace-panel {
+        display: grid;
+        min-height: 0;
+      }
+
+      .room-panel {
+        grid-template-rows: auto auto minmax(0, 1fr);
+      }
+
+      .workspace-panel {
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .section {
+        padding: 10px;
+        min-width: 0;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .room-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .room-tab {
+        min-width: 0;
+        padding: 0 6px;
+      }
+
+      .room-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .stat {
+        min-width: 0;
+        border: 1px solid var(--line);
+        padding: 7px;
+        background: rgba(3, 12, 3, 0.72);
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .stat-value {
+        margin-top: 4px;
+        color: var(--green);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .agents {
+        display: grid;
+        gap: 8px;
+      }
+
+      .agent {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        text-align: left;
+      }
+
+      .agent-name {
+        display: block;
+        color: var(--text);
+      }
+
+      .agent-role {
+        display: block;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .agent-state {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .tab {
+        min-width: 0;
+        padding: 0 6px;
+      }
+
+      .editor {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        min-height: 0;
+        padding: 10px;
+        gap: 10px;
+      }
+
+      .editor-title {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .file-path {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .raw-toggle {
+        min-height: 24px;
+        padding: 0 8px;
+        font-size: 12px;
+      }
+
+      .rendered-editor {
+        min-height: 0;
+        overflow: auto;
+        border: 1px solid var(--line);
+        background: #010501;
+        padding: 10px;
+      }
+
+      .setting-group {
+        margin-bottom: 14px;
+        border-bottom: 1px solid rgba(57, 255, 95, 0.18);
+        padding-bottom: 12px;
+      }
+
+      .setting-group:last-child {
+        margin-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .setting-heading {
+        color: var(--green);
+        text-transform: uppercase;
+        margin-bottom: 8px;
+        padding: 4px 6px;
+        border-left: 4px solid var(--green);
+        background: rgba(57, 255, 95, 0.08);
+      }
+
+      .setting-field {
+        display: grid;
+        grid-template-columns: 108px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0;
+      }
+
+      .setting-field label {
+        color: var(--muted);
+        text-transform: uppercase;
+        font-size: 12px;
+      }
+
+      .setting-field input,
+      .setting-field select,
+      .md-line input,
+      .md-line textarea,
+      .md-list-row input {
+        min-width: 0;
+        border: 1px solid var(--line);
+        background: #030803;
+        color: var(--text);
+        padding: 7px 8px;
+        box-shadow: inset 0 0 0 1px rgba(57, 255, 95, 0.07);
+      }
+
+      .setting-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .md-line {
+        display: grid;
+        margin: 7px 0;
+      }
+
+      .md-line textarea {
+        min-height: 54px;
+      }
+
+      .md-list-row {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) 26px;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .md-bullet {
+        color: var(--green);
+        text-align: center;
+      }
+
+      .md-list-row button {
+        min-height: 26px;
+        padding: 0;
+      }
+
+      .md-add-row {
+        color: var(--muted);
+        border-color: rgba(20, 80, 24, 0.9);
+      }
+
+      .rendered-editor p {
+        margin: 6px 0;
+        color: var(--text);
+      }
+
+      .rendered-json {
+        display: grid;
+        gap: 8px;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 0;
+        resize: none;
+        border: 1px solid var(--line);
+        border-radius: 0;
+        background: #010501;
+        color: var(--text);
+        padding: 10px;
+        line-height: 1.5;
+        caret-color: var(--green);
+        box-shadow: inset 0 0 0 1px rgba(57, 255, 95, 0.08);
+      }
+
+      textarea.raw-hidden,
+      .rendered-editor.raw-hidden {
+        display: none;
+      }
+
+      textarea:focus {
+        border-color: var(--green);
+        outline: none;
+      }
+
+      .editor-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .composer {
+        grid-area: composer;
+        position: relative;
+        display: grid;
+        grid-template-rows: 1fr auto;
+        gap: 8px;
+        padding: 12px 18px;
+        border-top: 1px solid var(--line);
+        background: rgba(2, 8, 2, 0.98);
+      }
+
+      .composer-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 88px;
+        gap: 10px;
+      }
+
+      .input-wrap {
+        position: relative;
+      }
+
+      .input {
+        height: 58px;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .suggestions {
+        position: absolute;
+        left: 18px;
+        right: 106px;
+        bottom: 102px;
+        max-height: 188px;
+        overflow: auto;
+        border: 1px solid var(--line-strong);
+        border-radius: 0;
+        background: #020802;
+        box-shadow: 0 16px 42px var(--shadow);
+        display: none;
+        z-index: 5;
+      }
+
+      .suggestions.open {
+        display: block;
+      }
+
+      .suggestion {
+        display: grid;
+        grid-template-columns: 110px minmax(0, 1fr);
+        gap: 10px;
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(57, 255, 95, 0.18);
+        cursor: pointer;
+      }
+
+      .suggestion:last-child {
+        border-bottom: 0;
+      }
+
+      .suggestion:hover,
+      .suggestion.active {
+        background: #202317;
+        background: #081a08;
+      }
+
+      .suggestion-key {
+        color: var(--green);
+        white-space: nowrap;
+      }
+
+      .suggestion-desc {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .queue {
+        display: flex;
+        gap: 8px;
+        overflow: hidden;
+      }
+
+      .queue-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 220px;
+        padding: 3px 8px;
+        border: 1px solid var(--line);
+        border-radius: 0;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .dot.pulse {
+        background: var(--amber);
+        animation: pulse 1s infinite;
+      }
+
+      .saved {
+        color: var(--green);
+        opacity: 0;
+        transition: opacity 160ms ease;
+      }
+
+      .saved.visible {
+        opacity: 1;
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(0, 0, 0, 0.72);
+      }
+
+      .modal-backdrop.open {
+        display: flex;
+      }
+
+      .modal {
+        width: min(900px, 100%);
+        height: min(680px, 100%);
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        border: 1px solid var(--line-strong);
+        background: #020802;
+        box-shadow: 0 24px 80px var(--shadow), inset 0 0 0 1px rgba(57, 255, 95, 0.18);
+      }
+
+      .modal-head {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .modal-title {
+        color: var(--green);
+        text-transform: uppercase;
+      }
+
+      .modal-body {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        min-height: 0;
+      }
+
+      .settings-list {
+        border-right: 1px solid var(--line);
+        padding: 10px;
+        overflow: auto;
+      }
+
+      .settings-main {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 0;
+        padding: 10px;
+        gap: 10px;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      @media (max-width: 980px) {
+        .app {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: 152px 36px minmax(0, 1fr) 104px 288px;
+          grid-template-areas:
+            "nav"
+            "top"
+            "chat"
+            "composer"
+            "side";
+        }
+
+        .nav {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .nav-scroll {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          padding: 8px;
+        }
+
+        .nav-section {
+          margin-bottom: 0;
+        }
+
+        .nav-foot {
+          display: none;
+        }
+
+        .side {
+          border-left: 0;
+          border-top: 1px solid var(--line);
+          grid-template-columns: 1fr 1fr;
+          grid-template-rows: minmax(0, 1fr);
+        }
+
+        .side-block:first-child {
+          border-right: 1px solid var(--line);
+        }
+
+        .editor {
+          min-height: 0;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .topbar {
+          grid-template-columns: 1fr auto;
+        }
+
+        .topbar .pill:last-child {
+          display: none;
+        }
+
+        .event {
+          grid-template-columns: 12px minmax(0, 1fr);
+          gap: 4px;
+        }
+
+        .event::before {
+          grid-row: 1 / span 2;
+        }
+
+        .event .meta,
+        .event .content {
+          grid-column: 2;
+        }
+
+        .side {
+          grid-template-columns: 1fr;
+          grid-template-rows: 260px minmax(0, 1fr);
+        }
+
+        .modal-body {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .settings-list {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 6px;
+        }
+
+        .side-block:first-child {
+          border-right: 0;
+        }
+
+        .suggestions {
+          left: 12px;
+          right: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <nav class="nav" aria-label="Workspace and room navigation">
+        <div class="nav-head">
+          <div class="nav-title">GAIA</div>
+          <div class="nav-subtitle">local rooms / workspace graph</div>
+        </div>
+        <div class="nav-scroll">
+          <section class="nav-section">
+            <div class="nav-label">
+              <span>Workspaces</span>
+              <span>2</span>
+            </div>
+            <button class="workspace-card active" type="button">
+              <span>
+                <span class="workspace-name">GAIA Playground</span>
+                <span class="workspace-path">/Users/.../GAIA Playground</span>
+              </span>
+              <span>*</span>
+            </button>
+            <button class="workspace-card" type="button">
+              <span>
+                <span class="workspace-name">Nanoclaw</span>
+                <span class="workspace-path">/tmp/nanoclaw</span>
+              </span>
+              <span></span>
+            </button>
+          </section>
+
+          <section class="nav-section">
+            <div class="nav-label">
+              <span>Rooms</span>
+              <span>3</span>
+            </div>
+            <button class="room-link active" type="button">
+              <span>
+                <span class="room-name">default</span>
+                <span class="room-meta">@gaia active now</span>
+              </span>
+              <span>42</span>
+            </button>
+            <button class="room-link" type="button">
+              <span>
+                <span class="room-name">ui-refactor</span>
+                <span class="room-meta">@sidia waiting</span>
+              </span>
+              <span>18</span>
+            </button>
+            <button class="room-link" type="button">
+              <span>
+                <span class="room-name">persona-lab</span>
+                <span class="room-meta">archived</span>
+              </span>
+              <span>07</span>
+            </button>
+          </section>
+        </div>
+        <div class="nav-foot">
+          <button id="globalSettingsButton" type="button">global settings</button>
+          <button type="button">new room</button>
+        </div>
+      </nav>
+
+      <header class="topbar">
+          <div class="brand">
+          <span class="prompt">GAIA://</span>
+          <span class="room">workspace/GAIA Playground :: room/default</span>
+        </div>
+        <span class="pill" id="runtimePill">Pi SDK: ready</span>
+        <span class="pill">local-first</span>
+      </header>
+
+      <section class="chat" id="chat" aria-label="Room transcript"></section>
+
+      <aside class="side">
+        <section class="side-block" aria-label="Room">
+          <div class="block-head">
+            <span class="block-title">Room</span>
+            <span class="block-meta">default</span>
+          </div>
+          <div class="room-panel">
+            <div class="room-tabs" id="roomTabs">
+              <button class="room-tab active" type="button" data-room-tab="agents">agents</button>
+              <button class="room-tab" type="button" data-room-tab="tasks">tasks</button>
+              <button class="room-tab" type="button" data-room-tab="state">state</button>
+            </div>
+            <div class="room-stats">
+              <div class="stat">
+                <div class="stat-label">room</div>
+                <div class="stat-value">default</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">agents</div>
+                <div class="stat-value" id="agentCount">3 online</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">runtime</div>
+                <div class="stat-value">pi</div>
+              </div>
+            </div>
+            <div class="section" id="roomPanel"></div>
+          </div>
+        </section>
+
+        <section class="side-block" aria-label="Workspace">
+          <div class="block-head">
+            <span class="block-title">Workspace</span>
+            <span class="block-meta">GAIA Playground</span>
+          </div>
+          <div class="workspace-panel">
+            <div class="tabs" id="tabs"></div>
+            <section class="editor">
+              <div class="editor-title">
+                <span class="file-path" id="editorPath"></span>
+                <button class="raw-toggle" id="rawToggle" type="button">raw</button>
+                <span class="saved" id="saved">saved</span>
+              </div>
+              <div class="rendered-editor" id="renderedEditor"></div>
+              <textarea id="configEditor" spellcheck="false"></textarea>
+              <div class="editor-actions">
+                <button id="saveConfig" type="button">save</button>
+                <button id="resetConfig" type="button">reset</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </aside>
+
+      <form class="composer" id="composer">
+        <div class="suggestions" id="suggestions"></div>
+        <div class="composer-row">
+          <div class="input-wrap">
+            <textarea
+              class="input"
+              id="messageInput"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="> message, /command, @agent"
+            ></textarea>
+          </div>
+          <button type="submit">send</button>
+        </div>
+        <div class="status">
+          <div class="queue" id="queue"></div>
+          <span id="inputStatus">default @gaia</span>
+        </div>
+      </form>
+    </main>
+
+    <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-label="Global settings">
+      <section class="modal">
+        <div class="modal-head">
+          <span class="modal-title">Global Settings</span>
+          <button id="closeSettings" type="button">close</button>
+        </div>
+        <div class="tabs" id="globalTabs"></div>
+        <div class="modal-body">
+          <div class="settings-list">
+            <button class="agent active" type="button">
+              <span>
+                <span class="agent-name">global personas</span>
+                <span class="agent-role">~/.gaia/agents</span>
+              </span>
+              <span class="agent-state">md</span>
+            </button>
+            <button class="agent" type="button">
+              <span>
+                <span class="agent-name">global skills</span>
+                <span class="agent-role">~/.gaia/skills</span>
+              </span>
+              <span class="agent-state">dir</span>
+            </button>
+            <button class="agent" type="button">
+              <span>
+                <span class="agent-name">runtime auth</span>
+                <span class="agent-role">Pi / providers</span>
+              </span>
+              <span class="agent-state">cfg</span>
+            </button>
+          </div>
+          <div class="settings-main">
+            <div class="editor-title">
+              <span class="file-path" id="globalPath"></span>
+              <button class="raw-toggle" id="globalRawToggle" type="button">raw</button>
+              <span class="saved" id="globalSaved">saved</span>
+            </div>
+            <div class="rendered-editor" id="globalRenderedEditor"></div>
+            <textarea id="globalEditor" spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="editor-actions" style="padding: 10px; border-top: 1px solid var(--line)">
+          <button id="saveGlobal" type="button">save</button>
+          <button id="resetGlobal" type="button">reset</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const agents = [
+        {
+          id: "gaia",
+          name: "Gaia",
+          icon: "*",
+          role: "planner",
+          state: "idle",
+          colorClass: "agent-gaia",
+        },
+        {
+          id: "sidia",
+          name: "Sidia",
+          icon: "+",
+          role: "critique",
+          state: "idle",
+          colorClass: "agent-sidia",
+        },
+        {
+          id: "terry",
+          name: "Terry",
+          icon: "#",
+          role: "builder",
+          state: "idle",
+          colorClass: "agent-terry",
+        },
+      ];
+
+      const commands = [
+        { label: "/agents", desc: "list active agents" },
+        { label: "/roles", desc: "show roles for an agent" },
+        { label: "/role", desc: "set an agent role" },
+        { label: "/memory", desc: "open memory file" },
+        { label: "/room", desc: "inspect room state" },
+        { label: "/tasks", desc: "show long-running tasks" },
+      ];
+
+      const workspaceFiles = {
+        agents: {
+          label: "AGENTS",
+          type: "md",
+          path: "/Users/pascaldisse/projects/GAIA Playground/AGENTS.md",
+          text:
+            "# AGENTS.md\n\nWorkspace instructions for GAIA Playground.\n\nBehavior:\n- prefer small reversible changes\n- keep persona files visible\n- do not edit workspace source from the UI yet\n",
+        },
+        config: {
+          label: "config",
+          type: "json",
+          path: "/Users/pascaldisse/projects/GAIA Playground/.gaia/config.json",
+          text:
+            '{\n  "room": "default",\n  "defaultAgent": "gaia",\n  "runtime": "pi",\n  "transcriptWindow": 24\n}\n',
+        },
+        intent: {
+          label: "intent",
+          type: "md",
+          path: "/Users/pascaldisse/projects/GAIA Playground/.gaia/agents/gaia/persona/INTENT.md",
+          text:
+            "# Workspace Intent\n\nWorkspace-local overlay for @gaia.\n\nFocus:\n- evolve GAIA into a standalone chat app\n- keep config editing local to the workspace\n- design for long-running agent tasks\n",
+        },
+        skill: {
+          label: "skill",
+          type: "md",
+          path: "/Users/pascaldisse/projects/GAIA Playground/.gaia/skills/planner/SKILL.md",
+          text:
+            "# Planner Skill\n\nSteps:\n- clarify current room goal\n- inspect workspace context\n- propose one concrete next action\n",
+        },
+      };
+
+      const globalFiles = {
+        soul: {
+          label: "soul",
+          type: "md",
+          path: "~/.gaia/agents/gaia/persona/SOUL.md",
+          text:
+            "# Gaia\n\nYou are the durable project guide across workspaces.\n\nVoice:\n- direct\n- local-first\n- practical\n\nBehavior:\n- preserve room continuity\n- route to specialists when mentioned\n",
+        },
+        agent: {
+          label: "agent",
+          type: "json",
+          path: "~/.gaia/agents/gaia/agent.json",
+          text:
+            '{\n  "id": "gaia",\n  "displayName": "Gaia",\n  "runtime": "pi",\n  "tools": ["memory"],\n  "model": {}\n}\n',
+        },
+        memory: {
+          label: "memory",
+          type: "md",
+          path: "~/.gaia/agents/gaia/persona/MEMORY.md",
+          text:
+            "# Gaia Memory\n\nFacts:\n- user prefers minimal terminal-like UI\n- web UI should become standalone\n- global config lives outside workspace panels\n",
+        },
+      };
+
+      const chat = document.querySelector("#chat");
+      const roomPanel = document.querySelector("#roomPanel");
+      const roomTabs = document.querySelector("#roomTabs");
+      const tabsEl = document.querySelector("#tabs");
+      const configEditor = document.querySelector("#configEditor");
+      const renderedEditor = document.querySelector("#renderedEditor");
+      const editorPath = document.querySelector("#editorPath");
+      const rawToggle = document.querySelector("#rawToggle");
+      const saved = document.querySelector("#saved");
+      const globalSettingsButton = document.querySelector("#globalSettingsButton");
+      const settingsModal = document.querySelector("#settingsModal");
+      const closeSettings = document.querySelector("#closeSettings");
+      const globalTabs = document.querySelector("#globalTabs");
+      const globalPath = document.querySelector("#globalPath");
+      const globalRawToggle = document.querySelector("#globalRawToggle");
+      const globalSaved = document.querySelector("#globalSaved");
+      const globalRenderedEditor = document.querySelector("#globalRenderedEditor");
+      const globalEditor = document.querySelector("#globalEditor");
+      const composer = document.querySelector("#composer");
+      const input = document.querySelector("#messageInput");
+      const suggestions = document.querySelector("#suggestions");
+      const queue = document.querySelector("#queue");
+      const inputStatus = document.querySelector("#inputStatus");
+      const runtimePill = document.querySelector("#runtimePill");
+
+      let activeAgent = "gaia";
+      let activeFile = "agents";
+      let activeGlobalFile = "soul";
+      let activeRoomTab = "agents";
+      let rawMode = false;
+      let globalRawMode = false;
+      let selectedSuggestion = 0;
+      let visibleSuggestions = [];
+      let taskId = 0;
+
+      const initialEvents = [
+        {
+          author: "user",
+          time: "09:14",
+          text: "What should the first web UI feel like?",
+        },
+        {
+          author: "gaia",
+          time: "09:14",
+          text:
+            "Keep it close to the CLI: transcript first, composer fixed, command registry exposed as data, and prompt files editable without leaving the room.",
+          tools: ["read workspace", "inspect roles"],
+        },
+        {
+          author: "sidia",
+          time: "09:15",
+          text:
+            "Do not make the first version a dashboard. The product center is the conversation. Configuration editing should sit beside the chat, not replace it.",
+        },
+      ];
+
+      function escapeHtml(value) {
+        return value.replace(/[&<>"']/g, (char) => {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#039;",
+          }[char];
+        });
+      }
+
+      function renderMarkdownSettings(text) {
+        const lines = text.split("\n");
+        let html = "";
+        let listOpen = false;
+        let groupOpen = false;
+        let paragraph = [];
+
+        const flushParagraph = () => {
+          if (paragraph.length === 0) return;
+          const value = paragraph.join("\n");
+          const multiline = paragraph.length > 1 || value.length > 68;
+          html += multiline
+            ? `<div class="md-line"><textarea>${escapeHtml(value)}</textarea></div>`
+            : `<div class="md-line"><input value="${escapeHtml(value)}" /></div>`;
+          paragraph = [];
+        };
+
+        const closeList = () => {
+          if (!listOpen) return;
+          html += `<button class="md-add-row" type="button">+ add item</button></div>`;
+          listOpen = false;
+        };
+
+        for (const line of lines) {
+          if (line.startsWith("# ")) {
+            flushParagraph();
+            closeList();
+            if (groupOpen) html += "</div>";
+            html += `<div class="setting-group"><div class="setting-heading">${escapeHtml(line.slice(2))}</div>`;
+            groupOpen = true;
+            continue;
+          }
+
+          if (line.startsWith("## ")) {
+            flushParagraph();
+            closeList();
+            html += `<div class="setting-heading">${escapeHtml(line.slice(3))}</div>`;
+            continue;
+          }
+
+          if (line.startsWith("### ")) {
+            flushParagraph();
+            closeList();
+            html += `<div class="setting-heading">${escapeHtml(line.slice(4))}</div>`;
+            continue;
+          }
+
+          if (line.startsWith("- ")) {
+            flushParagraph();
+            if (!listOpen) {
+              html += `<div class="setting-list">`;
+              listOpen = true;
+            }
+            html += `
+              <div class="md-list-row">
+                <span class="md-bullet">-</span>
+                <input value="${escapeHtml(line.slice(2))}" />
+                <button type="button">x</button>
+              </div>
+            `;
+            continue;
+          }
+
+          if (!line.trim()) {
+            flushParagraph();
+            closeList();
+            continue;
+          }
+
+          if (line.startsWith("---")) continue;
+          closeList();
+          paragraph.push(line);
+        }
+
+        flushParagraph();
+        closeList();
+        if (groupOpen) html += "</div>";
+        if (!html.includes("setting-group")) html = `<div class="setting-group">${html}</div>`;
+        if (!html.trim()) html = `<div class="setting-group"><div class="setting-heading">empty file</div></div>`;
+        return html;
+      }
+
+      function renderJsonSettings(text) {
+        try {
+          const value = JSON.parse(text);
+          return `<div class="rendered-json">${Object.entries(value)
+            .map(([key, raw]) => {
+              if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+                return `
+                  <div class="setting-group">
+                    <div class="setting-heading">${escapeHtml(key)}</div>
+                    ${Object.entries(raw)
+                      .map(
+                        ([childKey, childValue]) => `
+                          <div class="setting-field">
+                            <label>${escapeHtml(childKey)}</label>
+                            <input value="${escapeHtml(String(childValue))}" />
+                          </div>
+                        `,
+                      )
+                      .join("")}
+                  </div>
+                `;
+              }
+
+              return `
+                <div class="setting-field">
+                  <label>${escapeHtml(key)}</label>
+                  <input value="${escapeHtml(String(raw))}" />
+                </div>
+              `;
+            })
+            .join("")}</div>`;
+        } catch {
+          return `<div class="setting-group"><div class="setting-heading">invalid json</div><p>Use raw mode to repair this file.</p></div>`;
+        }
+      }
+
+      function renderFileAsSettings(file) {
+        return file.type === "json" ? renderJsonSettings(file.text) : renderMarkdownSettings(file.text);
+      }
+
+      function syncEditorMode() {
+        const file = workspaceFiles[activeFile];
+        renderedEditor.innerHTML = renderFileAsSettings(file);
+        renderedEditor.classList.toggle("raw-hidden", rawMode);
+        configEditor.classList.toggle("raw-hidden", !rawMode);
+        rawToggle.textContent = rawMode ? "view" : "raw";
+      }
+
+      function syncGlobalEditorMode() {
+        const file = globalFiles[activeGlobalFile];
+        globalRenderedEditor.innerHTML = renderFileAsSettings(file);
+        globalRenderedEditor.classList.toggle("raw-hidden", globalRawMode);
+        globalEditor.classList.toggle("raw-hidden", !globalRawMode);
+        globalRawToggle.textContent = globalRawMode ? "view" : "raw";
+      }
+
+      function renderRoomTabs() {
+        [...roomTabs.querySelectorAll("[data-room-tab]")].forEach((button) => {
+          button.classList.toggle("active", button.dataset.roomTab === activeRoomTab);
+        });
+      }
+
+      function renderRoomPanel() {
+        renderRoomTabs();
+
+        if (activeRoomTab === "tasks") {
+          roomPanel.innerHTML = `
+            <div class="agents">
+              <button class="agent" type="button">
+                <span>
+                  <span class="agent-name">queue</span>
+                  <span class="agent-role">long-running work appears here</span>
+                </span>
+                <span class="agent-state">watch</span>
+              </button>
+              <button class="agent" type="button">
+                <span>
+                  <span class="agent-name">history</span>
+                  <span class="agent-role">completed and failed runs</span>
+                </span>
+                <span class="agent-state">soon</span>
+              </button>
+            </div>
+          `;
+          return;
+        }
+
+        if (activeRoomTab === "state") {
+          roomPanel.innerHTML = `
+            <textarea readonly spellcheck="false">{
+  "room": "default",
+  "defaultAgent": "gaia",
+  "transcriptWindow": 24,
+  "activeRoles": {
+    "gaia": "planner",
+    "sidia": "critique",
+    "terry": "builder"
+  }
+}</textarea>
+          `;
+          return;
+        }
+
+        roomPanel.innerHTML = `
+          <div class="section-head">
+            <span>Current room agents</span>
+            <span>3 online</span>
+          </div>
+          <div class="agents">
+            ${agents
+              .map((agent) => {
+                const active = agent.id === activeAgent ? " active" : "";
+                const stateClass = agent.state === "running" ? "running" : "";
+                return `
+                  <button class="agent${active}" type="button" data-agent="${agent.id}">
+                    <span>
+                      <span class="agent-name">${agent.icon} @${agent.id}</span>
+                      <span class="agent-role">${agent.role}</span>
+                    </span>
+                    <span class="agent-state ${stateClass}">${agent.state}</span>
+                  </button>
+                `;
+              })
+              .join("")}
+          </div>
+        `;
+      }
+
+      function renderTabs() {
+        tabsEl.innerHTML = Object.entries(workspaceFiles)
+          .map(([key, file]) => {
+            const active = key === activeFile ? " active" : "";
+            return `<button class="tab${active}" type="button" data-file="${key}">${file.label}</button>`;
+          })
+          .join("");
+      }
+
+      function loadEditorFile() {
+        const file = workspaceFiles[activeFile];
+        editorPath.textContent = file.path;
+        configEditor.value = file.text;
+        syncEditorMode();
+      }
+
+      function renderGlobalTabs() {
+        globalTabs.innerHTML = Object.entries(globalFiles)
+          .map(([key, file]) => {
+            const active = key === activeGlobalFile ? " active" : "";
+            return `<button class="tab${active}" type="button" data-global-file="${key}">${file.label}</button>`;
+          })
+          .join("");
+      }
+
+      function loadGlobalFile() {
+        const file = globalFiles[activeGlobalFile];
+        globalPath.textContent = file.path;
+        globalEditor.value = file.text;
+        syncGlobalEditorMode();
+      }
+
+      function renderEvent(event) {
+        const agent = agents.find((item) => item.id === event.author);
+        const authorClass =
+          event.author === "user" ? "user" : agent ? agent.colorClass : "";
+        const label = event.author === "user" ? "you" : `@${event.author}`;
+        const tools = event.tools?.length
+          ? `<div class="tool-row">${event.tools
+              .map((tool) => `<span class="tool">${escapeHtml(tool)}</span>`)
+              .join("")}</div>`
+          : "";
+
+        const node = document.createElement("article");
+        node.className = "event";
+        node.innerHTML = `
+          <div class="meta">
+            <div class="author ${authorClass}">${label}</div>
+            <div>${event.time}</div>
+          </div>
+          <div class="content">${escapeHtml(event.text)}${tools}</div>
+        `;
+        chat.appendChild(node);
+        chat.scrollTop = chat.scrollHeight;
+        return node;
+      }
+
+      function nowTime() {
+        return new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+
+      function setAgentState(id, state) {
+        const agent = agents.find((item) => item.id === id);
+        if (!agent) return;
+        agent.state = state;
+        renderRoomPanel();
+      }
+
+      function addQueueItem(label) {
+        taskId += 1;
+        const id = `task-${taskId}`;
+        const node = document.createElement("span");
+        node.className = "queue-item";
+        node.id = id;
+        node.innerHTML = `<span class="dot pulse"></span><span>${escapeHtml(label)}</span>`;
+        queue.appendChild(node);
+        return () => {
+          const item = document.getElementById(id);
+          if (!item) return;
+          item.querySelector(".dot").classList.remove("pulse");
+          setTimeout(() => item.remove(), 900);
+        };
+      }
+
+      function simulateAgentReply(targets, text) {
+        let delay = 320;
+        targets.forEach((target) => {
+          setTimeout(() => {
+            setAgentState(target, "running");
+            runtimePill.textContent = `Pi SDK: @${target} streaming`;
+            const finishQueue = addQueueItem(`@${target}`);
+            const eventNode = renderEvent({
+              author: target,
+              time: nowTime(),
+              text: "",
+            });
+            const content = eventNode.querySelector(".content");
+            const response =
+              target === "sidia"
+                ? "The minimal version should prove the command and config model. Avoid adding navigation until transcript, composer, and prompt editing feel solid."
+                : target === "terry"
+                  ? "I would implement this as a Node local server with SSE for runtime events, then a small web client that renders controller snapshots."
+                  : `Received: "${text}". I would route this through the same command registry that powers slash previews and future UI panels.`;
+            let index = 0;
+            const timer = setInterval(() => {
+              content.textContent += response.slice(index, index + 4);
+              index += 4;
+              chat.scrollTop = chat.scrollHeight;
+              if (index >= response.length) {
+                clearInterval(timer);
+                setAgentState(target, "idle");
+                finishQueue();
+                runtimePill.textContent = "Pi SDK: ready";
+              }
+            }, 28);
+          }, delay);
+          delay += 620;
+        });
+      }
+
+      function targetAgents(text) {
+        const mentioned = [...text.matchAll(/@([a-z0-9_-]+)/gi)]
+          .map((match) => match[1].toLowerCase())
+          .filter((id) => agents.some((agent) => agent.id === id));
+        return mentioned.length ? [...new Set(mentioned)] : ["gaia"];
+      }
+
+      function showSuggestions() {
+        const text = input.value;
+        const slashMatch = text.match(/^\/([^\s]*)$/);
+        const mentionMatch = text.match(/(^|\s)@([a-z0-9_-]*)$/i);
+
+        if (slashMatch) {
+          const query = slashMatch[1].toLowerCase();
+          visibleSuggestions = commands.filter((command) =>
+            command.label.slice(1).startsWith(query),
+          );
+        } else if (mentionMatch) {
+          const query = mentionMatch[2].toLowerCase();
+          visibleSuggestions = agents
+            .filter((agent) => agent.id.startsWith(query))
+            .map((agent) => ({
+              label: `@${agent.id}`,
+              desc: `${agent.name} / ${agent.role}`,
+            }));
+        } else {
+          visibleSuggestions = [];
+        }
+
+        selectedSuggestion = Math.min(
+          selectedSuggestion,
+          Math.max(0, visibleSuggestions.length - 1),
+        );
+
+        suggestions.classList.toggle("open", visibleSuggestions.length > 0);
+        suggestions.innerHTML = visibleSuggestions
+          .map((item, index) => {
+            const active = index === selectedSuggestion ? " active" : "";
+            return `
+              <div class="suggestion${active}" data-index="${index}">
+                <span class="suggestion-key">${escapeHtml(item.label)}</span>
+                <span class="suggestion-desc">${escapeHtml(item.desc)}</span>
+              </div>
+            `;
+          })
+          .join("");
+      }
+
+      function applySuggestion() {
+        const item = visibleSuggestions[selectedSuggestion];
+        if (!item) return false;
+
+        if (item.label.startsWith("/")) {
+          input.value = item.label + " ";
+        } else {
+          input.value = input.value.replace(/(^|\s)@([a-z0-9_-]*)$/i, `$1${item.label} `);
+        }
+        visibleSuggestions = [];
+        suggestions.classList.remove("open");
+        input.focus();
+        return true;
+      }
+
+      roomTabs.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-room-tab]");
+        if (!button) return;
+        activeRoomTab = button.dataset.roomTab;
+        renderRoomPanel();
+      });
+
+      roomPanel.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-agent]");
+        if (!button) return;
+        activeAgent = button.dataset.agent;
+        inputStatus.textContent = `selected @${activeAgent}`;
+        renderRoomPanel();
+      });
+
+      tabsEl.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-file]");
+        if (!button) return;
+        activeFile = button.dataset.file;
+        rawMode = false;
+        renderTabs();
+        loadEditorFile();
+      });
+
+      rawToggle.addEventListener("click", () => {
+        rawMode = !rawMode;
+        if (!rawMode) workspaceFiles[activeFile].text = configEditor.value;
+        syncEditorMode();
+      });
+
+      document.querySelector("#saveConfig").addEventListener("click", () => {
+        workspaceFiles[activeFile].text = configEditor.value;
+        syncEditorMode();
+        saved.classList.add("visible");
+        setTimeout(() => saved.classList.remove("visible"), 900);
+      });
+
+      document.querySelector("#resetConfig").addEventListener("click", () => {
+        loadEditorFile();
+      });
+
+      globalSettingsButton.addEventListener("click", () => {
+        settingsModal.classList.add("open");
+        renderGlobalTabs();
+        loadGlobalFile();
+      });
+
+      closeSettings.addEventListener("click", () => {
+        settingsModal.classList.remove("open");
+      });
+
+      settingsModal.addEventListener("mousedown", (event) => {
+        if (event.target === settingsModal) settingsModal.classList.remove("open");
+      });
+
+      globalTabs.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-global-file]");
+        if (!button) return;
+        activeGlobalFile = button.dataset.globalFile;
+        globalRawMode = false;
+        renderGlobalTabs();
+        loadGlobalFile();
+      });
+
+      globalRawToggle.addEventListener("click", () => {
+        globalRawMode = !globalRawMode;
+        if (!globalRawMode) globalFiles[activeGlobalFile].text = globalEditor.value;
+        syncGlobalEditorMode();
+      });
+
+      document.querySelector("#saveGlobal").addEventListener("click", () => {
+        globalFiles[activeGlobalFile].text = globalEditor.value;
+        syncGlobalEditorMode();
+        globalSaved.classList.add("visible");
+        setTimeout(() => globalSaved.classList.remove("visible"), 900);
+      });
+
+      document.querySelector("#resetGlobal").addEventListener("click", () => {
+        loadGlobalFile();
+      });
+
+      composer.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+
+        if (text.startsWith("/")) {
+          renderEvent({
+            author: "user",
+            time: nowTime(),
+            text,
+          });
+          renderEvent({
+            author: "gaia",
+            time: nowTime(),
+            text:
+              text.startsWith("/roles")
+                ? "gaia: planner\nsidia: critique\nterry: builder"
+                : "Command handled from the shared command registry.",
+          });
+          input.value = "";
+          showSuggestions();
+          return;
+        }
+
+        renderEvent({
+          author: "user",
+          time: nowTime(),
+          text,
+        });
+        const targets = targetAgents(text);
+        input.value = "";
+        showSuggestions();
+        simulateAgentReply(targets, text);
+      });
+
+      input.addEventListener("input", () => {
+        selectedSuggestion = 0;
+        showSuggestions();
+      });
+
+      input.addEventListener("keydown", (event) => {
+        if (!visibleSuggestions.length) return;
+
+        if (event.key === "ArrowDown") {
+          selectedSuggestion = (selectedSuggestion + 1) % visibleSuggestions.length;
+          showSuggestions();
+          event.preventDefault();
+        }
+
+        if (event.key === "ArrowUp") {
+          selectedSuggestion =
+            (selectedSuggestion - 1 + visibleSuggestions.length) %
+            visibleSuggestions.length;
+          showSuggestions();
+          event.preventDefault();
+        }
+
+        if (event.key === "Tab" || event.key === "Enter") {
+          if (applySuggestion()) event.preventDefault();
+        }
+
+        if (event.key === "Escape") {
+          visibleSuggestions = [];
+          suggestions.classList.remove("open");
+          event.preventDefault();
+        }
+      });
+
+      suggestions.addEventListener("mousedown", (event) => {
+        const item = event.target.closest("[data-index]");
+        if (!item) return;
+        selectedSuggestion = Number(item.dataset.index);
+        applySuggestion();
+        event.preventDefault();
+      });
+
+      initialEvents.forEach(renderEvent);
+      renderRoomPanel();
+      renderTabs();
+      renderGlobalTabs();
+      loadEditorFile();
+      loadGlobalFile();
+      input.focus();
+    </script>
+  </body>
+</html>
