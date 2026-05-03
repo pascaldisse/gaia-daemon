@@ -1,7 +1,9 @@
 import { createReadStream, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EditableFileRegistry } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent } from "../app/gaia-controller.js";
@@ -73,6 +75,45 @@ function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function isWebUrl(target: string): boolean {
+  return /^https?:\/\//i.test(target) || /^www\./i.test(target);
+}
+
+function normalizeUrl(target: string): string {
+  return /^www\./i.test(target) ? `https://${target}` : target;
+}
+
+async function existingPathCandidate(path: string): Promise<string> {
+  const candidates = [path];
+  const withoutLine = path.replace(/:(\d+)(?::\d+)?$/, "");
+  if (withoutLine !== path) candidates.unshift(withoutLine);
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Keep trying less-specific candidates before falling back to the original target.
+    }
+  }
+
+  return path;
+}
+
+async function openWithSystem(target: string): Promise<void> {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", target] : [target];
+
+  await new Promise<void>((resolveOpen, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolveOpen();
+    });
+  });
 }
 
 function encodeSse(event: GaiaUiEvent): string {
@@ -152,6 +193,21 @@ export class GaiaWebServer {
       }
       await this.controllerFor(record.id);
       await this.handleApp(response, record.id);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/open-target") {
+      const body = await parseBody(request);
+      const rawTarget = stringField(body, "target")?.trim();
+      if (!rawTarget) {
+        json(response, 400, { error: "Missing target" });
+        return;
+      }
+
+      const workspaceId = stringField(body, "workspaceId");
+      const target = await this.resolveOpenTarget(rawTarget, workspaceId);
+      await openWithSystem(target);
+      json(response, 200, { target });
       return;
     }
 
@@ -277,6 +333,16 @@ export class GaiaWebServer {
     const record = await this.registry.find(workspaceId);
     if (!record?.isInitialized) return undefined;
     return loadWorkspace(record.path);
+  }
+
+  private async resolveOpenTarget(target: string, workspaceId?: string): Promise<string> {
+    if (isWebUrl(target)) return normalizeUrl(target);
+
+    const withoutFilePrefix = target.startsWith("file://") ? fileURLToPath(target) : target;
+    const expanded = withoutFilePrefix.startsWith("~/") ? join(homedir(), withoutFilePrefix.slice(2)) : withoutFilePrefix;
+    const base = workspaceId ? (await this.workspaceForId(workspaceId))?.rootDir : undefined;
+    const path = isAbsolute(expanded) ? expanded : resolve(base ?? this.options.cwd, expanded);
+    return existingPathCandidate(path);
   }
 
   private broadcast(event: GaiaUiEvent): void {

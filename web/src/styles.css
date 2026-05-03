@@ -64,6 +64,8 @@ input {
   border: 1px solid var(--line-dim);
   padding: 8px;
   outline: none;
+  caret-color: var(--line);
+  caret-shape: block;
 }
 
 textarea:focus,
@@ -229,6 +231,21 @@ time {
   border-top: 1px solid var(--line-dim);
   padding: 12px 14px;
   background: rgba(4, 14, 9, 0.92);
+  position: relative;
+}
+
+.command-input {
+  display: block;
+  min-height: 34px;
+  max-height: 180px;
+  resize: none;
+  overflow: auto;
+  line-height: 1.35;
+}
+
+.command-input:focus {
+  border-color: var(--line);
+  box-shadow: 0 0 14px rgba(28, 255, 139, 0.16);
 }
 
 .composer-row,
@@ -250,6 +267,53 @@ time {
 .task span,
 .dot {
   color: var(--line);
+}
+
+.autocomplete {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: calc(100% - 10px);
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  background: #010302;
+  box-shadow: 0 0 18px rgba(28, 255, 139, 0.22);
+  z-index: 5;
+}
+
+.completion-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.completion-row span {
+  color: var(--line);
+}
+
+.completion-row.empty {
+  display: block;
+  color: var(--muted);
+  padding: 7px 9px;
+}
+
+.link-token {
+  color: inherit;
+  text-decoration: none;
+}
+
+.open-link-mode .link-token:hover {
+  color: var(--line);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-shadow: 0 0 8px rgba(28, 255, 139, 0.55);
 }
 
 .panel {
