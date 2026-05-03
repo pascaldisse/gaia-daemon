@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
 import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
-import { appendRoomEvent, countRoomEventLines, readRecentRoomEvents, readRoomEventsAfterCursor, type RoomEvent } from "./transcript.js";
+import { appendRoomEvent, countRoomEventLines, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
@@ -14,21 +14,25 @@ export class Room {
     this.statePath = roomStatePath(workspace.roomsDir, this.id);
   }
 
-  async addUserMessage(text: string, targets: string[]): Promise<void> {
-    await appendRoomEvent(this.transcriptPath, {
+  async addUserMessage(text: string, targets: string[]): Promise<UserRoomEvent> {
+    const event: UserRoomEvent = {
       timestamp: new Date().toISOString(),
       author: "user",
       targets,
       text,
-    });
+    };
+    await appendRoomEvent(this.transcriptPath, event);
+    return event;
   }
 
-  async addAgentMessage(author: string, text: string): Promise<void> {
-    await appendRoomEvent(this.transcriptPath, {
+  async addAgentMessage(author: string, text: string): Promise<AgentRoomEvent> {
+    const event: AgentRoomEvent = {
       timestamp: new Date().toISOString(),
       author,
       text,
-    });
+    };
+    await appendRoomEvent(this.transcriptPath, event);
+    return event;
   }
 
   async recentEvents(): Promise<RoomEvent[]> {

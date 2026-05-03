@@ -13,7 +13,9 @@ class FakeRuntime implements AgentRuntime {
   constructor(readonly agent: AgentDefinition) {}
 
   async *send() {
+    yield { type: "thinking-start" as const };
     yield { type: "thinking-delta" as const, delta: "thinking" };
+    yield { type: "thinking-end" as const, content: "thinking" };
     yield { type: "tool-start" as const, toolName: "read", toolCallId: "call_1", args: { path: "AGENTS.md" } };
     yield { type: "tool-update" as const, toolName: "read", toolCallId: "call_1", partialResult: { content: "partial" } };
     yield { type: "tool-end" as const, toolName: "read", toolCallId: "call_1", result: { content: "done" }, isError: false };
@@ -68,12 +70,24 @@ test("streams a room task through UI-neutral events", async () => {
     assert.equal(task.status, "complete");
     assert.ok(events.some((event) => event.type === "task-start"));
     assert.ok(events.some((event) => event.type === "text-delta"));
+    assert.ok(events.some((event) => event.type === "thinking-start"));
     assert.ok(events.some((event) => event.type === "thinking-delta"));
+    assert.ok(events.some((event) => event.type === "thinking-end"));
     assert.ok(events.some((event) => event.type === "tool-start" && event.toolName === "read" && event.toolCallId === "call_1"));
     assert.ok(events.some((event) => event.type === "tool-update" && event.toolName === "read" && event.toolCallId === "call_1"));
     assert.ok(events.some((event) => event.type === "tool-end" && event.toolName === "read" && event.toolCallId === "call_1" && !event.isError));
     assert.equal(snapshot.room.events.at(-1)?.author, "gaia");
     assert.match(snapshot.room.events.at(-1)?.text ?? "", /hello from gaia/);
+    assert.equal(snapshot.room.events.at(-1)?._thinkingStarted, true);
+    assert.equal(snapshot.room.events.at(-1)?._thinking, "thinking");
+    assert.deepEqual(snapshot.room.events.at(-1)?._tools?.at(0), {
+      id: "call_1",
+      toolName: "read",
+      status: "complete",
+      args: { path: "AGENTS.md" },
+      partialResult: { content: "partial" },
+      result: { content: "done" },
+    });
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;

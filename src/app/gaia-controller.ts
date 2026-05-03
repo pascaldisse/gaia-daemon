@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
-import { defaultRoomState, type RoomState } from "../room/state.js";
+import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole, type ResolvedRole } from "../roles/roles.js";
@@ -35,6 +36,12 @@ export interface GaiaTask {
   error?: string;
 }
 
+export type UiRoomEvent = RoomEvent & {
+  _thinkingStarted?: boolean;
+  _thinking?: string;
+  _tools?: RuntimeToolDetails[];
+};
+
 export interface RoomSummary {
   id: string;
   path: string;
@@ -53,7 +60,7 @@ export interface GaiaSnapshot {
     id: string;
     transcriptPath: string;
     statePath: string;
-    events: RoomEvent[];
+    events: UiRoomEvent[];
     state: RoomState;
   };
   rooms: RoomSummary[];
@@ -64,10 +71,12 @@ export interface GaiaSnapshot {
 
 export type GaiaUiEvent =
   | { type: "snapshot"; workspaceId: string; roomId: string; snapshot: GaiaSnapshot }
-  | { type: "room-event"; workspaceId: string; roomId: string; event: RoomEvent }
+  | { type: "room-event"; workspaceId: string; roomId: string; event: UiRoomEvent }
   | { type: "task-start"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "text-delta"; workspaceId: string; roomId: string; taskId: string; agentId: string; delta: string }
+  | { type: "thinking-start"; workspaceId: string; roomId: string; taskId: string; agentId: string }
   | { type: "thinking-delta"; workspaceId: string; roomId: string; taskId: string; agentId: string; delta: string }
+  | { type: "thinking-end"; workspaceId: string; roomId: string; taskId: string; agentId: string; content?: string }
   | { type: "tool-start"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
@@ -153,7 +162,7 @@ export class GaiaController {
         id: this.room.id,
         transcriptPath: this.room.transcriptPath,
         statePath: this.room.statePath,
-        events,
+        events: this.applyRuntimeDetails(events),
         state: this.roomState,
       },
       rooms: await this.listRooms(),
@@ -285,13 +294,7 @@ export class GaiaController {
   }
 
   private async runAgentTask(task: GaiaTask, text: string): Promise<void> {
-    const userEvent: RoomEvent = {
-      timestamp: new Date().toISOString(),
-      author: "user",
-      targets: task.targets,
-      text,
-    };
-    await this.room.addUserMessage(text, task.targets);
+    const userEvent = await this.room.addUserMessage(text, task.targets);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
 
     for (const target of task.targets) {
@@ -303,6 +306,7 @@ export class GaiaController {
       const activeRoleName = this.roomState.activeRoles[target];
       const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
       let reply = "";
+      const runtimeDetails: RuntimeMessageDetails = {};
 
       if (activeRoleName && !activeRole) {
         this.emit({
@@ -321,11 +325,28 @@ export class GaiaController {
           this.emit({ type: "text-delta", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, delta: event.delta });
           continue;
         }
+        if (event.type === "thinking-start") {
+          runtimeDetails.thinkingStarted = true;
+          this.emit({ type: "thinking-start", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id });
+          continue;
+        }
         if (event.type === "thinking-delta") {
+          runtimeDetails.thinkingStarted = true;
+          runtimeDetails.thinking = `${runtimeDetails.thinking ?? ""}${event.delta}`;
           this.emit({ type: "thinking-delta", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, delta: event.delta });
           continue;
         }
+        if (event.type === "thinking-end") {
+          runtimeDetails.thinkingStarted = true;
+          if (event.content && !runtimeDetails.thinking) runtimeDetails.thinking = event.content;
+          this.emit({ type: "thinking-end", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, content: event.content });
+          continue;
+        }
         if (event.type === "tool-start") {
+          runtimeDetails.tools = [
+            ...(runtimeDetails.tools ?? []),
+            this.runtimeToolDetails(event.toolCallId, event.toolName, "running", { args: event.args }),
+          ];
           this.emit({
             type: "tool-start",
             workspaceId: this.workspaceId,
@@ -339,6 +360,8 @@ export class GaiaController {
           continue;
         }
         if (event.type === "tool-update") {
+          const tool = this.findRuntimeTool(runtimeDetails, event.toolCallId, event.toolName);
+          if (tool) tool.partialResult = event.partialResult;
           this.emit({
             type: "tool-update",
             workspaceId: this.workspaceId,
@@ -350,6 +373,16 @@ export class GaiaController {
             partialResult: event.partialResult,
           });
           continue;
+        }
+        const tool = this.findRuntimeTool(runtimeDetails, event.toolCallId, event.toolName);
+        if (tool) {
+          tool.status = event.isError ? "error" : "complete";
+          tool.result = event.result;
+        } else {
+          runtimeDetails.tools = [
+            ...(runtimeDetails.tools ?? []),
+            this.runtimeToolDetails(event.toolCallId, event.toolName, event.isError ? "error" : "complete", { result: event.result }),
+          ];
         }
         this.emit({
           type: "tool-end",
@@ -366,9 +399,9 @@ export class GaiaController {
 
       if (this.cancelledTaskIds.has(task.id)) return;
       if (reply.trim()) {
-        const agentEvent: RoomEvent = { timestamp: new Date().toISOString(), author: agent.id, text: reply.trim() };
-        await this.room.addAgentMessage(agent.id, reply.trim());
-        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: agentEvent });
+        const agentEvent = await this.room.addAgentMessage(agent.id, reply.trim());
+        this.persistRuntimeDetails(agentEvent, runtimeDetails);
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
       }
 
       this.roomState.agentCursors[agent.id] = await this.room.eventCursor();
@@ -444,6 +477,56 @@ export class GaiaController {
 
   private async emitSnapshot(): Promise<void> {
     this.emit({ type: "snapshot", workspaceId: this.workspaceId, roomId: this.room.id, snapshot: await this.getSnapshot() });
+  }
+
+  private applyRuntimeDetails(events: RoomEvent[]): UiRoomEvent[] {
+    return events.map((event) => this.withRuntimeDetails(event));
+  }
+
+  private withRuntimeDetails(event: RoomEvent): UiRoomEvent {
+    if (event.author === "user") return event;
+    const details = this.roomState.runtimeDetails[this.runtimeDetailsKey(event)];
+    if (!details) return event;
+    return {
+      ...event,
+      ...(details.thinkingStarted ? { _thinkingStarted: true } : {}),
+      ...(details.thinking ? { _thinking: details.thinking } : {}),
+      ...(details.tools?.length ? { _tools: details.tools } : {}),
+    };
+  }
+
+  private persistRuntimeDetails(event: RoomEvent, details: RuntimeMessageDetails): void {
+    if (!details.thinkingStarted && !details.thinking && !details.tools?.length) return;
+    this.roomState.runtimeDetails[this.runtimeDetailsKey(event)] = details;
+  }
+
+  private runtimeDetailsKey(event: RoomEvent): string {
+    return createHash("sha256")
+      .update(JSON.stringify({ timestamp: event.timestamp, author: event.author, text: event.text }))
+      .digest("hex")
+      .slice(0, 24);
+  }
+
+  private runtimeToolDetails(
+    toolCallId: string | undefined,
+    toolName: string,
+    status: RuntimeToolDetails["status"],
+    values: Pick<RuntimeToolDetails, "args" | "partialResult" | "result">,
+  ): RuntimeToolDetails {
+    return {
+      id: toolCallId ?? `${toolName}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+      toolName,
+      status,
+      ...(values.args !== undefined ? { args: values.args } : {}),
+      ...(values.partialResult !== undefined ? { partialResult: values.partialResult } : {}),
+      ...(values.result !== undefined ? { result: values.result } : {}),
+    };
+  }
+
+  private findRuntimeTool(details: RuntimeMessageDetails, toolCallId: string | undefined, toolName: string): RuntimeToolDetails | undefined {
+    const tools = details.tools ?? [];
+    if (toolCallId) return tools.find((tool) => tool.id === toolCallId);
+    return [...tools].reverse().find((tool) => tool.toolName === toolName && tool.status === "running");
   }
 
   private emit(event: GaiaUiEvent): void {

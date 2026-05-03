@@ -133,10 +133,10 @@ export class GaiaApp {
           this.view.write(toolLine("start", event.toolName));
           continue;
         }
-        if (event.type === "tool-update" || event.type === "thinking-delta") {
+        if (event.type === "tool-update" || event.type === "thinking-start" || event.type === "thinking-delta" || event.type === "thinking-end") {
           continue;
         }
-        this.view.write(toolLine("end", event.toolName, event.isError ? "(error)" : "(ok)"));
+        if (event.type === "tool-end") this.view.write(toolLine("end", event.toolName, event.isError ? "(error)" : "(ok)"));
       }
       this.view.line("\n");
       return collected;
