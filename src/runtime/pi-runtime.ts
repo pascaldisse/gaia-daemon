@@ -23,6 +23,7 @@ export interface PiSessionLike {
   readonly sessionFile: string | undefined;
   subscribe(listener: (event: any) => void): () => void;
   prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
+  abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
 }
@@ -94,11 +95,17 @@ export class PiRuntime implements AgentRuntime {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         push({ type: "text-delta", delta: event.assistantMessageEvent.delta });
       }
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
+        push({ type: "thinking-delta", delta: event.assistantMessageEvent.delta });
+      }
       if (event.type === "tool_execution_start") {
-        push({ type: "tool-start", toolName: event.toolName });
+        push({ type: "tool-start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args });
+      }
+      if (event.type === "tool_execution_update") {
+        push({ type: "tool-update", toolName: event.toolName, toolCallId: event.toolCallId, partialResult: event.partialResult });
       }
       if (event.type === "tool_execution_end") {
-        push({ type: "tool-end", toolName: event.toolName, isError: event.isError });
+        push({ type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError });
       }
     });
 
@@ -133,6 +140,10 @@ export class PiRuntime implements AgentRuntime {
   dispose(): void {
     for (const managed of this.sessions.values()) managed.session.dispose();
     this.sessions.clear();
+  }
+
+  async abort(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((managed) => managed.session.abort()));
   }
 
   private async ensureSession(input: AgentInput): Promise<ManagedPiSession> {

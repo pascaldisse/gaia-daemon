@@ -29,7 +29,7 @@ export interface GaiaTask {
   roomId: string;
   text: string;
   targets: string[];
-  status: "running" | "complete" | "error";
+  status: "running" | "complete" | "error" | "cancelled";
   startedAt: string;
   endedAt?: string;
   error?: string;
@@ -67,8 +67,10 @@ export type GaiaUiEvent =
   | { type: "room-event"; workspaceId: string; roomId: string; event: RoomEvent }
   | { type: "task-start"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "text-delta"; workspaceId: string; roomId: string; taskId: string; agentId: string; delta: string }
-  | { type: "tool-start"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string }
-  | { type: "tool-end"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; isError: boolean }
+  | { type: "thinking-delta"; workspaceId: string; roomId: string; taskId: string; agentId: string; delta: string }
+  | { type: "tool-start"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; args?: unknown }
+  | { type: "tool-update"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; partialResult?: unknown }
+  | { type: "tool-end"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
   | { type: "task-end"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "task-error"; workspaceId: string; roomId: string; task: GaiaTask; error: string }
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string };
@@ -89,6 +91,7 @@ export class GaiaController {
   private roomState: RoomState = defaultRoomState();
   private activeTask: GaiaTask | undefined;
   private recentTasks: GaiaTask[] = [];
+  private cancelledTaskIds = new Set<string>();
   private initialized = false;
 
   constructor(private readonly options: GaiaControllerOptions) {
@@ -213,9 +216,21 @@ export class GaiaController {
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
 
     void this.runAgentTask(task, text).catch((error) => {
+      if (this.cancelledTaskIds.has(task.id)) return;
       this.failTask(task, error);
     });
 
+    return task;
+  }
+
+  async cancelActiveTask(): Promise<GaiaTask | undefined> {
+    await this.init();
+    const task = this.activeTask;
+    if (!task) return undefined;
+
+    this.cancelledTaskIds.add(task.id);
+    await Promise.allSettled(task.targets.map((target) => this.runtimes[target]?.abort()).filter((promise): promise is Promise<void> => Boolean(promise)));
+    this.cancelTask(task);
     return task;
   }
 
@@ -280,6 +295,7 @@ export class GaiaController {
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
 
     for (const target of task.targets) {
+      if (this.cancelledTaskIds.has(task.id)) return;
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       const cursor = this.roomState.agentCursors[target] ?? 0;
@@ -299,13 +315,40 @@ export class GaiaController {
       }
 
       for await (const event of runtime.send({ roomId: this.room.id, message: text, transcript: events, activeRole })) {
+        if (this.cancelledTaskIds.has(task.id)) return;
         if (event.type === "text-delta") {
           reply += event.delta;
           this.emit({ type: "text-delta", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, delta: event.delta });
           continue;
         }
+        if (event.type === "thinking-delta") {
+          this.emit({ type: "thinking-delta", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, delta: event.delta });
+          continue;
+        }
         if (event.type === "tool-start") {
-          this.emit({ type: "tool-start", workspaceId: this.workspaceId, roomId: this.room.id, taskId: task.id, agentId: agent.id, toolName: event.toolName });
+          this.emit({
+            type: "tool-start",
+            workspaceId: this.workspaceId,
+            roomId: this.room.id,
+            taskId: task.id,
+            agentId: agent.id,
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+            args: event.args,
+          });
+          continue;
+        }
+        if (event.type === "tool-update") {
+          this.emit({
+            type: "tool-update",
+            workspaceId: this.workspaceId,
+            roomId: this.room.id,
+            taskId: task.id,
+            agentId: agent.id,
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+            partialResult: event.partialResult,
+          });
           continue;
         }
         this.emit({
@@ -315,10 +358,13 @@ export class GaiaController {
           taskId: task.id,
           agentId: agent.id,
           toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          result: event.result,
           isError: event.isError,
         });
       }
 
+      if (this.cancelledTaskIds.has(task.id)) return;
       if (reply.trim()) {
         const agentEvent: RoomEvent = { timestamp: new Date().toISOString(), author: agent.id, text: reply.trim() };
         await this.room.addAgentMessage(agent.id, reply.trim());
@@ -329,7 +375,7 @@ export class GaiaController {
       await this.room.writeState(this.roomState);
     }
 
-    this.completeTask(task);
+    if (!this.cancelledTaskIds.has(task.id)) this.completeTask(task);
   }
 
   private async runCommandTask(input: string, command: ReturnType<typeof parseCommand>): Promise<GaiaTask> {
@@ -384,6 +430,15 @@ export class GaiaController {
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     this.activeTask = undefined;
     this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.room.id, task, error: message });
+    void this.emitSnapshot();
+  }
+
+  private cancelTask(task: GaiaTask): void {
+    task.status = "cancelled";
+    task.endedAt = new Date().toISOString();
+    this.recentTasks = [...this.recentTasks.slice(-9), task];
+    if (this.activeTask?.id === task.id) this.activeTask = undefined;
+    this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task });
     void this.emitSnapshot();
   }
 

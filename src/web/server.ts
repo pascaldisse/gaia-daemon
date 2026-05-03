@@ -237,6 +237,18 @@ export class GaiaWebServer {
       return;
     }
 
+    const cancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/);
+    if (request.method === "POST" && cancelMatch) {
+      const controller = await this.controllerFor(decodeURIComponent(cancelMatch[1] ?? ""));
+      const roomId = decodeURIComponent(cancelMatch[2] ?? "");
+      if (roomId !== controller.roomId) {
+        json(response, 404, { error: `Room not loaded: ${roomId}` });
+        return;
+      }
+      json(response, 202, { task: await controller.cancelActiveTask() });
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/events") {
       await this.handleEvents(response, url);
       return;
