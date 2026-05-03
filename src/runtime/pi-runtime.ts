@@ -95,8 +95,14 @@ export class PiRuntime implements AgentRuntime {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         push({ type: "text-delta", delta: event.assistantMessageEvent.delta });
       }
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_start") {
+        push({ type: "thinking-start" });
+      }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
         push({ type: "thinking-delta", delta: event.assistantMessageEvent.delta });
+      }
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_end") {
+        push({ type: "thinking-end", content: event.assistantMessageEvent.content });
       }
       if (event.type === "tool_execution_start") {
         push({ type: "tool-start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args });

@@ -308,8 +308,12 @@ time {
 }
 
 .tool-activity,
-.thinking {
+.message > .activity-details {
   grid-column: 2;
+}
+
+.tool-activity,
+.activity-details {
   margin-top: 6px;
 }
 
@@ -318,34 +322,66 @@ time {
   gap: 5px;
 }
 
-.tool-call,
-.thinking {
+.activity-details {
   border-left: 1px solid var(--line-dim);
   padding-left: 8px;
   color: var(--muted);
 }
 
-.tool-call summary,
-.thinking summary {
+.activity-details summary {
   cursor: pointer;
   color: var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
 }
 
-.tool-call.running summary strong {
-  animation: pulse-tool 1s steps(2, end) infinite;
+.activity-details summary::-webkit-details-marker {
+  display: none;
 }
 
-.tool-call.error summary {
+.activity-details summary::marker {
+  content: "";
+}
+
+.activity-details.error summary {
   color: var(--danger);
 }
 
-.tool-call summary span {
-  display: inline-block;
-  width: 14px;
+.activity-icon {
+  width: 18px;
+  flex: 0 0 18px;
+  line-height: 1;
+  filter: grayscale(1) contrast(1.4);
 }
 
-.tool-call small {
-  margin-left: 8px;
+.activity-details.running .activity-icon {
+  animation: pulse-activity 1s steps(2, end) infinite;
+}
+
+.activity-title {
+  flex: 0 0 auto;
+}
+
+.activity-extra {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.activity-result {
+  width: 18px;
+  flex: 0 0 18px;
+  text-align: right;
+  color: var(--line);
+}
+
+.activity-details.error .activity-result {
+  color: var(--danger);
 }
 
 .tool-payload {
@@ -369,7 +405,7 @@ time {
   background: rgba(0, 0, 0, 0.28);
 }
 
-@keyframes pulse-tool {
+@keyframes pulse-activity {
   0%,
   45% {
     opacity: 1;

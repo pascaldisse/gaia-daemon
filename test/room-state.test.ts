@@ -24,6 +24,16 @@ test("room state writes and reads active roles, cursors, and pi sessions", async
       activeRoles: { gaia: "brainstorm" },
       agentCursors: { gaia: 12 },
       piSessions: { gaia: { id: "room-gaia" } },
+      runtimeDetails: {
+        turn: {
+          thinkingStarted: true,
+          thinking: "checking",
+          tools: [{ id: "call_1", toolName: "read", status: "complete" as const, args: { path: "AGENTS.md" }, result: { content: "ok" } }],
+        },
+        emptyThinking: {
+          thinkingStarted: true,
+        },
+      },
     };
 
     await writeRoomState(path, state);
@@ -51,6 +61,7 @@ test("partial room state merges with defaults and filters bad values", async () 
       activeRoles: { gaia: "plan" },
       agentCursors: { gaia: 2 },
       piSessions: {},
+      runtimeDetails: {},
     });
   } finally {
     await temp.cleanup();

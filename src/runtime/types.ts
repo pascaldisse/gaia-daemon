@@ -11,7 +11,9 @@ export interface AgentInput {
 
 export type AgentEvent =
   | { type: "text-delta"; delta: string }
+  | { type: "thinking-start" }
   | { type: "thinking-delta"; delta: string }
+  | { type: "thinking-end"; content?: string }
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean };

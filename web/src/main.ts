@@ -15,6 +15,7 @@ const state = {
   composerText: "",
   completionIndex: 0,
   completionHidden: false,
+  expandedActivities: new Set(),
 };
 
 function h(tag, attrs = {}, ...children) {
@@ -343,11 +344,27 @@ function connectEvents() {
     message.text += payload.delta;
     renderTranscriptOnly();
   });
+  source.addEventListener("thinking-start", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const message = streamingMessage(payload);
+    message._thinkingStarted = true;
+    renderTranscriptOnly();
+  });
   source.addEventListener("thinking-delta", (event) => {
     const payload = JSON.parse(event.data);
     if (!state.snapshot) return;
     const message = streamingMessage(payload);
+    message._thinkingStarted = true;
     message._thinking = `${message._thinking ?? ""}${payload.delta}`;
+    renderTranscriptOnly();
+  });
+  source.addEventListener("thinking-end", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const message = streamingMessage(payload);
+    message._thinkingStarted = true;
+    if (payload.content && !message._thinking) message._thinking = payload.content;
     renderTranscriptOnly();
   });
   source.addEventListener("tool-start", (event) => {
@@ -393,12 +410,21 @@ function streamingMessage(payload) {
 }
 
 function mergeRoomEvent(events, event) {
-  if (event.author === "user" || event.author === "system") return [...events, event];
+  if (event.author === "user" || event.author === "system") {
+    const streamingIndex = events.findIndex((candidate) => candidate._streamTaskId);
+    if (streamingIndex === -1) return [...events, event];
+    return [...events.slice(0, streamingIndex), event, ...events.slice(streamingIndex)];
+  }
   const index = events.findIndex((candidate) => candidate.author === event.author && candidate._streamTaskId);
   if (index === -1) return [...events, event];
 
   const previous = events[index];
-  const next = { ...event, _tools: previous._tools ?? [], _thinking: previous._thinking };
+  const next = {
+    ...event,
+    _tools: previous._tools ?? [],
+    ...(previous._thinkingStarted ? { _thinkingStarted: true } : {}),
+    ...(previous._thinking ? { _thinking: previous._thinking } : {}),
+  };
   return [...events.slice(0, index), next, ...events.slice(index + 1)];
 }
 
@@ -420,13 +446,14 @@ function preserveRuntimeMessageDetails(previousEvents, nextEvents) {
     return {
       ...event,
       _tools: previous._tools,
+      _thinkingStarted: previous._thinkingStarted,
       _thinking: previous._thinking,
     };
   });
 }
 
 function hasRuntimeMessageDetails(event) {
-  return Boolean(event?._thinking || event?._tools?.length);
+  return Boolean(event?._thinkingStarted || event?._thinking || event?._tools?.length);
 }
 
 function normalizeMessageText(text) {
@@ -552,11 +579,17 @@ function Message(event) {
   const isAgent = !isUser && event.author !== "system";
   const label = isUser ? `user -> ${(event.targets ?? []).map((target) => `@${target}`).join(", ")}` : `@${event.author}`;
   const text = isUser ? stripLeadingRouteMentions(event.text, event.targets ?? []) : event.text;
+  const showThinking = event._thinkingStarted || event._thinking;
   return h(
     "article",
     { class: `message ${isUser ? "user" : "agent"} ${event.author === "system" ? "system" : ""}` },
     h("div", { class: "message-meta" }, h("span", { text: label }), h("time", { text: formatTime(event.timestamp) })),
-    event._thinking ? h("details", { class: "thinking" }, h("summary", { text: "thinking" }), h("pre", {}, LinkedText(event._thinking))) : null,
+    showThinking
+      ? ActivityDetails(
+          { id: `thinking:${event._streamTaskId ?? event.timestamp}:${event.author}`, className: "thinking", status: event._streamTaskId ? "running" : "complete", icon: "💭", title: "thinking" },
+          h("pre", {}, event._thinking ? LinkedText(event._thinking) : ""),
+        )
+      : null,
     event._tools?.length ? ToolActivityList(event._tools) : null,
     text.trim() ? (isAgent || event.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
   );
@@ -652,17 +685,42 @@ function ToolActivityList(tools) {
   return h(
     "div",
     { class: "tool-activity" },
-    tools.map((tool) =>
-      h(
-        "details",
-        { class: `tool-call ${tool.status}` },
-        h("summary", {}, h("span", { text: tool.status === "running" ? ">" : "<" }), h("strong", { text: ` tool ${tool.toolName}` }), h("small", { text: toolStatusText(tool) })),
+    tools.map((tool) => {
+      const presentation = toolPresentation(tool);
+      return ActivityDetails(
+        { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: presentation.icon, title: presentation.title, extra: presentation.extra },
         ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
         ToolPayload("args", tool.args),
         ToolPayload("partial", tool.partialResult),
         ToolPayload("result", tool.result),
-      ),
+      );
+    }),
+  );
+}
+
+function ActivityDetails(options, ...children) {
+  const statusText = activityStatusText(options.status);
+  const id = options.id ?? `${options.className ?? "activity"}:${options.title ?? ""}:${options.extra ?? ""}`;
+  return h(
+    "details",
+    {
+      class: `activity-details ${options.className ?? ""} ${options.status ?? "complete"}`,
+      "data-activity-id": id,
+      open: state.expandedActivities.has(id),
+      ontoggle: (event) => {
+        if (event.currentTarget.open) state.expandedActivities.add(id);
+        else state.expandedActivities.delete(id);
+      },
+    },
+    h(
+      "summary",
+      {},
+      h("span", { class: "activity-icon", "aria-hidden": "true", text: options.icon ?? "" }),
+      h("strong", { class: "activity-title", text: options.title ?? "" }),
+      h("small", { class: "activity-extra", text: options.extra ?? "" }),
+      h("span", { class: "activity-result", title: statusText, "aria-label": statusText, text: activityResultText(options.status) }),
     ),
+    children,
   );
 }
 
@@ -671,10 +729,86 @@ function ToolPayload(label, value) {
   return h("div", { class: "tool-payload" }, h("span", { text: label }), h("pre", {}, LinkedText(formatPayload(value))));
 }
 
-function toolStatusText(tool) {
-  if (tool.status === "running") return "running";
-  if (tool.status === "error") return "error";
-  return "ok";
+function activityStatusText(status) {
+  if (status === "running") return "running";
+  if (status === "error") return "error";
+  return "complete";
+}
+
+function activityResultText(status) {
+  if (status === "running") return "";
+  if (status === "error") return "x";
+  return "✓";
+}
+
+function toolPresentation(tool) {
+  return {
+    icon: "🛠️",
+    title: tool.toolName,
+    extra: toolSummaryText(tool),
+  };
+}
+
+function toolSummaryText(tool) {
+  const candidates = [
+    ...toolSubjectCandidates(tool.args),
+    ...toolSubjectCandidates(tool.partialResult),
+    ...toolSubjectCandidates(tool.result),
+  ];
+  return candidates[0]?.summary ?? "";
+}
+
+function toolSubjectCandidates(value, path = [], depth = 0) {
+  if (value === undefined || value === null || depth > 3) return [];
+  if (typeof value === "string") {
+    const summary = compactOneLine(value);
+    return summary ? [{ score: path.length ? subjectScore(path.at(-1)) : 0, summary }] : [];
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    const key = path.at(-1);
+    const summary = key ? `${key}: ${String(value)}` : String(value);
+    return [{ score: subjectScore(key), summary }];
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 4).flatMap((item, index) => toolSubjectCandidates(item, [...path, String(index)], depth + 1));
+  }
+  if (typeof value !== "object") return [];
+
+  return Object.entries(value)
+    .flatMap(([key, nested]) => {
+      const nextPath = [...path, key];
+      const label = compactKey(key);
+      if (typeof nested === "string") {
+        const body = compactOneLine(nested);
+        if (!body) return [];
+        return [{ score: subjectScore(key), summary: subjectScore(key) >= 80 ? body : `${label}: ${body}` }];
+      }
+      if (typeof nested === "number" || typeof nested === "boolean") {
+        return [{ score: subjectScore(key), summary: `${label}: ${String(nested)}` }];
+      }
+      return toolSubjectCandidates(nested, nextPath, depth + 1);
+    })
+    .sort((left, right) => right.score - left.score);
+}
+
+function subjectScore(key) {
+  const normalized = String(key ?? "").toLowerCase();
+  if (["path", "filepath", "file", "filename", "url", "uri", "href", "target"].includes(normalized)) return 100;
+  if (["command", "cmd", "query", "pattern", "repo", "repository", "cwd", "name", "id"].includes(normalized)) return 80;
+  if (normalized.includes("path") || normalized.includes("file") || normalized.includes("url")) return 90;
+  return 10;
+}
+
+function compactKey(key) {
+  return String(key ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+}
+
+function compactOneLine(value) {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 96 ? `${normalized.slice(0, 93)}...` : normalized;
 }
 
 function formatPayload(value) {
