@@ -227,6 +227,160 @@ time {
   line-height: 1.45;
 }
 
+.markdown-message {
+  grid-column: 2;
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.markdown-message h1,
+.markdown-message h2,
+.markdown-message h3,
+.markdown-message h4,
+.markdown-message h5,
+.markdown-message h6 {
+  margin: 7px 0 0;
+  color: var(--line);
+  font-size: 1em;
+  text-transform: uppercase;
+}
+
+.markdown-message p,
+.markdown-message ul,
+.markdown-message ol,
+.markdown-message blockquote {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  padding-left: 22px;
+}
+
+.markdown-message li + li {
+  margin-top: 2px;
+}
+
+.markdown-message blockquote {
+  border-left: 1px solid var(--line-dim);
+  padding-left: 8px;
+  color: var(--muted);
+}
+
+.markdown-message code {
+  color: #ffffff;
+  background: rgba(28, 255, 139, 0.08);
+  border: 1px solid rgba(19, 107, 64, 0.65);
+  padding: 0 3px;
+}
+
+.code-block {
+  border: 1px solid var(--line-dim);
+  background: rgba(0, 0, 0, 0.35);
+  min-width: 0;
+}
+
+.code-lang {
+  border-bottom: 1px solid var(--line-dim);
+  color: var(--muted);
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.code-block pre {
+  grid-column: auto;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.code-block code {
+  display: block;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.tool-activity,
+.thinking {
+  grid-column: 2;
+  margin-top: 6px;
+}
+
+.tool-activity {
+  display: grid;
+  gap: 5px;
+}
+
+.tool-call,
+.thinking {
+  border-left: 1px solid var(--line-dim);
+  padding-left: 8px;
+  color: var(--muted);
+}
+
+.tool-call summary,
+.thinking summary {
+  cursor: pointer;
+  color: var(--line);
+}
+
+.tool-call.running summary strong {
+  animation: pulse-tool 1s steps(2, end) infinite;
+}
+
+.tool-call.error summary {
+  color: var(--danger);
+}
+
+.tool-call summary span {
+  display: inline-block;
+  width: 14px;
+}
+
+.tool-call small {
+  margin-left: 8px;
+}
+
+.tool-payload {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.tool-payload span {
+  color: var(--muted);
+}
+
+.tool-payload pre,
+.thinking pre {
+  grid-column: auto;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid rgba(19, 107, 64, 0.55);
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+@keyframes pulse-tool {
+  0%,
+  45% {
+    opacity: 1;
+  }
+
+  46%,
+  100% {
+    opacity: 0.35;
+  }
+}
+
 .composer {
   border-top: 1px solid var(--line-dim);
   padding: 12px 14px;
@@ -265,6 +419,25 @@ time {
 
 .target-status {
   overflow-wrap: anywhere;
+}
+
+.send-button {
+  min-width: 38px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--line);
+  font-weight: bold;
+}
+
+.send-button.cancel {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.task.cancelled span {
+  color: var(--muted);
 }
 
 .autocomplete {

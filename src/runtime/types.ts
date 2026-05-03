@@ -11,12 +11,15 @@ export interface AgentInput {
 
 export type AgentEvent =
   | { type: "text-delta"; delta: string }
-  | { type: "tool-start"; toolName: string }
-  | { type: "tool-end"; toolName: string; isError: boolean };
+  | { type: "thinking-delta"; delta: string }
+  | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
+  | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
+  | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean };
 
 export interface AgentRuntime {
   readonly agent: AgentDefinition;
   readonly modelLabel: string;
   send(input: AgentInput): AsyncIterable<AgentEvent>;
+  abort(): Promise<void>;
   dispose(): void;
 }

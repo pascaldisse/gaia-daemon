@@ -201,6 +201,12 @@ function installComposerRouting() {
   window.addEventListener(
     "keydown",
     (event) => {
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && activeTask()) {
+        event.preventDefault();
+        void cancelActiveTask();
+        return;
+      }
+
       if (!shouldRouteKeyToComposer(event)) return;
       event.preventDefault();
 
@@ -287,6 +293,23 @@ async function sendMessage(text) {
   }
 }
 
+async function cancelActiveTask() {
+  const snapshot = state.snapshot;
+  if (!snapshot || !activeTask(snapshot)) return;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    setError(error);
+  }
+}
+
+function activeTask(snapshot = state.snapshot) {
+  return (snapshot?.tasks ?? []).find((task) => task.status === "running") ?? null;
+}
+
 function connectEvents() {
   const snapshot = state.snapshot;
   if (state.eventSource) {
@@ -301,30 +324,130 @@ function connectEvents() {
 
   source.addEventListener("snapshot", (event) => {
     const payload = JSON.parse(event.data);
+    if (state.snapshot?.room?.events && payload.snapshot?.room?.events) {
+      payload.snapshot.room.events = preserveRuntimeMessageDetails(state.snapshot.room.events, payload.snapshot.room.events);
+    }
     state.snapshot = payload.snapshot;
     render();
   });
   source.addEventListener("room-event", (event) => {
     const payload = JSON.parse(event.data);
     if (!state.snapshot) return;
-    state.snapshot.room.events = [...state.snapshot.room.events, payload.event];
+    state.snapshot.room.events = mergeRoomEvent(state.snapshot.room.events, payload.event);
     render();
   });
   source.addEventListener("text-delta", (event) => {
     const payload = JSON.parse(event.data);
     if (!state.snapshot) return;
-    const events = state.snapshot.room.events;
-    let last = events[events.length - 1];
-    if (!last || last.author !== payload.agentId || last._streamTaskId !== payload.taskId) {
-      last = { timestamp: new Date().toISOString(), author: payload.agentId, text: "", _streamTaskId: payload.taskId };
-      events.push(last);
-    }
-    last.text += payload.delta;
+    const message = streamingMessage(payload);
+    message.text += payload.delta;
     renderTranscriptOnly();
   });
-  for (const name of ["task-start", "task-end", "task-error", "tool-start", "tool-end", "settings-saved"]) {
+  source.addEventListener("thinking-delta", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const message = streamingMessage(payload);
+    message._thinking = `${message._thinking ?? ""}${payload.delta}`;
+    renderTranscriptOnly();
+  });
+  source.addEventListener("tool-start", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const message = streamingMessage(payload);
+    message._tools = [...(message._tools ?? []), toolActivity(payload, "running")];
+    renderTranscriptOnly();
+  });
+  source.addEventListener("tool-update", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const tool = findToolActivity(streamingMessage(payload), payload);
+    if (tool) tool.partialResult = payload.partialResult;
+    renderTranscriptOnly();
+  });
+  source.addEventListener("tool-end", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    const message = streamingMessage(payload);
+    const tool = findToolActivity(message, payload);
+    if (tool) {
+      tool.status = payload.isError ? "error" : "complete";
+      tool.result = payload.result;
+    } else {
+      message._tools = [...(message._tools ?? []), toolActivity(payload, payload.isError ? "error" : "complete")];
+    }
+    renderTranscriptOnly();
+  });
+  for (const name of ["task-start", "task-end", "task-error", "settings-saved"]) {
     source.addEventListener(name, () => render());
   }
+}
+
+function streamingMessage(payload) {
+  const events = state.snapshot.room.events;
+  let message = events.find((event) => event.author === payload.agentId && event._streamTaskId === payload.taskId);
+  if (!message) {
+    message = { timestamp: new Date().toISOString(), author: payload.agentId, text: "", _streamTaskId: payload.taskId, _tools: [] };
+    events.push(message);
+  }
+  return message;
+}
+
+function mergeRoomEvent(events, event) {
+  if (event.author === "user" || event.author === "system") return [...events, event];
+  const index = events.findIndex((candidate) => candidate.author === event.author && candidate._streamTaskId);
+  if (index === -1) return [...events, event];
+
+  const previous = events[index];
+  const next = { ...event, _tools: previous._tools ?? [], _thinking: previous._thinking };
+  return [...events.slice(0, index), next, ...events.slice(index + 1)];
+}
+
+function preserveRuntimeMessageDetails(previousEvents, nextEvents) {
+  const enriched = previousEvents.filter((event) => hasRuntimeMessageDetails(event));
+  if (enriched.length === 0) return nextEvents;
+  const used = new Set();
+
+  return nextEvents.map((event) => {
+    if (event.author === "user") return event;
+    const index = enriched.findIndex((candidate, candidateIndex) => {
+      if (used.has(candidateIndex)) return false;
+      return candidate.author === event.author && normalizeMessageText(candidate.text) === normalizeMessageText(event.text);
+    });
+    if (index === -1) return event;
+
+    used.add(index);
+    const previous = enriched[index];
+    return {
+      ...event,
+      _tools: previous._tools,
+      _thinking: previous._thinking,
+    };
+  });
+}
+
+function hasRuntimeMessageDetails(event) {
+  return Boolean(event?._thinking || event?._tools?.length);
+}
+
+function normalizeMessageText(text) {
+  return String(text ?? "").trim();
+}
+
+function toolActivity(payload, status) {
+  return {
+    id: payload.toolCallId ?? `${payload.taskId}:${payload.toolName}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+    toolName: payload.toolName,
+    status,
+    args: payload.args,
+    partialResult: payload.partialResult,
+    result: payload.result,
+  };
+}
+
+function findToolActivity(message, payload) {
+  const tools = message._tools ?? [];
+  if (payload.toolCallId) return tools.find((tool) => tool.id === payload.toolCallId);
+  return [...tools].reverse().find((tool) => tool.toolName === payload.toolName && tool.status === "running");
 }
 
 async function loadInitialFiles() {
@@ -426,14 +549,141 @@ function Transcript() {
 
 function Message(event) {
   const isUser = event.author === "user";
+  const isAgent = !isUser && event.author !== "system";
   const label = isUser ? `user -> ${(event.targets ?? []).map((target) => `@${target}`).join(", ")}` : `@${event.author}`;
   const text = isUser ? stripLeadingRouteMentions(event.text, event.targets ?? []) : event.text;
   return h(
     "article",
-    { class: `message ${isUser ? "user" : "agent"}` },
+    { class: `message ${isUser ? "user" : "agent"} ${event.author === "system" ? "system" : ""}` },
     h("div", { class: "message-meta" }, h("span", { text: label }), h("time", { text: formatTime(event.timestamp) })),
-    text.trim() ? h("pre", {}, LinkedText(text)) : null,
+    event._thinking ? h("details", { class: "thinking" }, h("summary", { text: "thinking" }), h("pre", {}, LinkedText(event._thinking))) : null,
+    event._tools?.length ? ToolActivityList(event._tools) : null,
+    text.trim() ? (isAgent || event.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
   );
+}
+
+function MarkdownMessage(text) {
+  const root = h("div", { class: "markdown-message" });
+  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
+  let block = [];
+  let code = null;
+
+  const flushBlock = () => {
+    while (block.length > 0 && block[0].trim() === "") block.shift();
+    while (block.length > 0 && block[block.length - 1].trim() === "") block.pop();
+    if (block.length === 0) return;
+    renderMarkdownBlock(root, block);
+    block = [];
+  };
+
+  for (const line of lines) {
+    const fence = line.match(/^```([a-z0-9_-]*)\s*$/i);
+    if (fence) {
+      if (code) {
+        root.append(CodeBlock(code.lang, code.lines.join("\n")));
+        code = null;
+      } else {
+        flushBlock();
+        code = { lang: fence[1] ?? "", lines: [] };
+      }
+      continue;
+    }
+    if (code) code.lines.push(line);
+    else if (line.trim() === "") flushBlock();
+    else block.push(line);
+  }
+
+  if (code) root.append(CodeBlock(code.lang, code.lines.join("\n")));
+  flushBlock();
+  return root;
+}
+
+function renderMarkdownBlock(root, lines) {
+  if (lines.length === 1) {
+    const heading = lines[0].match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      root.append(h(`h${Math.min(6, heading[1].length)}`, {}, InlineMarkdown(heading[2])));
+      return;
+    }
+  }
+
+  if (lines.every((line) => /^[-*]\s+/.test(line))) {
+    root.append(h("ul", {}, lines.map((line) => h("li", {}, InlineMarkdown(line.replace(/^[-*]\s+/, ""))))));
+    return;
+  }
+
+  if (lines.every((line) => /^\d+\.\s+/.test(line))) {
+    root.append(h("ol", {}, lines.map((line) => h("li", {}, InlineMarkdown(line.replace(/^\d+\.\s+/, ""))))));
+    return;
+  }
+
+  if (lines.every((line) => /^>\s?/.test(line))) {
+    root.append(h("blockquote", {}, InlineMarkdown(lines.map((line) => line.replace(/^>\s?/, "")).join("\n"))));
+    return;
+  }
+
+  root.append(h("p", {}, InlineMarkdown(lines.join("\n"))));
+}
+
+function InlineMarkdown(text) {
+  const nodes = [];
+  const pattern = /`([^`\n]+)`/g;
+  let cursor = 0;
+  for (const match of String(text ?? "").matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) nodes.push(LinkedText(text.slice(cursor, index)));
+    nodes.push(h("code", {}, LinkedText(match[1])));
+    cursor = index + match[0].length;
+  }
+  if (cursor < text.length) nodes.push(LinkedText(text.slice(cursor)));
+  return nodes;
+}
+
+function CodeBlock(lang, code) {
+  return h(
+    "div",
+    { class: "code-block" },
+    lang ? h("div", { class: "code-lang", text: lang }) : null,
+    h("pre", {}, h("code", {}, LinkedText(code))),
+  );
+}
+
+function ToolActivityList(tools) {
+  return h(
+    "div",
+    { class: "tool-activity" },
+    tools.map((tool) =>
+      h(
+        "details",
+        { class: `tool-call ${tool.status}` },
+        h("summary", {}, h("span", { text: tool.status === "running" ? ">" : "<" }), h("strong", { text: ` tool ${tool.toolName}` }), h("small", { text: toolStatusText(tool) })),
+        ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
+        ToolPayload("args", tool.args),
+        ToolPayload("partial", tool.partialResult),
+        ToolPayload("result", tool.result),
+      ),
+    ),
+  );
+}
+
+function ToolPayload(label, value) {
+  if (value === undefined || value === null) return null;
+  return h("div", { class: "tool-payload" }, h("span", { text: label }), h("pre", {}, LinkedText(formatPayload(value))));
+}
+
+function toolStatusText(tool) {
+  if (tool.status === "running") return "running";
+  if (tool.status === "error") return "error";
+  return "ok";
+}
+
+function formatPayload(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function stripLeadingRouteMentions(text, targets) {
@@ -469,6 +719,7 @@ function composerTargetStatus(snapshot, text) {
 
 function Composer() {
   const snapshot = state.snapshot;
+  const runningTask = activeTask(snapshot);
   const completion = completionFor(state.composerText);
   const textarea = h("textarea", {
     rows: "1",
@@ -496,6 +747,7 @@ function Composer() {
 
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
+        if (runningTask) return;
         const text = state.composerText;
         state.composerText = "";
         state.completionIndex = 0;
@@ -512,6 +764,10 @@ function Composer() {
       class: "composer",
       onsubmit: (event) => {
         event.preventDefault();
+        if (runningTask) {
+          void cancelActiveTask();
+          return;
+        }
         const text = state.composerText;
         state.composerText = "";
         state.completionIndex = 0;
@@ -526,7 +782,7 @@ function Composer() {
       "div",
       { class: "composer-row" },
       h("div", { class: "target-status", text: composerTargetStatus(snapshot, state.composerText) }),
-      h("button", { disabled: !snapshot, text: "send" }),
+      h("button", { class: runningTask ? "send-button cancel" : "send-button", disabled: !snapshot, title: runningTask ? "stop agents" : "send", text: runningTask ? "x" : ">" }),
     ),
   );
 }

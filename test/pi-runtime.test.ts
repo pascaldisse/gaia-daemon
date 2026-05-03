@@ -15,6 +15,7 @@ class FakeSession implements PiSessionLike {
   listeners: Array<(event: any) => void> = [];
   disposed = false;
   reloads = 0;
+  aborts = 0;
 
   constructor(id: string) {
     this.sessionId = id;
@@ -35,6 +36,10 @@ class FakeSession implements PiSessionLike {
 
   async reload(): Promise<void> {
     this.reloads += 1;
+  }
+
+  async abort(): Promise<void> {
+    this.aborts += 1;
   }
 
   dispose(): void {
