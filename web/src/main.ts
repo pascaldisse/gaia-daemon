@@ -427,12 +427,44 @@ function Transcript() {
 function Message(event) {
   const isUser = event.author === "user";
   const label = isUser ? `user -> ${(event.targets ?? []).map((target) => `@${target}`).join(", ")}` : `@${event.author}`;
+  const text = isUser ? stripLeadingRouteMentions(event.text, event.targets ?? []) : event.text;
   return h(
     "article",
     { class: `message ${isUser ? "user" : "agent"}` },
     h("div", { class: "message-meta" }, h("span", { text: label }), h("time", { text: formatTime(event.timestamp) })),
-    h("pre", {}, LinkedText(event.text)),
+    text.trim() ? h("pre", {}, LinkedText(text)) : null,
   );
+}
+
+function stripLeadingRouteMentions(text, targets) {
+  let remaining = String(text ?? "").trimStart();
+  const targetSet = new Set(targets ?? []);
+
+  while (true) {
+    const match = remaining.match(/^@([a-z0-9_-]+)\b[,\s]*/i);
+    if (!match) break;
+    const target = match[1];
+    if (targetSet.size > 0 && !targetSet.has(target)) break;
+    remaining = remaining.slice(match[0].length).trimStart();
+  }
+
+  return remaining;
+}
+
+function composerTargetStatus(snapshot, text) {
+  if (!snapshot) return "no room";
+  if (text.trimStart().startsWith("/")) return "command mode";
+
+  const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
+  const targets = [];
+  for (const match of text.matchAll(/@([a-z0-9_-]+)/gi)) {
+    const id = match[1];
+    if (!knownAgents.has(id) || targets.includes(id)) continue;
+    targets.push(id);
+  }
+
+  if (targets.length === 0) targets.push(snapshot.workspace.defaultAgent);
+  return `talking to ${targets.map((target) => `@${target}`).join(", ")}`;
 }
 
 function Composer() {
@@ -493,7 +525,7 @@ function Composer() {
     h(
       "div",
       { class: "composer-row" },
-      h("div", { class: "hints" }, (snapshot?.commands ?? []).map((command) => h("span", { text: `/${command.name}` }))),
+      h("div", { class: "target-status", text: composerTargetStatus(snapshot, state.composerText) }),
       h("button", { disabled: !snapshot, text: "send" }),
     ),
   );

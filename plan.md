@@ -59,3 +59,4 @@ Not for now, but still interesting:
 - stronger isolation and tool audit
 - richer TUI or web UI
 - more runtimes beyond Pi
+- make sure all persona/ai settings work in tui

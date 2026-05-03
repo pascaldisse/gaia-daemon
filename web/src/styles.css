@@ -257,16 +257,14 @@ time {
   gap: 8px;
 }
 
-.hints {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.hints span,
+.target-status,
 .task span,
 .dot {
   color: var(--line);
+}
+
+.target-status {
+  overflow-wrap: anywhere;
 }
 
 .autocomplete {
