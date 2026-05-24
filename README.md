@@ -98,6 +98,15 @@ gaia
 This starts the local web UI and prints the URL.
 The Node process serves the frontend directly from `web/`, so no separate frontend bundler is required.
 
+For local development with auto-restart and browser reload support:
+
+```bash
+npm run dev:watch
+```
+
+- changes under `src/` restart the Node process
+- changes under `web/` reload the browser
+
 The legacy terminal UI is still available:
 
 ```bash

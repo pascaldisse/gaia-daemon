@@ -1,5 +1,5 @@
-import { createReadStream, existsSync } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { createReadStream, existsSync, watch, type FSWatcher } from "node:fs";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -15,12 +15,17 @@ interface WebServerOptions {
   cwd: string;
   host?: string;
   port?: number;
+  dev?: boolean;
 }
 
 interface Client {
   id: string;
   workspaceId?: string;
   roomId?: string;
+  response: ServerResponse;
+}
+
+interface DevClient {
   response: ServerResponse;
 }
 
@@ -120,20 +125,53 @@ function encodeSse(event: GaiaUiEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
+function encodeNamedSse(eventType: string, payload: unknown): string {
+  return `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
 function webRoot(): string {
   return resolve(fileURLToPath(new URL("../../web", import.meta.url)));
+}
+
+function injectSnippet(html: string, snippet: string): string {
+  return html.includes("</body>") ? html.replace("</body>", `${snippet}\n  </body>`) : `${html}\n${snippet}`;
+}
+
+function devReloadSnippet(): string {
+  return `<script>
+(() => {
+  if (window.__gaiaDevReload) return;
+  window.__gaiaDevReload = true;
+  let hadConnection = false;
+  let reconnectAfterDrop = false;
+  const source = new EventSource("/__dev/reload");
+  source.addEventListener("ready", () => {
+    if (hadConnection && reconnectAfterDrop) window.location.reload();
+    hadConnection = true;
+    reconnectAfterDrop = false;
+  });
+  source.addEventListener("reload", () => window.location.reload());
+  source.onerror = () => {
+    if (hadConnection) reconnectAfterDrop = true;
+  };
+})();
+</script>`;
 }
 
 export class GaiaWebServer {
   private readonly registry = new WorkspaceRegistry();
   private readonly controllers = new Map<string, GaiaController>();
   private readonly clients = new Set<Client>();
+  private readonly devClients = new Set<DevClient>();
+  private readonly devWatchers: FSWatcher[] = [];
   private readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
+  private devReloadTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly options: WebServerOptions) {}
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
     await this.registerCwdIfInitialized();
+    if (this.options.dev) await this.startDevWatchers();
 
     const server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
@@ -159,6 +197,11 @@ export class GaiaWebServer {
       close: () =>
         new Promise<void>((resolveClose, reject) => {
           for (const controller of this.controllers.values()) controller.dispose();
+          for (const watcher of this.devWatchers) watcher.close();
+          this.devWatchers.length = 0;
+          if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
+          for (const client of this.devClients) client.response.end();
+          this.devClients.clear();
           server.close((error) => (error ? reject(error) : resolveClose()));
         }),
     };
@@ -166,6 +209,10 @@ export class GaiaWebServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://gaia.local");
+    if (this.options.dev && request.method === "GET" && url.pathname === "/__dev/reload") {
+      this.handleDevReload(response);
+      return;
+    }
     if (url.pathname.startsWith("/api/")) {
       await this.handleApi(request, response, url);
       return;
@@ -310,6 +357,18 @@ export class GaiaWebServer {
     response.on("close", () => this.clients.delete(client));
   }
 
+  private handleDevReload(response: ServerResponse): void {
+    const client: DevClient = { response };
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+    response.write(encodeNamedSse("ready", {}));
+    this.devClients.add(client);
+    response.on("close", () => this.devClients.delete(client));
+  }
+
   private async serveStatic(response: ServerResponse, pathname: string): Promise<void> {
     const root = webRoot();
     const requested = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
@@ -321,7 +380,16 @@ export class GaiaWebServer {
     }
 
     const path = existsSync(resolved) && (await stat(resolved)).isFile() ? resolved : join(root, "index.html");
-    response.writeHead(200, { "content-type": MIME[extname(path)] ?? "application/octet-stream" });
+    const headers: Record<string, string> = { "content-type": MIME[extname(path)] ?? "application/octet-stream" };
+    if (this.options.dev) headers["cache-control"] = "no-store";
+
+    if (this.options.dev && path === join(root, "index.html")) {
+      response.writeHead(200, headers);
+      response.end(injectSnippet(await readFile(path, "utf8"), devReloadSnippet()));
+      return;
+    }
+
+    response.writeHead(200, headers);
     createReadStream(path).pipe(response);
   }
 
@@ -363,6 +431,34 @@ export class GaiaWebServer {
       if (client.roomId && event.roomId && client.roomId !== event.roomId) continue;
       client.response.write(encodeSse(event));
     }
+  }
+
+  private async startDevWatchers(): Promise<void> {
+    for (const dir of await this.directoriesUnder(webRoot())) {
+      const watcher = watch(dir, (_eventType, filename) => {
+        const name = String(filename ?? "").trim();
+        if (!name || name === ".DS_Store") return;
+        this.scheduleDevReload(name);
+      });
+      this.devWatchers.push(watcher);
+    }
+  }
+
+  private async directoriesUnder(root: string): Promise<string[]> {
+    const dirs = [root];
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      dirs.push(...(await this.directoriesUnder(join(root, entry.name))));
+    }
+    return dirs;
+  }
+
+  private scheduleDevReload(path: string): void {
+    if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
+    this.devReloadTimer = setTimeout(() => {
+      this.devReloadTimer = undefined;
+      for (const client of this.devClients) client.response.write(encodeNamedSse("reload", { path }));
+    }, 60);
   }
 
   private async registerCwdIfInitialized(): Promise<void> {

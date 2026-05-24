@@ -6,11 +6,13 @@ import { startWebServer } from "./web/server.js";
 import { globalAgentsPath, initWorkspace, loadWorkspace, workspacePath } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia tui                     start the legacy terminal UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --help                  show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia tui                     start the legacy terminal UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const devMode = rawArgs.includes("--dev");
+  const args = rawArgs.filter((arg) => arg !== "--dev");
   if (args.includes("--help") || args.includes("-h")) {
     usage();
     return;
@@ -70,7 +72,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    const server = await startWebServer({ cwd: process.cwd() });
+    const server = await startWebServer({ cwd: process.cwd(), dev: devMode });
     console.log(`GAIA web UI: ${server.url}`);
     console.log("Press Ctrl+C to stop.");
     await new Promise<void>((resolve) => {
