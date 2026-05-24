@@ -142,16 +142,44 @@ h3 {
   gap: 7px;
 }
 
+.segmented-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.segmented-tabs.nested {
+  margin-bottom: 12px;
+}
+
+.settings-split {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-sidebar-panel,
+.settings-main-panel {
+  min-width: 0;
+}
+
 .nav-item,
 .nav-action,
-.file-tabs button {
+.file-tabs button,
+.segmented-tabs button {
   width: 100%;
   text-align: left;
 }
 
 .nav-item span,
-.file-tabs span {
+.file-tabs span,
+.segmented-tabs span {
   display: block;
+}
+
+.segmented-tabs button {
+  flex: 1 1 0;
 }
 
 small,
@@ -608,6 +636,22 @@ time {
   align-items: center;
 }
 
+.setting-row.stacked {
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.setting-row.stacked > span {
+  color: var(--line);
+}
+
+.json-nested {
+  display: grid;
+  gap: 9px;
+  padding: 8px 0 0 14px;
+  border-left: 1px solid var(--line-dim);
+}
+
 .text-setting {
   min-height: 96px;
   resize: vertical;
@@ -654,5 +698,9 @@ time {
 
   .sidebar {
     display: none;
+  }
+
+  .settings-split {
+    grid-template-columns: 1fr;
   }
 }
