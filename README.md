@@ -1,6 +1,6 @@
 # GAIA
 
-`gaia` is a local-first terminal persona room built on the Pi SDK.
+`gaia` is a local-first persona room built on the Pi SDK.
 
 Its main idea is simple:
 
@@ -71,7 +71,6 @@ It creates or verifies global agents:
         SOUL.md
         MEMORY.md
         roles/
-  skills/
 ```
 
 And it creates project-local room/context files:
@@ -81,14 +80,14 @@ your-project/
   AGENTS.md
   .gaia/
     config.json
-    skills/
-    agents/
     rooms/
       default/
         state.json
         transcript.jsonl
-        pi-sessions/
 ```
+
+Optional overlay directories such as `.gaia/agents/` and `.gaia/skills/` are loaded if you create them later.
+Pi session folders are created lazily under `.gaia/rooms/<room>/pi-sessions/` after agent turns run.
 
 ## Run
 
@@ -97,6 +96,7 @@ gaia
 ```
 
 This starts the local web UI and prints the URL.
+The Node process serves the frontend directly from `web/`, so no separate frontend bundler is required.
 
 The legacy terminal UI is still available:
 
@@ -266,7 +266,7 @@ Shared room history for the project.
 
 ### `.gaia/rooms/default/state.json`
 
-Room-local active roles, transcript cursors, and future Pi session metadata.
+Room-local active roles, transcript cursors, runtime details, and Pi session metadata.
 
 ## Notes
 

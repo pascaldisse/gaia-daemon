@@ -1,62 +1,29 @@
-# GAIA Plan
+# GAIA Project Notes
 
-## Current base
+## Current shape
 
 Implemented now:
 
-- global personas under `~/.gaia/agents/`
-- `GAIA_HOME` override for the global persona home
-- `gaia init` seeds global sample personas
-- project-local `AGENTS.md` for repo instructions
-- project-local `.gaia/config.json`
-- project-local room transcript at `.gaia/rooms/default/transcript.jsonl`
-- sample personas: `gaia`, `sidia`, `terry`
-- global per-agent `SOUL.md` and `MEMORY.md`
-- project-local agent additions/overrides:
-  - `.gaia/agents/<id>/INTENT.md`
-  - `.gaia/agents/<id>/agent.json`
-- default-agent routing
-- deterministic `@agent` mention routing
-- multiple mentions in first-mentioned order
-- unknown-agent errors
-- recent transcript injected into agent turns
-- memory tool writing to global agent `MEMORY.md`
-- simple runtime seam with Pi as the only runtime
-- slash commands trimmed to app control: `/help`, `/agents`, `/quit`
-- dynamic selectable `/` and `@` previews sourced from command/agent registries
-- README updated for global personas + project context
-- old hardcoded persona switching and Monad orchestration removed
+- global agents under `~/.gaia/agents/`
+- project workspace under `.gaia/`
+- web UI is default entrypoint
+- Node serves frontend files directly from `web/`
+- legacy terminal UI remains behind `gaia tui`
+- HTTP + SSE controller flow for rooms, tasks, and settings
+- project and global editable file registry
+- persistent Pi session per room-agent pair
+- role overlays, `@agent` routing, and shared room transcript
+- tests pass for controller, runtime, roles, routing, state, and workspace loading
 
-## Remaining work
+## Known simplifications
 
-### 1. Tests
+- no frontend bundler
+- Pi is the only runtime
+- one active task per room
+- browser UI still lives mostly in `web/src/main.ts`
 
-Add coverage for:
+## Likely next refactor
 
-- global persona initialization
-- project workspace initialization
-- AGENTS.md discovery order
-- project-local agent intent behavior
-- agent config merge behavior
-- routing
-- transcript reads/writes
-- memory mutations
-- runtime prompt assembly
-
-### 2. Small polish
-
-- optional `/memory` and `/room` inspection commands
-- cleaner transcript formatting
-- better startup errors and validation
-- clearer docs for model overrides per agent
-
-### 3. Later direction
-
-Not for now, but still interesting:
-
-- smarter Monad-style routing
-- optional project-local memory if explicitly requested
-- stronger isolation and tool audit
-- richer TUI or web UI
-- more runtimes beyond Pi
-- make sure all persona/ai settings work in tui
+- split `web/src/main.ts` by API, events, composer, transcript, and settings views
+- add more server/API coverage
+- keep README and project notes aligned with shipped behavior
