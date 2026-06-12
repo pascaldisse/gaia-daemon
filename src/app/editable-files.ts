@@ -54,7 +54,7 @@ function globalCategory(path: string, home: string): Pick<EditableFileDescriptor
   const parts = rel.split(sep);
   if (parts[0] === "agents" && parts.length > 2) {
     const file = parts[parts.length - 1];
-    const category = file === "agent.json" ? "config" : file === "MEMORY.md" ? "memory" : "persona";
+    const category = file === "agent.json" ? "config" : parts.includes("memory") ? "memory" : "persona";
     return { agentId: parts[1], category };
   }
   return { category: rel === "voice.json" ? "voice" : "general" };

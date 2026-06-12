@@ -1,11 +1,40 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { writeFileAtomic } from "../lib/fs.js";
+import { mkdir, readdir, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { pathInside, writeFileAtomic, writeIfMissing } from "../lib/fs.js";
 
 export type MemoryAction = "add" | "replace" | "remove";
 
+// Always-injected core files. Everything else under the memory dir is a
+// topic file, read on demand through the memory tool.
+export const CORE_MEMORY_FILE = "MEMORY.md";
+export const USER_MEMORY_FILE = "USER.md";
+
+// Tight caps on the always-injected files force consolidation instead of
+// letting memory grow into an unbounded junk drawer; topic files are read
+// on demand, so they get a looser cap.
+const FILE_LIMITS: Record<string, number> = {
+  [CORE_MEMORY_FILE]: 4_000,
+  [USER_MEMORY_FILE]: 2_000,
+};
+const TOPIC_FILE_LIMIT = 10_000;
+const CONSOLIDATE_THRESHOLD = 0.8;
+
+const DELIMITER = "§";
+
+// Block only material that looks like an actual secret. Topical words
+// ("token", "key", "print") must stay storable for a coding product; the
+// room transcript, not the agent's own notes, is the injection surface.
+const SECRET_PATTERNS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{30,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+];
+
 export interface MemoryState {
+  file: string;
   path: string;
   chars: number;
   limit: number;
@@ -19,41 +48,55 @@ export interface MemoryMutationResult {
   state: MemoryState;
 }
 
-const DEFAULT_LIMIT = 12_000;
-const DELIMITER = "§";
-const UNSAFE_PATTERNS = [
-  /ignore (all )?(previous|prior) instructions/i,
-  /reveal|print|dump|exfiltrate/i,
-  /system prompt|developer message|hidden instruction/i,
-  /api[_ -]?key|access token|password|credential|private key|ssh key/i,
-];
+export interface MemoryFileInfo {
+  file: string;
+  chars: number;
+  limit: number;
+  usage: number;
+}
+
+export function memoryFileLimit(file: string): number {
+  return FILE_LIMITS[file] ?? TOPIC_FILE_LIMIT;
+}
 
 export class MemoryStore {
-  constructor(private readonly defaultLimit = DEFAULT_LIMIT) {}
-
-  async init(path: string, title = "Memory"): Promise<void> {
-    await mkdir(dirname(path), { recursive: true });
-    if (!existsSync(path)) await writeFile(path, `# ${title}\n\n`, "utf8");
+  async init(dir: string, displayName: string): Promise<void> {
+    await mkdir(dir, { recursive: true });
+    await writeIfMissing(join(dir, CORE_MEMORY_FILE), `# ${displayName} Memory\n\n`);
+    await writeIfMissing(join(dir, USER_MEMORY_FILE), `# About the User\n\n`);
   }
 
-  async readState(path: string, limit = this.defaultLimit): Promise<MemoryState> {
+  async listFiles(dir: string): Promise<MemoryFileInfo[]> {
+    if (!existsSync(dir)) return [];
+    const entries = await readdir(dir, { recursive: true, withFileTypes: true });
+    const infos = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map(async (entry) => {
+          const path = join(entry.parentPath, entry.name);
+          const file = path.slice(dir.length + 1);
+          const content = await readFile(path, "utf8");
+          const limit = memoryFileLimit(file);
+          return { file, chars: content.length, limit, usage: content.length / limit };
+        }),
+    );
+    return infos.sort((a, b) => a.file.localeCompare(b.file));
+  }
+
+  async readState(dir: string, file: string): Promise<MemoryState> {
+    const path = this.resolveFile(dir, file);
     const content = existsSync(path) ? await readFile(path, "utf8") : "";
-    return {
-      path,
-      chars: content.length,
-      limit,
-      usage: limit === 0 ? 0 : content.length / limit,
-      content,
-    };
+    const limit = memoryFileLimit(file);
+    return { file, path, chars: content.length, limit, usage: content.length / limit, content };
   }
 
   async mutate(
-    path: string,
+    dir: string,
+    file: string,
     action: MemoryAction,
     options: { content?: string; oldText?: string },
-    limit = this.defaultLimit,
   ): Promise<MemoryMutationResult> {
-    const state = await this.readState(path, limit);
+    const state = await this.readState(dir, file);
     const content = (options.content ?? "").trim();
     const oldText = (options.oldText ?? "").trim();
 
@@ -63,8 +106,11 @@ export class MemoryStore {
     if ((action === "replace" || action === "remove") && !oldText) {
       return { ok: false, message: "old_text is required", state };
     }
-    if (content && this.isUnsafe(content)) {
-      return { ok: false, message: "memory rejected: unsafe prompt-injection or secret pattern", state };
+    if (content && SECRET_PATTERNS.some((pattern) => pattern.test(content))) {
+      return { ok: false, message: "memory rejected: content looks like a secret (key/token/credential material)", state };
+    }
+    if (action !== "add" && !existsSync(state.path)) {
+      return { ok: false, message: `memory file not found: ${file}`, state };
     }
 
     let next = state.content;
@@ -85,12 +131,51 @@ export class MemoryStore {
     }
 
     if (next.length > state.limit) {
-      return { ok: false, message: `memory limit exceeded (${next.length}/${state.limit} chars)`, state };
+      return {
+        ok: false,
+        message: `${file} limit exceeded (${next.length}/${state.limit} chars) - consolidate existing entries or move detail into a topic file`,
+        state,
+      };
     }
 
-    await writeFileAtomic(path, next);
-    const updated = await this.readState(path, limit);
-    return { ok: true, message: `${action} complete`, state: updated };
+    await mkdir(dir, { recursive: true });
+    await writeFileAtomic(state.path, next);
+    const updated = await this.readState(dir, file);
+    const pressure =
+      updated.usage > CONSOLIDATE_THRESHOLD
+        ? ` - ${file} is at ${Math.round(updated.usage * 100)}% capacity; consolidate entries or move detail into a topic file before adding more`
+        : "";
+    return { ok: true, message: `${action} complete${pressure}`, state: updated };
+  }
+
+  // The block injected into the turn prompt: both core files plus a listing
+  // of topic files the agent can read on demand. Callers compare the whole
+  // block across turns, so any change (including a new topic file) flows to
+  // the agent without a session reload.
+  async promptBlock(dir: string): Promise<string> {
+    const files = await this.listFiles(dir);
+    const sections: string[] = [];
+    for (const name of [CORE_MEMORY_FILE, USER_MEMORY_FILE]) {
+      const info = files.find((item) => item.file === name);
+      if (!info) continue;
+      const state = await this.readState(dir, name);
+      sections.push(`## ${name} (${Math.round(info.usage * 100)}% of ${info.limit} chars)\n\n${state.content.trim()}`);
+    }
+    const topics = files.filter((item) => item.file !== CORE_MEMORY_FILE && item.file !== USER_MEMORY_FILE);
+    if (topics.length) {
+      sections.push(`## Topic files (read on demand with the memory tool)\n\n${topics.map((item) => `- ${item.file}`).join("\n")}`);
+    }
+    return sections.join("\n\n");
+  }
+
+  // Memory file references come from the model; keep them inside the memory
+  // dir and markdown-only.
+  private resolveFile(dir: string, file: string): string {
+    const path = resolve(dir, file);
+    if (!file.endsWith(".md") || !/^[A-Za-z0-9._/-]+$/.test(file) || !pathInside(path, dir)) {
+      throw new Error(`Invalid memory file name: ${file}`);
+    }
+    return path;
   }
 
   private entries(content: string): string[] {
@@ -110,9 +195,5 @@ export class MemoryStore {
       index = haystack.indexOf(needle, index + needle.length);
     }
     return count;
-  }
-
-  private isUnsafe(content: string): boolean {
-    return UNSAFE_PATTERNS.some((pattern) => pattern.test(content));
   }
 }

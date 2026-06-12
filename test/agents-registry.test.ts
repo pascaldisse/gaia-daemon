@@ -15,13 +15,14 @@ test("default agents use agent-owned persona folders", async () => {
 
     assert.equal(existsSync(join(agentsDir, "gaia", "agent.json")), true);
     assert.equal(existsSync(join(agentsDir, "gaia", "persona", "SOUL.md")), true);
-    assert.equal(existsSync(join(agentsDir, "gaia", "persona", "MEMORY.md")), true);
+    assert.equal(existsSync(join(agentsDir, "gaia", "persona", "memory", "MEMORY.md")), true);
+    assert.equal(existsSync(join(agentsDir, "gaia", "persona", "memory", "USER.md")), true);
     assert.equal(existsSync(join(agentsDir, "gaia", "persona", "roles")), true);
 
     const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
     assert.equal(agents.gaia?.personaDir, join(agentsDir, "gaia", "persona"));
     assert.equal(agents.gaia?.soulPath, join(agentsDir, "gaia", "persona", "SOUL.md"));
-    assert.equal(agents.gaia?.memoryPath, join(agentsDir, "gaia", "persona", "MEMORY.md"));
+    assert.equal(agents.gaia?.memoryDir, join(agentsDir, "gaia", "persona", "memory"));
   } finally {
     await temp.cleanup();
   }
@@ -40,11 +41,32 @@ test("legacy root persona files migrate into persona/ with content preserved", a
     const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
 
     assert.equal(agents.legacy?.soulPath, join(legacyDir, "persona", "SOUL.md"));
-    assert.equal(agents.legacy?.memoryPath, join(legacyDir, "persona", "MEMORY.md"));
+    assert.equal(agents.legacy?.memoryDir, join(legacyDir, "persona", "memory"));
     assert.equal(await readFile(join(legacyDir, "persona", "SOUL.md"), "utf8"), "# Custom Legacy Soul\n");
-    assert.equal(await readFile(join(legacyDir, "persona", "MEMORY.md"), "utf8"), "# Custom Legacy Memory\n");
+    assert.equal(await readFile(join(legacyDir, "persona", "memory", "MEMORY.md"), "utf8"), "# Custom Legacy Memory\n");
     assert.equal(existsSync(join(legacyDir, "SOUL.md")), false);
     assert.equal(existsSync(join(legacyDir, "MEMORY.md")), false);
+    assert.equal(existsSync(join(legacyDir, "persona", "MEMORY.md")), false);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("single persona MEMORY.md migrates into the memory directory", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const personaDir = join(agentsDir, "muse", "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentsDir, "muse", "agent.json"), JSON.stringify({ id: "muse", displayName: "Muse" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Muse\n", "utf8");
+    await writeFile(join(personaDir, "MEMORY.md"), "# Muse Memory\n\nremember this\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+
+    assert.equal(agents.muse?.memoryDir, join(personaDir, "memory"));
+    assert.equal(await readFile(join(personaDir, "memory", "MEMORY.md"), "utf8"), "# Muse Memory\n\nremember this\n");
+    assert.equal(existsSync(join(personaDir, "MEMORY.md")), false);
   } finally {
     await temp.cleanup();
   }

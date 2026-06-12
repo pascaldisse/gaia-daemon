@@ -16,7 +16,7 @@ function agent(globalRolesDir: string, projectRolesDir?: string): AgentDefinitio
     personaDir: join(globalRolesDir, ".."),
     rolesDir: globalRolesDir,
     soulPath: "SOUL.md",
-    memoryPath: "MEMORY.md",
+    memoryDir: "memory",
     tools: [],
     projectRolesDir,
   };

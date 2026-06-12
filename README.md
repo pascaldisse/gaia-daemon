@@ -22,7 +22,8 @@ Personas are durable. Projects add local context.
 - room-local active roles via `/role`
 - deterministic `@agent` mention routing
 - multiple agents in first-mentioned order
-- per-agent global markdown memory
+- per-agent markdown memory (capped core + user profile + topic files) and
+  full-text recall over the room history
 - persistent Pi session per room-agent pair
 - model switching through Pi's registry (API-key, subscription/OAuth, local);
   each agent message shows the model that actually produced it
@@ -63,19 +64,25 @@ It creates or verifies global agents:
       agent.json
       persona/
         SOUL.md
-        MEMORY.md
+        memory/
+          MEMORY.md
+          USER.md
         roles/
     sidia/
       agent.json
       persona/
         SOUL.md
-        MEMORY.md
+        memory/
+          MEMORY.md
+          USER.md
         roles/
     terry/
       agent.json
       persona/
         SOUL.md
-        MEMORY.md
+        memory/
+          MEMORY.md
+          USER.md
         roles/
 ```
 
@@ -246,7 +253,9 @@ This creates:
   agent.json
   persona/
     SOUL.md
-    MEMORY.md
+    memory/
+      MEMORY.md
+      USER.md
     roles/
       brainstorm.md
       research.md
@@ -276,7 +285,8 @@ The system prompt for each agent session contains:
 
 Each turn prompt then adds:
 
-5. global agent `persona/MEMORY.md`, only when it changed since the last turn
+5. the agent's memory block (`persona/memory/`), only when it changed since
+   the last turn
 6. new room events since that agent's cursor
 7. newest user message
 
@@ -284,6 +294,33 @@ Memory travels in the turn prompt instead of the system prompt so memory
 writes never force a session reload mid-conversation. The room cursor is a
 transcript line count for this MVP. It prevents injecting the same room
 events again and again.
+
+## Memory
+
+Each agent owns a `persona/memory/` directory with three tiers:
+
+- `MEMORY.md` (cap 4,000 chars) — durable agent notes and an index of topic
+  files; always in the agent's context
+- `USER.md` (cap 2,000 chars) — what the agent knows about you; always in
+  the agent's context
+- topic files (cap 10,000 chars each) — anything that doesn't earn
+  always-in-context status, e.g. `debugging.md` or `agents/sidia.md` (notes
+  about another agent); the agent reads them on demand
+
+Agents with the `memory` tool curate these files themselves
+(add/replace/remove/read/list). The tight caps are deliberate: when a file
+nears its limit the tool tells the agent to consolidate, and a write that
+would exceed the cap errors instead of silently dropping content. Writes
+that look like secret material (private keys, API-key shapes) are rejected.
+
+Agents with the `recall` tool can additionally full-text search the entire
+room history — every past session, beyond the transcript window — backed by
+a zero-dependency SQLite FTS5 index (`recall.db` next to the transcript;
+derived data, safe to delete).
+
+Memory files are plain markdown: read them, edit them by hand, or use the
+settings UI (they appear under each agent's Memory group). Pre-release
+layouts with a single `persona/MEMORY.md` migrate automatically on load.
 
 ## Project-local agent overlays
 

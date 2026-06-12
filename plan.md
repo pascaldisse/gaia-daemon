@@ -15,8 +15,11 @@ text and voice surfaces.
 - HTTP + SSE controller flow for rooms, tasks, and settings
 - room events carry stable ids; runtime details (thinking/tools) key off them
 - `runAgentTurn` (src/app/turn-runner.ts) is the shared single-turn primitive
-- agent memory travels in the turn prompt (only when changed), so memory
-  writes no longer force a Pi session reload
+- agent memory is a per-agent `persona/memory/` dir (capped MEMORY.md +
+  USER.md always injected, topic files read on demand) plus a `recall` tool
+  (SQLite FTS5 over the room transcript); the memory block travels in the
+  turn prompt (only when changed), so memory writes never force a Pi
+  session reload — see memory-plan.md
 - `agent.json` supports an optional `voice` field (TTS voice reference)
 - persistent Pi session per room-agent pair; role overlays; `@agent` routing
 - Pi SDK 0.73.x is the agent harness; model switching (local, API-key, and
@@ -104,6 +107,10 @@ same model, tools included.
 - [ ] server/API tests around `src/web/server.ts`
 - [ ] light browser-side smoke coverage for the split `web/src/` modules
 - [ ] keep README and these notes aligned with shipped behavior
+- [ ] provider/API errors mid-turn (rate limit, bad key) settle the task as
+      "complete" with no message in the room — the user sees nothing.
+      Surface turn errors in the transcript/UI (found while verifying the
+      memory tools against a rate-limited provider)
 
 ## Known simplifications
 
@@ -120,13 +127,14 @@ same model, tools included.
 
 Captured during the post-voice architecture review; not work items yet.
 
-- **memory (next up)**: `MemoryStore.UNSAFE_PATTERNS` blocks substrings like
-  "print"/"token"/"key", which will reject legitimate memories for a coding
-  product - revisit before building on it. Memory activity will also add
-  AgentEvent types; today each new event type must be added in
-  runtime/types.ts, controller toUiEvent, turn-runner accumulation, and
-  web/src/events.ts (the client mirrors the server fold because details only
-  persist at message end) - consider one shared accumulation module then.
+- **memory (shipped)**: three-tier file-based design implemented — capped
+  core (MEMORY.md/USER.md) + topic files + FTS5 recall; see `memory-plan.md`
+  for the design, remaining ideas, and the provider extension seam for
+  mem0-style backends. The shared-accumulation concern stands: each new
+  AgentEvent type must be added in runtime/types.ts, controller toUiEvent,
+  turn-runner accumulation, and web/src/events.ts (the client mirrors the
+  server fold because details only persist at message end) - consider one
+  shared accumulation module when memory activity grows its own events.
 - **group calls (far off)**: the call binding is a single `activeCall` field
   on the web server and requests carry no call identity (model id is the
   constant "gaia"). Prep when needed: a VoiceCall session object keyed by id,

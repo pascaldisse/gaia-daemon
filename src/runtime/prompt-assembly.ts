@@ -63,7 +63,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     `Room: ${input.roomId}`,
     `Current agent: @${input.agentId}`,
     input.channel === "voice" ? VOICE_MODE_INSTRUCTIONS : "",
-    input.memory?.trim() ? `Your persistent memory (MEMORY.md):\n\n${input.memory.trim()}` : "",
+    input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
     "New room events since your last turn:",
     renderRoomTranscript(input.events),
     "Newest user message:",

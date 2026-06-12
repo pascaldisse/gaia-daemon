@@ -14,7 +14,7 @@ const agent: AgentDefinition = {
   personaDir: "agents/gaia/persona",
   rolesDir: "agents/gaia/persona/roles",
   soulPath: "SOUL.md",
-  memoryPath: "MEMORY.md",
+  memoryDir: "memory",
   tools: [],
 };
 
@@ -108,6 +108,6 @@ test("turn prompt includes memory only when provided", () => {
     events: [],
   });
 
-  assert.match(withMemory, /Your persistent memory \(MEMORY\.md\):\n\n# Memory\n\nRemember stars\./);
+  assert.match(withMemory, /# Your persistent memory\n\n# Memory\n\nRemember stars\./);
   assert.doesNotMatch(withoutMemory, /persistent memory/);
 });

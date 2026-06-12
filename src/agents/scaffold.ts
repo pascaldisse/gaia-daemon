@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText } from "../lib/fs.js";
+import { MemoryStore } from "../memory/memory-store.js";
 
 export interface AgentScaffoldOptions {
   displayName?: string;
@@ -13,7 +14,7 @@ export interface AgentScaffoldResult {
   agentDir: string;
   configPath: string;
   soulPath: string;
-  memoryPath: string;
+  memoryDir: string;
   rolesDir: string;
   rolePaths: string[];
 }
@@ -43,12 +44,12 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
 
   const displayName = options.displayName?.trim() || titleCase(id) || id;
   const icon = options.icon?.trim() || "•";
-  const tools = options.tools ?? ["read", "write", "edit", "memory"];
+  const tools = options.tools ?? ["read", "write", "edit", "memory", "recall"];
   const personaDir = join(agentDir, "persona");
   const rolesDir = join(personaDir, "roles");
   const configPath = join(agentDir, "agent.json");
   const soulPath = join(personaDir, "SOUL.md");
-  const memoryPath = join(personaDir, "MEMORY.md");
+  const memoryDir = join(personaDir, "memory");
 
   await mkdir(rolesDir, { recursive: true });
   await writeFile(configPath, jsonText(agentConfigTemplate(id, displayName, icon, tools)), "utf8");
@@ -57,7 +58,7 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
     `# ${displayName}\n\nDescribe who this agent is.\n\nVoice:\n- clear\n- useful\n- distinct\n\nBoundaries:\n- say when unsure\n- ask before risky changes\n`,
     "utf8",
   );
-  await writeFile(memoryPath, `# ${displayName} Memory\n\n`, "utf8");
+  await new MemoryStore().init(memoryDir, displayName);
 
   const roles = new Map([
     [
@@ -81,5 +82,5 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
     rolePaths.push(path);
   }
 
-  return { agentDir, configPath, soulPath, memoryPath, rolesDir, rolePaths };
+  return { agentDir, configPath, soulPath, memoryDir, rolesDir, rolePaths };
 }

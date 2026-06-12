@@ -30,7 +30,7 @@ async function main(): Promise<void> {
       console.log(`Agent created: ${result.agentDir}`);
       console.log(`Config: ${result.configPath}`);
       console.log(`Soul: ${result.soulPath}`);
-      console.log(`Memory: ${result.memoryPath}`);
+      console.log(`Memory: ${result.memoryDir}`);
       console.log(`Roles: ${result.rolesDir}`);
       return;
     } catch (error) {

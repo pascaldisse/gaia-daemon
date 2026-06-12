@@ -16,7 +16,7 @@ export interface AgentDefinition {
   personaDir: string;
   rolesDir: string;
   soulPath: string;
-  memoryPath: string;
+  memoryDir: string;
   tools: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;

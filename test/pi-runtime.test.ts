@@ -68,7 +68,8 @@ async function fixture() {
   await mkdir(personaDir, { recursive: true });
   await mkdir(join(project, ".gaia"), { recursive: true });
   await writeFile(join(personaDir, "SOUL.md"), "Soul", "utf8");
-  await writeFile(join(personaDir, "MEMORY.md"), "# Memory\n", "utf8");
+  await mkdir(join(personaDir, "memory"), { recursive: true });
+  await writeFile(join(personaDir, "memory", "MEMORY.md"), "# Memory\n", "utf8");
 
   const agent: AgentDefinition = {
     id: "gaia",
@@ -79,7 +80,7 @@ async function fixture() {
     personaDir,
     rolesDir: join(personaDir, "roles"),
     soulPath: join(personaDir, "SOUL.md"),
-    memoryPath: join(personaDir, "MEMORY.md"),
+    memoryDir: join(personaDir, "memory"),
     tools: [],
   };
 
