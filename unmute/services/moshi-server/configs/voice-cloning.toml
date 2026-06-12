@@ -1,0 +1,11 @@
+static_dir = "./static/"
+log_dir = "/tmp/unmute_logs"
+instance_name = "voice"
+authorized_ids = ["public_token"]
+
+[modules.voice_py]
+type = "PyPost"
+path = "/api/voice"
+
+[modules.voice_py.py]
+mimi_weight = "hf://kyutai/unmute-voice-cloning/e9d43d50_500_mimi_voice.safetensors"

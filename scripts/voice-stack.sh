@@ -8,7 +8,7 @@
 #   VOICE_LOG_DIR=.. where service logs go
 set -euo pipefail
 
-UNMUTE_DIR="${UNMUTE_DIR:-/Users/USER/projects/Codex/AIWaifu/unmute}"
+UNMUTE_DIR="${UNMUTE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/unmute}"
 GAIA_URL="${GAIA_URL:-http://127.0.0.1:8787}"
 VOICE_LOG_DIR="${VOICE_LOG_DIR:-/tmp/gaia-voice}"
 

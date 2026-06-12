@@ -12,6 +12,7 @@ Personas are durable. Projects add local context.
 
 ## Current shape
 
+- web UI as the only frontend (`gaia` starts the server and prints the URL)
 - global agents under `~/.gaia/agents/`
 - agent-owned `persona/` folders
 - central skill libraries under `~/.gaia/skills/` and project `.gaia/skills/`
@@ -23,9 +24,14 @@ Personas are durable. Projects add local context.
 - multiple agents in first-mentioned order
 - per-agent global markdown memory
 - persistent Pi session per room-agent pair
+- model switching through Pi's registry (API-key, subscription/OAuth, local);
+  each agent message shows the model that actually produced it
+- voice calls per agent through the vendored unmute stack (`unmute/`)
 - sample global agents: `@gaia`, `@sidia`, `@terry`
-- slash commands: `/help`, `/agents`, `/roles`, `/role`
+- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/thinking`
 - dynamic selectable previews for `/` commands and `@` agents
+- settings stay plain text files; the formatted view renders smart controls
+  from server-computed hints
 
 `GAIA_HOME` can override the global home path. Default: `~/.gaia`.
 
@@ -133,21 +139,28 @@ room transcript as typed messages. The agent's text replies still appear in
 the chat (marked 🎙), you can still type, and what you say is transcribed
 live into the composer box.
 
+unmute ships inside this repo under `unmute/` (MIT licensed, Copyright 2025
+Kyutai — see `unmute/LICENSE`), including the macOS port that runs STT on
+Metal and TTS on MLX. Voice needs two host tools: `uv` (runs the Python
+services) and `cargo` (builds `moshi-server` for STT on first use).
+
 There is nothing to start by hand. Clicking the call button boots whatever
 parts of the voice stack (STT, TTS, unmute backend) are not already running,
-shows the startup progress in the topbar (the first call loads models, so it
-takes a moment), and connects when the stack reports healthy. Hanging up
-stops the services GAIA started; externally started ones are left alone. If
-a default port is taken by some other process, GAIA transparently runs the
-service on a free port instead.
+shows the startup progress in the topbar, and connects when the stack
+reports healthy. The very first call downloads Python dependencies and
+models, so it can take a few minutes; later calls only reload models.
+Hanging up stops the services GAIA started; externally started ones are left
+alone. If a default port is taken by some other process, GAIA transparently
+runs the service on a free port instead.
 
 - the agent's optional `voice` field in `agent.json` selects the TTS voice
 - service logs land in `~/.gaia/logs/voice/`
 - voice options live in `~/.gaia/voice.json`, edited under the **Voice** tab
-  in global settings: `unmuteUrl`, `unmuteDir`, `autoStart`,
-  `startTimeoutSec`, `speakOnSilence` + `silenceDelaySec` (whether/when the
-  agent speaks up on its own during a long silence), and `disableThinking`
-  (thinking is forced off during calls and restored on hang-up)
+  in global settings: `unmuteUrl`, `unmuteDir` (defaults to the bundled
+  `unmute/` copy), `autoStart`, `startTimeoutSec`, `speakOnSilence` +
+  `silenceDelaySec` (whether/when the agent speaks up on its own during a
+  long silence), and `disableThinking` (thinking is forced off during calls
+  and restored on hang-up)
 - the `💭 #level` text under the composer shows the current agent's thinking
   effort: click toggles between the current level and off, right-click opens
   a menu with all levels, and `/thinking [agent] <level>` does the same from
@@ -241,11 +254,16 @@ This creates:
 ```
 
 The command refuses to overwrite an existing agent.
-Edit the generated files directly.
+Edit the generated files directly (or through the settings UI, which renders
+dropdowns for these fields).
 
-`agent.json` also accepts an optional `voice` field: a TTS voice reference
-for voice surfaces (for example an unmute `voices.yaml` entry). See `plan.md`
-for the voice roadmap.
+Optional `agent.json` fields:
+
+- `model`: `{ "provider": ..., "name": ... }` pins a model from Pi's
+  registry; omitted means Pi's default
+- `thinking`: thinking effort (`off`...`xhigh`); also changeable from the
+  composer's `💭 #level` control and `/thinking`
+- `voice`: TTS voice for calls (an unmute `voices.yaml` entry)
 
 ## Prompt layering
 

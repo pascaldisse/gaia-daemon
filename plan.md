@@ -31,7 +31,9 @@ text and voice surfaces.
 
 ## Voice mode (shipped)
 
-The unmute stack (`/Users/USER/projects/Codex/AIWaifu/unmute`) handles
+The unmute stack is vendored into the repo at `unmute/` (MIT, Copyright 2025
+Kyutai - license preserved at `unmute/LICENSE`), including the custom macOS
+port (STT on Metal via moshi-server, TTS on MLX). It handles
 mic → STT → LLM → TTS → speaker with VAD, pause prediction, and barge-in.
 GAIA is the brain: the web server exposes an OpenAI-compatible
 `/v1/chat/completions` + `/v1/models` shim (`KYUTAI_LLM_URL` points at GAIA),

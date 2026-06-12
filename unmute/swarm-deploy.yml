@@ -1,0 +1,407 @@
+services:
+  traefik:
+    image: traefik:v3.6.9
+    command:
+      # Swarm provider configuration
+      - "--providers.swarm.endpoint=unix:///var/run/docker.sock"
+      - "--providers.swarm.exposedByDefault=false"
+
+      # EntryPoints for HTTP and HTTPS
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+
+      # Redirect HTTP to HTTPS
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+
+      # Enable Let's Encrypt with ACME, enable when you want
+      # It will get and renew certificates automatically for all domain names.
+      - "--certificatesResolvers.letsencrypt_resolver.acme.httpChallenge.entryPoint=web"
+      - "--certificatesResolvers.letsencrypt_resolver.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesResolvers.letsencrypt_resolver.acme.email=gabriel@kyutai.org"
+      - "--certificatesResolvers.letsencrypt_resolver.acme.httpChallenge=true"
+      # staging environment to avoid rate limiting
+      #- "--certificatesResolvers.letsencrypt_resolver.acme.caServer=https://acme-staging-v02.api.letsencrypt.org/directory"
+
+      # Enable dashboard
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--metrics.prometheus=true"
+      - "--log.level=DEBUG"
+      # Healthcheck
+      - "--ping=true"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "letsencrypt:/letsencrypt" # Persistent storage for SSL certificates
+    deploy:
+      update_config:
+        order: start-first # Since we can't have multiple replicas, at least we can start the new container first.
+      labels:
+        # Enable Traefik dashboard
+        - "traefik.enable=true"
+        - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`)"
+        - "traefik.http.routers.traefik.middlewares=traefik-forward-auth"
+        - "traefik.http.routers.traefik.entrypoints=websecure"
+        - "traefik.http.routers.traefik.tls=true"
+        - "traefik.http.routers.traefik.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.routers.traefik.service=api@internal"
+        - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+        - "prometheus-port=8080"
+      placement:
+        constraints:
+          - node.role == manager
+
+  frontend:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-frontend:latest
+    build:
+      context: frontend/
+    deploy:
+      # Having more than one replica is useful for scaling but also to avoid downtime
+      # during crashes or updates. Traffic will be load balanced between replicas.
+      replicas: 3
+      update_config:
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.frontend.rule=Host(`www.${DOMAIN}`) || Host(`${DOMAIN}`)"
+        - "traefik.http.routers.frontend.entrypoints=websecure"
+        - "traefik.http.routers.frontend.tls=true"
+        - "traefik.http.routers.frontend.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+        # A lower priority is necessary because the routing rule is very broad
+        # (no path specified), so it might match other services.
+        - "traefik.http.routers.frontend.priority=10" # lowest priority
+
+  backend:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-backend:latest
+    build:
+      context: ./
+      target: prod
+    environment:
+      # Any service can be called by other services at `http://<service_name>:<port>`.
+      # http://tasks.<service_name> can be called to get the ip addresses of all the replicas
+      # for a given service, allowing manual load balancing. The backend does this currently.
+      - KYUTAI_STT_URL=ws://tasks.stt:8080
+      - KYUTAI_TTS_URL=ws://tasks.tts:8080
+      - KYUTAI_LLM_URL=https://openrouter.ai/api
+      - KYUTAI_LLM_API_KEY=$KYUTAI_LLM_API_KEY
+      - KYUTAI_VOICE_CLONING_URL=http://voice-cloning:8080
+      - KYUTAI_REDIS_URL=redis://redis:6379
+      - KYUTAI_VOICE_DONATION_DIR=/voice-donation
+      - NEWSAPI_API_KEY=$NEWSAPI_API_KEY
+      - KYUTAI_RECORDINGS_DIR=/recordings
+      - KYUTAI_LLM_MODEL=$KYUTAI_LLM_MODEL
+    volumes:
+      - /scratch/voice-donation/:/voice-donation
+      - recordings:/recordings
+    deploy:
+      labels:
+        # Reachable with /api but removes the /api prefix from the URL after routing
+        # because the backend expects the API to be at the root path.
+        - "traefik.enable=true"
+        - "traefik.http.routers.backend.rule=(Host(`www.${DOMAIN}`) || Host(`${DOMAIN}`)) && PathPrefix(`/api`)"
+        - "traefik.http.routers.backend.middlewares=strip-api"
+        - "traefik.http.middlewares.strip-api.replacepathregex.regex=^/api/(.*)"
+        - "traefik.http.middlewares.strip-api.replacepathregex.replacement=/$$1"
+        - "traefik.http.routers.backend.entrypoints=websecure"
+        - "traefik.http.routers.backend.tls=true"
+        - "traefik.http.routers.backend.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.backend.loadbalancer.server.port=80"
+        - "traefik.http.routers.backend.priority=100" # higher priority than frontend
+        - "prometheus-port=80"
+      # Running the backend is quite cheap but Python is not great at multi-threading
+      # so we can run a few to get better performance. The downside is logs are harder to read;
+      # for debugging set replicas to 1.
+      replicas: 4
+      update_config:
+        delay: 10s      # wait 10 seconds before updating the next replica
+        parallelism: 3  # update 3 replicas at a time
+      resources:
+        # We set limits to avoid having one container taking down the whole service
+        # but we don't set reservations because we do not have enough cpu/memory for this.
+        # In practice, if we set reservations, the service will not start because not
+        # enough resources are available.
+        limits:
+          cpus: "1.5"
+          memory: 1G
+
+  tts:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-moshi-server:latest
+    # The command is added to the ENTRYPOINT in the Dockerfile
+    command: ["worker", "--config", "configs/tts-prod.toml"]
+    build:
+      context: services/moshi-server
+      dockerfile: private.Dockerfile
+      ssh:                          # Only needed for staging
+        - default                   # Only needed for staging
+      args:                         # Only needed for staging
+        GITHUB_ORG: $GITHUB_ORG     # Only needed for staging
+    environment:
+      # Env variables are grabbed from the environment of the Docker CLI, so the user deploying.
+      # For security reasons, use a read-only Hugging Face token.
+      - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
+      - HF_TOKEN=$HUGGING_FACE_HUB_TOKEN
+    volumes:
+      - cargo-registry:/root/.cargo/registry
+      - moshi-server-target:/app/target
+      - uv-cache:/root/.cache/uv
+      - hf-cache:/root/.cache/huggingface/hub
+      - tts-logs:/tmp/unmute_logs
+    stop_grace_period: 10s # change if needed
+    deploy:
+      labels:
+        - "prometheus-port=8080"
+        # Expose the TTS service via Traefik under the /tts-server path, but remove the /tts-server prefix
+        # from the URL after routing.
+        - "traefik.enable=true"
+        - "traefik.http.routers.tts.rule=(Host(`www.${DOMAIN}`) || Host(`${DOMAIN}`)) && PathPrefix(`/tts-server`)"
+        - "traefik.http.routers.tts.middlewares=strip-tts"
+        - "traefik.http.middlewares.strip-tts.replacepathregex.regex=^/tts-server/(.*)"
+        - "traefik.http.middlewares.strip-tts.replacepathregex.replacement=/$$1"
+        - "traefik.http.routers.tts.entrypoints=websecure"
+        - "traefik.http.routers.tts.tls=true"
+        - "traefik.http.routers.tts.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.tts.loadbalancer.server.port=8080"
+        - "traefik.http.routers.tts.priority=100"
+      replicas: 1
+      update_config:
+        delay: 60s # it takes a very long time to boot up and we want no downtime
+      resources:
+        limits:
+          cpus: "8"
+          memory: 16G
+
+  stt:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-moshi-server:latest
+    command: ["worker", "--config", "configs/stt-prod.toml"]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
+      - HF_TOKEN=$HUGGING_FACE_HUB_TOKEN
+    volumes:
+      - cargo-registry:/root/.cargo/registry
+      - moshi-server-target:/app/target
+      - uv-cache:/root/.cache/uv
+      - hf-cache:/root/.cache/huggingface/hub
+      - stt-logs:/tmp/unmute_logs
+    stop_grace_period: 10s # change if needed
+    deploy:
+      labels:
+        - "prometheus-port=8080"
+        # Expose the STT service via Traefik under the /stt-server path, but remove the /stt-server prefix
+        # from the URL after routing.
+        - "traefik.enable=true"
+        - "traefik.http.routers.stt.rule=(Host(`www.${DOMAIN}`) || Host(`${DOMAIN}`)) && PathPrefix(`/stt-server`)"
+        - "traefik.http.routers.stt.middlewares=strip-stt"
+        - "traefik.http.middlewares.strip-stt.replacepathregex.regex=^/stt-server/(.*)"
+        - "traefik.http.middlewares.strip-stt.replacepathregex.replacement=/$$1"
+        - "traefik.http.routers.stt.entrypoints=websecure"
+        - "traefik.http.routers.stt.tls=true"
+        - "traefik.http.routers.stt.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.stt.loadbalancer.server.port=8080"
+        - "traefik.http.routers.stt.priority=100"
+      replicas: 1
+      resources:
+        limits:
+          cpus: "8"
+          memory: 16G
+
+  voice-cloning:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-moshi-server:latest
+    command: ["worker", "--config", "configs/voice-cloning.toml"]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
+      - HF_TOKEN=$HUGGING_FACE_HUB_TOKEN
+    volumes:
+      - cargo-registry:/root/.cargo/registry
+      - moshi-server-target:/app/target
+      - uv-cache:/root/.cache/uv
+      - hf-cache:/root/.cache/huggingface/hub
+      - voice-cloning-logs:/tmp/unmute_logs
+    deploy:
+      labels:
+        - "prometheus-port=8080"
+      replicas: 1
+      update_config:
+        delay: 60s #it takes a very long time to boot up and we want no downtime
+      resources:
+        limits:
+          cpus: "8"
+          memory: 16G
+
+  # -------------------------------------------------------------------------
+  # Monitoring
+
+  prometheus:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-prometheus:latest
+    build:
+      # The logic to grab the metrics of all services is here:
+      # Notably the prometheus-port swarm label is used to know which port to scrape.
+      context: services/prometheus
+    volumes:
+      - prometheus-data:/prometheus
+      # Prometheus asks swarm about the services to know how to scrape them.
+      # It's read-only (ro) so it cannot modify the swarm or the containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    user: root # To allow Prometheus to acces the Docker socket
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN}`)"
+        - "traefik.http.routers.prometheus.entrypoints=websecure"
+        - "traefik.http.routers.prometheus.tls=true"
+        - "traefik.http.routers.prometheus.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        - "traefik.http.routers.prometheus.middlewares=traefik-forward-auth"
+        - "prometheus-port=9090"
+      placement:
+        constraints:
+          # Only the Docker socket of the manager node has information about the swarm
+          # so Prometheus must run on the manager node.
+          - node.role == manager
+
+  grafana:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-grafana:latest
+    build:
+      # All the dashboards are defined in the context directory. Note that there are no
+      # volumes mounted here, so the dashboards are not persistent. Any changes made
+      # in the UI will be lost on restart unless you add them to the build context.
+      # (export option in the UI, add the json in the git repo).
+      context: services/grafana
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)"
+        - "traefik.http.routers.grafana.entrypoints=websecure"
+        - "traefik.http.routers.grafana.tls=true"
+        - "traefik.http.routers.grafana.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+        - "traefik.http.routers.grafana.middlewares=traefik-forward-auth"
+
+  # This is useful if someone wants to display dashboards without the google auth.
+  grafana-with-password:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-grafana:latest
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.grafana-with-password.rule=Host(`grafana-with-password.${DOMAIN}`)"
+        - "traefik.http.middlewares.auth-grafana.basicauth.users=grafana:$$apr1$$wjRp63GU$$T2DyQQmKmFi/.Il.f/7t2."
+        - "traefik.http.routers.grafana-with-password.middlewares=auth-grafana"
+        - "traefik.http.routers.grafana-with-password.entrypoints=websecure"
+        - "traefik.http.routers.grafana-with-password.tls=true"
+        - "traefik.http.routers.grafana-with-password.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.grafana-with-password.loadbalancer.server.port=3000"
+
+  # This service grabs many information about the docker nodes and containers.
+  # Prometheus scrapes it automatically since it has the prometheus-port label.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    command: -docker_only
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/rootfs:ro
+      - /var/run:/var/run
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    deploy:
+      labels:
+        - "prometheus-port=8080"
+      # Global mode means that one container will run on each node.
+      # If one node is added or removed, the container will be started or stopped automatically.
+      mode: global
+
+  # The portainer agent is used to monitor the Docker swarm and containers.
+  agent:
+    image: portainer/agent:lts
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+    deploy:
+      mode: global
+
+  # The portainer frontend
+  portainer:
+    image: portainer/portainer-ce:lts
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+    volumes:
+      - portainer_data:/data
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
+        - "traefik.http.routers.portainer.tls=true"
+        - "traefik.http.routers.portainer.tls.certresolver=letsencrypt_resolver"
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+        # Protected by the traefik-forward-auth middleware
+        - "traefik.http.routers.portainer.middlewares=traefik-forward-auth"
+      placement:
+        # It's not needed to run on the manager node, but it needs to have a fixed
+        # node because it has data there (the portainer_data volume).
+        # We could use a node label to select a specific node, but for now
+        # we just run it on the manager node, it's enough.
+        constraints: [node.role == manager]
+
+  # It's a service that's not running anything, but it can be used to debug the swarm.
+  # Notably network issues.
+  debugger:
+    image: rg.fr-par.scw.cloud/namespace-unruffled-tereshkova/${DOMAIN}-debugger:latest
+    command: ["sleep", "infinity"]
+    build:
+      context: services/debugger
+    volumes:
+      - /tmp:/tmp
+
+  # This is a traefik middleware. Basically any service that has the label
+  # "traefik.http.routers.<name>.middlewares=traefik-forward-auth"
+  # will be protected by this middleware, which requires Google authentication.
+  # In our case, we use it for the Traefik dashboard, Grafana, Prometheus and Portainer.
+  traefik-forward-auth:
+    image: thomseddon/traefik-forward-auth:2
+    environment:
+      - PROVIDERS_GOOGLE_CLIENT_ID=1019173417489-oa1f0nrup1lc5jrcpqkfln0drpr23sk6.apps.googleusercontent.com
+      - PROVIDERS_GOOGLE_CLIENT_SECRET=$PROVIDERS_GOOGLE_CLIENT_SECRET
+      - SECRET=$PROVIDERS_GOOGLE_CLIENT_SECRET
+      # Users must have a kyutai.org email to be able to log in.
+      - DOMAIN=kyutai.org
+      - LOG_LEVEL=debug
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.middlewares.traefik-forward-auth.forwardauth.address=http://traefik-forward-auth:4181"
+        - "traefik.http.middlewares.traefik-forward-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
+        - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
+
+  # -------------------------------------------------------------------------
+  # Centralized storage
+
+  redis:
+    image: redis:latest
+
+networks:
+  default:
+    driver: overlay
+    attachable: true
+    driver_opts:
+      # This is useful if nodes communicates between themselves over the public internet.
+      # If you're sure that the traffic is only local, you can remove this.
+      encrypted: "true"
+
+volumes:
+  cargo-registry:
+  moshi-server-target:
+  uv-cache:
+  hf-cache:
+  voice-cloning-logs:
+  letsencrypt:
+  prometheus-data:
+  huggingface-cache:
+  portainer_data:
+  tts-logs:
+  stt-logs:
+  vllm-cache:
+  recordings:
