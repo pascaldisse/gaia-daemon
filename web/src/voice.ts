@@ -13,6 +13,18 @@ import { state } from "./state.ts";
 let session = null;
 let pendingTranscript = "";
 
+// Muting keeps the opus stream flowing (unmute's timing depends on a
+// continuous audio clock) but at zero gain, so the STT hears silence.
+export function setMicMuted(muted) {
+  state.micMuted = Boolean(muted);
+  try {
+    session?.recorder?.setRecordingGain(muted ? 0 : 1);
+  } catch {
+    // No live recorder; the flag still applies when one starts.
+  }
+  render();
+}
+
 export async function toggleCall(agentId) {
   if (state.voice?.agentId === agentId) {
     await endCall();
@@ -65,6 +77,7 @@ export async function endCall() {
   state.voiceStatus = "idle";
   state.voicePendingAgentId = null;
   state.voiceStatusText = "";
+  state.micMuted = false;
   const hadCall = state.voice;
   state.voice = null;
   state.composerText = "";
@@ -210,6 +223,7 @@ async function openVoiceSession(call) {
   current.recorder = recorder;
   await audioContext.resume();
   await recorder.start();
+  state.micMuted = false;
 }
 
 function handleVoiceMessage(data) {

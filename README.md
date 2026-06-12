@@ -149,8 +149,12 @@ service on a free port instead.
   agent speaks up on its own during a long silence), and `disableThinking`
   (thinking is forced off during calls and restored on hang-up)
 - the `💭 #level` text under the composer shows the current agent's thinking
-  effort; click it to cycle levels. Outside a call it persists to that
-  agent's `agent.json`; during a call it applies to the call only
+  effort: click toggles between the current level and off, right-click opens
+  a menu with all levels, and `/thinking [agent] <level>` does the same from
+  the keyboard. Outside a call changes persist to that agent's `agent.json`;
+  during a call they apply to the call only
+- on a call, mute (🎤) and hang-up (⏹) buttons appear under the text input;
+  muting sends silence so the conversation timing stays intact
 - interrupting the agent mid-sentence cancels its turn, like Esc on a text task
 - `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
   detect and reuse it instead of starting its own)

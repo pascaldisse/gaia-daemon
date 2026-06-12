@@ -480,9 +480,35 @@ time {
   line-height: 1.35;
 }
 
-.command-input:focus {
+/* The text input and send button read as one element: the shell carries the
+   border/focus ring; the button stays fixed at the top right as the
+   textarea grows. */
+.input-shell {
+  display: flex;
+  align-items: flex-start;
+  border: 1px solid var(--line-dim);
+  background: #010302;
+  margin-bottom: 8px;
+}
+
+.input-shell:focus-within {
   border-color: var(--line);
   box-shadow: 0 0 14px rgba(28, 255, 139, 0.16);
+}
+
+.input-shell .command-input,
+.input-shell .command-input:focus {
+  flex: 1;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.input-shell .send-button {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  align-self: flex-start;
 }
 
 .composer-row,
@@ -521,6 +547,48 @@ time {
 .thinking-toggle:hover {
   color: var(--text);
   text-shadow: none;
+}
+
+.thinking-wrap {
+  position: relative;
+}
+
+.thinking-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  background: #020604;
+  border: 1px solid var(--line-dim);
+  min-width: 110px;
+  z-index: 30;
+}
+
+.thinking-menu button {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  text-align: left;
+  font-style: italic;
+  padding: 6px 10px;
+}
+
+.thinking-menu button.active {
+  color: var(--line);
+}
+
+.voice-button {
+  min-width: 38px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0 8px;
+}
+
+.voice-button.muted,
+.voice-button.end-call {
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.6);
 }
 
 .send-button {

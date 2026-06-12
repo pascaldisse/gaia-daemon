@@ -447,7 +447,12 @@ export class GaiaWebServer {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     const workspace = await loadWorkspace(record.path);
-    const controller = new GaiaController({ cwd: record.path, workspaceId, workspace });
+    const controller = new GaiaController({
+      cwd: record.path,
+      workspaceId,
+      workspace,
+      setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
+    });
     controller.subscribe((event) => this.broadcast(event));
     await controller.init();
     this.controllers.set(workspaceId, controller);
@@ -565,32 +570,41 @@ export class GaiaWebServer {
     return `http://${this.options.host ?? "127.0.0.1"}:${this.options.port ?? 8787}`;
   }
 
-  // Changes an agent's thinking level. During a voice call with that agent
-  // the change is call-scoped (reverts on hang-up); otherwise it persists to
-  // agent.json and hot-applies through the normal settings-reload path.
   private async handleSetThinking(request: IncomingMessage, response: ServerResponse, workspaceId: string, agentId: string): Promise<void> {
     const body = await parseBody(request);
     const level = stringField(body, "level");
-    const levels = sdkThinkingLevels();
-    if (level === undefined || (level !== "" && !levels.includes(level))) {
-      json(response, 400, { error: `Invalid thinking level. Use one of: ${levels.join(", ")} (or "" to unset)` });
+    if (level === undefined) {
+      json(response, 400, { error: "Missing thinking level" });
       return;
+    }
+    try {
+      const result = await this.applyThinking(workspaceId, agentId, level);
+      json(response, 200, { scope: result.scope, thinking: level || undefined });
+    } catch (error) {
+      json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // Changes an agent's thinking level. During a voice call with that agent
+  // the change is call-scoped (reverts on hang-up); otherwise it persists to
+  // agent.json and hot-applies through the normal settings-reload path.
+  // Shared by the HTTP endpoint and the /thinking slash command.
+  private async applyThinking(workspaceId: string, agentId: string, level: string): Promise<{ scope: "call" | "agent"; message: string }> {
+    const levels = sdkThinkingLevels();
+    if (level !== "" && !levels.includes(level)) {
+      throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
     }
 
     const controller = await this.controllerFor(workspaceId);
     const agent = controller.workspace.agents[agentId];
-    if (!agent) {
-      json(response, 404, { error: `Unknown agent: ${agentId}` });
-      return;
-    }
+    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
 
     const call = this.activeCall;
     if (call && call.workspaceId === workspaceId && call.info.agentId === agentId) {
       if (level === "") delete call.info.thinking;
       else call.info.thinking = level;
       this.broadcast({ type: "voice-status", workspaceId, roomId: call.info.roomId, voice: call.info });
-      json(response, 200, { scope: "call", thinking: level || undefined });
-      return;
+      return { scope: "call", message: `Set @${agentId} thinking to ${level || "agent default"} for this call. It reverts on hang-up.` };
     }
 
     let config: Record<string, unknown> = {};
@@ -608,7 +622,7 @@ export class GaiaWebServer {
     const rel = relative(gaiaHome(), agent.configPath);
     const scope = rel.startsWith("..") || isAbsolute(rel) ? "workspace" : "global";
     await this.applySettingsChange(scope, workspaceId);
-    json(response, 200, { scope: "agent", thinking: level || undefined });
+    return { scope: "agent", message: `Set @${agentId} thinking to ${level || "unset"}.` };
   }
 
   // The unmute backend speaks to GAIA as if it were an OpenAI-compatible LLM

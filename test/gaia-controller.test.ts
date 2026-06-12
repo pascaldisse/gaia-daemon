@@ -156,6 +156,49 @@ test("runs a voice turn against an explicit target without a user room event", a
   }
 });
 
+test("routes /thinking through the host setThinking hook", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const calls: Array<[string, string]> = [];
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+      setThinking: async (agentId, level) => {
+        calls.push([agentId, level]);
+        return `Set @${agentId} thinking to ${level}.`;
+      },
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const systemText = async (input: string) => {
+      const task = await controller.sendMessage(input);
+      await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === task.id));
+      const systemEvents = events.filter((event) => event.type === "room-event" && event.event.author === "system");
+      return (systemEvents.at(-1) as { event: { text: string } }).event.text;
+    };
+
+    // Bare level targets the default agent; explicit agent overrides.
+    assert.match(await systemText("/thinking low"), /Set @gaia thinking to low\./);
+    assert.match(await systemText("/thinking sidia high"), /Set @sidia thinking to high\./);
+    assert.deepEqual(calls, [["gaia", "low"], ["sidia", "high"]]);
+    assert.match(await systemText("/thinking"), /Usage: \/thinking/);
+    assert.match(await systemText("/thinking nope low"), /Unknown agent: @nope/);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
 test("rejects explicit targets that do not exist", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;

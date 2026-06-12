@@ -3,6 +3,7 @@ import { api } from "./api.ts";
 import { h } from "./dom.ts";
 import { render, setError } from "./render.ts";
 import { activeTask, state } from "./state.ts";
+import { endCall, setMicMuted } from "./voice.ts";
 
 export function isEditableElement(element) {
   if (!(element instanceof HTMLElement)) return false;
@@ -28,6 +29,16 @@ function submitComposer(options = {}) {
 }
 
 export function installComposerRouting() {
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!state.thinkingMenuOpen) return;
+      if (event.target instanceof HTMLElement && event.target.closest(".thinking-wrap")) return;
+      state.thinkingMenuOpen = false;
+      renderComposerOnly();
+    },
+    true,
+  );
   window.addEventListener(
     "keydown",
     (event) => {
@@ -79,10 +90,28 @@ function composerTargetStatus(snapshot, text) {
   return composerTargets(snapshot, text).map((target) => `@${target}`).join(", ");
 }
 
-// Clickable thinking-effort indicator: cycles through the SDK levels. On a
-// call it changes only the call (reverts on hang-up); otherwise it persists
-// to the agent's agent.json.
-function ThinkingToggle(snapshot, text) {
+// Last non-off level per agent, so the off-toggle can come back to it.
+const thinkingReturnLevels = new Map();
+
+async function postThinking(snapshot, agent, level, onCall) {
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/agents/${encodeURIComponent(agent.id)}/thinking`, {
+      method: "POST",
+      body: JSON.stringify({ level }),
+    });
+    if (onCall) state.voice.thinking = level;
+    else agent.thinking = level;
+    state.thinkingMenuOpen = false;
+    renderComposerOnly();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+// Thinking-effort indicator: click toggles between the current level and
+// off; right-click opens a menu with all levels. On a call the change is
+// call-scoped (reverts on hang-up); otherwise it persists to agent.json.
+function ThinkingControl(snapshot, text) {
   if (!snapshot) return null;
   const onCall = Boolean(state.voice);
   const targetId = onCall ? state.voice.agentId : composerTargets(snapshot, text)[0];
@@ -93,27 +122,53 @@ function ThinkingToggle(snapshot, text) {
   const levels = snapshot.thinkingLevels ?? [];
   if (levels.length === 0) return null;
 
-  return h("button", {
+  const toggle = h("button", {
     type: "button",
     class: "thinking-toggle",
-    title: `thinking effort for @${agent.id} - click to change${onCall ? " (this call only)" : ""}`,
-    onclick: async (event) => {
+    title: `thinking effort for @${agent.id} - click toggles off, right-click for levels${onCall ? " (this call only)" : ""}`,
+    onclick: (event) => {
       event.preventDefault();
-      const next = levels[(levels.indexOf(effective) + 1) % levels.length] ?? "off";
-      try {
-        await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/agents/${encodeURIComponent(agent.id)}/thinking`, {
-          method: "POST",
-          body: JSON.stringify({ level: next }),
-        });
-        if (onCall) state.voice.thinking = next;
-        else agent.thinking = next;
-        renderComposerOnly();
-      } catch (error) {
-        setError(error);
+      let next;
+      if (effective === "off") {
+        const remembered = thinkingReturnLevels.get(agent.id);
+        const configured = agent.thinking && agent.thinking !== "off" ? agent.thinking : undefined;
+        next = remembered ?? configured ?? "medium";
+      } else {
+        thinkingReturnLevels.set(agent.id, effective);
+        next = "off";
       }
+      void postThinking(snapshot, agent, next, onCall);
+    },
+    oncontextmenu: (event) => {
+      event.preventDefault();
+      state.thinkingMenuOpen = !state.thinkingMenuOpen;
+      renderComposerOnly();
     },
     text: `\u{1F4AD} #${effective}`,
   });
+
+  return h(
+    "div",
+    { class: "thinking-wrap" },
+    toggle,
+    state.thinkingMenuOpen
+      ? h(
+          "div",
+          { class: "thinking-menu" },
+          levels.map((level) =>
+            h("button", {
+              type: "button",
+              class: level === effective ? "active" : "",
+              onclick: () => {
+                if (level !== "off") thinkingReturnLevels.set(agent.id, level);
+                void postThinking(snapshot, agent, level, onCall);
+              },
+              text: `#${level}`,
+            }),
+          ),
+        )
+      : null,
+  );
 }
 
 export function Composer() {
@@ -152,6 +207,7 @@ export function Composer() {
     },
   });
   requestAnimationFrame(() => resizeComposer(textarea));
+  const onCall = Boolean(state.voice);
   return h(
     "form",
     {
@@ -166,14 +222,36 @@ export function Composer() {
       },
     },
     completion && !state.completionHidden ? Autocomplete(completion) : null,
-    textarea,
+    h(
+      "div",
+      { class: "input-shell" },
+      textarea,
+      h("button", { class: runningTask ? "send-button cancel" : "send-button", disabled: !snapshot, title: runningTask ? "stop agents" : "send", text: runningTask ? "x" : ">" }),
+    ),
     h(
       "div",
       { class: "composer-row" },
       h("div", { class: "target-status", text: composerTargetStatus(snapshot, state.composerText) }),
-      ThinkingToggle(snapshot, state.composerText),
+      ThinkingControl(snapshot, state.composerText),
       h("div", { class: "composer-spacer" }),
-      h("button", { class: runningTask ? "send-button cancel" : "send-button", disabled: !snapshot, title: runningTask ? "stop agents" : "send", text: runningTask ? "x" : ">" }),
+      onCall
+        ? [
+            h("button", {
+              type: "button",
+              class: state.micMuted ? "voice-button muted" : "voice-button",
+              title: state.micMuted ? "unmute microphone" : "mute microphone",
+              onclick: () => setMicMuted(!state.micMuted),
+              text: state.micMuted ? "\u{1F507}" : "\u{1F3A4}",
+            }),
+            h("button", {
+              type: "button",
+              class: "voice-button end-call",
+              title: `hang up @${state.voice.agentId}`,
+              onclick: () => void endCall(),
+              text: "⏹",
+            }),
+          ]
+        : null,
     ),
   );
 }
