@@ -25,6 +25,7 @@ export const state = {
   voice: null,
   voiceStatus: "idle",
   voicePendingAgentId: null,
+  voiceStatusText: "",
 };
 
 export function activeTask(snapshot = state.snapshot) {

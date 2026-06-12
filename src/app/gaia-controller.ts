@@ -87,7 +87,14 @@ export type GaiaUiEvent =
   | { type: "task-end"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "task-error"; workspaceId: string; roomId: string; task: GaiaTask; error: string }
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
-  | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null };
+  | {
+      type: "voice-status";
+      workspaceId: string;
+      roomId: string;
+      voice: VoiceCallInfo | null;
+      // Startup progress while the voice stack boots, before the call binds.
+      pending?: { agentId: string; message: string };
+    };
 
 // Active voice call binding, broadcast to clients and returned by voice/start.
 export interface VoiceCallInfo {

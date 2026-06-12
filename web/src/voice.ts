@@ -42,11 +42,13 @@ async function startCall(agentId) {
     await openVoiceSession(body.voice);
     state.voiceStatus = "live";
     state.voicePendingAgentId = null;
+    state.voiceStatusText = "";
     setError("");
   } catch (error) {
     teardownAudio();
     state.voiceStatus = "idle";
     state.voicePendingAgentId = null;
+    state.voiceStatusText = "";
     state.voice = null;
     // Only release the binding we actually acquired - a failed start must
     // not hang up a call that belongs to another tab.
@@ -62,6 +64,7 @@ export async function endCall() {
   pendingTranscript = "";
   state.voiceStatus = "idle";
   state.voicePendingAgentId = null;
+  state.voiceStatusText = "";
   const hadCall = state.voice;
   state.voice = null;
   state.composerText = "";
@@ -76,16 +79,32 @@ export async function endCall() {
   }
 }
 
-// Server broadcast (voice-status SSE): keeps every tab's indicator in sync
-// and tears down audio if the call was ended elsewhere.
-export function applyVoiceStatus(voice) {
-  state.voice = voice ?? null;
-  if (!voice && session) {
-    teardownAudio();
-    pendingTranscript = "";
-    state.composerText = "";
+// Server broadcast (voice-status SSE): keeps every tab's indicator in sync,
+// shows voice-stack startup progress, and tears down audio if the call was
+// ended elsewhere.
+export function applyVoiceStatus(payload) {
+  const voice = payload.voice ?? null;
+  if (payload.pending) {
+    state.voiceStatus = "connecting";
+    state.voicePendingAgentId = payload.pending.agentId;
+    state.voiceStatusText = payload.pending.message;
+    render();
+    return;
   }
-  if (!voice) state.voiceStatus = "idle";
+
+  state.voice = voice;
+  state.voiceStatusText = "";
+  if (voice) {
+    state.voicePendingAgentId = null;
+  } else {
+    if (session) {
+      teardownAudio();
+      pendingTranscript = "";
+      state.composerText = "";
+    }
+    state.voiceStatus = "idle";
+    state.voicePendingAgentId = null;
+  }
   render();
 }
 
@@ -136,14 +155,14 @@ async function openVoiceSession(call) {
   const ws = new WebSocket(realtimeUrl(call.unmuteUrl), ["realtime"]);
   current.ws = ws;
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`unmute backend not reachable at ${call.unmuteUrl}`)), 6000);
+    const timer = setTimeout(() => reject(new Error(`unmute backend did not answer at ${call.unmuteUrl}`)), 10000);
     ws.onopen = () => {
       clearTimeout(timer);
       resolve();
     };
     ws.onerror = () => {
       clearTimeout(timer);
-      reject(new Error(`Could not connect to unmute at ${call.unmuteUrl}. Is the voice stack running? (scripts/voice-stack.sh)`));
+      reject(new Error(`Could not connect to unmute at ${call.unmuteUrl} - check ~/.gaia/logs/voice/ for service logs`));
     };
   });
   ws.onerror = () => {};
