@@ -14,6 +14,7 @@ import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { resolveSkillRefs } from "../skills/skill-resolver.js";
 import { createMemoryTool } from "../tools/memory-tool.js";
+import { createRecallTool } from "../tools/recall-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -36,7 +37,8 @@ export interface PiRuntimeSessionFactoryOptions {
   loader: DefaultResourceLoader;
   systemPromptRef: { current: string };
   skillPaths: string[];
-  builtInTools: string[];
+  /** Allowlist passed to Pi; includes custom tool names (memory, recall). */
+  tools: string[];
   customTools: unknown[];
   model: Model<any> | undefined;
   sessionDir: string;
@@ -106,8 +108,8 @@ export class PiRuntime implements AgentRuntime {
       yield { type: "model-info", provider: sessionModel.provider, modelId: sessionModel.id, subscription };
     }
 
-    const memory = await this.memoryStore.readState(this.agent.memoryPath);
-    const memoryChanged = managed.lastMemoryContent !== memory.content;
+    const memory = await this.memoryStore.promptBlock(this.agent.memoryDir);
+    const memoryChanged = managed.lastMemoryContent !== memory;
 
     const queue: AgentEvent[] = [];
     let done = false;
@@ -149,13 +151,13 @@ export class PiRuntime implements AgentRuntime {
       agentId: this.agent.id,
       message: input.message,
       events: input.transcript,
-      memory: memoryChanged ? memory.content : undefined,
+      memory: memoryChanged ? memory : undefined,
       channel: input.channel,
     });
     session
       .prompt(prompt, { source: "interactive" })
       .then(() => {
-        managed.lastMemoryContent = memory.content;
+        managed.lastMemoryContent = memory;
       })
       .catch((cause) => {
         error = cause;
@@ -236,8 +238,13 @@ export class PiRuntime implements AgentRuntime {
 
   private async createManagedSession(roomId: string, systemPrompt: string, skillPaths: string[], key: string): Promise<ManagedPiSession> {
     const model = this.resolveModel();
-    const builtInTools = this.agent.tools.filter((tool) => tool !== "memory");
-    const customTools = this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : [];
+    const roomDir = join(this.workspace.roomsDir, roomId);
+    const customTools = [
+      ...(this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : []),
+      ...(this.agent.tools.includes("recall")
+        ? [createRecallTool(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), roomId)]
+        : []),
+    ];
     const systemPromptRef = { current: systemPrompt };
 
     const loader = new DefaultResourceLoader({
@@ -263,7 +270,7 @@ export class PiRuntime implements AgentRuntime {
           loader,
           systemPromptRef,
           skillPaths,
-          builtInTools,
+          tools: this.agent.tools,
           customTools,
           model,
           sessionDir,
@@ -274,7 +281,9 @@ export class PiRuntime implements AgentRuntime {
           modelRegistry: this.modelRegistry,
           model,
           thinkingLevel: this.agent.thinking,
-          tools: builtInTools,
+          // Pi treats `tools` as an allowlist over built-in AND custom tools,
+          // so the custom tool names (memory, recall) must stay in the list.
+          tools: this.agent.tools,
           customTools,
           resourceLoader: loader,
           sessionManager: SessionManager.continueRecent(this.cwd, sessionDir),

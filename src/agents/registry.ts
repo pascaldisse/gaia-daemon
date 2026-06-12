@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
+import { MemoryStore } from "../memory/memory-store.js";
 import { agentConfigTemplate } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
@@ -37,6 +38,17 @@ async function migrateLegacyPersonaFiles(dir: string, names: string[]): Promise<
   }
 }
 
+// Memory grew from a single persona/MEMORY.md into a persona/memory/
+// directory (core + user profile + topic files). Move the old file once.
+async function migrateLegacyMemoryFile(personaDir: string): Promise<void> {
+  const legacyPath = join(personaDir, "MEMORY.md");
+  const memoryDir = join(personaDir, "memory");
+  const newPath = join(memoryDir, "MEMORY.md");
+  if (!existsSync(legacyPath) || existsSync(newPath)) return;
+  await mkdir(memoryDir, { recursive: true });
+  await rename(legacyPath, newPath);
+}
+
 async function ensureDefaultAgent(
   agentsDir: string,
   id: string,
@@ -49,9 +61,10 @@ async function ensureDefaultAgent(
   const personaDir = join(dir, "persona");
 
   await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
+  await migrateLegacyMemoryFile(personaDir);
   await writeIfMissing(join(dir, "agent.json"), jsonText(agentConfigTemplate(id, displayName, icon, tools)));
   await writeIfMissing(join(personaDir, "SOUL.md"), soul);
-  await writeIfMissing(join(personaDir, "MEMORY.md"), `# ${displayName} Memory\n\n`);
+  await new MemoryStore().init(join(personaDir, "memory"), displayName);
   await mkdirIfMissing(join(personaDir, "roles"));
 }
 
@@ -61,7 +74,7 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
     "gaia",
     "Gaia",
     "☀️",
-    ["read", "write", "edit", "memory"],
+    ["read", "write", "edit", "memory", "recall"],
     `# Gaia\n\nYou are warm, constructive, curious, and pattern-seeking.\n\nYou are good at:\n- shaping ideas\n- finding promising next steps\n- keeping momentum gentle and real\n\nVoice:\n- short, bright, grounded\n- encouraging without fluff\n- ask clear questions when needed\n\nAvoid:\n- fake certainty\n- empty praise\n- rambling\n`,
   );
 
@@ -70,7 +83,7 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
     "sidia",
     "Sidia",
     "◆",
-    ["read", "write", "edit", "memory"],
+    ["read", "write", "edit", "memory", "recall"],
     `# Sidia\n\nYou are skeptical, precise, and crack-finding without cruelty.\n\nYou are good at:\n- stress-testing plans\n- naming weak assumptions\n- separating evidence from inference\n\nVoice:\n- direct\n- exact\n- critical, then constructive\n\nAvoid:\n- broad cynicism\n- vague objections\n- needless harshness\n`,
   );
 
@@ -79,7 +92,7 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
     "terry",
     "Terry",
     "🐻",
-    ["read", "write", "edit", "bash", "memory"],
+    ["read", "write", "edit", "bash", "memory", "recall"],
     `# Terry\n\nYou are a practical engineer. Smallest useful patch first.\n\nYou are good at:\n- implementation\n- cleanup\n- cutting scope\n\nVoice:\n- short\n- plain\n- no drama\n\nAvoid:\n- overdesign\n- speeches\n- speculative complexity\n`,
   );
 }
@@ -112,9 +125,10 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
 
     await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
     const personaDir = join(dir, "persona");
+    await migrateLegacyMemoryFile(personaDir);
     const rolesDir = join(personaDir, "roles");
     const soulPath = join(personaDir, "SOUL.md");
-    const memoryPath = join(personaDir, "MEMORY.md");
+    const memoryDir = join(personaDir, "memory");
     if (!existsSync(soulPath)) throw new Error(`Missing global agent soul file: ${soulPath}`);
 
     const projectDir = join(projectAgentsDir, entry.name);
@@ -140,7 +154,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       personaDir,
       rolesDir,
       soulPath,
-      memoryPath,
+      memoryDir,
       tools: stringList(raw.tools, []),
       model: raw.model,
       thinking: raw.thinking,

@@ -63,7 +63,7 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] sat
 const EXTRA_TOOL_NAMES: ToolName[] = ["grep", "find", "ls"];
 
 // GAIA-provided custom tools (see runtime/pi-runtime.ts customTools).
-const GAIA_TOOL_NAMES = ["memory"];
+const GAIA_TOOL_NAMES = ["memory", "recall"];
 
 export function sdkToolNames(cwd: string): string[] {
   const coding = createCodingTools(cwd).map((tool) => tool.name);

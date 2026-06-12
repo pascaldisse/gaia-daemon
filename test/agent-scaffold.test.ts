@@ -13,7 +13,8 @@ test("scaffolds a global agent persona folder with starter roles", async () => {
 
     assert.equal(existsSync(result.configPath), true);
     assert.equal(existsSync(result.soulPath), true);
-    assert.equal(existsSync(result.memoryPath), true);
+    assert.equal(existsSync(join(result.memoryDir, "MEMORY.md")), true);
+    assert.equal(existsSync(join(result.memoryDir, "USER.md")), true);
     assert.equal(existsSync(join(result.rolesDir, "brainstorm.md")), true);
     assert.equal(existsSync(join(result.rolesDir, "research.md")), true);
     assert.equal(existsSync(join(result.rolesDir, "plan.md")), true);
@@ -24,7 +25,7 @@ test("scaffolds a global agent persona folder with starter roles", async () => {
       displayName: "Luma",
       icon: "•",
       thinking: "medium",
-      tools: ["read", "write", "edit", "memory"],
+      tools: ["read", "write", "edit", "memory", "recall"],
     });
   } finally {
     await temp.cleanup();

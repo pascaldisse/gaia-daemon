@@ -177,7 +177,7 @@ export class GaiaController {
   async init(): Promise<void> {
     if (this.initialized) return;
     await Promise.all(
-      Object.values(this.workspace.agents).map((agent) => this.memoryStore.init(agent.memoryPath, `${agent.displayName} Memory`)),
+      Object.values(this.workspace.agents).map((agent) => this.memoryStore.init(agent.memoryDir, agent.displayName)),
     );
     this.roomState = await this.room.readState();
     this.initialized = true;
