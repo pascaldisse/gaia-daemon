@@ -597,16 +597,54 @@ time {
 }
 
 .agent-row {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  padding: 0;
+}
+
+.agent-row.on-call {
+  border-color: var(--line);
+  box-shadow: 0 0 10px rgba(43, 255, 136, 0.25);
+}
+
+.agent-main {
+  flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr);
   gap: 7px;
-  width: 100%;
+  padding: 8px;
   text-align: left;
+  border: none;
+  background: transparent;
   box-shadow: none;
 }
 
-.agent-row small {
+.agent-main small {
   grid-column: 2;
+}
+
+.call-button {
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid rgba(19, 107, 64, 0.8);
+  background: transparent;
+  box-shadow: none;
+}
+
+.call-button.active {
+  color: #ff7b72;
+  text-shadow: 0 0 8px #ff7b72;
+}
+
+.status.on-call {
+  color: var(--line);
+  text-shadow: 0 0 8px var(--line);
+}
+
+.message-meta .channel-tag {
+  color: var(--muted);
 }
 
 .task {

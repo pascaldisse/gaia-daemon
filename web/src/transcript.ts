@@ -25,6 +25,7 @@ function Message(event) {
       "div",
       { class: "message-meta" },
       h("span", { text: label }),
+      event.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: "🎙" }) : null,
       event._model ? h("small", { class: "model-tag", text: event._model }) : null,
       h("time", { text: formatTime(event.timestamp) }),
     ),

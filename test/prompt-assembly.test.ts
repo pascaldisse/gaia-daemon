@@ -73,6 +73,26 @@ test("turn prompt uses new room events instead of whole transcript wording", () 
   assert.match(prompt, /Newest user message:\n\nNewest question/);
 });
 
+test("turn prompt carries voice-mode instructions only on voice turns", () => {
+  const voice = buildTurnPrompt({
+    roomId: "default",
+    agentId: "gaia",
+    message: "Hi",
+    events: [],
+    channel: "voice",
+  });
+  const typed = buildTurnPrompt({
+    roomId: "default",
+    agentId: "gaia",
+    message: "Hi",
+    events: [],
+  });
+
+  assert.match(voice, /Voice mode: you are on a live voice call/);
+  assert.match(voice, /no markdown/);
+  assert.doesNotMatch(typed, /Voice mode/);
+});
+
 test("turn prompt includes memory only when provided", () => {
   const withMemory = buildTurnPrompt({
     roomId: "default",

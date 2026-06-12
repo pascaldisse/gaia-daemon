@@ -144,6 +144,7 @@ export class PiRuntime implements AgentRuntime {
       message: input.message,
       events: input.transcript,
       memory: memoryChanged ? memory.content : undefined,
+      channel: input.channel,
     });
     session
       .prompt(prompt, { source: "interactive" })

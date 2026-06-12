@@ -83,7 +83,7 @@ export function Composer() {
   const textarea = h("textarea", {
     rows: "1",
     class: "command-input",
-    placeholder: snapshot ? "message @agent or /command" : "select a workspace",
+    placeholder: !snapshot ? "select a workspace" : state.voice ? `on call with @${state.voice.agentId} - speak, or type` : "message @agent or /command",
     disabled: !snapshot,
     value: state.composerText,
     oninput: () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { AgentDefinition } from "../src/agents/types.ts";
 import { GaiaController, type GaiaUiEvent } from "../src/app/gaia-controller.ts";
-import type { AgentRuntime } from "../src/runtime/types.ts";
+import type { AgentInput, AgentRuntime } from "../src/runtime/types.ts";
 import { initWorkspace, loadWorkspace } from "../src/workspace/workspace-loader.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
@@ -91,6 +91,86 @@ test("streams a room task through UI-neutral events", async () => {
       partialResult: { content: "partial" },
       result: { content: "done" },
     });
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("runs a voice turn against an explicit target without a user room event", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const inputs: AgentInput[] = [];
+    class CapturingRuntime extends FakeRuntime {
+      override async *send(input?: AgentInput) {
+        if (input) inputs.push(input);
+        yield* super.send();
+      }
+    }
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new CapturingRuntime(agent),
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    // Greeting-style turn: synthetic prompt, no user message in the room.
+    const greeting = await controller.sendMessage("(voice call started)", {
+      targets: ["gaia"],
+      channel: "voice",
+      recordUserMessage: false,
+    });
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === greeting.id));
+
+    // Spoken turn: lands in the room with the voice channel marker.
+    const spoken = await controller.sendMessage("how are you", { targets: ["gaia"], channel: "voice" });
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === spoken.id));
+
+    const snapshot = await controller.getSnapshot();
+    const userEvents = snapshot.room.events.filter((event) => event.author === "user");
+    assert.equal(userEvents.length, 1);
+    assert.equal(userEvents[0]?.text, "how are you");
+    assert.equal(userEvents[0]?.channel, "voice");
+    const agentEvents = snapshot.room.events.filter((event) => event.author === "gaia");
+    assert.equal(agentEvents.length, 2);
+    assert.ok(agentEvents.every((event) => event.channel === "voice"));
+    assert.deepEqual(
+      inputs.map((input) => input.channel),
+      ["voice", "voice"],
+    );
+    assert.deepEqual(greeting.targets, ["gaia"]);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("rejects explicit targets that do not exist", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    await assert.rejects(() => controller.sendMessage("hi", { targets: ["nope"] }), /Unknown agent: @nope/);
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;

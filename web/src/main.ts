@@ -3,8 +3,10 @@
 import { loadApp } from "./actions.ts";
 import { focusComposerFromBackground, installComposerRouting } from "./composer.ts";
 import { installOpenModifierTracking } from "./links.ts";
+import { installVoiceLifecycle } from "./voice.ts";
 
 installOpenModifierTracking();
 installComposerRouting();
+installVoiceLifecycle();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 void loadApp();

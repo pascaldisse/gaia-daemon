@@ -11,6 +11,7 @@ export async function loadApp(currentWorkspaceId) {
     state.snapshot = body.snapshot ?? null;
     state.workspaceFiles = body.workspaceFiles ?? [];
     state.globalFiles = body.globalFiles ?? [];
+    state.voice = body.voice ?? null;
     if (currentWorkspaceId && body.currentWorkspaceId !== currentWorkspaceId) await loadWorkspace(currentWorkspaceId);
     connectEvents();
     await loadInitialFiles();
@@ -24,6 +25,7 @@ export async function loadWorkspace(workspaceId) {
   const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
   state.snapshot = body.snapshot;
   state.workspaceFiles = body.workspaceFiles ?? [];
+  state.voice = body.voice ?? null;
   state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
   state.workspaceFile = null;
   connectEvents();
