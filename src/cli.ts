@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 import { scaffoldGlobalAgent } from "./agents/scaffold.js";
-import { GaiaApp } from "./app/gaia-app.js";
-import { MemoryStore } from "./memory/memory-store.js";
 import { startWebServer } from "./web/server.js";
-import { globalAgentsPath, initWorkspace, loadWorkspace, workspacePath } from "./workspace/workspace-loader.js";
+import { globalAgentsPath, initWorkspace } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia tui                     start the legacy terminal UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
@@ -46,22 +44,6 @@ async function main(): Promise<void> {
     const result = await initWorkspace(process.cwd());
     console.log(`Project workspace ready: ${result.workspaceDir}`);
     console.log(`Global personas ready: ${result.globalAgentsDir}`);
-    return;
-  }
-
-  if (args[0] === "tui") {
-    try {
-      const workspace = await loadWorkspace(process.cwd());
-      const memory = new MemoryStore();
-      await new GaiaApp(process.cwd(), workspace, memory).start();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`gaia: ${message}`);
-      console.error(`Expected project workspace: ${workspacePath(process.cwd())}`);
-      console.error(`Global personas directory: ${globalAgentsPath()}`);
-      console.error("Run `gaia init` in your project to prepare both layers.");
-      process.exitCode = 1;
-    }
     return;
   }
 

@@ -7,6 +7,7 @@ interface RawAgentConfig {
   id?: string;
   displayName?: string;
   icon?: string;
+  voice?: unknown;
   runtime?: string;
   tools?: unknown;
   model?: AgentModelConfig;
@@ -154,6 +155,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       id,
       displayName,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
+      voice: typeof raw.voice === "string" && raw.voice.trim() ? raw.voice.trim() : undefined,
       runtime: typeof raw.runtime === "string" && raw.runtime.trim() ? raw.runtime : "pi",
       dir,
       configPath,

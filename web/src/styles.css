@@ -73,6 +73,20 @@ input:focus {
   border-color: var(--line);
 }
 
+select {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: #010302;
+  border: 1px solid var(--line-dim);
+  padding: 8px;
+  outline: none;
+}
+
+select:focus {
+  border-color: var(--line);
+}
+
 .shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 360px;
@@ -245,6 +259,11 @@ time {
   justify-content: space-between;
   gap: 12px;
   color: var(--line);
+}
+
+.message-meta .model-tag {
+  margin-left: auto;
+  color: var(--muted);
 }
 
 .message pre {
@@ -581,10 +600,23 @@ time {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr);
   gap: 7px;
+  width: 100%;
+  text-align: left;
+  box-shadow: none;
 }
 
 .agent-row small {
   grid-column: 2;
+}
+
+.task {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.task small {
+  overflow-wrap: anywhere;
 }
 
 .dot {
@@ -655,6 +687,32 @@ time {
 .text-setting {
   min-height: 96px;
   resize: vertical;
+}
+
+.multi-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multi-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line-dim);
+  padding: 4px 8px;
+  background: #010302;
+  cursor: pointer;
+}
+
+.multi-option:hover {
+  border-color: var(--line);
+}
+
+.multi-option input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--line);
 }
 
 .empty {

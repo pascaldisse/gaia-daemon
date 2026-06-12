@@ -21,6 +21,7 @@ import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 export interface PiSessionLike {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
+  readonly model?: { provider: string; id: string } | undefined;
   subscribe(listener: (event: any) => void): () => void;
   prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
   abort(): Promise<void>;
@@ -50,6 +51,10 @@ interface ManagedPiSession {
   loader: DefaultResourceLoader;
   systemPromptRef: { current: string };
   skillPathsKey: string;
+  // Memory content last delivered to this session. Memory travels in the turn
+  // prompt (only when changed), not the system prompt, so memory-tool writes
+  // never force a session reload.
+  lastMemoryContent?: string;
 }
 
 export function piRoomSessionDir(workspace: Pick<Workspace, "roomsDir">, roomId: string, agentId: string): string {
@@ -61,10 +66,11 @@ function skillPathsKey(paths: string[]): string {
 }
 
 export class PiRuntime implements AgentRuntime {
-  readonly modelLabel: string;
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
   private readonly sessions = new Map<string, ManagedPiSession>();
+  private readonly configuredModelLabel: string;
+  private liveModelLabel: string | undefined;
 
   constructor(
     private readonly cwd: string,
@@ -73,12 +79,29 @@ export class PiRuntime implements AgentRuntime {
     private readonly memoryStore: MemoryStore,
     private readonly sessionFactory?: PiRuntimeSessionFactory,
   ) {
-    this.modelLabel = this.resolveModelLabel();
+    this.configuredModelLabel = this.resolveModelLabel();
+  }
+
+  // Reports the model the live session actually uses once a turn has run;
+  // before that, the configured model or "Pi default".
+  get modelLabel(): string {
+    return this.liveModelLabel ?? this.configuredModelLabel;
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     const managed = await this.ensureSession(input);
     const session = managed.session;
+
+    const sessionModel = session.model;
+    if (sessionModel) {
+      const registryModel = this.modelRegistry.find(sessionModel.provider, sessionModel.id);
+      const subscription = registryModel ? this.modelRegistry.isUsingOAuth(registryModel) : false;
+      this.liveModelLabel = `${sessionModel.provider}/${sessionModel.id}${subscription ? " (oauth)" : ""}`;
+      yield { type: "model-info", provider: sessionModel.provider, modelId: sessionModel.id, subscription };
+    }
+
+    const memory = await this.memoryStore.readState(this.agent.memoryPath);
+    const memoryChanged = managed.lastMemoryContent !== memory.content;
 
     const queue: AgentEvent[] = [];
     let done = false;
@@ -115,9 +138,18 @@ export class PiRuntime implements AgentRuntime {
       }
     });
 
-    const prompt = buildTurnPrompt({ roomId: input.roomId, agentId: this.agent.id, message: input.message, events: input.transcript });
+    const prompt = buildTurnPrompt({
+      roomId: input.roomId,
+      agentId: this.agent.id,
+      message: input.message,
+      events: input.transcript,
+      memory: memoryChanged ? memory.content : undefined,
+    });
     session
       .prompt(prompt, { source: "interactive" })
+      .then(() => {
+        managed.lastMemoryContent = memory.content;
+      })
       .catch((cause) => {
         error = cause;
       })
@@ -241,10 +273,9 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async buildSystemPrompt(input: AgentInput): Promise<string> {
-    const [soulText, intentText, memory] = await Promise.all([
+    const [soulText, intentText] = await Promise.all([
       readFile(this.agent.soulPath, "utf8"),
       this.readOptional(this.agent.projectIntentPath),
-      this.memoryStore.readState(this.agent.memoryPath),
     ]);
 
     return buildSystemPrompt({
@@ -253,7 +284,6 @@ export class PiRuntime implements AgentRuntime {
       role: input.activeRole,
       intentText,
       contextFiles: this.workspace.contextFiles,
-      memory,
     });
   }
 

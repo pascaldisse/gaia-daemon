@@ -13,6 +13,7 @@ class FakeRuntime implements AgentRuntime {
   constructor(readonly agent: AgentDefinition) {}
 
   async *send() {
+    yield { type: "model-info" as const, provider: "fake", modelId: "model-1", subscription: true };
     yield { type: "thinking-start" as const };
     yield { type: "thinking-delta" as const, delta: "thinking" };
     yield { type: "thinking-end" as const, content: "thinking" };
@@ -69,6 +70,7 @@ test("streams a room task through UI-neutral events", async () => {
 
     assert.equal(task.status, "complete");
     assert.ok(events.some((event) => event.type === "task-start"));
+    assert.ok(events.some((event) => event.type === "model-info" && event.provider === "fake" && event.subscription));
     assert.ok(events.some((event) => event.type === "text-delta"));
     assert.ok(events.some((event) => event.type === "thinking-start"));
     assert.ok(events.some((event) => event.type === "thinking-delta"));
@@ -78,6 +80,7 @@ test("streams a room task through UI-neutral events", async () => {
     assert.ok(events.some((event) => event.type === "tool-end" && event.toolName === "read" && event.toolCallId === "call_1" && !event.isError));
     assert.equal(snapshot.room.events.at(-1)?.author, "gaia");
     assert.match(snapshot.room.events.at(-1)?.text ?? "", /hello from gaia/);
+    assert.equal(snapshot.room.events.at(-1)?._model, "fake/model-1 (oauth)");
     assert.equal(snapshot.room.events.at(-1)?._thinkingStarted, true);
     assert.equal(snapshot.room.events.at(-1)?._thinking, "thinking");
     assert.deepEqual(snapshot.room.events.at(-1)?._tools?.at(0), {

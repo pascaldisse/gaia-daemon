@@ -1,6 +1,4 @@
 import type { AgentDefinition } from "../agents/types.js";
-import { renderAgentMemory } from "../memory/render.js";
-import type { MemoryState } from "../memory/memory-store.js";
 import { renderRoomTranscript } from "../room/room.js";
 import type { RoomEvent } from "../room/transcript.js";
 import type { ResolvedRole } from "../roles/roles.js";
@@ -12,7 +10,6 @@ export interface SystemPromptInput {
   role?: ResolvedRole;
   intentText?: string;
   contextFiles: ContextFile[];
-  memory: MemoryState;
 }
 
 export interface TurnPromptInput {
@@ -20,6 +17,9 @@ export interface TurnPromptInput {
   agentId: string;
   message: string;
   events: RoomEvent[];
+  // Persistent memory content, included only when it changed since the last
+  // turn so memory writes do not force a session reload mid-conversation.
+  memory?: string;
 }
 
 function renderProjectContext(contextFiles: ContextFile[]): string {
@@ -39,7 +39,6 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     roleSection,
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
-    renderAgentMemory(input.memory),
     roleDiagnostics,
     "You are participating in a shared GAIA room. Reply only as the current agent.",
   ]
@@ -51,10 +50,13 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
   return [
     `Room: ${input.roomId}`,
     `Current agent: @${input.agentId}`,
+    input.memory?.trim() ? `Your persistent memory (MEMORY.md):\n\n${input.memory.trim()}` : "",
     "New room events since your last turn:",
     renderRoomTranscript(input.events),
     "Newest user message:",
     input.message,
     "Respond to the newest user message in your own voice. Be concise and useful.",
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
