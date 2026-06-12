@@ -19,8 +19,6 @@ import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 export interface PiSessionLike {
-  readonly sessionId: string;
-  readonly sessionFile: string | undefined;
   readonly model?: { provider: string; id: string } | undefined;
   readonly thinkingLevel?: string;
   setThinkingLevel?(level: string): void;
@@ -77,13 +75,15 @@ export class PiRuntime implements AgentRuntime {
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
 
+  private readonly cwd: string;
+
   constructor(
-    private readonly cwd: string,
     private readonly workspace: Workspace,
     readonly agent: AgentDefinition,
     private readonly memoryStore: MemoryStore,
     private readonly sessionFactory?: PiRuntimeSessionFactory,
   ) {
+    this.cwd = workspace.rootDir;
     this.configuredModelLabel = this.resolveModelLabel();
   }
 
@@ -188,11 +188,13 @@ export class PiRuntime implements AgentRuntime {
   }
 
   // Applies a per-turn thinking override (voice mode forces "off") and
-  // restores the session's own level on turns without one.
+  // restores the agent's own level on turns without one. Reading
+  // agent.thinking live means a settings change hot-applies on the next
+  // turn without recreating the session.
   private applyThinkingLevel(managed: ManagedPiSession, override: string | undefined): void {
     const session = managed.session;
     if (!session.setThinkingLevel) return;
-    const target = override ?? managed.baseThinking;
+    const target = override ?? this.agent.thinking ?? managed.baseThinking;
     if (target === undefined || session.thinkingLevel === target) return;
     session.setThinkingLevel(target);
   }

@@ -1,11 +1,9 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { jsonText, readJsonFile, writeFileAtomic } from "../lib/fs.js";
 
 export interface RoomState {
   activeRoles: Record<string, string>;
   agentCursors: Record<string, number>;
-  piSessions: Record<string, unknown>;
   runtimeDetails: Record<string, RuntimeMessageDetails>;
 }
 
@@ -30,7 +28,6 @@ export function defaultRoomState(): RoomState {
   return {
     activeRoles: {},
     agentCursors: {},
-    piSessions: {},
     runtimeDetails: {},
   };
 }
@@ -97,24 +94,16 @@ export function normalizeRoomState(value: unknown): RoomState {
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
-    piSessions: isRecord(value.piSessions) ? value.piSessions : {},
     runtimeDetails: runtimeDetailsRecord(value.runtimeDetails),
   };
 }
 
 export async function readRoomState(path: string): Promise<RoomState> {
-  if (!existsSync(path)) return defaultRoomState();
-
-  try {
-    return normalizeRoomState(JSON.parse(await readFile(path, "utf8")));
-  } catch {
-    return defaultRoomState();
-  }
+  return normalizeRoomState(await readJsonFile(path));
 }
 
+// State is normalized on read; in-process mutations keep the shape, so writes
+// serialize directly instead of deep-rebuilding the whole map every turn.
 export async function writeRoomState(path: string, state: RoomState): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(normalizeRoomState(state), null, 2)}\n`, "utf8");
-  await rename(tempPath, path);
+  await writeFileAtomic(path, jsonText(state));
 }

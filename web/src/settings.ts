@@ -4,141 +4,85 @@ import { PathText } from "./links.ts";
 import { render } from "./render.ts";
 import { state } from "./state.ts";
 
-function globalAgentInfo(file) {
-  const match = file?.label?.match(/^agents\/([^/]+)\/(.+)$/);
-  if (!match) return null;
-  return { agentId: match[1], relativePath: match[2] };
-}
+// Files carry server-computed metadata (agentId, category) so grouping never
+// has to parse label paths. The selected file determines section/agent/view;
+// only the section survives on its own for the empty case.
 
-function globalAgentView(file) {
-  const info = globalAgentInfo(file);
-  if (!info) return "general";
-  if (info.relativePath === "agent.json") return "config";
-  if (info.relativePath.endsWith("MEMORY.md")) return "memory";
-  return "persona";
-}
-
-function isVoiceSettingsFile(file) {
-  return !globalAgentInfo(file) && (file?.label === "voice.json" || file?.label?.endsWith("/voice.json"));
-}
-
-function isGeneralFile(file) {
-  return !globalAgentInfo(file) && !isVoiceSettingsFile(file);
+function filesInCategory(category, files = state.globalFiles) {
+  return files.filter((file) => file.category === category);
 }
 
 function globalSettingsSections(files = state.globalFiles) {
-  const agentIds = [...new Set(files.map((file) => globalAgentInfo(file)?.agentId).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const agentIds = new Set(files.map((file) => file.agentId).filter(Boolean));
   return [
-    { id: "general", label: "General", count: files.filter(isGeneralFile).length },
-    { id: "voice", label: "Voice", count: files.filter(isVoiceSettingsFile).length },
-    { id: "agents", label: "Agents", count: agentIds.length },
+    { id: "general", label: "General", count: filesInCategory("general", files).length },
+    { id: "voice", label: "Voice", count: filesInCategory("voice", files).length },
+    { id: "agents", label: "Agents", count: agentIds.size },
   ];
 }
 
 function globalAgentGroups(files = state.globalFiles) {
   const groups = new Map();
   for (const file of files) {
-    const info = globalAgentInfo(file);
-    if (!info) continue;
-    if (!groups.has(info.agentId)) groups.set(info.agentId, { id: info.agentId, config: [], persona: [], memory: [], files: [] });
-    const group = groups.get(info.agentId);
+    if (!file.agentId) continue;
+    if (!groups.has(file.agentId)) groups.set(file.agentId, { id: file.agentId, config: [], persona: [], memory: [], files: [] });
+    const group = groups.get(file.agentId);
     group.files.push(file);
-    group[globalAgentView(file)].push(file);
+    group[file.category]?.push(file);
   }
   return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function globalAgentFileLabel(file) {
-  const info = globalAgentInfo(file);
-  if (!info) return file.label;
-  if (info.relativePath === "agent.json") return "agent.json";
-  if (info.relativePath.endsWith("SOUL.md")) return "SOUL.md";
-  if (info.relativePath.endsWith("MEMORY.md")) return "MEMORY.md";
-  const rolePath = info.relativePath.match(/(?:^|\/)roles\/(.+)$/);
-  if (rolePath) return `roles/${rolePath[1]}`;
-  return info.relativePath;
+  return file.label.replace(/^agents\/[^/]+\//, "").replace(/^persona\//, "");
+}
+
+function selectedGlobalFile() {
+  return state.globalFiles.find((file) => file.id === state.selectedGlobalFileId) ?? null;
 }
 
 function selectedGlobalAgentGroup() {
   const groups = globalAgentGroups();
-  return groups.find((group) => group.id === state.selectedGlobalAgentId) ?? groups[0] ?? null;
+  const agentId = selectedGlobalFile()?.agentId;
+  return groups.find((group) => group.id === agentId) ?? groups[0] ?? null;
 }
 
-function firstAgentViewWithFiles(group, preferred = state.selectedGlobalAgentView) {
-  if (!group) return null;
-  const order = [preferred, "config", "persona", "memory"].filter((value, index, values) => values.indexOf(value) === index);
-  return order.find((view) => group[view]?.length > 0) ?? null;
+function selectedGlobalAgentView() {
+  const file = selectedGlobalFile();
+  return file?.agentId ? file.category : "config";
 }
 
 function currentGlobalFiles() {
-  if (state.selectedGlobalSection === "general") return state.globalFiles.filter(isGeneralFile);
-  if (state.selectedGlobalSection === "voice") return state.globalFiles.filter(isVoiceSettingsFile);
+  if (state.selectedGlobalSection !== "agents") return filesInCategory(state.selectedGlobalSection);
   const group = selectedGlobalAgentGroup();
   if (!group) return [];
-  const files = group[state.selectedGlobalAgentView] ?? [];
+  const files = group[selectedGlobalAgentView()] ?? [];
   return files.length > 0 ? files : group.files;
 }
 
 export function syncGlobalSettingsSelection() {
-  const selected = state.globalFiles.find((file) => file.id === state.selectedGlobalFileId);
+  const selected = selectedGlobalFile();
   if (selected) {
-    const info = globalAgentInfo(selected);
-    if (!info) {
-      state.selectedGlobalSection = isVoiceSettingsFile(selected) ? "voice" : "general";
-      return;
-    }
-    state.selectedGlobalSection = "agents";
-    state.selectedGlobalAgentId = info.agentId;
-    state.selectedGlobalAgentView = globalAgentView(selected);
+    state.selectedGlobalSection = selected.agentId ? "agents" : selected.category;
     return;
   }
-
-  const generalFiles = state.globalFiles.filter(isGeneralFile);
-  const group = selectedGlobalAgentGroup();
-
-  if (state.selectedGlobalSection === "general" && generalFiles.length > 0) {
-    state.selectedGlobalFileId = generalFiles[0].id;
-    return;
-  }
-
-  if (group) {
-    state.selectedGlobalSection = "agents";
-    state.selectedGlobalAgentId = group.id;
-    state.selectedGlobalAgentView = firstAgentViewWithFiles(group) ?? "config";
-    const files = currentGlobalFiles();
-    state.selectedGlobalFileId = files[0]?.id ?? group.files[0]?.id ?? null;
-    return;
-  }
-
-  state.selectedGlobalSection = "general";
-  state.selectedGlobalFileId = generalFiles[0]?.id ?? null;
+  const generalFiles = filesInCategory("general");
+  state.selectedGlobalSection = generalFiles.length > 0 ? "general" : "agents";
+  state.selectedGlobalFileId = generalFiles[0]?.id ?? globalAgentGroups()[0]?.files[0]?.id ?? null;
 }
 
 async function selectGlobalSection(sectionId) {
   state.selectedGlobalSection = sectionId;
-  if (sectionId !== "agents") {
-    const files = currentGlobalFiles();
-    if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
-  } else {
-    const group = selectedGlobalAgentGroup();
-    if (group) {
-      state.selectedGlobalAgentId = group.id;
-      state.selectedGlobalAgentView = firstAgentViewWithFiles(group) ?? "config";
-      const files = currentGlobalFiles();
-      if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
-    } else state.selectedGlobalFileId = null;
-  }
+  const files = currentGlobalFiles();
+  if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
   await loadSelectedGlobalFile();
   render();
 }
 
 async function selectGlobalAgent(agentId) {
   state.selectedGlobalSection = "agents";
-  state.selectedGlobalAgentId = agentId;
-  const group = selectedGlobalAgentGroup();
-  state.selectedGlobalAgentView = firstAgentViewWithFiles(group) ?? "config";
-  const files = currentGlobalFiles();
-  state.selectedGlobalFileId = files[0]?.id ?? null;
+  const group = globalAgentGroups().find((candidate) => candidate.id === agentId);
+  state.selectedGlobalFileId = group?.config[0]?.id ?? group?.files[0]?.id ?? null;
   await loadSelectedGlobalFile();
   render();
 }
@@ -151,10 +95,8 @@ export async function openAgentSettings(agentId) {
 }
 
 async function selectGlobalAgentView(view) {
-  state.selectedGlobalSection = "agents";
-  state.selectedGlobalAgentView = view;
-  const files = currentGlobalFiles();
-  state.selectedGlobalFileId = files[0]?.id ?? null;
+  const group = selectedGlobalAgentGroup();
+  state.selectedGlobalFileId = group?.[view]?.[0]?.id ?? state.selectedGlobalFileId;
   await loadSelectedGlobalFile();
   render();
 }
@@ -212,10 +154,30 @@ export function WorkspacePanel() {
   );
 }
 
+function GlobalFileEditor(options = {}) {
+  return [
+    FileSelector(currentGlobalFiles(), state.selectedGlobalFileId, async (id) => {
+      state.selectedGlobalFileId = id;
+      syncGlobalSettingsSelection();
+      await loadSelectedGlobalFile();
+      render();
+    }, options),
+    FileSettingsEditor({
+      file: state.globalFile,
+      raw: state.globalRaw,
+      setRaw: (value) => {
+        state.globalRaw = value;
+        render();
+      },
+    }),
+  ];
+}
+
 export function SettingsModal() {
   const sections = globalSettingsSections();
   const agents = globalAgentGroups();
   const selectedAgent = selectedGlobalAgentGroup();
+  const selectedView = selectedGlobalAgentView();
   const agentViews = [
     { id: "config", label: "Config", files: selectedAgent?.config ?? [] },
     { id: "persona", label: "Persona", files: selectedAgent?.persona ?? [] },
@@ -246,22 +208,7 @@ export function SettingsModal() {
         ),
       ),
       state.selectedGlobalSection !== "agents"
-        ? [
-            FileSelector(currentGlobalFiles(), state.selectedGlobalFileId, async (id) => {
-              state.selectedGlobalFileId = id;
-              syncGlobalSettingsSelection();
-              await loadSelectedGlobalFile();
-              render();
-            }),
-            FileSettingsEditor({
-              file: state.globalFile,
-              raw: state.globalRaw,
-              setRaw: (value) => {
-                state.globalRaw = value;
-                render();
-              },
-            }),
-          ]
+        ? GlobalFileEditor()
         : h(
             "div",
             { class: "settings-split" },
@@ -296,7 +243,7 @@ export function SettingsModal() {
                         h(
                           "button",
                           {
-                            class: `${view.id === state.selectedGlobalAgentView ? "active" : ""} ${view.files.length === 0 ? "muted" : ""}`.trim(),
+                            class: `${view.id === selectedView ? "active" : ""} ${view.files.length === 0 ? "muted" : ""}`.trim(),
                             onclick: () => void selectGlobalAgentView(view.id),
                             disabled: view.files.length === 0,
                           },
@@ -305,20 +252,7 @@ export function SettingsModal() {
                         ),
                       ),
                     ),
-                    FileSelector(currentGlobalFiles(), state.selectedGlobalFileId, async (id) => {
-                      state.selectedGlobalFileId = id;
-                      syncGlobalSettingsSelection();
-                      await loadSelectedGlobalFile();
-                      render();
-                    }, { labeler: globalAgentFileLabel }),
-                    FileSettingsEditor({
-                      file: state.globalFile,
-                      raw: state.globalRaw,
-                      setRaw: (value) => {
-                        state.globalRaw = value;
-                        render();
-                      },
-                    }),
+                    ...GlobalFileEditor({ labeler: globalAgentFileLabel }),
                   ]
                 : h("div", { class: "empty", text: "no agent selected" }),
             ),

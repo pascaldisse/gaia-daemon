@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, appendFile, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { newId } from "../lib/ids.js";
 
 export interface UserRoomEvent {
   id: string;
@@ -8,8 +9,8 @@ export interface UserRoomEvent {
   author: "user";
   targets: string[];
   text: string;
-  // Present when the message was spoken on a voice call rather than typed.
-  channel?: "voice";
+  // Surface the message arrived on; "voice" today, absent for typed messages.
+  channel?: string;
 }
 
 export interface AgentRoomEvent {
@@ -17,13 +18,13 @@ export interface AgentRoomEvent {
   timestamp: string;
   author: string;
   text: string;
-  channel?: "voice";
+  channel?: string;
 }
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;
 
 export function newRoomEventId(): string {
-  return `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return newId("evt");
 }
 
 function isRoomEventLike(value: unknown): value is Omit<RoomEvent, "id"> & { id?: unknown } {
@@ -75,8 +76,4 @@ export async function readRecentRoomEvents(path: string, limit: number): Promise
 
 export async function readRoomEventsAfterCursor(path: string, cursor: number): Promise<ReadTranscriptResult> {
   return readTranscriptFromCursor(path, cursor);
-}
-
-export async function countRoomEventLines(path: string): Promise<number> {
-  return (await readTranscriptFromCursor(path, 0)).nextCursor;
 }

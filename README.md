@@ -297,15 +297,9 @@ Examples:
 .gaia/agents/gaia/agent.json              # override metadata/tools/model for this project
 ```
 
-Legacy paths still load for compatibility:
-
-```text
-~/.gaia/agents/gaia/SOUL.md
-~/.gaia/agents/gaia/MEMORY.md
-.gaia/agents/gaia/INTENT.md
-```
-
-Prefer the new `persona/` paths for new work.
+Pre-release layouts that kept these files at the agent root (e.g.
+`~/.gaia/agents/gaia/SOUL.md`) are migrated into `persona/` automatically the
+next time the agent loads.
 
 ## Workspace files
 
@@ -320,7 +314,6 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
 {
   "defaultAgent": "gaia",
   "room": "default",
-  "runtime": "pi",
   "transcriptWindow": 20
 }
 ```

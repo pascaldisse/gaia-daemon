@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
 import type { AgentDefinition } from "../agents/types.js";
 
 export interface RoleFile {
@@ -12,94 +13,39 @@ export interface RoleFile {
 
 export interface ResolvedRole {
   name: string;
-  globalPath?: string;
-  projectPath?: string;
-  globalBody?: string;
-  projectBody?: string;
   prompt: string;
   skills: string[];
   diagnostics: string[];
 }
 
-function dedupeInOrder(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) continue;
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
-function parseInlineSkills(value: string): string[] | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return undefined;
-
-  return trimmed
-    .slice(1, -1)
-    .split(",")
-    .map((item) => item.trim().replace(/^['\"]|['\"]$/g, ""))
-    .filter(Boolean);
+function dedupe(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 export function parseRoleMarkdown(content: string, path = "<role>"): Omit<RoleFile, "path"> {
+  let frontmatter: Record<string, unknown>;
+  let body: string;
+  try {
+    ({ frontmatter, body } = parseFrontmatter(content));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { body: content, skills: [], diagnostics: [`Malformed role frontmatter in ${path}: ${reason}`] };
+  }
+
   const diagnostics: string[] = [];
-  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
-    return { body: content, skills: [], diagnostics };
-  }
-
-  const lineBreak = content.startsWith("---\r\n") ? "\r\n" : "\n";
-  const startLength = `---${lineBreak}`.length;
-  const closingMarker = `${lineBreak}---${lineBreak}`;
-  const closingIndex = content.indexOf(closingMarker, startLength);
-
-  if (closingIndex === -1) {
-    diagnostics.push(`Malformed role frontmatter in ${path}: missing closing ---`);
-    return { body: content, skills: [], diagnostics };
-  }
-
-  const frontmatter = content.slice(startLength, closingIndex);
-  const body = content.slice(closingIndex + closingMarker.length);
-  const lines = frontmatter.split(/\r?\n/);
   const skills: string[] = [];
-  let readingSkills = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    if (trimmed === "skills:") {
-      readingSkills = true;
-      continue;
-    }
-
-    if (trimmed.startsWith("skills:")) {
-      readingSkills = false;
-      const parsed = parseInlineSkills(trimmed.slice("skills:".length));
-      if (parsed === undefined) diagnostics.push(`Malformed skills declaration in ${path}: ${trimmed}`);
-      else skills.push(...parsed);
-      continue;
-    }
-
-    if (readingSkills && trimmed.startsWith("- ")) {
-      const skill = trimmed.slice(2).trim().replace(/^['\"]|['\"]$/g, "");
-      if (skill) skills.push(skill);
-      continue;
-    }
-
-    if (readingSkills && /^[A-Za-z0-9_-]+:/.test(trimmed)) {
-      readingSkills = false;
-      continue;
-    }
-
-    if (readingSkills) {
-      diagnostics.push(`Malformed skills item in ${path}: ${trimmed}`);
+  if (frontmatter.skills !== undefined) {
+    if (!Array.isArray(frontmatter.skills)) {
+      diagnostics.push(`Malformed skills declaration in ${path}: expected a list`);
+    } else {
+      for (const skill of frontmatter.skills) {
+        if (typeof skill === "string" && skill.trim()) skills.push(skill.trim());
+        else diagnostics.push(`Malformed skills item in ${path}: ${JSON.stringify(skill)}`);
+      }
     }
   }
 
-  return { body, skills: dedupeInOrder(skills), diagnostics };
+  return { body, skills: dedupe(skills), diagnostics };
 }
 
 async function readRoleFile(path: string): Promise<RoleFile> {
@@ -126,7 +72,7 @@ async function roleNamesInDir(dir: string | undefined): Promise<string[]> {
 }
 
 export async function listAgentRoles(agent: AgentDefinition): Promise<string[]> {
-  return dedupeInOrder([...(await roleNamesInDir(agent.rolesDir)), ...(await roleNamesInDir(agent.projectRolesDir))]).sort((a, b) =>
+  return dedupe([...(await roleNamesInDir(agent.rolesDir)), ...(await roleNamesInDir(agent.projectRolesDir))]).sort((a, b) =>
     a.localeCompare(b),
   );
 }
@@ -145,12 +91,8 @@ export async function resolveAgentRole(agent: AgentDefinition, name: string): Pr
 
   return {
     name,
-    globalPath: globalFile?.path,
-    projectPath: projectFile?.path,
-    globalBody: globalFile?.body,
-    projectBody: projectFile?.body,
     prompt: promptParts.join("\n\n"),
-    skills: dedupeInOrder([...(globalFile?.skills ?? []), ...(projectFile?.skills ?? [])]),
+    skills: dedupe([...(globalFile?.skills ?? []), ...(projectFile?.skills ?? [])]),
     diagnostics: [...(globalFile?.diagnostics ?? []), ...(projectFile?.diagnostics ?? [])],
   };
 }

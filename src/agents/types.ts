@@ -11,7 +11,6 @@ export interface AgentDefinition {
   icon: string;
   // TTS voice reference for voice surfaces (e.g. an unmute voices.yaml entry).
   voice?: string;
-  runtime: string;
   dir: string;
   configPath: string;
   personaDir: string;

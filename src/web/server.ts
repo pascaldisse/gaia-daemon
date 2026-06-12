@@ -1,13 +1,13 @@
 import { createReadStream, existsSync, watch, type FSWatcher } from "node:fs";
-import { access, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EditableFileRegistry, type EditableFileContent } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
-import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources } from "../app/settings-hints.js";
+import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
   classifyVoiceTurn,
   completionChunk,
@@ -19,8 +19,9 @@ import {
 } from "../app/voice-bridge.js";
 import { ensureVoiceSettingsFile, readVoiceSettings, type VoiceSettings } from "../app/voice-settings.js";
 import { VoiceStackManager } from "../app/voice-stack.js";
-import { WorkspaceRegistry, type WorkspaceRecord } from "../app/workspace-registry.js";
-import { KNOWN_RUNTIMES } from "../runtime/runtime-factory.js";
+import { WorkspaceRegistry } from "../app/workspace-registry.js";
+import { pathInside } from "../lib/fs.js";
+import { newId } from "../lib/ids.js";
 import { gaiaHome, loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
@@ -135,12 +136,16 @@ async function openWithSystem(target: string): Promise<void> {
   });
 }
 
-function encodeSse(event: GaiaUiEvent): string {
-  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+function encodeSse(eventType: string, payload: unknown): string {
+  return `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
-function encodeNamedSse(eventType: string, payload: unknown): string {
-  return `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
+function beginSse(response: ServerResponse): void {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  });
 }
 
 function webRoot(): string {
@@ -185,6 +190,8 @@ export class GaiaWebServer {
   private activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   private voiceStarting = false;
   private readonly voiceStack = new VoiceStackManager(join(gaiaHome(), "logs", "voice"));
+  // Process-stable settings-hint sources, invalidated on settings saves.
+  private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
 
   constructor(private readonly options: WebServerOptions) {}
 
@@ -388,30 +395,22 @@ export class GaiaWebServer {
 
   private async handleEvents(response: ServerResponse, url: URL): Promise<void> {
     const client: Client = {
-      id: `client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      id: newId("client"),
       workspaceId: url.searchParams.get("workspaceId") ?? undefined,
       roomId: url.searchParams.get("roomId") ?? undefined,
       response,
     };
 
-    response.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    });
-    response.write("event: ready\ndata: {}\n\n");
+    beginSse(response);
+    response.write(encodeSse("ready", {}));
     this.clients.add(client);
     response.on("close", () => this.clients.delete(client));
   }
 
   private handleDevReload(response: ServerResponse): void {
     const client: DevClient = { response };
-    response.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    });
-    response.write(encodeNamedSse("ready", {}));
+    beginSse(response);
+    response.write(encodeSse("ready", {}));
     this.devClients.add(client);
     response.on("close", () => this.devClients.delete(client));
   }
@@ -420,8 +419,7 @@ export class GaiaWebServer {
     const root = webRoot();
     const requested = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
     const resolved = resolve(root, requested);
-    const rel = relative(root, resolved);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
+    if (!pathInside(resolved, root)) {
       text(response, 403, "Forbidden");
       return;
     }
@@ -448,7 +446,6 @@ export class GaiaWebServer {
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     const workspace = await loadWorkspace(record.path);
     const controller = new GaiaController({
-      cwd: record.path,
       workspaceId,
       workspace,
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
@@ -464,6 +461,7 @@ export class GaiaWebServer {
   // a global file (agents, app config) touches every workspace; a workspace
   // file only its own. Busy controllers are rebuilt when their task ends.
   private async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
+    this.hintSourcesCache = undefined;
     const ids = scope === "global" ? [...this.controllers.keys()] : workspaceId ? [workspaceId] : [];
     await Promise.all(ids.map((id) => this.reloadController(id)));
   }
@@ -475,12 +473,10 @@ export class GaiaWebServer {
     if (controller.hasActiveTask) {
       if (this.pendingReloads.has(workspaceId)) return;
       this.pendingReloads.add(workspaceId);
-      const unsubscribe = controller.subscribe((event) => {
-        if (event.type !== "task-end" && event.type !== "task-error") return;
-        unsubscribe();
+      void controller.waitForIdle().then(() => {
         this.pendingReloads.delete(workspaceId);
-        void this.reloadController(workspaceId).catch(() => {});
-      });
+        return this.reloadController(workspaceId);
+      }).catch(() => {});
       return;
     }
 
@@ -586,18 +582,15 @@ export class GaiaWebServer {
   }
 
   // Changes an agent's thinking level. During a voice call with that agent
-  // the change is call-scoped (reverts on hang-up); otherwise it persists to
-  // agent.json and hot-applies through the normal settings-reload path.
-  // Shared by the HTTP endpoint and the /thinking slash command.
+  // the change is call-scoped (reverts on hang-up); otherwise the controller
+  // persists it to the effective agent.json and hot-applies it. Shared by the
+  // HTTP endpoint and the /thinking slash command.
   private async applyThinking(workspaceId: string, agentId: string, level: string): Promise<{ scope: "call" | "agent"; message: string }> {
     const levels = sdkThinkingLevels();
     if (level !== "" && !levels.includes(level)) {
       throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
     }
-
     const controller = await this.controllerFor(workspaceId);
-    const agent = controller.workspace.agents[agentId];
-    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
 
     const call = this.activeCall;
     if (call && call.workspaceId === workspaceId && call.info.agentId === agentId) {
@@ -607,22 +600,7 @@ export class GaiaWebServer {
       return { scope: "call", message: `Set @${agentId} thinking to ${level || "agent default"} for this call. It reverts on hang-up.` };
     }
 
-    let config: Record<string, unknown> = {};
-    try {
-      config = JSON.parse(await readFile(agent.configPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      // Missing agent.json: create it with just the thinking level.
-    }
-    if (level === "") delete config.thinking;
-    else config.thinking = level;
-    const tempPath = `${agent.configPath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-    await rename(tempPath, agent.configPath);
-
-    const rel = relative(gaiaHome(), agent.configPath);
-    const scope = rel.startsWith("..") || isAbsolute(rel) ? "workspace" : "global";
-    await this.applySettingsChange(scope, workspaceId);
-    return { scope: "agent", message: `Set @${agentId} thinking to ${level || "unset"}.` };
+    return { scope: "agent", message: await controller.setAgentThinking(agentId, level) };
   }
 
   // The unmute backend speaks to GAIA as if it were an OpenAI-compatible LLM
@@ -662,10 +640,8 @@ export class GaiaWebServer {
     // stays quiet instead of speaking up on its own.
     if (turn.kind === "silence" && !call.settings.speakOnSilence) {
       if (streaming) {
-        response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform" });
-        response.write(completionChunk(completionId, undefined, "stop"));
-        response.write(completionDone());
-        response.end();
+        beginSse(response);
+        this.endCompletionStream(response, completionId);
         return;
       }
       json(response, 200, completionPayload(completionId, ""));
@@ -673,7 +649,9 @@ export class GaiaWebServer {
     }
 
     const controller = await this.controllerFor(call.workspaceId);
-    await this.waitForIdle(controller);
+    // A typed text task may be running when a voice turn arrives; give it a
+    // moment to finish instead of failing the spoken turn outright.
+    await controller.waitForIdle(20000);
 
     const task = await controller.sendMessage(turn.agentMessage, {
       targets: [call.info.agentId],
@@ -681,13 +659,7 @@ export class GaiaWebServer {
       recordUserMessage: turn.kind === "user",
       thinking: call.info.thinking,
     });
-    if (streaming) {
-      response.writeHead(200, {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-      });
-    }
+    if (streaming) beginSse(response);
 
     let reply = "";
     let settled = false;
@@ -715,30 +687,16 @@ export class GaiaWebServer {
 
     if (response.writableEnded) return;
     if (streaming) {
-      response.write(completionChunk(completionId, undefined, "stop"));
-      response.write(completionDone());
-      response.end();
+      this.endCompletionStream(response, completionId);
       return;
     }
     json(response, 200, completionPayload(completionId, reply));
   }
 
-  // A typed text task may be running when a voice turn arrives; give it a
-  // moment to finish instead of failing the spoken turn outright.
-  private async waitForIdle(controller: GaiaController, timeoutMs = 20000): Promise<void> {
-    if (!controller.hasActiveTask) return;
-    await new Promise<void>((resolveIdle, reject) => {
-      const timer = setTimeout(() => {
-        unsubscribe();
-        reject(new Error("Room is busy with another task"));
-      }, timeoutMs);
-      const unsubscribe = controller.subscribe((event) => {
-        if (event.type !== "task-end" && event.type !== "task-error") return;
-        clearTimeout(timer);
-        unsubscribe();
-        resolveIdle();
-      });
-    });
+  private endCompletionStream(response: ServerResponse, completionId: string): void {
+    response.write(completionChunk(completionId, undefined, "stop"));
+    response.write(completionDone());
+    response.end();
   }
 
   private async fileHints(file: EditableFileContent, workspaceId?: string): Promise<FileHints | undefined> {
@@ -756,13 +714,16 @@ export class GaiaWebServer {
       }
     }
 
+    // The model catalog and SDK tool set read Pi config from disk and are
+    // stable for the process; cache them until a settings save invalidates.
+    this.hintSourcesCache ??= { toolNames: sdkToolNames(this.options.cwd), models: readModelCatalog().models };
+
     const sources: HintSources = {
       agentIds,
       roomIds,
-      runtimes: KNOWN_RUNTIMES,
-      toolNames: sdkToolNames(this.options.cwd),
+      toolNames: this.hintSourcesCache.toolNames,
       thinkingLevels: sdkThinkingLevels(),
-      models: readModelCatalog().models,
+      models: this.hintSourcesCache.models,
     };
     return buildFileHints(file, sources);
   }
@@ -786,15 +747,19 @@ export class GaiaWebServer {
   }
 
   private broadcast(event: GaiaUiEvent): void {
+    const payload = encodeSse(event.type, event);
     for (const client of this.clients) {
       if (client.workspaceId && event.workspaceId && client.workspaceId !== event.workspaceId) continue;
       if (client.roomId && event.roomId && client.roomId !== event.roomId) continue;
-      client.response.write(encodeSse(event));
+      client.response.write(payload);
     }
   }
 
   private async startDevWatchers(): Promise<void> {
-    for (const dir of await this.directoriesUnder(webRoot())) {
+    const root = webRoot();
+    const entries = await readdir(root, { recursive: true, withFileTypes: true });
+    const dirs = [root, ...entries.filter((entry) => entry.isDirectory()).map((entry) => join(entry.parentPath, entry.name))];
+    for (const dir of dirs) {
       const watcher = watch(dir, (_eventType, filename) => {
         const name = String(filename ?? "").trim();
         if (!name || name === ".DS_Store") return;
@@ -804,20 +769,11 @@ export class GaiaWebServer {
     }
   }
 
-  private async directoriesUnder(root: string): Promise<string[]> {
-    const dirs = [root];
-    for (const entry of await readdir(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      dirs.push(...(await this.directoriesUnder(join(root, entry.name))));
-    }
-    return dirs;
-  }
-
   private scheduleDevReload(path: string): void {
     if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
     this.devReloadTimer = setTimeout(() => {
       this.devReloadTimer = undefined;
-      for (const client of this.devClients) client.response.write(encodeNamedSse("reload", { path }));
+      for (const client of this.devClients) client.response.write(encodeSse("reload", { path }));
     }, 60);
   }
 

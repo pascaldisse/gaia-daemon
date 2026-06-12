@@ -4,6 +4,8 @@
 // own system prompt and history - the room transcript and the agent's Pi
 // session are the source of truth - and only extracts what the user just said.
 
+import { newId } from "../lib/ids.js";
+
 // Markers unmute inserts into its chat history (see unmute/llm/llm_utils.py).
 const UNMUTE_GREETING_MESSAGE = "Hello.";
 const UNMUTE_SILENCE_MARKER = "...";
@@ -12,9 +14,8 @@ export type VoiceTurnKind = "greeting" | "silence" | "user";
 
 export interface VoiceTurn {
   kind: VoiceTurnKind;
-  // What the user actually said ("" for greeting/silence turns).
-  userText: string;
-  // The message to run the agent turn with.
+  // The message to run the agent turn with (what the user said, or a
+  // synthetic prompt for greeting/silence turns).
   agentMessage: string;
 }
 
@@ -58,18 +59,16 @@ export function classifyVoiceTurn(body: unknown): VoiceTurn | undefined {
   if (content === UNMUTE_GREETING_MESSAGE && userMessages.length === 1) {
     return {
       kind: "greeting",
-      userText: "",
       agentMessage: "(A voice call with you just started. Greet the user briefly in your own voice and invite them to talk.)",
     };
   }
   if (content === UNMUTE_SILENCE_MARKER) {
     return {
       kind: "silence",
-      userText: "",
       agentMessage: "(The user on the voice call has been silent for a while. Briefly check in, pick the conversation back up, or comfortably let the silence be - vary it.)",
     };
   }
-  return { kind: "user", userText: content, agentMessage: content };
+  return { kind: "user", agentMessage: content };
 }
 
 const COMPLETION_MODEL = "gaia";
@@ -112,5 +111,5 @@ export function completionPayload(id: string, text: string): unknown {
 }
 
 export function newCompletionId(): string {
-  return `chatcmpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return newId("chatcmpl");
 }

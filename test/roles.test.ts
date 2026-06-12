@@ -11,7 +11,6 @@ function agent(globalRolesDir: string, projectRolesDir?: string): AgentDefinitio
     id: "gaia",
     displayName: "Gaia",
     icon: "☀️",
-    runtime: "pi",
     dir: join(globalRolesDir, "..", ".."),
     configPath: "agent.json",
     personaDir: join(globalRolesDir, ".."),
@@ -27,7 +26,7 @@ test("parses role frontmatter skills and markdown body", () => {
   const parsed = parseRoleMarkdown(`---\nskills:\n  - brainstorm\n  - web\n  - web\n---\n# Brainstorm\n\nExplore softly.\n`, "brainstorm.md");
 
   assert.deepEqual(parsed.skills, ["brainstorm", "web"]);
-  assert.equal(parsed.body, "# Brainstorm\n\nExplore softly.\n");
+  assert.equal(parsed.body, "# Brainstorm\n\nExplore softly.");
   assert.deepEqual(parsed.diagnostics, []);
 });
 
@@ -35,16 +34,24 @@ test("parses inline skill arrays", () => {
   const parsed = parseRoleMarkdown(`---\nskills: [brainstorm, 'web']\n---\nBody\n`);
 
   assert.deepEqual(parsed.skills, ["brainstorm", "web"]);
-  assert.equal(parsed.body, "Body\n");
+  assert.equal(parsed.body, "Body");
 });
 
-test("malformed frontmatter keeps body intact and reports a diagnostic", () => {
+test("content without a closing frontmatter marker stays plain body", () => {
   const content = `---\nskills:\n  - plan\n# Missing close\n`;
   const parsed = parseRoleMarkdown(content, "broken.md");
 
   assert.equal(parsed.body, content);
   assert.deepEqual(parsed.skills, []);
-  assert.match(parsed.diagnostics[0] ?? "", /missing closing/);
+  assert.deepEqual(parsed.diagnostics, []);
+});
+
+test("a non-list skills declaration reports a diagnostic", () => {
+  const parsed = parseRoleMarkdown(`---\nskills: web\n---\nBody\n`, "broken.md");
+
+  assert.equal(parsed.body, "Body");
+  assert.deepEqual(parsed.skills, []);
+  assert.match(parsed.diagnostics[0] ?? "", /expected a list/);
 });
 
 test("resolves global role plus project overlay in prompt order", async () => {
@@ -60,8 +67,6 @@ test("resolves global role plus project overlay in prompt order", async () => {
     const resolved = await resolveAgentRole(agent(globalRolesDir, projectRolesDir), "brainstorm");
 
     assert.equal(resolved?.name, "brainstorm");
-    assert.equal(resolved?.globalBody, "Global role body\n");
-    assert.equal(resolved?.projectBody, "Project overlay body\n");
     assert.equal(resolved?.prompt, "Global role body\n\nProject overlay body");
     assert.deepEqual(resolved?.skills, ["brainstorm", "web", "plan"]);
   } finally {

@@ -1,6 +1,5 @@
 export interface RoutePlan {
   targets: string[];
-  mentions: string[];
 }
 
 export type RouteResult =

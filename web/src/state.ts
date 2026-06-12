@@ -1,6 +1,6 @@
 // Shared mutable UI state. Views read it; actions/events mutate it and re-render.
 export const state = {
-  app: null,
+  workspaces: [],
   snapshot: null,
   workspaceFiles: [],
   globalFiles: [],
@@ -11,8 +11,6 @@ export const state = {
   workspaceRaw: false,
   globalRaw: false,
   selectedGlobalSection: "general",
-  selectedGlobalAgentId: null,
-  selectedGlobalAgentView: "config",
   settingsOpen: false,
   eventSource: null,
   error: "",
@@ -23,7 +21,6 @@ export const state = {
   // Active voice call binding from the server (visible to every tab); the
   // tab that started the call also holds the audio session (see voice.ts).
   voice: null,
-  voiceStatus: "idle",
   voicePendingAgentId: null,
   voiceStatusText: "",
   micMuted: false,

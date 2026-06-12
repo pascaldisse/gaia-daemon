@@ -7,7 +7,7 @@ test("routes to the default agent when no mention is present", () => {
 
   assert.deepEqual(result, {
     ok: true,
-    plan: { targets: ["gaia"], mentions: [] },
+    plan: { targets: ["gaia"] },
   });
 });
 
@@ -16,7 +16,7 @@ test("routes mentioned agents in first-mentioned order without duplicates", () =
 
   assert.deepEqual(result, {
     ok: true,
-    plan: { targets: ["sidia", "gaia"], mentions: ["sidia", "gaia"] },
+    plan: { targets: ["sidia", "gaia"] },
   });
 });
 

@@ -16,14 +16,13 @@ test("missing room state reads as safe defaults", async () => {
   }
 });
 
-test("room state writes and reads active roles, cursors, and pi sessions", async () => {
+test("room state writes and reads active roles, cursors, and runtime details", async () => {
   const temp = await createTempDir();
   try {
     const path = join(temp.path, "rooms", "default", "state.json");
     const state = {
       activeRoles: { gaia: "brainstorm" },
       agentCursors: { gaia: 12 },
-      piSessions: { gaia: { id: "room-gaia" } },
       runtimeDetails: {
         turn: {
           thinkingStarted: true,
@@ -60,7 +59,6 @@ test("partial room state merges with defaults and filters bad values", async () 
     assert.deepEqual(await readRoomState(path), {
       activeRoles: { gaia: "plan" },
       agentCursors: { gaia: 2 },
-      piSessions: {},
       runtimeDetails: {},
     });
   } finally {

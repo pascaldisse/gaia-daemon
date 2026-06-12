@@ -14,7 +14,6 @@ test("classifies unmute's synthetic greeting turn", () => {
     ]),
   );
   assert.equal(turn?.kind, "greeting");
-  assert.equal(turn?.userText, "");
   assert.match(turn?.agentMessage ?? "", /voice call/i);
 });
 
@@ -28,7 +27,6 @@ test("a literal 'Hello.' later in the call is a real user turn", () => {
     ]),
   );
   assert.equal(turn?.kind, "user");
-  assert.equal(turn?.userText, "Hello.");
 });
 
 test("classifies the silence marker as a nudge, not a user message", () => {
@@ -41,7 +39,6 @@ test("classifies the silence marker as a nudge, not a user message", () => {
     ]),
   );
   assert.equal(turn?.kind, "silence");
-  assert.equal(turn?.userText, "");
 });
 
 test("classifies a normal spoken turn", () => {
@@ -54,7 +51,6 @@ test("classifies a normal spoken turn", () => {
     ]),
   );
   assert.equal(turn?.kind, "user");
-  assert.equal(turn?.userText, "what files are in this project");
   assert.equal(turn?.agentMessage, "what files are in this project");
 });
 

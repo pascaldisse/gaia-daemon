@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readdir, rename } from "node:fs/promises";
+import { join } from "node:path";
+import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
+import { agentConfigTemplate } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
 interface RawAgentConfig {
@@ -8,7 +10,6 @@ interface RawAgentConfig {
   displayName?: string;
   icon?: string;
   voice?: unknown;
-  runtime?: string;
   tools?: unknown;
   model?: AgentModelConfig;
   thinking?: AgentDefinition["thinking"];
@@ -18,39 +19,22 @@ function stringList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
 }
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (existsSync(path)) return;
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, "utf8");
-}
-
 async function mkdirIfMissing(path: string): Promise<void> {
   if (existsSync(path)) return;
   await mkdir(path, { recursive: true });
 }
 
-async function writePersonaFileIfMissing(newPath: string, legacyPath: string, content: string): Promise<void> {
-  if (existsSync(newPath) || existsSync(legacyPath)) return;
-  await writeIfMissing(newPath, content);
-}
-
-function firstExisting(paths: string[]): string | undefined {
-  return paths.find((path) => existsSync(path));
-}
-
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function agentJson(id: string, displayName: string, icon: string, tools: string[]): string {
-  return json({
-    id,
-    displayName,
-    icon,
-    runtime: "pi",
-    thinking: "medium",
-    tools,
-  });
+// Pre-release layouts kept persona files at the agent root. Move them into
+// persona/ once; after this every code path knows a single layout.
+async function migrateLegacyPersonaFiles(dir: string, names: string[]): Promise<void> {
+  const personaDir = join(dir, "persona");
+  for (const name of names) {
+    const legacyPath = join(dir, name);
+    const newPath = join(personaDir, name);
+    if (!existsSync(legacyPath) || existsSync(newPath)) continue;
+    await mkdir(personaDir, { recursive: true });
+    await rename(legacyPath, newPath);
+  }
 }
 
 async function ensureDefaultAgent(
@@ -63,12 +47,11 @@ async function ensureDefaultAgent(
 ): Promise<void> {
   const dir = join(agentsDir, id);
   const personaDir = join(dir, "persona");
-  const legacySoulPath = join(dir, "SOUL.md");
-  const legacyMemoryPath = join(dir, "MEMORY.md");
 
-  await writeIfMissing(join(dir, "agent.json"), agentJson(id, displayName, icon, tools));
-  await writePersonaFileIfMissing(join(personaDir, "SOUL.md"), legacySoulPath, soul);
-  await writePersonaFileIfMissing(join(personaDir, "MEMORY.md"), legacyMemoryPath, `# ${displayName} Memory\n\n`);
+  await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
+  await writeIfMissing(join(dir, "agent.json"), jsonText(agentConfigTemplate(id, displayName, icon, tools)));
+  await writeIfMissing(join(personaDir, "SOUL.md"), soul);
+  await writeIfMissing(join(personaDir, "MEMORY.md"), `# ${displayName} Memory\n\n`);
   await mkdirIfMissing(join(personaDir, "roles"));
 }
 
@@ -101,13 +84,8 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
   );
 }
 
-async function readJson(path: string): Promise<RawAgentConfig> {
-  if (!existsSync(path)) return {};
-  return (JSON.parse(await readFile(path, "utf8")) ?? {}) as RawAgentConfig;
-}
-
-async function ensureMemoryFile(path: string, displayName: string): Promise<void> {
-  await writeIfMissing(path, `# ${displayName} Memory\n\n`);
+async function readAgentConfig(path: string): Promise<RawAgentConfig> {
+  return ((await readJsonFile(path)) ?? {}) as RawAgentConfig;
 }
 
 function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAgentConfig {
@@ -130,25 +108,26 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
 
     const dir = join(globalAgentsDir, entry.name);
     const configPath = join(dir, "agent.json");
+    if (!existsSync(configPath)) continue;
+
+    await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
     const personaDir = join(dir, "persona");
     const rolesDir = join(personaDir, "roles");
-    const soulPath = firstExisting([join(personaDir, "SOUL.md"), join(dir, "SOUL.md")]);
-    const memoryPath = firstExisting([join(personaDir, "MEMORY.md"), join(dir, "MEMORY.md")]) ?? join(personaDir, "MEMORY.md");
-
-    if (!existsSync(configPath)) continue;
-    if (!soulPath) throw new Error(`Missing global agent soul file: ${join(personaDir, "SOUL.md")}`);
+    const soulPath = join(personaDir, "SOUL.md");
+    const memoryPath = join(personaDir, "MEMORY.md");
+    if (!existsSync(soulPath)) throw new Error(`Missing global agent soul file: ${soulPath}`);
 
     const projectDir = join(projectAgentsDir, entry.name);
+    if (existsSync(projectDir)) await migrateLegacyPersonaFiles(projectDir, ["INTENT.md"]);
     const projectPersonaDir = join(projectDir, "persona");
     const projectConfigPath = join(projectDir, "agent.json");
-    const projectIntentPath = firstExisting([join(projectPersonaDir, "INTENT.md"), join(projectDir, "INTENT.md")]);
+    const projectIntentPath = join(projectPersonaDir, "INTENT.md");
     const projectRolesDir = join(projectPersonaDir, "roles");
 
-    const raw = mergeAgentConfig(await readJson(configPath), await readJson(projectConfigPath));
+    const raw = mergeAgentConfig(await readAgentConfig(configPath), await readAgentConfig(projectConfigPath));
     const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : entry.name;
     const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : id;
 
-    await ensureMemoryFile(memoryPath, displayName);
     await mkdirIfMissing(rolesDir);
 
     agents[id] = {
@@ -156,7 +135,6 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       displayName,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
       voice: typeof raw.voice === "string" && raw.voice.trim() ? raw.voice.trim() : undefined,
-      runtime: typeof raw.runtime === "string" && raw.runtime.trim() ? raw.runtime : "pi",
       dir,
       configPath,
       personaDir,
@@ -170,7 +148,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
       projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,
       projectRolesDir: existsSync(projectRolesDir) ? projectRolesDir : undefined,
-      projectIntentPath,
+      projectIntentPath: existsSync(projectIntentPath) ? projectIntentPath : undefined,
     };
   }
 

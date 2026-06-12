@@ -3,7 +3,6 @@ import type { AgentDefinition } from "../agents/types.js";
 export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
-  runtime: string;
   transcriptWindow: number;
 }
 

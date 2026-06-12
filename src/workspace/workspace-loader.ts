@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
+import { jsonText, writeIfMissing } from "../lib/fs.js";
 import { defaultRoomState } from "../room/state.js";
 import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
@@ -26,7 +27,6 @@ function defaultConfig(): WorkspaceConfig {
   return {
     defaultAgent: "gaia",
     room: DEFAULT_ROOM,
-    runtime: "pi",
     transcriptWindow: 20,
   };
 }
@@ -37,22 +37,11 @@ function mergeConfig(raw: unknown): WorkspaceConfig {
   return {
     defaultAgent: typeof input.defaultAgent === "string" && input.defaultAgent.trim() ? input.defaultAgent : base.defaultAgent,
     room: typeof input.room === "string" && input.room.trim() ? input.room : base.room,
-    runtime: typeof input.runtime === "string" && input.runtime.trim() ? input.runtime : base.runtime,
     transcriptWindow:
       typeof input.transcriptWindow === "number" && Number.isFinite(input.transcriptWindow) && input.transcriptWindow > 0
         ? Math.floor(input.transcriptWindow)
         : base.transcriptWindow,
   };
-}
-
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (existsSync(path)) return;
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, "utf8");
-}
-
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 export function workspacePath(cwd: string): string {
@@ -64,13 +53,13 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
   const agentsDir = globalAgentsPath();
 
   await ensureGlobalDefaultAgents(agentsDir);
-  await writeIfMissing(workspaceFile(cwd, "config.json"), json(defaultConfig()));
+  await writeIfMissing(workspaceFile(cwd, "config.json"), jsonText(defaultConfig()));
   await writeIfMissing(
     join(cwd, "AGENTS.md"),
     `# Project Instructions\n\nThis file is project-local context for GAIA agents.\n\nAdd repo conventions, commands, constraints, and preferences here.\nCanonical agent identity lives in global personas under ~/.gaia/agents/.\n`,
   );
   await writeIfMissing(workspaceFile(cwd, "rooms", DEFAULT_ROOM, "transcript.jsonl"), "");
-  await writeIfMissing(workspaceFile(cwd, "rooms", DEFAULT_ROOM, "state.json"), json(defaultRoomState()));
+  await writeIfMissing(workspaceFile(cwd, "rooms", DEFAULT_ROOM, "state.json"), jsonText(defaultRoomState()));
 
   return { workspaceDir, globalAgentsDir: agentsDir };
 }
@@ -97,7 +86,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   }
 
   await writeIfMissing(join(roomsDir, config.room, "transcript.jsonl"), "");
-  await writeIfMissing(join(roomsDir, config.room, "state.json"), json(defaultRoomState()));
+  await writeIfMissing(join(roomsDir, config.room, "state.json"), jsonText(defaultRoomState()));
 
   return {
     rootDir: cwd,

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
 import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
-import { appendRoomEvent, countRoomEventLines, newRoomEventId, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
+import { appendRoomEvent, newRoomEventId, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
@@ -14,7 +14,7 @@ export class Room {
     this.statePath = roomStatePath(workspace.roomsDir, this.id);
   }
 
-  async addUserMessage(text: string, targets: string[], channel?: "voice"): Promise<UserRoomEvent> {
+  async addUserMessage(text: string, targets: string[], channel?: string): Promise<UserRoomEvent> {
     const event: UserRoomEvent = {
       id: newRoomEventId(),
       timestamp: new Date().toISOString(),
@@ -27,7 +27,7 @@ export class Room {
     return event;
   }
 
-  async addAgentMessage(author: string, text: string, channel?: "voice"): Promise<AgentRoomEvent> {
+  async addAgentMessage(author: string, text: string, channel?: string): Promise<AgentRoomEvent> {
     const event: AgentRoomEvent = {
       id: newRoomEventId(),
       timestamp: new Date().toISOString(),
@@ -45,10 +45,6 @@ export class Room {
 
   async eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }> {
     return readRoomEventsAfterCursor(this.transcriptPath, cursor);
-  }
-
-  async eventCursor(): Promise<number> {
-    return countRoomEventLines(this.transcriptPath);
   }
 
   async readState(): Promise<RoomState> {
