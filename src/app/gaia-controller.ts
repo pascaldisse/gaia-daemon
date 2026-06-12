@@ -13,6 +13,7 @@ import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
+import { sdkThinkingLevels } from "./settings-hints.js";
 import { runAgentTurn } from "./turn-runner.js";
 
 export interface AgentStatus {
@@ -22,6 +23,7 @@ export interface AgentStatus {
   modelLabel: string;
   tools: string[];
   voice?: string;
+  thinking?: string;
   activeRole?: string;
   status: "idle" | "running" | "error";
   isDefault: boolean;
@@ -70,6 +72,7 @@ export interface GaiaSnapshot {
   commands: typeof SLASH_COMMANDS;
   agents: AgentStatus[];
   tasks: GaiaTask[];
+  thinkingLevels: string[];
 }
 
 export type GaiaUiEvent =
@@ -102,6 +105,9 @@ export interface VoiceCallInfo {
   roomId: string;
   unmuteUrl: string;
   voice?: string;
+  // Thinking level in force for this call's spoken turns (auto-off or a
+  // manual mid-call change); the agent's own setting returns on hang-up.
+  thinking?: string;
   startedAt: string;
 }
 
@@ -120,6 +126,8 @@ export interface SendMessageOptions {
   channel?: "text" | "voice";
   // Synthetic prompts (call greetings, silence nudges) skip the user event.
   recordUserMessage?: boolean;
+  // Per-turn thinking level override (voice calls may force "off").
+  thinking?: string;
 }
 
 export class GaiaController {
@@ -207,6 +215,7 @@ export class GaiaController {
       commands: SLASH_COMMANDS,
       agents: this.agentStatuses(),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : [])],
+      thinkingLevels: sdkThinkingLevels(),
     };
   }
 
@@ -367,7 +376,7 @@ export class GaiaController {
 
       const turn = await runAgentTurn({
         runtime,
-        input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel },
+        input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
         isCancelled: () => this.cancelledTaskIds.has(task.id),
         onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
       });
@@ -517,6 +526,7 @@ export class GaiaController {
       modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
       tools: agent.tools,
       voice: agent.voice,
+      thinking: agent.thinking,
       activeRole: this.roomState.activeRoles[agent.id],
       status: this.activeTask?.targets.includes(agent.id) ? "running" : "idle",
       isDefault: agent.id === this.workspace.config.defaultAgent,

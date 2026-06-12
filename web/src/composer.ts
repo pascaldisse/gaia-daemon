@@ -1,6 +1,7 @@
 import { cancelActiveTask, sendMessage } from "./actions.ts";
+import { api } from "./api.ts";
 import { h } from "./dom.ts";
-import { render } from "./render.ts";
+import { render, setError } from "./render.ts";
 import { activeTask, state } from "./state.ts";
 
 export function isEditableElement(element) {
@@ -60,20 +61,59 @@ export function installComposerRouting() {
   );
 }
 
-function composerTargetStatus(snapshot, text) {
-  if (!snapshot) return "no room";
-  if (text.trimStart().startsWith("/")) return "command mode";
-
-  const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
+function composerTargets(snapshot, text) {
+  const knownAgents = new Set((snapshot?.agents ?? []).map((agent) => agent.id));
   const targets = [];
   for (const match of text.matchAll(/@([a-z0-9_-]+)/gi)) {
     const id = match[1];
     if (!knownAgents.has(id) || targets.includes(id)) continue;
     targets.push(id);
   }
+  if (targets.length === 0 && snapshot) targets.push(snapshot.workspace.defaultAgent);
+  return targets;
+}
 
-  if (targets.length === 0) targets.push(snapshot.workspace.defaultAgent);
-  return `talking to ${targets.map((target) => `@${target}`).join(", ")}`;
+function composerTargetStatus(snapshot, text) {
+  if (!snapshot) return "no room";
+  if (text.trimStart().startsWith("/")) return "command mode";
+  return composerTargets(snapshot, text).map((target) => `@${target}`).join(", ");
+}
+
+// Clickable thinking-effort indicator: cycles through the SDK levels. On a
+// call it changes only the call (reverts on hang-up); otherwise it persists
+// to the agent's agent.json.
+function ThinkingToggle(snapshot, text) {
+  if (!snapshot) return null;
+  const onCall = Boolean(state.voice);
+  const targetId = onCall ? state.voice.agentId : composerTargets(snapshot, text)[0];
+  const agent = (snapshot.agents ?? []).find((candidate) => candidate.id === targetId);
+  if (!agent) return null;
+
+  const effective = onCall ? (state.voice.thinking ?? agent.thinking ?? "off") : (agent.thinking ?? "off");
+  const levels = snapshot.thinkingLevels ?? [];
+  if (levels.length === 0) return null;
+
+  return h("button", {
+    type: "button",
+    class: "thinking-toggle",
+    title: `thinking effort for @${agent.id} - click to change${onCall ? " (this call only)" : ""}`,
+    onclick: async (event) => {
+      event.preventDefault();
+      const next = levels[(levels.indexOf(effective) + 1) % levels.length] ?? "off";
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/agents/${encodeURIComponent(agent.id)}/thinking`, {
+          method: "POST",
+          body: JSON.stringify({ level: next }),
+        });
+        if (onCall) state.voice.thinking = next;
+        else agent.thinking = next;
+        renderComposerOnly();
+      } catch (error) {
+        setError(error);
+      }
+    },
+    text: `\u{1F4AD} #${effective}`,
+  });
 }
 
 export function Composer() {
@@ -131,6 +171,8 @@ export function Composer() {
       "div",
       { class: "composer-row" },
       h("div", { class: "target-status", text: composerTargetStatus(snapshot, state.composerText) }),
+      ThinkingToggle(snapshot, state.composerText),
+      h("div", { class: "composer-spacer" }),
       h("button", { class: runningTask ? "send-button cancel" : "send-button", disabled: !snapshot, title: runningTask ? "stop agents" : "send", text: runningTask ? "x" : ">" }),
     ),
   );

@@ -17,9 +17,16 @@ class FakeSession implements PiSessionLike {
   disposed = false;
   reloads = 0;
   aborts = 0;
+  thinkingLevel = "medium";
+  thinkingChanges: string[] = [];
 
   constructor(id: string) {
     this.sessionId = id;
+  }
+
+  setThinkingLevel(level: string): void {
+    this.thinkingLevel = level;
+    this.thinkingChanges.push(level);
   }
 
   subscribe(listener: (event: any) => void): () => void {
@@ -158,6 +165,34 @@ test("PiRuntime reports the session's actual model as a model-info event", async
     const events = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     assert.deepEqual(events[0], { type: "model-info", provider: "fake-provider", modelId: "fake-model", subscription: false });
     assert.equal(runtime.modelLabel, "fake-provider/fake-model");
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("PiRuntime applies a per-turn thinking override and restores the base level after", async () => {
+  const { temp, project, workspace, agent } = await fixture();
+  try {
+    let created: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      created = new FakeSession("s1");
+      return { session: created };
+    };
+    const runtime = new PiRuntime(project, workspace, agent, new MemoryStore(), factory);
+
+    // Voice turn forces thinking off.
+    await collect(runtime.send({ roomId: "default", message: "one", transcript: [], channel: "voice", thinking: "off" }));
+    assert.equal(created?.thinkingLevel, "off");
+
+    // The next plain turn restores the session's own level.
+    await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
+    assert.equal(created?.thinkingLevel, "medium");
+    assert.deepEqual(created?.thinkingChanges, ["off", "medium"]);
+
+    // No redundant set calls when the level already matches.
+    await collect(runtime.send({ roomId: "default", message: "three", transcript: [] }));
+    assert.deepEqual(created?.thinkingChanges, ["off", "medium"]);
     runtime.dispose();
   } finally {
     await temp.cleanup();

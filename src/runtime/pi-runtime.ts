@@ -22,6 +22,8 @@ export interface PiSessionLike {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
   readonly model?: { provider: string; id: string } | undefined;
+  readonly thinkingLevel?: string;
+  setThinkingLevel?(level: string): void;
   subscribe(listener: (event: any) => void): () => void;
   prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
   abort(): Promise<void>;
@@ -55,6 +57,9 @@ interface ManagedPiSession {
   // prompt (only when changed), not the system prompt, so memory-tool writes
   // never force a session reload.
   lastMemoryContent?: string;
+  // Thinking level the session was created with; turns without an explicit
+  // override restore it (voice mode may have switched it off).
+  baseThinking?: string;
 }
 
 export function piRoomSessionDir(workspace: Pick<Workspace, "roomsDir">, roomId: string, agentId: string): string {
@@ -91,6 +96,7 @@ export class PiRuntime implements AgentRuntime {
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     const managed = await this.ensureSession(input);
     const session = managed.session;
+    this.applyThinkingLevel(managed, input.thinking);
 
     const sessionModel = session.model;
     if (sessionModel) {
@@ -181,6 +187,16 @@ export class PiRuntime implements AgentRuntime {
     this.sessions.clear();
   }
 
+  // Applies a per-turn thinking override (voice mode forces "off") and
+  // restores the session's own level on turns without one.
+  private applyThinkingLevel(managed: ManagedPiSession, override: string | undefined): void {
+    const session = managed.session;
+    if (!session.setThinkingLevel) return;
+    const target = override ?? managed.baseThinking;
+    if (target === undefined || session.thinkingLevel === target) return;
+    session.setThinkingLevel(target);
+  }
+
   async abort(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((managed) => managed.session.abort()));
   }
@@ -265,12 +281,15 @@ export class PiRuntime implements AgentRuntime {
 
     if (modelFallbackMessage) console.warn(modelFallbackMessage);
 
-    return {
+    const managed: ManagedPiSession = {
       session: session as PiSessionLike,
       loader,
       systemPromptRef,
       skillPathsKey: key,
     };
+    const baseThinking = (session as PiSessionLike).thinkingLevel;
+    if (baseThinking !== undefined) managed.baseThinking = baseThinking;
+    return managed;
   }
 
   private async buildSystemPrompt(input: AgentInput): Promise<string> {

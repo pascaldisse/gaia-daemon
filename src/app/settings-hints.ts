@@ -16,7 +16,7 @@ type ToolName = keyof ToolsOptions;
  * (e.g. "tools" for the array itself, "model.provider" for a nested leaf).
  */
 
-export type FieldInput = "select" | "multiselect" | "number" | "text";
+export type FieldInput = "select" | "multiselect" | "number" | "boolean" | "text";
 
 export interface FieldHintOption {
   value: string;
@@ -156,10 +156,21 @@ function agentJsonHints(sources: HintSources): FileHints {
   };
 }
 
+function voiceJsonHints(): FileHints {
+  return {
+    autoStart: { input: "boolean" },
+    speakOnSilence: { input: "boolean" },
+    disableThinking: { input: "boolean" },
+    startTimeoutSec: { input: "number" },
+    silenceDelaySec: { input: "number" },
+  };
+}
+
 export function buildFileHints(file: { label: string; kind: string }, sources: HintSources): FileHints | undefined {
   if (file.kind !== "json") return undefined;
   const basename = file.label.split("/").pop() ?? file.label;
   if (basename === "config.json") return configJsonHints(sources);
   if (basename === "agent.json") return agentJsonHints(sources);
+  if (basename === "voice.json") return voiceJsonHints();
   return undefined;
 }

@@ -18,11 +18,19 @@ function globalAgentView(file) {
   return "persona";
 }
 
+function isVoiceSettingsFile(file) {
+  return !globalAgentInfo(file) && (file?.label === "voice.json" || file?.label?.endsWith("/voice.json"));
+}
+
+function isGeneralFile(file) {
+  return !globalAgentInfo(file) && !isVoiceSettingsFile(file);
+}
+
 function globalSettingsSections(files = state.globalFiles) {
-  const generalFiles = files.filter((file) => !globalAgentInfo(file));
   const agentIds = [...new Set(files.map((file) => globalAgentInfo(file)?.agentId).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   return [
-    { id: "general", label: "General", count: generalFiles.length },
+    { id: "general", label: "General", count: files.filter(isGeneralFile).length },
+    { id: "voice", label: "Voice", count: files.filter(isVoiceSettingsFile).length },
     { id: "agents", label: "Agents", count: agentIds.length },
   ];
 }
@@ -63,7 +71,8 @@ function firstAgentViewWithFiles(group, preferred = state.selectedGlobalAgentVie
 }
 
 function currentGlobalFiles() {
-  if (state.selectedGlobalSection === "general") return state.globalFiles.filter((file) => !globalAgentInfo(file));
+  if (state.selectedGlobalSection === "general") return state.globalFiles.filter(isGeneralFile);
+  if (state.selectedGlobalSection === "voice") return state.globalFiles.filter(isVoiceSettingsFile);
   const group = selectedGlobalAgentGroup();
   if (!group) return [];
   const files = group[state.selectedGlobalAgentView] ?? [];
@@ -75,7 +84,7 @@ export function syncGlobalSettingsSelection() {
   if (selected) {
     const info = globalAgentInfo(selected);
     if (!info) {
-      state.selectedGlobalSection = "general";
+      state.selectedGlobalSection = isVoiceSettingsFile(selected) ? "voice" : "general";
       return;
     }
     state.selectedGlobalSection = "agents";
@@ -84,7 +93,7 @@ export function syncGlobalSettingsSelection() {
     return;
   }
 
-  const generalFiles = state.globalFiles.filter((file) => !globalAgentInfo(file));
+  const generalFiles = state.globalFiles.filter(isGeneralFile);
   const group = selectedGlobalAgentGroup();
 
   if (state.selectedGlobalSection === "general" && generalFiles.length > 0) {
@@ -107,7 +116,7 @@ export function syncGlobalSettingsSelection() {
 
 async function selectGlobalSection(sectionId) {
   state.selectedGlobalSection = sectionId;
-  if (sectionId === "general") {
+  if (sectionId !== "agents") {
     const files = currentGlobalFiles();
     if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
   } else {
@@ -236,9 +245,9 @@ export function SettingsModal() {
           ),
         ),
       ),
-      state.selectedGlobalSection === "general"
+      state.selectedGlobalSection !== "agents"
         ? [
-            FileSelector(state.globalFiles.filter((file) => !globalAgentInfo(file)), state.selectedGlobalFileId, async (id) => {
+            FileSelector(currentGlobalFiles(), state.selectedGlobalFileId, async (id) => {
               state.selectedGlobalFileId = id;
               syncGlobalSettingsSelection();
               await loadSelectedGlobalFile();
@@ -435,10 +444,24 @@ function HintedNumber(entryPath, key, currentValue) {
   );
 }
 
+function HintedBoolean(entryPath, key, hint, currentValue) {
+  const select = h("select", {
+    "data-json-path": JSON.stringify(entryPath),
+    "data-path-key": pathKey(entryPath),
+    "data-json-boolean": "1",
+  });
+  if (hint.optional || (currentValue !== true && currentValue !== false)) select.append(h("option", { value: "", text: "(not set)" }));
+  select.append(h("option", { value: "true", text: "true" }));
+  select.append(h("option", { value: "false", text: "false" }));
+  select.value = currentValue === true ? "true" : currentValue === false ? "false" : "";
+  return h("label", { class: "setting-row" }, h("span", { text: key }), select);
+}
+
 function hintedField(entryPath, key, hint, currentValue, parsedRoot) {
   if (hint.input === "select") return HintedSelect(entryPath, key, hint, currentValue, parsedRoot);
   if (hint.input === "multiselect") return HintedMultiselect(entryPath, key, hint, currentValue);
   if (hint.input === "number") return HintedNumber(entryPath, key, currentValue);
+  if (hint.input === "boolean") return HintedBoolean(entryPath, key, hint, currentValue);
   return null;
 }
 
@@ -605,6 +628,11 @@ function serializeSettings(view, kind) {
       if (element.dataset.jsonMulti !== undefined) {
         const checked = [...element.querySelectorAll("input[type=checkbox]")].filter((box) => box.checked).map((box) => box.dataset.value);
         setJsonPathValue(next, path, checked);
+        continue;
+      }
+      if (element.dataset.jsonBoolean !== undefined) {
+        if (element.value === "") deleteJsonPathValue(next, path);
+        else setJsonPathValue(next, path, element.value === "true");
         continue;
       }
       if (element.tagName === "SELECT") {
