@@ -5,3 +5,8 @@ dist/
 .DS_Store
 npm-debug.log*
 tmp/
+
+# unmute runtime artifacts (the source is vendored; these are rebuilt locally)
+unmute/.uv-cache/
+unmute/.uv-python/
+unmute/models/

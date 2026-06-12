@@ -4,8 +4,15 @@
 // has something to show; missing or invalid keys fall back to defaults.
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gaiaHome } from "../workspace/workspace-loader.js";
+
+// The unmute voice stack is vendored into the repo (unmute/, MIT licensed,
+// Copyright 2025 Kyutai), so the default checkout is the bundled one.
+function bundledUnmuteDir(): string {
+  return resolve(fileURLToPath(new URL("../../unmute", import.meta.url)));
+}
 
 export interface VoiceSettings {
   /** unmute backend the browser connects to (and GAIA health-checks). */
@@ -26,7 +33,7 @@ export interface VoiceSettings {
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   unmuteUrl: "ws://127.0.0.1:8000",
-  unmuteDir: "/Users/pascaldisse/projects/Codex/AIWaifu/unmute",
+  unmuteDir: bundledUnmuteDir(),
   autoStart: true,
   startTimeoutSec: 180,
   speakOnSilence: true,

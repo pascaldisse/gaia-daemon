@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - prod
+  pull_request:
+
+jobs:
+  # Enable again when we don't have private dependencies
+  #build-docker-images:
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - name: Checkout code
+  #      uses: actions/checkout@v3
+#
+  #    - name: Set up a builder (we don't want to load the images)
+  #      run: docker buildx create --name mybuilder --use
+#
+  #    - name: Build all docker images
+  #      run: docker buildx bake --progress=plain -f swarm-deploy.yml workers frontend tts
+  #      env:
+  #        DOMAIN: dummy
+
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.12"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: cd frontend && pnpm install
+
+      - name: Run pre-commit
+        run: |
+          uv run pre-commit run --all-files
+          # Some redundancy here because some hooks will run in any stage,
+          # but I don't think there is a cleaner way to make sure they all run
+          uv run pre-commit run --all-files --hook-stage pre-push
+
+  backend-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.12"
+
+      - name: Run backend unit tests
+        run: uv run pytest -v
