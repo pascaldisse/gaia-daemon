@@ -133,19 +133,23 @@ room transcript as typed messages. The agent's text replies still appear in
 the chat (marked 🎙), you can still type, and what you say is transcribed
 live into the composer box.
 
-Start the voice services first (STT, TTS, and the unmute backend pointed at
-GAIA's built-in OpenAI-compatible endpoint):
-
-```bash
-scripts/voice-stack.sh                 # uses UNMUTE_DIR, GAIA_URL env overrides
-```
-
-Then click the call button next to an agent. Hang up with the same button.
+There is nothing to start by hand. Clicking the call button boots whatever
+parts of the voice stack (STT, TTS, unmute backend) are not already running,
+shows the startup progress in the topbar (the first call loads models, so it
+takes a moment), and connects when the stack reports healthy. Hanging up
+stops the services GAIA started; externally started ones are left alone. If
+a default port is taken by some other process, GAIA transparently runs the
+service on a free port instead.
 
 - the agent's optional `voice` field in `agent.json` selects the TTS voice
-- `~/.gaia/app.json` may set `{ "voice": { "unmuteUrl": "ws://127.0.0.1:8000" } }`
-  if the unmute backend runs elsewhere
+- service logs land in `~/.gaia/logs/voice/`
+- `~/.gaia/app.json` may set
+  `{ "voice": { "unmuteUrl": "...", "unmuteDir": "...", "autoStart": true, "startTimeoutSec": 180 } }`
+  to point at a different unmute backend or checkout, disable auto-start, or
+  give slow first launches more time
 - interrupting the agent mid-sentence cancels its turn, like Esc on a text task
+- `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
+  detect and reuse it instead of starting its own)
 
 ## Roles
 

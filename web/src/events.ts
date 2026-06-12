@@ -30,8 +30,7 @@ export function connectEvents() {
     render();
   });
   source.addEventListener("voice-status", (event) => {
-    const payload = JSON.parse(event.data);
-    applyVoiceStatus(payload.voice);
+    applyVoiceStatus(JSON.parse(event.data));
   });
   source.addEventListener("model-info", (event) => {
     const payload = JSON.parse(event.data);

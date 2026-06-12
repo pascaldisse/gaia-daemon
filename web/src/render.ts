@@ -68,10 +68,12 @@ function Topbar() {
       h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
     ),
     h("div", {
-      class: state.voice ? "status on-call" : "status",
-      text: snapshot
-        ? `${state.voice ? `on call:@${state.voice.agentId} ` : ""}room:${snapshot.room.id} default:@${snapshot.workspace.defaultAgent}`
-        : "idle",
+      class: state.voice || state.voiceStatusText ? "status on-call" : "status",
+      text: state.voiceStatusText
+        ? state.voiceStatusText
+        : snapshot
+          ? `${state.voice ? `on call:@${state.voice.agentId} ` : ""}room:${snapshot.room.id} default:@${snapshot.workspace.defaultAgent}`
+          : "idle",
     }),
   );
 }

@@ -56,9 +56,14 @@ same model, tools included.
       when the spoken turn commits to the room
 - [x] agent `voice` field is sent as the unmute session voice
 - [x] on-call indicators (agent row, topbar) synced across tabs via the
-      `voice-status` SSE event; `scripts/voice-stack.sh` starts STT/TTS/
-      backend pointed at GAIA; `voice.unmuteUrl` in `~/.gaia/app.json`
-      overrides the backend address (default `ws://127.0.0.1:8000`)
+      `voice-status` SSE event
+- [x] zero-setup lifecycle (src/app/voice-stack.ts): dialing auto-starts
+      missing services (probed via `/api/build_info` and `/v1/health`, so a
+      foreign process on a port triggers a free-port fallback instead of a
+      false positive), startup progress streams to the topbar, hang-up stops
+      exactly the services GAIA spawned; logs in `~/.gaia/logs/voice/`;
+      `voice.{unmuteUrl,unmuteDir,autoStart,startTimeoutSec}` in
+      `~/.gaia/app.json`; exit hooks prevent orphans across dev restarts
 
 ### Voice follow-ups
 
