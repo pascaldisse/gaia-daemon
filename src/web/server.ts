@@ -6,11 +6,20 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EditableFileRegistry, type EditableFileContent } from "../app/editable-files.js";
-import { GaiaController, type GaiaUiEvent } from "../app/gaia-controller.js";
+import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources } from "../app/settings-hints.js";
+import {
+  classifyVoiceTurn,
+  completionChunk,
+  completionDone,
+  completionPayload,
+  isStreamingRequest,
+  modelListPayload,
+  newCompletionId,
+} from "../app/voice-bridge.js";
 import { WorkspaceRegistry, type WorkspaceRecord } from "../app/workspace-registry.js";
 import { KNOWN_RUNTIMES } from "../runtime/runtime-factory.js";
-import { loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
+import { gaiaHome, loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 interface WebServerOptions {
@@ -40,6 +49,7 @@ const MIME: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".webp": "image/webp",
+  ".wasm": "application/wasm",
 };
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -169,6 +179,8 @@ export class GaiaWebServer {
   private readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
   private readonly pendingReloads = new Set<string>();
   private devReloadTimer: NodeJS.Timeout | undefined;
+  // One voice call at a time; unmute's chat-completions requests bind to it.
+  private activeCall: { workspaceId: string; info: VoiceCallInfo } | undefined;
 
   constructor(private readonly options: WebServerOptions) {}
 
@@ -220,6 +232,10 @@ export class GaiaWebServer {
       await this.handleApi(request, response, url);
       return;
     }
+    if (url.pathname.startsWith("/v1/")) {
+      await this.handleOpenAi(request, response, url);
+      return;
+    }
     await this.serveStatic(response, url.pathname);
   }
 
@@ -264,7 +280,11 @@ export class GaiaWebServer {
     const snapshotMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/snapshot$/);
     if (request.method === "GET" && snapshotMatch) {
       const controller = await this.controllerFor(decodeURIComponent(snapshotMatch[1] ?? ""));
-      json(response, 200, { snapshot: await controller.getSnapshot(), workspaceFiles: await this.files.listWorkspace(controller.workspaceId) });
+      json(response, 200, {
+        snapshot: await controller.getSnapshot(),
+        workspaceFiles: await this.files.listWorkspace(controller.workspaceId),
+        voice: this.voiceFor(controller.workspaceId),
+      });
       return;
     }
 
@@ -296,6 +316,14 @@ export class GaiaWebServer {
         return;
       }
       json(response, 202, { task: await controller.cancelActiveTask() });
+      return;
+    }
+
+    const voiceMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/voice\/(start|stop)$/);
+    if (request.method === "POST" && voiceMatch) {
+      const workspaceId = decodeURIComponent(voiceMatch[1] ?? "");
+      if (voiceMatch[2] === "start") await this.handleVoiceStart(request, response, workspaceId);
+      else this.handleVoiceStop(response, workspaceId);
       return;
     }
 
@@ -342,6 +370,7 @@ export class GaiaWebServer {
       globalFiles,
       snapshot: current ? await (await this.controllerFor(current)).getSnapshot() : undefined,
       workspaceFiles: current ? await this.files.listWorkspace(current) : [],
+      voice: this.voiceFor(current),
     });
   }
 
@@ -442,6 +471,157 @@ export class GaiaWebServer {
     this.controllers.delete(workspaceId);
     const fresh = await this.controllerFor(workspaceId);
     this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
+  }
+
+  private voiceFor(workspaceId: string | undefined): VoiceCallInfo | null {
+    if (!workspaceId || !this.activeCall || this.activeCall.workspaceId !== workspaceId) return null;
+    return this.activeCall.info;
+  }
+
+  private async handleVoiceStart(request: IncomingMessage, response: ServerResponse, workspaceId: string): Promise<void> {
+    const body = await parseBody(request);
+    const agentId = stringField(body, "agentId");
+    const controller = await this.controllerFor(workspaceId);
+    const agent = agentId ? controller.workspace.agents[agentId] : undefined;
+    if (!agent) {
+      json(response, 404, { error: `Unknown agent: ${agentId ?? "(missing agentId)"}` });
+      return;
+    }
+    if (this.activeCall) {
+      json(response, 409, { error: `Voice call already active with @${this.activeCall.info.agentId}` });
+      return;
+    }
+
+    const info: VoiceCallInfo = {
+      agentId: agent.id,
+      roomId: controller.roomId,
+      unmuteUrl: await this.readUnmuteUrl(),
+      ...(agent.voice ? { voice: agent.voice } : {}),
+      startedAt: new Date().toISOString(),
+    };
+    this.activeCall = { workspaceId, info };
+    this.broadcast({ type: "voice-status", workspaceId, roomId: controller.roomId, voice: info });
+    json(response, 200, { voice: info });
+  }
+
+  private handleVoiceStop(response: ServerResponse, workspaceId: string): void {
+    if (this.activeCall && this.activeCall.workspaceId === workspaceId) {
+      const ended = this.activeCall;
+      this.activeCall = undefined;
+      this.broadcast({ type: "voice-status", workspaceId, roomId: ended.info.roomId, voice: null });
+    }
+    json(response, 200, { voice: null });
+  }
+
+  // The unmute backend speaks to GAIA as if it were an OpenAI-compatible LLM
+  // server (KYUTAI_LLM_URL points here). Each voice turn arrives as a
+  // chat-completions request; the reply streams back to TTS while the same
+  // turn flows through the controller into the room transcript and SSE.
+  private async handleOpenAi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    if (request.method === "GET" && url.pathname === "/v1/models") {
+      json(response, 200, modelListPayload());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+      await this.handleChatCompletions(request, response);
+      return;
+    }
+    json(response, 404, { error: { message: "Not found", type: "invalid_request_error" } });
+  }
+
+  private async handleChatCompletions(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const call = this.activeCall;
+    if (!call) {
+      json(response, 503, { error: { message: "No active GAIA voice call. Start one from the GAIA web UI.", type: "unavailable" } });
+      return;
+    }
+
+    const body = await parseBody(request);
+    const turn = classifyVoiceTurn(body);
+    if (!turn) {
+      json(response, 400, { error: { message: "Request contains no user message", type: "invalid_request_error" } });
+      return;
+    }
+
+    const controller = await this.controllerFor(call.workspaceId);
+    await this.waitForIdle(controller);
+
+    const task = await controller.sendMessage(turn.agentMessage, {
+      targets: [call.info.agentId],
+      channel: "voice",
+      recordUserMessage: turn.kind === "user",
+    });
+
+    const completionId = newCompletionId();
+    const streaming = isStreamingRequest(body);
+    if (streaming) {
+      response.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+      });
+    }
+
+    let reply = "";
+    let settled = false;
+    await new Promise<void>((resolveTurn) => {
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        resolveTurn();
+      };
+      const unsubscribe = controller.subscribe((event) => {
+        if (event.type === "text-delta" && event.taskId === task.id) {
+          reply += event.delta;
+          if (streaming) response.write(completionChunk(completionId, event.delta, null));
+        }
+        if ((event.type === "task-end" || event.type === "task-error") && event.task.id === task.id) finish();
+      });
+      // unmute aborts the request when the user interrupts the agent.
+      response.on("close", () => {
+        if (settled) return;
+        if (controller.activeTaskId === task.id) void controller.cancelActiveTask().catch(() => {});
+        finish();
+      });
+    });
+
+    if (response.writableEnded) return;
+    if (streaming) {
+      response.write(completionChunk(completionId, undefined, "stop"));
+      response.write(completionDone());
+      response.end();
+      return;
+    }
+    json(response, 200, completionPayload(completionId, reply));
+  }
+
+  // A typed text task may be running when a voice turn arrives; give it a
+  // moment to finish instead of failing the spoken turn outright.
+  private async waitForIdle(controller: GaiaController, timeoutMs = 20000): Promise<void> {
+    if (!controller.hasActiveTask) return;
+    await new Promise<void>((resolveIdle, reject) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        reject(new Error("Room is busy with another task"));
+      }, timeoutMs);
+      const unsubscribe = controller.subscribe((event) => {
+        if (event.type !== "task-end" && event.type !== "task-error") return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolveIdle();
+      });
+    });
+  }
+
+  private async readUnmuteUrl(): Promise<string> {
+    try {
+      const raw = JSON.parse(await readFile(join(gaiaHome(), "app.json"), "utf8")) as { voice?: { unmuteUrl?: unknown } };
+      if (typeof raw.voice?.unmuteUrl === "string" && raw.voice.unmuteUrl) return raw.voice.unmuteUrl;
+    } catch {
+      // Fall through to the default unmute backend address.
+    }
+    return "ws://127.0.0.1:8000";
   }
 
   private async fileHints(file: EditableFileContent, workspaceId?: string): Promise<FileHints | undefined> {

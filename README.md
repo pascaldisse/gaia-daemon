@@ -123,6 +123,30 @@ What should we build next?
 # Gaia responds, then Terry responds
 ```
 
+## Voice calls
+
+Each agent row in the room panel has a call button (📞). On a call you talk
+naturally — no push-to-talk, no Enter. The [unmute](https://github.com/kyutai-labs/unmute)
+stack does the audio work (STT, TTS, turn-taking, barge-in) while GAIA stays
+the brain: every spoken turn runs through the same agent, model, tools, and
+room transcript as typed messages. The agent's text replies still appear in
+the chat (marked 🎙), you can still type, and what you say is transcribed
+live into the composer box.
+
+Start the voice services first (STT, TTS, and the unmute backend pointed at
+GAIA's built-in OpenAI-compatible endpoint):
+
+```bash
+scripts/voice-stack.sh                 # uses UNMUTE_DIR, GAIA_URL env overrides
+```
+
+Then click the call button next to an agent. Hang up with the same button.
+
+- the agent's optional `voice` field in `agent.json` selects the TTS voice
+- `~/.gaia/app.json` may set `{ "voice": { "unmuteUrl": "ws://127.0.0.1:8000" } }`
+  if the unmute backend runs elsewhere
+- interrupting the agent mid-sentence cancels its turn, like Esc on a text task
+
 ## Roles
 
 A role is a markdown prompt overlay for an agent.

@@ -1,5 +1,6 @@
 import { state } from "./state.ts";
 import { render, renderTranscriptOnly } from "./render.ts";
+import { applyVoiceStatus, voiceTurnCommitted } from "./voice.ts";
 
 export function connectEvents() {
   const snapshot = state.snapshot;
@@ -25,7 +26,12 @@ export function connectEvents() {
     const payload = JSON.parse(event.data);
     if (!state.snapshot) return;
     state.snapshot.room.events = mergeRoomEvent(state.snapshot.room.events, payload.event);
+    if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
     render();
+  });
+  source.addEventListener("voice-status", (event) => {
+    const payload = JSON.parse(event.data);
+    applyVoiceStatus(payload.voice);
   });
   source.addEventListener("model-info", (event) => {
     const payload = JSON.parse(event.data);

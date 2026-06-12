@@ -14,24 +14,26 @@ export class Room {
     this.statePath = roomStatePath(workspace.roomsDir, this.id);
   }
 
-  async addUserMessage(text: string, targets: string[]): Promise<UserRoomEvent> {
+  async addUserMessage(text: string, targets: string[], channel?: "voice"): Promise<UserRoomEvent> {
     const event: UserRoomEvent = {
       id: newRoomEventId(),
       timestamp: new Date().toISOString(),
       author: "user",
       targets,
       text,
+      ...(channel ? { channel } : {}),
     };
     await appendRoomEvent(this.transcriptPath, event);
     return event;
   }
 
-  async addAgentMessage(author: string, text: string): Promise<AgentRoomEvent> {
+  async addAgentMessage(author: string, text: string, channel?: "voice"): Promise<AgentRoomEvent> {
     const event: AgentRoomEvent = {
       id: newRoomEventId(),
       timestamp: new Date().toISOString(),
       author,
       text,
+      ...(channel ? { channel } : {}),
     };
     await appendRoomEvent(this.transcriptPath, event);
     return event;

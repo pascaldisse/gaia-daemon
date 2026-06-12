@@ -20,6 +20,11 @@ export const state = {
   completionIndex: 0,
   completionHidden: false,
   expandedActivities: new Set(),
+  // Active voice call binding from the server (visible to every tab); the
+  // tab that started the call also holds the audio session (see voice.ts).
+  voice: null,
+  voiceStatus: "idle",
+  voicePendingAgentId: null,
 };
 
 export function activeTask(snapshot = state.snapshot) {

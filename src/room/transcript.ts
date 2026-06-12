@@ -8,6 +8,8 @@ export interface UserRoomEvent {
   author: "user";
   targets: string[];
   text: string;
+  // Present when the message was spoken on a voice call rather than typed.
+  channel?: "voice";
 }
 
 export interface AgentRoomEvent {
@@ -15,6 +17,7 @@ export interface AgentRoomEvent {
   timestamp: string;
   author: string;
   text: string;
+  channel?: "voice";
 }
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;

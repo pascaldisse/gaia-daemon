@@ -5,6 +5,7 @@ import { LinkedText, PathText } from "./links.ts";
 import { openAgentSettings, SettingsModal, WorkspacePanel } from "./settings.ts";
 import { state } from "./state.ts";
 import { Transcript } from "./transcript.ts";
+import { toggleCall } from "./voice.ts";
 
 export function setError(error) {
   state.error = error instanceof Error ? error.message : String(error ?? "");
@@ -66,7 +67,12 @@ function Topbar() {
       h("strong", {}, snapshot ? PathText(snapshot.workspace.rootDir) : LinkedText("No workspace selected")),
       h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
     ),
-    h("div", { class: "status", text: snapshot ? `room:${snapshot.room.id} default:@${snapshot.workspace.defaultAgent}` : "idle" }),
+    h("div", {
+      class: state.voice ? "status on-call" : "status",
+      text: snapshot
+        ? `${state.voice ? `on call:@${state.voice.agentId} ` : ""}room:${snapshot.room.id} default:@${snapshot.workspace.defaultAgent}`
+        : "idle",
+    }),
   );
 }
 
@@ -82,19 +88,32 @@ function RoomPanel() {
     h(
       "div",
       { class: "agent-list" },
-      agents.map((agent) =>
-        h(
-          "button",
-          { class: "agent-row", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
-          h("span", { class: `dot ${agent.status}` }),
-          h("strong", { text: `${agent.icon} @${agent.id}` }),
-          h("small", {
-            text: [agent.isDefault ? "default" : "", agent.activeRole ? `role:${agent.activeRole}` : "", agent.voice ? `voice:${agent.voice}` : "", agent.modelLabel]
-              .filter(Boolean)
-              .join(" / "),
+      agents.map((agent) => {
+        const onCall = state.voice?.agentId === agent.id;
+        const connecting = state.voicePendingAgentId === agent.id;
+        return h(
+          "div",
+          { class: `agent-row ${onCall ? "on-call" : ""}` },
+          h(
+            "button",
+            { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
+            h("span", { class: `dot ${agent.status}` }),
+            h("strong", { text: `${agent.icon} @${agent.id}` }),
+            h("small", {
+              text: [agent.isDefault ? "default" : "", agent.activeRole ? `role:${agent.activeRole}` : "", agent.voice ? `voice:${agent.voice}` : "", agent.modelLabel]
+                .filter(Boolean)
+                .join(" / "),
+            }),
+          ),
+          h("button", {
+            class: `call-button ${onCall ? "active" : ""}`,
+            title: onCall ? `hang up @${agent.id}` : `start voice call with @${agent.id}`,
+            disabled: connecting || (Boolean(state.voice) && !onCall),
+            onclick: () => void toggleCall(agent.id),
+            text: connecting ? "..." : onCall ? "⏹" : "📞",
           }),
-        ),
-      ),
+        );
+      }),
     ),
     h("h3", { text: "tasks" }),
     h(

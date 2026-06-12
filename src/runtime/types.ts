@@ -7,6 +7,8 @@ export interface AgentInput {
   message: string;
   transcript: RoomEvent[];
   activeRole?: ResolvedRole;
+  // "voice" turns come from a live call: the reply is spoken aloud by TTS.
+  channel?: "text" | "voice";
 }
 
 export type AgentEvent =

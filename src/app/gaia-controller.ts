@@ -86,7 +86,17 @@ export type GaiaUiEvent =
   | { type: "tool-end"; workspaceId: string; roomId: string; taskId: string; agentId: string; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
   | { type: "task-end"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "task-error"; workspaceId: string; roomId: string; task: GaiaTask; error: string }
-  | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string };
+  | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
+  | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null };
+
+// Active voice call binding, broadcast to clients and returned by voice/start.
+export interface VoiceCallInfo {
+  agentId: string;
+  roomId: string;
+  unmuteUrl: string;
+  voice?: string;
+  startedAt: string;
+}
 
 export interface GaiaControllerOptions {
   cwd: string;
@@ -94,6 +104,15 @@ export interface GaiaControllerOptions {
   workspace: Workspace;
   memoryStore?: MemoryStore;
   runtimeFactory?: (agent: AgentDefinition) => AgentRuntime;
+}
+
+export interface SendMessageOptions {
+  // Bypass @mention routing and send to exactly these agents.
+  targets?: string[];
+  // Voice turns get a spoken-reply prompt overlay and a transcript marker.
+  channel?: "text" | "voice";
+  // Synthetic prompts (call greetings, silence nudges) skip the user event.
+  recordUserMessage?: boolean;
 }
 
 export class GaiaController {
@@ -134,6 +153,10 @@ export class GaiaController {
 
   get hasActiveTask(): boolean {
     return Boolean(this.activeTask);
+  }
+
+  get activeTaskId(): string | undefined {
+    return this.activeTask?.id;
   }
 
   async init(): Promise<void> {
@@ -210,7 +233,7 @@ export class GaiaController {
     };
   }
 
-  async sendMessage(text: string): Promise<GaiaTask> {
+  async sendMessage(text: string, options: SendMessageOptions = {}): Promise<GaiaTask> {
     await this.init();
     if (this.activeTask) throw new Error(`Room already has an active task: ${this.activeTask.id}`);
 
@@ -219,6 +242,24 @@ export class GaiaController {
       return this.runCommandTask(text, command);
     }
 
+    const targets = options.targets ?? this.routeTargets(text);
+    for (const target of targets) {
+      if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
+    }
+
+    const task = this.createTask(text, targets);
+    this.activeTask = task;
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
+
+    void this.runAgentTask(task, text, options).catch((error) => {
+      if (this.cancelledTaskIds.has(task.id)) return;
+      this.failTask(task, error);
+    });
+
+    return task;
+  }
+
+  private routeTargets(text: string): string[] {
     const route = planMentionRoute(text, Object.keys(this.workspace.agents), this.workspace.config.defaultAgent);
     if (!route.ok) {
       throw new Error(
@@ -227,17 +268,7 @@ export class GaiaController {
           .join(", ")}`,
       );
     }
-
-    const task = this.createTask(text, route.plan.targets);
-    this.activeTask = task;
-    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
-
-    void this.runAgentTask(task, text).catch((error) => {
-      if (this.cancelledTaskIds.has(task.id)) return;
-      this.failTask(task, error);
-    });
-
-    return task;
+    return route.plan.targets;
   }
 
   async cancelActiveTask(): Promise<GaiaTask | undefined> {
@@ -301,9 +332,12 @@ export class GaiaController {
     return `Set @${agent.id} role to ${role}.`;
   }
 
-  private async runAgentTask(task: GaiaTask, text: string): Promise<void> {
-    const userEvent = await this.room.addUserMessage(text, task.targets);
-    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
+  private async runAgentTask(task: GaiaTask, text: string, options: SendMessageOptions = {}): Promise<void> {
+    const channel = options.channel === "voice" ? "voice" : undefined;
+    if (options.recordUserMessage !== false) {
+      const userEvent = await this.room.addUserMessage(text, task.targets, channel);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
+    }
 
     for (const target of task.targets) {
       if (this.cancelledTaskIds.has(task.id)) return;
@@ -326,14 +360,14 @@ export class GaiaController {
 
       const turn = await runAgentTurn({
         runtime,
-        input: { roomId: this.room.id, message: text, transcript: events, activeRole },
+        input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel },
         isCancelled: () => this.cancelledTaskIds.has(task.id),
         onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
       });
       if (turn.cancelled || this.cancelledTaskIds.has(task.id)) return;
 
       if (turn.reply.trim()) {
-        const agentEvent = await this.room.addAgentMessage(agent.id, turn.reply.trim());
+        const agentEvent = await this.room.addAgentMessage(agent.id, turn.reply.trim(), channel);
         this.persistRuntimeDetails(agentEvent, turn.details);
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
       }

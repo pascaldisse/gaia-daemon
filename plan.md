@@ -26,46 +26,55 @@ text and voice surfaces.
   server-computed field hints (src/app/settings-hints.ts): JSON path →
   input type + live options (agents, rooms, models, tools, thinking levels)
 - agent rows in the room panel open that agent's settings
+- voice calls (call button per agent) run through unmute with GAIA as the
+  LLM; spoken turns are normal agent turns in the same room transcript
 
-## Roadmap
-
-### Phase 1 — Voice MVP (unmute as the audio stack)
+## Voice mode (shipped)
 
 The unmute stack (`/Users/USER/projects/Codex/AIWaifu/unmute`) handles
-mic → STT → LLM → TTS → speaker with VAD, pause prediction, and barge-in. Its
-LLM is any OpenAI-compatible streaming endpoint (`KYUTAI_LLM_URL`, see
-`unmute/kyutai_constants.py` and `unmute/llm/llm_utils.py`). GAIA becomes the
-brain; unmute does the audio plumbing.
+mic → STT → LLM → TTS → speaker with VAD, pause prediction, and barge-in.
+GAIA is the brain: the web server exposes an OpenAI-compatible
+`/v1/chat/completions` + `/v1/models` shim (`KYUTAI_LLM_URL` points at GAIA),
+so every spoken turn is a normal agent turn — same room, same Pi session,
+same model, tools included.
 
-- [ ] OpenAI-compatible `/v1/chat/completions` streaming shim on the GAIA
-      server, bound to one agent + one room (`gaia voice` or config flag);
-      built on `runAgentTurn`
-- [ ] abort on client disconnect → cancel the active task (this is what makes
-      unmute barge-in interruption work end-to-end)
-- [ ] `voice` role overlay for spoken style: short sentences, no markdown,
-      no lists, capped response length
-- [ ] fast-model `agent.json` project override for the voice agent; no
-      synchronous tools (slow tool calls kill conversational flow)
-- [ ] map agent `voice` field to an unmute `voices.yaml` entry
-- [ ] measure turn latency through Pi (prompt assembly + TTFT); target
-      first text delta well under ~500ms
+- [x] chat-completions streaming shim bound to one agent + room
+      (call button → `POST /api/workspaces/:id/voice/start`); built on the
+      controller, so turns land in the transcript and stream over SSE
+- [x] abort on client disconnect → cancel the active task (unmute barge-in
+      interruption works end-to-end)
+- [x] unmute's synthetic turns are recognized (`"Hello."` greeting, `"..."`
+      silence marker) and become agent prompts, not fake user messages
+      (src/app/voice-bridge.ts)
+- [x] voice-mode overlay in the turn prompt (no session reload): short
+      spoken prose, no markdown/emojis, transcription-error tolerance
+- [x] voice turns persist with `channel: "voice"` (🎙 marker in the UI)
+- [x] in-UI voice client (web/src/voice.ts + web/vendor/): call button next
+      to each agent, opus mic capture → unmute WebSocket, TTS playback via
+      the jitter-buffer worklet, buffer flush on `unmute.interrupted_by_vad`
+- [x] live STT transcription rendered in the composer text box, cleared
+      when the spoken turn commits to the room
+- [x] agent `voice` field is sent as the unmute session voice
+- [x] on-call indicators (agent row, topbar) synced across tabs via the
+      `voice-status` SSE event; `scripts/voice-stack.sh` starts STT/TTS/
+      backend pointed at GAIA; `voice.unmuteUrl` in `~/.gaia/app.json`
+      overrides the backend address (default `ws://127.0.0.1:8000`)
 
-### Phase 2 — Voice as a first-class room surface
+### Voice follow-ups
 
-- [ ] persist voice turns to the room transcript with a `channel: "voice"`
-      marker (event ids already in place)
+- [ ] editable transcription: click the composer before the turn
+      auto-commits to correct the STT text by hand (needs unmute-side
+      commit control — investigate `input_audio_buffer` events)
 - [ ] on interruption, record the truncated text actually spoken — keep the
       agent's view of the conversation aligned with what the user heard
-- [ ] live indicator in the web UI when a voice session is active
-
-### Phase 3 — Tighter integration (after the MVP proves the feel)
-
-- [ ] embed the voice client in GAIA's web UI (WebSocket to the unmute
-      backend, which speaks an OpenAI-Realtime-style protocol)
+      (today the interrupted turn is dropped entirely, matching text cancel)
+- [ ] TTS-ignored spans (e.g. tool-call narration tags) so long tool turns
+      can say something short while the full text shows in the room
+- [ ] measure turn latency through Pi (prompt assembly + TTFT); target
+      first text delta well under ~500ms
 - [ ] voice-driven agent switching ("let me talk to Sidia") via the
-      deterministic router
-- [ ] multi-agent voice stays out of scope for now; the one-task-per-room
-      constraint enforces one speaker at a time
+      deterministic router; multi-agent voice stays out of scope — the
+      one-task-per-room constraint enforces one speaker at a time
 
 ### Ongoing hygiene
 
