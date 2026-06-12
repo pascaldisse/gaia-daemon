@@ -25,6 +25,11 @@ text and voice surfaces.
 - Pi SDK 0.73.x is the agent harness; model switching (local, API-key, and
   subscription/OAuth models) is exposed through Pi's `ModelRegistry` — GAIA
   does not implement its own provider layer
+- GAIA sessions read the user's pi defaults (~/.pi) but never write them
+  back: pi persists "last used" model/thinking into its settings, which
+  would let GAIA's per-agent models and voice thinking toggles overwrite
+  the user's global pi configuration (read-only settings storage in
+  pi-runtime.ts)
 - settings stay plain text files; the formatted editor view is driven by
   server-computed field hints (src/app/settings-hints.ts): JSON path →
   input type + live options (agents, rooms, models, tools, thinking levels)

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
@@ -64,6 +65,24 @@ interface ManagedPiSession {
 
 export function piRoomSessionDir(workspace: Pick<Workspace, "roomsDir">, roomId: string, agentId: string): string {
   return join(workspace.roomsDir, roomId, "pi-sessions", agentId);
+}
+
+// Pi sessions persist "last used" model and thinking level back into the
+// user's pi settings (~/.pi/agent/settings.json). GAIA controls both per
+// agent.json - and voice calls toggle thinking every call - so its sessions
+// must read the user's pi defaults without ever rewriting them. Reads pass
+// through to the real files; writes are dropped.
+function readOnlyPiSettings(cwd: string): SettingsManager {
+  const paths = {
+    global: join(getAgentDir(), "settings.json"),
+    project: join(cwd, ".pi", "settings.json"),
+  };
+  return SettingsManager.fromStorage({
+    withLock(scope: "global" | "project", fn: (current: string | undefined) => string | undefined): void {
+      const path = paths[scope];
+      fn(existsSync(path) ? readFileSync(path, "utf8") : undefined);
+    },
+  });
 }
 
 function skillPathsKey(paths: string[]): string {
@@ -295,7 +314,7 @@ export class PiRuntime implements AgentRuntime {
           customTools,
           resourceLoader: loader,
           sessionManager: SessionManager.continueRecent(this.cwd, sessionDir),
-          settingsManager: SettingsManager.create(this.cwd),
+          settingsManager: readOnlyPiSettings(this.cwd),
         });
 
     if (modelFallbackMessage) console.warn(modelFallbackMessage);
