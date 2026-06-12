@@ -117,6 +117,9 @@ export interface GaiaControllerOptions {
   workspace: Workspace;
   memoryStore?: MemoryStore;
   runtimeFactory?: (agent: AgentDefinition) => AgentRuntime;
+  // Host-provided thinking setter (the web server scopes changes to an
+  // active voice call or persists them to agent.json). Returns feedback text.
+  setThinking?: (agentId: string, level: string) => Promise<string>;
 }
 
 export interface SendMessageOptions {
@@ -417,6 +420,21 @@ export class GaiaController {
     }
   }
 
+  private async runThinkingCommand(agentId: string | undefined, level: string | undefined): Promise<string> {
+    const target = agentId ?? this.workspace.config.defaultAgent;
+    const agent = this.workspace.agents[target];
+    if (!agent) return this.unknownAgentMessage(target);
+    if (!level) {
+      return `Usage: /thinking [agent] <${sdkThinkingLevels().join("|")}>\n@${agent.id} thinking is ${agent.thinking ?? "off"}.`;
+    }
+    if (!this.options.setThinking) return "Thinking control is not available in this context.";
+    try {
+      return await this.options.setThinking(agent.id, level);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   private async runCommandTask(input: string, command: ReturnType<typeof parseCommand>): Promise<GaiaTask> {
     const task = this.createTask(input, []);
     this.activeTask = task;
@@ -428,6 +446,7 @@ export class GaiaController {
       if (command.type === "agents") text = await this.renderAgentsList();
       if (command.type === "roles") text = await this.renderRoles(command.agent);
       if (command.type === "role") text = await this.setRole(command.agent, command.role);
+      if (command.type === "thinking") text = await this.runThinkingCommand(command.agent, command.level);
       if (command.type === "unknown") text = `Unknown command: /${command.command}. Try /help.`;
 
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };

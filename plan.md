@@ -72,9 +72,14 @@ same model, tools included.
       backend via KYUTAI_USER_SILENCE_TIMEOUT (env-configurable in the
       unmute fork, unmute_handler.py)
 - [x] thinking control: voice calls force thinking off (restored on
-      hang-up); the composer shows a clickable `💭 #level` indicator that
-      cycles levels - persisted to agent.json outside calls, call-scoped
-      during them (POST /api/workspaces/:id/agents/:agentId/thinking)
+      hang-up); the composer shows a clickable `💭 #level` indicator -
+      click toggles current↔off, right-click opens a level menu, and
+      /thinking [agent] <level> works from the keyboard (controller hook →
+      server applyThinking) - persisted to agent.json outside calls,
+      call-scoped during them
+- [x] composer: send button lives at the top right of the text input (one
+      visual element); on a call, mic-mute (silence at zero gain keeps the
+      stream timing intact) and hang-up buttons sit under the input
 
 ### Voice follow-ups
 

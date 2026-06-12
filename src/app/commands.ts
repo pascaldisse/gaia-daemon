@@ -1,4 +1,4 @@
-export type SlashCommandType = "help" | "agents" | "roles" | "role";
+export type SlashCommandType = "help" | "agents" | "roles" | "role" | "thinking";
 
 export interface SlashCommandDefinition {
   name: string;
@@ -12,6 +12,7 @@ export type SlashCommand =
   | { type: "agents" }
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
+  | { type: "thinking"; agent?: string; level?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -20,6 +21,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "agents", type: "agents", description: "list available agents" },
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
+  { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -36,10 +38,17 @@ export function parseCommand(input: string): SlashCommand {
 
   if (command.type === "roles") return { type: "roles", agent: args[0] };
   if (command.type === "role") return { type: "role", agent: args[0], role: args[1] };
+  if (command.type === "thinking") {
+    // "/thinking high" targets the default agent; "/thinking gaia high"
+    // (with or without @) names one explicitly.
+    const stripped = args.map((arg) => arg.replace(/^@/, ""));
+    if (stripped.length >= 2) return { type: "thinking", agent: stripped[0], level: stripped[1] };
+    return { type: "thinking", level: stripped[0] };
+  }
 
   return { type: command.type };
 }
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map(
-  (command) => `  /${command.name.padEnd(7)} ${command.description}`,
-).join("\n")}\n\nRole commands:\n  /roles <agent>       list roles for an agent\n  /role <agent> <role> set a role in this room\n  /role <agent> none   clear a role in this room\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+  (command) => `  /${command.name.padEnd(8)} ${command.description}`,
+).join("\n")}\n\nRole commands:\n  /roles <agent>       list roles for an agent\n  /role <agent> <role> set a role in this room\n  /role <agent> none   clear a role in this room\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
