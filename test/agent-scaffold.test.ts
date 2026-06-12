@@ -23,7 +23,6 @@ test("scaffolds a global agent persona folder with starter roles", async () => {
       id: "luma",
       displayName: "Luma",
       icon: "•",
-      runtime: "pi",
       thinking: "medium",
       tools: ["read", "write", "edit", "memory"],
     });

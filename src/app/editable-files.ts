@@ -1,11 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
+import { pathId, pathInside, writeFileAtomic } from "../lib/fs.js";
 import { gaiaHome } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 export type EditableScope = "global" | "workspace";
+
+// What a file *is*, computed where the directory layout is known (here), so
+// the frontend can group files without parsing label paths.
+export type EditableCategory = "general" | "voice" | "config" | "persona" | "memory";
 
 export interface EditableFileDescriptor {
   id: string;
@@ -13,6 +17,9 @@ export interface EditableFileDescriptor {
   label: string;
   path: string;
   kind: "markdown" | "json" | "text";
+  /** Owning agent for files under the global agents directory. */
+  agentId?: string;
+  category?: EditableCategory;
 }
 
 export interface EditableFileContent extends EditableFileDescriptor {
@@ -20,18 +27,13 @@ export interface EditableFileContent extends EditableFileDescriptor {
 }
 
 function fileId(scope: EditableScope, path: string): string {
-  return `${scope}_${createHash("sha256").update(resolve(path)).digest("hex").slice(0, 18)}`;
+  return `${scope}_${pathId(path, 18)}`;
 }
 
 function kindFor(path: string): EditableFileDescriptor["kind"] {
   if (path.endsWith(".md")) return "markdown";
   if (path.endsWith(".json")) return "json";
   return "text";
-}
-
-function inside(path: string, root: string): boolean {
-  const rel = relative(resolve(root), resolve(path));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function labelFor(path: string, root: string): string {
@@ -41,17 +43,21 @@ function labelFor(path: string, root: string): string {
 
 async function walkEditable(root: string): Promise<string[]> {
   if (!existsSync(root)) return [];
-  const out: string[] = [];
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...(await walkEditable(path)));
-      continue;
-    }
-    if (entry.isFile() && (entry.name.endsWith(".md") || entry.name.endsWith(".json"))) out.push(path);
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && (entry.name.endsWith(".md") || entry.name.endsWith(".json")))
+    .map((entry) => join(entry.parentPath, entry.name));
+}
+
+function globalCategory(path: string, home: string): Pick<EditableFileDescriptor, "agentId" | "category"> {
+  const rel = relative(home, path);
+  const parts = rel.split(sep);
+  if (parts[0] === "agents" && parts.length > 2) {
+    const file = parts[parts.length - 1];
+    const category = file === "agent.json" ? "config" : file === "MEMORY.md" ? "memory" : "persona";
+    return { agentId: parts[1], category };
   }
-  return out;
+  return { category: rel === "voice.json" ? "voice" : "general" };
 }
 
 async function descriptor(scope: EditableScope, path: string, labelRoot: string): Promise<EditableFileDescriptor | undefined> {
@@ -64,6 +70,7 @@ async function descriptor(scope: EditableScope, path: string, labelRoot: string)
     label: labelFor(path, labelRoot),
     path,
     kind: kindFor(path),
+    ...(scope === "global" ? globalCategory(path, labelRoot) : {}),
   };
 }
 
@@ -72,9 +79,7 @@ export class EditableFileRegistry {
 
   async listGlobal(): Promise<EditableFileDescriptor[]> {
     const home = gaiaHome();
-    const roots = [join(home, "agents")];
-    const files = [join(home, "app.json"), join(home, "voice.json")];
-    for (const root of roots) files.push(...(await walkEditable(root)));
+    const files = [join(home, "app.json"), join(home, "voice.json"), ...(await walkEditable(join(home, "agents")))];
     const descriptors = await Promise.all(files.map((path) => descriptor("global", path, home)));
     return descriptors.filter((item): item is EditableFileDescriptor => Boolean(item)).sort((a, b) => a.label.localeCompare(b.label));
   }
@@ -100,10 +105,7 @@ export class EditableFileRegistry {
   async write(fileId: string, content: string, workspaceId?: string): Promise<EditableFileContent> {
     const found = await this.find(fileId, workspaceId);
     if (!found) throw new Error("Editable file not found");
-    await mkdir(dirname(found.path), { recursive: true });
-    const tempPath = `${found.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, content, "utf8");
-    await rename(tempPath, found.path);
+    await writeFileAtomic(found.path, content);
     return { ...found, content };
   }
 
@@ -111,8 +113,7 @@ export class EditableFileRegistry {
     const globalFiles = await this.listGlobal();
     const globalMatch = globalFiles.find((file) => file.id === fileId);
     if (globalMatch) {
-      const home = gaiaHome();
-      if (!inside(globalMatch.path, home)) throw new Error("Editable file escaped GAIA home");
+      if (!pathInside(globalMatch.path, gaiaHome())) throw new Error("Editable file escaped GAIA home");
       return globalMatch;
     }
 
@@ -121,7 +122,7 @@ export class EditableFileRegistry {
     const workspaceMatch = workspaceFiles.find((file) => file.id === fileId);
     if (!workspaceMatch) return undefined;
     const workspace = await this.workspaceById(workspaceId);
-    if (!workspace || !inside(workspaceMatch.path, workspace.rootDir)) throw new Error("Editable file escaped workspace");
+    if (!workspace || !pathInside(workspaceMatch.path, workspace.rootDir)) throw new Error("Editable file escaped workspace");
     return workspaceMatch;
   }
 }

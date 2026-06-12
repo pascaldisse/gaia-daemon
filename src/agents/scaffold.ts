@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { jsonText } from "../lib/fs.js";
 
 export interface AgentScaffoldOptions {
   displayName?: string;
@@ -25,12 +26,13 @@ function titleCase(id: string): string {
     .join(" ");
 }
 
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
 function assertSafeAgentId(id: string): void {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid agent id: ${id}. Use letters, numbers, dash, or underscore.`);
+}
+
+/** The default agent.json shape, shared by `gaia agent create` and the seeded default agents. */
+export function agentConfigTemplate(id: string, displayName: string, icon: string, tools: string[]): Record<string, unknown> {
+  return { id, displayName, icon, thinking: "medium", tools };
 }
 
 export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, options: AgentScaffoldOptions = {}): Promise<AgentScaffoldResult> {
@@ -49,7 +51,7 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
   const memoryPath = join(personaDir, "MEMORY.md");
 
   await mkdir(rolesDir, { recursive: true });
-  await writeFile(configPath, json({ id, displayName, icon, runtime: "pi", thinking: "medium", tools }), "utf8");
+  await writeFile(configPath, jsonText(agentConfigTemplate(id, displayName, icon, tools)), "utf8");
   await writeFile(
     soulPath,
     `# ${displayName}\n\nDescribe who this agent is.\n\nVoice:\n- clear\n- useful\n- distinct\n\nBoundaries:\n- say when unsure\n- ask before risky changes\n`,

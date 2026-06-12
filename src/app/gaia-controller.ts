@@ -1,15 +1,16 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
+import { readJsonFile, writeJsonFile } from "../lib/fs.js";
+import { newId } from "../lib/ids.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
-import { listAgentRoles, resolveAgentRole, type ResolvedRole } from "../roles/roles.js";
-import { createAgentRuntime } from "../runtime/runtime-factory.js";
+import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
+import { PiRuntime } from "../runtime/pi-runtime.js";
 import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
@@ -57,16 +58,13 @@ export interface GaiaSnapshot {
   workspace: {
     id: string;
     rootDir: string;
-    dir: string;
     configPath: string;
     defaultAgent: string;
   };
   room: {
     id: string;
-    transcriptPath: string;
     statePath: string;
     events: UiRoomEvent[];
-    state: RoomState;
   };
   rooms: RoomSummary[];
   commands: typeof SLASH_COMMANDS;
@@ -112,13 +110,11 @@ export interface VoiceCallInfo {
 }
 
 export interface GaiaControllerOptions {
-  cwd: string;
   workspaceId: string;
   workspace: Workspace;
-  memoryStore?: MemoryStore;
   runtimeFactory?: (agent: AgentDefinition) => AgentRuntime;
-  // Host-provided thinking setter (the web server scopes changes to an
-  // active voice call or persists them to agent.json). Returns feedback text.
+  // Host-provided thinking setter; the web server scopes changes to an active
+  // voice call before falling back to persistence. Returns feedback text.
   setThinking?: (agentId: string, level: string) => Promise<string>;
 }
 
@@ -133,26 +129,27 @@ export interface SendMessageOptions {
   thinking?: string;
 }
 
+// How many messages keep their thinking/tool details in room state. Details
+// are only rendered for the recent transcript window, so the map stays small
+// instead of accumulating every tool result the room has ever seen.
+const RUNTIME_DETAILS_LIMIT = 50;
+
 export class GaiaController {
   private readonly room: Room;
-  private readonly memoryStore: MemoryStore;
+  private readonly memoryStore = new MemoryStore();
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly listeners = new Set<(event: GaiaUiEvent) => void>();
   private roomState: RoomState = defaultRoomState();
   private activeTask: GaiaTask | undefined;
   private recentTasks: GaiaTask[] = [];
-  private cancelledTaskIds = new Set<string>();
   private initialized = false;
 
   constructor(private readonly options: GaiaControllerOptions) {
-    this.memoryStore = options.memoryStore ?? new MemoryStore();
     this.room = new Room(options.workspace);
     this.runtimes = Object.fromEntries(
       Object.values(options.workspace.agents).map((agent) => [
         agent.id,
-        options.runtimeFactory
-          ? options.runtimeFactory(agent)
-          : createAgentRuntime({ cwd: options.cwd, workspace: options.workspace, agent, memoryStore: this.memoryStore }),
+        options.runtimeFactory ? options.runtimeFactory(agent) : new PiRuntime(options.workspace, agent, this.memoryStore),
       ]),
     );
   }
@@ -203,16 +200,13 @@ export class GaiaController {
       workspace: {
         id: this.workspaceId,
         rootDir: this.workspace.rootDir,
-        dir: this.workspace.dir,
         configPath: this.workspace.configPath,
         defaultAgent: this.workspace.config.defaultAgent,
       },
       room: {
         id: this.room.id,
-        transcriptPath: this.room.transcriptPath,
         statePath: this.room.statePath,
-        events: this.applyRuntimeDetails(events),
-        state: this.roomState,
+        events: events.map((event) => this.withRuntimeDetails(event)),
       },
       rooms: await this.listRooms(),
       commands: SLASH_COMMANDS,
@@ -237,21 +231,6 @@ export class GaiaController {
     return rooms.length > 0 ? rooms : fallback;
   }
 
-  promptPreviews() {
-    return {
-      slashCommands: SLASH_COMMANDS.map((command) => ({ label: command.name, description: command.description })),
-      agents: Object.values(this.workspace.agents).map((agent) => {
-        const defaultMark = agent.id === this.workspace.config.defaultAgent ? "default" : undefined;
-        const role = this.roomState.activeRoles[agent.id] ? `role: ${this.roomState.activeRoles[agent.id]}` : undefined;
-        const tools = agent.tools.length > 0 ? `tools: ${agent.tools.join(", ")}` : "no tools";
-        return {
-          label: agent.id,
-          description: [agent.displayName, defaultMark, role, tools].filter(Boolean).join(" - "),
-        };
-      }),
-    };
-  }
-
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<GaiaTask> {
     await this.init();
     if (this.activeTask) throw new Error(`Room already has an active task: ${this.activeTask.id}`);
@@ -271,8 +250,8 @@ export class GaiaController {
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
 
     void this.runAgentTask(task, text, options).catch((error) => {
-      if (this.cancelledTaskIds.has(task.id)) return;
-      this.failTask(task, error);
+      if (this.taskCancelled(task)) return;
+      this.settleTask(task, "error", error);
     });
 
     return task;
@@ -295,10 +274,33 @@ export class GaiaController {
     const task = this.activeTask;
     if (!task) return undefined;
 
-    this.cancelledTaskIds.add(task.id);
+    // Mark first so in-flight event handling sees the cancellation while the
+    // runtimes abort.
+    task.status = "cancelled";
     await Promise.allSettled(task.targets.map((target) => this.runtimes[target]?.abort()).filter((promise): promise is Promise<void> => Boolean(promise)));
-    this.cancelTask(task);
+    this.settleTask(task, "cancelled");
     return task;
+  }
+
+  /** Resolves when no task is running; rejects after timeoutMs (when given). */
+  async waitForIdle(timeoutMs?: number): Promise<void> {
+    await this.init();
+    if (!this.activeTask) return;
+    await new Promise<void>((resolveIdle, reject) => {
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              unsubscribe();
+              reject(new Error("Room is busy with another task"));
+            }, timeoutMs);
+      const unsubscribe = this.subscribe((event) => {
+        if (event.type !== "task-end" && event.type !== "task-error") return;
+        if (timer) clearTimeout(timer);
+        unsubscribe();
+        resolveIdle();
+      });
+    });
   }
 
   async renderAgentsList(): Promise<string> {
@@ -351,6 +353,31 @@ export class GaiaController {
     return `Set @${agent.id} role to ${role}.`;
   }
 
+  /**
+   * Persists an agent's thinking level to the agent.json that is effective
+   * for this workspace (a project override wins over the global file) and
+   * hot-applies it: the runtime reads agent.thinking live on the next turn,
+   * so no session or controller rebuild is needed.
+   */
+  async setAgentThinking(agentId: string, level: string): Promise<string> {
+    const levels = sdkThinkingLevels();
+    if (level !== "" && !levels.includes(level)) {
+      throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
+    }
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+
+    const configPath = agent.projectConfigPath ?? agent.configPath;
+    const config = ((await readJsonFile(configPath)) ?? {}) as Record<string, unknown>;
+    if (level === "") delete config.thinking;
+    else config.thinking = level;
+    await writeJsonFile(configPath, config);
+
+    agent.thinking = level === "" ? undefined : (level as AgentDefinition["thinking"]);
+    await this.emitSnapshot();
+    return `Set @${agent.id} thinking to ${level || "unset"}.`;
+  }
+
   private async runAgentTask(task: GaiaTask, text: string, options: SendMessageOptions = {}): Promise<void> {
     const channel = options.channel === "voice" ? "voice" : undefined;
     if (options.recordUserMessage !== false) {
@@ -359,11 +386,11 @@ export class GaiaController {
     }
 
     for (const target of task.targets) {
-      if (this.cancelledTaskIds.has(task.id)) return;
+      if (this.taskCancelled(task)) return;
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       const cursor = this.roomState.agentCursors[target] ?? 0;
-      const { events } = await this.room.eventsAfterCursor(cursor);
+      const { events, nextCursor } = await this.room.eventsAfterCursor(cursor);
       const activeRoleName = this.roomState.activeRoles[target];
       const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
 
@@ -380,22 +407,32 @@ export class GaiaController {
       const turn = await runAgentTurn({
         runtime,
         input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
-        isCancelled: () => this.cancelledTaskIds.has(task.id),
+        isCancelled: () => this.taskCancelled(task),
         onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
       });
-      if (turn.cancelled || this.cancelledTaskIds.has(task.id)) return;
+      if (turn.cancelled || this.taskCancelled(task)) return;
 
+      let appended = 0;
       if (turn.reply.trim()) {
         const agentEvent = await this.room.addAgentMessage(agent.id, turn.reply.trim(), channel);
         this.persistRuntimeDetails(agentEvent, turn.details);
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
+        appended = 1;
       }
 
-      this.roomState.agentCursors[agent.id] = await this.room.eventCursor();
+      // The room is single-writer while a task runs, so the new cursor is the
+      // line count at read time plus this agent's own reply.
+      this.roomState.agentCursors[agent.id] = nextCursor + appended;
       await this.room.writeState(this.roomState);
     }
 
-    if (!this.cancelledTaskIds.has(task.id)) this.completeTask(task);
+    if (!this.taskCancelled(task)) this.settleTask(task, "complete");
+  }
+
+  // Cancellation mutates task.status from another call path mid-turn; a
+  // method call keeps TypeScript from narrowing the comparison away.
+  private taskCancelled(task: GaiaTask): boolean {
+    return task.status === "cancelled";
   }
 
   private toUiEvent(taskId: string, agentId: string, event: AgentEvent): GaiaUiEvent {
@@ -427,9 +464,11 @@ export class GaiaController {
     if (!level) {
       return `Usage: /thinking [agent] <${sdkThinkingLevels().join("|")}>\n@${agent.id} thinking is ${agent.thinking ?? "off"}.`;
     }
-    if (!this.options.setThinking) return "Thinking control is not available in this context.";
     try {
-      return await this.options.setThinking(agent.id, level);
+      // The host hook scopes the change to an active voice call when there is
+      // one; without a hook (or outside calls) it persists via setAgentThinking.
+      if (this.options.setThinking) return await this.options.setThinking(agent.id, level);
+      return await this.setAgentThinking(agent.id, level);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
@@ -451,9 +490,9 @@ export class GaiaController {
 
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event });
-      this.completeTask(task);
+      this.settleTask(task, "complete");
     } catch (error) {
-      this.failTask(task, error);
+      this.settleTask(task, "error", error);
     }
 
     return task;
@@ -461,7 +500,7 @@ export class GaiaController {
 
   private createTask(text: string, targets: string[]): GaiaTask {
     return {
-      id: `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      id: newId("task"),
       roomId: this.room.id,
       text,
       targets,
@@ -470,32 +509,17 @@ export class GaiaController {
     };
   }
 
-  private completeTask(task: GaiaTask): void {
-    task.status = "complete";
+  private settleTask(task: GaiaTask, status: "complete" | "error" | "cancelled", error?: unknown): void {
+    task.status = status;
     task.endedAt = new Date().toISOString();
-    this.recentTasks = [...this.recentTasks.slice(-9), task];
-    this.activeTask = undefined;
-    this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task });
-    void this.emitSnapshot();
-  }
-
-  private failTask(task: GaiaTask, error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    task.status = "error";
-    task.error = message;
-    task.endedAt = new Date().toISOString();
-    this.recentTasks = [...this.recentTasks.slice(-9), task];
-    this.activeTask = undefined;
-    this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.room.id, task, error: message });
-    void this.emitSnapshot();
-  }
-
-  private cancelTask(task: GaiaTask): void {
-    task.status = "cancelled";
-    task.endedAt = new Date().toISOString();
+    if (error !== undefined) task.error = error instanceof Error ? error.message : String(error);
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     if (this.activeTask?.id === task.id) this.activeTask = undefined;
-    this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task });
+    if (status === "error") {
+      this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.room.id, task, error: task.error ?? "" });
+    } else {
+      this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task });
+    }
     void this.emitSnapshot();
   }
 
@@ -503,13 +527,9 @@ export class GaiaController {
     this.emit({ type: "snapshot", workspaceId: this.workspaceId, roomId: this.room.id, snapshot: await this.getSnapshot() });
   }
 
-  private applyRuntimeDetails(events: RoomEvent[]): UiRoomEvent[] {
-    return events.map((event) => this.withRuntimeDetails(event));
-  }
-
   private withRuntimeDetails(event: RoomEvent): UiRoomEvent {
     if (event.author === "user") return event;
-    const details = this.roomState.runtimeDetails[event.id] ?? this.roomState.runtimeDetails[this.legacyRuntimeDetailsKey(event)];
+    const details = this.roomState.runtimeDetails[event.id];
     if (!details) return event;
     return {
       ...event,
@@ -523,14 +543,10 @@ export class GaiaController {
   private persistRuntimeDetails(event: RoomEvent, details: RuntimeMessageDetails): void {
     if (!details.model && !details.thinkingStarted && !details.thinking && !details.tools?.length) return;
     this.roomState.runtimeDetails[event.id] = details;
-  }
-
-  // Details written before room events carried ids were keyed by a content hash.
-  private legacyRuntimeDetailsKey(event: RoomEvent): string {
-    return createHash("sha256")
-      .update(JSON.stringify({ timestamp: event.timestamp, author: event.author, text: event.text }))
-      .digest("hex")
-      .slice(0, 24);
+    const keys = Object.keys(this.roomState.runtimeDetails);
+    for (const key of keys.slice(0, Math.max(0, keys.length - RUNTIME_DETAILS_LIMIT))) {
+      delete this.roomState.runtimeDetails[key];
+    }
   }
 
   private emit(event: GaiaUiEvent): void {

@@ -84,10 +84,7 @@ function isLoopback(unmuteUrl: string): boolean {
 
 async function defaultProbeHealth(backendHttpUrl: string): Promise<VoiceHealth | null> {
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${backendHttpUrl}/v1/health`, { signal: controller.signal });
-    clearTimeout(timer);
+    const response = await fetch(`${backendHttpUrl}/v1/health`, { signal: AbortSignal.timeout(2000) });
     if (!response.ok) return null;
     return (await response.json()) as VoiceHealth;
   } catch {
@@ -97,11 +94,7 @@ async function defaultProbeHealth(backendHttpUrl: string): Promise<VoiceHealth |
 
 async function defaultProbeHttpOk(url: string): Promise<boolean> {
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    return response.ok;
+    return (await fetch(url, { signal: AbortSignal.timeout(2000) })).ok;
   } catch {
     return false;
   }
@@ -209,9 +202,13 @@ export class VoiceStackManager {
     }
 
     mkdirSync(this.logDir, { recursive: true });
-    const stt = await this.resolveService("stt", STT_PORT, onStatus);
-    const tts = await this.resolveService("tts", TTS_PORT, onStatus);
-    const backend = await this.resolveService("backend", configuredBackendPort(settings.unmuteUrl), onStatus);
+    // The three services probe independently; resolving them in parallel
+    // keeps the worst case at one probe round instead of three.
+    const [stt, tts, backend] = await Promise.all([
+      this.resolveService("stt", STT_PORT, onStatus),
+      this.resolveService("tts", TTS_PORT, onStatus),
+      this.resolveService("backend", configuredBackendPort(settings.unmuteUrl), onStatus),
+    ]);
 
     const specs: ServiceSpec[] = [
       { name: "stt", script: "macos/start_stt_metal.sh", port: stt.port, env: { STT_PORT: String(stt.port) } },

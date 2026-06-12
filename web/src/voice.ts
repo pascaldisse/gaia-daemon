@@ -42,7 +42,6 @@ async function startCall(agentId) {
   if (!snapshot) return;
   let bound = false;
   try {
-    state.voiceStatus = "connecting";
     state.voicePendingAgentId = agentId;
     render();
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/voice/start`, {
@@ -52,13 +51,11 @@ async function startCall(agentId) {
     bound = true;
     state.voice = body.voice;
     await openVoiceSession(body.voice);
-    state.voiceStatus = "live";
     state.voicePendingAgentId = null;
     state.voiceStatusText = "";
     setError("");
   } catch (error) {
     teardownAudio();
-    state.voiceStatus = "idle";
     state.voicePendingAgentId = null;
     state.voiceStatusText = "";
     state.voice = null;
@@ -74,7 +71,6 @@ async function startCall(agentId) {
 export async function endCall() {
   teardownAudio();
   pendingTranscript = "";
-  state.voiceStatus = "idle";
   state.voicePendingAgentId = null;
   state.voiceStatusText = "";
   state.micMuted = false;
@@ -98,7 +94,6 @@ export async function endCall() {
 export function applyVoiceStatus(payload) {
   const voice = payload.voice ?? null;
   if (payload.pending) {
-    state.voiceStatus = "connecting";
     state.voicePendingAgentId = payload.pending.agentId;
     state.voiceStatusText = payload.pending.message;
     render();
@@ -115,7 +110,6 @@ export function applyVoiceStatus(payload) {
       pendingTranscript = "";
       state.composerText = "";
     }
-    state.voiceStatus = "idle";
     state.voicePendingAgentId = null;
   }
   render();
@@ -296,7 +290,9 @@ function realtimeUrl(unmuteUrl) {
 
 function base64Encode(bytes) {
   let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.byteLength; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
   return window.btoa(binary);
 }
 

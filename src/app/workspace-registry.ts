@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { pathId, readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { gaiaHome, workspacePath } from "../workspace/workspace-loader.js";
 
 export interface WorkspaceRecord {
@@ -21,7 +20,7 @@ function appConfigPath(home = gaiaHome()): string {
 }
 
 function workspaceId(path: string): string {
-  return createHash("sha256").update(resolve(path)).digest("hex").slice(0, 16);
+  return pathId(path, 16);
 }
 
 function workspaceName(path: string): string {
@@ -41,19 +40,7 @@ function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString()):
 }
 
 async function readConfig(path: string): Promise<AppConfig> {
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as AppConfig;
-  } catch {
-    return {};
-  }
-}
-
-async function writeConfig(path: string, config: AppConfig): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tempPath, path);
+  return ((await readJsonFile(path)) ?? {}) as AppConfig;
 }
 
 export class WorkspaceRegistry {
@@ -75,7 +62,7 @@ export class WorkspaceRegistry {
     const config = await readConfig(this.path);
     const existing = config.recentWorkspaces ?? [];
     const next = [record, ...existing.filter((item) => item.id !== record.id)].slice(0, 30);
-    await writeConfig(this.path, { ...config, recentWorkspaces: next });
+    await writeJsonFile(this.path, { ...config, recentWorkspaces: next });
     return record;
   }
 

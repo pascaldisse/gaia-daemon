@@ -5,7 +5,6 @@ import { buildFileHints, sdkThinkingLevels, sdkToolNames, type HintSources } fro
 const sources: HintSources = {
   agentIds: ["gaia", "sidia"],
   roomIds: ["default", "lab"],
-  runtimes: ["pi"],
   toolNames: ["read", "bash", "memory"],
   thinkingLevels: ["off", "medium"],
   models: [
@@ -15,13 +14,12 @@ const sources: HintSources = {
   ],
 };
 
-test("config.json gets agent, room, runtime dropdowns and a numeric window", () => {
+test("config.json gets agent and room dropdowns and a numeric window", () => {
   const hints = buildFileHints({ label: ".gaia/config.json", kind: "json" }, sources);
   assert.ok(hints);
   assert.equal(hints.defaultAgent.input, "select");
   assert.deepEqual(hints.defaultAgent.options?.map((option) => option.value), ["gaia", "sidia"]);
   assert.deepEqual(hints.room.options?.map((option) => option.value), ["default", "lab"]);
-  assert.deepEqual(hints.runtime.options?.map((option) => option.value), ["pi"]);
   assert.equal(hints.transcriptWindow.input, "number");
 });
 

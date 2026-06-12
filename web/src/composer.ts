@@ -76,7 +76,9 @@ function composerTargets(snapshot, text) {
   const knownAgents = new Set((snapshot?.agents ?? []).map((agent) => agent.id));
   const targets = [];
   for (const match of text.matchAll(/@([a-z0-9_-]+)/gi)) {
-    const id = match[1];
+    // Lowercase like the server-side mention router so the preview matches
+    // the actual routing.
+    const id = match[1].toLowerCase();
     if (!knownAgents.has(id) || targets.includes(id)) continue;
     targets.push(id);
   }

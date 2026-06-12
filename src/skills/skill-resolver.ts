@@ -15,17 +15,6 @@ export interface SkillResolutionResult {
   diagnostics: string[];
 }
 
-function dedupeInOrder(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) continue;
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
 function isSkillName(value: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value);
 }
@@ -46,7 +35,7 @@ export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: 
   const diagnostics: string[] = [];
   const skills: ResolvedSkill[] = [];
 
-  for (const name of dedupeInOrder(skillNames)) {
+  for (const name of new Set(skillNames)) {
     if (!isSkillName(name)) {
       diagnostics.push(`Ignoring unsafe skill name: ${name}`);
       continue;

@@ -4,18 +4,22 @@ import { render, setError } from "./render.ts";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.ts";
 import { activeTask, state } from "./state.ts";
 
+async function applyAppPayload(body) {
+  state.workspaces = body.workspaces ?? [];
+  state.snapshot = body.snapshot ?? null;
+  state.workspaceFiles = body.workspaceFiles ?? [];
+  state.globalFiles = body.globalFiles ?? state.globalFiles;
+  state.voice = body.voice ?? null;
+  connectEvents();
+  await loadInitialFiles();
+  setError("");
+}
+
 export async function loadApp(currentWorkspaceId) {
   try {
     const body = await api("/api/app");
-    state.app = body;
-    state.snapshot = body.snapshot ?? null;
-    state.workspaceFiles = body.workspaceFiles ?? [];
-    state.globalFiles = body.globalFiles ?? [];
-    state.voice = body.voice ?? null;
+    await applyAppPayload(body);
     if (currentWorkspaceId && body.currentWorkspaceId !== currentWorkspaceId) await loadWorkspace(currentWorkspaceId);
-    connectEvents();
-    await loadInitialFiles();
-    setError("");
   } catch (error) {
     setError(error);
   }
@@ -37,14 +41,7 @@ export async function addWorkspace() {
   const path = window.prompt("Workspace path");
   if (!path) return;
   try {
-    const body = await api("/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
-    state.app = body;
-    state.snapshot = body.snapshot ?? null;
-    state.workspaceFiles = body.workspaceFiles ?? [];
-    state.globalFiles = body.globalFiles ?? state.globalFiles;
-    connectEvents();
-    await loadInitialFiles();
-    setError("");
+    await applyAppPayload(await api("/api/workspaces", { method: "POST", body: JSON.stringify({ path }) }));
   } catch (error) {
     setError(error);
   }

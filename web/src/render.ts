@@ -24,7 +24,7 @@ function App() {
 }
 
 function Sidebar() {
-  const workspaces = state.app?.workspaces ?? [];
+  const workspaces = state.workspaces;
   const current = state.snapshot?.workspace.id;
   return h(
     "nav",
@@ -128,14 +128,23 @@ function RoomPanel() {
   );
 }
 
+// Streaming deltas arrive far faster than the screen refreshes; coalesce
+// transcript rebuilds to one per animation frame.
+let transcriptRenderQueued = false;
+
 export function renderTranscriptOnly() {
-  const target = document.querySelector("#transcript");
-  if (!target) {
-    render();
-    return;
-  }
-  target.replaceWith(Transcript());
-  document.querySelector("#transcript")?.scrollTo({ top: 100000 });
+  if (transcriptRenderQueued) return;
+  transcriptRenderQueued = true;
+  requestAnimationFrame(() => {
+    transcriptRenderQueued = false;
+    const target = document.querySelector("#transcript");
+    if (!target) {
+      render();
+      return;
+    }
+    target.replaceWith(Transcript());
+    document.querySelector("#transcript")?.scrollTo({ top: 100000 });
+  });
 }
 
 export function render() {

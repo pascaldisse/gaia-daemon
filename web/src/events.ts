@@ -120,10 +120,13 @@ function mergeRoomEvent(events, event) {
   const index = events.findIndex((candidate) => candidate.author === event.author && candidate._streamTaskId);
   if (index === -1) return [...events, event];
 
+  // Prefer the locally accumulated stream details, but fall back to the
+  // server-persisted ones on the event itself - a tab that connected
+  // mid-task only has a partial accumulation.
   const previous = events[index];
   const next = {
     ...event,
-    _tools: previous._tools ?? [],
+    _tools: previous._tools?.length ? previous._tools : (event._tools ?? []),
     ...(previous._model ? { _model: previous._model } : {}),
     ...(previous._thinkingStarted ? { _thinkingStarted: true } : {}),
     ...(previous._thinking ? { _thinking: previous._thinking } : {}),
@@ -149,10 +152,10 @@ function preserveRuntimeMessageDetails(previousEvents, nextEvents) {
     const previous = enriched[index];
     return {
       ...event,
-      _tools: previous._tools,
-      _model: previous._model,
-      _thinkingStarted: previous._thinkingStarted,
-      _thinking: previous._thinking,
+      _tools: previous._tools?.length ? previous._tools : event._tools,
+      _model: previous._model ?? event._model,
+      _thinkingStarted: previous._thinkingStarted ?? event._thinkingStarted,
+      _thinking: previous._thinking ?? event._thinking,
     };
   });
 }

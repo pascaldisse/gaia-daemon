@@ -24,6 +24,5 @@ export function planMentionRoute(message: string, agentIds: string[], defaultAge
   }
 
   if (unknown.length > 0) return { ok: false, unknown };
-  if (mentions.length === 0) return { ok: true, plan: { targets: [defaultAgent], mentions: [] } };
-  return { ok: true, plan: { targets: mentions, mentions } };
+  return { ok: true, plan: { targets: mentions.length > 0 ? mentions : [defaultAgent] } };
 }

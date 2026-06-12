@@ -49,7 +49,6 @@ export interface ModelChoice {
 export interface HintSources {
   agentIds: string[];
   roomIds: string[];
-  runtimes: string[];
   toolNames: string[];
   thinkingLevels: string[];
   models: ModelChoice[];
@@ -141,14 +140,12 @@ function configJsonHints(sources: HintSources): FileHints {
   return {
     defaultAgent: select(values(sources.agentIds)),
     room: select(values(sources.roomIds)),
-    runtime: select(values(sources.runtimes)),
     transcriptWindow: { input: "number" },
   };
 }
 
 function agentJsonHints(sources: HintSources): FileHints {
   return {
-    runtime: select(values(sources.runtimes)),
     thinking: select(values(sources.thinkingLevels), { optional: true }),
     tools: { input: "multiselect", options: values(sources.toolNames) },
     "model.provider": select(providerOptions(sources.models), { optional: true }),

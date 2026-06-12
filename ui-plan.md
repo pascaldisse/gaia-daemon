@@ -40,8 +40,14 @@ render → views) are function-level only and safe in browser ESM.
 The formatted settings view is hint-driven. `/api/files/:id` responses carry
 an optional `hints` object computed server-side (`src/app/settings-hints.ts`)
 from live sources: workspace agents and rooms, Pi's model registry (with auth
-status per provider), SDK tool names, and thinking levels. Hints map a
-normalized JSON path to a generic input descriptor:
+status per provider), SDK tool names, and thinking levels. The model catalog
+and tool list are cached per process and invalidated on settings saves.
+
+File descriptors also carry server-computed metadata (`agentId`, `category`:
+general/voice/config/persona/memory) so the settings modal groups files
+without parsing label paths; the selected file determines the agent/view
+shown in the Agents tab. Hints map a normalized JSON path to a generic input
+descriptor:
 
 - `select` (with optional `(not set)` that omits the key on save)
 - `multiselect` (checkbox chips, used for `tools`)

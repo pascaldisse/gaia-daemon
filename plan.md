@@ -107,6 +107,32 @@ same model, tools included.
 
 ## Known simplifications
 
-- Pi is the only runtime
+- Pi is the only runtime (no runtime abstraction until a second one exists;
+  `GaiaControllerOptions.runtimeFactory` is the test seam)
 - one active task per room (intentional: matches one-speaker voice semantics)
 - no frontend bundler (deliberate; direct-served ES modules)
+- shared fs/json/id helpers live in `src/lib/` — atomic writes, JSON
+  read/write, path ids; every settings/state write goes through them
+- legacy persona layouts migrate on load (rename into `persona/`), so only
+  one on-disk layout exists after first contact
+
+## Design notes for the next features
+
+Captured during the post-voice architecture review; not work items yet.
+
+- **memory (next up)**: `MemoryStore.UNSAFE_PATTERNS` blocks substrings like
+  "print"/"token"/"key", which will reject legitimate memories for a coding
+  product - revisit before building on it. Memory activity will also add
+  AgentEvent types; today each new event type must be added in
+  runtime/types.ts, controller toUiEvent, turn-runner accumulation, and
+  web/src/events.ts (the client mirrors the server fold because details only
+  persist at message end) - consider one shared accumulation module then.
+- **group calls (far off)**: the call binding is a single `activeCall` field
+  on the web server and requests carry no call identity (model id is the
+  constant "gaia"). Prep when needed: a VoiceCall session object keyed by id,
+  per-call model ids ("gaia:<callId>"), VoiceCallInfo as its projection.
+- **multiple rooms**: PiRuntime already keys sessions by roomId; the
+  controller holds exactly one Room. When rooms land, a Map<roomId, room
+  state> inside the controller keeps the external API unchanged.
+- **transcript scaling**: the JSONL transcript is re-read per turn/snapshot;
+  fine at current sizes, keep an in-memory tail if rooms grow long.

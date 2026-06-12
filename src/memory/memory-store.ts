@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { writeFileAtomic } from "../lib/fs.js";
 
 export type MemoryAction = "add" | "replace" | "remove";
 
@@ -88,7 +88,7 @@ export class MemoryStore {
       return { ok: false, message: `memory limit exceeded (${next.length}/${state.limit} chars)`, state };
     }
 
-    await this.writeAtomic(path, next);
+    await writeFileAtomic(path, next);
     const updated = await this.readState(path, limit);
     return { ok: true, message: `${action} complete`, state: updated };
   }
@@ -114,12 +114,5 @@ export class MemoryStore {
 
   private isUnsafe(content: string): boolean {
     return UNSAFE_PATTERNS.some((pattern) => pattern.test(content));
-  }
-
-  private async writeAtomic(path: string, content: string): Promise<void> {
-    await mkdir(dirname(path), { recursive: true });
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    await writeFile(tmp, content, "utf8");
-    await rename(tmp, path);
   }
 }
