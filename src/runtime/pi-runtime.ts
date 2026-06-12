@@ -144,6 +144,14 @@ export class PiRuntime implements AgentRuntime {
       if (event.type === "tool_execution_end") {
         push({ type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError });
       }
+      // Pi's stream contract encodes every provider/request failure (rate
+      // limit, bad key, network) as a final assistant message with
+      // stopReason "error" instead of throwing - surface it as a turn
+      // failure so the task settles as "error", not a silent empty reply.
+      // "aborted" is the cancel path and stays non-fatal.
+      if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
+        error = new Error(event.message.errorMessage || "model request failed");
+      }
     });
 
     const prompt = buildTurnPrompt({

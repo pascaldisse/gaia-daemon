@@ -130,6 +130,55 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
   }
 });
 
+test("PiRuntime surfaces provider failures encoded as error-final messages", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.prompt = async () => {
+        for (const listener of session.listeners) {
+          listener({
+            type: "message_end",
+            message: { role: "assistant", content: [], stopReason: "error", errorMessage: "You have hit your usage limit." },
+          });
+        }
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+
+    await assert.rejects(
+      () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
+      /usage limit/,
+    );
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("PiRuntime treats aborted-final messages as non-fatal", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.prompt = async () => {
+        for (const listener of session.listeners) {
+          listener({
+            type: "message_end",
+            message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Request was aborted." },
+          });
+        }
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+
+    assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })), []);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("PiRuntime reloads an existing session when prompt changes but skills do not", async () => {
   const { temp, workspace, agent } = await fixture();
   try {

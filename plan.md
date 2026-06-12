@@ -107,10 +107,10 @@ same model, tools included.
 - [ ] server/API tests around `src/web/server.ts`
 - [ ] light browser-side smoke coverage for the split `web/src/` modules
 - [ ] keep README and these notes aligned with shipped behavior
-- [ ] provider/API errors mid-turn (rate limit, bad key) settle the task as
-      "complete" with no message in the room — the user sees nothing.
-      Surface turn errors in the transcript/UI (found while verifying the
-      memory tools against a rate-limited provider)
+- [x] provider/API errors mid-turn (rate limit, bad key) surface as failed
+      tasks and an error banner; Pi encodes all provider failures as a
+      final assistant message with stopReason "error", so one hook in
+      PiRuntime covers every provider
 
 ## Known simplifications
 

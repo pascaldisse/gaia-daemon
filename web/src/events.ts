@@ -1,5 +1,5 @@
 import { state } from "./state.ts";
-import { render, renderTranscriptOnly } from "./render.ts";
+import { render, renderTranscriptOnly, setError } from "./render.ts";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.ts";
 
 export function connectEvents() {
@@ -96,9 +96,20 @@ export function connectEvents() {
     }
     renderTranscriptOnly();
   });
-  for (const name of ["task-start", "task-end", "task-error", "settings-saved"]) {
+  for (const name of ["task-start", "task-end", "settings-saved"]) {
     source.addEventListener(name, () => render());
   }
+  source.addEventListener("task-error", (event) => {
+    const payload = JSON.parse(event.data);
+    if (state.snapshot) {
+      // Drop the empty streaming placeholder the failed turn left behind.
+      state.snapshot.room.events = state.snapshot.room.events.filter(
+        (item) => !(item._streamTaskId === payload.task?.id && !item.text),
+      );
+    }
+    const who = payload.task?.targets?.length ? ` (@${payload.task.targets.join(", @")})` : "";
+    setError(`Turn failed${who}: ${payload.error || "unknown error"}`);
+  });
 }
 
 function streamingMessage(payload) {
