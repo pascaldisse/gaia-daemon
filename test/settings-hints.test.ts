@@ -51,6 +51,16 @@ test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);
 });
 
+test("voice.json gets boolean and number hints", () => {
+  const hints = buildFileHints({ label: "voice.json", kind: "json" }, sources);
+  assert.ok(hints);
+  assert.equal(hints.autoStart.input, "boolean");
+  assert.equal(hints.speakOnSilence.input, "boolean");
+  assert.equal(hints.disableThinking.input, "boolean");
+  assert.equal(hints.silenceDelaySec.input, "number");
+  assert.equal(hints.startTimeoutSec.input, "number");
+});
+
 test("sdk tool names and thinking levels come from the SDK", () => {
   const names = sdkToolNames(process.cwd());
   for (const expected of ["read", "bash", "edit", "write", "grep", "find", "ls", "memory"]) {

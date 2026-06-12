@@ -143,10 +143,14 @@ service on a free port instead.
 
 - the agent's optional `voice` field in `agent.json` selects the TTS voice
 - service logs land in `~/.gaia/logs/voice/`
-- `~/.gaia/app.json` may set
-  `{ "voice": { "unmuteUrl": "...", "unmuteDir": "...", "autoStart": true, "startTimeoutSec": 180 } }`
-  to point at a different unmute backend or checkout, disable auto-start, or
-  give slow first launches more time
+- voice options live in `~/.gaia/voice.json`, edited under the **Voice** tab
+  in global settings: `unmuteUrl`, `unmuteDir`, `autoStart`,
+  `startTimeoutSec`, `speakOnSilence` + `silenceDelaySec` (whether/when the
+  agent speaks up on its own during a long silence), and `disableThinking`
+  (thinking is forced off during calls and restored on hang-up)
+- the `💭 #level` text under the composer shows the current agent's thinking
+  effort; click it to cycle levels. Outside a call it persists to that
+  agent's `agent.json`; during a call it applies to the call only
 - interrupting the agent mid-sentence cancels its turn, like Esc on a text task
 - `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
   detect and reuse it instead of starting its own)

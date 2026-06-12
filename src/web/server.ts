@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, watch, type FSWatcher } from "node:fs";
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -17,7 +17,8 @@ import {
   modelListPayload,
   newCompletionId,
 } from "../app/voice-bridge.js";
-import { VoiceStackManager, type VoiceStackSettings } from "../app/voice-stack.js";
+import { ensureVoiceSettingsFile, readVoiceSettings, type VoiceSettings } from "../app/voice-settings.js";
+import { VoiceStackManager } from "../app/voice-stack.js";
 import { WorkspaceRegistry, type WorkspaceRecord } from "../app/workspace-registry.js";
 import { KNOWN_RUNTIMES } from "../runtime/runtime-factory.js";
 import { gaiaHome, loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
@@ -181,7 +182,7 @@ export class GaiaWebServer {
   private readonly pendingReloads = new Set<string>();
   private devReloadTimer: NodeJS.Timeout | undefined;
   // One voice call at a time; unmute's chat-completions requests bind to it.
-  private activeCall: { workspaceId: string; info: VoiceCallInfo } | undefined;
+  private activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   private voiceStarting = false;
   private readonly voiceStack = new VoiceStackManager(join(gaiaHome(), "logs", "voice"));
 
@@ -189,6 +190,7 @@ export class GaiaWebServer {
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
     await this.registerCwdIfInitialized();
+    await ensureVoiceSettingsFile();
     if (this.options.dev) await this.startDevWatchers();
 
     const server = createServer((request, response) => {
@@ -328,6 +330,12 @@ export class GaiaWebServer {
       const workspaceId = decodeURIComponent(voiceMatch[1] ?? "");
       if (voiceMatch[2] === "start") await this.handleVoiceStart(request, response, workspaceId);
       else this.handleVoiceStop(response, workspaceId);
+      return;
+    }
+
+    const thinkingMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/agents\/([^/]+)\/thinking$/);
+    if (request.method === "POST" && thinkingMatch) {
+      await this.handleSetThinking(request, response, decodeURIComponent(thinkingMatch[1] ?? ""), decodeURIComponent(thinkingMatch[2] ?? ""));
       return;
     }
 
@@ -498,11 +506,18 @@ export class GaiaWebServer {
 
     // Boot whatever parts of the unmute stack are not running yet, streaming
     // progress to the UI; hanging up stops them again (handleVoiceStop).
-    const settings = await this.readVoiceSettings();
+    const settings = await readVoiceSettings();
+    const stackSettings = {
+      unmuteUrl: settings.unmuteUrl,
+      unmuteDir: settings.unmuteDir,
+      autoStart: settings.autoStart,
+      startTimeoutMs: settings.startTimeoutSec * 1000,
+      silenceTimeoutSec: settings.speakOnSilence ? settings.silenceDelaySec : null,
+    };
     this.voiceStarting = true;
     let unmuteUrl: string;
     try {
-      ({ unmuteUrl } = await this.voiceStack.ensureRunning(settings, this.gaiaUrl(), (message) => {
+      ({ unmuteUrl } = await this.voiceStack.ensureRunning(stackSettings, this.gaiaUrl(), (message) => {
         this.broadcast({
           type: "voice-status",
           workspaceId,
@@ -523,9 +538,13 @@ export class GaiaWebServer {
       roomId: controller.roomId,
       unmuteUrl,
       ...(agent.voice ? { voice: agent.voice } : {}),
+      // Voice latency: thinking defaults to off during the call and the
+      // agent's configured level returns on hang-up. A manual change from
+      // the composer control overrides this for the rest of the call.
+      ...(settings.disableThinking ? { thinking: "off" } : {}),
       startedAt: new Date().toISOString(),
     };
-    this.activeCall = { workspaceId, info };
+    this.activeCall = { workspaceId, info, settings };
     this.broadcast({ type: "voice-status", workspaceId, roomId: controller.roomId, voice: info });
     json(response, 200, { voice: info });
   }
@@ -544,6 +563,52 @@ export class GaiaWebServer {
 
   private gaiaUrl(): string {
     return `http://${this.options.host ?? "127.0.0.1"}:${this.options.port ?? 8787}`;
+  }
+
+  // Changes an agent's thinking level. During a voice call with that agent
+  // the change is call-scoped (reverts on hang-up); otherwise it persists to
+  // agent.json and hot-applies through the normal settings-reload path.
+  private async handleSetThinking(request: IncomingMessage, response: ServerResponse, workspaceId: string, agentId: string): Promise<void> {
+    const body = await parseBody(request);
+    const level = stringField(body, "level");
+    const levels = sdkThinkingLevels();
+    if (level === undefined || (level !== "" && !levels.includes(level))) {
+      json(response, 400, { error: `Invalid thinking level. Use one of: ${levels.join(", ")} (or "" to unset)` });
+      return;
+    }
+
+    const controller = await this.controllerFor(workspaceId);
+    const agent = controller.workspace.agents[agentId];
+    if (!agent) {
+      json(response, 404, { error: `Unknown agent: ${agentId}` });
+      return;
+    }
+
+    const call = this.activeCall;
+    if (call && call.workspaceId === workspaceId && call.info.agentId === agentId) {
+      if (level === "") delete call.info.thinking;
+      else call.info.thinking = level;
+      this.broadcast({ type: "voice-status", workspaceId, roomId: call.info.roomId, voice: call.info });
+      json(response, 200, { scope: "call", thinking: level || undefined });
+      return;
+    }
+
+    let config: Record<string, unknown> = {};
+    try {
+      config = JSON.parse(await readFile(agent.configPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      // Missing agent.json: create it with just the thinking level.
+    }
+    if (level === "") delete config.thinking;
+    else config.thinking = level;
+    const tempPath = `${agent.configPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    await rename(tempPath, agent.configPath);
+
+    const rel = relative(gaiaHome(), agent.configPath);
+    const scope = rel.startsWith("..") || isAbsolute(rel) ? "workspace" : "global";
+    await this.applySettingsChange(scope, workspaceId);
+    json(response, 200, { scope: "agent", thinking: level || undefined });
   }
 
   // The unmute backend speaks to GAIA as if it were an OpenAI-compatible LLM
@@ -576,6 +641,23 @@ export class GaiaWebServer {
       return;
     }
 
+    const completionId = newCompletionId();
+    const streaming = isStreamingRequest(body);
+
+    // Silence nudges disabled: answer with an empty completion so the agent
+    // stays quiet instead of speaking up on its own.
+    if (turn.kind === "silence" && !call.settings.speakOnSilence) {
+      if (streaming) {
+        response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform" });
+        response.write(completionChunk(completionId, undefined, "stop"));
+        response.write(completionDone());
+        response.end();
+        return;
+      }
+      json(response, 200, completionPayload(completionId, ""));
+      return;
+    }
+
     const controller = await this.controllerFor(call.workspaceId);
     await this.waitForIdle(controller);
 
@@ -583,10 +665,8 @@ export class GaiaWebServer {
       targets: [call.info.agentId],
       channel: "voice",
       recordUserMessage: turn.kind === "user",
+      thinking: call.info.thinking,
     });
-
-    const completionId = newCompletionId();
-    const streaming = isStreamingRequest(body);
     if (streaming) {
       response.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
@@ -645,26 +725,6 @@ export class GaiaWebServer {
         resolveIdle();
       });
     });
-  }
-
-  private async readVoiceSettings(): Promise<VoiceStackSettings> {
-    const settings: VoiceStackSettings = {
-      unmuteUrl: "ws://127.0.0.1:8000",
-      unmuteDir: "/Users/USER/projects/Codex/AIWaifu/unmute",
-      autoStart: true,
-      startTimeoutMs: 180_000,
-    };
-    try {
-      const raw = JSON.parse(await readFile(join(gaiaHome(), "app.json"), "utf8")) as { voice?: Record<string, unknown> };
-      const voice = raw.voice ?? {};
-      if (typeof voice.unmuteUrl === "string" && voice.unmuteUrl) settings.unmuteUrl = voice.unmuteUrl;
-      if (typeof voice.unmuteDir === "string" && voice.unmuteDir) settings.unmuteDir = voice.unmuteDir;
-      if (typeof voice.autoStart === "boolean") settings.autoStart = voice.autoStart;
-      if (typeof voice.startTimeoutSec === "number" && voice.startTimeoutSec > 0) settings.startTimeoutMs = voice.startTimeoutSec * 1000;
-    } catch {
-      // Defaults cover the common local setup.
-    }
-    return settings;
   }
 
   private async fileHints(file: EditableFileContent, workspaceId?: string): Promise<FileHints | undefined> {

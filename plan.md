@@ -62,8 +62,19 @@ same model, tools included.
       foreign process on a port triggers a free-port fallback instead of a
       false positive), startup progress streams to the topbar, hang-up stops
       exactly the services GAIA spawned; logs in `~/.gaia/logs/voice/`;
-      `voice.{unmuteUrl,unmuteDir,autoStart,startTimeoutSec}` in
-      `~/.gaia/app.json`; exit hooks prevent orphans across dev restarts
+      exit hooks prevent orphans across dev restarts
+- [x] voice settings file `~/.gaia/voice.json` with its own Voice tab in
+      global settings (boolean/number hints): unmuteUrl, unmuteDir,
+      autoStart, startTimeoutSec, speakOnSilence, silenceDelaySec,
+      disableThinking
+- [x] silence nudges are controllable: speakOnSilence off answers unmute's
+      "..." turns with an empty completion, and the delay flows to the
+      backend via KYUTAI_USER_SILENCE_TIMEOUT (env-configurable in the
+      unmute fork, unmute_handler.py)
+- [x] thinking control: voice calls force thinking off (restored on
+      hang-up); the composer shows a clickable `💭 #level` indicator that
+      cycles levels - persisted to agent.json outside calls, call-scoped
+      during them (POST /api/workspaces/:id/agents/:agentId/thinking)
 
 ### Voice follow-ups
 

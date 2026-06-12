@@ -92,13 +92,18 @@ test("spawns only missing services and waits until healthy, then stop() kills th
           assert.equal(spec.env.KYUTAI_LLM_URL, "http://127.0.0.1:8787");
           assert.equal(spec.env.KYUTAI_LLM_MODEL, "gaia");
           assert.equal(spec.env.KYUTAI_STT_URL, "ws://localhost:8090");
+          assert.equal(spec.env.KYUTAI_USER_SILENCE_TIMEOUT, "9");
         }
         return service;
       },
       pollIntervalMs: 10,
     });
 
-    const result = await manager.ensureRunning(settings({ unmuteDir: unmute.path }), "http://127.0.0.1:8787", (message) => statuses.push(message));
+    const result = await manager.ensureRunning(
+      settings({ unmuteDir: unmute.path, silenceTimeoutSec: 9 }),
+      "http://127.0.0.1:8787",
+      (message) => statuses.push(message),
+    );
 
     assert.deepEqual([...spawned.keys()].sort(), ["backend", "tts"]);
     assert.equal(result.unmuteUrl, "ws://127.0.0.1:8000");
@@ -120,7 +125,7 @@ test("falls back to a free port when a foreign process occupies the backend port
   const unmute = await unmuteCheckout();
   try {
     let healthy = false;
-    const spawned = new Map<string, { port: number }>();
+    const spawned = new Map<string, { port: number; env: Record<string, string> }>();
     const statuses: string[] = [];
     const manager = new VoiceStackManager(temp.path, {
       probeHealth: async () => {
@@ -133,16 +138,17 @@ test("falls back to a free port when a foreign process occupies the backend port
       probeHttpOk: async () => false,
       freePort: async () => 49152,
       spawnService: (spec) => {
-        spawned.set(spec.name, { port: spec.port });
+        spawned.set(spec.name, { port: spec.port, env: spec.env });
         return new FakeService();
       },
       pollIntervalMs: 10,
     });
 
-    const result = await manager.ensureRunning(settings({ unmuteDir: unmute.path }), "http://127.0.0.1:8787", (message) => statuses.push(message));
+    const result = await manager.ensureRunning(settings({ unmuteDir: unmute.path, silenceTimeoutSec: null }), "http://127.0.0.1:8787", (message) => statuses.push(message));
 
     assert.equal(result.unmuteUrl, "ws://127.0.0.1:49152");
     assert.equal(spawned.get("backend")?.port, 49152);
+    assert.equal(spawned.get("backend")?.env.KYUTAI_USER_SILENCE_TIMEOUT, "1000000000");
     assert.ok(statuses.some((status) => status.includes("port 8000 is taken")));
   } finally {
     await unmute.cleanup();

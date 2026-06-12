@@ -15,6 +15,9 @@ export interface VoiceStackSettings {
   unmuteUrl: string;
   autoStart: boolean;
   startTimeoutMs: number;
+  // Seconds before unmute nudges the agent to fill a silence; null disables
+  // the nudges entirely (the backend gets an effectively-infinite timeout).
+  silenceTimeoutSec?: number | null;
 }
 
 export interface VoiceHealth {
@@ -223,6 +226,7 @@ export class VoiceStackManager {
           KYUTAI_STT_URL: `ws://localhost:${stt.port}`,
           KYUTAI_TTS_URL: `ws://localhost:${tts.port}`,
           KYUTAI_BACKEND_PORT: String(backend.port),
+          KYUTAI_USER_SILENCE_TIMEOUT: String(settings.silenceTimeoutSec ?? 1_000_000_000),
         },
       },
     ];

@@ -9,6 +9,9 @@ export interface AgentInput {
   activeRole?: ResolvedRole;
   // "voice" turns come from a live call: the reply is spoken aloud by TTS.
   channel?: "text" | "voice";
+  // Per-turn thinking level override (e.g. voice mode forcing it off). When
+  // absent, the runtime restores the agent's configured level.
+  thinking?: string;
 }
 
 export type AgentEvent =

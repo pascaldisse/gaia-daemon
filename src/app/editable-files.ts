@@ -73,7 +73,7 @@ export class EditableFileRegistry {
   async listGlobal(): Promise<EditableFileDescriptor[]> {
     const home = gaiaHome();
     const roots = [join(home, "agents")];
-    const files = [join(home, "app.json")];
+    const files = [join(home, "app.json"), join(home, "voice.json")];
     for (const root of roots) files.push(...(await walkEditable(root)));
     const descriptors = await Promise.all(files.map((path) => descriptor("global", path, home)));
     return descriptors.filter((item): item is EditableFileDescriptor => Boolean(item)).sort((a, b) => a.label.localeCompare(b.label));
