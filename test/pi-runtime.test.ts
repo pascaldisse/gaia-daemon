@@ -12,6 +12,7 @@ import { createTempDir } from "./helpers/temp.ts";
 class FakeSession implements PiSessionLike {
   readonly sessionId: string;
   readonly sessionFile = undefined;
+  model: { provider: string; id: string } | undefined;
   listeners: Array<(event: any) => void> = [];
   disposed = false;
   reloads = 0;
@@ -139,6 +140,25 @@ test("PiRuntime reloads an existing session when prompt changes but skills do no
 
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].reloads, 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("PiRuntime reports the session's actual model as a model-info event", async () => {
+  const { temp, project, workspace, agent } = await fixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.model = { provider: "fake-provider", id: "fake-model" };
+      return { session };
+    };
+    const runtime = new PiRuntime(project, workspace, agent, new MemoryStore(), factory);
+
+    const events = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
+    assert.deepEqual(events[0], { type: "model-info", provider: "fake-provider", modelId: "fake-model", subscription: false });
+    assert.equal(runtime.modelLabel, "fake-provider/fake-model");
+    runtime.dispose();
   } finally {
     await temp.cleanup();
   }

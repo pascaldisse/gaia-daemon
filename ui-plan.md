@@ -2,25 +2,57 @@
 
 ## Current shape
 
-GAIA now ships a minimal web UI without a frontend bundler.
+GAIA ships a web UI without a frontend bundler.
 
 - `gaia` starts the Node server in `src/web/server.ts`
-- Node serves `web/index.html` and `web/src/*` directly
-- frontend uses plain browser-side code in `web/src/main.ts`
+- Node serves `web/index.html` and `web/src/*` directly as ES modules
 - transport is HTTP + SSE
 - settings/file edits use explicit save
-- legacy terminal UI remains behind `gaia tui`
+
+## Module layout (`web/src/`)
+
+- `main.ts` — entry; installs global listeners and loads the app
+- `dom.ts` — `h()` hyperscript helper
+- `state.ts` — shared mutable UI state + `activeTask`
+- `api.ts` — fetch wrapper
+- `actions.ts` — app/workspace/message/cancel actions
+- `events.ts` — SSE connection and streaming merge logic
+- `render.ts` — root render, shell views (sidebar, topbar, room panel), `setError`
+- `transcript.ts` — transcript, messages, thinking/tool activity
+- `composer.ts` — composer, autocomplete, keyboard routing, focus management
+- `settings.ts` — workspace panel, global settings modal, file editors
+- `links.ts` — path/url detection, cmd/ctrl-click open targets
+- `markdown.ts` — lightweight markdown rendering
+
+All files are plain browser JavaScript under `.ts` paths; the server maps
+`.ts` to `text/javascript`. Cross-module cycles (e.g. views → actions →
+render → views) are function-level only and safe in browser ESM.
+
+## Settings field hints
+
+The formatted settings view is hint-driven. `/api/files/:id` responses carry
+an optional `hints` object computed server-side (`src/app/settings-hints.ts`)
+from live sources: workspace agents and rooms, Pi's model registry (with auth
+status per provider), SDK tool names, and thinking levels. Hints map a
+normalized JSON path to a generic input descriptor:
+
+- `select` (with optional `(not set)` that omits the key on save)
+- `multiselect` (checkbox chips, used for `tools`)
+- `number`
+- dependent selects via `groupBy` (model list filters by chosen provider)
+
+The frontend renderer (`settings.ts`) has no per-field knowledge; hinted
+fields missing from the file render as unset rows so e.g. `model.provider`
+is editable on an agent.json that has no model block yet. Files on disk stay
+plain JSON.
 
 ## Why no Vite
 
 Keeping dependencies small matters more than bundling right now.
-The current frontend works as direct-served source files, so Vite is not required.
+Direct-served source modules work, so Vite is not required.
 
-## Refactor seams
+## Next seams
 
-Most likely next cleanup:
-
-- split `web/src/main.ts` into smaller modules
 - add API/server tests around `src/web/server.ts`
 - add light browser-side smoke coverage
-- keep docs aligned with actual runtime behavior
+- voice session indicator (see plan.md Phase 2)

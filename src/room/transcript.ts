@@ -3,6 +3,7 @@ import { mkdir, appendFile, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export interface UserRoomEvent {
+  id: string;
   timestamp: string;
   author: "user";
   targets: string[];
@@ -10,6 +11,7 @@ export interface UserRoomEvent {
 }
 
 export interface AgentRoomEvent {
+  id: string;
   timestamp: string;
   author: string;
   text: string;
@@ -17,7 +19,11 @@ export interface AgentRoomEvent {
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;
 
-function isRoomEvent(value: unknown): value is RoomEvent {
+export function newRoomEventId(): string {
+  return `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isRoomEventLike(value: unknown): value is Omit<RoomEvent, "id"> & { id?: unknown } {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<RoomEvent>;
   return typeof candidate.timestamp === "string" && typeof candidate.author === "string" && typeof candidate.text === "string";
@@ -38,19 +44,23 @@ async function readTranscriptFromCursor(path: string, cursor: number): Promise<R
   const text = await readFile(path, "utf8");
   if (!text.trim()) return { events: [], nextCursor: 0 };
 
-  const lines = text.split("\n");
-  const nonEmptyLines = lines.filter((line) => line.trim());
+  const nonEmptyLines = text.split("\n").filter((line) => line.trim());
   const safeCursor = Math.max(0, Math.floor(cursor));
-  const events = nonEmptyLines
-    .slice(safeCursor)
-    .map((line) => {
-      try {
-        return JSON.parse(line) as unknown;
-      } catch {
-        return undefined;
-      }
-    })
-    .filter(isRoomEvent);
+  const events: RoomEvent[] = [];
+
+  nonEmptyLines.slice(safeCursor).forEach((line, index) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!isRoomEventLike(parsed)) return;
+    // Transcript lines written before events carried ids get a deterministic
+    // line-based id so runtime-detail lookups stay stable across reads.
+    const id = typeof parsed.id === "string" && parsed.id ? parsed.id : `legacy_${safeCursor + index}`;
+    events.push({ ...parsed, id } as RoomEvent);
+  });
 
   return { events, nextCursor: nonEmptyLines.length };
 }

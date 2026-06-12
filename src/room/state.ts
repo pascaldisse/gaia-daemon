@@ -19,6 +19,8 @@ export interface RuntimeToolDetails {
 }
 
 export interface RuntimeMessageDetails {
+  /** Model that produced this message, e.g. "openai/gpt-5.1-codex (oauth)". */
+  model?: string;
   thinkingStarted?: boolean;
   thinking?: string;
   tools?: RuntimeToolDetails[];
@@ -72,11 +74,12 @@ function runtimeMessageDetails(value: unknown): RuntimeMessageDetails | undefine
   if (!isRecord(value)) return undefined;
   const tools = Array.isArray(value.tools) ? value.tools.map(runtimeToolDetails).filter((tool): tool is RuntimeToolDetails => Boolean(tool)) : undefined;
   const details: RuntimeMessageDetails = {
+    ...(typeof value.model === "string" && value.model.length > 0 ? { model: value.model } : {}),
     ...(value.thinkingStarted === true ? { thinkingStarted: true } : {}),
     ...(typeof value.thinking === "string" && value.thinking.length > 0 ? { thinking: value.thinking } : {}),
     ...(tools && tools.length > 0 ? { tools } : {}),
   };
-  return details.thinkingStarted || details.thinking || details.tools?.length ? details : undefined;
+  return details.model || details.thinkingStarted || details.thinking || details.tools?.length ? details : undefined;
 }
 
 function runtimeDetailsRecord(value: unknown): Record<string, RuntimeMessageDetails> {

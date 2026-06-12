@@ -5,9 +5,11 @@ import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { EditableFileRegistry } from "../app/editable-files.js";
+import { EditableFileRegistry, type EditableFileContent } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent } from "../app/gaia-controller.js";
+import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources } from "../app/settings-hints.js";
 import { WorkspaceRegistry, type WorkspaceRecord } from "../app/workspace-registry.js";
+import { KNOWN_RUNTIMES } from "../runtime/runtime-factory.js";
 import { loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
@@ -165,6 +167,7 @@ export class GaiaWebServer {
   private readonly devClients = new Set<DevClient>();
   private readonly devWatchers: FSWatcher[] = [];
   private readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
+  private readonly pendingReloads = new Set<string>();
   private devReloadTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly options: WebServerOptions) {}
@@ -304,7 +307,9 @@ export class GaiaWebServer {
     const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)$/);
     if (fileMatch && request.method === "GET") {
       const fileId = decodeURIComponent(fileMatch[1] ?? "");
-      json(response, 200, { file: await this.files.read(fileId, url.searchParams.get("workspaceId") ?? undefined) });
+      const workspaceId = url.searchParams.get("workspaceId") ?? undefined;
+      const file = await this.files.read(fileId, workspaceId);
+      json(response, 200, { file: { ...file, hints: await this.fileHints(file, workspaceId) } });
       return;
     }
 
@@ -318,8 +323,9 @@ export class GaiaWebServer {
       }
       const workspaceId = url.searchParams.get("workspaceId") ?? undefined;
       const file = await this.files.write(fileId, content, workspaceId);
+      await this.applySettingsChange(file.scope, workspaceId);
       this.broadcast({ type: "settings-saved", workspaceId, fileId });
-      json(response, 200, { file });
+      json(response, 200, { file: { ...file, hints: await this.fileHints(file, workspaceId) } });
       return;
     }
 
@@ -405,6 +411,63 @@ export class GaiaWebServer {
     await controller.init();
     this.controllers.set(workspaceId, controller);
     return controller;
+  }
+
+  // Settings files feed workspace/agent definitions that controllers cache at
+  // creation. Rebuild affected controllers so saves apply without a restart:
+  // a global file (agents, app config) touches every workspace; a workspace
+  // file only its own. Busy controllers are rebuilt when their task ends.
+  private async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
+    const ids = scope === "global" ? [...this.controllers.keys()] : workspaceId ? [workspaceId] : [];
+    await Promise.all(ids.map((id) => this.reloadController(id)));
+  }
+
+  private async reloadController(workspaceId: string): Promise<void> {
+    const controller = this.controllers.get(workspaceId);
+    if (!controller) return;
+
+    if (controller.hasActiveTask) {
+      if (this.pendingReloads.has(workspaceId)) return;
+      this.pendingReloads.add(workspaceId);
+      const unsubscribe = controller.subscribe((event) => {
+        if (event.type !== "task-end" && event.type !== "task-error") return;
+        unsubscribe();
+        this.pendingReloads.delete(workspaceId);
+        void this.reloadController(workspaceId).catch(() => {});
+      });
+      return;
+    }
+
+    controller.dispose();
+    this.controllers.delete(workspaceId);
+    const fresh = await this.controllerFor(workspaceId);
+    this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
+  }
+
+  private async fileHints(file: EditableFileContent, workspaceId?: string): Promise<FileHints | undefined> {
+    if (file.kind !== "json") return undefined;
+
+    let agentIds: string[] = [];
+    let roomIds: string[] = [];
+    if (workspaceId) {
+      try {
+        const controller = await this.controllerFor(workspaceId);
+        agentIds = Object.keys(controller.workspace.agents);
+        roomIds = (await controller.listRooms()).map((room) => room.id);
+      } catch {
+        // Hints degrade gracefully when the workspace cannot be loaded.
+      }
+    }
+
+    const sources: HintSources = {
+      agentIds,
+      roomIds,
+      runtimes: KNOWN_RUNTIMES,
+      toolNames: sdkToolNames(this.options.cwd),
+      thinkingLevels: sdkThinkingLevels(),
+      models: readModelCatalog().models,
+    };
+    return buildFileHints(file, sources);
   }
 
   private async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {

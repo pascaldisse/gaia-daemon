@@ -10,6 +10,7 @@ export interface AgentInput {
 }
 
 export type AgentEvent =
+  | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "text-delta"; delta: string }
   | { type: "thinking-start" }
   | { type: "thinking-delta"; delta: string }

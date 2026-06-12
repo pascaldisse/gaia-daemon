@@ -24,7 +24,7 @@ Personas are durable. Projects add local context.
 - per-agent global markdown memory
 - persistent Pi session per room-agent pair
 - sample global agents: `@gaia`, `@sidia`, `@terry`
-- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/quit`
+- slash commands: `/help`, `/agents`, `/roles`, `/role`
 - dynamic selectable previews for `/` commands and `@` agents
 
 `GAIA_HOME` can override the global home path. Default: `~/.gaia`.
@@ -107,14 +107,7 @@ npm run dev:watch
 - changes under `src/` restart the Node process
 - changes under `web/` reload the browser
 
-The legacy terminal UI is still available:
-
-```bash
-gaia tui
-```
-
-Press `/` to open the command preview.
-Press `@` to open the agent preview.
+In the composer, type `/` for the command preview and `@` for the agent preview.
 Use ↑/↓ to select, Tab/Enter to insert, and Esc to hide.
 
 Examples:
@@ -214,20 +207,29 @@ This creates:
 The command refuses to overwrite an existing agent.
 Edit the generated files directly.
 
+`agent.json` also accepts an optional `voice` field: a TTS voice reference
+for voice surfaces (for example an unmute `voices.yaml` entry). See `plan.md`
+for the voice roadmap.
+
 ## Prompt layering
 
-Each agent turn gets:
+The system prompt for each agent session contains:
 
 1. global agent `persona/SOUL.md`
 2. active role prompt, if set
 3. optional project agent `persona/INTENT.md`
 4. project `AGENTS.md` files, discovered from parent dirs to current dir
-5. global agent `persona/MEMORY.md`
+
+Each turn prompt then adds:
+
+5. global agent `persona/MEMORY.md`, only when it changed since the last turn
 6. new room events since that agent's cursor
 7. newest user message
 
-The room cursor is a transcript line count for this MVP.
-It prevents injecting the same room events again and again.
+Memory travels in the turn prompt instead of the system prompt so memory
+writes never force a session reload mid-conversation. The room cursor is a
+transcript line count for this MVP. It prevents injecting the same room
+events again and again.
 
 ## Project-local agent overlays
 
@@ -268,6 +270,13 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
   "transcriptWindow": 20
 }
 ```
+
+All settings are plain text files. The web UI's formatted view renders smart
+controls on top of them (dropdowns for agents, rooms, models, tool
+checkboxes) using server-computed field hints; the raw view always shows the
+file as-is. Model choices come from Pi's model registry, including custom and
+local models from `~/.pi/agent/models.json` and subscription (OAuth) or
+API-key auth configured via `pi /login`.
 
 ### `.gaia/rooms/default/transcript.jsonl`
 

@@ -15,9 +15,9 @@
     "dev:watch": "tsx watch src/cli.ts --dev"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.70.6",
-    "@mariozechner/pi-coding-agent": "^0.70.6",
-    "@mariozechner/pi-tui": "^0.70.6",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
     "typebox": "^1.1.24"
   },
   "devDependencies": {

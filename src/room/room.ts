@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
 import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
-import { appendRoomEvent, countRoomEventLines, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
+import { appendRoomEvent, countRoomEventLines, newRoomEventId, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
@@ -16,6 +16,7 @@ export class Room {
 
   async addUserMessage(text: string, targets: string[]): Promise<UserRoomEvent> {
     const event: UserRoomEvent = {
+      id: newRoomEventId(),
       timestamp: new Date().toISOString(),
       author: "user",
       targets,
@@ -27,6 +28,7 @@ export class Room {
 
   async addAgentMessage(author: string, text: string): Promise<AgentRoomEvent> {
     const event: AgentRoomEvent = {
+      id: newRoomEventId(),
       timestamp: new Date().toISOString(),
       author,
       text,

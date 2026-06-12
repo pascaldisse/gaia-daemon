@@ -4,6 +4,8 @@ import type { Workspace } from "../workspace/types.js";
 import { PiRuntime } from "./pi-runtime.js";
 import type { AgentRuntime } from "./types.js";
 
+export const KNOWN_RUNTIMES = ["pi"];
+
 export function createAgentRuntime(options: {
   cwd: string;
   workspace: Workspace;
@@ -11,6 +13,6 @@ export function createAgentRuntime(options: {
   memoryStore: MemoryStore;
 }): AgentRuntime {
   const runtime = options.agent.runtime || options.workspace.config.runtime;
-  if (runtime !== "pi") throw new Error(`Unsupported runtime: ${runtime}`);
+  if (!KNOWN_RUNTIMES.includes(runtime)) throw new Error(`Unsupported runtime: ${runtime}`);
   return new PiRuntime(options.cwd, options.workspace, options.agent, options.memoryStore);
 }

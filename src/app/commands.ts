@@ -1,4 +1,4 @@
-export type SlashCommandType = "help" | "quit" | "agents" | "roles" | "role";
+export type SlashCommandType = "help" | "agents" | "roles" | "role";
 
 export interface SlashCommandDefinition {
   name: string;
@@ -9,7 +9,6 @@ export interface SlashCommandDefinition {
 
 export type SlashCommand =
   | { type: "help" }
-  | { type: "quit" }
   | { type: "agents" }
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
@@ -21,7 +20,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "agents", type: "agents", description: "list available agents" },
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
-  { name: "quit", type: "quit", description: "exit GAIA", aliases: ["exit"] },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
