@@ -1,4 +1,4 @@
-# GAIA
+# GAIA Daemon
 
 `gaia` is a local-first persona room built on the Pi SDK.
 
