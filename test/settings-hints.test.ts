@@ -14,9 +14,12 @@ const sources: HintSources = {
   ],
 };
 
-test("config.json gets agent and room dropdowns and a numeric window", () => {
+test("config.json gets harness, agent and room dropdowns and a numeric window", () => {
   const hints = buildFileHints({ label: ".gaia/config.json", kind: "json" }, sources);
   assert.ok(hints);
+  assert.equal(hints.harness.input, "select");
+  assert.equal(hints.harness.optional, true);
+  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex"]);
   assert.equal(hints.defaultAgent.input, "select");
   assert.deepEqual(hints.defaultAgent.options?.map((option) => option.value), ["gaia", "sidia"]);
   assert.deepEqual(hints.room.options?.map((option) => option.value), ["default", "lab"]);
@@ -47,6 +50,36 @@ test("agent.json gets tools multiselect and grouped model dropdowns", () => {
 test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "agents/gaia/persona/SOUL.md", kind: "markdown" }, sources), undefined);
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);
+});
+
+test("agent.json gets harness select (optional, pi/codex)", () => {
+  const hints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
+  assert.ok(hints);
+  assert.equal(hints.harness.input, "select");
+  assert.equal(hints.harness.optional, true);
+  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex"]);
+});
+
+test("agent.json always includes tools hint; hidden flag set when harness is codex", () => {
+  const codexHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, sources);
+  assert.ok(codexHints);
+  assert.ok(codexHints.tools, "tools hint always present");
+  assert.equal(codexHints.tools.input, "multiselect");
+  assert.equal(codexHints.tools.hidden, true, "tools hidden when saved harness is codex");
+  assert.ok(codexHints.harness);
+  assert.ok(codexHints["model.provider"]);
+});
+
+test("agent.json tools hint not hidden when harness is pi or unset", () => {
+  const piHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "pi" }) }, sources);
+  assert.ok(piHints.tools);
+  assert.equal(piHints.tools.input, "multiselect");
+  assert.equal(piHints.tools.hidden, false, "tools not hidden when harness is pi");
+
+  const unsetHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
+  assert.ok(unsetHints.tools);
+  assert.equal(unsetHints.tools.input, "multiselect");
+  assert.equal(unsetHints.tools.hidden, false, "tools not hidden when harness is unset");
 });
 
 test("voice.json gets boolean and number hints", () => {

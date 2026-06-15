@@ -33,9 +33,49 @@ export interface FieldHint {
   options?: FieldHintOption[];
   /** JSON path of another field whose current value filters options by their `group`. */
   groupBy?: string;
+  /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
+  hidden?: boolean;
 }
 
-export type FileHints = Record<string, FieldHint>;
+/** Per-harness config that controls field visibility and model filtering in the settings UI. */
+export interface HarnessConfig {
+  id: string;
+  label: string;
+  description: string;
+  /** If set, model provider is locked to this value; the UI hides the provider selector. */
+  lockedProvider?: string;
+  /** If set, model name options are filtered to these provider IDs. */
+  modelProviderIds?: string[];
+  /** Fields to hide in the settings UI when this harness is active (JSON paths relative to file root). */
+  hiddenFields?: string[];
+}
+
+/** Harness registry: future harnesses/providers plug in here. */
+export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
+  pi: {
+    id: "pi",
+    label: "pi",
+    description: "Pi coding agent (local SDK)",
+  },
+  codex: {
+    id: "codex",
+    label: "codex",
+    description: "OpenAI Codex app-server",
+    lockedProvider: "openai-codex",
+    modelProviderIds: ["openai-codex"],
+    hiddenFields: ["tools"],
+  },
+};
+
+/** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
+export interface HarnessHintsMeta {
+  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; hiddenFields: string[] }>;
+}
+
+export interface FileHints {
+  [key: string]: FieldHint | HarnessHintsMeta | undefined;
+  _harness?: HarnessHintsMeta;
+}
 
 export interface ModelChoice {
   provider: string;
@@ -136,20 +176,66 @@ function values(items: string[]): FieldHintOption[] {
   return items.map((value) => ({ value }));
 }
 
-function configJsonHints(sources: HintSources): FileHints {
+function harnessSelectOptions(): FieldHintOption[] {
+  return Object.values(HARNESS_CONFIGS).map((config) => ({
+    value: config.id,
+    label: config.label,
+    description: config.description,
+  }));
+}
+
+function harnessHintsMeta(): HarnessHintsMeta {
+  const configs: HarnessHintsMeta["configs"] = {};
+  for (const config of Object.values(HARNESS_CONFIGS)) {
+    configs[config.id] = {
+      lockedProvider: config.lockedProvider,
+      modelProviderIds: config.modelProviderIds,
+      hiddenFields: config.hiddenFields ?? [],
+    };
+  }
+  return { configs };
+}
+
+function fileHarnessMeta(): FileHints {
+  return { _harness: harnessHintsMeta() };
+}
+
+function configJsonHints(sources: HintSources, parsed?: Record<string, unknown>): FileHints {
   return {
     defaultAgent: select(values(sources.agentIds)),
     room: select(values(sources.roomIds)),
     transcriptWindow: { input: "number" },
+    harness: select(harnessSelectOptions(), { optional: true }),
+    ...fileHarnessMeta(),
   };
 }
 
-function agentJsonHints(sources: HintSources): FileHints {
+function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>): FileHints {
+  const rawHarness = typeof parsed?.harness === "string" ? parsed.harness : undefined;
+  const currentHarnessConfig = rawHarness ? HARNESS_CONFIGS[rawHarness] : undefined;
+
+  // Fields hidden by current harness config. The `hidden` flag carries the
+  // saved state; the frontend reads _harness meta to toggle when harness changes.
+  const hiddenByHarness = new Set(currentHarnessConfig?.hiddenFields ?? []);
+
+  // Locked provider: if the harness locks a provider, hide model.provider
+  // and filter model names to only that provider's models.
+  const providerLocked = Boolean(currentHarnessConfig?.lockedProvider);
+  const modelFilterProviders = currentHarnessConfig?.modelProviderIds;
+
+  const allModels = sources.models;
+  const modelNameOptions = modelFilterProviders
+    ? modelOptions(allModels).filter((opt) => modelFilterProviders.includes(opt.group ?? ""))
+    : modelOptions(allModels);
+  const providerOptionList = providerOptions(allModels);
+
   return {
     thinking: select(values(sources.thinkingLevels), { optional: true }),
-    tools: { input: "multiselect", options: values(sources.toolNames) },
-    "model.provider": select(providerOptions(sources.models), { optional: true }),
-    "model.name": select(modelOptions(sources.models), { optional: true, groupBy: "model.provider" }),
+    tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
+    harness: select(harnessSelectOptions(), { optional: true }),
+    "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
+    "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),
+    ...fileHarnessMeta(),
   };
 }
 
@@ -163,11 +249,19 @@ function voiceJsonHints(): FileHints {
   };
 }
 
-export function buildFileHints(file: { label: string; kind: string }, sources: HintSources): FileHints | undefined {
+export function buildFileHints(file: { label: string; kind: string; content?: string }, sources: HintSources): FileHints | undefined {
   if (file.kind !== "json") return undefined;
   const basename = file.label.split("/").pop() ?? file.label;
-  if (basename === "config.json") return configJsonHints(sources);
-  if (basename === "agent.json") return agentJsonHints(sources);
+  let parsed: Record<string, unknown> | undefined;
+  if (file.content) {
+    try {
+      parsed = JSON.parse(file.content);
+    } catch {
+      // Hints degrade gracefully on parse failure.
+    }
+  }
+  if (basename === "config.json") return configJsonHints(sources, parsed);
+  if (basename === "agent.json") return agentJsonHints(sources, parsed);
   if (basename === "voice.json") return voiceJsonHints();
   return undefined;
 }

@@ -22,7 +22,8 @@ import { VoiceStackManager } from "../app/voice-stack.js";
 import { WorkspaceRegistry } from "../app/workspace-registry.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
-import { ensureWorkspaceRoom, gaiaHome, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
+import { scaffoldGlobalAgent } from "../agents/scaffold.js";
+import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 interface WebServerOptions {
@@ -95,6 +96,16 @@ function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function titleCaseId(id: string): string {
+  return (
+    id
+      .split(/[-_]/)
+      .filter(Boolean)
+      .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+      .join(" ") || id
+  );
 }
 
 function isWebUrl(target: string): boolean {
@@ -248,8 +259,11 @@ export class GaiaWebServer {
       });
     });
 
+    const address = server.address();
+    const boundPort = address && typeof address === "object" ? address.port : port;
+
     return {
-      url: `http://${host}:${port}/`,
+      url: `http://${host}:${boundPort}/`,
       close: () =>
         new Promise<void>((resolveClose, reject) => {
           this.voiceStack.stop();
@@ -310,6 +324,28 @@ export class GaiaWebServer {
       }
       await this.controllerFor(record.id);
       await this.handleApp(response, record.id);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/agents") {
+      const body = await parseBody(request);
+      const id = stringField(body, "id");
+      if (!id) {
+        json(response, 400, { error: "Missing agent id" });
+        return;
+      }
+      try {
+        const displayName = stringField(body, "displayName")?.trim() || titleCaseId(id);
+        const result = await scaffoldGlobalAgent(globalAgentsPath(), id, {
+          displayName,
+          icon: stringField(body, "icon"),
+        });
+        await this.applySettingsChange("global");
+        json(response, 201, { agent: { id, displayName, dir: result.agentDir } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        json(response, message.startsWith("Invalid agent id") ? 400 : 409, { error: message });
+      }
       return;
     }
 
@@ -883,7 +919,7 @@ export class GaiaWebServer {
       thinkingLevels: sdkThinkingLevels(),
       models: this.hintSourcesCache.models,
     };
-    return buildFileHints(file, sources);
+    return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
   }
 
   private async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {

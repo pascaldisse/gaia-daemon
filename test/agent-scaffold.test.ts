@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { scaffoldGlobalAgent } from "../src/agents/scaffold.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
-test("scaffolds a global agent persona folder with starter roles", async () => {
+test("scaffolds a global agent persona folder without role stubs", async () => {
   const temp = await createTempDir();
   try {
     const result = await scaffoldGlobalAgent(join(temp.path, "agents"), "luma", { displayName: "Luma" });
@@ -15,9 +15,9 @@ test("scaffolds a global agent persona folder with starter roles", async () => {
     assert.equal(existsSync(result.soulPath), true);
     assert.equal(existsSync(join(result.memoryDir, "MEMORY.md")), true);
     assert.equal(existsSync(join(result.memoryDir, "USER.md")), true);
-    assert.equal(existsSync(join(result.rolesDir, "brainstorm.md")), true);
-    assert.equal(existsSync(join(result.rolesDir, "research.md")), true);
-    assert.equal(existsSync(join(result.rolesDir, "plan.md")), true);
+    // Roles directory exists but is empty: roles are user-added only.
+    assert.equal(existsSync(result.rolesDir), true);
+    assert.deepEqual(result.rolePaths, []);
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     assert.deepEqual(config, {
@@ -26,6 +26,8 @@ test("scaffolds a global agent persona folder with starter roles", async () => {
       icon: "•",
       thinking: "medium",
       tools: ["read", "write", "edit", "memory", "recall"],
+      harness: "pi",
+      model: { provider: "deepseek", name: "deepseek-v4-pro" },
     });
   } finally {
     await temp.cleanup();
