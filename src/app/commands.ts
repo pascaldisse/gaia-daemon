@@ -1,4 +1,4 @@
-export type SlashCommandType = "help" | "agents" | "roles" | "role" | "thinking";
+export type SlashCommandType = "help" | "agents" | "roles" | "role" | "summon" | "thinking";
 
 export interface SlashCommandDefinition {
   name: string;
@@ -12,6 +12,7 @@ export type SlashCommand =
   | { type: "agents" }
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
+  | { type: "summon"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
@@ -21,6 +22,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "agents", type: "agents", description: "list available agents" },
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
+  { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
 ];
 
@@ -38,6 +40,11 @@ export function parseCommand(input: string): SlashCommand {
 
   if (command.type === "roles") return { type: "roles", agent: args[0] };
   if (command.type === "role") return { type: "role", agent: args[0], role: args[1] };
+  if (command.type === "summon") {
+    const agent = args[0];
+    const task = args.slice(1).join(" ");
+    return { type: "summon", agent: agent || undefined, task: task || undefined };
+  }
   if (command.type === "thinking") {
     // "/thinking high" targets the default agent; "/thinking gaia high"
     // (with or without @) names one explicitly.
@@ -51,4 +58,4 @@ export function parseCommand(input: string): SlashCommand {
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map(
   (command) => `  /${command.name.padEnd(8)} ${command.description}`,
-).join("\n")}\n\nRole commands:\n  /roles <agent>       list roles for an agent\n  /role <agent> <role> set a role in this room\n  /role <agent> none   clear a role in this room\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+).join("\n")}\n\nRole commands:\n  /roles <agent>       list roles for an agent\n  /role <agent> <role> set a role in this room\n  /role <agent> none   clear a role in this room\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;

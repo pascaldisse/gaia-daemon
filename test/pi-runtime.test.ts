@@ -130,6 +130,39 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
   }
 });
 
+test("PiRuntime exposes summon as a custom tool when enabled", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    agent.tools = ["summon"];
+    let customTools: any[] = [];
+    const calls: Array<{ roomId: string; agentId: string; task: string }> = [];
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      customTools = options.customTools as any[];
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime(
+      workspace,
+      agent,
+      new MemoryStore(),
+      factory,
+      async (params) => {
+        calls.push(params);
+        return "summon complete";
+      },
+    );
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(customTools.length, 1);
+    assert.equal(customTools[0].name, "summon");
+    const result = await customTools[0].execute("call_1", { agent: "sidia", task: "map routes", publish: "summary" });
+    assert.deepEqual(calls, [{ roomId: "default", agentId: "sidia", task: "map routes" }]);
+    assert.deepEqual(result.content, [{ type: "text", text: "summon complete" }]);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("PiRuntime surfaces provider failures encoded as error-final messages", async () => {
   const { temp, workspace, agent } = await fixture();
   try {

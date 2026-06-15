@@ -16,6 +16,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import { resolveSkillRefs } from "../skills/skill-resolver.js";
 import { createMemoryTool } from "../tools/memory-tool.js";
 import { createRecallTool } from "../tools/recall-tool.js";
+import { createSummonTool, type SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -103,6 +104,7 @@ export class PiRuntime implements AgentRuntime {
     readonly agent: AgentDefinition,
     private readonly memoryStore: MemoryStore,
     private readonly sessionFactory?: PiRuntimeSessionFactory,
+    private readonly summonCreate?: SummonCreate,
   ) {
     this.cwd = workspace.rootDir;
     this.configuredModelLabel = this.resolveModelLabel();
@@ -270,6 +272,9 @@ export class PiRuntime implements AgentRuntime {
       ...(this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : []),
       ...(this.agent.tools.includes("recall")
         ? [createRecallTool(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), roomId)]
+        : []),
+      ...(this.agent.tools.includes("summon") && this.summonCreate
+        ? [createSummonTool(this.summonCreate, roomId)]
         : []),
     ];
     const systemPromptRef = { current: systemPrompt };

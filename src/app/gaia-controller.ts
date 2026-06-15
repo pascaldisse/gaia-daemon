@@ -10,11 +10,14 @@ import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type Runt
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
-import { PiRuntime } from "../runtime/pi-runtime.js";
+import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
+import { SummonManager } from "./summon-manager.js";
+import type { SummonEvent, SummonSession } from "../room/summons.js";
+import type { SummonCreate } from "../tools/summon-tool.js";
 import { runAgentTurn } from "./turn-runner.js";
 
 export interface AgentStatus {
@@ -70,6 +73,7 @@ export interface GaiaSnapshot {
   commands: typeof SLASH_COMMANDS;
   agents: AgentStatus[];
   tasks: GaiaTask[];
+  summons: SummonSession[];
   thinkingLevels: string[];
 }
 
@@ -88,6 +92,9 @@ export type GaiaUiEvent =
   | { type: "task-end"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "task-error"; workspaceId: string; roomId: string; task: GaiaTask; error: string }
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
+  | { type: "summon-start"; workspaceId: string; roomId: string; session: SummonSession }
+  | { type: "summon-event"; workspaceId: string; roomId: string; summonId: string; agentId: string; event: SummonEvent }
+  | { type: "summon-end"; workspaceId: string; roomId: string; session: SummonSession }
   | {
       type: "voice-status";
       workspaceId: string;
@@ -143,15 +150,37 @@ export class GaiaController {
   private activeTask: GaiaTask | undefined;
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
+  private readonly _summonManager?: SummonManager;
 
   constructor(private readonly options: GaiaControllerOptions) {
     this.room = new Room(options.workspace);
+
+    // SummonManager is created first so the summon tool factory is available
+    // when constructing agent runtimes below.
+    this._summonManager = options.runtimeFactory
+      ? undefined
+      : new SummonManager(
+          options.workspaceId,
+          options.workspace,
+          (agent) => createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore }),
+          (event) => this.emit(event),
+          this.memoryStore,
+        );
+
+    const summonCreate: SummonCreate | undefined = this._summonManager
+      ? (params) => this.runSummonAndWait(params)
+      : undefined;
+
     this.runtimes = Object.fromEntries(
       Object.values(options.workspace.agents).map((agent) => [
         agent.id,
-        options.runtimeFactory ? options.runtimeFactory(agent) : new PiRuntime(options.workspace, agent, this.memoryStore),
+        options.runtimeFactory
+          ? options.runtimeFactory(agent)
+          : createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, summonCreate }),
       ]),
     );
+    // When a test injects a custom runtimeFactory, SummonManager stays absent
+    // so tests that only care about room turns don't get side effects.
   }
 
   get workspace(): Workspace {
@@ -174,6 +203,10 @@ export class GaiaController {
     return this.activeTask?.id;
   }
 
+  get summonManager(): SummonManager | undefined {
+    return this._summonManager;
+  }
+
   async init(): Promise<void> {
     if (this.initialized) return;
     await Promise.all(
@@ -189,6 +222,7 @@ export class GaiaController {
   }
 
   dispose(): void {
+    this._summonManager?.dispose();
     for (const runtime of Object.values(this.runtimes)) runtime.dispose();
     this.listeners.clear();
   }
@@ -212,6 +246,7 @@ export class GaiaController {
       commands: SLASH_COMMANDS,
       agents: this.agentStatuses(),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : [])],
+      summons: (await this._summonManager?.listStored(this.room.id)) ?? [],
       thinkingLevels: sdkThinkingLevels(),
     };
   }
@@ -486,6 +521,7 @@ export class GaiaController {
       if (command.type === "roles") text = await this.renderRoles(command.agent);
       if (command.type === "role") text = await this.setRole(command.agent, command.role);
       if (command.type === "thinking") text = await this.runThinkingCommand(command.agent, command.level);
+      if (command.type === "summon") text = await this.runSummonCommand(command.agent, command.task);
       if (command.type === "unknown") text = `Unknown command: /${command.command}. Try /help.`;
 
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
@@ -566,6 +602,26 @@ export class GaiaController {
       status: this.activeTask?.targets.includes(agent.id) ? "running" : "idle",
       isDefault: agent.id === this.workspace.config.defaultAgent,
     }));
+  }
+
+  async runSummonCommand(agentId: string | undefined, task: string | undefined): Promise<string> {
+    if (!this._summonManager) return "Summon system is not available.";
+    if (!agentId || !task) return "Usage: /summon <agent> <task>";
+    const agent = this.workspace.agents[agentId];
+    if (!agent) return this.unknownAgentMessage(agentId);
+    const session = await this._summonManager.create(this.room.id, agent.id, task);
+    return `Summoned @${session.agentId} (${session.id}): ${session.prompt}`;
+  }
+
+  /**
+   * Creates and waits for a summon to complete. Used by the summon Pi tool
+   * (inside an agent turn) so the tool returns the finished result.
+   */
+  private async runSummonAndWait(params: { roomId: string; agentId: string; task: string }): Promise<string> {
+    const sm = this._summonManager!;
+    const session = await sm.create(params.roomId, params.agentId, params.task);
+    const completed = await sm.waitForEnd(session.id, 300_000);
+    return completed?.summary ?? "summon timed out after 5 minutes";
   }
 
   private unknownAgentMessage(agentId: string): string {

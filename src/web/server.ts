@@ -320,6 +320,75 @@ export class GaiaWebServer {
       return;
     }
 
+    const summonsMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons$/);
+    if (summonsMatch) {
+      const controller = await this.controllerFor(decodeURIComponent(summonsMatch[1] ?? ""));
+      const roomId = decodeURIComponent(summonsMatch[2] ?? "");
+      if (roomId !== controller.roomId) {
+        json(response, 404, { error: `Room not loaded: ${roomId}` });
+        return;
+      }
+      const manager = controller.summonManager;
+      if (!manager) {
+        json(response, 501, { error: "Summon system is not available." });
+        return;
+      }
+
+      if (request.method === "GET") {
+        json(response, 200, { summons: await manager.listStored(roomId) });
+        return;
+      }
+      if (request.method === "POST") {
+        const body = await parseBody(request);
+        const agentId = stringField(body, "agentId") ?? stringField(body, "agent");
+        const taskText = stringField(body, "task");
+        if (!agentId || !taskText?.trim()) {
+          json(response, 400, { error: "Missing agentId or task" });
+          return;
+        }
+        try {
+          json(response, 202, { session: await manager.create(roomId, agentId, taskText.trim()) });
+        } catch (error) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+    }
+
+    const summonMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)$/);
+    if (request.method === "GET" && summonMatch) {
+      const controller = await this.controllerFor(decodeURIComponent(summonMatch[1] ?? ""));
+      const roomId = decodeURIComponent(summonMatch[2] ?? "");
+      if (roomId !== controller.roomId) {
+        json(response, 404, { error: `Room not loaded: ${roomId}` });
+        return;
+      }
+      const details = await controller.summonManager?.details(roomId, decodeURIComponent(summonMatch[3] ?? ""));
+      if (!details) {
+        json(response, 404, { error: "Summon not found" });
+        return;
+      }
+      json(response, 200, details);
+      return;
+    }
+
+    const summonCancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)\/cancel$/);
+    if (request.method === "POST" && summonCancelMatch) {
+      const controller = await this.controllerFor(decodeURIComponent(summonCancelMatch[1] ?? ""));
+      const roomId = decodeURIComponent(summonCancelMatch[2] ?? "");
+      if (roomId !== controller.roomId) {
+        json(response, 404, { error: `Room not loaded: ${roomId}` });
+        return;
+      }
+      const session = await controller.summonManager?.cancel(decodeURIComponent(summonCancelMatch[3] ?? ""));
+      if (!session) {
+        json(response, 404, { error: "Running summon not found" });
+        return;
+      }
+      json(response, 202, { session });
+      return;
+    }
+
     const cancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/);
     if (request.method === "POST" && cancelMatch) {
       const controller = await this.controllerFor(decodeURIComponent(cancelMatch[1] ?? ""));

@@ -15,6 +15,8 @@ export const state = {
   eventSource: null,
   error: "",
   composerText: "",
+  selectedSummonId: null,
+  selectedSummon: null,
   completionIndex: 0,
   completionHidden: false,
   expandedActivities: new Set(),

@@ -1,4 +1,5 @@
 import { addWorkspace, loadWorkspace } from "./actions.ts";
+import { cancelSummon, fetchSummon } from "./api.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
 import { LinkedText, PathText } from "./links.ts";
@@ -19,6 +20,7 @@ function App() {
     Sidebar(),
     h("main", { class: "main" }, Topbar(), h("div", { class: "main-stack" }, state.error ? h("div", { class: "error", text: state.error }) : null, Transcript()), Composer()),
     h("aside", { class: "right" }, RoomPanel(), WorkspacePanel()),
+    SummonDrawer(),
     state.settingsOpen ? SettingsModal() : null,
   );
 }
@@ -82,6 +84,7 @@ function RoomPanel() {
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
   const tasks = snapshot?.tasks ?? [];
+  const summons = snapshot?.summons ?? [];
   return h(
     "section",
     { class: "panel" },
@@ -117,6 +120,25 @@ function RoomPanel() {
         );
       }),
     ),
+    h("h3", { text: "summons" }),
+    h(
+      "div",
+      { class: "summon-list" },
+      summons.length === 0
+        ? h("div", { class: "empty", text: "no summons" })
+        : summons.slice(0, 8).map((summon) =>
+            h(
+              "button",
+              {
+                class: `summon-row ${summon.status} ${state.selectedSummonId === summon.id ? "active" : ""}`,
+                onclick: () => void openSummon(summon),
+              },
+              h("span", { text: summon.status }),
+              h("strong", { text: `@${summon.agentId}` }),
+              h("small", { text: summon.prompt }),
+            ),
+          ),
+    ),
     h("h3", { text: "tasks" }),
     h(
       "div",
@@ -126,6 +148,91 @@ function RoomPanel() {
         : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
     ),
   );
+}
+
+async function openSummon(summon) {
+  state.selectedSummonId = summon.id;
+  state.selectedSummon = { session: summon, events: [], result: summon.summary ?? "" };
+  render();
+  try {
+    state.selectedSummon = await fetchSummon(summon.id);
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+function SummonDrawer() {
+  const selectedId = state.selectedSummonId;
+  if (!selectedId) return null;
+  const fallback = state.snapshot?.summons?.find((summon) => summon.id === selectedId);
+  const details = state.selectedSummon?.session?.id === selectedId ? state.selectedSummon : null;
+  const session = details?.session ?? fallback;
+  if (!session) return null;
+  const events = details?.events ?? [];
+  const result = details?.result || session.summary || "";
+  return h(
+    "div",
+    { class: "summon-backdrop" },
+    h(
+      "section",
+      { class: "summon-drawer" },
+      h(
+        "header",
+        { class: "summon-drawer-head" },
+        h("div", {}, h("h2", { text: `summon @${session.agentId}` }), h("small", { text: `${session.status} / ${session.harness} / ${session.id}` })),
+        h(
+          "div",
+          { class: "summon-actions" },
+          session.status === "running"
+            ? h("button", {
+                class: "danger-button",
+                text: "cancel",
+                onclick: async () => {
+                  try {
+                    const body = await cancelSummon(session.id);
+                    state.selectedSummon = { ...(state.selectedSummon ?? { events: [] }), session: body.session };
+                    render();
+                  } catch (error) {
+                    setError(error);
+                  }
+                },
+              })
+            : null,
+          h("button", { text: "close", onclick: () => ((state.selectedSummonId = null), (state.selectedSummon = null), render()) }),
+        ),
+      ),
+      h("div", { class: "summon-prompt" }, h("span", { text: "task" }), h("pre", {}, LinkedText(session.prompt))),
+      h(
+        "div",
+        { class: "summon-events" },
+        events.length === 0 ? h("div", { class: "empty", text: "waiting for summon events" }) : events.map(SummonEventView),
+      ),
+      result ? h("div", { class: "summon-result" }, h("h3", { text: "result" }), h("pre", {}, LinkedText(result))) : null,
+    ),
+  );
+}
+
+function SummonEventView(event) {
+  if (event.type === "text-delta") return h("pre", { class: "summon-text" }, LinkedText(event.delta));
+  if (event.type === "model-info") return h("div", { class: "summon-meta", text: `${event.provider}/${event.modelId}` });
+  if (event.type === "thinking-start") return h("div", { class: "summon-meta", text: "thinking started" });
+  if (event.type === "thinking-delta") return h("pre", { class: "summon-thinking" }, LinkedText(event.delta));
+  if (event.type === "thinking-end") return event.content ? h("pre", { class: "summon-thinking" }, LinkedText(event.content)) : null;
+  if (event.type === "tool-start") return h("div", { class: "summon-tool running", text: `tool ${event.toolName} started` });
+  if (event.type === "tool-update") return h("pre", { class: "summon-tool" }, LinkedText(formatSummonPayload(event.partialResult)));
+  if (event.type === "tool-end") return h("pre", { class: `summon-tool ${event.isError ? "error" : "complete"}` }, LinkedText(formatSummonPayload(event.result)));
+  return null;
+}
+
+function formatSummonPayload(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 // Streaming deltas arrive far faster than the screen refreshes; coalesce

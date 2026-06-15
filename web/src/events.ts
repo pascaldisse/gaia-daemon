@@ -96,6 +96,29 @@ export function connectEvents() {
     }
     renderTranscriptOnly();
   });
+  source.addEventListener("summon-start", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    upsertSummon(payload.session);
+    render();
+  });
+  source.addEventListener("summon-event", (event) => {
+    const payload = JSON.parse(event.data);
+    if (state.selectedSummonId === payload.summonId && state.selectedSummon) {
+      state.selectedSummon.events = [...(state.selectedSummon.events ?? []), payload.event];
+    }
+    render();
+  });
+  source.addEventListener("summon-end", (event) => {
+    const payload = JSON.parse(event.data);
+    if (!state.snapshot) return;
+    upsertSummon(payload.session);
+    if (state.selectedSummonId === payload.session?.id && state.selectedSummon) {
+      state.selectedSummon.session = payload.session;
+      if (payload.session?.summary && !state.selectedSummon.result) state.selectedSummon.result = payload.session.summary;
+    }
+    render();
+  });
   for (const name of ["task-start", "task-end", "settings-saved"]) {
     source.addEventListener(name, () => render());
   }
@@ -110,6 +133,16 @@ export function connectEvents() {
     const who = payload.task?.targets?.length ? ` (@${payload.task.targets.join(", @")})` : "";
     setError(`Turn failed${who}: ${payload.error || "unknown error"}`);
   });
+}
+
+function upsertSummon(session) {
+  if (!session || !state.snapshot) return;
+  const summons = state.snapshot.summons ?? [];
+  const index = summons.findIndex((candidate) => candidate.id === session.id);
+  state.snapshot.summons =
+    index === -1
+      ? [session, ...summons]
+      : [...summons.slice(0, index), session, ...summons.slice(index + 1)];
 }
 
 function streamingMessage(payload) {

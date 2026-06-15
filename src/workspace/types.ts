@@ -4,6 +4,8 @@ export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
   transcriptWindow: number;
+  /** Default agent harness for all agents in this workspace; overridden by AgentDefinition.harness. */
+  harness?: "pi" | "codex";
 }
 
 export interface ContextFile {

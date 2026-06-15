@@ -150,6 +150,7 @@ h3 {
 
 .workspace-list,
 .agent-list,
+.summon-list,
 .task-list,
 .file-tabs {
   display: grid;
@@ -608,6 +609,113 @@ time {
 
 .task.cancelled span {
   color: var(--muted);
+}
+
+.summon-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 4px 8px;
+  text-align: left;
+}
+
+.summon-row span {
+  color: var(--line);
+  text-transform: uppercase;
+}
+
+.summon-row strong,
+.summon-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summon-row small {
+  grid-column: 1 / -1;
+}
+
+.summon-row.error span,
+.summon-row.cancelled span {
+  color: var(--danger);
+}
+
+.summon-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.summon-drawer {
+  width: min(680px, 100vw);
+  height: 100vh;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: rgba(2, 6, 4, 0.98);
+  padding: 14px;
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.5);
+}
+
+.summon-drawer-head,
+.summon-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.summon-drawer h2,
+.summon-drawer h3 {
+  margin: 0 0 7px;
+}
+
+.summon-actions {
+  flex: 0 0 auto;
+}
+
+.danger-button {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.summon-prompt,
+.summon-events,
+.summon-result {
+  margin-top: 14px;
+}
+
+.summon-prompt span {
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.summon-prompt pre,
+.summon-result pre,
+.summon-text,
+.summon-thinking,
+.summon-tool {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(19, 107, 64, 0.55);
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.summon-events {
+  display: grid;
+  gap: 7px;
+}
+
+.summon-meta {
+  color: var(--muted);
+}
+
+.summon-tool.error {
+  border-color: rgba(255, 92, 122, 0.65);
+  color: var(--danger);
 }
 
 .autocomplete {

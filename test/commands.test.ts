@@ -24,6 +24,25 @@ test("parses thinking slash commands", () => {
   assert.deepEqual(parseCommand("/thinking"), { type: "thinking", level: undefined });
 });
 
+test("parses summon slash commands", () => {
+  assert.deepEqual(parseCommand("/summon scout map the codex"), {
+    type: "summon",
+    agent: "scout",
+    task: "map the codex",
+  });
+  assert.deepEqual(parseCommand("/summon reviewer inspect"), {
+    type: "summon",
+    agent: "reviewer",
+    task: "inspect",
+  });
+  assert.deepEqual(parseCommand("/summon"), { type: "summon", agent: undefined, task: undefined });
+  assert.deepEqual(parseCommand("/summon scout"), {
+    type: "summon",
+    agent: "scout",
+    task: undefined,
+  });
+});
+
 test("reports unknown slash commands", () => {
   assert.deepEqual(parseCommand("/dance now"), { type: "unknown", command: "dance" });
 });

@@ -20,6 +20,8 @@ export interface AgentDefinition {
   tools: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  /** Agent harness backend. Falls back to workspace config, then "pi". */
+  harness?: "pi" | "codex";
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;
