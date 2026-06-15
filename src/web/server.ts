@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { EditableFileRegistry, type EditableFileContent } from "../app/editable-files.js";
+import { EditableFileRegistry, type EditableFileContent, type EditableFileDescriptor } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
@@ -22,7 +22,7 @@ import { VoiceStackManager } from "../app/voice-stack.js";
 import { WorkspaceRegistry } from "../app/workspace-registry.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
-import { gaiaHome, loadWorkspace, workspacePath } from "../workspace/workspace-loader.js";
+import { ensureWorkspaceRoom, gaiaHome, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 interface WebServerOptions {
@@ -132,6 +132,35 @@ async function openWithSystem(target: string): Promise<void> {
     child.once("spawn", () => {
       child.unref();
       resolveOpen();
+    });
+  });
+}
+
+async function pickDirectoryWithSystem(): Promise<string | undefined> {
+  if (process.platform !== "darwin") throw new Error("Native folder picker is only available on macOS.");
+
+  return new Promise((resolvePick, reject) => {
+    const child = spawn("osascript", ["-e", 'POSIX path of (choose folder with prompt "Choose a GAIA workspace folder")'], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => (stdout += chunk));
+    child.stderr?.on("data", (chunk) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      const message = stderr.trim();
+      if (code === 0) {
+        resolvePick(stdout.trim() || undefined);
+        return;
+      }
+      if (message.includes("User canceled") || message.includes("(-128)")) {
+        resolvePick(undefined);
+        return;
+      }
+      reject(new Error(message || `Folder picker exited with code ${code}`));
     });
   });
 }
@@ -258,6 +287,15 @@ export class GaiaWebServer {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/pick-directory") {
+      try {
+        json(response, 200, { path: (await pickDirectoryWithSystem()) ?? null });
+      } catch (error) {
+        json(response, 501, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/workspaces") {
       const body = await parseBody(request);
       const path = stringField(body, "path");
@@ -272,6 +310,32 @@ export class GaiaWebServer {
       }
       await this.controllerFor(record.id);
       await this.handleApp(response, record.id);
+      return;
+    }
+
+    const createRoomMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms$/);
+    if (request.method === "POST" && createRoomMatch) {
+      const body = await parseBody(request);
+      const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
+      if (!roomId?.trim()) {
+        json(response, 400, { error: "Missing room id" });
+        return;
+      }
+      try {
+        json(response, 200, await this.selectWorkspaceRoom(decodeURIComponent(createRoomMatch[1] ?? ""), roomId.trim()));
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const selectRoomMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/);
+    if (request.method === "POST" && selectRoomMatch) {
+      try {
+        json(response, 200, await this.selectWorkspaceRoom(decodeURIComponent(selectRoomMatch[1] ?? ""), decodeURIComponent(selectRoomMatch[2] ?? "")));
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -523,6 +587,31 @@ export class GaiaWebServer {
     await controller.init();
     this.controllers.set(workspaceId, controller);
     return controller;
+  }
+
+  private async selectWorkspaceRoom(workspaceId: string, roomId: string): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    const existing = this.controllers.get(workspaceId);
+    if (existing?.hasActiveTask) throw new Error("Room is busy with an active task; wait for it to finish or cancel it first.");
+    if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId !== roomId) {
+      throw new Error("Stop the active voice call before switching rooms.");
+    }
+
+    await ensureWorkspaceRoom(record.path, roomId);
+    await setWorkspaceRoom(record.path, roomId);
+
+    existing?.dispose();
+    this.controllers.delete(workspaceId);
+    const controller = await this.controllerFor(workspaceId);
+    const snapshot = await controller.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: controller.roomId, snapshot });
+    return {
+      snapshot,
+      workspaceFiles: await this.files.listWorkspace(workspaceId),
+      voice: this.voiceFor(workspaceId),
+    };
   }
 
   // Settings files feed workspace/agent definitions that controllers cache at
