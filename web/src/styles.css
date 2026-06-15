@@ -953,6 +953,29 @@ time {
   padding: 8px 0;
 }
 
+.add-agent-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--line-dim);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.add-agent-form .setting-row {
+  grid-template-columns: 42px minmax(0, 1fr);
+}
+
+.add-agent-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.add-agent-form .error {
+  color: var(--danger);
+  font-size: 11px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -16,9 +16,10 @@ test("factory defaults to PiRuntime when no harness is configured", async () => 
   try {
     await initWorkspace(temp.path);
     const workspace = await loadWorkspace(temp.path);
+    // New agents scaffold with harness: "pi" by default.
     const agent = workspace.agents.gaia;
     assert.ok(agent);
-    assert.equal(agent?.harness, undefined);
+    assert.equal(agent?.harness, "pi");
     assert.equal(workspace.config.harness, undefined);
 
     const runtime = createAgentRuntime({
@@ -86,7 +87,7 @@ test("factory uses CodexRuntime when agent harness is codex", async () => {
   }
 });
 
-test("factory uses CodexRuntime when workspace config harness is codex", async () => {
+test("factory uses CodexRuntime when workspace config harness is codex and agent has no override", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;
   process.env.GAIA_HOME = join(temp.path, "home");
@@ -95,7 +96,8 @@ test("factory uses CodexRuntime when workspace config harness is codex", async (
     await initWorkspace(temp.path);
     const workspace = await loadWorkspace(temp.path);
     workspace.config.harness = "codex";
-    const agent = workspace.agents.gaia;
+    // Strip agent harness so workspace fallback takes effect.
+    const agent = { ...workspace.agents.gaia, harness: undefined };
 
     const runtime = createAgentRuntime({
       workspace,

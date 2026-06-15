@@ -16,7 +16,8 @@ export interface AgentScaffoldResult {
   soulPath: string;
   memoryDir: string;
   rolesDir: string;
-  rolePaths: string[];
+  /** Always empty: roles are user-added only. */
+  rolePaths: [];
 }
 
 function titleCase(id: string): string {
@@ -33,7 +34,21 @@ function assertSafeAgentId(id: string): void {
 
 /** The default agent.json shape, shared by `gaia agent create` and the seeded default agents. */
 export function agentConfigTemplate(id: string, displayName: string, icon: string, tools: string[]): Record<string, unknown> {
-  return { id, displayName, icon, thinking: "medium", tools };
+  return {
+    id,
+    displayName,
+    icon,
+    thinking: "medium",
+    tools,
+    harness: "pi",
+    model: { provider: "deepseek", name: "deepseek-v4-pro" },
+  };
+}
+
+/** Returns whether a string value matches a known harness identifier. */
+export function normalizeHarness(raw: unknown): "pi" | "codex" | undefined {
+  if (raw === "pi" || raw === "codex") return raw;
+  return undefined;
 }
 
 export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, options: AgentScaffoldOptions = {}): Promise<AgentScaffoldResult> {
@@ -60,27 +75,6 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
   );
   await new MemoryStore().init(memoryDir, displayName);
 
-  const roles = new Map([
-    [
-      "brainstorm",
-      `---\nskills:\n  - brainstorm\n---\n# Brainstorm Role\n\nExplore the problem space. Generate options. Notice patterns. Ask crisp questions when the goal is fuzzy.\n`,
-    ],
-    [
-      "research",
-      `---\nskills:\n  - web\n---\n# Research Role\n\nFind evidence. Separate facts from guesses. Cite uncertainty. Bring back concise findings.\n`,
-    ],
-    [
-      "plan",
-      `---\nskills:\n  - plan\n---\n# Plan Role\n\nTurn the chosen direction into ordered tasks, dependencies, risks, and acceptance criteria.\n`,
-    ],
-  ]);
-
-  const rolePaths: string[] = [];
-  for (const [name, content] of roles) {
-    const path = join(rolesDir, `${name}.md`);
-    await writeFile(path, content, "utf8");
-    rolePaths.push(path);
-  }
-
-  return { agentDir, configPath, soulPath, memoryDir, rolesDir, rolePaths };
+  // Roles are user-added only; the scaffold leaves the roles directory empty.
+  return { agentDir, configPath, soulPath, memoryDir, rolesDir, rolePaths: [] };
 }

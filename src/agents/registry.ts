@@ -3,7 +3,7 @@ import { mkdir, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import { agentConfigTemplate } from "./scaffold.js";
+import { agentConfigTemplate, normalizeHarness } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
 interface RawAgentConfig {
@@ -14,6 +14,7 @@ interface RawAgentConfig {
   tools?: unknown;
   model?: AgentModelConfig;
   thinking?: AgentDefinition["thinking"];
+  harness?: unknown;
 }
 
 function stringList(value: unknown, fallback: string[]): string[] {
@@ -107,6 +108,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     ...override,
     id: base.id,
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
+    harness: override.harness !== undefined ? override.harness : base.harness,
   };
 }
 
@@ -158,6 +160,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       tools: stringList(raw.tools, []),
       model: raw.model,
       thinking: raw.thinking,
+      harness: normalizeHarness(raw.harness),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
       projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,

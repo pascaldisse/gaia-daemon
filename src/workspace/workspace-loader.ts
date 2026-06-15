@@ -12,7 +12,8 @@ export const WORKSPACE_DIRNAME = ".gaia";
 export const DEFAULT_ROOM = "default";
 
 export function gaiaHome(): string {
-  return resolve(process.env.GAIA_HOME ?? join(homedir(), ".gaia"));
+  const env = process.env.GAIA_HOME?.trim();
+  return resolve(env ? env : join(homedir(), ".gaia"));
 }
 
 export function globalAgentsPath(home = gaiaHome()): string {
@@ -31,6 +32,11 @@ function defaultConfig(): WorkspaceConfig {
   };
 }
 
+function parseHarness(raw: unknown): "pi" | "codex" | undefined {
+  if (raw === "pi" || raw === "codex") return raw;
+  return undefined;
+}
+
 function mergeConfig(raw: unknown): WorkspaceConfig {
   const base = defaultConfig();
   const input = raw && typeof raw === "object" ? (raw as Partial<WorkspaceConfig>) : {};
@@ -41,6 +47,7 @@ function mergeConfig(raw: unknown): WorkspaceConfig {
       typeof input.transcriptWindow === "number" && Number.isFinite(input.transcriptWindow) && input.transcriptWindow > 0
         ? Math.floor(input.transcriptWindow)
         : base.transcriptWindow,
+    harness: parseHarness(input.harness),
   };
 }
 

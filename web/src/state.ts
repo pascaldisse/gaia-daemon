@@ -27,6 +27,10 @@ export const state = {
   voiceStatusText: "",
   micMuted: false,
   thinkingMenuOpen: false,
+  addAgentOpen: false,
+  addAgentId: "",
+  addAgentName: "",
+  addAgentError: "",
 };
 
 export function activeTask(snapshot = state.snapshot) {

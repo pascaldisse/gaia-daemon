@@ -1,7 +1,7 @@
 import { api } from "./api.ts";
 import { h } from "./dom.ts";
 import { PathText } from "./links.ts";
-import { render } from "./render.ts";
+import { render, setError } from "./render.ts";
 import { state } from "./state.ts";
 
 // Files carry server-computed metadata (agentId, category) so grouping never
@@ -173,6 +173,63 @@ function GlobalFileEditor(options = {}) {
   ];
 }
 
+async function handleAddAgent() {
+  const id = state.addAgentId?.trim();
+  if (!id) {
+    state.addAgentError = "Agent id is required";
+    render();
+    return;
+  }
+  try {
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ id, displayName: state.addAgentName?.trim() || undefined }),
+    });
+    // Refresh global files and select the new agent.
+    const app = await api("/api/app");
+    state.globalFiles = app.globalFiles ?? state.globalFiles;
+    state.addAgentOpen = false;
+    state.addAgentId = "";
+    state.addAgentName = "";
+    state.addAgentError = "";
+    syncGlobalSettingsSelection();
+    await selectGlobalAgent(id);
+    await loadSelectedGlobalFile();
+    render();
+  } catch (error) {
+    state.addAgentError = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+function AddAgentForm() {
+  return h(
+    "div",
+    { class: "add-agent-form" },
+    state.addAgentError ? h("div", { class: "error", text: state.addAgentError }) : null,
+    h("label", { class: "setting-row" }, h("span", { text: "id" }), h("input", {
+      type: "text",
+      placeholder: "agent-id",
+      value: state.addAgentId,
+      oninput: (event) => { state.addAgentId = event.target.value; state.addAgentError = ""; },
+      onkeydown: (event) => { if (event.key === "Enter") handleAddAgent(); },
+    })),
+    h("label", { class: "setting-row" }, h("span", { text: "name" }), h("input", {
+      type: "text",
+      placeholder: "Display Name",
+      value: state.addAgentName,
+      oninput: (event) => { state.addAgentName = event.target.value; state.addAgentError = ""; },
+      onkeydown: (event) => { if (event.key === "Enter") handleAddAgent(); },
+    })),
+    h(
+      "div",
+      { class: "add-agent-actions" },
+      h("button", { onclick: handleAddAgent, text: "create" }),
+      h("button", { onclick: () => { state.addAgentOpen = false; state.addAgentId = ""; state.addAgentName = ""; state.addAgentError = ""; render(); }, text: "cancel" }),
+    ),
+  );
+}
+
 export function SettingsModal() {
   const sections = globalSettingsSections();
   const agents = globalAgentGroups();
@@ -230,6 +287,9 @@ export function SettingsModal() {
                       ),
                     ),
               ),
+              state.addAgentOpen
+                ? AddAgentForm()
+                : h("button", { class: "nav-action", onclick: () => { state.addAgentOpen = true; render(); }, text: "+ add agent" }),
             ),
             h(
               "div",
@@ -349,9 +409,10 @@ function HintedMultiselect(entryPath, key, hint, currentValues) {
   const values = Array.isArray(currentValues) ? currentValues.map(String) : [];
   const known = (hint.options ?? []).map((option) => option.value);
   const extras = values.filter((value) => !known.includes(value));
+  const pathKeyValue = pathKey(entryPath);
   const container = h(
     "div",
-    { class: "multi-options", "data-json-path": JSON.stringify(entryPath), "data-json-multi": "1" },
+    { class: "multi-options", "data-json-path": JSON.stringify(entryPath), "data-json-multi": "1", "data-path-key": pathKeyValue },
     [...(hint.options ?? []), ...extras.map((value) => ({ value }))].map((option) =>
       h(
         "label",
@@ -490,12 +551,133 @@ function JsonSettingsView(content, hints) {
     return h("textarea", { class: "raw-editor", value: content });
   }
 
+  // Keep all hints including hidden ones so renderJsonFields builds hinted
+  // controls with the correct data-path-key attributes; applyHarnessVisibility
+  // hides them afterwards when the saved harness requires it.
+  const allHintEntries = Object.entries(hints ?? {});
+  // Only FieldHint entries drive rendering; non-FieldHint entries (e.g. _harness)
+  // are consumed separately by wireHarnessFieldVisibility.
+  const hintDict = {};
+  for (const [key, hint] of allHintEntries) {
+    if (typeof hint === "object" && hint !== null && "input" in hint) hintDict[key] = hint;
+  }
+
   const root = h("div", { class: "settings-view", "data-kind": "json", "data-json-source": JSON.stringify(parsed) });
-  const ctx = { hints: hints ?? {}, parsedRoot: parsed, renderedKeys: new Set() };
+  const ctx = { hints: hintDict, parsedRoot: parsed, renderedKeys: new Set() };
   renderJsonFields(root, parsed, [], ctx);
   appendMissingHintedFields(root, parsed, ctx);
   wireDependentSelects(root);
+
+  // Wire harness-driven field visibility using the _harness meta the server
+  // attaches to hints. Harness configs declare which fields to hide/show;
+  // model-provider locking and model-name filtering also live here.
+  const harnessMeta = (hints ?? {})._harness;
+  if (harnessMeta) wireHarnessFieldVisibility(root, harnessMeta, hints ?? {}, parsed);
+
   return root;
+}
+
+
+
+/**
+ * Harness-driven field visibility. Reads harness configs from `_harness` meta
+ * attached by the server. When the harness select changes:
+ * - fields in the config's `hiddenFields` are hidden / re-shown
+ * - if the config has `lockedProvider`, model.provider is hidden and model.name
+ *   options are rebuilt from only the locked provider's models
+ * - if the config has `modelProviderIds`, model.name options are filtered
+ *
+ * No harness-specific branches are hardcoded; the meta dict drives everything.
+ */
+function wireHarnessFieldVisibility(root, harnessMeta, hints, parsed) {
+  const harnessSelect = root.querySelector('[data-path-key="harness"]');
+  if (!harnessSelect) return;
+
+  const allModelOptions = (hints["model.name"]?.options ?? []).slice();
+  const allModelHint = hints["model.name"];
+
+  function buildModelNameOptions(providerIds) {
+    if (!allModelHint) return;
+    const modelSelect = root.querySelector('[data-path-key="model.name"]');
+    if (!modelSelect) return;
+    const filtered = providerIds
+      ? allModelOptions.filter((opt) => providerIds.includes(opt.group ?? ""))
+      : allModelOptions;
+    // Preserve current value through rebuild.
+    const currentValue = modelSelect.value;
+    modelSelect.replaceChildren();
+    if (allModelHint.optional) modelSelect.append(h("option", { value: "", text: "(not set)" }));
+    let currentListed = currentValue === "" || currentValue === undefined;
+    for (const option of filtered) {
+      if (option.value === currentValue) currentListed = true;
+      modelSelect.append(h("option", { value: option.value, text: optionText(option) }));
+    }
+    if (!currentListed) modelSelect.append(h("option", { value: currentValue, text: `${currentValue} (current)` }));
+    modelSelect.value = currentValue ?? "";
+  }
+
+  function findFieldRow(fieldKey) {
+    const el = root.querySelector(`[data-path-key="${fieldKey}"]`);
+    if (!el) return null;
+    return el.closest(".setting-row") ?? el;
+  }
+
+  function applyHarnessVisibility(harnessValue) {
+    const config = (harnessMeta?.configs ?? {})[harnessValue] ?? null;
+
+    // Collect all field keys that any harness might hide.
+    const allHiddenFields = new Set();
+    for (const cfg of Object.values(harnessMeta?.configs ?? {})) {
+      for (const field of cfg.hiddenFields ?? []) allHiddenFields.add(field);
+    }
+
+    for (const fieldKey of allHiddenFields) {
+      const shouldHide = config ? (config.hiddenFields ?? []).includes(fieldKey) : false;
+      const row = findFieldRow(fieldKey);
+
+      if (shouldHide) {
+        if (row) {
+          row.setAttribute("data-skip-serialize", "1");
+          row.style.display = "none";
+        }
+      } else {
+        if (row) {
+          row.removeAttribute("data-skip-serialize");
+          row.style.display = "";
+        } else {
+          const hint = hints[fieldKey];
+          if (!hint) continue;
+          const entryPath = fieldKey.split(".");
+          const field = hintedField(entryPath, fieldKey.split(".").pop(), hint, getJsonPathValue(parsed, entryPath), parsed);
+          if (field) root.append(field);
+        }
+      }
+    }
+
+    // Handle locked provider: hide model.provider row, rebuild model.name options.
+    const providerLocked = config?.lockedProvider;
+    const providerRow = findFieldRow("model.provider");
+    if (providerLocked) {
+      if (providerRow) {
+        providerRow.setAttribute("data-skip-serialize", "1");
+        providerRow.style.display = "none";
+      }
+      const lockedIds = config?.modelProviderIds ?? [providerLocked];
+      buildModelNameOptions(lockedIds);
+    } else {
+      if (providerRow) {
+        providerRow.removeAttribute("data-skip-serialize");
+        providerRow.style.display = "";
+      }
+      const filterIds = config?.modelProviderIds ?? null;
+      buildModelNameOptions(filterIds);
+    }
+  }
+
+  const onChange = () => applyHarnessVisibility(harnessSelect.value);
+  harnessSelect.addEventListener("change", onChange);
+
+  applyHarnessVisibility(harnessSelect.value);
 }
 
 function setJsonPathValue(root, path, value) {
@@ -558,6 +740,7 @@ function serializeSettings(view, kind) {
       next = {};
     }
     for (const element of view.querySelectorAll("[data-json-path]")) {
+      if (element.closest("[data-skip-serialize]")) continue;
       const path = JSON.parse(element.dataset.jsonPath || "[]");
       if (element.dataset.jsonMulti !== undefined) {
         const checked = [...element.querySelectorAll("input[type=checkbox]")].filter((box) => box.checked).map((box) => box.dataset.value);

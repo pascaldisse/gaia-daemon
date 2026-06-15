@@ -106,3 +106,60 @@ test("gaia init seeds persona folders through GAIA_HOME", async () => {
     await temp.cleanup();
   }
 });
+
+test("parses harness from agent.json", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const agentDir = join(agentsDir, "rex");
+    const personaDir = join(agentDir, "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentDir, "agent.json"), JSON.stringify({ id: "rex", displayName: "Rex", harness: "codex" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+    assert.equal(agents.rex?.harness, "codex");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("parses harness override from project agent.json", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const projectAgentsDir = join(temp.path, "project", ".gaia", "agents");
+    const agentDir = join(agentsDir, "rex");
+    const personaDir = join(agentDir, "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentDir, "agent.json"), JSON.stringify({ id: "rex", displayName: "Rex", harness: "pi" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    // Project override sets harness to codex
+    const projectAgentDir = join(projectAgentsDir, "rex");
+    await mkdir(projectAgentDir, { recursive: true });
+    await writeFile(join(projectAgentDir, "agent.json"), JSON.stringify({ harness: "codex" }), "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, projectAgentsDir);
+    assert.equal(agents.rex?.harness, "codex");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ignores invalid harness values", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const agentDir = join(agentsDir, "rex");
+    const personaDir = join(agentDir, "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentDir, "agent.json"), JSON.stringify({ id: "rex", displayName: "Rex", harness: "unknown" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+    assert.equal(agents.rex?.harness, undefined);
+  } finally {
+    await temp.cleanup();
+  }
+});
