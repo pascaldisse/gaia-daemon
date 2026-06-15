@@ -26,22 +26,65 @@ export async function loadApp(currentWorkspaceId) {
 }
 
 export async function loadWorkspace(workspaceId) {
-  const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
-  state.snapshot = body.snapshot;
-  state.workspaceFiles = body.workspaceFiles ?? [];
-  state.voice = body.voice ?? null;
-  state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
-  state.workspaceFile = null;
-  connectEvents();
-  await loadSelectedWorkspaceFile();
-  render();
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
+    state.snapshot = body.snapshot;
+    state.workspaceFiles = body.workspaceFiles ?? [];
+    state.voice = body.voice ?? null;
+    state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
+    state.workspaceFile = null;
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    setError("");
+  } catch (error) {
+    setError(error);
+  }
 }
 
 export async function addWorkspace() {
-  const path = window.prompt("Workspace path");
+  let path;
+  let pickerUnavailable = false;
+  try {
+    const pick = await api("/api/pick-directory", { method: "POST", body: "{}" });
+    path = pick.path;
+  } catch {
+    pickerUnavailable = true;
+  }
+  if (!path && pickerUnavailable) path = window.prompt("Workspace path");
   if (!path) return;
   try {
     await applyAppPayload(await api("/api/workspaces", { method: "POST", body: JSON.stringify({ path }) }));
+  } catch (error) {
+    setError(error);
+  }
+}
+
+export async function selectRoom(workspaceId, roomId) {
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/select`, {
+      method: "POST",
+      body: "{}",
+    });
+    state.snapshot = body.snapshot;
+    state.workspaceFiles = body.workspaceFiles ?? [];
+    state.voice = body.voice ?? null;
+    state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
+    state.workspaceFile = null;
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    setError("");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+export async function addRoom() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const roomId = window.prompt("Room name (letters, numbers, dots, hyphens, underscores)");
+  if (!roomId?.trim()) return;
+  try {
+    await selectRoom(snapshot.workspace.id, roomId.trim());
   } catch (error) {
     setError(error);
   }

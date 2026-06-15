@@ -1,4 +1,4 @@
-import { addWorkspace, loadWorkspace } from "./actions.ts";
+import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.ts";
 import { cancelSummon, fetchSummon } from "./api.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
@@ -51,8 +51,17 @@ function Sidebar() {
     h("button", { class: "nav-action", onclick: addWorkspace, text: "+ add workspace" }),
     h("div", { class: "nav-title", text: "rooms" }),
     (state.snapshot?.rooms ?? [{ id: "no room", path: "select a workspace", isCurrent: true }]).map((room) =>
-      h("button", { class: `nav-item ${room.isCurrent ? "active" : ""}` }, h("span", { text: room.id }), h("small", {}, PathText(room.path))),
+      h(
+        "button",
+        {
+          class: `nav-item ${room.isCurrent ? "active" : ""}`,
+          onclick: room.isCurrent || !state.snapshot ? undefined : () => selectRoom(state.snapshot.workspace.id, room.id),
+        },
+        h("span", { text: room.id }),
+        h("small", {}, PathText(room.path)),
+      ),
     ),
+    state.snapshot ? h("button", { class: "nav-action", onclick: addRoom, text: "+ add room" }) : null,
     h("div", { class: "spacer" }),
     h("button", { class: "nav-action", onclick: () => ((state.settingsOpen = true), render()), text: "global settings" }),
   );
