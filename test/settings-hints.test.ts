@@ -19,7 +19,7 @@ test("config.json gets harness, agent and room dropdowns and a numeric window", 
   assert.ok(hints);
   assert.equal(hints.harness.input, "select");
   assert.equal(hints.harness.optional, true);
-  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex"]);
+  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex", "claude"]);
   assert.equal(hints.defaultAgent.input, "select");
   assert.deepEqual(hints.defaultAgent.options?.map((option) => option.value), ["gaia", "sidia"]);
   assert.deepEqual(hints.room.options?.map((option) => option.value), ["default", "lab"]);
@@ -52,12 +52,12 @@ test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);
 });
 
-test("agent.json gets harness select (optional, pi/codex)", () => {
+test("agent.json gets harness select (optional, pi/codex/claude)", () => {
   const hints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
   assert.ok(hints);
   assert.equal(hints.harness.input, "select");
   assert.equal(hints.harness.optional, true);
-  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex"]);
+  assert.deepEqual(hints.harness.options?.map((option) => option.value), ["pi", "codex", "claude"]);
 });
 
 test("agent.json always includes tools hint; hidden flag set when harness is codex", () => {

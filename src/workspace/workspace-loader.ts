@@ -32,8 +32,8 @@ function defaultConfig(): WorkspaceConfig {
   };
 }
 
-function parseHarness(raw: unknown): "pi" | "codex" | undefined {
-  if (raw === "pi" || raw === "codex") return raw;
+function parseHarness(raw: unknown): "pi" | "codex" | "claude" | undefined {
+  if (raw === "pi" || raw === "codex" || raw === "claude") return raw;
   return undefined;
 }
 
