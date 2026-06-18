@@ -46,8 +46,8 @@ export function agentConfigTemplate(id: string, displayName: string, icon: strin
 }
 
 /** Returns whether a string value matches a known harness identifier. */
-export function normalizeHarness(raw: unknown): "pi" | "codex" | undefined {
-  if (raw === "pi" || raw === "codex") return raw;
+export function normalizeHarness(raw: unknown): "pi" | "codex" | "claude" | undefined {
+  if (raw === "pi" || raw === "codex" || raw === "claude") return raw;
   return undefined;
 }
 

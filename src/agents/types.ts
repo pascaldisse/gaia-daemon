@@ -21,7 +21,7 @@ export interface AgentDefinition {
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   /** Agent harness backend. Falls back to workspace config, then "pi". */
-  harness?: "pi" | "codex";
+  harness?: "pi" | "codex" | "claude";
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;

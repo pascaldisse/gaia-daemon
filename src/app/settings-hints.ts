@@ -65,6 +65,16 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     modelProviderIds: ["openai-codex"],
     hiddenFields: ["tools"],
   },
+  claude: {
+    id: "claude",
+    label: "claude",
+    description: "Claude Code CLI (claude -p, subscription auth)",
+    lockedProvider: "anthropic",
+    modelProviderIds: ["anthropic"],
+    // Phase 1 uses a fixed read-only tool set; memory/recall/summon arrive in
+    // Phase 2 via an in-process MCP bridge.
+    hiddenFields: ["tools"],
+  },
 };
 
 /** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
