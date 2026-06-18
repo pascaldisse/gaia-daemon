@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentDefinition } from "../src/agents/types.ts";
 import { MemoryStore } from "../src/memory/memory-store.ts";
 import {
+  codexSandboxFor,
   CodexRuntime,
   type CodexClient,
   type CodexClientFactory,
@@ -170,6 +171,102 @@ async function fixture() {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test("codexSandboxFor: read-only unless the agent can modify the workspace", () => {
+  assert.equal(codexSandboxFor([]), "read-only");
+  assert.equal(codexSandboxFor(["read"]), "read-only");
+  assert.equal(codexSandboxFor(["read", "memory", "recall"]), "read-only");
+  assert.equal(codexSandboxFor(["read", "write"]), "workspace-write");
+  assert.equal(codexSandboxFor(["read", "edit"]), "workspace-write");
+  assert.equal(codexSandboxFor(["read", "bash"]), "workspace-write");
+});
+
+test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const writeAgent = { ...agent, tools: ["read", "write", "edit"] };
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime(workspace, writeAgent, new MemoryStore(), undefined, undefined, factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    assert.equal((threadStart?.params as { sandbox?: string }).sandbox, "workspace-write");
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("CodexRuntime injects room-independent memory env + token and a gaia mem pointer", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const calls: Array<{ cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const factory: CodexClientFactory = async (cwd, env) => {
+      calls.push({ cwd, env });
+      return fake;
+    };
+    const host = {
+      baseUrl: "http://127.0.0.1:9999",
+      mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
+    };
+    const memAgent = { ...agent, tools: ["read", "write", "edit", "memory"] };
+    const runtime = new CodexRuntime(workspace, memAgent, new MemoryStore(), undefined, undefined, factory, host);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(calls[0]?.env.GAIA_MEMORY_DIR, memAgent.memoryDir);
+    assert.equal(calls[0]?.env.GAIA_AGENT_ID, "gaia");
+    assert.equal(calls[0]?.env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
+    // Token carries no room (room-independent memory only).
+    assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, "tok:gaia:");
+    // No room env: recall/summon are intentionally unavailable under Codex.
+    assert.equal(calls[0]?.env.GAIA_ROOM_DIR, undefined);
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    assert.match((threadStart?.params as { baseInstructions: string }).baseInstructions, /gaia mem/);
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("CodexRuntime adds no daemon token when the agent lacks the memory tool", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const calls: Array<{ env: NodeJS.ProcessEnv }> = [];
+    const factory: CodexClientFactory = async (_cwd, env) => {
+      calls.push({ env });
+      return fake;
+    };
+    const host = { baseUrl: "http://127.0.0.1:9999", mintToken: () => "tok" };
+    const runtime = new CodexRuntime(workspace, { ...agent, tools: ["read"] }, new MemoryStore(), undefined, undefined, factory, host);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, undefined);
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    assert.ok(!/gaia mem/.test((threadStart?.params as { baseInstructions: string }).baseInstructions));
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
 
 test("CodexRuntime yields model-info from thread/start response", async () => {
   const { temp, workspace, agent } = await fixture();

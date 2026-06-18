@@ -23,7 +23,15 @@ export function createAgentRuntime(options: {
     case "pi":
       return new PiRuntime(options.workspace, options.agent, options.memoryStore, undefined, options.summonCreate);
     case "codex":
-      return new CodexRuntime(options.workspace, options.agent, options.memoryStore, undefined, options.summonCreate);
+      return new CodexRuntime(
+        options.workspace,
+        options.agent,
+        options.memoryStore,
+        undefined,
+        options.summonCreate,
+        undefined,
+        options.harnessHost,
+      );
     case "claude":
       return new ClaudeRuntime(
         options.workspace,

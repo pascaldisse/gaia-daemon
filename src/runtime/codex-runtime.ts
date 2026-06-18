@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
+import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
@@ -179,6 +180,23 @@ function codexStartupError(error: unknown, stderr?: string): Error {
 }
 
 // ---------------------------------------------------------------------------
+// Config-driven sandbox translation
+// ---------------------------------------------------------------------------
+//
+// Codex is a COARSE translator of the per-agent `tools` array: unlike Claude
+// (per-tool grants) it only has a workspace sandbox level. An agent that can
+// modify files (write/edit) or run commands (bash) needs "workspace-write";
+// a read-only agent gets "read-only". This honors the config at the granularity
+// Codex actually supports — see HANDOFF-CLAUDE-HARNESS.md §2 (don't pretend a
+// toggle maps when it can't; surface the gap).
+
+export type CodexSandbox = "read-only" | "workspace-write";
+
+export function codexSandboxFor(tools: string[]): CodexSandbox {
+  return tools.includes("write") || tools.includes("edit") || tools.includes("bash") ? "workspace-write" : "read-only";
+}
+
+// ---------------------------------------------------------------------------
 // Persistent thread state
 // ---------------------------------------------------------------------------
 
@@ -212,6 +230,10 @@ export class CodexRuntime implements AgentRuntime {
     private readonly summonCreate?: SummonCreate,
     // Injectable client factory for testing
     clientFactory?: CodexClientFactory,
+    // Daemon bridge for the `gaia mem` CLI. The app-server is persistent and
+    // shared across rooms, so only room-independent memory is wired here; recall
+    // and summon are room-specific and stay unavailable under Codex.
+    private readonly harnessHost?: HarnessHost,
   ) {
     this.cwd = workspace.rootDir;
     this.clientFactory = clientFactory ?? defaultFactory;
@@ -456,10 +478,31 @@ export class CodexRuntime implements AgentRuntime {
   // Internal helpers
   // -----------------------------------------------------------------------
 
+  // Env for the persistent app-server: room-independent memory only. The token
+  // carries no room (roomId ""), so the daemon's memory endpoint — which is
+  // per-agent, not per-room — accepts it while room-scoped recall/summon do not.
+  private buildEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GAIA_MEMORY_DIR: this.agent.memoryDir,
+      GAIA_AGENT_ID: this.agent.id,
+    };
+    if (this.harnessHost && this.agent.tools.includes("memory")) {
+      env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
+      env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId: "" });
+    }
+    return env;
+  }
+
+  private memoryPointer(): string {
+    if (!this.agent.tools.includes("memory")) return "";
+    return ["# GAIA tools (run via shell)", "You have a `gaia` CLI:", "- `gaia mem list|read|add|replace|remove` — your persistent memory"].join("\n");
+  }
+
   private async ensureClient(): Promise<CodexClient> {
     if (this.client) return this.client;
     if (!this.initPromise) {
-      this.initPromise = this.clientFactory(this.cwd, process.env)
+      this.initPromise = this.clientFactory(this.cwd, this.buildEnv())
         .then(async (client) => {
           try {
             await client.request("initialize", {
@@ -490,13 +533,15 @@ export class CodexRuntime implements AgentRuntime {
       this.readOptional(this.agent.projectIntentPath),
     ]);
 
-    const baseInstructions = buildSystemPrompt({
+    const base = buildSystemPrompt({
       agent: this.agent,
       soulText,
       role: input.activeRole,
       intentText,
       contextFiles: this.workspace.contextFiles,
     });
+    const pointer = this.memoryPointer();
+    const baseInstructions = pointer ? `${base}\n\n---\n\n${pointer}` : base;
 
     const response = (await client.request("thread/start", {
       cwd: this.cwd,
@@ -504,7 +549,9 @@ export class CodexRuntime implements AgentRuntime {
       modelProvider: this.agent.model?.provider ?? null,
       baseInstructions,
       ephemeral: false,
-      sandbox: "read-only",
+      // Derived from agent.tools instead of a fixed read-only stance, so an
+      // agent with write/edit/bash can actually modify the workspace.
+      sandbox: codexSandboxFor(this.agent.tools),
     })) as { thread: { id: string }; model: string; modelProvider: string };
 
     return {
