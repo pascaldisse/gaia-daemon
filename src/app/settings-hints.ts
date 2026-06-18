@@ -1,5 +1,6 @@
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@mariozechner/pi-coding-agent";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import { CLAUDE_PERMISSION_MODES } from "../agents/types.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -56,6 +57,8 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     id: "pi",
     label: "pi",
     description: "Pi coding agent (local SDK)",
+    // permissionMode is a Claude-only posture knob; hide it elsewhere.
+    hiddenFields: ["permissionMode"],
   },
   codex: {
     id: "codex",
@@ -63,7 +66,9 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     description: "OpenAI Codex app-server",
     lockedProvider: "openai-codex",
     modelProviderIds: ["openai-codex"],
-    hiddenFields: ["tools"],
+    // codex runs a fixed sandbox and ignores the per-agent tools array, so both
+    // tools and the Claude-only permissionMode are hidden.
+    hiddenFields: ["tools", "permissionMode"],
   },
   claude: {
     id: "claude",
@@ -71,9 +76,9 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     description: "Claude Code CLI (claude -p, subscription auth)",
     lockedProvider: "anthropic",
     modelProviderIds: ["anthropic"],
-    // Phase 1 uses a fixed read-only tool set; memory/recall/summon arrive in
-    // Phase 2 via an in-process MCP bridge.
-    hiddenFields: ["tools"],
+    // For Claude the `tools` array is the real control surface: the harness
+    // translates it onto --tools/--allowedTools (see claude-runtime.ts), so it
+    // stays visible (unlike codex, which runs a fixed sandbox).
   },
 };
 
@@ -242,6 +247,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
   return {
     thinking: select(values(sources.thinkingLevels), { optional: true }),
     tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
+    permissionMode: select(values([...CLAUDE_PERMISSION_MODES]), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
     "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { scaffoldGlobalAgent } from "./agents/scaffold.js";
-import { startWebServer } from "./web/server.js";
+import { runHarnessCommand } from "./cli-harness.js";
 import { globalAgentsPath, initWorkspace } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
@@ -13,6 +13,11 @@ async function main(): Promise<void> {
   const args = rawArgs.filter((arg) => arg !== "--dev");
   if (args.includes("--help") || args.includes("-h")) {
     usage();
+    return;
+  }
+
+  if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon") {
+    process.exitCode = await runHarnessCommand(args);
     return;
   }
 
@@ -54,6 +59,9 @@ async function main(): Promise<void> {
   }
 
   try {
+    // Imported lazily so lightweight subcommands (mem/recall/summon, init,
+    // agent create) don't pull in the web server graph (and node:sqlite).
+    const { startWebServer } = await import("./web/server.js");
     const server = await startWebServer({ cwd: process.cwd(), dev: devMode });
     console.log(`GAIA web UI: ${server.url}`);
     console.log("Press Ctrl+C to stop.");

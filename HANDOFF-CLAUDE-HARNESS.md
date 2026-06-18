@@ -12,6 +12,34 @@ four-point provider seam), `HANDOFF-CODEX-HARNESS.md`.
 
 ## 0. Status
 
+> **Update (this session): §4 cleanup, §2 Phase 1.5, and §3 Phase 2 (Claude
+> path) are DONE on `feat/claude-harness`.** Suite 191/191 green;
+> `npm run check`/`build` clean; CLI reads + daemon routing live-smoked.
+>
+> - **§4**: `runtime` accepted as a `harness` alias (`rawHarness`), `permissionMode`
+>   plumbed through `RawAgentConfig`→`AgentDefinition` (`normalizePermissionMode`).
+> - **§2**: `claude-runtime.ts` now derives `--tools`/`--allowedTools` from
+>   `agent.tools` via the pure `buildClaudeToolGrant` (read→Read,Grep,Glob;
+>   write→Write; edit→Edit; bash→general `Bash`; memory/recall/summon→narrow
+>   `Bash(gaia mem:*|recall:*|summon:*)` decoupled from `bash`). `--permission-mode`
+>   is data (`agent.permissionMode`, incl. `plan`). `--safe-mode` kept as default.
+>   `tools` unhidden for claude; `permissionMode` hint shown only for claude.
+> - **§3 (Claude)**: `gaia mem|recall|summon` CLI (`src/cli-harness.ts`). Reads
+>   (`mem list|read`, `recall`) hit disk via env (`GAIA_MEMORY_DIR`,
+>   `GAIA_ROOM_DIR`); writes/summon POST to the daemon (`/api/harness/memory`,
+>   `/api/harness/summon`) authed by an HMAC token (`src/app/harness-bridge.ts`,
+>   `HarnessBridge`/`HarnessHost`) minted per turn and carrying
+>   `{workspaceId,agentId,roomId,allowSummon}`. `ClaudeRuntime` injects env +
+>   token and appends a one-line gaia-CLI pointer to the system prompt.
+>   `GaiaController.mutateAgentMemory`/`summonAndWait` are the daemon-side single
+>   writer. Summoned agents get a `allowSummon:false` token (no recursive summon).
+> - **Still open**: extend the same memory/recall/summon CLI path to **Codex**
+>   (it currently has neither tools-array honoring nor the gaia CLI); optional
+>   recall prefetch; optional Pi→CLI convergence; full live claude turn E2E of the
+>   write loop (covered piecewise by tests, not yet one real claude round-trip).
+
+## 0a. Original status (Phase 1)
+
 - **Phase 1 (Claude harness) is BUILT, tested, live-validated, and committed**
   on branch **`feat/claude-harness`** (commit `1f1168e`), **not merged to main**.
   Suite 161/161 green, `npm run check`/`build` clean. The user may want it

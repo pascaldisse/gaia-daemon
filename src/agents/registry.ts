@@ -3,7 +3,7 @@ import { mkdir, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import { agentConfigTemplate, normalizeHarness } from "./scaffold.js";
+import { agentConfigTemplate, normalizeHarness, normalizePermissionMode } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
 interface RawAgentConfig {
@@ -15,6 +15,15 @@ interface RawAgentConfig {
   model?: AgentModelConfig;
   thinking?: AgentDefinition["thinking"];
   harness?: unknown;
+  /** Legacy alias for `harness`; some seed configs use "runtime". */
+  runtime?: unknown;
+  permissionMode?: unknown;
+}
+
+// `harness` is canonical; older configs use `runtime`. Prefer harness, fall
+// back to runtime, so a `"runtime": "claude"` no longer silently runs Pi.
+function rawHarness(config: RawAgentConfig): unknown {
+  return config.harness !== undefined ? config.harness : config.runtime;
 }
 
 function stringList(value: unknown, fallback: string[]): string[] {
@@ -108,7 +117,8 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     ...override,
     id: base.id,
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
-    harness: override.harness !== undefined ? override.harness : base.harness,
+    harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
+    permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
   };
 }
 
@@ -161,6 +171,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       model: raw.model,
       thinking: raw.thinking,
       harness: normalizeHarness(raw.harness),
+      permissionMode: normalizePermissionMode(raw.permissionMode),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
       projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentDefinition } from "../src/agents/types.ts";
 import { MemoryStore } from "../src/memory/memory-store.ts";
 import {
+  buildClaudeToolGrant,
   ClaudeRuntime,
   type ClaudeProcessFactory,
   type ClaudeProcessOptions,
@@ -114,7 +115,7 @@ async function fixture() {
     rolesDir: join(personaDir, "roles"),
     soulPath: join(personaDir, "SOUL.md"),
     memoryDir: join(personaDir, "memory"),
-    tools: [],
+    tools: ["read", "write", "edit", "memory", "recall"],
     harness: "claude",
     model: { provider: "anthropic", name: "claude-opus-4-8" },
   };
@@ -137,6 +138,52 @@ async function fixture() {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// buildClaudeToolGrant – the config-driven translator
+// ---------------------------------------------------------------------------
+
+test("buildClaudeToolGrant: read maps to read-only tools with no allow rules", () => {
+  const grant = buildClaudeToolGrant(["read"]);
+  assert.deepEqual(grant.tools, ["Read", "Grep", "Glob"]);
+  assert.deepEqual(grant.allowedTools, []);
+});
+
+test("buildClaudeToolGrant: write/edit expose and auto-approve their tools", () => {
+  const grant = buildClaudeToolGrant(["read", "write", "edit"]);
+  assert.deepEqual(grant.tools, ["Read", "Grep", "Glob", "Write", "Edit"]);
+  assert.deepEqual(grant.allowedTools, ["Write", "Edit"]);
+});
+
+test("buildClaudeToolGrant: memory/recall grant the narrow gaia CLI, not a general shell", () => {
+  const grant = buildClaudeToolGrant(["read", "write", "edit", "memory", "recall"]);
+  // Bash is present (to invoke gaia) but general Bash is NOT auto-approved.
+  assert.ok(grant.tools.includes("Bash"));
+  assert.ok(!grant.allowedTools.includes("Bash"));
+  assert.ok(grant.allowedTools.includes("Bash(gaia mem:*)"));
+  assert.ok(grant.allowedTools.includes("Bash(gaia recall:*)"));
+});
+
+test("buildClaudeToolGrant: bash grants the general shell", () => {
+  const grant = buildClaudeToolGrant(["read", "write", "edit", "bash", "memory", "recall"]);
+  assert.ok(grant.tools.includes("Bash"));
+  assert.ok(grant.allowedTools.includes("Bash"));
+  // memory/recall grants coexist with the general shell.
+  assert.ok(grant.allowedTools.includes("Bash(gaia mem:*)"));
+});
+
+test("buildClaudeToolGrant: an empty tools list yields no tools", () => {
+  const grant = buildClaudeToolGrant([]);
+  assert.deepEqual(grant.tools, []);
+  assert.deepEqual(grant.allowedTools, []);
+});
+
+test("buildClaudeToolGrant: summon maps to the narrow gaia summon grant", () => {
+  const grant = buildClaudeToolGrant(["read", "summon"]);
+  assert.ok(grant.tools.includes("Bash"));
+  assert.ok(grant.allowedTools.includes("Bash(gaia summon:*)"));
+  assert.ok(!grant.allowedTools.includes("Bash"));
+});
 
 test("ClaudeRuntime yields model-info from init and text-delta from stream_event", async () => {
   const { temp, workspace, agent } = await fixture();
@@ -294,12 +341,52 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
     assert.ok(!second.includes("--session-id"), "second turn does not pass --session-id");
     assert.equal(sessionFlagValue(first, "--session-id"), sessionFlagValue(second, "--resume"));
 
-    // Phase 1 invariants: safe-mode isolation, custom system prompt, read-only tools, model.
+    // Invariants: safe-mode isolation, custom system prompt, config-derived
+    // tools/permissions, model.
     assert.ok(first.includes("--safe-mode"));
     assert.ok(first.includes("--system-prompt"));
-    assert.equal(sessionFlagValue(first, "--tools"), "Read,Grep,Glob");
+    assert.equal(sessionFlagValue(first, "--tools"), "Read,Grep,Glob,Write,Edit,Bash");
+    assert.equal(sessionFlagValue(first, "--allowedTools"), "Write,Edit,Bash(gaia mem:*),Bash(gaia recall:*)");
     assert.equal(sessionFlagValue(first, "--model"), "claude-opus-4-8");
 
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime passes --permission-mode from the agent config (plan mode as data)", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const planAgent = { ...agent, permissionMode: "plan" as const };
+    const runtime = new ClaudeRuntime(workspace, planAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const args = fake.calls[0].args;
+    assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime omits --permission-mode when unset and passes empty --tools for a no-tool agent", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const bareAgent = { ...agent, tools: [] };
+    const runtime = new ClaudeRuntime(workspace, bareAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const args = fake.calls[0].args;
+    assert.ok(!args.includes("--permission-mode"), "no permission-mode flag when unset");
+    assert.equal(args[args.indexOf("--tools") + 1], "", "empty tools disables all tools");
+    assert.ok(!args.includes("--allowedTools"), "no allow rules when there are no tools");
     runtime.dispose();
   } finally {
     await temp.cleanup();
@@ -330,6 +417,89 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
     // The failed first turn for C dropped its session, so the retry is a fresh
     // --session-id, not a --resume of a session that may not exist.
     assert.ok(fake.calls[3].args.includes("--session-id"), "retry after failed first turn starts fresh");
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime injects memory/room env for the gaia CLI and a daemon token when a host is present", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const host = {
+      baseUrl: "http://127.0.0.1:9999",
+      mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
+    };
+    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory, host);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const env = fake.calls[0].env;
+    assert.equal(env.GAIA_MEMORY_DIR, agent.memoryDir);
+    assert.equal(env.GAIA_ROOM_DIR, join(workspace.roomsDir, "default"));
+    assert.equal(env.GAIA_ROOM_ID, "default");
+    assert.equal(env.GAIA_AGENT_ID, "gaia");
+    assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
+    assert.equal(env.GAIA_DAEMON_TOKEN, "tok:gaia:default");
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime omits daemon env when no host is present but still sets read env", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const env = fake.calls[0].env;
+    assert.equal(env.GAIA_MEMORY_DIR, agent.memoryDir);
+    assert.equal(env.GAIA_DAEMON_URL, undefined);
+    assert.equal(env.GAIA_DAEMON_TOKEN, undefined);
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const args = fake.calls[0].args;
+    const systemPrompt = args[args.indexOf("--system-prompt") + 1];
+    assert.match(systemPrompt, /gaia mem/);
+    assert.match(systemPrompt, /gaia recall/);
+    runtime.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ClaudeRuntime adds no gaia pointer when the agent has no gaia tools", async () => {
+  const { temp, workspace, agent } = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const bareAgent = { ...agent, tools: ["read"] };
+    const runtime = new ClaudeRuntime(workspace, bareAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const args = fake.calls[0].args;
+    const systemPrompt = args[args.indexOf("--system-prompt") + 1];
+    assert.ok(!/gaia mem/.test(systemPrompt), "no gaia pointer without gaia tools");
     runtime.dispose();
   } finally {
     await temp.cleanup();
