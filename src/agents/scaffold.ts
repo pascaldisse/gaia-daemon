@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
+import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from "./types.js";
 
 export interface AgentScaffoldOptions {
   displayName?: string;
@@ -49,6 +50,13 @@ export function agentConfigTemplate(id: string, displayName: string, icon: strin
 export function normalizeHarness(raw: unknown): "pi" | "codex" | "claude" | undefined {
   if (raw === "pi" || raw === "codex" || raw === "claude") return raw;
   return undefined;
+}
+
+/** Returns the value if it is a known Claude permission mode, else undefined. */
+export function normalizePermissionMode(raw: unknown): ClaudePermissionMode | undefined {
+  return typeof raw === "string" && (CLAUDE_PERMISSION_MODES as string[]).includes(raw)
+    ? (raw as ClaudePermissionMode)
+    : undefined;
 }
 
 export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, options: AgentScaffoldOptions = {}): Promise<AgentScaffoldResult> {

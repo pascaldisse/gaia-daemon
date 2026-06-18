@@ -293,6 +293,39 @@ test("cancels an active room task", async () => {
   }
 });
 
+test("mutateAgentMemory writes through the controller's MemoryStore (the daemon single-writer path)", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    await controller.init();
+
+    const result = await controller.mutateAgentMemory("gaia", "MEMORY.md", "add", { content: "the latency target is 500ms" });
+    assert.equal(result.ok, true);
+    assert.match(result.state.content, /latency target is 500ms/);
+
+    // A fresh read sees the persisted write (file-backed, no in-process bridge).
+    const reread = await controller.mutateAgentMemory("gaia", "MEMORY.md", "add", { content: "the latency target is 500ms" });
+    assert.match(reread.message, /duplicate/);
+
+    await assert.rejects(() => controller.mutateAgentMemory("nope", "MEMORY.md", "add", { content: "x" }), /Unknown agent/);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {

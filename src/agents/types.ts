@@ -5,6 +5,18 @@ export interface AgentModelConfig {
   name?: string;
 }
 
+/** Claude Code `--permission-mode` values (see `claude --help`). */
+export type ClaudePermissionMode = "default" | "acceptEdits" | "auto" | "dontAsk" | "plan" | "bypassPermissions";
+
+export const CLAUDE_PERMISSION_MODES: ClaudePermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "plan",
+  "bypassPermissions",
+];
+
 export interface AgentDefinition {
   id: string;
   displayName: string;
@@ -22,6 +34,12 @@ export interface AgentDefinition {
   thinking?: ThinkingLevel;
   /** Agent harness backend. Falls back to workspace config, then "pi". */
   harness?: "pi" | "codex" | "claude";
+  /**
+   * Posture knob exposed as data (Claude harness): permission mode for the
+   * session. "plan" is how a read-only "plan mode" is expressed without a
+   * hardcoded code path. Ignored by harnesses that have no equivalent.
+   */
+  permissionMode?: ClaudePermissionMode;
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;

@@ -82,6 +82,26 @@ test("agent.json tools hint not hidden when harness is pi or unset", () => {
   assert.equal(unsetHints.tools.hidden, false, "tools not hidden when harness is unset");
 });
 
+test("agent.json tools hint not hidden when harness is claude (tools are the control surface)", () => {
+  const claudeHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "claude" }) }, sources);
+  assert.ok(claudeHints.tools);
+  assert.equal(claudeHints.tools.hidden, false, "tools visible for claude");
+});
+
+test("agent.json permissionMode hint is shown only for claude", () => {
+  const claudeHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "claude" }) }, sources);
+  assert.ok(claudeHints.permissionMode, "permissionMode hint present");
+  assert.equal(claudeHints.permissionMode.input, "select");
+  assert.equal(claudeHints.permissionMode.hidden, false, "shown for claude");
+  assert.ok(claudeHints.permissionMode.options?.some((option) => option.value === "plan"));
+
+  const piHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "pi" }) }, sources);
+  assert.equal(piHints.permissionMode.hidden, true, "hidden for pi");
+
+  const codexHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, sources);
+  assert.equal(codexHints.permissionMode.hidden, true, "hidden for codex");
+});
+
 test("voice.json gets boolean and number hints", () => {
   const hints = buildFileHints({ label: "voice.json", kind: "json" }, sources);
   assert.ok(hints);

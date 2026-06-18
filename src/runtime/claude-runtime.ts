@@ -1,7 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
@@ -128,9 +130,68 @@ interface RoomState {
 
 // GAIA owns the persona system prompt, project context, and memory; --safe-mode
 // keeps the user's own CLAUDE.md, skills, hooks, and MCP servers out of the
-// session while leaving subscription auth, the model, and built-in tools intact.
-// Phase 1 grants a read-only tool set (no memory/recall/summon yet).
-const READ_ONLY_TOOLS = "Read,Grep,Glob";
+// session while leaving subscription auth, the model, built-in tools, and
+// permissions intact (confirmed in `claude --help`).
+const SAFE_MODE = "--safe-mode";
+
+// ---------------------------------------------------------------------------
+// Config-driven tool translation
+// ---------------------------------------------------------------------------
+//
+// The agent's `tools` array is the single source of truth. A harness is a
+// faithful translator of that config, not a place that bakes in "modes". This
+// maps each logical GAIA tool onto Claude's two control surfaces:
+//   --tools         which built-in tools exist in the session
+//   --allowedTools  which calls auto-approve in -p mode (no interactive prompt,
+//                   so anything not pre-approved is denied)
+//
+// memory/recall/summon are granted as a NARROW, locked `gaia` CLI permission
+// (Bash with a fixed command prefix), DECOUPLED from the general `bash` toggle —
+// gaia/sidia have memory/recall but no shell. A no-shell agent thus gets
+// memory/recall and still cannot run arbitrary commands. We rely on Claude's
+// permission matcher to block command chaining/injection past the prefix.
+
+export interface ClaudeToolGrant {
+  /** Built-in Claude tools to expose (--tools). Empty means "no tools". */
+  tools: string[];
+  /** Permission patterns to auto-approve (--allowedTools). */
+  allowedTools: string[];
+}
+
+// Narrow gaia-CLI grants. The colon-prefix form matches commands beginning
+// with the given words; Claude denies anything chained past them in -p mode.
+const GAIA_GRANTS: Record<string, string> = {
+  memory: "Bash(gaia mem:*)",
+  recall: "Bash(gaia recall:*)",
+  summon: "Bash(gaia summon:*)",
+};
+
+export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
+  const has = (name: string): boolean => tools.includes(name);
+  const builtin = new Set<string>();
+  const allowed = new Set<string>();
+
+  // Read-only tools are auto-approved by Claude even in default mode, so they
+  // need no allow rule — only exposure.
+  if (has("read")) for (const t of ["Read", "Grep", "Glob"]) builtin.add(t);
+  if (has("write")) {
+    builtin.add("Write");
+    allowed.add("Write");
+  }
+  if (has("edit")) {
+    builtin.add("Edit");
+    allowed.add("Edit");
+  }
+
+  // memory/recall/summon need the Bash tool present (to invoke `gaia`) but only
+  // the narrow command, independent of the general `bash` shell.
+  const gaiaTools = Object.keys(GAIA_GRANTS).filter(has);
+  if (has("bash") || gaiaTools.length > 0) builtin.add("Bash");
+  if (has("bash")) allowed.add("Bash");
+  for (const tool of gaiaTools) allowed.add(GAIA_GRANTS[tool]);
+
+  return { tools: [...builtin], allowedTools: [...allowed] };
+}
 
 // GAIA thinking levels -> Claude --effort. Claude has no "off"; floor at "low".
 function effortFor(level: string | undefined): string | undefined {
@@ -168,11 +229,15 @@ export class ClaudeRuntime implements AgentRuntime {
     private readonly memoryStore: MemoryStore,
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _unused?: unknown,
-    // Phase 2 will expose memory/recall/summon via an in-process MCP bridge.
+    // memory/recall/summon reach the daemon via the `gaia` CLI (see
+    // buildClaudeToolGrant), not an in-process handle; kept for factory parity.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     private readonly summonCreate?: SummonCreate,
     // Injectable process factory for testing.
     processFactory?: ClaudeProcessFactory,
+    // Daemon bridge for memory writes / summon (undefined in tests + when the
+    // agent has none of memory/recall/summon enabled).
+    private readonly harnessHost?: HarnessHost,
   ) {
     this.cwd = workspace.rootDir;
     this.processFactory = processFactory ?? spawnClaudeProcess;
@@ -301,7 +366,7 @@ export class ClaudeRuntime implements AgentRuntime {
       args,
       prompt,
       cwd: this.cwd,
-      env: process.env,
+      env: this.buildEnv(input.roomId),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
         if (!done && code !== 0 && !error) {
@@ -408,20 +473,31 @@ export class ClaudeRuntime implements AgentRuntime {
   }
 
   private buildArgs(sessionId: string, firstTurn: boolean, systemPrompt: string, thinkingOverride: string | undefined): string[] {
+    const grant = buildClaudeToolGrant(this.agent.tools);
     const args = [
       "-p",
       "--output-format",
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      "--safe-mode",
+      SAFE_MODE,
       "--system-prompt",
       systemPrompt,
+      // Single comma-joined token: --tools/--allowedTools are variadic, so a
+      // joined value keeps them from swallowing later flags. Tool/pattern names
+      // contain no commas. "" disables all tools when the agent has none.
       "--tools",
-      READ_ONLY_TOOLS,
-      firstTurn ? "--session-id" : "--resume",
-      sessionId,
+      grant.tools.join(","),
     ];
+    if (grant.allowedTools.length > 0) {
+      args.push("--allowedTools", grant.allowedTools.join(","));
+    }
+    // Posture knob as data: plan/acceptEdits/etc. live in the agent config, not
+    // a hardcoded branch. Default (unset) leaves Claude's default behavior.
+    if (this.agent.permissionMode) {
+      args.push("--permission-mode", this.agent.permissionMode);
+    }
+    args.push(firstTurn ? "--session-id" : "--resume", sessionId);
     const model = this.agent.model?.name;
     if (model) args.push("--model", model);
     const effort = effortFor(thinkingOverride ?? this.agent.thinking);
@@ -434,13 +510,51 @@ export class ClaudeRuntime implements AgentRuntime {
       readFile(this.agent.soulPath, "utf8"),
       this.readOptional(this.agent.projectIntentPath),
     ]);
-    return buildSystemPrompt({
+    const base = buildSystemPrompt({
       agent: this.agent,
       soulText,
       role: input.activeRole,
       intentText,
       contextFiles: this.workspace.contextFiles,
     });
+    const pointer = this.gaiaCliPointer();
+    return pointer ? `${base}\n\n---\n\n${pointer}` : base;
+  }
+
+  // Progressive disclosure: a one-line pointer to the `gaia` CLI for whichever
+  // of memory/recall/summon the agent has. `gaia <cmd> --help` is the README;
+  // near-zero context until used.
+  private gaiaCliPointer(): string {
+    const lines: string[] = [];
+    if (this.agent.tools.includes("memory")) {
+      lines.push("- `gaia mem list|read|add|replace|remove` — your persistent memory");
+    }
+    if (this.agent.tools.includes("recall")) {
+      lines.push("- `gaia recall <query>` — full-text search of the room history");
+    }
+    if (this.agent.tools.includes("summon")) {
+      lines.push("- `gaia summon <agent> <task>` — run a private worker agent");
+    }
+    if (!lines.length) return "";
+    return ["# GAIA tools (run via Bash)", "You have a `gaia` CLI:", ...lines].join("\n");
+  }
+
+  // Per-turn env for the subprocess: reads work straight off disk (memory dir,
+  // room dir); writes/summon go to the daemon with a token scoped to this
+  // (agent, room). Only added when a daemon bridge is present.
+  private buildEnv(roomId: string): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GAIA_MEMORY_DIR: this.agent.memoryDir,
+      GAIA_ROOM_DIR: join(this.workspace.roomsDir, roomId),
+      GAIA_ROOM_ID: roomId,
+      GAIA_AGENT_ID: this.agent.id,
+    };
+    if (this.harnessHost) {
+      env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
+      env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId });
+    }
+    return env;
   }
 
   private async readOptional(path: string | undefined): Promise<string> {

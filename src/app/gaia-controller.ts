@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
-import { MemoryStore } from "../memory/memory-store.js";
+import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import type { RoomEvent } from "../room/transcript.js";
@@ -13,6 +13,7 @@ import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
 import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
+import type { HarnessHost } from "./harness-bridge.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
 import { SummonManager } from "./summon-manager.js";
@@ -123,6 +124,10 @@ export interface GaiaControllerOptions {
   // Host-provided thinking setter; the web server scopes changes to an active
   // voice call before falling back to persistence. Returns feedback text.
   setThinking?: (agentId: string, level: string) => Promise<string>;
+  // Daemon bridge for the Claude harness's memory/recall/summon CLI. A factory
+  // so the controller can request a no-summon host for summoned agents. Absent
+  // in tests and headless contexts; the Claude harness then has no write path.
+  harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
 }
 
 export interface SendMessageOptions {
@@ -162,7 +167,10 @@ export class GaiaController {
       : new SummonManager(
           options.workspaceId,
           options.workspace,
-          (agent) => createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore }),
+          // Summoned agents get the daemon bridge too (so a summoned Claude
+          // agent can use memory/recall) but with a no-summon token, so they
+          // cannot recursively summon.
+          (agent) => createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, harnessHost: options.harnessHost?.({ allowSummon: false }) }),
           (event) => this.emit(event),
           this.memoryStore,
         );
@@ -176,7 +184,7 @@ export class GaiaController {
         agent.id,
         options.runtimeFactory
           ? options.runtimeFactory(agent)
-          : createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, summonCreate }),
+          : createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, summonCreate, harnessHost: options.harnessHost?.({ allowSummon: true }) }),
       ]),
     );
     // When a test injects a custom runtimeFactory, SummonManager stays absent
@@ -611,6 +619,30 @@ export class GaiaController {
     if (!agent) return this.unknownAgentMessage(agentId);
     const session = await this._summonManager.create(this.room.id, agent.id, task);
     return `Summoned @${session.agentId} (${session.id}): ${session.prompt}`;
+  }
+
+  /**
+   * Memory write for a harness subprocess (the `gaia mem` CLI). The daemon is
+   * the single writer; this reuses the controller's MemoryStore so caps and the
+   * secret filter match the in-process (Pi) path exactly.
+   */
+  async mutateAgentMemory(
+    agentId: string,
+    file: string,
+    action: MemoryAction,
+    options: { content?: string; oldText?: string },
+  ): Promise<MemoryMutationResult> {
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+    return this.memoryStore.mutate(agent.memoryDir, file, action, options);
+  }
+
+  /** Summon for a harness subprocess (the `gaia summon` CLI): create and wait. */
+  async summonAndWait(roomId: string, agentId: string, task: string): Promise<string> {
+    if (!this._summonManager) throw new Error("Summon system is not available.");
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+    return this.runSummonAndWait({ roomId, agentId, task });
   }
 
   /**

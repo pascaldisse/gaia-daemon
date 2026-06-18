@@ -147,6 +147,62 @@ test("parses harness override from project agent.json", async () => {
   }
 });
 
+test("accepts legacy `runtime` as an alias for harness", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const agentDir = join(agentsDir, "rex");
+    const personaDir = join(agentDir, "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentDir, "agent.json"), JSON.stringify({ id: "rex", displayName: "Rex", runtime: "claude" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+    assert.equal(agents.rex?.harness, "claude");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("harness wins over runtime when both are present", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const agentDir = join(agentsDir, "rex");
+    const personaDir = join(agentDir, "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentDir, "agent.json"), JSON.stringify({ id: "rex", harness: "pi", runtime: "claude" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+    assert.equal(agents.rex?.harness, "pi");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("parses and validates permissionMode", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const personaDir = join(agentsDir, "rex", "persona");
+    await mkdir(personaDir, { recursive: true });
+    await writeFile(join(agentsDir, "rex", "agent.json"), JSON.stringify({ id: "rex", harness: "claude", permissionMode: "plan" }), "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+    // A second agent with a bogus permission mode is dropped to undefined.
+    const dexPersona = join(agentsDir, "dex", "persona");
+    await mkdir(dexPersona, { recursive: true });
+    await writeFile(join(agentsDir, "dex", "agent.json"), JSON.stringify({ id: "dex", harness: "claude", permissionMode: "nonsense" }), "utf8");
+    await writeFile(join(dexPersona, "SOUL.md"), "# Dex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, join(temp.path, "project", ".gaia", "agents"));
+    assert.equal(agents.rex?.permissionMode, "plan");
+    assert.equal(agents.dex?.permissionMode, undefined);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("ignores invalid harness values", async () => {
   const temp = await createTempDir();
   try {

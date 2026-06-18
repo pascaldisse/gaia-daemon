@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EditableFileRegistry, type EditableFileContent, type EditableFileDescriptor } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
+import { HarnessBridge } from "../app/harness-bridge.js";
+import type { MemoryAction } from "../memory/memory-store.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
   classifyVoiceTurn,
@@ -232,6 +234,9 @@ export class GaiaWebServer {
   private readonly voiceStack = new VoiceStackManager(join(gaiaHome(), "logs", "voice"));
   // Process-stable settings-hint sources, invalidated on settings saves.
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
+  // Bridges harness subprocesses to memory-write/summon endpoints; created once
+  // the server is bound so the token URL points at the real port.
+  private harnessBridge: HarnessBridge | undefined;
 
   constructor(private readonly options: WebServerOptions) {}
 
@@ -261,6 +266,7 @@ export class GaiaWebServer {
 
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;
+    this.harnessBridge = new HarnessBridge(`http://${host}:${boundPort}`);
 
     return {
       url: `http://${host}:${boundPort}/`,
@@ -298,6 +304,11 @@ export class GaiaWebServer {
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (request.method === "GET" && url.pathname === "/api/app") {
       await this.handleApp(response);
+      return;
+    }
+
+    if (request.method === "POST" && (url.pathname === "/api/harness/memory" || url.pathname === "/api/harness/summon")) {
+      await this.handleHarness(request, response, url.pathname);
       return;
     }
 
@@ -548,6 +559,66 @@ export class GaiaWebServer {
     json(response, 404, { error: "Not found" });
   }
 
+  // Memory writes and summon for harness subprocesses (the `gaia` CLI). The
+  // bearer token (minted per turn, see HarnessBridge) resolves the (workspace,
+  // agent, room) the request acts on, so the body cannot spoof identity.
+  private async handleHarness(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
+    const auth = request.headers.authorization;
+    const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
+    const claims = this.harnessBridge?.verify(token);
+    if (!claims) {
+      json(response, 401, { error: "Invalid or missing harness token." });
+      return;
+    }
+
+    let controller: GaiaController;
+    try {
+      controller = await this.controllerFor(claims.workspaceId);
+    } catch (error) {
+      json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+
+    const body = await parseBody(request);
+
+    if (pathname === "/api/harness/memory") {
+      const action = stringField(body, "action") as MemoryAction | undefined;
+      if (action !== "add" && action !== "replace" && action !== "remove") {
+        json(response, 400, { error: "action must be add, replace, or remove" });
+        return;
+      }
+      try {
+        const result = await controller.mutateAgentMemory(claims.agentId, stringField(body, "file") ?? "MEMORY.md", action, {
+          content: stringField(body, "content"),
+          oldText: stringField(body, "old_text"),
+        });
+        const head = `${result.ok ? "OK" : "ERROR"}: ${result.message}`;
+        json(response, 200, { result: result.ok ? `${head}\n\n${result.state.content}` : head });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/summon
+    if (!claims.allowSummon) {
+      json(response, 403, { error: "Summoned agents cannot summon." });
+      return;
+    }
+    const targetAgent = stringField(body, "agent") ?? stringField(body, "agentId");
+    const task = stringField(body, "task");
+    if (!targetAgent || !task?.trim()) {
+      json(response, 400, { error: "Missing agent or task" });
+      return;
+    }
+    try {
+      const result = await controller.summonAndWait(claims.roomId, targetAgent, task.trim());
+      json(response, 200, { result });
+    } catch (error) {
+      json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   private async handleApp(response: ServerResponse, currentWorkspaceId?: string): Promise<void> {
     const workspaces = await this.registry.list();
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
@@ -618,6 +689,7 @@ export class GaiaWebServer {
       workspaceId,
       workspace,
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
+      harnessHost: this.harnessBridge ? (opts) => this.harnessBridge!.hostFor(workspaceId, opts) : undefined,
     });
     controller.subscribe((event) => this.broadcast(event));
     await controller.init();
