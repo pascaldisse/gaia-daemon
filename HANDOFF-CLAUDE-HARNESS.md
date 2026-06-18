@@ -33,10 +33,27 @@ four-point provider seam), `HANDOFF-CODEX-HARNESS.md`.
 >   token and appends a one-line gaia-CLI pointer to the system prompt.
 >   `GaiaController.mutateAgentMemory`/`summonAndWait` are the daemon-side single
 >   writer. Summoned agents get a `allowSummon:false` token (no recursive summon).
-> - **Still open**: extend the same memory/recall/summon CLI path to **Codex**
->   (it currently has neither tools-array honoring nor the gaia CLI); optional
->   recall prefetch; optional Pi→CLI convergence; full live claude turn E2E of the
->   write loop (covered piecewise by tests, not yet one real claude round-trip).
+> - **Codex (partial, this session)**: `codex-runtime.ts` now derives its
+>   sandbox from `agent.tools` (`codexSandboxFor`: write/edit/bash →
+>   `workspace-write`, else `read-only`) instead of a fixed read-only stance, and
+>   injects room-independent **memory** env + a no-room token (`gaia mem` works;
+>   `gaia mem` pointer added to baseInstructions). `recall`/`summon` are NOT wired
+>   for Codex: its app-server is one persistent process shared across rooms, so
+>   per-turn/per-room env (`GAIA_ROOM_DIR`, room-scoped token) can't be injected.
+>   Codex `tools` stays hidden in settings (coarse/partial mapping — recall/summon
+>   toggles wouldn't take effect). NOTE: whether Codex's OS sandbox permits the
+>   localhost daemon write call is unverified (needs a live codex turn).
+> - **Still open**: Codex recall/summon (needs a room-context delivery design for
+>   the persistent app-server — e.g. daemon resolves the agent's active room);
+>   live codex memory-write validation; optional recall prefetch; optional Pi→CLI
+>   convergence; full live claude turn E2E (write+summon loops were smoked with a
+>   fake `claude` binary this session — see below).
+>
+> Live E2E this session (fake `claude`, isolated `GAIA_HOME`, daemon on a temp
+> port): a daemon-spawned turn ran `gaia mem add` → token → `/api/harness/memory`
+> → `MemoryStore` (wrote a real `§`-delimited entry); and `gaia summon gaia …`
+> ran a summoned agent whose own `gaia summon` was correctly 403'd (recursion
+> guard) while its `gaia mem add` succeeded.
 
 ## 0a. Original status (Phase 1)
 
