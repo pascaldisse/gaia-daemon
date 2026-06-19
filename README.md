@@ -4,7 +4,7 @@
 
 Its main idea is simple:
 
-- **Agent = hard control**: runtime, model, tools, and future sandbox policy.
+- **Agent = hard control**: harness, model, tools, and sandbox/permission policy.
 - **Persona = soft control**: identity, voice, memory, roles, and behavior.
 - **Room = shared place**: transcript, active roles, cursors, and runtime continuity.
 
@@ -24,12 +24,13 @@ Personas are durable. Projects add local context.
 - multiple agents in first-mentioned order
 - per-agent markdown memory (capped core + user profile + topic files) and
   full-text recall over the room history
-- persistent Pi session per room-agent pair
+- pluggable per-agent harness (`pi`, `codex`, `claude`) — see **Harnesses**
+- persistent session per room-agent pair
 - model switching through Pi's registry (API-key, subscription/OAuth, local);
   each agent message shows the model that actually produced it
 - voice calls per agent through the vendored unmute stack (`unmute/`)
 - sample global agents: `@gaia`, `@sidia`, `@terry`
-- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/thinking`
+- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`, `/thinking`
 - dynamic selectable previews for `/` commands and `@` agents
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
@@ -240,6 +241,37 @@ Project skills win over global skills on name collision.
 Skills are soft workflow instructions.
 They do **not** grant tools. Tools stay in `agent.json` as hard control.
 
+## Harnesses
+
+A harness is the backend that runs an agent's turns. Pick one per agent with
+the `harness` field in `agent.json` (or a workspace default in
+`.gaia/config.json`); it falls back to `pi`.
+
+A harness is a faithful **translator** of the agent's `tools` array and posture
+— not a place that hardcodes "modes". "Plan mode" or "read-only" are just
+combinations of toggles, mapped onto each backend as faithfully as it can.
+
+- **`pi`** (default) — the Pi SDK, in-process. `memory`, `recall`, and `summon`
+  are in-process tools. Models and auth come from Pi's registry.
+- **`claude`** — spawns your installed `claude` CLI once per turn, inheriting
+  your environment so it rides your logged-in **Claude subscription** (no API
+  key needed; `claude` must be on `PATH`). The `tools` array maps onto Claude's
+  own tools: `read`→Read/Grep/Glob, `write`→Write, `edit`→Edit, `bash`→shell,
+  and `memory`/`recall`/`summon`→a narrow, locked `gaia` CLI grant (so they work
+  even for agents with no general shell). `permissionMode` exposes Claude's
+  permission modes (e.g. `plan`).
+- **`codex`** — drives your installed `codex` app-server, riding your **Codex
+  subscription** (`codex` must be on `PATH`). It honors `tools` coarsely through
+  a workspace sandbox: `write`/`edit`/`bash` → `workspace-write`, otherwise
+  `read-only`. `memory` works (via the `gaia` CLI); `recall` and `summon` are
+  not available under Codex yet.
+
+For the `claude` and `codex` harnesses, `memory`/`recall`/`summon` are delivered
+through a small `gaia` CLI the agent runs (reads go straight to disk; writes and
+summon call back to the running daemon, which stays the single writer) — no MCP.
+The `claude`/`codex` providers are locked in the settings UI to Anthropic /
+OpenAI-Codex models respectively.
+
 ## Create a new agent
 
 ```bash
@@ -273,6 +305,11 @@ Optional `agent.json` fields:
 - `thinking`: thinking effort (`off`...`xhigh`); also changeable from the
   composer's `💭 #level` control and `/thinking`
 - `voice`: TTS voice for calls (an unmute `voices.yaml` entry)
+- `harness`: which backend runs the agent — `pi` (default), `codex`, or
+  `claude`; falls back to `.gaia/config.json`'s `harness`, then `pi` (see
+  **Harnesses**)
+- `permissionMode` (Claude harness only): Claude Code permission mode, e.g.
+  `plan` for a no-edit planning posture (`default`, `acceptEdits`, `plan`, …)
 
 ## Prompt layering
 
@@ -322,6 +359,10 @@ Memory files are plain markdown: read them, edit them by hand, or use the
 settings UI (they appear under each agent's Memory group). Pre-release
 layouts with a single `persona/MEMORY.md` migrate automatically on load.
 
+Under the `claude` and `codex` harnesses the agent reaches these same files
+through the `gaia` CLI rather than an in-process tool; the data, caps, and
+secret-filtering are identical (see **Harnesses**).
+
 ## Project-local agent overlays
 
 You can customize an agent for one project without changing the global persona.
@@ -355,6 +396,10 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
 }
 ```
 
+An optional `"harness"` key (`pi` | `codex` | `claude`) sets the default
+harness for every agent in the workspace; per-agent `agent.json` overrides it
+(see **Harnesses**).
+
 All settings are plain text files. The web UI's formatted view renders smart
 controls on top of them (dropdowns for agents, rooms, models, tool
 checkboxes) using server-computed field hints; the raw view always shows the
@@ -374,5 +419,6 @@ Room-local active roles, transcript cursors, runtime details, and Pi session met
 
 - Unknown mentions fail loudly.
 - Agent messages do not auto-trigger more routing.
-- Pi is the only runtime right now.
-- Containers, subagents, and stronger isolation are future seams, not part of this MVP.
+- Three harnesses ship: `pi` (default), `claude`, and `codex` (see **Harnesses**).
+  `claude`/`codex` ride your logged-in subscriptions via their own CLIs.
+- Containers and stronger OS-level isolation are future seams, not part of this MVP.
