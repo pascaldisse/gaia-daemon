@@ -275,11 +275,12 @@ function truncate(text, max) {
 let transcriptRenderQueued = false;
 
 // True when the transcript is scrolled to (or near) the bottom, so streaming
-// output keeps it pinned but reading scrollback is never yanked away.
-function transcriptAtBottom() {
-  const target = document.querySelector("#transcript");
-  if (!target) return true;
-  return target.scrollHeight - target.scrollTop - target.clientHeight < 140;
+// output keeps it pinned but reading scrollback is never yanked away. Pass the
+// node when you already hold it to skip a redundant querySelector + reflow.
+function transcriptAtBottom(target) {
+  const el = target ?? document.querySelector("#transcript");
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 140;
 }
 
 export function renderTranscriptOnly() {
@@ -292,7 +293,7 @@ export function renderTranscriptOnly() {
       render();
       return;
     }
-    const stick = transcriptAtBottom();
+    const stick = transcriptAtBottom(target);
     target.replaceWith(Transcript());
     if (stick) document.querySelector("#transcript")?.scrollTo({ top: 100000 });
   });

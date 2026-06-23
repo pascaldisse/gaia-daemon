@@ -1,8 +1,10 @@
+import { readFile } from "node:fs/promises";
 import type { AgentDefinition } from "../agents/types.js";
 import { renderRoomTranscript } from "../room/room.js";
 import type { RoomEvent } from "../room/transcript.js";
 import type { ResolvedRole } from "../roles/roles.js";
-import type { ContextFile } from "../workspace/types.js";
+import { loadRoleSkillText } from "../skills/skill-resolver.js";
+import type { ContextFile, Workspace } from "../workspace/types.js";
 
 export interface SystemPromptInput {
   agent: AgentDefinition;
@@ -56,6 +58,72 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
   ]
     .filter(Boolean)
     .join("\n\n---\n\n");
+}
+
+/** Read a file, returning "" for a missing path or read failure. */
+export async function readOptional(path: string | undefined): Promise<string> {
+  if (!path) return "";
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+// Reads soul + optional project-intent off disk and composes the base system
+// prompt. Every harness needs this exact read-then-assemble step.
+export async function buildBaseSystemPrompt(params: {
+  agent: AgentDefinition;
+  role: ResolvedRole | undefined;
+  contextFiles: ContextFile[];
+}): Promise<string> {
+  const [soulText, intentText] = await Promise.all([
+    readFile(params.agent.soulPath, "utf8"),
+    readOptional(params.agent.projectIntentPath),
+  ]);
+  return buildSystemPrompt({
+    agent: params.agent,
+    soulText,
+    role: params.role,
+    intentText,
+    contextFiles: params.contextFiles,
+  });
+}
+
+// CLI harnesses (Claude, Codex) can't load Pi-style skill files, so the active
+// role's skill text is inlined into the system prompt, followed by a one-line
+// pointer to the `gaia` CLI. Shared by every inline (subprocess) harness.
+export async function buildInlineSystemPrompt(params: {
+  workspace: Workspace;
+  agent: AgentDefinition;
+  role: ResolvedRole | undefined;
+  toolPointer: string;
+}): Promise<string> {
+  const base = await buildBaseSystemPrompt({
+    agent: params.agent,
+    role: params.role,
+    contextFiles: params.workspace.contextFiles,
+  });
+  const skills = await loadRoleSkillText(params.workspace, params.role);
+  for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
+  return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
+}
+
+// Progressive-disclosure pointer to the `gaia` CLI for whichever of
+// memory/recall/summon the agent has AND the harness can wire (`supported`).
+// Near-zero context until the agent runs `gaia <cmd> --help`.
+export function gaiaCliPointer(tools: string[], supported: readonly string[] = ["memory", "recall", "summon"]): string {
+  const has = (name: string): boolean => tools.includes(name) && supported.includes(name);
+  const lines: string[] = [];
+  if (has("memory")) lines.push("- `gaia mem list|read|add|replace|remove` — your persistent memory");
+  if (has("recall")) lines.push("- `gaia recall <query>` — full-text search of the room history");
+  if (has("summon")) lines.push('- `gaia summon <agent> "<task>"` — run a private worker agent (visible live in the summons drawer)');
+  if (!lines.length) return "";
+  return [
+    "# GAIA tools (run via shell)",
+    "You have a ready-to-use `gaia` CLI on your PATH (already wired to this daemon — just run it, no setup, no hunting for the binary):",
+    ...lines,
+  ].join("\n");
 }
 
 export function buildTurnPrompt(input: TurnPromptInput): string {

@@ -1,7 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -10,8 +9,8 @@ import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
-import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
-import { loadRoleSkillText } from "../skills/skill-resolver.js";
+import { createEventChannel } from "./event-stream.js";
+import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -235,20 +234,30 @@ function shellQuote(value: string): string {
 // to this exact daemon's CLI (shadowing any unrelated global `gaia`) AND still
 // matches the narrow `Bash(gaia …:*)` permission grants. Best-effort: on failure
 // we fall back to whatever `gaia` is already on PATH.
+//
+// Resolved lazily on first spawn (memoized), not at import: a Pi/Codex-only
+// daemon — or the test suite — never spawns `claude` and shouldn't pay the fs
+// writes. The shim is rewritten only when missing or stale (deterministic path).
+let gaiaShimDir: string | undefined;
+let gaiaShimResolved = false;
 function ensureGaiaShimDir(): string | undefined {
+  if (gaiaShimResolved) return gaiaShimDir;
+  gaiaShimResolved = true;
   try {
     const cliPath = fileURLToPath(new URL("../cli.js", import.meta.url));
     const dir = join(dirname(cliPath), ".bin");
-    mkdirSync(dir, { recursive: true });
     const shimPath = join(dir, "gaia");
-    writeFileSync(shimPath, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"\n`, { mode: 0o755 });
-    chmodSync(shimPath, 0o755);
-    return dir;
+    const contents = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"\n`;
+    if (!existsSync(shimPath) || readFileSync(shimPath, "utf8") !== contents) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(shimPath, contents, { mode: 0o755 });
+    }
+    gaiaShimDir = dir;
   } catch {
-    return undefined;
+    gaiaShimDir = undefined;
   }
+  return gaiaShimDir;
 }
-const GAIA_SHIM_DIR = ensureGaiaShimDir();
 
 // GAIA thinking levels -> Claude --effort. Claude has no "off"; floor at "low".
 function effortFor(level: string | undefined): string | undefined {
@@ -330,22 +339,7 @@ export class ClaudeRuntime implements AgentRuntime {
     });
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking);
 
-    // Push-based async iteration, mirroring PiRuntime/CodexRuntime.
-    const queue: AgentEvent[] = [];
-    let done = false;
-    let error: unknown = null;
-    let notify: (() => void) | undefined;
-
-    const push = (event: AgentEvent): void => {
-      queue.push(event);
-      notify?.();
-      notify = undefined;
-    };
-    const finish = (): void => {
-      done = true;
-      notify?.();
-      notify = undefined;
-    };
+    const channel = createEventChannel();
 
     // Per-turn parse state.
     const blockTypes = new Map<number, string>(); // content-block index -> type
@@ -358,7 +352,7 @@ export class ClaudeRuntime implements AgentRuntime {
     const startThinking = (): void => {
       if (thinkingActive) return;
       thinkingActive = true;
-      push({ type: "thinking-start" });
+      channel.push({ type: "thinking-start" });
     };
     const endThinking = (): void => {
       if (!thinkingActive) return;
@@ -366,7 +360,7 @@ export class ClaudeRuntime implements AgentRuntime {
       // When no real reasoning text streamed (the usual -p case), hand the UI a
       // short note + token estimate so the thinking disclosure isn't empty.
       const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens);
-      push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
+      channel.push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
     };
 
     const onMessage = (raw: unknown): void => {
@@ -377,7 +371,7 @@ export class ClaudeRuntime implements AgentRuntime {
           if (sys.subtype === "init" && sys.model) {
             const subscription = sys.apiKeySource === "none";
             this.liveModelLabel = `anthropic/${sys.model}`;
-            push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+            channel.push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
           } else if (sys.subtype === "thinking_tokens") {
             // The CLI redacts reasoning *text* in -p mode (it streams encrypted
             // thinking blocks), but reports a live token estimate. Surface that
@@ -392,7 +386,7 @@ export class ClaudeRuntime implements AgentRuntime {
           this.handleStreamEvent(
             (raw as { event?: unknown }).event,
             { blockTypes, startThinking, endThinking, markTextSeen: () => (thinkingTextSeen = true) },
-            push,
+            channel.push,
           );
           break;
         }
@@ -405,7 +399,7 @@ export class ClaudeRuntime implements AgentRuntime {
           for (const block of content as Array<{ type?: string; id?: string; name?: string; input?: unknown }>) {
             if (block.type === "tool_use" && block.id && !toolNames.has(block.id)) {
               toolNames.set(block.id, block.name ?? "tool");
-              push({ type: "tool-start", toolName: block.name ?? "tool", toolCallId: block.id, args: block.input });
+              channel.push({ type: "tool-start", toolName: block.name ?? "tool", toolCallId: block.id, args: block.input });
             }
           }
           break;
@@ -418,7 +412,7 @@ export class ClaudeRuntime implements AgentRuntime {
           for (const block of content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
             if (block.type === "tool_result" && block.tool_use_id && !endedTools.has(block.tool_use_id)) {
               endedTools.add(block.tool_use_id);
-              push({
+              channel.push({
                 type: "tool-end",
                 toolName: toolNames.get(block.tool_use_id) ?? "tool",
                 toolCallId: block.tool_use_id,
@@ -433,11 +427,11 @@ export class ClaudeRuntime implements AgentRuntime {
         case "result": {
           const res = raw as { subtype?: string; is_error?: boolean; result?: string };
           if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
-            error = new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`);
+            channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
           }
           // Close any thinking indicator that never saw a content_block_stop.
           endThinking();
-          finish();
+          channel.close();
           break;
         }
       }
@@ -450,42 +444,32 @@ export class ClaudeRuntime implements AgentRuntime {
       env: this.buildEnv(input.roomId),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
-        if (!done && code !== 0 && !error) {
-          error = claudeStartupError(
-            new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
-            stderr,
+        if (!channel.closed && code !== 0 && !channel.hasError) {
+          channel.fail(
+            claudeStartupError(
+              new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
+              stderr,
+            ),
           );
         }
-        finish();
+        channel.close();
       },
       onError: (err) => {
-        error = claudeStartupError(err);
-        finish();
+        channel.fail(claudeStartupError(err));
+        channel.close();
       },
     });
     this.active = handle;
 
     try {
-      while (!done || queue.length > 0) {
-        if (queue.length === 0) {
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-          });
-        }
-        while (queue.length > 0) {
-          const event = queue.shift();
-          if (event) yield event;
-        }
-      }
-    } finally {
-      this.active = null;
-    }
-
-    if (error) {
+      for await (const event of channel.stream()) yield event;
+    } catch (err) {
       // A failed first turn may never have created a resumable session; drop
       // the room so the next turn starts fresh instead of --resume'ing nothing.
       if (firstTurn) this.rooms.delete(input.roomId);
-      throw error instanceof Error ? error : new Error(String(error));
+      throw err;
+    } finally {
+      this.active = null;
     }
 
     room.started = true;
@@ -593,46 +577,15 @@ export class ClaudeRuntime implements AgentRuntime {
     return args;
   }
 
-  private async buildSystemPrompt(input: AgentInput): Promise<string> {
-    const [soulText, intentText] = await Promise.all([
-      readFile(this.agent.soulPath, "utf8"),
-      this.readOptional(this.agent.projectIntentPath),
-    ]);
-    const base = buildSystemPrompt({
+  private buildSystemPrompt(input: AgentInput): Promise<string> {
+    // Claude Code never sees Pi-style skill files, so the active role's skill
+    // text is inlined into the system prompt (handled by buildInlineSystemPrompt).
+    return buildInlineSystemPrompt({
+      workspace: this.workspace,
       agent: this.agent,
-      soulText,
       role: input.activeRole,
-      intentText,
-      contextFiles: this.workspace.contextFiles,
+      toolPointer: gaiaCliPointer(this.agent.tools),
     });
-    // Claude Code never sees Pi-style skill files, so inline the active role's
-    // skill text into the system prompt.
-    const skills = await loadRoleSkillText(this.workspace, input.activeRole);
-    for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
-    const pointer = this.gaiaCliPointer();
-    return [base, skills.text, pointer].filter(Boolean).join("\n\n---\n\n");
-  }
-
-  // Progressive disclosure: a one-line pointer to the `gaia` CLI for whichever
-  // of memory/recall/summon the agent has. `gaia <cmd> --help` is the README;
-  // near-zero context until used.
-  private gaiaCliPointer(): string {
-    const lines: string[] = [];
-    if (this.agent.tools.includes("memory")) {
-      lines.push("- `gaia mem list|read|add|replace|remove` — your persistent memory");
-    }
-    if (this.agent.tools.includes("recall")) {
-      lines.push("- `gaia recall <query>` — full-text search of the room history");
-    }
-    if (this.agent.tools.includes("summon")) {
-      lines.push('- `gaia summon <agent> "<task>"` — run a private worker agent (visible live in the summons drawer)');
-    }
-    if (!lines.length) return "";
-    return [
-      "# GAIA tools (run via Bash)",
-      "You have a ready-to-use `gaia` CLI on your PATH (already wired to this daemon — just run it, no setup, no hunting for the binary):",
-      ...lines,
-    ].join("\n");
   }
 
   // Per-turn env for the subprocess: reads work straight off disk (memory dir,
@@ -647,21 +600,13 @@ export class ClaudeRuntime implements AgentRuntime {
       GAIA_AGENT_ID: this.agent.id,
     };
     // Prepend our `gaia` shim so plain `gaia <cmd>` runs THIS daemon's CLI.
-    if (GAIA_SHIM_DIR) env.PATH = `${GAIA_SHIM_DIR}${delimiter}${process.env.PATH ?? ""}`;
+    const shimDir = ensureGaiaShimDir();
+    if (shimDir) env.PATH = `${shimDir}${delimiter}${process.env.PATH ?? ""}`;
     if (this.harnessHost) {
       env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
       env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId });
     }
     return env;
-  }
-
-  private async readOptional(path: string | undefined): Promise<string> {
-    if (!path) return "";
-    try {
-      return await readFile(path, "utf8");
-    } catch {
-      return "";
-    }
   }
 
   private resolveModelLabel(): string {
