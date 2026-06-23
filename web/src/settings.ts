@@ -616,6 +616,19 @@ function wireHarnessFieldVisibility(root, harnessMeta, hints, parsed) {
     modelSelect.value = currentValue ?? "";
   }
 
+  // Some harnesses (e.g. Claude Code) take their own model aliases rather than a
+  // Pi catalog id. Offer exactly those names and drop any stale value that isn't
+  // valid for the harness (so a leftover deepseek id can't persist under Claude).
+  function buildModelNameFromNames(names) {
+    const modelSelect = root.querySelector('[data-path-key="model.name"]');
+    if (!modelSelect) return;
+    const currentValue = modelSelect.value;
+    modelSelect.replaceChildren();
+    if (allModelHint?.optional !== false) modelSelect.append(h("option", { value: "", text: "(not set)" }));
+    for (const name of names) modelSelect.append(h("option", { value: name, text: name }));
+    modelSelect.value = names.includes(currentValue) ? currentValue : "";
+  }
+
   function findFieldRow(fieldKey) {
     const el = root.querySelector(`[data-path-key="${fieldKey}"]`);
     if (!el) return null;
@@ -654,9 +667,20 @@ function wireHarnessFieldVisibility(root, harnessMeta, hints, parsed) {
       }
     }
 
+    // Harness supplies its own model-name aliases (e.g. Claude): hide provider,
+    // offer exactly those names, and discard any stale value.
+    const providerRow = findFieldRow("model.provider");
+    if (config?.modelNameOptions) {
+      if (providerRow) {
+        providerRow.setAttribute("data-skip-serialize", "1");
+        providerRow.style.display = "none";
+      }
+      buildModelNameFromNames(config.modelNameOptions);
+      return;
+    }
+
     // Handle locked provider: hide model.provider row, rebuild model.name options.
     const providerLocked = config?.lockedProvider;
-    const providerRow = findFieldRow("model.provider");
     if (providerLocked) {
       if (providerRow) {
         providerRow.setAttribute("data-skip-serialize", "1");

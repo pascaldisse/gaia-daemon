@@ -47,6 +47,13 @@ export interface HarnessConfig {
   lockedProvider?: string;
   /** If set, model name options are filtered to these provider IDs. */
   modelProviderIds?: string[];
+  /**
+   * If set, the model name selector offers exactly these values instead of the
+   * Pi model catalog (and the provider selector is hidden). Used by harnesses
+   * whose `--model` takes its own aliases — e.g. Claude Code accepts
+   * "opus"/"sonnet"/"haiku", where "opus" always resolves to the latest Opus.
+   */
+  modelNameOptions?: string[];
   /** Fields to hide in the settings UI when this harness is active (JSON paths relative to file root). */
   hiddenFields?: string[];
 }
@@ -74,8 +81,11 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     id: "claude",
     label: "claude",
     description: "Claude Code CLI (claude -p, subscription auth)",
+    // Claude Code picks the model itself; `--model` takes its own aliases, not
+    // Pi catalog ids. Offer those aliases ("opus" = latest Opus, e.g. 4.8) and
+    // hide the provider. Empty = whatever the Claude Code CLI defaults to.
     lockedProvider: "anthropic",
-    modelProviderIds: ["anthropic"],
+    modelNameOptions: ["opus", "sonnet", "haiku"],
     // For Claude the `tools` array is the real control surface: the harness
     // translates it onto --tools/--allowedTools (see claude-runtime.ts), so it
     // stays visible (unlike codex, which runs a fixed sandbox).
@@ -84,7 +94,7 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
 
 /** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
 export interface HarnessHintsMeta {
-  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; hiddenFields: string[] }>;
+  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; modelNameOptions?: string[]; hiddenFields: string[] }>;
 }
 
 export interface FileHints {
@@ -205,6 +215,7 @@ function harnessHintsMeta(): HarnessHintsMeta {
     configs[config.id] = {
       lockedProvider: config.lockedProvider,
       modelProviderIds: config.modelProviderIds,
+      modelNameOptions: config.modelNameOptions,
       hiddenFields: config.hiddenFields ?? [],
     };
   }
