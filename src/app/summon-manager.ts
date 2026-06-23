@@ -173,6 +173,14 @@ export class SummonManager {
     return this.sessions.get(summonId);
   }
 
+  /** True while any summon for this manager is still running. */
+  hasRunning(): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.status === "running") return true;
+    }
+    return false;
+  }
+
   /** Running and recently completed summons for a room (capped at 50). */
   list(roomId: string): SummonSession[] {
     return [...this.sessions.values()]
