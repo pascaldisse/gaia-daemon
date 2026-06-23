@@ -17,68 +17,6 @@ export function TranscriptView(events, id) {
   );
 }
 
-// Fold a summon's raw AgentEvent stream into the same RoomEvent shape the room
-// transcript renders (a user "task" message + the agent's reply with thinking +
-// tool activity reconstructed). This is the adapter that lets a summon reuse the
-// room renderer instead of a second one.
-export function summonTranscript(session, events) {
-  const task = {
-    id: `${session.id}:task`,
-    author: "user",
-    targets: [session.agentId],
-    text: session.prompt,
-    timestamp: session.startedAt,
-  };
-  const reply = { id: `${session.id}:reply`, author: session.agentId, text: "", timestamp: session.startedAt, _tools: [] };
-  const toolsById = new Map();
-  let thinking = "";
-  for (const event of events ?? []) {
-    switch (event.type) {
-      case "model-info":
-        reply._model = `${event.provider}/${event.modelId}${event.subscription ? " (oauth)" : ""}`;
-        break;
-      case "text-delta":
-        reply.text += event.delta;
-        break;
-      case "thinking-start":
-        reply._thinkingStarted = true;
-        break;
-      case "thinking-delta":
-        reply._thinkingStarted = true;
-        thinking += event.delta;
-        break;
-      case "thinking-end":
-        if (event.content) thinking += (thinking ? "\n" : "") + event.content;
-        break;
-      case "tool-start": {
-        const tool = { id: event.toolCallId ?? `t${reply._tools.length}`, toolName: event.toolName, status: "running", args: event.args };
-        toolsById.set(tool.id, tool);
-        reply._tools.push(tool);
-        break;
-      }
-      case "tool-update": {
-        const tool = toolsById.get(event.toolCallId);
-        if (tool) tool.partialResult = event.partialResult;
-        break;
-      }
-      case "tool-end": {
-        const tool = toolsById.get(event.toolCallId);
-        if (tool) {
-          tool.status = event.isError ? "error" : "complete";
-          tool.result = event.result;
-        } else {
-          reply._tools.push({ id: event.toolCallId ?? `t${reply._tools.length}`, toolName: event.toolName, status: event.isError ? "error" : "complete", result: event.result });
-        }
-        break;
-      }
-    }
-  }
-  if (thinking) reply._thinking = thinking;
-  // Mark the reply as live so the thinking disclosure shows a running spinner.
-  if (session.status === "running") reply._streamTaskId = session.id;
-  return [task, reply];
-}
-
 function Message(event) {
   const isUser = event.author === "user";
   const isAgent = !isUser && event.author !== "system";

@@ -81,7 +81,7 @@ export function installComposerRouting() {
 
 function runningLabel(snapshot) {
   const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
-  const summons = (snapshot?.summons ?? []).filter((summon) => summon.status === "running").length;
+  const summons = (snapshot?.rooms ?? []).filter((room) => room.running).length;
   const queued = (snapshot?.tasks ?? []).filter((task) => task.status === "queued").length;
   const parts = [];
   if (agents.length) parts.push(agents.join(", "));
