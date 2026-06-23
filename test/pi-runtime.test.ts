@@ -117,7 +117,7 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "one", transcript: [] })), [{ type: "text-delta", delta: "ok" }]);
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "two", transcript: [] })), [{ type: "text-delta", delta: "ok" }]);
@@ -140,16 +140,16 @@ test("PiRuntime exposes summon as a custom tool when enabled", async () => {
       customTools = options.customTools as any[];
       return { session: new FakeSession("s1") };
     };
-    const runtime = new PiRuntime(
+    const runtime = new PiRuntime({
       workspace,
       agent,
-      new MemoryStore(),
-      factory,
-      async (params) => {
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      summonCreate: async (params) => {
         calls.push(params);
         return "summon complete";
       },
-    );
+    });
 
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
@@ -178,7 +178,7 @@ test("PiRuntime surfaces provider failures encoded as error-final messages", asy
       };
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
@@ -204,7 +204,7 @@ test("PiRuntime treats aborted-final messages as non-fatal", async () => {
       };
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })), []);
   } finally {
@@ -221,7 +221,7 @@ test("PiRuntime reloads an existing session when prompt changes but skills do no
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], activeRole: { name: "plan", prompt: "A", skills: [], diagnostics: [] } }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [], activeRole: { name: "plan", prompt: "B", skills: [], diagnostics: [] } }));
@@ -241,7 +241,7 @@ test("PiRuntime reports the session's actual model as a model-info event", async
       session.model = { provider: "fake-provider", id: "fake-model" };
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     assert.deepEqual(events[0], { type: "model-info", provider: "fake-provider", modelId: "fake-model", subscription: false });
@@ -260,7 +260,7 @@ test("PiRuntime applies a per-turn thinking override and restores the base level
       created = new FakeSession("s1");
       return { session: created };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     // Voice turn forces thinking off.
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], channel: "voice", thinking: "off" }));
@@ -297,7 +297,7 @@ test("PiRuntime recreates a session when active role skill paths change", async 
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime(workspace, agent, new MemoryStore(), factory);
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], activeRole: { name: "a", prompt: "A", skills: ["a"], diagnostics: [] } }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [], activeRole: { name: "b", prompt: "B", skills: ["b"], diagnostics: [] } }));

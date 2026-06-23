@@ -20,29 +20,19 @@ export function createAgentRuntime(options: {
   harnessHost?: HarnessHost;
 }): AgentRuntime {
   const harness: AgentHarness = options.agent.harness ?? options.workspace.config.harness ?? "pi";
+  const base = {
+    workspace: options.workspace,
+    agent: options.agent,
+    memoryStore: options.memoryStore,
+    summonCreate: options.summonCreate,
+  };
   switch (harness) {
     case "pi":
-      return new PiRuntime(options.workspace, options.agent, options.memoryStore, undefined, options.summonCreate);
+      return new PiRuntime(base);
     case "codex":
-      return new CodexRuntime(
-        options.workspace,
-        options.agent,
-        options.memoryStore,
-        undefined,
-        options.summonCreate,
-        undefined,
-        options.harnessHost,
-      );
+      return new CodexRuntime({ ...base, harnessHost: options.harnessHost });
     case "claude":
-      return new ClaudeRuntime(
-        options.workspace,
-        options.agent,
-        options.memoryStore,
-        undefined,
-        options.summonCreate,
-        undefined,
-        options.harnessHost,
-      );
+      return new ClaudeRuntime({ ...base, harnessHost: options.harnessHost });
     default:
       throw new Error(`Unsupported harness: ${harness}`);
   }

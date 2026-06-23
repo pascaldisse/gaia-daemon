@@ -1,7 +1,23 @@
 import type { AgentDefinition } from "../agents/types.js";
+import type { MemoryStore } from "../memory/memory-store.js";
 import type { RoomEvent } from "../room/transcript.js";
 import type { ResolvedRole } from "../roles/roles.js";
+import type { SummonCreate } from "../tools/summon-tool.js";
+import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
+
+/**
+ * Construction inputs shared by every runtime. Each harness extends this with
+ * its own injectable factory (sessionFactory / clientFactory / processFactory)
+ * and, for the subprocess harnesses, the daemon bridge — so construction is a
+ * named-field object, not a positional list with `undefined` padding.
+ */
+export interface BaseRuntimeOptions {
+  workspace: Workspace;
+  agent: AgentDefinition;
+  memoryStore: MemoryStore;
+  summonCreate?: SummonCreate;
+}
 
 export interface AgentInput {
   roomId: string;

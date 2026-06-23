@@ -191,7 +191,7 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("Hello"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     assert.equal(events.length, 2);
@@ -210,7 +210,7 @@ test("ClaudeRuntime reports subscription:false when an API key is the source", a
     const fake = new FakeClaude();
     fake.script([initMsg("claude-opus-4-8", "ANTHROPIC_API_KEY"), textDelta("hi"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const info = events.find((e) => e.type === "model-info");
@@ -236,7 +236,7 @@ test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () 
       resultSuccess(),
     ]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const relevant = events.filter((e) => e.type !== "model-info");
 
@@ -271,7 +271,7 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
       resultSuccess(),
     ]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "read", transcript: [] }));
     const relevant = events.filter((e) => e.type !== "model-info");
 
@@ -290,7 +290,7 @@ test("ClaudeRuntime rejects on an error result", async () => {
     const fake = new FakeClaude();
     fake.script([initMsg(), { type: "result", subtype: "error_during_execution", is_error: true, result: "rate limit exceeded" }]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /rate limit exceeded/,
@@ -309,7 +309,7 @@ test("ClaudeRuntime reports a clear error when the claude CLI is missing", async
     enoent.code = "ENOENT";
     fake.scriptSpawnError(enoent);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /Claude Code is unavailable: the `claude` CLI was not found in PATH\./,
@@ -327,7 +327,7 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
     fake.script([initMsg(), textDelta("one"), resultSuccess()]);
     fake.script([initMsg(), textDelta("two"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
 
@@ -362,7 +362,7 @@ test("ClaudeRuntime passes --permission-mode from the agent config (plan mode as
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
     const planAgent = { ...agent, permissionMode: "plan" as const };
-    const runtime = new ClaudeRuntime(workspace, planAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: planAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -380,7 +380,7 @@ test("ClaudeRuntime omits --permission-mode when unset and passes empty --tools 
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
     const bareAgent = { ...agent, tools: [] };
-    const runtime = new ClaudeRuntime(workspace, bareAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -403,7 +403,7 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
     fake.script([initMsg(), { type: "result", subtype: "error_during_execution", is_error: true, result: "boom" }]);
     fake.script([initMsg(), textDelta("C"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "a", message: "x", transcript: [] }));
     await collect(runtime.send({ roomId: "b", message: "x", transcript: [] }));
     await assert.rejects(() => collect(runtime.send({ roomId: "c", message: "x", transcript: [] })), /boom/);
@@ -433,7 +433,7 @@ test("ClaudeRuntime injects memory/room env for the gaia CLI and a daemon token 
       baseUrl: "http://127.0.0.1:9999",
       mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
     };
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory, host);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory, harnessHost: host });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const env = fake.calls[0].env;
@@ -455,7 +455,7 @@ test("ClaudeRuntime omits daemon env when no host is present but still sets read
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const env = fake.calls[0].env;
@@ -474,7 +474,7 @@ test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/r
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -494,7 +494,7 @@ test("ClaudeRuntime adds no gaia pointer when the agent has no gaia tools", asyn
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
     const bareAgent = { ...agent, tools: ["read"] };
-    const runtime = new ClaudeRuntime(workspace, bareAgent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -513,7 +513,7 @@ test("ClaudeRuntime abort kills the active process", async () => {
     // Open turn: emits init but never sends a result, so send() hangs.
     fake.scriptOpen([initMsg()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const sendPromise = collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     await new Promise((r) => setTimeout(r, 20));
@@ -535,7 +535,7 @@ test("ClaudeRuntime modelLabel reports the configured model before the first tur
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime(workspace, agent, new MemoryStore(), undefined, undefined, fake.factory);
+    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
