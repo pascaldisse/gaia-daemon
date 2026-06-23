@@ -121,6 +121,13 @@ export interface VoiceCallInfo {
 export interface GaiaControllerOptions {
   workspaceId: string;
   workspace: Workspace;
+  // The room this controller is bound to. Defaults to the workspace's
+  // configured room; the server passes an explicit id so it can hold one
+  // long-lived controller per room (parent rooms and summon sub-rooms alike).
+  roomId?: string;
+  // Workspace-scoped memory store, shared by every room controller in the
+  // workspace. Omitted by tests/standalone, which get a private store.
+  memoryStore?: MemoryStore;
   runtimeFactory?: (agent: AgentDefinition) => AgentRuntime;
   // Host-provided thinking setter; the web server scopes changes to an active
   // voice call before falling back to persistence. Returns feedback text.
@@ -149,7 +156,11 @@ const RUNTIME_DETAILS_LIMIT = 50;
 
 export class GaiaController {
   private readonly room: Room;
-  private readonly memoryStore = new MemoryStore();
+  // Workspace-scoped, shared across that workspace's room controllers so the
+  // daemon stays the single writer for an agent's memory even when several
+  // rooms (and their summons) run at once. Defaults to a private store when the
+  // host (tests, standalone) does not supply one.
+  private readonly memoryStore: MemoryStore;
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly listeners = new Set<(event: GaiaUiEvent) => void>();
   private roomState: RoomState = defaultRoomState();
@@ -162,7 +173,8 @@ export class GaiaController {
   private readonly _summonManager?: SummonManager;
 
   constructor(private readonly options: GaiaControllerOptions) {
-    this.room = new Room(options.workspace);
+    this.room = new Room(options.workspace, options.roomId);
+    this.memoryStore = options.memoryStore ?? new MemoryStore();
 
     // SummonManager is created first so the summon tool factory is available
     // when constructing agent runtimes below.

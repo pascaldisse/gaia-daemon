@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { EditableFileRegistry, type EditableFileContent, type EditableFileDescriptor } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
 import { HarnessBridge } from "../app/harness-bridge.js";
-import type { MemoryAction } from "../memory/memory-store.js";
+import { MemoryStore, type MemoryAction } from "../memory/memory-store.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
   classifyVoiceTurn,
@@ -222,6 +222,9 @@ function devReloadSnippet(): string {
 export class GaiaWebServer {
   private readonly registry = new WorkspaceRegistry();
   private readonly controllers = new Map<string, GaiaController>();
+  // One memory store per workspace, shared across that workspace's room
+  // controllers so the daemon stays the single writer for agent memory.
+  private readonly memoryStores = new Map<string, MemoryStore>();
   private readonly clients = new Set<Client>();
   private readonly devClients = new Set<DevClient>();
   private readonly devWatchers: FSWatcher[] = [];
@@ -724,6 +727,7 @@ export class GaiaWebServer {
     const controller = new GaiaController({
       workspaceId,
       workspace,
+      memoryStore: this.memoryStoreFor(workspaceId),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.harnessBridge ? (opts) => this.harnessBridge!.hostFor(workspaceId, opts) : undefined,
     });
@@ -731,6 +735,17 @@ export class GaiaWebServer {
     await controller.init();
     this.controllers.set(workspaceId, controller);
     return controller;
+  }
+
+  // One memory store per workspace, created lazily and shared by every room
+  // controller in that workspace (the daemon single-writer invariant).
+  private memoryStoreFor(workspaceId: string): MemoryStore {
+    let store = this.memoryStores.get(workspaceId);
+    if (!store) {
+      store = new MemoryStore();
+      this.memoryStores.set(workspaceId, store);
+    }
+    return store;
   }
 
   private async selectWorkspaceRoom(workspaceId: string, roomId: string): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null }> {
