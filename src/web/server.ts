@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { EditableFileRegistry, type EditableFileContent, type EditableFileDescriptor } from "../app/editable-files.js";
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
+import { SummonCoordinator } from "../app/summon-coordinator.js";
 import { HarnessBridge } from "../app/harness-bridge.js";
 import { MemoryStore, type MemoryAction } from "../memory/memory-store.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
@@ -240,6 +241,9 @@ export class GaiaWebServer {
   // One memory store per workspace, shared across that workspace's room
   // controllers so the daemon stays the single writer for agent memory.
   private readonly memoryStores = new Map<string, MemoryStore>();
+  // One summon coordinator per workspace: runs each summon as a child room
+  // through its own controller, and tracks running summons for the cap/cancel.
+  private readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly clients = new Set<Client>();
   private readonly devClients = new Set<DevClient>();
   private readonly devWatchers: FSWatcher[] = [];
@@ -480,59 +484,26 @@ export class GaiaWebServer {
       return;
     }
 
+    // Summons are child rooms now: create one here, then watch/steer/cancel it
+    // through the ordinary room endpoints by selecting it in the rooms tree.
     const summonsMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons$/);
-    if (summonsMatch) {
-      const roomId = decodeURIComponent(summonsMatch[2] ?? "");
-      const controller = await this.controllerFor(decodeURIComponent(summonsMatch[1] ?? ""), roomId);
-      const manager = controller.summonManager;
-      if (!manager) {
-        json(response, 501, { error: "Summon system is not available." });
+    if (request.method === "POST" && summonsMatch) {
+      const workspaceId = decodeURIComponent(summonsMatch[1] ?? "");
+      const parentRoomId = decodeURIComponent(summonsMatch[2] ?? "");
+      const body = await parseBody(request);
+      const agentId = stringField(body, "agentId") ?? stringField(body, "agent");
+      const taskText = stringField(body, "task");
+      if (!agentId || !taskText?.trim()) {
+        json(response, 400, { error: "Missing agentId or task" });
         return;
       }
-
-      if (request.method === "GET") {
-        json(response, 200, { summons: await manager.listStored(roomId) });
-        return;
+      try {
+        const coordinator = await this.coordinatorFor(workspaceId);
+        const childRoomId = await coordinator.summon(parentRoomId, agentId, taskText.trim());
+        json(response, 202, { roomId: childRoomId });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
-      if (request.method === "POST") {
-        const body = await parseBody(request);
-        const agentId = stringField(body, "agentId") ?? stringField(body, "agent");
-        const taskText = stringField(body, "task");
-        if (!agentId || !taskText?.trim()) {
-          json(response, 400, { error: "Missing agentId or task" });
-          return;
-        }
-        try {
-          json(response, 202, { session: await manager.create(roomId, agentId, taskText.trim()) });
-        } catch (error) {
-          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-        }
-        return;
-      }
-    }
-
-    const summonMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)$/);
-    if (request.method === "GET" && summonMatch) {
-      const roomId = decodeURIComponent(summonMatch[2] ?? "");
-      const controller = await this.controllerFor(decodeURIComponent(summonMatch[1] ?? ""), roomId);
-      const details = await controller.summonManager?.details(roomId, decodeURIComponent(summonMatch[3] ?? ""));
-      if (!details) {
-        json(response, 404, { error: "Summon not found" });
-        return;
-      }
-      json(response, 200, details);
-      return;
-    }
-
-    const summonCancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)\/cancel$/);
-    if (request.method === "POST" && summonCancelMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(summonCancelMatch[1] ?? ""), decodeURIComponent(summonCancelMatch[2] ?? ""));
-      const session = await controller.summonManager?.cancel(decodeURIComponent(summonCancelMatch[3] ?? ""));
-      if (!session) {
-        json(response, 404, { error: "Running summon not found" });
-        return;
-      }
-      json(response, 202, { session });
       return;
     }
 
@@ -734,6 +705,7 @@ export class GaiaWebServer {
       workspace,
       roomId: resolvedRoom,
       memoryStore: this.memoryStoreFor(workspaceId),
+      summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.harnessBridge ? (opts) => this.harnessBridge!.hostFor(workspaceId, opts) : undefined,
     });
@@ -778,6 +750,34 @@ export class GaiaWebServer {
       this.memoryStores.set(workspaceId, store);
     }
     return store;
+  }
+
+  // One summon coordinator per workspace, persistent so it keeps tracking
+  // running summons across room switches. Runs each summon as a child room
+  // through that room's own controller (controllerFor).
+  private summonCoordinatorFor(workspaceId: string, workspace: Workspace, workspacePath: string): SummonCoordinator {
+    let coordinator = this.summonCoordinators.get(workspaceId);
+    if (!coordinator) {
+      coordinator = new SummonCoordinator(
+        workspace,
+        workspacePath,
+        (roomId) => this.controllerFor(workspaceId, roomId),
+        workspace.config.maxSummonsPerRoom ?? 8,
+      );
+      this.summonCoordinators.set(workspaceId, coordinator);
+    }
+    return coordinator;
+  }
+
+  // Resolve a workspace's summon coordinator, loading the workspace if no room
+  // controller has been created yet.
+  private async coordinatorFor(workspaceId: string): Promise<SummonCoordinator> {
+    const existing = this.summonCoordinators.get(workspaceId);
+    if (existing) return existing;
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    const workspace = await loadWorkspace(record.path);
+    return this.summonCoordinatorFor(workspaceId, workspace, record.path);
   }
 
   private async selectWorkspaceRoom(workspaceId: string, roomId: string): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null }> {

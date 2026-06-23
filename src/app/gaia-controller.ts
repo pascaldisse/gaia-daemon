@@ -6,7 +6,7 @@ import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
-import { defaultRoomState, roomStatePath, writeRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
+import { defaultRoomState, readRoomState, roomStatePath, writeRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
@@ -16,8 +16,7 @@ import type { Workspace } from "../workspace/types.js";
 import type { HarnessHost } from "./harness-bridge.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
-import { SummonManager } from "./summon-manager.js";
-import type { SummonEvent, SummonSession } from "../room/summons.js";
+import type { SummonHost } from "./summon-coordinator.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import { runAgentTurn } from "./turn-runner.js";
 
@@ -57,6 +56,11 @@ export interface RoomSummary {
   id: string;
   path: string;
   isCurrent: boolean;
+  // Set on a summon's child room: the room that spawned it. Drives the nested,
+  // collapsed rooms tree in the sidebar. Absent on top-level rooms.
+  parentRoomId?: string;
+  // True while this room is a summon whose first turn is still streaming.
+  running?: boolean;
 }
 
 export interface GaiaSnapshot {
@@ -75,7 +79,6 @@ export interface GaiaSnapshot {
   commands: typeof SLASH_COMMANDS;
   agents: AgentStatus[];
   tasks: GaiaTask[];
-  summons: SummonSession[];
   thinkingLevels: string[];
 }
 
@@ -94,9 +97,6 @@ export type GaiaUiEvent =
   | { type: "task-end"; workspaceId: string; roomId: string; task: GaiaTask }
   | { type: "task-error"; workspaceId: string; roomId: string; task: GaiaTask; error: string }
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
-  | { type: "summon-start"; workspaceId: string; roomId: string; session: SummonSession }
-  | { type: "summon-event"; workspaceId: string; roomId: string; summonId: string; agentId: string; event: SummonEvent }
-  | { type: "summon-end"; workspaceId: string; roomId: string; session: SummonSession }
   | {
       type: "voice-status";
       workspaceId: string;
@@ -132,10 +132,13 @@ export interface GaiaControllerOptions {
   // Host-provided thinking setter; the web server scopes changes to an active
   // voice call before falling back to persistence. Returns feedback text.
   setThinking?: (agentId: string, level: string) => Promise<string>;
-  // Daemon bridge for the Claude harness's memory/recall/summon CLI. A factory
-  // so the controller can request a no-summon host for summoned agents. Absent
-  // in tests and headless contexts; the Claude harness then has no write path.
+  // Daemon bridge for the Claude harness's memory/recall/summon CLI. Absent in
+  // tests and headless contexts; the Claude harness then has no write path.
   harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
+  // Server-owned summon coordinator. A summon runs as a child room through its
+  // own controller, so this is just the cross-room handle the controller can't
+  // hold itself. Absent in tests/standalone (then /summon is unavailable).
+  summonHost?: SummonHost;
 }
 
 export interface SendMessageOptions {
@@ -170,30 +173,17 @@ export class GaiaController {
   private pending: Array<{ task: GaiaTask; text: string; command: ReturnType<typeof parseCommand>; options: SendMessageOptions }> = [];
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
-  private readonly _summonManager?: SummonManager;
 
   constructor(private readonly options: GaiaControllerOptions) {
     this.room = new Room(options.workspace, options.roomId);
     this.memoryStore = options.memoryStore ?? new MemoryStore();
 
-    // SummonManager is created first so the summon tool factory is available
-    // when constructing agent runtimes below.
-    this._summonManager = options.runtimeFactory
-      ? undefined
-      : new SummonManager(
-          options.workspaceId,
-          options.workspace,
-          // Summoned agents get the daemon bridge too (so a summoned Claude
-          // agent can use memory/recall) but with a no-summon token, so they
-          // cannot recursively summon.
-          (agent) => createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, harnessHost: options.harnessHost?.({ allowSummon: false }) }),
-          (event) => this.emit(event),
-          this.memoryStore,
-          { maxRunningPerRoom: options.workspace.config.maxSummonsPerRoom },
-        );
-
-    const summonCreate: SummonCreate | undefined = this._summonManager
-      ? (params) => this.runSummonAndWait(params)
+    // A summon runs as a child room: the Pi summon tool just asks the coordinator
+    // to run the worker in its own room and hands back the final reply. Every
+    // controller can summon (including summoned ones), so nesting is recursive.
+    const summonHost = this.options.summonHost;
+    const summonCreate: SummonCreate | undefined = summonHost
+      ? (params) => summonHost.summonAndWait(params.roomId, params.agentId, params.task)
       : undefined;
 
     this.runtimes = Object.fromEntries(
@@ -204,8 +194,6 @@ export class GaiaController {
           : createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, summonCreate, harnessHost: options.harnessHost?.({ allowSummon: true }) }),
       ]),
     );
-    // When a test injects a custom runtimeFactory, SummonManager stays absent
-    // so tests that only care about room turns don't get side effects.
   }
 
   get workspace(): Workspace {
@@ -228,15 +216,11 @@ export class GaiaController {
   // keys controllers per room and evicts idle ones; this guards a controller
   // from being torn down (and its background work killed) while it is live.
   get isBusy(): boolean {
-    return Boolean(this.activeTask) || Boolean(this._summonManager?.hasRunning());
+    return Boolean(this.activeTask) || Boolean(this.options.summonHost?.runningChildren(this.room.id).length);
   }
 
   get activeTaskId(): string | undefined {
     return this.activeTask?.id;
-  }
-
-  get summonManager(): SummonManager | undefined {
-    return this._summonManager;
   }
 
   async init(): Promise<void> {
@@ -254,7 +238,6 @@ export class GaiaController {
   }
 
   dispose(): void {
-    this._summonManager?.dispose();
     for (const runtime of Object.values(this.runtimes)) runtime.dispose();
     this.listeners.clear();
   }
@@ -278,7 +261,6 @@ export class GaiaController {
       commands: SLASH_COMMANDS,
       agents: await this.agentStatuses(),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.pending.map((item) => item.task)],
-      summons: (await this._summonManager?.listStored(this.room.id)) ?? [],
       thinkingLevels: sdkThinkingLevels(),
     };
   }
@@ -287,14 +269,25 @@ export class GaiaController {
     const fallback = [{ id: this.room.id, path: join(this.workspace.roomsDir, this.room.id), isCurrent: true }];
     if (!existsSync(this.workspace.roomsDir)) return fallback;
     const entries = await readdir(this.workspace.roomsDir, { withFileTypes: true });
-    const rooms = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        id: entry.name,
-        path: join(this.workspace.roomsDir, entry.name),
-        isCurrent: entry.name === this.room.id,
-      }))
-      .sort((a, b) => a.id.localeCompare(b.id));
+    // A summon whose first turn is still streaming, so the tree can flag it live.
+    const running = new Set(this.options.summonHost?.runningChildren().map((child) => child.roomId) ?? []);
+    const rooms = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          // parentRoomId links a summon's child room to its spawner; read from
+          // the room's own state so the sidebar can nest it under its parent.
+          const state = await readRoomState(roomStatePath(this.workspace.roomsDir, entry.name));
+          return {
+            id: entry.name,
+            path: join(this.workspace.roomsDir, entry.name),
+            isCurrent: entry.name === this.room.id,
+            ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
+            ...(running.has(entry.name) ? { running: true } : {}),
+          };
+        }),
+    );
+    rooms.sort((a, b) => a.id.localeCompare(b.id));
     return rooms.length > 0 ? rooms : fallback;
   }
 
@@ -751,12 +744,23 @@ export class GaiaController {
   }
 
   async runSummonCommand(agentId: string | undefined, task: string | undefined): Promise<string> {
-    if (!this._summonManager) return "Summon system is not available.";
+    if (!this.options.summonHost) return "Summon system is not available.";
     if (!agentId || !task) return "Usage: /summon <agent> <task>";
     const agent = this.workspace.agents[agentId];
     if (!agent) return this.unknownAgentMessage(agentId);
-    const session = await this._summonManager.create(this.room.id, agent.id, task);
-    return `Summoned @${session.agentId} (${session.id}): ${session.prompt}`;
+    const childRoomId = await this.options.summonHost.summon(this.room.id, agent.id, task);
+    return `Summoned @${agent.id} in room '${childRoomId}'. Open it from the rooms list (under this room) to watch or steer.`;
+  }
+
+  /** The most recent reply text from an agent in this room (for summon results). */
+  async latestReplyFrom(agentId: string): Promise<string> {
+    await this.init();
+    const events = await this.room.recentEvents();
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event.author === agentId && "text" in event) return event.text;
+    }
+    return "";
   }
 
   /**
@@ -777,21 +781,10 @@ export class GaiaController {
 
   /** Summon for a harness subprocess (the `gaia summon` CLI): create and wait. */
   async summonAndWait(roomId: string, agentId: string, task: string): Promise<string> {
-    if (!this._summonManager) throw new Error("Summon system is not available.");
+    if (!this.options.summonHost) throw new Error("Summon system is not available.");
     const agent = this.workspace.agents[agentId];
     if (!agent) throw new Error(this.unknownAgentMessage(agentId));
-    return this.runSummonAndWait({ roomId, agentId, task });
-  }
-
-  /**
-   * Creates and waits for a summon to complete. Used by the summon Pi tool
-   * (inside an agent turn) so the tool returns the finished result.
-   */
-  private async runSummonAndWait(params: { roomId: string; agentId: string; task: string }): Promise<string> {
-    const sm = this._summonManager!;
-    const session = await sm.create(params.roomId, params.agentId, params.task);
-    const completed = await sm.waitForEnd(session.id, 300_000);
-    return completed?.summary ?? "summon timed out after 5 minutes";
+    return this.options.summonHost.summonAndWait(roomId, agent.id, task);
   }
 
   private unknownAgentMessage(agentId: string): string {
