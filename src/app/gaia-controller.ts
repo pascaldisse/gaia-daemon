@@ -6,7 +6,7 @@ import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
-import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
+import { defaultRoomState, roomStatePath, writeRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
@@ -622,21 +622,28 @@ export class GaiaController {
     return "Cleared room history and reset all agent sessions.";
   }
 
-  // /fork: branch this room into a new sibling room by copying its transcript +
-  // state. The fork appears in the rooms list (next snapshot); selecting it
-  // continues the branch with fresh harness sessions seeded from the copied
-  // transcript.
+  // /fork: branch this room into a new sibling room. Copies the transcript
+  // verbatim and carries role assignments, but RESETS the per-agent cursors so
+  // the branch's first turn replays the whole transcript.
+  //
+  // Why reset, not copy, the cursors: a fork starts with fresh harness sessions
+  // — no Pi session dir, Claude --resume id, or Codex thread is carried, because
+  // none of those can be branched (and replaying the transcript is the one
+  // mechanism that works for every harness). The transcript IS how each agent
+  // rebuilds context on its first turn. Copying the cursors-at-end (as the old
+  // copy-state-verbatim did) pointed every agent past the end of the copied
+  // history, leaving the branch amnesiac. Reset → replay → continuity.
   private async runForkCommand(): Promise<string> {
     const target = this.nextForkId(this.room.id);
     const dstDir = join(this.workspace.roomsDir, target);
     await mkdir(dstDir, { recursive: true });
-    for (const file of ["transcript.jsonl", "state.json"]) {
-      try {
-        await copyFile(join(this.room.dir, file), join(dstDir, file));
-      } catch {
-        // Missing source file (e.g. never-written state) — nothing to copy.
-      }
+    try {
+      await copyFile(join(this.room.dir, "transcript.jsonl"), join(dstDir, "transcript.jsonl"));
+    } catch {
+      // Never-written transcript — nothing to copy; the branch starts empty.
     }
+    const forked: RoomState = { activeRoles: { ...this.roomState.activeRoles }, agentCursors: {}, runtimeDetails: {} };
+    await writeRoomState(roomStatePath(this.workspace.roomsDir, target), forked);
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
   }
