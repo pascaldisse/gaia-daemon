@@ -6,13 +6,12 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
-import { MemoryStore } from "../memory/memory-store.js";
-import type { SummonCreate } from "../tools/summon-tool.js";
+import type { MemoryStore } from "../memory/memory-store.js";
 import type { Workspace } from "../workspace/types.js";
 import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
-import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
+import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Process abstraction (injectable for tests)
@@ -282,8 +281,23 @@ function effortFor(level: string | undefined): string | undefined {
 // ClaudeRuntime
 // ---------------------------------------------------------------------------
 
+// memory/recall/summon reach the daemon via the `gaia` CLI (see
+// buildClaudeToolGrant), not an in-process handle — so there is no summonCreate
+// field; the base option is accepted and ignored.
+export interface ClaudeRuntimeOptions extends BaseRuntimeOptions {
+  /** Injectable process factory for testing. */
+  processFactory?: ClaudeProcessFactory;
+  // Daemon bridge for memory writes / summon (undefined in tests + when the
+  // agent has none of memory/recall/summon enabled).
+  harnessHost?: HarnessHost;
+}
+
 export class ClaudeRuntime implements AgentRuntime {
   readonly capabilities = HARNESS_CAPABILITIES.claude;
+  readonly agent: AgentDefinition;
+  private readonly workspace: Workspace;
+  private readonly memoryStore: MemoryStore;
+  private readonly harnessHost?: HarnessHost;
   private readonly cwd: string;
   private readonly rooms = new Map<string, RoomState>();
   private active: ClaudeProcessHandle | null = null;
@@ -291,24 +305,13 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
 
-  constructor(
-    private readonly workspace: Workspace,
-    readonly agent: AgentDefinition,
-    private readonly memoryStore: MemoryStore,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _unused?: unknown,
-    // memory/recall/summon reach the daemon via the `gaia` CLI (see
-    // buildClaudeToolGrant), not an in-process handle; kept for factory parity.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    private readonly summonCreate?: SummonCreate,
-    // Injectable process factory for testing.
-    processFactory?: ClaudeProcessFactory,
-    // Daemon bridge for memory writes / summon (undefined in tests + when the
-    // agent has none of memory/recall/summon enabled).
-    private readonly harnessHost?: HarnessHost,
-  ) {
-    this.cwd = workspace.rootDir;
-    this.processFactory = processFactory ?? spawnClaudeProcess;
+  constructor(options: ClaudeRuntimeOptions) {
+    this.workspace = options.workspace;
+    this.agent = options.agent;
+    this.memoryStore = options.memoryStore;
+    this.harnessHost = options.harnessHost;
+    this.cwd = options.workspace.rootDir;
+    this.processFactory = options.processFactory ?? spawnClaudeProcess;
     this.configuredModelLabel = this.resolveModelLabel();
   }
 

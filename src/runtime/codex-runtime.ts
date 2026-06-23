@@ -2,13 +2,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
-import { MemoryStore } from "../memory/memory-store.js";
-import type { SummonCreate } from "../tools/summon-tool.js";
+import type { MemoryStore } from "../memory/memory-store.js";
 import type { Workspace } from "../workspace/types.js";
 import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
-import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
+import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Internal JSON‑RPC client abstraction (injectable for tests)
@@ -211,8 +210,21 @@ interface ThreadState {
 // CodexRuntime
 // ---------------------------------------------------------------------------
 
+export interface CodexRuntimeOptions extends BaseRuntimeOptions {
+  /** Injectable client factory for testing. */
+  clientFactory?: CodexClientFactory;
+  // Daemon bridge for the `gaia mem` CLI. The app-server is persistent and
+  // shared across rooms, so only room-independent memory is wired here; recall
+  // and summon are room-specific and stay unavailable under Codex.
+  harnessHost?: HarnessHost;
+}
+
 export class CodexRuntime implements AgentRuntime {
   readonly capabilities = HARNESS_CAPABILITIES.codex;
+  readonly agent: AgentDefinition;
+  private readonly workspace: Workspace;
+  private readonly memoryStore: MemoryStore;
+  private readonly harnessHost?: HarnessHost;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
@@ -222,23 +234,13 @@ export class CodexRuntime implements AgentRuntime {
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
 
-  constructor(
-    private readonly workspace: Workspace,
-    readonly agent: AgentDefinition,
-    private readonly memoryStore: MemoryStore,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _unused?: unknown,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    private readonly summonCreate?: SummonCreate,
-    // Injectable client factory for testing
-    clientFactory?: CodexClientFactory,
-    // Daemon bridge for the `gaia mem` CLI. The app-server is persistent and
-    // shared across rooms, so only room-independent memory is wired here; recall
-    // and summon are room-specific and stay unavailable under Codex.
-    private readonly harnessHost?: HarnessHost,
-  ) {
-    this.cwd = workspace.rootDir;
-    this.clientFactory = clientFactory ?? defaultFactory;
+  constructor(options: CodexRuntimeOptions) {
+    this.workspace = options.workspace;
+    this.agent = options.agent;
+    this.memoryStore = options.memoryStore;
+    this.harnessHost = options.harnessHost;
+    this.cwd = options.workspace.rootDir;
+    this.clientFactory = options.clientFactory ?? defaultFactory;
     this.configuredModelLabel = this.resolveModelLabel();
   }
 

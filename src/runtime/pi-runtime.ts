@@ -20,7 +20,11 @@ import type { Workspace } from "../workspace/types.js";
 import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
-import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
+import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
+
+export interface PiRuntimeOptions extends BaseRuntimeOptions {
+  sessionFactory?: PiRuntimeSessionFactory;
+}
 
 export interface PiSessionLike {
   readonly model?: { provider: string; id: string } | undefined;
@@ -93,22 +97,25 @@ function skillPathsKey(paths: string[]): string {
 
 export class PiRuntime implements AgentRuntime {
   readonly capabilities = HARNESS_CAPABILITIES.pi;
+  readonly agent: AgentDefinition;
+  private readonly workspace: Workspace;
+  private readonly memoryStore: MemoryStore;
+  private readonly sessionFactory?: PiRuntimeSessionFactory;
+  private readonly summonCreate?: SummonCreate;
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
   private readonly sessions = new Map<string, ManagedPiSession>();
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
-
   private readonly cwd: string;
 
-  constructor(
-    private readonly workspace: Workspace,
-    readonly agent: AgentDefinition,
-    private readonly memoryStore: MemoryStore,
-    private readonly sessionFactory?: PiRuntimeSessionFactory,
-    private readonly summonCreate?: SummonCreate,
-  ) {
-    this.cwd = workspace.rootDir;
+  constructor(options: PiRuntimeOptions) {
+    this.workspace = options.workspace;
+    this.agent = options.agent;
+    this.memoryStore = options.memoryStore;
+    this.sessionFactory = options.sessionFactory;
+    this.summonCreate = options.summonCreate;
+    this.cwd = options.workspace.rootDir;
     this.configuredModelLabel = this.resolveModelLabel();
   }
 
