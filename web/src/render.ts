@@ -5,7 +5,7 @@ import { h } from "./dom.ts";
 import { LinkedText, PathText } from "./links.ts";
 import { openAgentSettings, SettingsModal, WorkspacePanel } from "./settings.ts";
 import { state } from "./state.ts";
-import { Transcript } from "./transcript.ts";
+import { Transcript, TranscriptView, summonTranscript } from "./transcript.ts";
 import { toggleCall } from "./voice.ts";
 
 export function setError(error) {
@@ -232,37 +232,13 @@ function SummonDrawer() {
           h("button", { text: "close", onclick: () => ((state.selectedSummonId = null), (state.selectedSummon = null), render()) }),
         ),
       ),
-      h("div", { class: "summon-prompt" }, h("span", { text: "task" }), h("pre", {}, LinkedText(session.prompt))),
-      h(
-        "div",
-        { class: "summon-events" },
-        events.length === 0 ? h("div", { class: "empty", text: "waiting for summon events" }) : events.map(SummonEventView),
-      ),
-      result ? h("div", { class: "summon-result" }, h("h3", { text: "result" }), h("pre", {}, LinkedText(result))) : null,
+      // The summon's subroom reuses the SAME room renderer — its event stream is
+      // folded into the room transcript shape (see summonTranscript). No second
+      // renderer; a summon looks and reads exactly like a room.
+      TranscriptView(summonTranscript(session, events), "summon-transcript"),
+      result && !events.length ? h("div", { class: "summon-result" }, h("h3", { text: "result" }), h("pre", {}, LinkedText(result))) : null,
     ),
   );
-}
-
-function SummonEventView(event) {
-  if (event.type === "text-delta") return h("pre", { class: "summon-text" }, LinkedText(event.delta));
-  if (event.type === "model-info") return h("div", { class: "summon-meta", text: `${event.provider}/${event.modelId}` });
-  if (event.type === "thinking-start") return h("div", { class: "summon-meta", text: "thinking started" });
-  if (event.type === "thinking-delta") return h("pre", { class: "summon-thinking" }, LinkedText(event.delta));
-  if (event.type === "thinking-end") return event.content ? h("pre", { class: "summon-thinking" }, LinkedText(event.content)) : null;
-  if (event.type === "tool-start") return h("div", { class: "summon-tool running", text: `tool ${event.toolName} started` });
-  if (event.type === "tool-update") return h("pre", { class: "summon-tool" }, LinkedText(formatSummonPayload(event.partialResult)));
-  if (event.type === "tool-end") return h("pre", { class: `summon-tool ${event.isError ? "error" : "complete"}` }, LinkedText(formatSummonPayload(event.result)));
-  return null;
-}
-
-function formatSummonPayload(value) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 function truncate(text, max) {
@@ -302,7 +278,7 @@ export function renderTranscriptOnly() {
 // Side panels that own their own scroll position. A full rebuild replaces these
 // nodes, so we snapshot their scrollTop before and restore it after — otherwise
 // the panel snaps to the top on every SSE event (e.g. while a swarm streams).
-const SCROLL_KEEP = [".right", ".sidebar", ".summon-drawer", ".summon-events"];
+const SCROLL_KEEP = [".right", ".sidebar", ".summon-drawer", "#summon-transcript"];
 
 // Full re-renders are coalesced to one per animation frame. Without this, a
 // swarm of summons streaming at once triggers thousands of full-DOM rebuilds
