@@ -7,6 +7,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
+import { loadRoleSkillText } from "../skills/skill-resolver.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -540,8 +541,10 @@ export class CodexRuntime implements AgentRuntime {
       intentText,
       contextFiles: this.workspace.contextFiles,
     });
+    const skills = await loadRoleSkillText(this.workspace, input.activeRole);
+    for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
     const pointer = this.memoryPointer();
-    const baseInstructions = pointer ? `${base}\n\n---\n\n${pointer}` : base;
+    const baseInstructions = [base, skills.text, pointer].filter(Boolean).join("\n\n---\n\n");
 
     const response = (await client.request("thread/start", {
       cwd: this.cwd,

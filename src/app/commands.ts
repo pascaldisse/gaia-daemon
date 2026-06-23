@@ -38,8 +38,14 @@ export function parseCommand(input: string): SlashCommand {
   const command = COMMAND_BY_NAME.get(name);
   if (!command) return { type: "unknown", command: name };
 
-  if (command.type === "roles") return { type: "roles", agent: args[0] };
-  if (command.type === "role") return { type: "role", agent: args[0], role: args[1] };
+  if (command.type === "roles") return { type: "roles", agent: args[0]?.replace(/^@/, "") };
+  if (command.type === "role") {
+    // "/role matriarch" targets the default agent; "/role ari matriarch"
+    // (with or without @) names one explicitly. Mirrors /thinking.
+    const stripped = args.map((arg) => arg.replace(/^@/, ""));
+    if (stripped.length >= 2) return { type: "role", agent: stripped[0], role: stripped[1] };
+    return { type: "role", role: stripped[0] };
+  }
   if (command.type === "summon") {
     const agent = args[0];
     const task = args.slice(1).join(" ");
@@ -58,4 +64,4 @@ export function parseCommand(input: string): SlashCommand {
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map(
   (command) => `  /${command.name.padEnd(8)} ${command.description}`,
-).join("\n")}\n\nRole commands:\n  /roles <agent>       list roles for an agent\n  /role <agent> <role> set a role in this room\n  /role <agent> none   clear a role in this room\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+).join("\n")}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;

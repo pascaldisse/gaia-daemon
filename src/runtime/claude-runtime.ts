@@ -9,6 +9,7 @@ import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
+import { loadRoleSkillText } from "../skills/skill-resolver.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -44,11 +45,16 @@ export type ClaudeProcessFactory = (options: ClaudeProcessOptions) => ClaudeProc
 // ---------------------------------------------------------------------------
 
 function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle {
+  // `detached: true` puts the child in its own process group so abort() can
+  // signal the WHOLE tree (claude + any bash/tool grandchildren) via the
+  // negative-pid group kill below. Without this, SIGTERM hits only the `claude`
+  // parent and leaves its children running — which made agents unstoppable.
   const proc: ChildProcess = spawn("claude", options.args, {
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    detached: true,
   });
 
   let stderr = "";
@@ -92,7 +98,26 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
 
   return {
     kill() {
-      proc.kill("SIGTERM");
+      const pid = proc.pid;
+      if (pid === undefined) return;
+      // Kill the whole process group (negative pid). Escalate to SIGKILL after a
+      // grace period in case claude or a child ignores SIGTERM, so abort is
+      // guaranteed to stop the agent.
+      const signalGroup = (signal: NodeJS.Signals) => {
+        try {
+          process.kill(-pid, signal);
+        } catch {
+          try {
+            proc.kill(signal);
+          } catch {
+            // Already gone.
+          }
+        }
+      };
+      signalGroup("SIGTERM");
+      const grace = setTimeout(() => signalGroup("SIGKILL"), 2000);
+      grace.unref?.();
+      proc.once("exit", () => clearTimeout(grace));
     },
   };
 }
@@ -517,8 +542,12 @@ export class ClaudeRuntime implements AgentRuntime {
       intentText,
       contextFiles: this.workspace.contextFiles,
     });
+    // Claude Code never sees Pi-style skill files, so inline the active role's
+    // skill text into the system prompt.
+    const skills = await loadRoleSkillText(this.workspace, input.activeRole);
+    for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
     const pointer = this.gaiaCliPointer();
-    return pointer ? `${base}\n\n---\n\n${pointer}` : base;
+    return [base, skills.text, pointer].filter(Boolean).join("\n\n---\n\n");
   }
 
   // Progressive disclosure: a one-line pointer to the `gaia` CLI for whichever
