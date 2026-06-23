@@ -5,6 +5,9 @@ export interface RoomState {
   activeRoles: Record<string, string>;
   agentCursors: Record<string, number>;
   runtimeDetails: Record<string, RuntimeMessageDetails>;
+  // Set on a summon's child sub-room: the room that spawned it. Drives the
+  // nested (recursive, collapsed) rooms tree. Absent on top-level rooms.
+  parentRoomId?: string;
 }
 
 export interface RuntimeToolDetails {
@@ -95,6 +98,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
     runtimeDetails: runtimeDetailsRecord(value.runtimeDetails),
+    ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
   };
 }
 
