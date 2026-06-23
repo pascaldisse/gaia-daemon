@@ -17,8 +17,11 @@ import { createTempDir } from "./helpers/temp.ts";
 
 class FakeRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
+  readonly capabilities = { gaiaTools: [], granularTools: true };
 
   constructor(readonly agent: AgentDefinition) {}
+
+  resetRoom(): void {}
 
   async *send() {
     yield { type: "model-info" as const, provider: "fake", modelId: "m1", subscription: false };
@@ -101,9 +104,12 @@ test("limits concurrent running summons per room", async () => {
 
     class SlowRuntime implements AgentRuntime {
       readonly modelLabel = "fake/model";
+      readonly capabilities = { gaiaTools: [], granularTools: true };
       private aborted = false;
 
       constructor(readonly agent: AgentDefinition) {}
+
+      resetRoom(): void {}
 
       async *send() {
         while (!this.aborted) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -156,9 +162,12 @@ test("cancels a running summon", async () => {
 
     class SlowRuntime implements AgentRuntime {
       readonly modelLabel = "fake/model";
+      readonly capabilities = { gaiaTools: [], granularTools: true };
       private aborted = false;
 
       constructor(readonly agent: AgentDefinition) {}
+
+      resetRoom(): void {}
 
       async *send() {
         while (!this.aborted) await new Promise((resolve) => setTimeout(resolve, 10));

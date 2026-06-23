@@ -612,7 +612,7 @@ export class GaiaController {
   // next turn starts from a blank slate. Active role assignments are kept (they
   // are configuration, not conversation).
   private async runClearCommand(): Promise<string> {
-    for (const runtime of Object.values(this.runtimes)) runtime.clearRoom?.(this.room.id);
+    for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.room.id);
     await this.room.clearTranscript();
     this.roomState.agentCursors = {};
     this.roomState.runtimeDetails = {};

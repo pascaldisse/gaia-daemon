@@ -9,8 +9,11 @@ import { createTempDir } from "./helpers/temp.ts";
 
 class FakeRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
+  readonly capabilities = { gaiaTools: [], granularTools: true };
 
   constructor(readonly agent: AgentDefinition) {}
+
+  resetRoom(): void {}
 
   async *send() {
     yield { type: "model-info" as const, provider: "fake", modelId: "model-1", subscription: true };
@@ -30,9 +33,12 @@ class FakeRuntime implements AgentRuntime {
 
 class SlowRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
+  readonly capabilities = { gaiaTools: [], granularTools: true };
   private aborted = false;
 
   constructor(readonly agent: AgentDefinition) {}
+
+  resetRoom(): void {}
 
   async *send() {
     while (!this.aborted) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -48,9 +54,10 @@ class SlowRuntime implements AgentRuntime {
 }
 
 // A runtime that blocks until release() is called, so a test can hold a turn
-// "running" and observe queueing, then let it finish. clearRoom is recorded.
+// "running" and observe queueing, then let it finish. resetRoom is recorded.
 class GatedRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
+  readonly capabilities = { gaiaTools: [], granularTools: true };
   released = false;
   cleared = 0;
 
@@ -73,7 +80,7 @@ class GatedRuntime implements AgentRuntime {
     this.released = true;
   }
 
-  clearRoom(): void {
+  resetRoom(): void {
     this.cleared += 1;
   }
 }

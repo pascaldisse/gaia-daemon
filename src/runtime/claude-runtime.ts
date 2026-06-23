@@ -9,6 +9,7 @@ import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
+import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -282,6 +283,7 @@ function effortFor(level: string | undefined): string | undefined {
 // ---------------------------------------------------------------------------
 
 export class ClaudeRuntime implements AgentRuntime {
+  readonly capabilities = HARNESS_CAPABILITIES.claude;
   private readonly cwd: string;
   private readonly rooms = new Map<string, RoomState>();
   private active: ClaudeProcessHandle | null = null;
@@ -492,7 +494,7 @@ export class ClaudeRuntime implements AgentRuntime {
 
   // Drop this room's session id so the next turn is a fresh --session-id (no
   // --resume), i.e. Claude forgets the prior conversation for /clear.
-  clearRoom(roomId: string): void {
+  resetRoom(roomId: string): void {
     this.rooms.delete(roomId);
   }
 
@@ -584,7 +586,7 @@ export class ClaudeRuntime implements AgentRuntime {
       workspace: this.workspace,
       agent: this.agent,
       role: input.activeRole,
-      toolPointer: gaiaCliPointer(this.agent.tools),
+      toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
     });
   }
 

@@ -5,6 +5,7 @@ import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
+import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -211,6 +212,7 @@ interface ThreadState {
 // ---------------------------------------------------------------------------
 
 export class CodexRuntime implements AgentRuntime {
+  readonly capabilities = HARNESS_CAPABILITIES.codex;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
@@ -450,7 +452,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   // Forget this room's Codex thread so the next turn opens a fresh one (/clear).
-  clearRoom(roomId: string): void {
+  resetRoom(roomId: string): void {
     this.threads.delete(roomId);
   }
 
@@ -509,7 +511,7 @@ export class CodexRuntime implements AgentRuntime {
       workspace: this.workspace,
       agent: this.agent,
       role: input.activeRole,
-      toolPointer: gaiaCliPointer(this.agent.tools, ["memory"]),
+      toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
     });
 
     const response = (await client.request("thread/start", {
