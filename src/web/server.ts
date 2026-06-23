@@ -25,7 +25,7 @@ import { WorkspaceRegistry } from "../app/workspace-registry.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { scaffoldGlobalAgent } from "../agents/scaffold.js";
-import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
+import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, initWorkspace, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 interface WebServerOptions {
@@ -328,10 +328,13 @@ export class GaiaWebServer {
         json(response, 400, { error: "Missing workspace path" });
         return;
       }
-      const record = await this.registry.add(path);
+      let record = await this.registry.add(path);
       if (!record.isInitialized) {
-        json(response, 400, { error: `Missing .gaia workspace. Run gaia init in ${record.path}.`, workspace: record });
-        return;
+        // Adding a workspace through the UI is an explicit "make this a GAIA
+        // workspace" action, so initialize it (the same files `gaia init`
+        // writes) instead of erroring. Re-add to refresh isInitialized.
+        await initWorkspace(record.path);
+        record = await this.registry.add(record.path);
       }
       await this.controllerFor(record.id);
       await this.handleApp(response, record.id);
