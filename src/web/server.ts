@@ -25,7 +25,7 @@ import { WorkspaceRegistry } from "../app/workspace-registry.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { scaffoldGlobalAgent } from "../agents/scaffold.js";
-import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, initWorkspace, loadWorkspace, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
+import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 
 interface WebServerOptions {
@@ -379,6 +379,22 @@ export class GaiaWebServer {
       return;
     }
 
+    const defaultAgentMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/default-agent$/);
+    if (request.method === "POST" && defaultAgentMatch) {
+      const body = await parseBody(request);
+      const agentId = stringField(body, "agentId") ?? stringField(body, "id");
+      if (!agentId?.trim()) {
+        json(response, 400, { error: "Missing agent id" });
+        return;
+      }
+      try {
+        json(response, 200, await this.setWorkspaceDefaultAgent(decodeURIComponent(defaultAgentMatch[1] ?? ""), agentId.trim()));
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     const selectRoomMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/);
     if (request.method === "POST" && selectRoomMatch) {
       try {
@@ -718,6 +734,34 @@ export class GaiaWebServer {
     const controller = await this.controllerFor(workspaceId);
     const snapshot = await controller.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: controller.roomId, snapshot });
+    return {
+      snapshot,
+      workspaceFiles: await this.files.listWorkspace(workspaceId),
+      voice: this.voiceFor(workspaceId),
+    };
+  }
+
+  private async setWorkspaceDefaultAgent(
+    workspaceId: string,
+    agentId: string,
+  ): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    const existing = this.controllers.get(workspaceId);
+    if (existing?.hasActiveTask) throw new Error("Room is busy with an active task; wait for it to finish or cancel it first.");
+    const controller = existing ?? (await this.controllerFor(workspaceId));
+    if (!controller.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
+
+    await setWorkspaceDefaultAgent(record.path, agentId);
+
+    // Rebuild the controller so the cached workspace config (and snapshot's
+    // isDefault flags) reflect the new default.
+    controller.dispose();
+    this.controllers.delete(workspaceId);
+    const rebuilt = await this.controllerFor(workspaceId);
+    const snapshot = await rebuilt.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
     return {
       snapshot,
       workspaceFiles: await this.files.listWorkspace(workspaceId),

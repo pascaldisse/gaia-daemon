@@ -83,6 +83,14 @@ export async function setWorkspaceRoom(cwd: string, roomId: string): Promise<voi
   await writeJsonFile(configPath, config);
 }
 
+export async function setWorkspaceDefaultAgent(cwd: string, agentId: string): Promise<void> {
+  const configPath = workspaceFile(cwd, "config.json");
+  const raw = JSON.parse(await readFile(configPath, "utf8")) as unknown;
+  const config = raw && typeof raw === "object" && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : {};
+  config.defaultAgent = agentId;
+  await writeJsonFile(configPath, config);
+}
+
 export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string; globalAgentsDir: string }> {
   const workspaceDir = workspacePath(cwd);
   const agentsDir = globalAgentsPath();

@@ -78,6 +78,25 @@ export async function selectRoom(workspaceId, roomId) {
   }
 }
 
+export async function setDefaultAgent(agentId) {
+  const snapshot = state.snapshot;
+  if (!snapshot || snapshot.workspace.defaultAgent === agentId) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/default-agent`, {
+      method: "POST",
+      body: JSON.stringify({ agentId }),
+    });
+    state.snapshot = body.snapshot;
+    state.workspaceFiles = body.workspaceFiles ?? [];
+    state.voice = body.voice ?? null;
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    setError("");
+  } catch (error) {
+    setError(error);
+  }
+}
+
 export async function addRoom() {
   const snapshot = state.snapshot;
   if (!snapshot) return;

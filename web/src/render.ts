@@ -1,4 +1,4 @@
-import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.ts";
+import { addRoom, addWorkspace, loadWorkspace, selectRoom, setDefaultAgent } from "./actions.ts";
 import { cancelSummon, fetchSummon } from "./api.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
@@ -119,6 +119,13 @@ function RoomPanel() {
                 .join(" / "),
             }),
           ),
+          h("button", {
+            class: `main-button ${agent.isDefault ? "active" : ""}`,
+            title: agent.isDefault ? `@${agent.id} is the main agent` : `make @${agent.id} the main agent`,
+            disabled: agent.isDefault,
+            onclick: () => void setDefaultAgent(agent.id),
+            text: agent.isDefault ? "★" : "☆",
+          }),
           h("button", {
             class: `call-button ${onCall ? "active" : ""}`,
             title: onCall ? `hang up @${agent.id}` : `start voice call with @${agent.id}`,
