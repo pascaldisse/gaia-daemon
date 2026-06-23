@@ -833,6 +833,21 @@ time {
   text-shadow: 0 0 8px #ff7b72;
 }
 
+.main-button {
+  padding: 0 8px;
+  border: none;
+  border-left: 1px solid rgba(19, 107, 64, 0.8);
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.main-button.active {
+  color: #f2cc60;
+  text-shadow: 0 0 8px #f2cc60;
+  cursor: default;
+}
+
 .status.on-call {
   color: var(--line);
   text-shadow: 0 0 8px var(--line);
