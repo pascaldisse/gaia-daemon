@@ -244,10 +244,19 @@ function ensureGaiaShimDir(): string | undefined {
   if (gaiaShimResolved) return gaiaShimDir;
   gaiaShimResolved = true;
   try {
-    const cliPath = fileURLToPath(new URL("../cli.js", import.meta.url));
+    // The CLI entry is cli.js when built, cli.ts under tsx (dev / no-build);
+    // assuming a built cli.js sibling broke `gaia` whenever the daemon ran via
+    // tsx. Pick whichever exists.
+    const jsPath = fileURLToPath(new URL("../cli.js", import.meta.url));
+    const cliPath = existsSync(jsPath) ? jsPath : fileURLToPath(new URL("../cli.ts", import.meta.url));
     const dir = join(dirname(cliPath), ".bin");
     const shimPath = join(dir, "gaia");
-    const contents = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"\n`;
+    // Re-launch the CLI exactly how THIS daemon was launched: execPath + the
+    // node flags in execArgv (which under tsx carry the TS loader, e.g.
+    // `--import …/tsx/loader.mjs`). So a plain `gaia <cmd>` works in both built
+    // mode (`node cli.js`) and dev/tsx mode (`node --import tsx … cli.ts`).
+    const runner = [process.execPath, ...process.execArgv].map(shellQuote).join(" ");
+    const contents = `#!/bin/sh\nexec ${runner} ${shellQuote(cliPath)} "$@"\n`;
     if (!existsSync(shimPath) || readFileSync(shimPath, "utf8") !== contents) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(shimPath, contents, { mode: 0o755 });
