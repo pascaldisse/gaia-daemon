@@ -1,4 +1,4 @@
-import { addRoom, addWorkspace, loadWorkspace, selectRoom, setDefaultAgent } from "./actions.ts";
+import { addRoom, addWorkspace, loadWorkspace, selectRoom, setAgentRole, setDefaultAgent } from "./actions.ts";
 import { cancelSummon, fetchSummon } from "./api.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
@@ -105,20 +105,33 @@ function RoomPanel() {
       agents.map((agent) => {
         const onCall = state.voice?.agentId === agent.id;
         const connecting = state.voicePendingAgentId === agent.id;
+        const roles = agent.roles ?? [];
         return h(
           "div",
-          { class: `agent-row ${onCall ? "on-call" : ""}` },
+          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" ? "running" : ""} ${agent.activeRole ? "has-role" : ""}` },
           h(
             "button",
             { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
             h("span", { class: `dot ${agent.status}` }),
             h("strong", { text: `${agent.icon} @${agent.id}` }),
             h("small", {
-              text: [agent.isDefault ? "default" : "", agent.activeRole ? `role:${agent.activeRole}` : "", agent.voice ? `voice:${agent.voice}` : "", agent.modelLabel]
+              text: [agent.isDefault ? "main" : "", agent.status === "running" ? "running" : "", agent.voice ? `voice:${agent.voice}` : "", agent.modelLabel]
                 .filter(Boolean)
                 .join(" / "),
             }),
           ),
+          roles.length > 0
+            ? h(
+                "select",
+                {
+                  class: `role-select ${agent.activeRole ? "active" : ""}`,
+                  title: `role for @${agent.id}`,
+                  onchange: (event) => void setAgentRole(agent.id, event.target.value),
+                },
+                h("option", { value: "none", text: "— role —", selected: !agent.activeRole }),
+                roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === agent.activeRole })),
+              )
+            : null,
           h("button", {
             class: `main-button ${agent.isDefault ? "active" : ""}`,
             title: agent.isDefault ? `@${agent.id} is the main agent` : `make @${agent.id} the main agent`,

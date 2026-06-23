@@ -36,3 +36,13 @@ export const state = {
 export function activeTask(snapshot = state.snapshot) {
   return (snapshot?.tasks ?? []).find((task) => task.status === "running") ?? null;
 }
+
+export function runningSummons(snapshot = state.snapshot) {
+  return (snapshot?.summons ?? []).filter((summon) => summon.status === "running");
+}
+
+// "Busy" = a room turn is running OR any summoned worker is still running.
+// Esc / Ctrl+C / the stop button all act on this so nothing is unstoppable.
+export function isBusy(snapshot = state.snapshot) {
+  return Boolean(activeTask(snapshot)) || runningSummons(snapshot).length > 0;
+}

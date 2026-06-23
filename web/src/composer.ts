@@ -1,8 +1,8 @@
-import { cancelActiveTask, sendMessage } from "./actions.ts";
+import { sendMessage, stopAll } from "./actions.ts";
 import { api } from "./api.ts";
 import { h } from "./dom.ts";
 import { render, setError } from "./render.ts";
-import { activeTask, state } from "./state.ts";
+import { isBusy, state } from "./state.ts";
 import { endCall, setMicMuted } from "./voice.ts";
 
 export function isEditableElement(element) {
@@ -42,9 +42,16 @@ export function installComposerRouting() {
   window.addEventListener(
     "keydown",
     (event) => {
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && activeTask()) {
+      // Panic stop: Ctrl+C or Esc aborts the running turn AND all summoned
+      // workers, from anywhere in the app, for every agent/harness.
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {
         event.preventDefault();
-        void cancelActiveTask();
+        void stopAll();
+        return;
+      }
+      if (event.key === "Escape" && isBusy()) {
+        event.preventDefault();
+        void stopAll();
         return;
       }
 
@@ -70,6 +77,15 @@ export function installComposerRouting() {
     },
     true,
   );
+}
+
+function runningLabel(snapshot) {
+  const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
+  const summons = (snapshot?.summons ?? []).filter((summon) => summon.status === "running").length;
+  const parts = [];
+  if (agents.length) parts.push(agents.join(", "));
+  if (summons) parts.push(`${summons} summon${summons === 1 ? "" : "s"}`);
+  return parts.length ? `running: ${parts.join(" + ")}` : "running…";
 }
 
 function composerTargets(snapshot, text) {
@@ -175,7 +191,7 @@ function ThinkingControl(snapshot, text) {
 
 export function Composer() {
   const snapshot = state.snapshot;
-  const runningTask = activeTask(snapshot);
+  const busy = isBusy(snapshot);
   const completion = completionFor(state.composerText);
   const textarea = h("textarea", {
     rows: "1",
@@ -203,7 +219,7 @@ export function Composer() {
 
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (runningTask) return;
+        if (busy) return;
         submitComposer();
       }
     },
@@ -216,19 +232,33 @@ export function Composer() {
       class: "composer",
       onsubmit: (event) => {
         event.preventDefault();
-        if (runningTask) {
-          void cancelActiveTask();
+        if (busy) {
+          void stopAll();
           return;
         }
         submitComposer();
       },
     },
     completion && !state.completionHidden ? Autocomplete(completion) : null,
+    busy
+      ? h(
+          "div",
+          { class: "running-banner" },
+          h("span", { class: "running-dot" }),
+          h("span", { class: "running-label", text: runningLabel(snapshot) }),
+          h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
+        )
+      : null,
     h(
       "div",
       { class: "input-shell" },
       textarea,
-      h("button", { class: runningTask ? "send-button cancel" : "send-button", disabled: !snapshot, title: runningTask ? "stop agents" : "send", text: runningTask ? "x" : ">" }),
+      h("button", {
+        class: busy ? "send-button cancel" : "send-button",
+        disabled: !snapshot,
+        title: busy ? "stop all agents (Esc)" : "send",
+        text: busy ? "■" : ">",
+      }),
     ),
     h(
       "div",

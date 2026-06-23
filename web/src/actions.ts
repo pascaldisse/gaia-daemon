@@ -1,8 +1,8 @@
-import { api } from "./api.ts";
+import { api, cancelSummon } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { render, setError } from "./render.ts";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.ts";
-import { activeTask, state } from "./state.ts";
+import { activeTask, runningSummons, state } from "./state.ts";
 
 async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
@@ -97,6 +97,25 @@ export async function setDefaultAgent(agentId) {
   }
 }
 
+export async function setAgentRole(agentId, role) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/role`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, role: role || "none" }),
+    });
+    state.snapshot = body.snapshot;
+    state.workspaceFiles = body.workspaceFiles ?? [];
+    state.voice = body.voice ?? null;
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    setError(body.message && /^Unknown|^Usage/.test(body.message) ? body.message : "");
+  } catch (error) {
+    setError(error);
+  }
+}
+
 export async function addRoom() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
@@ -130,6 +149,23 @@ export async function cancelActiveTask() {
       method: "POST",
       body: JSON.stringify({}),
     });
+  } catch (error) {
+    setError(error);
+  }
+}
+
+// Panic stop: abort the running room turn AND every running summoned worker.
+// Bound to Esc, Ctrl+C, and the stop button so nothing is ever unstoppable.
+export async function stopAll() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const summons = runningSummons(snapshot);
+  try {
+    await Promise.allSettled([
+      ...(activeTask(snapshot) ? [cancelActiveTask()] : []),
+      ...summons.map((summon) => cancelSummon(summon.id)),
+    ]);
+    setError("");
   } catch (error) {
     setError(error);
   }
