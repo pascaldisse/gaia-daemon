@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
 import { gaiaHome } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
+import type { ResolvedRole } from "../roles/roles.js";
 
 export interface ResolvedSkill {
   name: string;
@@ -61,4 +64,38 @@ export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: 
     paths: skills.map((skill) => skill.path),
     diagnostics,
   };
+}
+
+/**
+ * Inline the text of a role's skills for harnesses that can't load skill files
+ * natively. Pi loads skills via the SDK (additionalSkillPaths); the Claude and
+ * Codex harnesses run external CLIs that never see them, so we read each
+ * SKILL.md, strip its frontmatter, and return a block to append to the system
+ * prompt. Without this, a role that references a skill (e.g. matriarch) reaches
+ * those agents as an instruction to use a skill they can't see.
+ */
+export async function loadRoleSkillText(
+  workspace: Pick<Workspace, "dir">,
+  role: ResolvedRole | undefined,
+  home = gaiaHome(),
+): Promise<{ text: string; diagnostics: string[] }> {
+  if (!role || role.skills.length === 0) return { text: "", diagnostics: [] };
+  const resolution = resolveSkillRefs(workspace, role.skills, home);
+  const blocks: string[] = [];
+  for (const skill of resolution.skills) {
+    try {
+      const raw = await readFile(skill.path, "utf8");
+      let body = raw;
+      try {
+        body = parseFrontmatter(raw).body;
+      } catch {
+        // Malformed frontmatter: fall back to the raw file.
+      }
+      blocks.push(`## Skill: ${skill.name}\n\n${body.trim()}`);
+    } catch (error) {
+      resolution.diagnostics.push(`Failed to read skill ${skill.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const text = blocks.length ? `# Active Role Skills\n\n${blocks.join("\n\n")}` : "";
+  return { text, diagnostics: resolution.diagnostics };
 }

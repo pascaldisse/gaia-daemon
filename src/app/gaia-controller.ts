@@ -30,6 +30,7 @@ export interface AgentStatus {
   voice?: string;
   thinking?: string;
   activeRole?: string;
+  roles: string[];
   status: "idle" | "running" | "error";
   isDefault: boolean;
 }
@@ -253,7 +254,7 @@ export class GaiaController {
       },
       rooms: await this.listRooms(),
       commands: SLASH_COMMANDS,
-      agents: this.agentStatuses(),
+      agents: await this.agentStatuses(),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : [])],
       summons: (await this._summonManager?.listStored(this.room.id)) ?? [],
       thinkingLevels: sdkThinkingLevels(),
@@ -375,9 +376,10 @@ export class GaiaController {
 
   async setRole(agentId: string | undefined, role: string | undefined): Promise<string> {
     await this.init();
-    if (!agentId || !role) return "Usage: /role <agent> <role|none>";
-    const agent = this.workspace.agents[agentId];
-    if (!agent) return this.unknownAgentMessage(agentId);
+    if (!role) return "Usage: /role [agent] <role|none>";
+    const targetId = agentId ?? this.workspace.config.defaultAgent;
+    const agent = this.workspace.agents[targetId];
+    if (!agent) return this.unknownAgentMessage(targetId);
 
     if (role === "none") {
       delete this.roomState.activeRoles[agent.id];
@@ -598,19 +600,22 @@ export class GaiaController {
     for (const listener of this.listeners) listener(event);
   }
 
-  private agentStatuses(): AgentStatus[] {
-    return Object.values(this.workspace.agents).map((agent) => ({
-      id: agent.id,
-      displayName: agent.displayName,
-      icon: agent.icon,
-      modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
-      tools: agent.tools,
-      voice: agent.voice,
-      thinking: agent.thinking,
-      activeRole: this.roomState.activeRoles[agent.id],
-      status: this.activeTask?.targets.includes(agent.id) ? "running" : "idle",
-      isDefault: agent.id === this.workspace.config.defaultAgent,
-    }));
+  private async agentStatuses(): Promise<AgentStatus[]> {
+    return Promise.all(
+      Object.values(this.workspace.agents).map(async (agent) => ({
+        id: agent.id,
+        displayName: agent.displayName,
+        icon: agent.icon,
+        modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
+        tools: agent.tools,
+        voice: agent.voice,
+        thinking: agent.thinking,
+        activeRole: this.roomState.activeRoles[agent.id],
+        roles: await listAgentRoles(agent),
+        status: this.activeTask?.targets.includes(agent.id) ? "running" : "idle",
+        isDefault: agent.id === this.workspace.config.defaultAgent,
+      })),
+    );
   }
 
   async runSummonCommand(agentId: string | undefined, task: string | undefined): Promise<string> {

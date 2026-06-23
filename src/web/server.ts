@@ -395,6 +395,23 @@ export class GaiaWebServer {
       return;
     }
 
+    const setRoleMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/role$/);
+    if (request.method === "POST" && setRoleMatch) {
+      const body = await parseBody(request);
+      const agentId = stringField(body, "agentId");
+      const role = stringField(body, "role"); // "none" clears the role
+      if (!agentId?.trim() || !role?.trim()) {
+        json(response, 400, { error: "Missing agentId or role" });
+        return;
+      }
+      try {
+        json(response, 200, await this.setAgentRole(decodeURIComponent(setRoleMatch[1] ?? ""), decodeURIComponent(setRoleMatch[2] ?? ""), agentId.trim(), role.trim()));
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     const selectRoomMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/);
     if (request.method === "POST" && selectRoomMatch) {
       try {
@@ -739,6 +756,20 @@ export class GaiaWebServer {
       workspaceFiles: await this.files.listWorkspace(workspaceId),
       voice: this.voiceFor(workspaceId),
     };
+  }
+
+  private async setAgentRole(
+    workspaceId: string,
+    roomId: string,
+    agentId: string,
+    role: string,
+  ): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null; message: string }> {
+    const controller = await this.controllerFor(workspaceId);
+    if (roomId !== controller.roomId) throw new Error(`Room not loaded: ${roomId}`);
+    const message = await controller.setRole(agentId, role);
+    const snapshot = await controller.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: controller.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId), message };
   }
 
   private async setWorkspaceDefaultAgent(
