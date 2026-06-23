@@ -104,10 +104,13 @@ export function connectEvents() {
   });
   source.addEventListener("summon-event", (event) => {
     const payload = JSON.parse(event.data);
+    // A summon streams one event per token. Only touch the DOM when this
+    // summon's drawer is actually open; otherwise nothing visible changed and a
+    // full render per token would lock the page during a swarm.
     if (state.selectedSummonId === payload.summonId && state.selectedSummon) {
       state.selectedSummon.events = [...(state.selectedSummon.events ?? []), payload.event];
+      render();
     }
-    render();
   });
   source.addEventListener("summon-end", (event) => {
     const payload = JSON.parse(event.data);

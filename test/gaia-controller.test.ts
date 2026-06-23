@@ -47,6 +47,37 @@ class SlowRuntime implements AgentRuntime {
   }
 }
 
+// A runtime that blocks until release() is called, so a test can hold a turn
+// "running" and observe queueing, then let it finish. clearRoom is recorded.
+class GatedRuntime implements AgentRuntime {
+  readonly modelLabel = "fake/model";
+  released = false;
+  cleared = 0;
+
+  constructor(readonly agent: AgentDefinition) {}
+
+  async *send() {
+    while (!this.released) await new Promise((resolve) => setTimeout(resolve, 5));
+    yield { type: "text-delta" as const, delta: `reply from ${this.agent.id}` };
+  }
+
+  release(): void {
+    this.released = true;
+  }
+
+  async abort(): Promise<void> {
+    this.released = true;
+  }
+
+  dispose(): void {
+    this.released = true;
+  }
+
+  clearRoom(): void {
+    this.cleared += 1;
+  }
+}
+
 test("streams a room task through UI-neutral events", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;
@@ -285,6 +316,176 @@ test("cancels an active room task", async () => {
 
     assert.equal(cancelled?.status, "cancelled");
     assert.equal((await controller.getSnapshot()).tasks.at(-1)?.status, "cancelled");
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("queues a message sent while a turn is running, then drains it (steer instead of block)", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const gated = new Map<string, GatedRuntime>();
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => {
+        const runtime = new GatedRuntime(agent);
+        gated.set(agent.id, runtime);
+        return runtime;
+      },
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const first = await controller.sendMessage("first");
+    await waitFor(() => events.some((event) => event.type === "task-start" && event.task.id === first.id));
+
+    // Sending while busy must NOT throw — it queues.
+    const second = await controller.sendMessage("second");
+    assert.equal(second.status, "queued");
+    assert.notEqual(first.id, second.id);
+    assert.ok((await controller.getSnapshot()).tasks.some((task) => task.id === second.id && task.status === "queued"));
+
+    // Release: first finishes, then the queued second drains and runs.
+    for (const runtime of gated.values()) runtime.release();
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === second.id && event.task.status === "complete"));
+
+    assert.equal(first.status, "complete");
+    assert.equal(second.status, "complete");
+    const texts = (await controller.getSnapshot()).room.events.map((event) => event.text);
+    assert.ok(texts.includes("first"));
+    assert.ok(texts.includes("second"));
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("panic stop cancels the active turn AND clears the queued messages", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new GatedRuntime(agent), // never released → stays running
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const first = await controller.sendMessage("first");
+    await waitFor(() => events.some((event) => event.type === "task-start" && event.task.id === first.id));
+    const second = await controller.sendMessage("second");
+    assert.equal(second.status, "queued");
+
+    await controller.cancelActiveTask();
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === first.id && event.task.status === "cancelled"));
+
+    assert.equal(first.status, "cancelled");
+    assert.equal(second.status, "cancelled");
+    // The cleared queue must not have run: the second message was never recorded
+    // and no agent reply was produced.
+    const roomEvents = (await controller.getSnapshot()).room.events;
+    assert.ok(!roomEvents.some((event) => event.text === "second"), "queued message must not run");
+    assert.ok(!roomEvents.some((event) => event.author === "gaia"), "no agent reply after cancel");
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("/clear wipes the transcript and resets every agent's session", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const gated = new Map<string, GatedRuntime>();
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => {
+        const runtime = new GatedRuntime(agent);
+        runtime.released = true; // complete immediately
+        gated.set(agent.id, runtime);
+        return runtime;
+      },
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const task = await controller.sendMessage("remember this");
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === task.id));
+    assert.ok((await controller.getSnapshot()).room.events.length > 0);
+
+    await controller.sendMessage("/clear");
+
+    assert.equal((await controller.getSnapshot()).room.events.length, 0);
+    assert.ok(events.some((event) => event.type === "room-event" && event.event.author === "system" && /Cleared/.test(event.event.text)));
+    assert.ok([...gated.values()].every((runtime) => runtime.cleared > 0), "each runtime's clearRoom was called");
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("/fork copies the room transcript into a new sibling room", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => {
+        const runtime = new GatedRuntime(agent);
+        runtime.released = true;
+        return runtime;
+      },
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const base = controller.roomId;
+    const task = await controller.sendMessage("seed the branch");
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === task.id));
+
+    await controller.sendMessage("/fork");
+
+    const forkId = `${base}-fork`;
+    const forkTranscript = join(workspace.roomsDir, forkId, "transcript.jsonl");
+    const { readFile } = await import("node:fs/promises");
+    const forked = await readFile(forkTranscript, "utf8");
+    assert.match(forked, /seed the branch/);
+    assert.ok((await controller.listRooms()).some((room) => room.id === forkId));
+    assert.ok(events.some((event) => event.type === "room-event" && event.event.author === "system" && new RegExp(forkId).test(event.event.text)));
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;

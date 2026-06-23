@@ -82,10 +82,13 @@ export function installComposerRouting() {
 function runningLabel(snapshot) {
   const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
   const summons = (snapshot?.summons ?? []).filter((summon) => summon.status === "running").length;
+  const queued = (snapshot?.tasks ?? []).filter((task) => task.status === "queued").length;
   const parts = [];
   if (agents.length) parts.push(agents.join(", "));
   if (summons) parts.push(`${summons} summon${summons === 1 ? "" : "s"}`);
-  return parts.length ? `running: ${parts.join(" + ")}` : "running…";
+  let label = parts.length ? `running: ${parts.join(" + ")}` : "running…";
+  if (queued) label += ` · ${queued} queued`;
+  return label;
 }
 
 function composerTargets(snapshot, text) {
@@ -219,7 +222,8 @@ export function Composer() {
 
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (busy) return;
+        // While busy this queues (the server stacks it behind the running turn);
+        // stopping is a separate action (Esc / Ctrl+C / the banner ■).
         submitComposer();
       }
     },
@@ -232,10 +236,6 @@ export function Composer() {
       class: "composer",
       onsubmit: (event) => {
         event.preventDefault();
-        if (busy) {
-          void stopAll();
-          return;
-        }
         submitComposer();
       },
     },
@@ -254,10 +254,10 @@ export function Composer() {
       { class: "input-shell" },
       textarea,
       h("button", {
-        class: busy ? "send-button cancel" : "send-button",
+        class: "send-button",
         disabled: !snapshot,
-        title: busy ? "stop all agents (Esc)" : "send",
-        text: busy ? "■" : ">",
+        title: busy ? "queue message — runs after the current turn (Esc to stop instead)" : "send",
+        text: busy ? "+" : ">",
       }),
     ),
     h(

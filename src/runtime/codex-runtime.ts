@@ -475,6 +475,11 @@ export class CodexRuntime implements AgentRuntime {
     this.initPromise = null;
   }
 
+  // Forget this room's Codex thread so the next turn opens a fresh one (/clear).
+  clearRoom(roomId: string): void {
+    this.threads.delete(roomId);
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------

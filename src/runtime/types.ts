@@ -30,4 +30,9 @@ export interface AgentRuntime {
   send(input: AgentInput): AsyncIterable<AgentEvent>;
   abort(): Promise<void>;
   dispose(): void;
+  /**
+   * Drop the in-memory session for a single room so the next turn starts fresh
+   * (backs `/clear`). Optional: a runtime with no per-room session can omit it.
+   */
+  clearRoom?(roomId: string): void;
 }

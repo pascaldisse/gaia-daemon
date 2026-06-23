@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { readJsonFile, writeJsonFile } from "../lib/fs.js";
@@ -40,7 +40,7 @@ export interface GaiaTask {
   roomId: string;
   text: string;
   targets: string[];
-  status: "running" | "complete" | "error" | "cancelled";
+  status: "queued" | "running" | "complete" | "error" | "cancelled";
   startedAt: string;
   endedAt?: string;
   error?: string;
@@ -154,6 +154,9 @@ export class GaiaController {
   private readonly listeners = new Set<(event: GaiaUiEvent) => void>();
   private roomState: RoomState = defaultRoomState();
   private activeTask: GaiaTask | undefined;
+  // Messages sent while a turn is running queue here and drain on settle, so the
+  // user can steer/stack instead of hitting "room already has an active task".
+  private pending: Array<{ task: GaiaTask; text: string; command: ReturnType<typeof parseCommand>; options: SendMessageOptions }> = [];
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
   private readonly _summonManager?: SummonManager;
@@ -255,7 +258,7 @@ export class GaiaController {
       rooms: await this.listRooms(),
       commands: SLASH_COMMANDS,
       agents: await this.agentStatuses(),
-      tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : [])],
+      tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.pending.map((item) => item.task)],
       summons: (await this._summonManager?.listStored(this.room.id)) ?? [],
       thinkingLevels: sdkThinkingLevels(),
     };
@@ -278,28 +281,73 @@ export class GaiaController {
 
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<GaiaTask> {
     await this.init();
-    if (this.activeTask) throw new Error(`Room already has an active task: ${this.activeTask.id}`);
 
     const command = parseCommand(text);
-    if (command.type !== "message") {
-      return this.runCommandTask(text, command);
-    }
-
-    const targets = options.targets ?? this.routeTargets(text);
-    for (const target of targets) {
-      if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
+    // Validate message routing up-front so unknown-agent errors surface
+    // immediately, whether the turn runs now or is queued behind a busy one.
+    let targets: string[] = [];
+    if (command.type === "message") {
+      targets = options.targets ?? this.routeTargets(text);
+      for (const target of targets) {
+        if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
+      }
     }
 
     const task = this.createTask(text, targets);
+
+    // Busy? Queue and return — the message runs when the current turn settles.
+    if (this.activeTask) {
+      task.status = "queued";
+      this.pending.push({ task, text, command, options });
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
+      void this.emitSnapshot();
+      return task;
+    }
+
+    // Idle. A command resolves synchronously so callers can read its system
+    // reply right after awaiting; message turns start and stream asynchronously.
+    if (command.type !== "message") {
+      task.status = "running";
+      task.startedAt = new Date().toISOString();
+      this.activeTask = task;
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
+      await this.runCommand(task, command);
+      return task;
+    }
+
+    this.startTask(task, text, command, options);
+    return task;
+  }
+
+  // Begins a queued-or-fresh task immediately. The room is single-flight: this
+  // is only ever entered when no task is active (sendMessage guard / drain).
+  private startTask(task: GaiaTask, text: string, command: ReturnType<typeof parseCommand>, options: SendMessageOptions): void {
+    task.status = "running";
+    task.startedAt = new Date().toISOString();
     this.activeTask = task;
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
+
+    if (command.type !== "message") {
+      void this.runCommand(task, command).catch((error) => this.settleTask(task, "error", error));
+      return;
+    }
 
     void this.runAgentTask(task, text, options).catch((error) => {
       if (this.taskCancelled(task)) return;
       this.settleTask(task, "error", error);
     });
+  }
 
-    return task;
+  // Dispatches the next queued message once the room goes idle.
+  private drain(): void {
+    if (this.activeTask) return;
+    const next = this.pending.shift();
+    if (!next) return;
+    try {
+      this.startTask(next.task, next.text, next.command, next.options);
+    } catch (error) {
+      this.settleTask(next.task, "error", error);
+    }
   }
 
   private routeTargets(text: string): string[] {
@@ -316,6 +364,10 @@ export class GaiaController {
 
   async cancelActiveTask(): Promise<GaiaTask | undefined> {
     await this.init();
+    // Panic stop clears the whole pipeline: drop queued messages first so the
+    // drain after settling the active task doesn't immediately start one.
+    this.clearPending("cancelled");
+
     const task = this.activeTask;
     if (!task) return undefined;
 
@@ -325,6 +377,19 @@ export class GaiaController {
     await Promise.allSettled(task.targets.map((target) => this.runtimes[target]?.abort()).filter((promise): promise is Promise<void> => Boolean(promise)));
     this.settleTask(task, "cancelled");
     return task;
+  }
+
+  // Drops every queued message, marking each as the given terminal status so the
+  // UI clears its chip. Used by the panic stop.
+  private clearPending(status: "cancelled"): void {
+    const dropped = this.pending;
+    this.pending = [];
+    for (const item of dropped) {
+      item.task.status = status;
+      item.task.endedAt = new Date().toISOString();
+      this.recentTasks = [...this.recentTasks.slice(-9), item.task];
+      this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task: item.task });
+    }
   }
 
   /** Resolves when no task is running; rejects after timeoutMs (when given). */
@@ -520,11 +585,8 @@ export class GaiaController {
     }
   }
 
-  private async runCommandTask(input: string, command: ReturnType<typeof parseCommand>): Promise<GaiaTask> {
-    const task = this.createTask(input, []);
-    this.activeTask = task;
-    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
-
+  // Runs a slash command for an already-active task (created by startTask).
+  private async runCommand(task: GaiaTask, command: ReturnType<typeof parseCommand>): Promise<void> {
     try {
       let text = "";
       if (command.type === "help") text = HELP_TEXT;
@@ -533,6 +595,8 @@ export class GaiaController {
       if (command.type === "role") text = await this.setRole(command.agent, command.role);
       if (command.type === "thinking") text = await this.runThinkingCommand(command.agent, command.level);
       if (command.type === "summon") text = await this.runSummonCommand(command.agent, command.task);
+      if (command.type === "clear") text = await this.runClearCommand();
+      if (command.type === "fork") text = await this.runForkCommand();
       if (command.type === "unknown") text = `Unknown command: /${command.command}. Try /help.`;
 
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
@@ -541,8 +605,48 @@ export class GaiaController {
     } catch (error) {
       this.settleTask(task, "error", error);
     }
+  }
 
-    return task;
+  // /clear: wipe the room transcript, reset per-agent cursors + cached runtime
+  // details, and drop every harness's in-memory session for this room so the
+  // next turn starts from a blank slate. Active role assignments are kept (they
+  // are configuration, not conversation).
+  private async runClearCommand(): Promise<string> {
+    for (const runtime of Object.values(this.runtimes)) runtime.clearRoom?.(this.room.id);
+    await this.room.clearTranscript();
+    this.roomState.agentCursors = {};
+    this.roomState.runtimeDetails = {};
+    await this.room.writeState(this.roomState);
+    this.recentTasks = [];
+    await this.emitSnapshot();
+    return "Cleared room history and reset all agent sessions.";
+  }
+
+  // /fork: branch this room into a new sibling room by copying its transcript +
+  // state. The fork appears in the rooms list (next snapshot); selecting it
+  // continues the branch with fresh harness sessions seeded from the copied
+  // transcript.
+  private async runForkCommand(): Promise<string> {
+    const target = this.nextForkId(this.room.id);
+    const dstDir = join(this.workspace.roomsDir, target);
+    await mkdir(dstDir, { recursive: true });
+    for (const file of ["transcript.jsonl", "state.json"]) {
+      try {
+        await copyFile(join(this.room.dir, file), join(dstDir, file));
+      } catch {
+        // Missing source file (e.g. never-written state) — nothing to copy.
+      }
+    }
+    await this.emitSnapshot();
+    return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
+  }
+
+  private nextForkId(base: string): string {
+    const exists = (id: string): boolean => existsSync(join(this.workspace.roomsDir, id));
+    let candidate = `${base}-fork`;
+    let n = 2;
+    while (exists(candidate)) candidate = `${base}-fork-${n++}`;
+    return candidate;
   }
 
   private createTask(text: string, targets: string[]): GaiaTask {
@@ -568,6 +672,8 @@ export class GaiaController {
       this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.room.id, task });
     }
     void this.emitSnapshot();
+    // Now idle — start the next queued message, if any.
+    this.drain();
   }
 
   private async emitSnapshot(): Promise<void> {

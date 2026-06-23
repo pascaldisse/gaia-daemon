@@ -160,11 +160,12 @@ function RoomPanel() {
               "button",
               {
                 class: `summon-row ${summon.status} ${state.selectedSummonId === summon.id ? "active" : ""}`,
+                title: `open @${summon.agentId}'s session — ${summon.prompt}`,
                 onclick: () => void openSummon(summon),
               },
               h("span", { text: summon.status }),
               h("strong", { text: `@${summon.agentId}` }),
-              h("small", { text: summon.prompt }),
+              h("small", { class: "summon-task", text: truncate(summon.prompt, 90) }),
             ),
           ),
     ),
@@ -264,9 +265,22 @@ function formatSummonPayload(value) {
   }
 }
 
+function truncate(text, max) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
 // Streaming deltas arrive far faster than the screen refreshes; coalesce
 // transcript rebuilds to one per animation frame.
 let transcriptRenderQueued = false;
+
+// True when the transcript is scrolled to (or near) the bottom, so streaming
+// output keeps it pinned but reading scrollback is never yanked away.
+function transcriptAtBottom() {
+  const target = document.querySelector("#transcript");
+  if (!target) return true;
+  return target.scrollHeight - target.scrollTop - target.clientHeight < 140;
+}
 
 export function renderTranscriptOnly() {
   if (transcriptRenderQueued) return;
@@ -278,15 +292,44 @@ export function renderTranscriptOnly() {
       render();
       return;
     }
+    const stick = transcriptAtBottom();
     target.replaceWith(Transcript());
-    document.querySelector("#transcript")?.scrollTo({ top: 100000 });
+    if (stick) document.querySelector("#transcript")?.scrollTo({ top: 100000 });
   });
 }
 
+// Side panels that own their own scroll position. A full rebuild replaces these
+// nodes, so we snapshot their scrollTop before and restore it after — otherwise
+// the panel snaps to the top on every SSE event (e.g. while a swarm streams).
+const SCROLL_KEEP = [".right", ".sidebar", ".summon-drawer", ".summon-events"];
+
+// Full re-renders are coalesced to one per animation frame. Without this, a
+// swarm of summons streaming at once triggers thousands of full-DOM rebuilds
+// and locks the main thread ("Page Unresponsive").
+let renderQueued = false;
+
 export function render() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderNow();
+  });
+}
+
+function renderNow() {
   const root = document.querySelector("#app");
+  if (!root) return;
   const shouldKeepComposerFocus = document.activeElement === document.querySelector(".command-input") || document.activeElement === document.body;
+  const stick = transcriptAtBottom();
+  const scroll = SCROLL_KEEP.map((selector) => [selector, document.querySelector(selector)?.scrollTop ?? 0]);
   root.replaceChildren(App());
-  document.querySelector("#transcript")?.scrollTo({ top: 100000 });
+  for (const [selector, top] of scroll) {
+    if (top) {
+      const el = document.querySelector(selector);
+      if (el) el.scrollTop = top;
+    }
+  }
+  if (stick) document.querySelector("#transcript")?.scrollTo({ top: 100000 });
   if (shouldKeepComposerFocus && !state.settingsOpen) focusComposer();
 }

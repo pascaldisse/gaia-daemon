@@ -1,4 +1,4 @@
-export type SlashCommandType = "help" | "agents" | "roles" | "role" | "summon" | "thinking";
+export type SlashCommandType = "help" | "agents" | "roles" | "role" | "summon" | "thinking" | "clear" | "fork";
 
 export interface SlashCommandDefinition {
   name: string;
@@ -14,6 +14,8 @@ export type SlashCommand =
   | { type: "role"; agent?: string; role?: string }
   | { type: "summon"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
+  | { type: "clear" }
+  | { type: "fork" }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -24,6 +26,8 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "role", type: "role", description: "set or clear an agent role" },
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
+  { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
+  { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
