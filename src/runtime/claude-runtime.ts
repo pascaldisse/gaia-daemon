@@ -1,8 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
@@ -218,6 +220,36 @@ export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
   return { tools: [...builtin], allowedTools: [...allowed] };
 }
 
+// Note shown in the thinking disclosure when the CLI redacted the reasoning text.
+function thinkingNote(tokens: number): string {
+  const spend = tokens > 0 ? `~${tokens} tokens` : "a moment";
+  return `Reasoned for ${spend} before answering. (Claude hides reasoning text in -p mode.)`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// Write a `gaia` shim that execs THIS install's cli.js and return its directory,
+// to be PREPENDED to the subprocess PATH. That way a plain `gaia <cmd>` resolves
+// to this exact daemon's CLI (shadowing any unrelated global `gaia`) AND still
+// matches the narrow `Bash(gaia …:*)` permission grants. Best-effort: on failure
+// we fall back to whatever `gaia` is already on PATH.
+function ensureGaiaShimDir(): string | undefined {
+  try {
+    const cliPath = fileURLToPath(new URL("../cli.js", import.meta.url));
+    const dir = join(dirname(cliPath), ".bin");
+    mkdirSync(dir, { recursive: true });
+    const shimPath = join(dir, "gaia");
+    writeFileSync(shimPath, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"\n`, { mode: 0o755 });
+    chmodSync(shimPath, 0o755);
+    return dir;
+  } catch {
+    return undefined;
+  }
+}
+const GAIA_SHIM_DIR = ensureGaiaShimDir();
+
 // GAIA thinking levels -> Claude --effort. Claude has no "off"; floor at "low".
 function effortFor(level: string | undefined): string | undefined {
   switch (level) {
@@ -318,18 +350,40 @@ export class ClaudeRuntime implements AgentRuntime {
     // Per-turn parse state.
     const blockTypes = new Map<number, string>(); // content-block index -> type
     let thinkingActive = false;
+    let thinkingTokens = 0; // best estimate of reasoning tokens spent this turn
+    let thinkingTextSeen = false; // did any *real* reasoning text stream?
     const toolNames = new Map<string, string>(); // tool_use id -> name
     const endedTools = new Set<string>();
+
+    const startThinking = (): void => {
+      if (thinkingActive) return;
+      thinkingActive = true;
+      push({ type: "thinking-start" });
+    };
+    const endThinking = (): void => {
+      if (!thinkingActive) return;
+      thinkingActive = false;
+      // When no real reasoning text streamed (the usual -p case), hand the UI a
+      // short note + token estimate so the thinking disclosure isn't empty.
+      const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens);
+      push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
+    };
 
     const onMessage = (raw: unknown): void => {
       const msg = raw as { type?: string };
       switch (msg.type) {
         case "system": {
-          const sys = raw as { subtype?: string; model?: string; apiKeySource?: string };
+          const sys = raw as { subtype?: string; model?: string; apiKeySource?: string; estimated_tokens?: number };
           if (sys.subtype === "init" && sys.model) {
             const subscription = sys.apiKeySource === "none";
             this.liveModelLabel = `anthropic/${sys.model}`;
             push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+          } else if (sys.subtype === "thinking_tokens") {
+            // The CLI redacts reasoning *text* in -p mode (it streams encrypted
+            // thinking blocks), but reports a live token estimate. Surface that
+            // as a "thinking" indicator so the pre-answer pause isn't silent.
+            if (typeof sys.estimated_tokens === "number") thinkingTokens = Math.max(thinkingTokens, sys.estimated_tokens);
+            startThinking();
           }
           break;
         }
@@ -337,7 +391,7 @@ export class ClaudeRuntime implements AgentRuntime {
         case "stream_event": {
           this.handleStreamEvent(
             (raw as { event?: unknown }).event,
-            { blockTypes, getThinking: () => thinkingActive, setThinking: (v) => (thinkingActive = v) },
+            { blockTypes, startThinking, endThinking, markTextSeen: () => (thinkingTextSeen = true) },
             push,
           );
           break;
@@ -381,6 +435,8 @@ export class ClaudeRuntime implements AgentRuntime {
           if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
             error = new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`);
           }
+          // Close any thinking indicator that never saw a content_block_stop.
+          endThinking();
           finish();
           break;
         }
@@ -450,13 +506,19 @@ export class ClaudeRuntime implements AgentRuntime {
     this.rooms.clear();
   }
 
+  // Drop this room's session id so the next turn is a fresh --session-id (no
+  // --resume), i.e. Claude forgets the prior conversation for /clear.
+  clearRoom(roomId: string): void {
+    this.rooms.delete(roomId);
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
 
   private handleStreamEvent(
     event: unknown,
-    state: { blockTypes: Map<number, string>; getThinking: () => boolean; setThinking: (v: boolean) => void },
+    state: { blockTypes: Map<number, string>; startThinking: () => void; endThinking: () => void; markTextSeen: () => void },
     push: (event: AgentEvent) => void,
   ): void {
     const e = event as {
@@ -472,26 +534,27 @@ export class ClaudeRuntime implements AgentRuntime {
       case "content_block_start":
         if (typeof e.index === "number" && e.content_block?.type) {
           state.blockTypes.set(e.index, e.content_block.type);
+          // The reasoning block opens here even when its text is redacted, so
+          // light up the thinking indicator as soon as it appears.
+          if (e.content_block.type === "thinking") state.startThinking();
         }
         break;
       case "content_block_delta": {
         if (e.delta?.type === "text_delta" && e.delta.text) {
           push({ type: "text-delta", delta: e.delta.text });
-        } else if (e.delta?.type === "thinking_delta" && e.delta.thinking) {
-          if (!state.getThinking()) {
-            state.setThinking(true);
-            push({ type: "thinking-start" });
+        } else if (e.delta?.type === "thinking_delta") {
+          state.startThinking();
+          // Real reasoning text is usually empty in -p mode; stream it when present.
+          if (e.delta.thinking) {
+            state.markTextSeen();
+            push({ type: "thinking-delta", delta: e.delta.thinking });
           }
-          push({ type: "thinking-delta", delta: e.delta.thinking });
         }
         break;
       }
       case "content_block_stop": {
         const type = typeof e.index === "number" ? state.blockTypes.get(e.index) : undefined;
-        if (type === "thinking" && state.getThinking()) {
-          state.setThinking(false);
-          push({ type: "thinking-end" });
-        }
+        if (type === "thinking") state.endThinking();
         break;
       }
     }
@@ -562,10 +625,14 @@ export class ClaudeRuntime implements AgentRuntime {
       lines.push("- `gaia recall <query>` — full-text search of the room history");
     }
     if (this.agent.tools.includes("summon")) {
-      lines.push("- `gaia summon <agent> <task>` — run a private worker agent");
+      lines.push('- `gaia summon <agent> "<task>"` — run a private worker agent (visible live in the summons drawer)');
     }
     if (!lines.length) return "";
-    return ["# GAIA tools (run via Bash)", "You have a `gaia` CLI:", ...lines].join("\n");
+    return [
+      "# GAIA tools (run via Bash)",
+      "You have a ready-to-use `gaia` CLI on your PATH (already wired to this daemon — just run it, no setup, no hunting for the binary):",
+      ...lines,
+    ].join("\n");
   }
 
   // Per-turn env for the subprocess: reads work straight off disk (memory dir,
@@ -579,6 +646,8 @@ export class ClaudeRuntime implements AgentRuntime {
       GAIA_ROOM_ID: roomId,
       GAIA_AGENT_ID: this.agent.id,
     };
+    // Prepend our `gaia` shim so plain `gaia <cmd>` runs THIS daemon's CLI.
+    if (GAIA_SHIM_DIR) env.PATH = `${GAIA_SHIM_DIR}${delimiter}${process.env.PATH ?? ""}`;
     if (this.harnessHost) {
       env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
       env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId });

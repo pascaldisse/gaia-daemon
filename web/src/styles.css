@@ -611,12 +611,27 @@ time {
   color: var(--muted);
 }
 
+.task.queued span {
+  color: var(--accent, #c9b458);
+  opacity: 0.85;
+}
+
+.task.queued {
+  opacity: 0.8;
+}
+
 .summon-row {
   width: 100%;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   gap: 4px 8px;
   text-align: left;
+  cursor: pointer;
+}
+
+.summon-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line);
 }
 
 .summon-row span {
@@ -632,6 +647,16 @@ time {
 
 .summon-row small {
   grid-column: 1 / -1;
+}
+
+/* The full task lives in the drawer; the row shows a clamped preview. */
+.summon-row small.summon-task {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  opacity: 0.72;
 }
 
 .summon-row.error span,

@@ -218,6 +218,14 @@ export class PiRuntime implements AgentRuntime {
     this.sessions.clear();
   }
 
+  // Tear down this room's Pi session so the next turn rebuilds it from an empty
+  // transcript (backs /clear).
+  clearRoom(roomId: string): void {
+    const managed = this.sessions.get(roomId);
+    managed?.session.dispose();
+    this.sessions.delete(roomId);
+  }
+
   // Applies a per-turn thinking override (voice mode forces "off") and
   // restores the agent's own level on turns without one. Reading
   // agent.thinking live means a settings change hot-applies on the next
