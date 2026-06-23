@@ -219,9 +219,24 @@ function devReloadSnippet(): string {
 </script>`;
 }
 
+// Soft cap on simultaneously-resident room controllers. Idle rooms past this
+// are evicted (their transcripts persist on disk); busy ones are always kept.
+const MAX_LIVE_CONTROLLERS = 32;
+
+function controllerKey(workspaceId: string, roomId: string): string {
+  return `${workspaceId}::${roomId}`;
+}
+
 export class GaiaWebServer {
   private readonly registry = new WorkspaceRegistry();
+  // One long-lived controller PER ROOM, keyed `${workspaceId}::${roomId}`, in
+  // LRU order (oldest first) so idle rooms can be evicted while busy ones — a
+  // running turn or a background summon — are always kept alive. Selecting a
+  // room views its controller; it never tears down the others.
   private readonly controllers = new Map<string, GaiaController>();
+  // The room each workspace currently defaults to (mirrors config.room), so a
+  // request that names only a workspace resolves to its active room.
+  private readonly currentRoom = new Map<string, string>();
   // One memory store per workspace, shared across that workspace's room
   // controllers so the daemon stays the single writer for agent memory.
   private readonly memoryStores = new Map<string, MemoryStore>();
@@ -453,12 +468,7 @@ export class GaiaWebServer {
 
     const messageMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/messages$/);
     if (request.method === "POST" && messageMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(messageMatch[1] ?? ""));
-      const roomId = decodeURIComponent(messageMatch[2] ?? "");
-      if (roomId !== controller.roomId) {
-        json(response, 404, { error: `Room not loaded: ${roomId}` });
-        return;
-      }
+      const controller = await this.controllerFor(decodeURIComponent(messageMatch[1] ?? ""), decodeURIComponent(messageMatch[2] ?? ""));
       const body = await parseBody(request);
       const textValue = stringField(body, "text");
       if (!textValue?.trim()) {
@@ -472,12 +482,8 @@ export class GaiaWebServer {
 
     const summonsMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons$/);
     if (summonsMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(summonsMatch[1] ?? ""));
       const roomId = decodeURIComponent(summonsMatch[2] ?? "");
-      if (roomId !== controller.roomId) {
-        json(response, 404, { error: `Room not loaded: ${roomId}` });
-        return;
-      }
+      const controller = await this.controllerFor(decodeURIComponent(summonsMatch[1] ?? ""), roomId);
       const manager = controller.summonManager;
       if (!manager) {
         json(response, 501, { error: "Summon system is not available." });
@@ -507,12 +513,8 @@ export class GaiaWebServer {
 
     const summonMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)$/);
     if (request.method === "GET" && summonMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(summonMatch[1] ?? ""));
       const roomId = decodeURIComponent(summonMatch[2] ?? "");
-      if (roomId !== controller.roomId) {
-        json(response, 404, { error: `Room not loaded: ${roomId}` });
-        return;
-      }
+      const controller = await this.controllerFor(decodeURIComponent(summonMatch[1] ?? ""), roomId);
       const details = await controller.summonManager?.details(roomId, decodeURIComponent(summonMatch[3] ?? ""));
       if (!details) {
         json(response, 404, { error: "Summon not found" });
@@ -524,12 +526,7 @@ export class GaiaWebServer {
 
     const summonCancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons\/([^/]+)\/cancel$/);
     if (request.method === "POST" && summonCancelMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(summonCancelMatch[1] ?? ""));
-      const roomId = decodeURIComponent(summonCancelMatch[2] ?? "");
-      if (roomId !== controller.roomId) {
-        json(response, 404, { error: `Room not loaded: ${roomId}` });
-        return;
-      }
+      const controller = await this.controllerFor(decodeURIComponent(summonCancelMatch[1] ?? ""), decodeURIComponent(summonCancelMatch[2] ?? ""));
       const session = await controller.summonManager?.cancel(decodeURIComponent(summonCancelMatch[3] ?? ""));
       if (!session) {
         json(response, 404, { error: "Running summon not found" });
@@ -541,12 +538,7 @@ export class GaiaWebServer {
 
     const cancelMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/);
     if (request.method === "POST" && cancelMatch) {
-      const controller = await this.controllerFor(decodeURIComponent(cancelMatch[1] ?? ""));
-      const roomId = decodeURIComponent(cancelMatch[2] ?? "");
-      if (roomId !== controller.roomId) {
-        json(response, 404, { error: `Room not loaded: ${roomId}` });
-        return;
-      }
+      const controller = await this.controllerFor(decodeURIComponent(cancelMatch[1] ?? ""), decodeURIComponent(cancelMatch[2] ?? ""));
       json(response, 202, { task: await controller.cancelActiveTask() });
       return;
     }
@@ -612,7 +604,7 @@ export class GaiaWebServer {
 
     let controller: GaiaController;
     try {
-      controller = await this.controllerFor(claims.workspaceId);
+      controller = await this.controllerFor(claims.workspaceId, claims.roomId);
     } catch (error) {
       json(response, 404, { error: error instanceof Error ? error.message : String(error) });
       return;
@@ -717,24 +709,64 @@ export class GaiaWebServer {
     createReadStream(path).pipe(response);
   }
 
-  private async controllerFor(workspaceId: string): Promise<GaiaController> {
-    const existing = this.controllers.get(workspaceId);
-    if (existing) return existing;
+  // Get-or-create the long-lived controller for a (workspace, room). When the
+  // room is omitted the request means "this workspace's current room". The
+  // controller is kept alive across room switches so background work survives;
+  // creating one past the soft cap evicts the least-recently-used idle room.
+  private async controllerFor(workspaceId: string, roomId?: string): Promise<GaiaController> {
+    const resolvedRoom = roomId ?? (await this.resolveCurrentRoom(workspaceId));
+    const key = controllerKey(workspaceId, resolvedRoom);
+
+    const existing = this.controllers.get(key);
+    if (existing) {
+      // Bump to most-recently-used (Map keeps insertion order).
+      this.controllers.delete(key);
+      this.controllers.set(key, existing);
+      return existing;
+    }
 
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    await ensureWorkspaceRoom(record.path, resolvedRoom);
     const workspace = await loadWorkspace(record.path);
     const controller = new GaiaController({
       workspaceId,
       workspace,
+      roomId: resolvedRoom,
       memoryStore: this.memoryStoreFor(workspaceId),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.harnessBridge ? (opts) => this.harnessBridge!.hostFor(workspaceId, opts) : undefined,
     });
     controller.subscribe((event) => this.broadcast(event));
     await controller.init();
-    this.controllers.set(workspaceId, controller);
+    this.controllers.set(key, controller);
+    this.evictIdleControllers();
     return controller;
+  }
+
+  // Resolve (and cache) the room a workspace currently defaults to. Mirrors the
+  // persisted config.room; kept in sync by selectWorkspaceRoom.
+  private async resolveCurrentRoom(workspaceId: string): Promise<string> {
+    const cached = this.currentRoom.get(workspaceId);
+    if (cached) return cached;
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    const workspace = await loadWorkspace(record.path);
+    this.currentRoom.set(workspaceId, workspace.config.room);
+    return workspace.config.room;
+  }
+
+  // Keep memory bounded as rooms accumulate: dispose the oldest IDLE controllers
+  // once past the soft cap. A busy controller (running a turn or a background
+  // summon) is never evicted; its on-disk transcript means an evicted room is
+  // transparently recreated on next access.
+  private evictIdleControllers(): void {
+    for (const [key, controller] of this.controllers) {
+      if (this.controllers.size <= MAX_LIVE_CONTROLLERS) break;
+      if (controller.isBusy) continue;
+      controller.dispose();
+      this.controllers.delete(key);
+    }
   }
 
   // One memory store per workspace, created lazily and shared by every room
@@ -752,18 +784,18 @@ export class GaiaWebServer {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
 
-    const existing = this.controllers.get(workspaceId);
-    if (existing?.hasActiveTask) throw new Error("Room is busy with an active task; wait for it to finish or cancel it first.");
+    // Switching rooms is always safe now: each room has its own long-lived
+    // controller, so the room being left keeps running its turn/summons. Only a
+    // live voice call (bound to one room) blocks a switch.
     if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId !== roomId) {
       throw new Error("Stop the active voice call before switching rooms.");
     }
 
     await ensureWorkspaceRoom(record.path, roomId);
     await setWorkspaceRoom(record.path, roomId);
+    this.currentRoom.set(workspaceId, roomId);
 
-    existing?.dispose();
-    this.controllers.delete(workspaceId);
-    const controller = await this.controllerFor(workspaceId);
+    const controller = await this.controllerFor(workspaceId, roomId);
     const snapshot = await controller.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: controller.roomId, snapshot });
     return {
@@ -779,8 +811,7 @@ export class GaiaWebServer {
     agentId: string,
     role: string,
   ): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null; message: string }> {
-    const controller = await this.controllerFor(workspaceId);
-    if (roomId !== controller.roomId) throw new Error(`Room not loaded: ${roomId}`);
+    const controller = await this.controllerFor(workspaceId, roomId);
     const message = await controller.setRole(agentId, role);
     const snapshot = await controller.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: controller.roomId, snapshot });
@@ -794,17 +825,15 @@ export class GaiaWebServer {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
 
-    const existing = this.controllers.get(workspaceId);
-    if (existing?.hasActiveTask) throw new Error("Room is busy with an active task; wait for it to finish or cancel it first.");
-    const controller = existing ?? (await this.controllerFor(workspaceId));
+    const controller = await this.controllerFor(workspaceId);
     if (!controller.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
 
     await setWorkspaceDefaultAgent(record.path, agentId);
 
-    // Rebuild the controller so the cached workspace config (and snapshot's
-    // isDefault flags) reflect the new default.
-    controller.dispose();
-    this.controllers.delete(workspaceId);
+    // The default is workspace-wide, so rebuild EVERY room controller in the
+    // workspace to refresh cached config + isDefault flags, then return the
+    // current room's snapshot.
+    await Promise.all(this.workspaceControllerKeys(workspaceId).map((key) => this.reloadController(key)));
     const rebuilt = await this.controllerFor(workspaceId);
     const snapshot = await rebuilt.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
@@ -821,27 +850,37 @@ export class GaiaWebServer {
   // file only its own. Busy controllers are rebuilt when their task ends.
   private async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
     this.hintSourcesCache = undefined;
-    const ids = scope === "global" ? [...this.controllers.keys()] : workspaceId ? [workspaceId] : [];
-    await Promise.all(ids.map((id) => this.reloadController(id)));
+    const keys = scope === "global" ? [...this.controllers.keys()] : workspaceId ? this.workspaceControllerKeys(workspaceId) : [];
+    await Promise.all(keys.map((key) => this.reloadController(key)));
   }
 
-  private async reloadController(workspaceId: string): Promise<void> {
-    const controller = this.controllers.get(workspaceId);
+  // Composite controller keys (`${workspaceId}::${roomId}`) belonging to a
+  // workspace — every room of it that is currently resident.
+  private workspaceControllerKeys(workspaceId: string): string[] {
+    const prefix = controllerKey(workspaceId, "");
+    return [...this.controllers.keys()].filter((key) => key.startsWith(prefix));
+  }
+
+  // Rebuilds one room controller (by composite key) so cached workspace/agent
+  // config is re-read. Deferred while a turn is running.
+  private async reloadController(key: string): Promise<void> {
+    const controller = this.controllers.get(key);
     if (!controller) return;
 
     if (controller.hasActiveTask) {
-      if (this.pendingReloads.has(workspaceId)) return;
-      this.pendingReloads.add(workspaceId);
+      if (this.pendingReloads.has(key)) return;
+      this.pendingReloads.add(key);
       void controller.waitForIdle().then(() => {
-        this.pendingReloads.delete(workspaceId);
-        return this.reloadController(workspaceId);
+        this.pendingReloads.delete(key);
+        return this.reloadController(key);
       }).catch(() => {});
       return;
     }
 
+    const { workspaceId, roomId } = controller;
     controller.dispose();
-    this.controllers.delete(workspaceId);
-    const fresh = await this.controllerFor(workspaceId);
+    this.controllers.delete(key);
+    const fresh = await this.controllerFor(workspaceId, roomId);
     this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
   }
 
@@ -1007,7 +1046,7 @@ export class GaiaWebServer {
       return;
     }
 
-    const controller = await this.controllerFor(call.workspaceId);
+    const controller = await this.controllerFor(call.workspaceId, call.info.roomId);
     // A typed text task may be running when a voice turn arrives; give it a
     // moment to finish instead of failing the spoken turn outright.
     await controller.waitForIdle(20000);
@@ -1088,7 +1127,8 @@ export class GaiaWebServer {
   }
 
   private async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {
-    const controller = this.controllers.get(workspaceId);
+    const key = this.workspaceControllerKeys(workspaceId)[0];
+    const controller = key ? this.controllers.get(key) : undefined;
     if (controller) return controller.workspace;
     const record = await this.registry.find(workspaceId);
     if (!record?.isInitialized) return undefined;

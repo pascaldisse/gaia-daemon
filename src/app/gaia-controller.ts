@@ -224,6 +224,13 @@ export class GaiaController {
     return Boolean(this.activeTask);
   }
 
+  // Busy = running a turn OR has a background summon still running. The server
+  // keys controllers per room and evicts idle ones; this guards a controller
+  // from being torn down (and its background work killed) while it is live.
+  get isBusy(): boolean {
+    return Boolean(this.activeTask) || Boolean(this._summonManager?.hasRunning());
+  }
+
   get activeTaskId(): string | undefined {
     return this.activeTask?.id;
   }
