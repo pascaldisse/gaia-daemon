@@ -17,6 +17,7 @@ import { createMemoryTool } from "../tools/memory-tool.js";
 import { createRecallTool } from "../tools/recall-tool.js";
 import { createSummonTool, type SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
+import { HARNESS_CAPABILITIES } from "./capabilities.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -91,6 +92,7 @@ function skillPathsKey(paths: string[]): string {
 }
 
 export class PiRuntime implements AgentRuntime {
+  readonly capabilities = HARNESS_CAPABILITIES.pi;
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
   private readonly sessions = new Map<string, ManagedPiSession>();
@@ -195,7 +197,7 @@ export class PiRuntime implements AgentRuntime {
 
   // Tear down this room's Pi session so the next turn rebuilds it from an empty
   // transcript (backs /clear).
-  clearRoom(roomId: string): void {
+  resetRoom(roomId: string): void {
     const managed = this.sessions.get(roomId);
     managed?.session.dispose();
     this.sessions.delete(roomId);

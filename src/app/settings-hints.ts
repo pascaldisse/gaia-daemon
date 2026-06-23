@@ -1,6 +1,7 @@
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@mariozechner/pi-coding-agent";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { CLAUDE_PERMISSION_MODES } from "../agents/types.js";
+import { capabilitiesFor } from "../runtime/capabilities.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -54,18 +55,16 @@ export interface HarnessConfig {
    * "opus"/"sonnet"/"haiku", where "opus" always resolves to the latest Opus.
    */
   modelNameOptions?: string[];
-  /** Fields to hide in the settings UI when this harness is active (JSON paths relative to file root). */
-  hiddenFields?: string[];
 }
 
-/** Harness registry: future harnesses/providers plug in here. */
+/** Harness registry: future harnesses/providers plug in here. Field *visibility*
+ *  is NOT configured here — it is derived from runtime capabilities (see
+ *  hiddenFieldsFor) so the UI never re-encodes a backend truth. */
 export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
   pi: {
     id: "pi",
     label: "pi",
     description: "Pi coding agent (local SDK)",
-    // permissionMode is a Claude-only posture knob; hide it elsewhere.
-    hiddenFields: ["permissionMode"],
   },
   codex: {
     id: "codex",
@@ -73,9 +72,6 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     description: "OpenAI Codex app-server",
     lockedProvider: "openai-codex",
     modelProviderIds: ["openai-codex"],
-    // codex runs a fixed sandbox and ignores the per-agent tools array, so both
-    // tools and the Claude-only permissionMode are hidden.
-    hiddenFields: ["tools", "permissionMode"],
   },
   claude: {
     id: "claude",
@@ -86,11 +82,19 @@ export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
     // hide the provider. Empty = whatever the Claude Code CLI defaults to.
     lockedProvider: "anthropic",
     modelNameOptions: ["opus", "sonnet", "haiku"],
-    // For Claude the `tools` array is the real control surface: the harness
-    // translates it onto --tools/--allowedTools (see claude-runtime.ts), so it
-    // stays visible (unlike codex, which runs a fixed sandbox).
   },
 };
+
+// Which agent.json fields the settings UI hides for a harness — derived from the
+// declared runtime capabilities, never hardcoded per harness. A coarse-sandbox
+// harness (Codex) ignores the granular `tools` array; permissionMode is a
+// Claude-only posture knob.
+function hiddenFieldsFor(harnessId: string): string[] {
+  const hidden: string[] = [];
+  if (!capabilitiesFor(harnessId).granularTools) hidden.push("tools");
+  if (harnessId !== "claude") hidden.push("permissionMode");
+  return hidden;
+}
 
 /** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
 export interface HarnessHintsMeta {
@@ -216,7 +220,7 @@ function harnessHintsMeta(): HarnessHintsMeta {
       lockedProvider: config.lockedProvider,
       modelProviderIds: config.modelProviderIds,
       modelNameOptions: config.modelNameOptions,
-      hiddenFields: config.hiddenFields ?? [],
+      hiddenFields: hiddenFieldsFor(config.id),
     };
   }
   return { configs };
@@ -240,9 +244,10 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
   const rawHarness = typeof parsed?.harness === "string" ? parsed.harness : undefined;
   const currentHarnessConfig = rawHarness ? HARNESS_CONFIGS[rawHarness] : undefined;
 
-  // Fields hidden by current harness config. The `hidden` flag carries the
-  // saved state; the frontend reads _harness meta to toggle when harness changes.
-  const hiddenByHarness = new Set(currentHarnessConfig?.hiddenFields ?? []);
+  // Fields hidden for the current harness, derived from its capabilities. The
+  // `hidden` flag carries the saved state; the frontend reads _harness meta to
+  // toggle when harness changes.
+  const hiddenByHarness = new Set(rawHarness ? hiddenFieldsFor(rawHarness) : []);
 
   // Locked provider: if the harness locks a provider, hide model.provider
   // and filter model names to only that provider's models.

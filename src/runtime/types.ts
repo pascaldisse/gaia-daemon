@@ -1,6 +1,7 @@
 import type { AgentDefinition } from "../agents/types.js";
 import type { RoomEvent } from "../room/transcript.js";
 import type { ResolvedRole } from "../roles/roles.js";
+import type { HarnessCapabilities } from "./capabilities.js";
 
 export interface AgentInput {
   roomId: string;
@@ -27,12 +28,14 @@ export type AgentEvent =
 export interface AgentRuntime {
   readonly agent: AgentDefinition;
   readonly modelLabel: string;
+  /** What this harness can wire/honor — declared, not implied. */
+  readonly capabilities: HarnessCapabilities;
   send(input: AgentInput): AsyncIterable<AgentEvent>;
   abort(): Promise<void>;
   dispose(): void;
   /**
    * Drop the in-memory session for a single room so the next turn starts fresh
-   * (backs `/clear`). Optional: a runtime with no per-room session can omit it.
+   * (backs `/clear`). A sessionless harness may make this a no-op.
    */
-  clearRoom?(roomId: string): void;
+  resetRoom(roomId: string): void;
 }
