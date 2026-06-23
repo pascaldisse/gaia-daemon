@@ -173,6 +173,7 @@ export class GaiaController {
           (agent) => createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, harnessHost: options.harnessHost?.({ allowSummon: false }) }),
           (event) => this.emit(event),
           this.memoryStore,
+          { maxRunningPerRoom: options.workspace.config.maxSummonsPerRoom },
         );
 
     const summonCreate: SummonCreate | undefined = this._summonManager

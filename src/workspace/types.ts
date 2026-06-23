@@ -6,6 +6,8 @@ export interface WorkspaceConfig {
   transcriptWindow: number;
   /** Default agent harness for all agents in this workspace; overridden by AgentDefinition.harness. */
   harness?: "pi" | "codex" | "claude";
+  /** Max summons (whales) allowed to run concurrently per room. Bounds swarm fan-out. */
+  maxSummonsPerRoom?: number;
 }
 
 export interface ContextFile {

@@ -29,6 +29,7 @@ function defaultConfig(): WorkspaceConfig {
     defaultAgent: "gaia",
     room: DEFAULT_ROOM,
     transcriptWindow: 20,
+    maxSummonsPerRoom: 8,
   };
 }
 
@@ -48,6 +49,10 @@ function mergeConfig(raw: unknown): WorkspaceConfig {
         ? Math.floor(input.transcriptWindow)
         : base.transcriptWindow,
     harness: parseHarness(input.harness),
+    maxSummonsPerRoom:
+      typeof input.maxSummonsPerRoom === "number" && Number.isFinite(input.maxSummonsPerRoom) && input.maxSummonsPerRoom > 0
+        ? Math.floor(input.maxSummonsPerRoom)
+        : base.maxSummonsPerRoom,
   };
 }
 
