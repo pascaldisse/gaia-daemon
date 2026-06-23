@@ -10,8 +10,13 @@ export class Room {
   readonly transcriptPath: string;
   readonly statePath: string;
 
-  constructor(private readonly workspace: Workspace) {
-    this.id = workspace.config.room;
+  // roomId defaults to the workspace's configured room; pass an explicit id to
+  // address any other room in the workspace (e.g. a summon's child sub-room).
+  constructor(
+    private readonly workspace: Workspace,
+    roomId: string = workspace.config.room,
+  ) {
+    this.id = roomId;
     this.dir = join(workspace.roomsDir, this.id);
     this.transcriptPath = join(workspace.roomsDir, this.id, "transcript.jsonl");
     this.statePath = roomStatePath(workspace.roomsDir, this.id);
