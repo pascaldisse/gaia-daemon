@@ -1,13 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFile } from "node:fs/promises";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
-import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
-import { loadRoleSkillText } from "../skills/skill-resolver.js";
+import { createEventChannel } from "./event-stream.js";
+import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -282,17 +281,7 @@ export class CodexRuntime implements AgentRuntime {
 
     this.activeTurn = { threadId: thread.threadId, turnId: turnResponse.turn.id };
 
-    // Push-based async iteration
-    const queue: AgentEvent[] = [];
-    let done = false;
-    let error: unknown = null;
-    let notify: (() => void) | undefined;
-
-    const push = (event: AgentEvent): void => {
-      queue.push(event);
-      notify?.();
-      notify = undefined;
-    };
+    const channel = createEventChannel();
 
     // Per-turn tracking
     const toolNames = new Map<string, string>();
@@ -307,14 +296,14 @@ export class CodexRuntime implements AgentRuntime {
           if (p.toModel && currentThread) {
             currentThread.model = p.toModel;
             this.liveModelLabel = `${currentThread.modelProvider}/${p.toModel}`;
-            push({ type: "model-info", provider: currentThread.modelProvider, modelId: p.toModel, subscription: true });
+            channel.push({ type: "model-info", provider: currentThread.modelProvider, modelId: p.toModel, subscription: true });
           }
           break;
         }
 
         case "item/agentMessage/delta": {
           const p = params as { delta: string };
-          push({ type: "text-delta", delta: p.delta });
+          channel.push({ type: "text-delta", delta: p.delta });
           break;
         }
 
@@ -322,9 +311,9 @@ export class CodexRuntime implements AgentRuntime {
           const p = params as { itemId: string; delta: string };
           if (!reasoningStarted.has(p.itemId)) {
             reasoningStarted.add(p.itemId);
-            push({ type: "thinking-start" });
+            channel.push({ type: "thinking-start" });
           }
-          push({ type: "thinking-delta", delta: p.delta });
+          channel.push({ type: "thinking-delta", delta: p.delta });
           break;
         }
 
@@ -334,7 +323,7 @@ export class CodexRuntime implements AgentRuntime {
           // reasoning completed
           if (item.type === "reasoning") {
             const c = item.summary ?? item.content;
-            push({ type: "thinking-end", content: Array.isArray(c) ? c.join("\n") : undefined });
+            channel.push({ type: "thinking-end", content: Array.isArray(c) ? c.join("\n") : undefined });
             return;
           }
 
@@ -365,7 +354,7 @@ export class CodexRuntime implements AgentRuntime {
                 ? item.result ?? item.arguments
                 : item.result;
 
-          push({ type: "tool-end", toolName: tn, toolCallId: item.id, result: res, isError: isErr });
+          channel.push({ type: "tool-end", toolName: tn, toolCallId: item.id, result: res, isError: isErr });
           break;
         }
 
@@ -382,7 +371,7 @@ export class CodexRuntime implements AgentRuntime {
               : item.tool ?? item.type;
             toolNames.set(item.id, tn);
 
-            push({
+            channel.push({
               type: "tool-start",
               toolName: tn,
               toolCallId: item.id,
@@ -396,55 +385,40 @@ export class CodexRuntime implements AgentRuntime {
         case "item/commandExecution/outputDelta": {
           const p = params as { itemId: string; delta: string };
           const tn = toolNames.get(p.itemId) ?? "command";
-          push({ type: "tool-update", toolName: tn, toolCallId: p.itemId, partialResult: p.delta });
+          channel.push({ type: "tool-update", toolName: tn, toolCallId: p.itemId, partialResult: p.delta });
           break;
         }
 
         case "item/mcpToolCall/progress": {
           const p = params as { itemId: string; message: string };
           const tn = toolNames.get(p.itemId) ?? "mcp";
-          push({ type: "tool-update", toolName: tn, toolCallId: p.itemId, partialResult: p.message });
+          channel.push({ type: "tool-update", toolName: tn, toolCallId: p.itemId, partialResult: p.message });
           break;
         }
 
         case "turn/completed": {
           const t = (params as { turn: { status: string; error?: { message?: string } } }).turn;
           if (t.status === "failed") {
-            error = new Error(t.error?.message ?? "Turn failed.");
+            channel.fail(new Error(t.error?.message ?? "Turn failed."));
           }
-          done = true;
-          notify?.();
-          notify = undefined;
+          channel.close();
           break;
         }
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
-          error = new Error(e.message);
-          done = true;
-          notify?.();
-          notify = undefined;
+          channel.fail(new Error(e.message));
+          channel.close();
           break;
         }
       }
     });
 
-    // Yield from queue until turn ends
-    while (!done || queue.length > 0) {
-      if (queue.length === 0) {
-        await new Promise<void>((resolve) => {
-          notify = resolve;
-        });
-      }
-      while (queue.length > 0) {
-        const event = queue.shift();
-        if (event) yield event;
-      }
+    try {
+      for await (const event of channel.stream()) yield event;
+    } finally {
+      this.activeTurn = null;
     }
-
-    this.activeTurn = null;
-
-    if (error) throw error instanceof Error ? error : new Error(String(error));
   }
 
   // -----------------------------------------------------------------------
@@ -500,11 +474,6 @@ export class CodexRuntime implements AgentRuntime {
     return env;
   }
 
-  private memoryPointer(): string {
-    if (!this.agent.tools.includes("memory")) return "";
-    return ["# GAIA tools (run via shell)", "You have a `gaia` CLI:", "- `gaia mem list|read|add|replace|remove` — your persistent memory"].join("\n");
-  }
-
   private async ensureClient(): Promise<CodexClient> {
     if (this.client) return this.client;
     if (!this.initPromise) {
@@ -534,22 +503,14 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private async startThread(client: CodexClient, input: AgentInput): Promise<ThreadState> {
-    const [soulText, intentText] = await Promise.all([
-      readFile(this.agent.soulPath, "utf8"),
-      this.readOptional(this.agent.projectIntentPath),
-    ]);
-
-    const base = buildSystemPrompt({
+    // The persistent app-server is shared across rooms, so only room-independent
+    // memory is wired under Codex; recall/summon stay unavailable (see buildEnv).
+    const baseInstructions = await buildInlineSystemPrompt({
+      workspace: this.workspace,
       agent: this.agent,
-      soulText,
       role: input.activeRole,
-      intentText,
-      contextFiles: this.workspace.contextFiles,
+      toolPointer: gaiaCliPointer(this.agent.tools, ["memory"]),
     });
-    const skills = await loadRoleSkillText(this.workspace, input.activeRole);
-    for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
-    const pointer = this.memoryPointer();
-    const baseInstructions = [base, skills.text, pointer].filter(Boolean).join("\n\n---\n\n");
 
     const response = (await client.request("thread/start", {
       cwd: this.cwd,
@@ -567,15 +528,6 @@ export class CodexRuntime implements AgentRuntime {
       model: response.model,
       modelProvider: response.modelProvider,
     };
-  }
-
-  private async readOptional(path: string | undefined): Promise<string> {
-    if (!path) return "";
-    try {
-      return await readFile(path, "utf8");
-    } catch {
-      return "";
-    }
   }
 
   private resolveModelLabel(): string {

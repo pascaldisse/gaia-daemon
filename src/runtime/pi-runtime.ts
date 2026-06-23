@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import {
@@ -18,7 +17,8 @@ import { createMemoryTool } from "../tools/memory-tool.js";
 import { createRecallTool } from "../tools/recall-tool.js";
 import { createSummonTool, type SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
-import { buildSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
+import { createEventChannel } from "./event-stream.js";
+import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
 
 export interface PiSessionLike {
@@ -132,38 +132,29 @@ export class PiRuntime implements AgentRuntime {
     const memory = await this.memoryStore.promptBlock(this.agent.memoryDir);
     const memoryChanged = managed.lastMemoryContent !== memory;
 
-    const queue: AgentEvent[] = [];
-    let done = false;
-    let error: unknown;
-    let notify: (() => void) | undefined;
-
-    const push = (event: AgentEvent): void => {
-      queue.push(event);
-      notify?.();
-      notify = undefined;
-    };
+    const channel = createEventChannel();
 
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        push({ type: "text-delta", delta: event.assistantMessageEvent.delta });
+        channel.push({ type: "text-delta", delta: event.assistantMessageEvent.delta });
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_start") {
-        push({ type: "thinking-start" });
+        channel.push({ type: "thinking-start" });
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
-        push({ type: "thinking-delta", delta: event.assistantMessageEvent.delta });
+        channel.push({ type: "thinking-delta", delta: event.assistantMessageEvent.delta });
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_end") {
-        push({ type: "thinking-end", content: event.assistantMessageEvent.content });
+        channel.push({ type: "thinking-end", content: event.assistantMessageEvent.content });
       }
       if (event.type === "tool_execution_start") {
-        push({ type: "tool-start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args });
+        channel.push({ type: "tool-start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args });
       }
       if (event.type === "tool_execution_update") {
-        push({ type: "tool-update", toolName: event.toolName, toolCallId: event.toolCallId, partialResult: event.partialResult });
+        channel.push({ type: "tool-update", toolName: event.toolName, toolCallId: event.toolCallId, partialResult: event.partialResult });
       }
       if (event.type === "tool_execution_end") {
-        push({ type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError });
+        channel.push({ type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError });
       }
       // Pi's stream contract encodes every provider/request failure (rate
       // limit, bad key, network) as a final assistant message with
@@ -171,7 +162,7 @@ export class PiRuntime implements AgentRuntime {
       // failure so the task settles as "error", not a silent empty reply.
       // "aborted" is the cancel path and stays non-fatal.
       if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
-        error = new Error(event.message.errorMessage || "model request failed");
+        channel.fail(new Error(event.message.errorMessage || "model request failed"));
       }
     });
 
@@ -188,29 +179,13 @@ export class PiRuntime implements AgentRuntime {
       .then(() => {
         managed.lastMemoryContent = memory;
       })
-      .catch((cause) => {
-        error = cause;
-      })
+      .catch((cause) => channel.fail(cause))
       .finally(() => {
-        done = true;
         unsubscribe();
-        notify?.();
-        notify = undefined;
+        channel.close();
       });
 
-    while (!done || queue.length > 0) {
-      if (queue.length === 0) {
-        await new Promise<void>((resolve) => {
-          notify = resolve;
-        });
-      }
-      while (queue.length > 0) {
-        const event = queue.shift();
-        if (event) yield event;
-      }
-    }
-
-    if (error) throw error;
+    for await (const event of channel.stream()) yield event;
   }
 
   dispose(): void {
@@ -243,7 +218,11 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async ensureSession(input: AgentInput): Promise<ManagedPiSession> {
-    const systemPrompt = await this.buildSystemPrompt(input);
+    const systemPrompt = await buildBaseSystemPrompt({
+      agent: this.agent,
+      role: input.activeRole,
+      contextFiles: this.workspace.contextFiles,
+    });
     const skillResolution = input.activeRole ? resolveSkillRefs(this.workspace, input.activeRole.skills) : { paths: [], diagnostics: [] };
     for (const diagnostic of skillResolution.diagnostics) console.warn(diagnostic);
 
@@ -341,30 +320,6 @@ export class PiRuntime implements AgentRuntime {
     const baseThinking = (session as PiSessionLike).thinkingLevel;
     if (baseThinking !== undefined) managed.baseThinking = baseThinking;
     return managed;
-  }
-
-  private async buildSystemPrompt(input: AgentInput): Promise<string> {
-    const [soulText, intentText] = await Promise.all([
-      readFile(this.agent.soulPath, "utf8"),
-      this.readOptional(this.agent.projectIntentPath),
-    ]);
-
-    return buildSystemPrompt({
-      agent: this.agent,
-      soulText,
-      role: input.activeRole,
-      intentText,
-      contextFiles: this.workspace.contextFiles,
-    });
-  }
-
-  private async readOptional(path: string | undefined): Promise<string> {
-    if (!path) return "";
-    try {
-      return await readFile(path, "utf8");
-    } catch {
-      return "";
-    }
   }
 
   private resolveModel(): Model<any> | undefined {
