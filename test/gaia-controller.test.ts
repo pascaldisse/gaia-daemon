@@ -459,7 +459,7 @@ test("/clear wipes the transcript and resets every agent's session", async () =>
   }
 });
 
-test("/fork copies the room transcript into a new sibling room", async () => {
+test("/fork copies the transcript but resets cursors so the branch replays (not amnesiac)", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;
   process.env.GAIA_HOME = join(temp.path, "home");
@@ -487,12 +487,18 @@ test("/fork copies the room transcript into a new sibling room", async () => {
     await controller.sendMessage("/fork");
 
     const forkId = `${base}-fork`;
-    const forkTranscript = join(workspace.roomsDir, forkId, "transcript.jsonl");
+    const forkDir = join(workspace.roomsDir, forkId);
     const { readFile } = await import("node:fs/promises");
-    const forked = await readFile(forkTranscript, "utf8");
+    const forked = await readFile(join(forkDir, "transcript.jsonl"), "utf8");
     assert.match(forked, /seed the branch/);
     assert.ok((await controller.listRooms()).some((room) => room.id === forkId));
     assert.ok(events.some((event) => event.type === "room-event" && event.event.author === "system" && new RegExp(forkId).test(event.event.text)));
+
+    // The source room advanced its cursor past the seed turn; the fork must
+    // reset cursors to {} so a fresh harness session replays the whole copied
+    // transcript instead of starting amnesiac at the end of it.
+    const forkedState = JSON.parse(await readFile(join(forkDir, "state.json"), "utf8"));
+    assert.deepEqual(forkedState.agentCursors, {});
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;
