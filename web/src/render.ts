@@ -1,11 +1,10 @@
 import { addRoom, addWorkspace, loadWorkspace, selectRoom, setAgentRole, setDefaultAgent } from "./actions.ts";
-import { cancelSummon, fetchSummon } from "./api.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
 import { LinkedText, PathText } from "./links.ts";
 import { openAgentSettings, SettingsModal, WorkspacePanel } from "./settings.ts";
 import { state } from "./state.ts";
-import { Transcript, TranscriptView, summonTranscript } from "./transcript.ts";
+import { Transcript } from "./transcript.ts";
 import { toggleCall } from "./voice.ts";
 
 export function setError(error) {
@@ -20,7 +19,6 @@ function App() {
     Sidebar(),
     h("main", { class: "main" }, Topbar(), h("div", { class: "main-stack" }, state.error ? h("div", { class: "error", text: state.error }) : null, Transcript()), Composer()),
     h("aside", { class: "right" }, RoomPanel(), WorkspacePanel()),
-    SummonDrawer(),
     state.settingsOpen ? SettingsModal() : null,
   );
 }
@@ -50,20 +48,58 @@ function Sidebar() {
     ),
     h("button", { class: "nav-action", onclick: addWorkspace, text: "+ add workspace" }),
     h("div", { class: "nav-title", text: "rooms" }),
-    (state.snapshot?.rooms ?? [{ id: "no room", path: "select a workspace", isCurrent: true }]).map((room) =>
-      h(
-        "button",
-        {
-          class: `nav-item ${room.isCurrent ? "active" : ""}`,
-          onclick: room.isCurrent || !state.snapshot ? undefined : () => selectRoom(state.snapshot.workspace.id, room.id),
-        },
-        h("span", { text: room.id }),
-        h("small", {}, PathText(room.path)),
-      ),
-    ),
+    RoomTree(),
     state.snapshot ? h("button", { class: "nav-action", onclick: addRoom, text: "+ add room" }) : null,
     h("div", { class: "spacer" }),
     h("button", { class: "nav-action", onclick: () => ((state.settingsOpen = true), render()), text: "global settings" }),
+  );
+}
+
+// The rooms list is a recursive tree: a summon's child room nests under its
+// parent (via room.parentRoomId) and is collapsed by default behind a twisty.
+// Nesting is unbounded — grandchildren summon their own children.
+function RoomTree() {
+  const rooms = state.snapshot?.rooms ?? [{ id: "no room", path: "select a workspace", isCurrent: true }];
+  const ids = new Set(rooms.map((room) => room.id));
+  const childrenOf = new Map();
+  for (const room of rooms) {
+    // Treat a child whose parent isn't present as top-level, so nothing is lost.
+    const parent = room.parentRoomId && ids.has(room.parentRoomId) ? room.parentRoomId : null;
+    if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+    childrenOf.get(parent).push(room);
+  }
+  return h("div", { class: "room-tree" }, (childrenOf.get(null) ?? []).map((room) => RoomNode(room, childrenOf, 0)));
+}
+
+function RoomNode(room, childrenOf, depth) {
+  const kids = childrenOf.get(room.id) ?? [];
+  const expanded = state.expandedRooms.has(room.id);
+  const toggle = (event) => {
+    event.stopPropagation();
+    if (expanded) state.expandedRooms.delete(room.id);
+    else state.expandedRooms.add(room.id);
+    render();
+  };
+  return h(
+    "div",
+    { class: "room-node" },
+    h(
+      "div",
+      { class: `room-row ${room.isCurrent ? "active" : ""}`, style: depth ? `padding-left:${depth * 14}px` : null },
+      kids.length > 0
+        ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
+        : h("span", { class: "room-twisty leaf" }),
+      h(
+        "button",
+        {
+          class: `nav-item room-item ${room.isCurrent ? "active" : ""}`,
+          onclick: room.isCurrent || !state.snapshot ? undefined : () => selectRoom(state.snapshot.workspace.id, room.id),
+        },
+        h("span", { class: "room-label" }, room.running ? h("span", { class: "room-dot running", title: "summon running" }) : null, h("span", { text: room.id })),
+        h("small", {}, PathText(room.path)),
+      ),
+    ),
+    kids.length > 0 && expanded ? h("div", { class: "room-children" }, kids.map((kid) => RoomNode(kid, childrenOf, depth + 1))) : null,
   );
 }
 
@@ -93,7 +129,6 @@ function RoomPanel() {
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
   const tasks = snapshot?.tasks ?? [];
-  const summons = snapshot?.summons ?? [];
   return h(
     "section",
     { class: "panel" },
@@ -149,26 +184,6 @@ function RoomPanel() {
         );
       }),
     ),
-    h("h3", { text: "summons" }),
-    h(
-      "div",
-      { class: "summon-list" },
-      summons.length === 0
-        ? h("div", { class: "empty", text: "no summons" })
-        : summons.slice(0, 8).map((summon) =>
-            h(
-              "button",
-              {
-                class: `summon-row ${summon.status} ${state.selectedSummonId === summon.id ? "active" : ""}`,
-                title: `open @${summon.agentId}'s session — ${summon.prompt}`,
-                onclick: () => void openSummon(summon),
-              },
-              h("span", { text: summon.status }),
-              h("strong", { text: `@${summon.agentId}` }),
-              h("small", { class: "summon-task", text: truncate(summon.prompt, 90) }),
-            ),
-          ),
-    ),
     h("h3", { text: "tasks" }),
     h(
       "div",
@@ -178,72 +193,6 @@ function RoomPanel() {
         : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
     ),
   );
-}
-
-async function openSummon(summon) {
-  state.selectedSummonId = summon.id;
-  state.selectedSummon = { session: summon, events: [], result: summon.summary ?? "" };
-  render();
-  try {
-    state.selectedSummon = await fetchSummon(summon.id);
-    render();
-  } catch (error) {
-    setError(error);
-  }
-}
-
-function SummonDrawer() {
-  const selectedId = state.selectedSummonId;
-  if (!selectedId) return null;
-  const fallback = state.snapshot?.summons?.find((summon) => summon.id === selectedId);
-  const details = state.selectedSummon?.session?.id === selectedId ? state.selectedSummon : null;
-  const session = details?.session ?? fallback;
-  if (!session) return null;
-  const events = details?.events ?? [];
-  const result = details?.result || session.summary || "";
-  return h(
-    "div",
-    { class: "summon-backdrop" },
-    h(
-      "section",
-      { class: "summon-drawer" },
-      h(
-        "header",
-        { class: "summon-drawer-head" },
-        h("div", {}, h("h2", { text: `summon @${session.agentId}` }), h("small", { text: `${session.status} / ${session.harness} / ${session.id}` })),
-        h(
-          "div",
-          { class: "summon-actions" },
-          session.status === "running"
-            ? h("button", {
-                class: "danger-button",
-                text: "cancel",
-                onclick: async () => {
-                  try {
-                    const body = await cancelSummon(session.id);
-                    state.selectedSummon = { ...(state.selectedSummon ?? { events: [] }), session: body.session };
-                    render();
-                  } catch (error) {
-                    setError(error);
-                  }
-                },
-              })
-            : null,
-          h("button", { text: "close", onclick: () => ((state.selectedSummonId = null), (state.selectedSummon = null), render()) }),
-        ),
-      ),
-      // The summon's subroom reuses the SAME room renderer — its event stream is
-      // folded into the room transcript shape (see summonTranscript). No second
-      // renderer; a summon looks and reads exactly like a room.
-      TranscriptView(summonTranscript(session, events), "summon-transcript"),
-      result && !events.length ? h("div", { class: "summon-result" }, h("h3", { text: "result" }), h("pre", {}, LinkedText(result))) : null,
-    ),
-  );
-}
-
-function truncate(text, max) {
-  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 // Streaming deltas arrive far faster than the screen refreshes; coalesce
@@ -278,7 +227,7 @@ export function renderTranscriptOnly() {
 // Side panels that own their own scroll position. A full rebuild replaces these
 // nodes, so we snapshot their scrollTop before and restore it after — otherwise
 // the panel snaps to the top on every SSE event (e.g. while a swarm streams).
-const SCROLL_KEEP = [".right", ".sidebar", ".summon-drawer", "#summon-transcript"];
+const SCROLL_KEEP = [".right", ".sidebar"];
 
 // Full re-renders are coalesced to one per animation frame. Without this, a
 // swarm of summons streaming at once triggers thousands of full-DOM rebuilds

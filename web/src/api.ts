@@ -10,19 +10,3 @@ export async function api(path, options = {}) {
   return body;
 }
 
-function roomApiPath(suffix = "") {
-  const snapshot = state.snapshot;
-  if (!snapshot) throw new Error("No workspace loaded");
-  return `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}${suffix}`;
-}
-
-export async function fetchSummon(summonId) {
-  return api(roomApiPath(`/summons/${encodeURIComponent(summonId)}`));
-}
-
-export async function cancelSummon(summonId) {
-  return api(roomApiPath(`/summons/${encodeURIComponent(summonId)}/cancel`), {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-}

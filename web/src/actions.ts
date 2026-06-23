@@ -1,8 +1,8 @@
-import { api, cancelSummon } from "./api.ts";
+import { api } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { render, setError } from "./render.ts";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.ts";
-import { activeTask, runningSummons, state } from "./state.ts";
+import { activeTask, runningSummonRooms, state } from "./state.ts";
 
 async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
@@ -154,16 +154,20 @@ export async function cancelActiveTask() {
   }
 }
 
-// Panic stop: abort the running room turn AND every running summoned worker.
-// Bound to Esc, Ctrl+C, and the stop button so nothing is ever unstoppable.
+// Panic stop: abort the running room turn AND every running summon sub-room.
+// A summon is a child room now, so each one is cancelled through the ordinary
+// room-cancel endpoint. Bound to Esc, Ctrl+C, and the stop button.
 export async function stopAll() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const summons = runningSummons(snapshot);
+  const workspaceId = snapshot.workspace.id;
+  const summonRooms = runningSummonRooms(snapshot);
   try {
     await Promise.allSettled([
       ...(activeTask(snapshot) ? [cancelActiveTask()] : []),
-      ...summons.map((summon) => cancelSummon(summon.id)),
+      ...summonRooms.map((room) =>
+        api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(room.id)}/cancel`, { method: "POST", body: "{}" }),
+      ),
     ]);
     setError("");
   } catch (error) {

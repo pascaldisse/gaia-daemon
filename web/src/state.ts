@@ -15,11 +15,12 @@ export const state = {
   eventSource: null,
   error: "",
   composerText: "",
-  selectedSummonId: null,
-  selectedSummon: null,
   completionIndex: 0,
   completionHidden: false,
   expandedActivities: new Set(),
+  // Which parent rooms are expanded in the sidebar's nested rooms tree. Summon
+  // sub-rooms are collapsed under their parent by default.
+  expandedRooms: new Set(),
   // Active voice call binding from the server (visible to every tab); the
   // tab that started the call also holds the audio session (see voice.ts).
   voice: null,
@@ -37,12 +38,14 @@ export function activeTask(snapshot = state.snapshot) {
   return (snapshot?.tasks ?? []).find((task) => task.status === "running") ?? null;
 }
 
-export function runningSummons(snapshot = state.snapshot) {
-  return (snapshot?.summons ?? []).filter((summon) => summon.status === "running");
+// Summon sub-rooms whose first turn is still streaming, surfaced on the rooms
+// list so the panic stop can reach background workers in other rooms.
+export function runningSummonRooms(snapshot = state.snapshot) {
+  return (snapshot?.rooms ?? []).filter((room) => room.running);
 }
 
 // "Busy" = a room turn is running OR any summoned worker is still running.
 // Esc / Ctrl+C / the stop button all act on this so nothing is unstoppable.
 export function isBusy(snapshot = state.snapshot) {
-  return Boolean(activeTask(snapshot)) || runningSummons(snapshot).length > 0;
+  return Boolean(activeTask(snapshot)) || runningSummonRooms(snapshot).length > 0;
 }
