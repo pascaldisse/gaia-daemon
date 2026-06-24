@@ -44,6 +44,21 @@ export interface AgentDefinition {
   permissionMode?: ClaudePermissionMode;
   /** Per-agent sandbox override (above the harness; merged over the workspace default). */
   sandbox?: SandboxConfig;
+  /**
+   * Trust tier (default true). An untrusted agent (`trust: false`) can never run
+   * outside a sandbox — forced isolation that no sandbox config can weaken (see
+   * resolveSandboxPolicy) — and may never summon further workers. The cheap or
+   * erratic models go here; the trusted lead runs wide open.
+   */
+  trust?: boolean;
+  /**
+   * May this agent summon further workers when it is ITSELF a summon (running in
+   * a nested child room)? Default false — a summoned worker gets a scoped task,
+   * not the keys to spawn its own swarm (prevents runaway summon fan-out). Top-
+   * level turns are unaffected. Forced false for untrusted agents regardless
+   * (see mayNestSummon).
+   */
+  allowNestedSummon?: boolean;
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;

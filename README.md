@@ -315,47 +315,44 @@ knowledge of which harness is inside. Backends are swappable: adding one is a ne
 `src/runtime/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
 line, the daemon analogue of a single-file container-runtime swap.
 
-Two backends ship:
+Three backends ship:
 
-- **`none`** (default) — no isolation; the identity launch. Selected unless a
-  workspace opts into something stronger.
+- **`macos-seatbelt`** (default real backend on macOS) — wraps the launch in
+  `sandbox-exec`. It ships with macOS, so it needs no image or daemon and works
+  out of the box. Posture: keep every capability the turn needs — read anything,
+  reach the network, spawn subprocesses — but confine **writes** to the workspace
+  (which is git-tracked and recoverable), temp, and regenerable caches, denying
+  writes to the rest of the host. So a confined agent can still edit the project
+  it was pointed at, but cannot touch the user's other files. Two carve-outs stay
+  read-only even inside the writable trees: the policy files (`config.json`,
+  project `agent.json`) and the pi credential store (`~/.pi/agent/auth.json`), so
+  a turn can neither rewrite its own governance nor tamper with keys it can read.
+  Residual, stated plainly: reads and network stay open, so this stops
+  destruction and tampering, not exfiltration.
 - **`apple-container`** — wraps the launch in Apple's `container run` (a Linux
-  VM). The workspace mounts read-only, declared subdirs mount read-write, the
-  rest of the host stays invisible, and `net: "none"` cuts network access. The
-  `container` binary must be on `PATH`, and the image (`GAIA_SANDBOX_IMAGE`,
-  default `gaia-agent`) must carry node + the gaia runner; building that image
-  is a separate concern, like the pi skill's `Containerfile`.
+  VM): stronger isolation, but it needs the `container` binary, a running
+  `container system start`, and an image (`GAIA_SANDBOX_IMAGE`, default
+  `gaia-agent`) carrying node + the gaia runner. Until that's built it is
+  unavailable, and a policy that names it **fail-closes** (below).
+- **`none`** — the identity launch, no isolation. The posture for a *trusted*
+  agent (see below).
 
 Policy is resolved above the harness — an `agent.json` `sandbox` block overrides
-the workspace `.gaia/config.json` one:
+the workspace `.gaia/config.json` one (`enabled`, `backend`, `writable`, `net`).
+Two rules sit above that config, driven by the agent's **trust** flag:
 
-```json
-{
-  "sandbox": {
-    "enabled": true,
-    "backend": "apple-container",
-    "writable": [".gaia/rooms"],
-    "net": "none"
-  }
-}
-```
+- **Untrusted agents** (`trust: false`) can **never** run unsandboxed. They are
+  forced enabled with a real backend, and no `sandbox` config can weaken that to
+  `none`/disabled — only swap in a *different* real backend. This is the cheap or
+  erratic tier (e.g. a DeepSeek worker): a scoped task and a room it can't trash.
+- **Summons** (any agent running in a child room) default to a real backend too,
+  so an agent-spawned turn is **never naked by default**. A *trusted* agent may
+  override that — including back to `none` — but an untrusted one cannot.
 
-Scope `writable` as narrowly as the turn needs (here, just the room scratch where
-Pi writes its session files) and **never include the policy files themselves**.
-The workspace mounts read-only, so `.gaia/config.json` and per-agent `agent.json`
-are unwritable by default; widening `writable` to all of `.gaia` would re-expose
-them, and since the next summon re-reads `config.json` from disk, a worker could
-write itself a weaker policy for the following turn. Pin a summoned agent's
-`sandbox` block in its `agent.json` (which lives in `~/.gaia`, outside the
-workspace mount) so its isolation can't be downgraded from inside the workspace.
-
-Two deliberate defaults: **summons default to `enabled: true`** (the riskier,
-agent-spawned turns opt into isolation first), and resolution is **fail-closed**
-— if a policy enables a backend that isn't available on this machine, the turn
-refuses to run rather than silently dropping to no isolation. The backend
-defaults to `none`, so until a workspace names a real backend nothing is actually
-isolated yet — an enabled policy with no configured backend is a safe no-op, and
-summons never break for lack of a runtime.
+Resolution is **fail-closed**: if the chosen backend isn't available on this
+machine (e.g. `apple-container` with no image), the turn refuses to run rather
+than silently dropping isolation. A trusted top-level turn defaults to `none`
+(the trusted lead runs wide open).
 
 ## Summons
 
@@ -367,8 +364,13 @@ the worker's final result.
 
 Fan several summons out at once and they run in parallel — that is the swarm.
 `maxSummonsPerRoom` in `.gaia/config.json` (default 8) bounds how many run
-concurrently per room. Summoned workers are sandbox-enabled by default (see
+concurrently per room. Summoned workers run sandboxed by default (see
 **Sandbox**).
+
+A summoned worker **cannot summon further workers by default** — it gets a scoped
+task, not the keys to spawn its own swarm (this bounds runaway fan-out). An agent
+opts back in with `allowNestedSummon: true` in its `agent.json`, but an untrusted
+agent (`trust: false`) is refused regardless.
 
 ## Create a new agent
 
@@ -410,6 +412,11 @@ Optional `agent.json` fields:
   `plan` for a no-edit planning posture (`default`, `acceptEdits`, `plan`, …)
 - `sandbox`: per-agent isolation policy (`enabled`, `backend`, `writable`,
   `net`) that overrides the workspace default (see **Sandbox**)
+- `trust`: trust tier (default `true`). `trust: false` forces the agent into a
+  sandbox it can't configure away, and bars it from summoning (see **Sandbox** /
+  **Summons**) — the tier for cheap or untrusted models
+- `allowNestedSummon`: let this agent summon further workers when it is itself a
+  summon (default `false`; ignored for untrusted agents — see **Summons**)
 
 ## Prompt layering
 
@@ -526,6 +533,7 @@ Room-local active roles, transcript cursors, runtime details, and Pi session met
 - Agent messages do not auto-trigger more routing.
 - Three harnesses ship: `pi` (default), `claude`, and `codex` (see **Harnesses**).
   `claude`/`codex` ride your logged-in subscriptions via their own CLIs.
-- OS-level isolation is a swappable sandbox that wraps the per-turn runner
-  (`none` by default, Apple `container` available); summons run sandboxed by
-  default (see **Sandbox**).
+- OS-level isolation is a swappable sandbox that wraps the per-turn runner. On
+  macOS it defaults to a real `sandbox-exec` backend; summons and untrusted
+  (`trust: false`) agents are sandboxed by default, the latter unconditionally
+  (see **Sandbox**).

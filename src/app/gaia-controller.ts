@@ -18,6 +18,7 @@ import type { HarnessHost } from "./harness-bridge.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
 import type { SummonHost } from "./summon-coordinator.js";
+import { allowSummonForTurn, isTrusted } from "./summon-policy.js";
 import { runAgentTurn } from "./turn-runner.js";
 
 export interface AgentStatus {
@@ -189,10 +190,18 @@ export class GaiaController {
           : createAgentRuntime({
               workspace: options.workspace,
               agent,
-              harnessHost: options.harnessHost?.({ allowSummon: true }),
+              harnessHost: options.harnessHost,
+              // Resolved at spawn (after init), when parentRoomId is known. A
+              // summoned worker only gets summon rights if its agent opts in
+              // (and isn't deepseek-tier); top-level turns always do.
+              allowSummon: () => allowSummonForTurn(agent, Boolean(this.roomState.parentRoomId)),
               // Resolved at spawn (after init), so a summon child room is known
-              // and can default the sandbox on (above the harness).
-              sandbox: () => resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, Boolean(this.roomState.parentRoomId)),
+              // and can default the sandbox on (above the harness). An untrusted
+              // agent is forced into a sandbox regardless of isSummon/config.
+              sandbox: () =>
+                resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, Boolean(this.roomState.parentRoomId), {
+                  trusted: isTrusted(agent),
+                }),
             }),
       ]),
     );

@@ -174,6 +174,8 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       thinking: raw.thinking,
       harness: parseHarness(raw.harness),
       sandbox: parseSandboxConfig((raw as { sandbox?: unknown }).sandbox),
+      trust: (raw as { trust?: unknown }).trust === false ? false : undefined,
+      allowNestedSummon: (raw as { allowNestedSummon?: unknown }).allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
