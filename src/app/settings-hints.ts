@@ -45,8 +45,9 @@ export interface FieldHint {
 // Claude-only posture knob.
 function hiddenFieldsFor(harnessId: string): string[] {
   const hidden: string[] = [];
-  if (!capabilitiesFor(harnessId).granularTools) hidden.push("tools");
-  if (harnessId !== "claude") hidden.push("permissionMode");
+  const caps = capabilitiesFor(harnessId);
+  if (!caps.granularTools) hidden.push("tools");
+  if (!caps.supportsPermissionMode) hidden.push("permissionMode");
   return hidden;
 }
 

@@ -96,7 +96,11 @@ function skillPathsKey(paths: string[]): string {
   return JSON.stringify(paths);
 }
 
-const PI_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory", "recall", "summon"], granularTools: true };
+const PI_CAPABILITIES: HarnessCapabilities = {
+  gaiaTools: ["memory", "recall", "summon"],
+  granularTools: true,
+  supportsPermissionMode: false,
+};
 
 export class PiRuntime implements AgentRuntime {
   readonly capabilities = PI_CAPABILITIES;
