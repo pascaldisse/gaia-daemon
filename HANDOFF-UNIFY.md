@@ -1,8 +1,18 @@
 # Unification Refactor — Plan
 
-## STATUS (2026-06-24, branch feat/claude-harness)
+## STATUS — COMPLETE (2026-06-24, branch feat/claude-harness)
 
-Done + committed, each its own commit, 197/197 green + tsc clean throughout:
+ALL phases done + committed, 210/210 green + tsc clean. The keystone (3+4+7)
+landed as one atomic commit `aa85957`: createAgentRuntime returns a RunnerHost
+for every harness; each runs in a per-(room, agent) `gaia __run-agent`
+subprocess (Pi no longer in-process); all tool I/O goes over the HTTP bridge
+(BridgeMemoryStore writes, bridgeSummonCreate); the swappable sandbox
+(runtime/sandbox/*, none + apple-container) wraps that one spawn, summons default
+enabled, fail-closed. Codex is per-room now, so its recall/summon limit is gone.
+Tested with zero API cost (real runner ready handshake, stub-runner protocol,
+bridge deps, sandbox policy/launch).
+
+Done + committed, each its own commit, 197/197 → 210/210 green + tsc clean throughout:
 - **Phase 0** `6816aaf` — one harness descriptor (runtime/harness-registry.ts +
   runtime/index.ts barrel; self-registration; AgentHarness=string; one
   parseHarness; HARNESS_CONFIGS deleted).
