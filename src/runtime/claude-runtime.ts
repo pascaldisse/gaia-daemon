@@ -302,7 +302,11 @@ export interface ClaudeRuntimeOptions extends BaseRuntimeOptions {
   harnessHost?: HarnessHost;
 }
 
-const CLAUDE_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory", "recall", "summon"], granularTools: true };
+const CLAUDE_CAPABILITIES: HarnessCapabilities = {
+  gaiaTools: ["memory", "recall", "summon"],
+  granularTools: true,
+  supportsPermissionMode: true,
+};
 
 export class ClaudeRuntime implements AgentRuntime {
   readonly capabilities = CLAUDE_CAPABILITIES;

@@ -24,4 +24,10 @@ export interface HarnessCapabilities {
    * sandbox (Codex), where the `tools` array is ignored — so the UI hides it.
    */
   readonly granularTools: boolean;
+  /**
+   * True when the harness honors the `permissionMode` posture knob (Claude
+   * Code's `--permission-mode`). The settings UI hides that field for harnesses
+   * with no equivalent — derived from this flag, never from the harness id.
+   */
+  readonly supportsPermissionMode: boolean;
 }

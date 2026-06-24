@@ -223,7 +223,11 @@ export interface CodexRuntimeOptions extends BaseRuntimeOptions {
 // The persistent app-server is shared across rooms, so room-coupled recall/
 // summon can't be wired (only room-independent memory); and Codex runs a coarse
 // sandbox rather than honoring a granular per-tool array.
-const CODEX_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory"], granularTools: false };
+const CODEX_CAPABILITIES: HarnessCapabilities = {
+  gaiaTools: ["memory"],
+  granularTools: false,
+  supportsPermissionMode: false,
+};
 
 export class CodexRuntime implements AgentRuntime {
   readonly capabilities = CODEX_CAPABILITIES;
