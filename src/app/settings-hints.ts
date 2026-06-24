@@ -2,6 +2,7 @@ import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { CLAUDE_PERMISSION_MODES } from "../agents/types.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../runtime/index.js";
+import { gaiaToolIds } from "../tools/gaia-tools.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -86,12 +87,11 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] sat
 // the ToolName annotation keeps this list checked against the SDK union.
 const EXTRA_TOOL_NAMES: ToolName[] = ["grep", "find", "ls"];
 
-// GAIA-provided custom tools (see runtime/pi-runtime.ts customTools).
-const GAIA_TOOL_NAMES = ["memory", "recall"];
-
 export function sdkToolNames(cwd: string): string[] {
   const coding = createCodingTools(cwd).map((tool) => tool.name);
-  return [...new Set([...coding, ...EXTRA_TOOL_NAMES, ...GAIA_TOOL_NAMES])];
+  // GAIA-provided custom tools come from the single tool registry (so this list
+  // can never drift from what the harnesses actually wire).
+  return [...new Set([...coding, ...EXTRA_TOOL_NAMES, ...gaiaToolIds()])];
 }
 
 export function sdkThinkingLevels(): string[] {

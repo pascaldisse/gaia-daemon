@@ -13,9 +13,8 @@ import {
 import type { AgentDefinition } from "../agents/types.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { resolveSkillRefs } from "../skills/skill-resolver.js";
-import { createMemoryTool } from "../tools/memory-tool.js";
-import { createRecallTool } from "../tools/recall-tool.js";
-import { createSummonTool, type SummonCreate } from "../tools/summon-tool.js";
+import { buildPiTools } from "../tools/gaia-tools.js";
+import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
@@ -271,15 +270,13 @@ export class PiRuntime implements AgentRuntime {
   private async createManagedSession(roomId: string, systemPrompt: string, skillPaths: string[], key: string): Promise<ManagedPiSession> {
     const model = this.resolveModel();
     const roomDir = join(this.workspace.roomsDir, roomId);
-    const customTools = [
-      ...(this.agent.tools.includes("memory") ? [createMemoryTool(this.memoryStore, this.agent)] : []),
-      ...(this.agent.tools.includes("recall")
-        ? [createRecallTool(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), roomId)]
-        : []),
-      ...(this.agent.tools.includes("summon") && this.summonCreate
-        ? [createSummonTool(this.summonCreate, roomId)]
-        : []),
-    ];
+    const customTools = await buildPiTools(this.agent.tools, {
+      memoryStore: this.memoryStore,
+      agent: this.agent,
+      roomId,
+      roomDir,
+      summonCreate: this.summonCreate,
+    });
     const systemPromptRef = { current: systemPrompt };
 
     const loader = new DefaultResourceLoader({
@@ -319,7 +316,9 @@ export class PiRuntime implements AgentRuntime {
           // Pi treats `tools` as an allowlist over built-in AND custom tools,
           // so the custom tool names (memory, recall) must stay in the list.
           tools: this.agent.tools,
-          customTools,
+          // The registry yields `unknown[]` (it imports no pi types to stay light);
+          // this is the one site that knows they are pi tool definitions.
+          customTools: customTools as NonNullable<Parameters<typeof createAgentSession>[0]>["customTools"],
           resourceLoader: loader,
           sessionManager: SessionManager.continueRecent(this.cwd, sessionDir),
           settingsManager: readOnlyPiSettings(this.cwd),
