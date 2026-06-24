@@ -23,6 +23,7 @@ import {
 import { ensureVoiceSettingsFile, readVoiceSettings, type VoiceSettings } from "../app/voice-settings.js";
 import { VoiceStackManager } from "../app/voice-stack.js";
 import { WorkspaceRegistry } from "../app/workspace-registry.js";
+import { gaiaHost, gaiaPort } from "../config/defaults.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { scaffoldGlobalAgent } from "../agents/scaffold.js";
@@ -275,8 +276,8 @@ export class GaiaWebServer {
       });
     });
 
-    const host = this.options.host ?? "127.0.0.1";
-    const port = this.options.port ?? 8787;
+    const host = this.options.host ?? gaiaHost();
+    const port = this.options.port ?? gaiaPort();
 
     await new Promise<void>((resolveListen, reject) => {
       server.once("error", reject);
@@ -964,7 +965,7 @@ export class GaiaWebServer {
   }
 
   private gaiaUrl(): string {
-    return `http://${this.options.host ?? "127.0.0.1"}:${this.options.port ?? 8787}`;
+    return `http://${this.options.host ?? gaiaHost()}:${this.options.port ?? gaiaPort()}`;
   }
 
   private async handleSetThinking(request: IncomingMessage, response: ServerResponse, workspaceId: string, agentId: string): Promise<void> {

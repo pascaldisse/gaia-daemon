@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
+import { DEFAULTS } from "../config/defaults.js";
 import { jsonText, writeIfMissing, writeJsonFile } from "../lib/fs.js";
 import { defaultRoomState } from "../room/state.js";
 import { parseHarness } from "../runtime/index.js";
@@ -10,7 +11,7 @@ import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
 export const WORKSPACE_DIRNAME = ".gaia";
-export const DEFAULT_ROOM = "default";
+export const DEFAULT_ROOM = DEFAULTS.room;
 
 export function gaiaHome(): string {
   const env = process.env.GAIA_HOME?.trim();
@@ -27,10 +28,10 @@ function workspaceFile(cwd: string, ...parts: string[]): string {
 
 function defaultConfig(): WorkspaceConfig {
   return {
-    defaultAgent: "gaia",
-    room: DEFAULT_ROOM,
-    transcriptWindow: 20,
-    maxSummonsPerRoom: 8,
+    defaultAgent: DEFAULTS.defaultAgent,
+    room: DEFAULTS.room,
+    transcriptWindow: DEFAULTS.transcriptWindow,
+    maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
   };
 }
 
