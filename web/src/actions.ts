@@ -3,6 +3,7 @@ import { connectEvents } from "./events.ts";
 import { render, setError } from "./render.ts";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.ts";
 import { activeTask, runningSummonRooms, state } from "./state.ts";
+import { closeTab, openTab, restoreTabs } from "./tabs.ts";
 
 async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
@@ -10,6 +11,10 @@ async function applyAppPayload(body) {
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.globalFiles = body.globalFiles ?? state.globalFiles;
   state.voice = body.voice ?? null;
+  if (state.snapshot) {
+    restoreTabs(state.snapshot.workspace.id);
+    openTab(state.snapshot.room.id, state.snapshot.workspace.id);
+  }
   connectEvents();
   await loadInitialFiles();
   setError("");
@@ -33,6 +38,10 @@ export async function loadWorkspace(workspaceId) {
     state.voice = body.voice ?? null;
     state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
     state.workspaceFile = null;
+    if (state.snapshot) {
+      restoreTabs(state.snapshot.workspace.id);
+      openTab(state.snapshot.room.id, state.snapshot.workspace.id);
+    }
     connectEvents();
     await loadSelectedWorkspaceFile();
     setError("");
@@ -70,6 +79,7 @@ export async function selectRoom(workspaceId, roomId) {
     state.voice = body.voice ?? null;
     state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
     state.workspaceFile = null;
+    if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
     await loadSelectedWorkspaceFile();
     setError("");
@@ -126,6 +136,18 @@ export async function addRoom() {
   } catch (error) {
     setError(error);
   }
+}
+
+// Close a room tab. This only drops it from the working set — the room and its
+// transcript stay put and remain reachable from the sidebar tree. If the closed
+// tab was active, jump to a neighbour so a room is always in view.
+export async function closeRoomTab(roomId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const isActive = snapshot.room.id === roomId;
+  const neighbour = closeTab(roomId, snapshot.workspace.id, isActive);
+  if (isActive && neighbour && neighbour !== roomId) await selectRoom(snapshot.workspace.id, neighbour);
+  else render();
 }
 
 export async function sendMessage(text) {
