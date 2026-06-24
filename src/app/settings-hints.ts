@@ -1,7 +1,7 @@
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@mariozechner/pi-coding-agent";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { CLAUDE_PERMISSION_MODES } from "../agents/types.js";
-import { capabilitiesFor } from "../runtime/capabilities.js";
+import { capabilitiesFor, findHarness, harnessSpecs } from "../runtime/index.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -38,52 +38,6 @@ export interface FieldHint {
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
   hidden?: boolean;
 }
-
-/** Per-harness config that controls field visibility and model filtering in the settings UI. */
-export interface HarnessConfig {
-  id: string;
-  label: string;
-  description: string;
-  /** If set, model provider is locked to this value; the UI hides the provider selector. */
-  lockedProvider?: string;
-  /** If set, model name options are filtered to these provider IDs. */
-  modelProviderIds?: string[];
-  /**
-   * If set, the model name selector offers exactly these values instead of the
-   * Pi model catalog (and the provider selector is hidden). Used by harnesses
-   * whose `--model` takes its own aliases — e.g. Claude Code accepts
-   * "opus"/"sonnet"/"haiku", where "opus" always resolves to the latest Opus.
-   */
-  modelNameOptions?: string[];
-}
-
-/** Harness registry: future harnesses/providers plug in here. Field *visibility*
- *  is NOT configured here — it is derived from runtime capabilities (see
- *  hiddenFieldsFor) so the UI never re-encodes a backend truth. */
-export const HARNESS_CONFIGS: Record<string, HarnessConfig> = {
-  pi: {
-    id: "pi",
-    label: "pi",
-    description: "Pi coding agent (local SDK)",
-  },
-  codex: {
-    id: "codex",
-    label: "codex",
-    description: "OpenAI Codex app-server",
-    lockedProvider: "openai-codex",
-    modelProviderIds: ["openai-codex"],
-  },
-  claude: {
-    id: "claude",
-    label: "claude",
-    description: "Claude Code CLI (claude -p, subscription auth)",
-    // Claude Code picks the model itself; `--model` takes its own aliases, not
-    // Pi catalog ids. Offer those aliases ("opus" = latest Opus, e.g. 4.8) and
-    // hide the provider. Empty = whatever the Claude Code CLI defaults to.
-    lockedProvider: "anthropic",
-    modelNameOptions: ["opus", "sonnet", "haiku"],
-  },
-};
 
 // Which agent.json fields the settings UI hides for a harness — derived from the
 // declared runtime capabilities, never hardcoded per harness. A coarse-sandbox
@@ -206,21 +160,21 @@ function values(items: string[]): FieldHintOption[] {
 }
 
 function harnessSelectOptions(): FieldHintOption[] {
-  return Object.values(HARNESS_CONFIGS).map((config) => ({
-    value: config.id,
-    label: config.label,
-    description: config.description,
+  return harnessSpecs().map((spec) => ({
+    value: spec.id,
+    label: spec.ui.label,
+    description: spec.ui.description,
   }));
 }
 
 function harnessHintsMeta(): HarnessHintsMeta {
   const configs: HarnessHintsMeta["configs"] = {};
-  for (const config of Object.values(HARNESS_CONFIGS)) {
-    configs[config.id] = {
-      lockedProvider: config.lockedProvider,
-      modelProviderIds: config.modelProviderIds,
-      modelNameOptions: config.modelNameOptions,
-      hiddenFields: hiddenFieldsFor(config.id),
+  for (const spec of harnessSpecs()) {
+    configs[spec.id] = {
+      lockedProvider: spec.ui.lockedProvider,
+      modelProviderIds: spec.ui.modelProviderIds,
+      modelNameOptions: spec.ui.modelNameOptions,
+      hiddenFields: hiddenFieldsFor(spec.id),
     };
   }
   return { configs };
@@ -242,7 +196,7 @@ function configJsonHints(sources: HintSources, parsed?: Record<string, unknown>)
 
 function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>): FileHints {
   const rawHarness = typeof parsed?.harness === "string" ? parsed.harness : undefined;
-  const currentHarnessConfig = rawHarness ? HARNESS_CONFIGS[rawHarness] : undefined;
+  const currentHarnessUi = rawHarness ? findHarness(rawHarness)?.ui : undefined;
 
   // Fields hidden for the current harness, derived from its capabilities. The
   // `hidden` flag carries the saved state; the frontend reads _harness meta to
@@ -251,8 +205,8 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
 
   // Locked provider: if the harness locks a provider, hide model.provider
   // and filter model names to only that provider's models.
-  const providerLocked = Boolean(currentHarnessConfig?.lockedProvider);
-  const modelFilterProviders = currentHarnessConfig?.modelProviderIds;
+  const providerLocked = Boolean(currentHarnessUi?.lockedProvider);
+  const modelFilterProviders = currentHarnessUi?.modelProviderIds;
 
   const allModels = sources.models;
   const modelNameOptions = modelFilterProviders

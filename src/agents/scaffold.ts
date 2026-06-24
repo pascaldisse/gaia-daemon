@@ -46,12 +46,6 @@ export function agentConfigTemplate(id: string, displayName: string, icon: strin
   };
 }
 
-/** Returns whether a string value matches a known harness identifier. */
-export function normalizeHarness(raw: unknown): "pi" | "codex" | "claude" | undefined {
-  if (raw === "pi" || raw === "codex" || raw === "claude") return raw;
-  return undefined;
-}
-
 /** Returns the value if it is a known Claude permission mode, else undefined. */
 export function normalizePermissionMode(raw: unknown): ClaudePermissionMode | undefined {
   return typeof raw === "string" && (CLAUDE_PERMISSION_MODES as string[]).includes(raw)

@@ -8,7 +8,8 @@ import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { MemoryStore } from "../memory/memory-store.js";
 import type { Workspace } from "../workspace/types.js";
-import { HARNESS_CAPABILITIES } from "./capabilities.js";
+import type { HarnessCapabilities } from "./capabilities.js";
+import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
@@ -301,8 +302,10 @@ export interface ClaudeRuntimeOptions extends BaseRuntimeOptions {
   harnessHost?: HarnessHost;
 }
 
+const CLAUDE_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory", "recall", "summon"], granularTools: true };
+
 export class ClaudeRuntime implements AgentRuntime {
-  readonly capabilities = HARNESS_CAPABILITIES.claude;
+  readonly capabilities = CLAUDE_CAPABILITIES;
   readonly agent: AgentDefinition;
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
@@ -628,3 +631,18 @@ export class ClaudeRuntime implements AgentRuntime {
     return name ? `anthropic/${name}` : "Claude default";
   }
 }
+
+registerHarness({
+  id: "claude",
+  capabilities: CLAUDE_CAPABILITIES,
+  ui: {
+    // Claude Code picks the model itself; `--model` takes its own aliases, not
+    // Pi catalog ids. Offer those aliases ("opus" = latest Opus) and hide the
+    // provider. Empty = whatever the Claude Code CLI defaults to.
+    label: "claude",
+    description: "Claude Code CLI (claude -p, subscription auth)",
+    lockedProvider: "anthropic",
+    modelNameOptions: ["opus", "sonnet", "haiku"],
+  },
+  create: (ctx) => new ClaudeRuntime(ctx),
+});

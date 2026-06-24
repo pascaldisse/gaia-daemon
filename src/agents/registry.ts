@@ -3,7 +3,8 @@ import { mkdir, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
-import { agentConfigTemplate, normalizeHarness, normalizePermissionMode } from "./scaffold.js";
+import { parseHarness } from "../runtime/index.js";
+import { agentConfigTemplate, normalizePermissionMode } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
 interface RawAgentConfig {
@@ -170,7 +171,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       tools: stringList(raw.tools, []),
       model: raw.model,
       thinking: raw.thinking,
-      harness: normalizeHarness(raw.harness),
+      harness: parseHarness(raw.harness),
       permissionMode: normalizePermissionMode(raw.permissionMode),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,

@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { AgentHarness } from "../runtime/capabilities.js";
 
 export interface AgentModelConfig {
   provider?: string;
@@ -33,7 +34,7 @@ export interface AgentDefinition {
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   /** Agent harness backend. Falls back to workspace config, then "pi". */
-  harness?: "pi" | "codex" | "claude";
+  harness?: AgentHarness;
   /**
    * Posture knob exposed as data (Claude harness): permission mode for the
    * session. "plan" is how a read-only "plan mode" is expressed without a
