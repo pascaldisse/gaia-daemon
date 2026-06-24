@@ -614,7 +614,10 @@ export class GaiaWebServer {
       return;
     }
     try {
-      const result = await controller.summonAndWait(claims.roomId, targetAgent, task.trim());
+      // The coordinator validates the agent and owns the per-room cap; call it
+      // directly instead of bouncing through a controller pass-through.
+      const coordinator = await this.coordinatorFor(claims.workspaceId);
+      const result = await coordinator.summonAndWait(claims.roomId, targetAgent, task.trim());
       json(response, 200, { result });
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -52,16 +52,6 @@ export class SummonCoordinator {
     return parentRoomId === undefined ? all : all.filter((child) => child.parentRoomId === parentRoomId);
   }
 
-  // Cancel a running summon by aborting its child room's turn. The room (and its
-  // transcript so far) persists; it just stops streaming.
-  async cancel(childRoomId: string): Promise<boolean> {
-    if (!this.running.has(childRoomId)) return false;
-    const child = await this.controllerForRoom(childRoomId);
-    await child.cancelActiveTask();
-    this.running.delete(childRoomId);
-    return true;
-  }
-
   async summon(parentRoomId: string, agentId: string, task: string): Promise<string> {
     const { childRoomId } = await this.start(parentRoomId, agentId, task);
     return childRoomId;
@@ -107,7 +97,7 @@ export class SummonCoordinator {
     try {
       await child.waitForIdle(SUMMON_TIMEOUT_MS);
     } catch {
-      return "summon timed out after 5 minutes";
+      return `summon timed out after ${Math.round(SUMMON_TIMEOUT_MS / 60_000)} minutes`;
     }
     const reply = (await child.latestReplyFrom(agentId)).trim();
     return reply || "(no output)";

@@ -779,14 +779,6 @@ export class GaiaController {
     return this.memoryStore.mutate(agent.memoryDir, file, action, options);
   }
 
-  /** Summon for a harness subprocess (the `gaia summon` CLI): create and wait. */
-  async summonAndWait(roomId: string, agentId: string, task: string): Promise<string> {
-    if (!this.options.summonHost) throw new Error("Summon system is not available.");
-    const agent = this.workspace.agents[agentId];
-    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
-    return this.options.summonHost.summonAndWait(roomId, agent.id, task);
-  }
-
   private unknownAgentMessage(agentId: string): string {
     return `Unknown agent: @${agentId}\nAvailable agents: ${Object.keys(this.workspace.agents)
       .map((id) => `@${id}`)
