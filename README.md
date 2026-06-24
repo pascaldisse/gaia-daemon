@@ -1,6 +1,6 @@
 # GAIA Daemon
 
-`gaia` is a local-first persona room built on the Pi SDK.
+`gaia` is a local-first multi-agent workspace built on the Pi SDK.
 
 Its main idea is simple:
 
@@ -12,7 +12,10 @@ Personas are durable. Projects add local context.
 
 ## Current shape
 
-- web UI as the only frontend (`gaia` starts the server and prints the URL)
+- web UI as the only frontend (`gaia` starts the server and prints the URL),
+  laid out like a tmux/omarchy terminal multiplexer: rooms are tabs across the
+  top, a powerline status bar runs along the bottom, and the whole thing
+  restyles live through 11 swappable themes (default Tokyo Night) — see **Run**
 - global agents under `~/.gaia/agents/`
 - agent-owned `persona/` folders
 - central skill libraries under `~/.gaia/skills/` and project `.gaia/skills/`
@@ -25,17 +28,24 @@ Personas are durable. Projects add local context.
 - per-agent markdown memory (capped core + user profile + topic files) and
   full-text recall over the room history
 - pluggable per-agent harness (`pi`, `codex`, `claude`) — see **Harnesses**
-- persistent session per room-agent pair
+- one long-lived runner per room-agent pair: every harness runs each turn in a
+  uniform `gaia __run-agent` subprocess, so a swappable OS-level **sandbox** can
+  wrap exactly one process — see **Sandbox**
+- summons run as nested child rooms (a `/summon` or the `summon` tool opens a
+  sub-room in the tree); fan several out at once for a swarm — see **Summons**
 - model switching through Pi's registry (API-key, subscription/OAuth, local);
   each agent message shows the model that actually produced it
 - voice calls per agent through the vendored unmute stack (`unmute/`)
 - sample global agents: `@gaia`, `@sidia`, `@terry`
-- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`, `/thinking`
+- slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`,
+  `/thinking`, `/clear`, `/fork`
 - dynamic selectable previews for `/` commands and `@` agents
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
 
-`GAIA_HOME` can override the global home path. Default: `~/.gaia`.
+Environment overrides: `GAIA_HOME` (global home, default `~/.gaia`), `GAIA_HOST`
+/ `GAIA_PORT` (web-server bind address, default `127.0.0.1:8787`; port `0` picks
+a free one), and `GAIA_SANDBOX_IMAGE` (container image for the sandbox).
 
 ## Setup
 
@@ -123,6 +133,24 @@ npm run dev:watch
 
 In the composer, type `/` for the command preview and `@` for the agent preview.
 Use ↑/↓ to select, Tab/Enter to insert, and Esc to hide.
+
+The UI is a tmux-style multiplexer. Rooms are tabs; a powerline status bar shows
+the workspace, active room, and agent state. tmux-flavoured keybindings (all
+modified, so they never collide with the composer):
+
+```text
+Ctrl/Cmd+T            new room (tab)
+Alt+1..9             jump to room tab N
+Ctrl+Tab / Alt+←/→   next / previous tab
+Ctrl+B               toggle the sessions sidebar
+Ctrl+G               toggle the room panel
+Alt+T                theme palette        Alt+Shift+T   cycle theme
+Esc                  close the theme palette
+```
+
+Eleven themes ship (Tokyo Night by default, plus Cyberpunk, Catppuccin, Gruvbox,
+Nord, Everforest, Kanagawa, Rosé Pine, Dracula, Matte Black, and an opt-in
+green-CRT Matrix). The choice is per-browser.
 
 Examples:
 
@@ -251,6 +279,13 @@ A harness is a faithful **translator** of the agent's `tools` array and posture
 — not a place that hardcodes "modes". "Plan mode" or "read-only" are just
 combinations of toggles, mapped onto each backend as faithfully as it can.
 
+Every harness — Pi included — runs each turn in a uniform `gaia __run-agent`
+subprocess (one long-lived runner per room-agent pair). The daemon launches all
+three the same way, so the execution model has no harness-specific branches and
+the **sandbox** has exactly one process to wrap (see **Sandbox**). The runner
+talks back to the daemon over a small HTTP bridge for `memory`/`recall`/`summon`,
+keeping the daemon the single writer.
+
 - **`pi`** (default) — the Pi SDK, in-process. `memory`, `recall`, and `summon`
   are in-process tools. Models and auth come from Pi's registry.
 - **`claude`** — spawns your installed `claude` CLI once per turn, inheriting
@@ -271,6 +306,59 @@ through a small `gaia` CLI the agent runs (reads go straight to disk; writes and
 summon call back to the running daemon, which stays the single writer) — no MCP.
 The `claude`/`codex` providers are locked in the settings UI to Anthropic /
 OpenAI-Codex models respectively.
+
+## Sandbox
+
+Because every harness runs a turn in the same `gaia __run-agent` subprocess, the
+daemon can wrap that one process in an OS-level sandbox — uniformly, with no
+knowledge of which harness is inside. Backends are swappable: adding one is a new
+`src/runtime/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
+line, the daemon analogue of a single-file container-runtime swap.
+
+Two backends ship:
+
+- **`none`** (default) — no isolation; the identity launch. Selected unless a
+  workspace opts into something stronger.
+- **`apple-container`** — wraps the launch in Apple's `container run` (a Linux
+  VM). The workspace mounts read-only, declared subdirs mount read-write, the
+  rest of the host stays invisible, and `net: "none"` cuts network access. The
+  `container` binary must be on `PATH`, and the image (`GAIA_SANDBOX_IMAGE`,
+  default `gaia-agent`) must carry node + the gaia runner; building that image
+  is a separate concern, like the pi skill's `Containerfile`.
+
+Policy is resolved above the harness — an `agent.json` `sandbox` block overrides
+the workspace `.gaia/config.json` one:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "backend": "apple-container",
+    "writable": [".gaia"],
+    "net": "none"
+  }
+}
+```
+
+Two deliberate defaults: **summons default to sandbox-enabled** (the riskier,
+agent-spawned turns are isolated first), and resolution is **fail-closed** — if a
+policy enables a backend that isn't available on this machine, the turn refuses
+to run rather than silently dropping to no isolation. The backend defaults to
+`none`, so an enabled policy with no configured backend is a safe no-op until you
+name a real one — summons never break for lack of a runtime.
+
+## Summons
+
+A summon is a private worker turn that runs as a **nested child room**. Trigger
+one from the composer with `/summon <agent> <task>`, or give an agent the
+`summon` tool and let it call workers itself. Each summon opens a sub-room under
+the calling room in the tabs tree; its transcript is its own, and the parent sees
+the worker's final result.
+
+Fan several summons out at once and they run in parallel — that is the swarm.
+`maxSummonsPerRoom` in `.gaia/config.json` (default 8) bounds how many run
+concurrently per room. Summoned workers are sandbox-enabled by default (see
+**Sandbox**).
 
 ## Create a new agent
 
@@ -310,6 +398,8 @@ Optional `agent.json` fields:
   **Harnesses**)
 - `permissionMode` (Claude harness only): Claude Code permission mode, e.g.
   `plan` for a no-edit planning posture (`default`, `acceptEdits`, `plan`, …)
+- `sandbox`: per-agent isolation policy (`enabled`, `backend`, `writable`,
+  `net`) that overrides the workspace default (see **Sandbox**)
 
 ## Prompt layering
 
@@ -396,9 +486,14 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
 }
 ```
 
-An optional `"harness"` key (`pi` | `codex` | `claude`) sets the default
-harness for every agent in the workspace; per-agent `agent.json` overrides it
-(see **Harnesses**).
+Optional keys:
+
+- `"harness"` (`pi` | `codex` | `claude`) sets the default harness for every
+  agent in the workspace; per-agent `agent.json` overrides it (see **Harnesses**)
+- `"maxSummonsPerRoom"` bounds concurrent summons per room (default 8, see
+  **Summons**)
+- `"sandbox"` sets the workspace-wide isolation policy, overridden per agent
+  (see **Sandbox**)
 
 All settings are plain text files. The web UI's formatted view renders smart
 controls on top of them (dropdowns for agents, rooms, models, tool
@@ -421,4 +516,6 @@ Room-local active roles, transcript cursors, runtime details, and Pi session met
 - Agent messages do not auto-trigger more routing.
 - Three harnesses ship: `pi` (default), `claude`, and `codex` (see **Harnesses**).
   `claude`/`codex` ride your logged-in subscriptions via their own CLIs.
-- Containers and stronger OS-level isolation are future seams, not part of this MVP.
+- OS-level isolation is a swappable sandbox that wraps the per-turn runner
+  (`none` by default, Apple `container` available); summons run sandboxed by
+  default (see **Sandbox**).
