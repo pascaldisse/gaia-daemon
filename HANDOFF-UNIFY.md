@@ -1,5 +1,38 @@
 # Unification Refactor — Plan
 
+## STATUS (2026-06-24, branch feat/claude-harness)
+
+Done + committed, each its own commit, 197/197 green + tsc clean throughout:
+- **Phase 0** `6816aaf` — one harness descriptor (runtime/harness-registry.ts +
+  runtime/index.ts barrel; self-registration; AgentHarness=string; one
+  parseHarness; HARNESS_CONFIGS deleted).
+- **Phase 1** `04fa634` — permissionMode visibility is a `supportsPermissionMode`
+  capability; the last `!== "claude"` logic leak is gone.
+- **Phase 2** `ed0afbc` — one gaia-tool registry (tools/gaia-tools.ts); pi/claude/
+  prompt/CLI/settings all iterate it; fixed the settings `summon` drift; registry
+  stays import-light via lazy makePiTool.
+- **Phase 5** `239dc4e` — deleted dead SummonCoordinator.cancel + redundant
+  GaiaController.summonAndWait hop; deduped the timeout string. (Kept the running
+  map + latestReplyFrom: correct, not duplication.)
+- **Phase 6** `2ee37c7` — one config/defaults.ts (DEFAULTS) + GAIA_HOST/GAIA_PORT.
+  (Left single-site constants/secret-patterns/personas as-is: one source already.)
+
+Result: **no harness-id branching remains in daemon logic.** Harnesses, tools,
+capabilities, and defaults are each a single registry/source. Adding a harness =
+one runtime file + one barrel line; adding a tool = one registry entry.
+
+Remaining = Phases 3, 4, 7 — NOT independent. They are one atomic change:
+Phase 4 (Pi runs as a per-room subprocess runner like the others) is what *forces*
+Pi's memory/recall/summon onto the HTTP bridge (Phase 3) and is the single process
+the sandbox wraps (Phase 7). The Codex `memory`-only limit is a symptom: its token
+is minted roomless at app-server spawn (codex-runtime.ts:486) because the
+app-server is shared; a per-room runner gives it a per-room token and recall/summon
+become uniform. There is no safe partial slice — it must land atomically (the
+plan's own rule), touching every turn of every agent + all the runtime test
+injection points. Do it as a focused effort; spec below is unchanged.
+
+---
+
 Goal: make the daemon *one uniform thing*. A harness, a tool, a sandbox backend
 is added by dropping in **one module** and it just works. No harness-id literals
 outside a single descriptor. No concept implemented twice. Nothing hardcoded that
