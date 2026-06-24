@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DEFAULTS } from "../config/defaults.js";
 import { jsonText } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from "./types.js";
@@ -39,10 +40,10 @@ export function agentConfigTemplate(id: string, displayName: string, icon: strin
     id,
     displayName,
     icon,
-    thinking: "medium",
+    thinking: DEFAULTS.thinking,
     tools,
-    harness: "pi",
-    model: { provider: "deepseek", name: "deepseek-v4-pro" },
+    harness: DEFAULTS.harness,
+    model: { ...DEFAULTS.model },
   };
 }
 
