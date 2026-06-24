@@ -334,18 +334,28 @@ the workspace `.gaia/config.json` one:
   "sandbox": {
     "enabled": true,
     "backend": "apple-container",
-    "writable": [".gaia"],
+    "writable": [".gaia/rooms"],
     "net": "none"
   }
 }
 ```
 
-Two deliberate defaults: **summons default to sandbox-enabled** (the riskier,
-agent-spawned turns are isolated first), and resolution is **fail-closed** — if a
-policy enables a backend that isn't available on this machine, the turn refuses
-to run rather than silently dropping to no isolation. The backend defaults to
-`none`, so an enabled policy with no configured backend is a safe no-op until you
-name a real one — summons never break for lack of a runtime.
+Scope `writable` as narrowly as the turn needs (here, just the room scratch where
+Pi writes its session files) and **never include the policy files themselves**.
+The workspace mounts read-only, so `.gaia/config.json` and per-agent `agent.json`
+are unwritable by default; widening `writable` to all of `.gaia` would re-expose
+them, and since the next summon re-reads `config.json` from disk, a worker could
+write itself a weaker policy for the following turn. Pin a summoned agent's
+`sandbox` block in its `agent.json` (which lives in `~/.gaia`, outside the
+workspace mount) so its isolation can't be downgraded from inside the workspace.
+
+Two deliberate defaults: **summons default to `enabled: true`** (the riskier,
+agent-spawned turns opt into isolation first), and resolution is **fail-closed**
+— if a policy enables a backend that isn't available on this machine, the turn
+refuses to run rather than silently dropping to no isolation. The backend
+defaults to `none`, so until a workspace names a real backend nothing is actually
+isolated yet — an enabled policy with no configured backend is a safe no-op, and
+summons never break for lack of a runtime.
 
 ## Summons
 
