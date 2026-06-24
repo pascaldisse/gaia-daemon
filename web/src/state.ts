@@ -21,6 +21,15 @@ export const state = {
   // Which parent rooms are expanded in the sidebar's nested rooms tree. Summon
   // sub-rooms are collapsed under their parent by default.
   expandedRooms: new Set(),
+  // The tmux-style working set: room ids open as tabs, in user order. Persisted
+  // per workspace; the sidebar tree remains the full list of every room.
+  openTabs: [],
+  tabDragId: null,
+  // Collapsible panes (Ctrl+B / Ctrl+G), like zooming a tmux pane.
+  sidebarCollapsed: false,
+  rightCollapsed: false,
+  // The omarchy-style theme palette overlay.
+  themePaletteOpen: false,
   // Active voice call binding from the server (visible to every tab); the
   // tab that started the call also holds the audio session (see voice.ts).
   voice: null,

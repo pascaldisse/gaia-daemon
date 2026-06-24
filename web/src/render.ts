@@ -1,9 +1,11 @@
-import { addRoom, addWorkspace, loadWorkspace, selectRoom, setAgentRole, setDefaultAgent } from "./actions.ts";
+import { addRoom, addWorkspace, closeRoomTab, loadWorkspace, selectRoom, setAgentRole, setDefaultAgent } from "./actions.ts";
 import { Composer, focusComposer } from "./composer.ts";
 import { h } from "./dom.ts";
 import { LinkedText, PathText } from "./links.ts";
 import { openAgentSettings, SettingsModal, WorkspacePanel } from "./settings.ts";
 import { state } from "./state.ts";
+import { moveTab, visibleTabs } from "./tabs.ts";
+import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.ts";
 import { Transcript } from "./transcript.ts";
 import { toggleCall } from "./voice.ts";
 
@@ -12,15 +14,145 @@ export function setError(error) {
   render();
 }
 
+// Layout reads like a tmux session: a window bar of room tabs up top, a
+// resizable three-pane body, and a powerline status bar pinned at the bottom.
 function App() {
   return h(
     "div",
     { class: "shell" },
-    Sidebar(),
-    h("main", { class: "main" }, Topbar(), h("div", { class: "main-stack" }, state.error ? h("div", { class: "error", text: state.error }) : null, Transcript()), Composer()),
-    h("aside", { class: "right" }, RoomPanel(), WorkspacePanel()),
+    TabBar(),
+    Body(),
+    StatusBar(),
+    state.themePaletteOpen ? ThemePalette() : null,
     state.settingsOpen ? SettingsModal() : null,
   );
+}
+
+function Body() {
+  const cols = [];
+  const kids = [];
+  if (!state.sidebarCollapsed) {
+    cols.push("var(--w-left)", "5px");
+    kids.push(Sidebar(), ColResizer("left"));
+  }
+  cols.push("minmax(0,1fr)");
+  kids.push(
+    h(
+      "main",
+      { class: "main" },
+      Topbar(),
+      h("div", { class: "main-stack" }, state.error ? h("div", { class: "error", text: state.error }) : null, Transcript()),
+      Composer(),
+    ),
+  );
+  if (!state.rightCollapsed) {
+    cols.push("5px", "var(--w-right)");
+    kids.push(ColResizer("right"), h("aside", { class: "right" }, RoomPanel(), WorkspacePanel()));
+  }
+  return h("div", { class: "body", style: `grid-template-columns:${cols.join(" ")}` }, ...kids);
+}
+
+// The tmux window bar. Rooms are windows; the active one is highlighted, each
+// carries its jump number (Alt+N), drags to reorder, and closes from the
+// working set without deleting the room.
+function TabBar() {
+  const snapshot = state.snapshot;
+  const wsId = snapshot?.workspace.id;
+  const currentId = snapshot?.room?.id;
+  const tabs = visibleTabs(snapshot);
+  return h(
+    "header",
+    { class: "tabbar" },
+    h("button", {
+      class: "chrome-btn",
+      title: state.sidebarCollapsed ? "show sessions (Ctrl+B)" : "hide sessions (Ctrl+B)",
+      onclick: () => ((state.sidebarCollapsed = !state.sidebarCollapsed), render()),
+      text: state.sidebarCollapsed ? "▸" : "◂",
+    }),
+    h("div", { class: "tab-brand" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
+    h(
+      "div",
+      { class: "tab-strip" },
+      tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
+      snapshot ? h("button", { class: "tab-new", title: "new room (Ctrl+T)", onclick: addRoom, text: "+" }) : null,
+    ),
+    h("div", { class: "tab-spacer" }),
+    h("button", {
+      class: "chrome-btn",
+      title: state.rightCollapsed ? "show room panel (Ctrl+G)" : "hide room panel (Ctrl+G)",
+      onclick: () => ((state.rightCollapsed = !state.rightCollapsed), render()),
+      text: "▥",
+    }),
+  );
+}
+
+function Tab(room, number, isActive, wsId) {
+  const isDragging = state.tabDragId === room.id;
+  return h(
+    "div",
+    {
+      class: `tab ${isActive ? "active" : ""} ${isDragging ? "dragging" : ""} ${room.running ? "running" : ""}`,
+      draggable: "true",
+      title: room.id,
+      ondragstart: (event) => {
+        state.tabDragId = room.id;
+        event.dataTransfer.effectAllowed = "move";
+      },
+      ondragend: () => ((state.tabDragId = null), render()),
+      ondragover: (event) => event.preventDefault(),
+      ondrop: (event) => {
+        event.preventDefault();
+        if (state.tabDragId && wsId) moveTab(state.tabDragId, room.id, wsId);
+        state.tabDragId = null;
+        render();
+      },
+      onclick: () => (isActive || !wsId ? undefined : selectRoom(wsId, room.id)),
+    },
+    h("span", { class: "tab-num", text: String(number) }),
+    room.running ? h("span", { class: "tab-dot" }) : null,
+    h("span", { class: "tab-name", text: room.id }),
+    h("button", {
+      class: "tab-close",
+      title: "close tab (room is kept)",
+      onclick: (event) => (event.stopPropagation(), void closeRoomTab(room.id)),
+      text: "×",
+    }),
+  );
+}
+
+// Drag handle between panes. Resizing rewrites the width CSS var on :root and
+// persists it, so panes stay where the user put them across reloads.
+function ColResizer(side) {
+  return h("div", { class: "col-resizer", title: "drag to resize", onpointerdown: (event) => startResize(event, side) });
+}
+
+function startResize(event, side) {
+  event.preventDefault();
+  const root = document.documentElement;
+  const varName = side === "left" ? "--w-left" : "--w-right";
+  const startX = event.clientX;
+  const start = parseInt(getComputedStyle(root).getPropertyValue(varName), 10) || (side === "left" ? 260 : 340);
+  const onMove = (move) => {
+    const delta = side === "left" ? move.clientX - startX : startX - move.clientX;
+    const next = Math.max(160, Math.min(560, start + delta));
+    root.style.setProperty(varName, `${next}px`);
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    document.body.classList.remove("resizing");
+    try {
+      localStorage.setItem(
+        "gaia.cols",
+        JSON.stringify({ left: root.style.getPropertyValue("--w-left"), right: root.style.getPropertyValue("--w-right") }),
+      );
+    } catch {
+      // storage disabled — widths just won't persist.
+    }
+  };
+  document.body.classList.add("resizing");
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
 }
 
 function Sidebar() {
@@ -29,7 +161,6 @@ function Sidebar() {
   return h(
     "nav",
     { class: "sidebar" },
-    h("div", { class: "brand" }, h("span", { text: "GAIA" }), h("small", { text: "local room" })),
     h("div", { class: "nav-title", text: "workspaces" }),
     h(
       "div",
@@ -39,6 +170,7 @@ function Sidebar() {
           "button",
           {
             class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"}`,
+            title: workspace.path,
             onclick: () => (workspace.isInitialized ? loadWorkspace(workspace.id) : setError(`Missing .gaia workspace: ${workspace.path}`)),
           },
           h("span", { text: workspace.name }),
@@ -93,6 +225,7 @@ function RoomNode(room, childrenOf, depth) {
         "button",
         {
           class: `nav-item room-item ${room.isCurrent ? "active" : ""}`,
+          title: room.path,
           onclick: room.isCurrent || !state.snapshot ? undefined : () => selectRoom(state.snapshot.workspace.id, room.id),
         },
         h("span", { class: "room-label" }, room.running ? h("span", { class: "room-dot running", title: "summon running" }) : null, h("span", { text: room.id })),
@@ -119,9 +252,125 @@ function Topbar() {
       text: state.voiceStatusText
         ? state.voiceStatusText
         : snapshot
-          ? `${state.voice ? `on call:@${state.voice.agentId} ` : ""}room:${snapshot.room.id} default:@${snapshot.workspace.defaultAgent}`
+          ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.workspace.defaultAgent}`}`
           : "idle",
     }),
+  );
+}
+
+// The signature: a spaceship-style powerline status line. Every segment is one
+// fact about the session; arrows are pure CSS so no Nerd Font is required.
+function StatusBar() {
+  const snapshot = state.snapshot;
+  const segs = [];
+  if (snapshot) {
+    const runningAgents = (snapshot.agents ?? []).filter((agent) => agent.status === "running").length;
+    const runningRooms = (snapshot.rooms ?? []).filter((room) => room.running).length;
+    const running = runningAgents + runningRooms;
+    segs.push({ text: snapshot.workspace.name, cls: "seg-head", title: snapshot.workspace.rootDir });
+    segs.push({ text: `⊞ ${snapshot.room.id}`, cls: "seg-a", title: "active room" });
+    segs.push({ text: `${snapshot.rooms?.length ?? 0} rooms`, cls: "seg-b" });
+    segs.push({
+      text: running ? `● ${running} running` : "○ idle",
+      cls: running ? "seg-run on" : "seg-run",
+      title: "running agents + summons",
+    });
+    if (state.voice) segs.push({ text: `🎙 @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
+  } else {
+    segs.push({ text: "no workspace", cls: "seg-head" });
+  }
+  segs.push({ spacer: true });
+  const theme = themeById(currentThemeId());
+  segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
+  segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
+  segs.push({ text: "^T new · ^B panes", cls: "seg-keys", title: "Ctrl+T new room · Ctrl+B/G toggle panes" });
+
+  return h(
+    "footer",
+    { class: "statusbar" },
+    segs.map((seg) =>
+      seg.spacer
+        ? h("div", { class: "seg spacer" })
+        : h(seg.onclick ? "button" : "div", {
+            class: `seg ${seg.cls}`,
+            id: seg.id ?? null,
+            title: seg.title ?? null,
+            text: seg.text,
+            onclick: seg.onclick ?? null,
+          }),
+    ),
+  );
+}
+
+export function clockText() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+// Omarchy-style theme palette. Hover previews live (instant recolour, no
+// re-render); click commits; Esc or backdrop cancels back to where you were.
+let themeCommitted = null;
+
+export function openThemePalette() {
+  themeCommitted = currentThemeId();
+  state.themePaletteOpen = true;
+  render();
+}
+
+export function closeThemePalette(commit) {
+  if (!commit && themeCommitted) applyTheme(themeCommitted);
+  state.themePaletteOpen = false;
+  themeCommitted = null;
+  render();
+}
+
+function ThemePalette() {
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeThemePalette(false);
+      },
+    },
+    h(
+      "div",
+      { class: "palette" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "themes" }),
+        h("small", { text: "hover to preview · click to apply · esc to cancel" }),
+      ),
+      h(
+        "div",
+        { class: "palette-grid" },
+        THEMES.map((theme) =>
+          h(
+            "button",
+            {
+              class: `swatch ${theme.id === currentThemeId() ? "active" : ""}`,
+              style: `--sw-bg:${theme.bg};--sw-border:${theme.border}`,
+              onmouseenter: () => applyTheme(theme.id),
+              onclick: () => {
+                applyTheme(theme.id);
+                themeCommitted = theme.id;
+                closeThemePalette(true);
+              },
+            },
+            h(
+              "span",
+              { class: "sw-preview", style: `background:${theme.bg2}` },
+              h("span", { class: "sw-dot", style: `background:${theme.accent}` }),
+              h("span", { class: "sw-dot", style: `background:${theme.accent2}` }),
+              h("span", { class: "sw-dot", style: `background:${theme.good}` }),
+              h("span", { class: "sw-dot", style: `background:${theme.danger}` }),
+            ),
+            h("span", { class: "sw-name", text: theme.name }),
+          ),
+        ),
+      ),
+    ),
   );
 }
 
