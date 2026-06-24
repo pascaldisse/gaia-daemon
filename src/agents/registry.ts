@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { jsonText, readJsonFile, writeIfMissing } from "../lib/fs.js";
 import { MemoryStore } from "../memory/memory-store.js";
 import { parseHarness } from "../runtime/index.js";
+import { parseSandboxConfig } from "../runtime/sandbox/registry.js";
 import { agentConfigTemplate, normalizePermissionMode } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
@@ -172,6 +173,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       model: raw.model,
       thinking: raw.thinking,
       harness: parseHarness(raw.harness),
+      sandbox: parseSandboxConfig((raw as { sandbox?: unknown }).sandbox),
       permissionMode: normalizePermissionMode(raw.permissionMode),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,

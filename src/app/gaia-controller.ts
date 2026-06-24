@@ -11,13 +11,13 @@ import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
+import { resolveSandboxPolicy } from "../runtime/sandbox/index.js";
 import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessHost } from "./harness-bridge.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
 import type { SummonHost } from "./summon-coordinator.js";
-import type { SummonCreate } from "../tools/summon-tool.js";
 import { runAgentTurn } from "./turn-runner.js";
 
 export interface AgentStatus {
@@ -178,20 +178,22 @@ export class GaiaController {
     this.room = new Room(options.workspace, options.roomId);
     this.memoryStore = options.memoryStore ?? new MemoryStore();
 
-    // A summon runs as a child room: the Pi summon tool just asks the coordinator
-    // to run the worker in its own room and hands back the final reply. Every
-    // controller can summon (including summoned ones), so nesting is recursive.
-    const summonHost = this.options.summonHost;
-    const summonCreate: SummonCreate | undefined = summonHost
-      ? (params) => summonHost.summonAndWait(params.roomId, params.agentId, params.task)
-      : undefined;
-
+    // Every agent runs in a uniform per-(room, agent) runner subprocess; its
+    // tool I/O (memory writes, summon) reaches the daemon over the same HTTP
+    // bridge, so there is no privileged in-process summon path anymore.
     this.runtimes = Object.fromEntries(
       Object.values(options.workspace.agents).map((agent) => [
         agent.id,
         options.runtimeFactory
           ? options.runtimeFactory(agent)
-          : createAgentRuntime({ workspace: options.workspace, agent, memoryStore: this.memoryStore, summonCreate, harnessHost: options.harnessHost?.({ allowSummon: true }) }),
+          : createAgentRuntime({
+              workspace: options.workspace,
+              agent,
+              harnessHost: options.harnessHost?.({ allowSummon: true }),
+              // Resolved at spawn (after init), so a summon child room is known
+              // and can default the sandbox on (above the harness).
+              sandbox: () => resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, Boolean(this.roomState.parentRoomId)),
+            }),
       ]),
     );
   }

@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { AgentHarness } from "../runtime/capabilities.js";
+import type { SandboxConfig } from "../runtime/sandbox/registry.js";
 
 export interface AgentModelConfig {
   provider?: string;
@@ -41,6 +42,8 @@ export interface AgentDefinition {
    * hardcoded code path. Ignored by harnesses that have no equivalent.
    */
   permissionMode?: ClaudePermissionMode;
+  /** Per-agent sandbox override (above the harness; merged over the workspace default). */
+  sandbox?: SandboxConfig;
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;
