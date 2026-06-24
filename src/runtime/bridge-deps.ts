@@ -48,8 +48,14 @@ export class BridgeMemoryStore extends MemoryStore {
       // for the post-state the tool echoes back.
       const state = await this.readState(dir, file);
       if (!ok) return { ok: false, message: typeof payload.error === "string" ? payload.error : "memory write failed", state };
+      // Require the daemon's explicit ok:true. A 200 with a non-JSON/empty body
+      // (e.g. the SPA handler answering a mis-routed request) must NOT read as a
+      // successful write — fail loud rather than silently dropping the content.
+      if (payload.ok !== true) {
+        return { ok: false, message: typeof payload.message === "string" ? payload.message : "memory write not confirmed by daemon", state };
+      }
       return {
-        ok: payload.ok !== false,
+        ok: true,
         message: typeof payload.message === "string" ? payload.message : "ok",
         state,
       };

@@ -41,6 +41,41 @@ function resolveCliPath(): string {
   return existsSync(jsPath) ? jsPath : fileURLToPath(new URL("../cli.ts", import.meta.url));
 }
 
+// Provider API-key env names (pi-ai's env-api-keys map). A container inherits no
+// env, so for the apple-container backend these are forwarded by name alongside
+// the runner's own GAIA_* vars — but only the ones actually set in this process.
+const PROVIDER_KEY_ENV = [
+  "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+  "GEMINI_API_KEY", "GOOGLE_CLOUD_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "XAI_API_KEY",
+  "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "ZAI_API_KEY", "MISTRAL_API_KEY", "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY", "MOONSHOT_API_KEY", "AZURE_OPENAI_API_KEY",
+];
+
+// Inside an apple-container VM the daemon's 127.0.0.1 is the GUEST's loopback, not
+// the host. The host is reachable at the container network's gateway (apple's
+// default bridge gateway is 192.168.64.1; override with GAIA_CONTAINER_HOST_IP).
+function containerHostGateway(): string {
+  return process.env.GAIA_CONTAINER_HOST_IP?.trim() || "192.168.64.1";
+}
+
+// Rewrite a daemon bridge URL so a containerized runner can reach the host: swap
+// the loopback/0.0.0.0 host for the container-network gateway, keeping the port.
+// Returns a bare origin (no trailing slash) to match host baseUrl shape — callers
+// append a path that already starts with "/", so a trailing slash here would
+// produce "//api/harness/..." which misses the daemon's "/api/" router and falls
+// through to the SPA handler (a 200 that silently swallows the write).
+function daemonUrlForContainer(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "0.0.0.0" || url.hostname === "::1") {
+      url.hostname = containerHostGateway();
+    }
+    return `${url.protocol}//${url.host}`; // e.g. http://192.168.64.1:8796 — no trailing slash, no path
+  } catch {
+    return baseUrl;
+  }
+}
+
 function configuredLabel(agent: AgentDefinition): string {
   const provider = agent.model?.provider;
   const name = agent.model?.name;
@@ -124,8 +159,15 @@ export class RunnerHost implements AgentRuntime {
     // read-only so a confined turn can't rewrite the governance that launches
     // the next one. Room scratch lives under cwd, so it needs no extra grant.
     const policy = this.options.sandbox();
+    // Build the env first: the per-turn bridge token lands here, and the
+    // container backend forwards env by name, so it needs the keys that are set.
+    const env = this.buildEnv(roomId, policy);
+    const forwardEnv = [...Object.values(RUNNER_ENV), "GAIA_HOME", ...PROVIDER_KEY_ENV].filter(
+      (name) => env[name] !== undefined,
+    );
     const launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
       readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
+      forwardEnv,
     });
     if (process.env.GAIA_DEBUG_SANDBOX) {
       process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} launch=${launch.command}\n`);
@@ -133,7 +175,7 @@ export class RunnerHost implements AgentRuntime {
 
     const child = spawn(launch.command, launch.args, {
       cwd: this.options.workspace.rootDir,
-      env: this.buildEnv(roomId),
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -187,7 +229,7 @@ export class RunnerHost implements AgentRuntime {
     this.activeChannel?.close();
   }
 
-  private buildEnv(roomId: string): NodeJS.ProcessEnv {
+  private buildEnv(roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       [RUNNER_ENV.workspacePath]: this.options.workspace.rootDir,
@@ -199,7 +241,9 @@ export class RunnerHost implements AgentRuntime {
     };
     if (this.options.harnessHost) {
       const host = this.options.harnessHost({ allowSummon: this.options.allowSummon() });
-      env[RUNNER_ENV.daemonUrl] = host.baseUrl;
+      // A runner inside an apple-container VM reaches the daemon at the container
+      // gateway, not the daemon's own loopback; rewrite the URL it phones home to.
+      env[RUNNER_ENV.daemonUrl] = policy.backend === "apple-container" ? daemonUrlForContainer(host.baseUrl) : host.baseUrl;
       env[RUNNER_ENV.daemonToken] = host.mintToken({ agentId: this.agent.id, roomId });
     }
     return env;

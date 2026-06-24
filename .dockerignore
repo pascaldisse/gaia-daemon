@@ -1,0 +1,31 @@
+# Keep the build context small and force a fresh, Linux-native npm install
+# inside the image. Host node_modules contain macOS-only native binaries
+# (@esbuild/darwin-arm64, clipboard-darwin-*, fsevents) and must never be
+# copied in — npm install inside the linux/arm64 image resolves linux natives.
+node_modules
+dist
+.git
+.gitignore
+
+# web build artifacts / vendored browser assets (runner doesn't need them)
+web/vendor
+web/.DS_Store
+
+# workspace + runtime state
+.gaia
+tmp
+.env
+.env.*
+
+# editor / OS cruft
+.DS_Store
+**/.DS_Store
+
+# unrelated vendored runtimes / caches
+unmute
+.pi
+.unipi
+ui-test
+
+# misc
+npm-debug.log*

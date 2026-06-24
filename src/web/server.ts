@@ -289,10 +289,14 @@ export class GaiaWebServer {
 
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;
-    this.harnessBridge = new HarnessBridge(`http://${host}:${boundPort}`);
+    // 0.0.0.0 means "listen on every interface" (so an apple-container guest can
+    // reach the bridge via the host gateway) — but it is not itself a connectable
+    // address, so the URL handed to local runners + the browser uses loopback.
+    const reachableHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+    this.harnessBridge = new HarnessBridge(`http://${reachableHost}:${boundPort}`);
 
     return {
-      url: `http://${host}:${boundPort}/`,
+      url: `http://${reachableHost}:${boundPort}/`,
       close: () =>
         new Promise<void>((resolveClose, reject) => {
           this.voiceStack.stop();
@@ -583,6 +587,13 @@ export class GaiaWebServer {
     }
 
     const body = await parseBody(request);
+
+    if (process.env.GAIA_DEBUG_BRIDGE) {
+      const b = (body ?? {}) as Record<string, unknown>;
+      process.stderr.write(
+        `[bridge-debug] agent=${claims.agentId} room=${claims.roomId} path=${pathname} keys=${Object.keys(b).join(",")} file=${String(b.file ?? "")} contentLen=${String(b.content ?? "").length}\n`,
+      );
+    }
 
     if (pathname === "/api/harness/memory") {
       const action = stringField(body, "action") as MemoryAction | undefined;

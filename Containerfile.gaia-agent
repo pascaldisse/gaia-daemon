@@ -1,0 +1,33 @@
+# Linux image that runs the gaia agent-runner subprocess.
+# The daemon spawns it as: node dist/cli.js __run-agent
+#
+# IMPORTANT: this build does a FRESH npm install inside the linux/arm64 image so
+# npm resolves Linux-native binaries (@esbuild/linux-arm64, linux koffi, ...).
+# We deliberately COPY only the source needed to build (NOT `COPY . .`) so the
+# host's macOS node_modules (@esbuild/darwin-arm64, clipboard-darwin-*, fsevents)
+# and the 2.5GB vendored `unmute` tree are never dragged in — Apple's
+# `container build` v1.0.0 does not honor .containerignore/.dockerignore, so the
+# Containerfile itself must be the source of truth for what enters the image.
+FROM node:24-bookworm-slim
+
+WORKDIR /opt/gaia
+
+# Install deps first for better layer caching. package-lock.json is present, so
+# use a reproducible `npm ci`. devDeps (typescript) are needed to build dist/,
+# so install the full set — do NOT --omit=dev.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Bring in ONLY the build inputs (keeps the freshly installed linux node_modules
+# intact and excludes node_modules/unmute/.git/etc. without relying on an
+# ignore file). tsconfig include is "src/**/*.ts", emitting to dist/.
+COPY tsconfig.json ./
+COPY src ./src
+
+# Build dist/ (tsc + chmod +x dist/cli.js).
+RUN npm run build
+
+# Sane default: launch the agent-runner. It reads its workspace/agent from env
+# (RUNNER_ENV) and emits protocol JSON on stdout; with no env it cleanly prints
+# a turn-error and exits, which still proves the JS import graph loads on Linux.
+CMD ["node", "dist/cli.js", "__run-agent"]

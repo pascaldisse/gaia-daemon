@@ -7,6 +7,7 @@ import {
   sandboxBackendIds,
 } from "../src/runtime/sandbox/index.ts";
 import { buildSeatbeltProfile } from "../src/runtime/sandbox/macos-seatbelt.ts";
+import { buildContainerArgs } from "../src/runtime/sandbox/apple-container.ts";
 
 const ARGV = ["/usr/bin/node", "cli.js", "__run-agent"];
 const DARWIN = { platform: "darwin" };
@@ -95,6 +96,7 @@ test("buildSeatbeltProfile: confines writes to the workspace, carves out policy 
     cwd: "/work",
     writable: ["/scratch"],
     readonly: ["/work/.gaia/config.json"],
+    forwardEnv: [],
     net: "none",
   });
   assert.match(profile, /\(allow default\)/);
@@ -107,8 +109,30 @@ test("buildSeatbeltProfile: confines writes to the workspace, carves out policy 
 });
 
 test("buildSeatbeltProfile: leaves network alone when net is full", () => {
-  const profile = buildSeatbeltProfile({ argv: ARGV, cwd: "/work", writable: [], readonly: [], net: "full" });
+  const profile = buildSeatbeltProfile({ argv: ARGV, cwd: "/work", writable: [], readonly: [], forwardEnv: [], net: "full" });
   assert.doesNotMatch(profile, /deny network/);
+});
+
+test("buildContainerArgs: workspace rw, image gaia (not host argv), env forwarded by name", () => {
+  const args = buildContainerArgs({
+    argv: ARGV,
+    cwd: "/work",
+    writable: ["/work/scratch"],
+    readonly: ["/work/.gaia/config.json"], // does not exist in test → carve-out skipped (existsSync guard)
+    forwardEnv: ["GAIA_DAEMON_TOKEN", "DEEPSEEK_API_KEY"],
+    net: "none",
+  });
+  const s = args.join(" ");
+  assert.ok(s.startsWith("run --rm -i -w /work"));
+  assert.match(s, /-v \/work:\/work\b/); // workspace mounted READ-WRITE (no :ro)
+  assert.doesNotMatch(s, /-v \/work:\/work:ro/);
+  assert.match(s, /-v \/work\/scratch:\/work\/scratch/); // extra writable grant
+  assert.match(s, /-e GAIA_DAEMON_TOKEN/); // env forwarded by NAME (value not embedded)
+  assert.match(s, /-e DEEPSEEK_API_KEY/);
+  assert.doesNotMatch(s, /secret|=.*KEY/); // no values in argv
+  assert.match(s, /--net none/);
+  assert.ok(s.endsWith("node /opt/gaia/dist/cli.js __run-agent")); // runs the image's gaia
+  assert.ok(!s.includes(ARGV[0])); // the host node path is NOT pushed into the guest
 });
 
 test("end-to-end on darwin: an untrusted policy resolves to a real sandbox-exec launch wrapping the argv", { skip: process.platform !== "darwin" }, async () => {

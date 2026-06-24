@@ -329,11 +329,23 @@ Three backends ship:
   a turn can neither rewrite its own governance nor tamper with keys it can read.
   Residual, stated plainly: reads and network stay open, so this stops
   destruction and tampering, not exfiltration.
-- **`apple-container`** — wraps the launch in Apple's `container run` (a Linux
-  VM): stronger isolation, but it needs the `container` binary, a running
-  `container system start`, and an image (`GAIA_SANDBOX_IMAGE`, default
-  `gaia-agent`) carrying node + the gaia runner. Until that's built it is
-  unavailable, and a policy that names it **fail-closes** (below).
+- **`apple-container`** — wraps the launch in Apple's `container run`, so the
+  turn runs in a real **Linux VM** (the strongest isolation gaia offers, and the
+  cross-platform one). The workspace mounts **read-write** (git-tracked, so a
+  coding agent can still edit its project), the policy files are carved back to
+  read-only, and the rest of the host is simply **not mounted** — invisible, so
+  `rm -rf /` inside hits nothing real. Because a VM inherits no environment, the
+  runner's env (workspace/agent pointers, the bridge token, provider keys) is
+  forwarded by **name** (`--env NAME`), so secrets never appear in argv. It needs
+  the `container` binary, `container system start`, and an image
+  (`GAIA_SANDBOX_IMAGE`, default `gaia-agent`) carrying node + a Linux build of
+  the runner — build it with `container build -t gaia-agent -f
+  Containerfile.gaia-agent .`. The bridge (memory/summon) lives on the daemon's
+  loopback, which is the *guest's* loopback from inside the VM; the daemon must
+  listen on an interface the guest can reach (`GAIA_HOST=0.0.0.0`) and the
+  runner's `GAIA_DAEMON_URL` is auto-rewritten to the container gateway
+  (`GAIA_CONTAINER_HOST_IP`, default `192.168.64.1`). A policy that names it when
+  it isn't available **fail-closes** (below).
 - **`none`** — the identity launch, no isolation. The posture for a *trusted*
   agent (see below).
 

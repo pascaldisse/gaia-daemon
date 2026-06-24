@@ -15,6 +15,14 @@ export interface SandboxSpec {
   writable: string[];
   /** Paths kept read-only even though they sit inside cwd (the policy files). */
   readonly: string[];
+  /**
+   * Env var NAMES the backend should carry into the isolated process. Used by
+   * backends that don't inherit the parent env automatically (a container only
+   * sees what `--env NAME` forwards). Values are read from the launched
+   * process's own environment, so secrets never appear in argv. Host-confining
+   * backends (seatbelt) ignore this — they already inherit the full env.
+   */
+  forwardEnv: string[];
   /** Network access. */
   net: "full" | "none";
 }
@@ -144,13 +152,14 @@ export async function resolveSandboxLaunch(
   policy: SandboxPolicy,
   argv: string[],
   cwd: string,
-  extra: { writable?: string[]; readonly?: string[] } = {},
+  extra: { writable?: string[]; readonly?: string[]; forwardEnv?: string[] } = {},
 ): Promise<SandboxLaunch> {
   const spec: SandboxSpec = {
     argv,
     cwd,
     writable: [...(policy.writable ?? []), ...(extra.writable ?? [])],
     readonly: extra.readonly ?? [],
+    forwardEnv: extra.forwardEnv ?? [],
     net: policy.net ?? "full",
   };
   const backendId = policy.backend ?? "none";
