@@ -14,6 +14,7 @@
 //   GAIA_DAEMON_TOKEN bearer token mapping to (workspace, agent, room)
 import { join } from "node:path";
 import { CORE_MEMORY_FILE, MemoryStore } from "./memory/memory-store.js";
+import { gaiaToolByVerb } from "./tools/gaia-tools.js";
 
 const MEMORY_USAGE = `Usage:
   gaia mem list                      list memory files
@@ -150,8 +151,8 @@ async function runSummon(args: string[]): Promise<number> {
 /** Dispatches `gaia mem|recall|summon …`. Returns a process exit code. */
 export async function runHarnessCommand(args: string[]): Promise<number> {
   const [command, ...rest] = args;
-  switch (command) {
-    case "mem":
+  const tool = command ? gaiaToolByVerb(command) : undefined;
+  switch (tool?.id) {
     case "memory":
       return runMem(rest);
     case "recall":

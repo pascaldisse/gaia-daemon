@@ -4,6 +4,7 @@ import { renderRoomTranscript } from "../room/room.js";
 import type { RoomEvent } from "../room/transcript.js";
 import type { ResolvedRole } from "../roles/roles.js";
 import { loadRoleSkillText } from "../skills/skill-resolver.js";
+import { GAIA_TOOLS, gaiaToolIds } from "../tools/gaia-tools.js";
 import type { ContextFile, Workspace } from "../workspace/types.js";
 
 export interface SystemPromptInput {
@@ -112,12 +113,8 @@ export async function buildInlineSystemPrompt(params: {
 // Progressive-disclosure pointer to the `gaia` CLI for whichever of
 // memory/recall/summon the agent has AND the harness can wire (`supported`).
 // Near-zero context until the agent runs `gaia <cmd> --help`.
-export function gaiaCliPointer(tools: string[], supported: readonly string[] = ["memory", "recall", "summon"]): string {
-  const has = (name: string): boolean => tools.includes(name) && supported.includes(name);
-  const lines: string[] = [];
-  if (has("memory")) lines.push("- `gaia mem list|read|add|replace|remove` — your persistent memory");
-  if (has("recall")) lines.push("- `gaia recall <query>` — full-text search of the room history");
-  if (has("summon")) lines.push('- `gaia summon <agent> "<task>"` — run a private worker agent (visible live in the summons drawer)');
+export function gaiaCliPointer(tools: string[], supported: readonly string[] = gaiaToolIds()): string {
+  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) => tool.pointer);
   if (!lines.length) return "";
   return [
     "# GAIA tools (run via shell)",

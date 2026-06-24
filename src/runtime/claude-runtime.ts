@@ -11,6 +11,7 @@ import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
+import { GAIA_TOOLS } from "../tools/gaia-tools.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
 
@@ -185,14 +186,6 @@ export interface ClaudeToolGrant {
   allowedTools: string[];
 }
 
-// Narrow gaia-CLI grants. The colon-prefix form matches commands beginning
-// with the given words; Claude denies anything chained past them in -p mode.
-const GAIA_GRANTS: Record<string, string> = {
-  memory: "Bash(gaia mem:*)",
-  recall: "Bash(gaia recall:*)",
-  summon: "Bash(gaia summon:*)",
-};
-
 export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
   const has = (name: string): boolean => tools.includes(name);
   const builtin = new Set<string>();
@@ -211,11 +204,13 @@ export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
   }
 
   // memory/recall/summon need the Bash tool present (to invoke `gaia`) but only
-  // the narrow command, independent of the general `bash` shell.
-  const gaiaTools = Object.keys(GAIA_GRANTS).filter(has);
+  // the narrow, locked command prefix (the registry's grant), independent of the
+  // general `bash` shell. The colon-prefix form matches commands beginning with
+  // the grant words; Claude denies anything chained past them in -p mode.
+  const gaiaTools = GAIA_TOOLS.filter((tool) => has(tool.id));
   if (has("bash") || gaiaTools.length > 0) builtin.add("Bash");
   if (has("bash")) allowed.add("Bash");
-  for (const tool of gaiaTools) allowed.add(GAIA_GRANTS[tool]);
+  for (const tool of gaiaTools) allowed.add(tool.grant);
 
   return { tools: [...builtin], allowedTools: [...allowed] };
 }
