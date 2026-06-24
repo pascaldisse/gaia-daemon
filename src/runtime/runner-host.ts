@@ -24,7 +24,10 @@ export interface RunnerHostOptions {
   workspace: Workspace;
   agent: AgentDefinition;
   harness: string;
-  harnessHost?: HarnessHost;
+  /** Bridge factory; the turn token is minted at spawn with the resolved allowSummon. */
+  harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
+  /** Resolved lazily at spawn: may this turn's token create summons? */
+  allowSummon: () => boolean;
   /** Resolved lazily at spawn, so the controller can read room state (summon?) first. */
   sandbox: () => SandboxPolicy;
   /** Test seam: override the argv launched (default is `gaia __run-agent`). */
@@ -117,7 +120,16 @@ export class RunnerHost implements AgentRuntime {
 
   private async spawnChild(roomId: string): Promise<void> {
     const argv = this.options.runnerArgv ?? [process.execPath, ...process.execArgv, resolveCliPath(), "__run-agent"];
-    const launch = await resolveSandboxLaunch(this.options.sandbox(), argv, this.options.workspace.rootDir);
+    // The workspace (cwd) is writable, but its policy files are carved back to
+    // read-only so a confined turn can't rewrite the governance that launches
+    // the next one. Room scratch lives under cwd, so it needs no extra grant.
+    const policy = this.options.sandbox();
+    const launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
+      readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
+    });
+    if (process.env.GAIA_DEBUG_SANDBOX) {
+      process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} launch=${launch.command}\n`);
+    }
 
     const child = spawn(launch.command, launch.args, {
       cwd: this.options.workspace.rootDir,
@@ -186,8 +198,9 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.roomDir]: join(this.options.workspace.roomsDir, roomId),
     };
     if (this.options.harnessHost) {
-      env[RUNNER_ENV.daemonUrl] = this.options.harnessHost.baseUrl;
-      env[RUNNER_ENV.daemonToken] = this.options.harnessHost.mintToken({ agentId: this.agent.id, roomId });
+      const host = this.options.harnessHost({ allowSummon: this.options.allowSummon() });
+      env[RUNNER_ENV.daemonUrl] = host.baseUrl;
+      env[RUNNER_ENV.daemonToken] = host.mintToken({ agentId: this.agent.id, roomId });
     }
     return env;
   }

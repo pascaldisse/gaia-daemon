@@ -20,8 +20,14 @@ export type { AgentHarness } from "./capabilities.js";
 export function createAgentRuntime(options: {
   workspace: Workspace;
   agent: AgentDefinition;
-  /** Daemon bridge: the runner forwards its token for memory writes + summon. */
-  harnessHost?: HarnessHost;
+  /**
+   * Daemon bridge factory: minting the turn token is deferred to spawn (via
+   * RunnerHost) so `allowSummon` can reflect room state the controller only
+   * knows after init (is this room itself a summon?).
+   */
+  harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
+  /** Resolved lazily at spawn: may this turn's token create summons? */
+  allowSummon?: () => boolean;
   /** Resolved lazily at spawn so the controller can read room state (summon?) first. */
   sandbox?: () => SandboxPolicy;
 }): AgentRuntime {
@@ -31,6 +37,7 @@ export function createAgentRuntime(options: {
     agent: options.agent,
     harness,
     harnessHost: options.harnessHost,
+    allowSummon: options.allowSummon ?? (() => true),
     sandbox: options.sandbox ?? (() => ({ enabled: false, backend: "none" })),
   });
 }
