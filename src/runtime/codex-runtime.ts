@@ -4,7 +4,8 @@ import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { MemoryStore } from "../memory/memory-store.js";
 import type { Workspace } from "../workspace/types.js";
-import { HARNESS_CAPABILITIES } from "./capabilities.js";
+import type { HarnessCapabilities } from "./capabilities.js";
+import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
@@ -219,8 +220,13 @@ export interface CodexRuntimeOptions extends BaseRuntimeOptions {
   harnessHost?: HarnessHost;
 }
 
+// The persistent app-server is shared across rooms, so room-coupled recall/
+// summon can't be wired (only room-independent memory); and Codex runs a coarse
+// sandbox rather than honoring a granular per-tool array.
+const CODEX_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory"], granularTools: false };
+
 export class CodexRuntime implements AgentRuntime {
-  readonly capabilities = HARNESS_CAPABILITIES.codex;
+  readonly capabilities = CODEX_CAPABILITIES;
   readonly agent: AgentDefinition;
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
@@ -541,3 +547,15 @@ export class CodexRuntime implements AgentRuntime {
     return `${provider}/${name}`;
   }
 }
+
+registerHarness({
+  id: "codex",
+  capabilities: CODEX_CAPABILITIES,
+  ui: {
+    label: "codex",
+    description: "OpenAI Codex app-server",
+    lockedProvider: "openai-codex",
+    modelProviderIds: ["openai-codex"],
+  },
+  create: (ctx) => new CodexRuntime(ctx),
+});

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
 import { jsonText, writeIfMissing, writeJsonFile } from "../lib/fs.js";
 import { defaultRoomState } from "../room/state.js";
+import { parseHarness } from "../runtime/index.js";
 import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
@@ -31,11 +32,6 @@ function defaultConfig(): WorkspaceConfig {
     transcriptWindow: 20,
     maxSummonsPerRoom: 8,
   };
-}
-
-function parseHarness(raw: unknown): "pi" | "codex" | "claude" | undefined {
-  if (raw === "pi" || raw === "codex" || raw === "claude") return raw;
-  return undefined;
 }
 
 function mergeConfig(raw: unknown): WorkspaceConfig {

@@ -17,7 +17,8 @@ import { createMemoryTool } from "../tools/memory-tool.js";
 import { createRecallTool } from "../tools/recall-tool.js";
 import { createSummonTool, type SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
-import { HARNESS_CAPABILITIES } from "./capabilities.js";
+import type { HarnessCapabilities } from "./capabilities.js";
+import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
@@ -95,8 +96,10 @@ function skillPathsKey(paths: string[]): string {
   return JSON.stringify(paths);
 }
 
+const PI_CAPABILITIES: HarnessCapabilities = { gaiaTools: ["memory", "recall", "summon"], granularTools: true };
+
 export class PiRuntime implements AgentRuntime {
-  readonly capabilities = HARNESS_CAPABILITIES.pi;
+  readonly capabilities = PI_CAPABILITIES;
   readonly agent: AgentDefinition;
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
@@ -345,3 +348,10 @@ export class PiRuntime implements AgentRuntime {
     return this.modelRegistry.find(provider, name) ? `${provider}/${name}` : "Pi default";
   }
 }
+
+registerHarness({
+  id: "pi",
+  capabilities: PI_CAPABILITIES,
+  ui: { label: "pi", description: "Pi coding agent (local SDK)" },
+  create: (ctx) => new PiRuntime(ctx),
+});

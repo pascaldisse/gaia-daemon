@@ -1,11 +1,12 @@
 import type { AgentDefinition } from "../agents/types.js";
+import type { AgentHarness } from "../runtime/capabilities.js";
 
 export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
   transcriptWindow: number;
   /** Default agent harness for all agents in this workspace; overridden by AgentDefinition.harness. */
-  harness?: "pi" | "codex" | "claude";
+  harness?: AgentHarness;
   /** Max summons (whales) allowed to run concurrently per room. Bounds swarm fan-out. */
   maxSummonsPerRoom?: number;
 }
