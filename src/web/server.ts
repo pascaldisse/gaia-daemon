@@ -596,7 +596,10 @@ export class GaiaWebServer {
           oldText: stringField(body, "old_text"),
         });
         const head = `${result.ok ? "OK" : "ERROR"}: ${result.message}`;
-        json(response, 200, { result: result.ok ? `${head}\n\n${result.state.content}` : head });
+        // `result`/`message` are structured so the in-process runner's
+        // BridgeMemoryStore can reconstruct a result; the `gaia mem` CLI just
+        // prints `result`.
+        json(response, 200, { result: result.ok ? `${head}\n\n${result.state.content}` : head, ok: result.ok, message: result.message });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

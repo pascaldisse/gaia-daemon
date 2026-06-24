@@ -16,6 +16,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Hidden: the per-(room, agent) runner subprocess the daemon spawns for every
+  // harness. Long-lived; talks the runner protocol over stdio (see RunnerHost).
+  if (args[0] === "__run-agent") {
+    const { runAgentRunner } = await import("./runtime/agent-runner.js");
+    await runAgentRunner();
+    return;
+  }
+
   if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon") {
     process.exitCode = await runHarnessCommand(args);
     return;

@@ -7,6 +7,7 @@ import { DEFAULTS } from "../config/defaults.js";
 import { jsonText, writeIfMissing, writeJsonFile } from "../lib/fs.js";
 import { defaultRoomState } from "../room/state.js";
 import { parseHarness } from "../runtime/index.js";
+import { parseSandboxConfig } from "../runtime/sandbox/registry.js";
 import { discoverContextFiles } from "./context-files.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
@@ -46,6 +47,7 @@ function mergeConfig(raw: unknown): WorkspaceConfig {
         ? Math.floor(input.transcriptWindow)
         : base.transcriptWindow,
     harness: parseHarness(input.harness),
+    sandbox: parseSandboxConfig((input as { sandbox?: unknown }).sandbox),
     maxSummonsPerRoom:
       typeof input.maxSummonsPerRoom === "number" && Number.isFinite(input.maxSummonsPerRoom) && input.maxSummonsPerRoom > 0
         ? Math.floor(input.maxSummonsPerRoom)
