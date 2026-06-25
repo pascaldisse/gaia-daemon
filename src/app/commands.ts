@@ -1,4 +1,4 @@
-export type SlashCommandType = "help" | "agents" | "roles" | "role" | "summon" | "thinking" | "clear" | "fork";
+export type SlashCommandType = "help" | "agents" | "roles" | "role" | "summon" | "thinking" | "clear" | "fork" | "setup";
 
 export interface SlashCommandDefinition {
   name: string;
@@ -16,6 +16,7 @@ export type SlashCommand =
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "clear" }
   | { type: "fork" }
+  | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -28,6 +29,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
   { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
+  { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -62,10 +64,18 @@ export function parseCommand(input: string): SlashCommand {
     if (stripped.length >= 2) return { type: "thinking", agent: stripped[0], level: stripped[1] };
     return { type: "thinking", level: stripped[0] };
   }
+  if (command.type === "setup") {
+    // "/setup" or "/setup list" → list; "/setup activate <id> [room]";
+    // "/setup status"; "/setup off" (deactivate the monad on this room).
+    const sub = args[0]?.toLowerCase();
+    if (sub === "activate") return { type: "setup", sub: "activate", id: args[1], room: args[2] };
+    if (sub === "status" || sub === "off" || sub === "list") return { type: "setup", sub };
+    return { type: "setup", sub: sub ? "unknown" : "list", ...(sub ? { id: args[0] } : {}) };
+  }
 
   return { type: command.type };
 }
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map(
   (command) => `  /${command.name.padEnd(8)} ${command.description}`,
-).join("\n")}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+).join("\n")}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
