@@ -185,7 +185,7 @@ function fileHarnessMeta(): FileHints {
   return { _harness: harnessHintsMeta() };
 }
 
-function configJsonHints(sources: HintSources, parsed?: Record<string, unknown>): FileHints {
+function configJsonHints(sources: HintSources): FileHints {
   return {
     defaultAgent: select(values(sources.agentIds)),
     room: select(values(sources.roomIds)),
@@ -247,7 +247,7 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
       // Hints degrade gracefully on parse failure.
     }
   }
-  if (basename === "config.json") return configJsonHints(sources, parsed);
+  if (basename === "config.json") return configJsonHints(sources);
   if (basename === "agent.json") return agentJsonHints(sources, parsed);
   if (basename === "voice.json") return voiceJsonHints();
   return undefined;

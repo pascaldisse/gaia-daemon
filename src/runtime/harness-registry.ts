@@ -81,10 +81,6 @@ export function registerHarness(spec: HarnessSpec): void {
   registry.set(spec.id, spec);
 }
 
-export function harnessIds(): string[] {
-  return [...registry.keys()];
-}
-
 export function harnessSpecs(): HarnessSpec[] {
   return [...registry.values()];
 }

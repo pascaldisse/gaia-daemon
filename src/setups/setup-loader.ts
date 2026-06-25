@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, join, resolve } from "node:path";
-import { jsonText, readJsonFile, writeFileAtomic, writeJsonFile } from "../lib/fs.js";
+import { readJsonFile, writeFileAtomic, writeJsonFile } from "../lib/fs.js";
 import { parseRoleMarkdown } from "../roles/roles.js";
 import { ensureWorkspaceRoom, gaiaHome } from "../workspace/workspace-loader.js";
 import { readRoomState, roomStatePath, writeRoomState } from "../room/state.js";
@@ -287,7 +287,3 @@ export async function deactivateMonad(workspace: Workspace, roomId: string): Pro
   return true;
 }
 
-/** Persist a setup manifest into a bundle dir (used by tests / scaffolding). */
-export async function writeSetupManifest(dir: string, manifest: SetupManifest): Promise<void> {
-  await writeFileAtomic(join(dir, "setup.json"), jsonText(manifest));
-}

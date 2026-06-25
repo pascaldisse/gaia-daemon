@@ -39,11 +39,6 @@ export function createSummonTool(summonCreate: SummonCreate, roomId: string) {
           { description: "Fan out multiple workers in parallel. Each runs concurrently and returns its own result." },
         ),
       ),
-      publish: Type.Optional(
-        Type.Union([Type.Literal("summary"), Type.Literal("full")], {
-          description: "How to publish the result into the room (unused in first pass).",
-        }),
-      ),
     }),
     execute: async (_toolCallId, params) => {
       const jobs: WhaleJob[] =

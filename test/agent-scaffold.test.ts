@@ -17,7 +17,6 @@ test("scaffolds a global agent persona folder without role stubs", async () => {
     assert.equal(existsSync(join(result.memoryDir, "USER.md")), true);
     // Roles directory exists but is empty: roles are user-added only.
     assert.equal(existsSync(result.rolesDir), true);
-    assert.deepEqual(result.rolePaths, []);
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     assert.deepEqual(config, {

@@ -21,15 +21,6 @@ export function routingPolicyIds(): string[] {
   return [...registry.keys()];
 }
 
-export function routingPolicySpecs(): RoutingPolicySpec[] {
-  return [...registry.values()];
-}
-
-/** Safe lookup: undefined for an unknown policy. */
-export function findRoutingPolicy(id: string): RoutingPolicySpec | undefined {
-  return registry.get(id);
-}
-
 /** Strict lookup used by the engine: throws for an unknown policy. */
 export function routingPolicySpecFor(id: string): RoutingPolicySpec {
   const spec = registry.get(id);

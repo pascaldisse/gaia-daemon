@@ -9,6 +9,8 @@
 // (the daemon forwards stderr to its own logs).
 
 import { createInterface } from "node:readline";
+import { DEFAULTS } from "../config/defaults.js";
+import { env } from "../lib/env.js";
 import { loadWorkspace } from "../workspace/workspace-loader.js";
 import { BridgeMemoryStore, bridgeSummonCreate, fixedTokenHost } from "./bridge-deps.js";
 import { harnessSpecFor } from "./harness-registry.js";
@@ -18,11 +20,6 @@ import type { AgentRuntime } from "./types.js";
 
 function send(message: RunnerMessage): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
-}
-
-function env(key: string): string | undefined {
-  const value = process.env[key];
-  return value && value.trim() ? value : undefined;
 }
 
 export async function runAgentRunner(): Promise<void> {
@@ -57,7 +54,7 @@ export async function runAgentRunner(): Promise<void> {
 
   // The daemon already resolved the harness (agent > workspace > default) and
   // passed it down; fall back to recomputing if the env is somehow absent.
-  const harness = env(RUNNER_ENV.harness) ?? agent.harness ?? workspace.config.harness ?? "pi";
+  const harness = env(RUNNER_ENV.harness) ?? agent.harness ?? workspace.config.harness ?? DEFAULTS.harness;
   const runtime: AgentRuntime = harnessSpecFor(harness).create({
     workspace,
     agent,

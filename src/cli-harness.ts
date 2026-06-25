@@ -13,6 +13,8 @@
 //   GAIA_DAEMON_URL  daemon base url (writes/summon)
 //   GAIA_DAEMON_TOKEN bearer token mapping to (workspace, agent, room)
 import { join } from "node:path";
+import { daemonPost as postToDaemon } from "./lib/daemon-client.js";
+import { env } from "./lib/env.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "./memory/memory-store.js";
 import { gaiaToolByVerb } from "./tools/gaia-tools.js";
 
@@ -48,32 +50,23 @@ function parseFlags(args: string[]): ParsedFlags {
   return { positional, flags };
 }
 
-function env(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.trim() ? value : undefined;
-}
-
 function fail(message: string): number {
   console.error(message);
   return 1;
 }
 
-// Reads come straight off disk; writes/summon post to the daemon.
+// Reads come straight off disk; writes/summon post to the daemon. Wraps the
+// shared daemon client to derive the flat {ok, text} the CLI prints.
 async function daemonPost(path: string, body: unknown): Promise<{ ok: boolean; text: string }> {
-  const base = env("GAIA_DAEMON_URL");
+  const url = env("GAIA_DAEMON_URL");
   const token = env("GAIA_DAEMON_TOKEN");
-  if (!base || !token) {
+  if (!url || !token) {
     return { ok: false, text: "ERROR: this command needs the GAIA daemon; run it from inside a GAIA agent turn." };
   }
   try {
-    const response = await fetch(`${base}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    });
-    const payload = (await response.json().catch(() => ({}))) as { result?: string; error?: string };
-    if (!response.ok) return { ok: false, text: `ERROR: ${payload.error ?? `daemon returned ${response.status}`}` };
-    return { ok: true, text: payload.result ?? "OK" };
+    const { ok, status, payload } = await postToDaemon({ url, token }, path, body);
+    if (!ok) return { ok: false, text: `ERROR: ${typeof payload.error === "string" ? payload.error : `daemon returned ${status}`}` };
+    return { ok: true, text: typeof payload.result === "string" ? payload.result : "OK" };
   } catch (error) {
     return { ok: false, text: `ERROR: ${error instanceof Error ? error.message : String(error)}` };
   }

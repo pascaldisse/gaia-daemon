@@ -68,15 +68,10 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
   },
 ];
 
-const byId = new Map(GAIA_TOOLS.map((tool) => [tool.id, tool]));
 const byVerb = new Map(GAIA_TOOLS.flatMap((tool) => tool.cliVerbs.map((verb) => [verb, tool] as const)));
 
 export function gaiaToolIds(): GaiaTool[] {
   return GAIA_TOOLS.map((tool) => tool.id);
-}
-
-export function gaiaToolFor(id: string): GaiaToolSpec | undefined {
-  return byId.get(id as GaiaTool);
 }
 
 export function gaiaToolByVerb(verb: string): GaiaToolSpec | undefined {

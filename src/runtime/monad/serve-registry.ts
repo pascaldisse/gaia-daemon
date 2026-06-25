@@ -35,10 +35,6 @@ export function serveAdapterIds(): string[] {
   return [...registry.keys()];
 }
 
-export function findServeAdapter(id: string): ServeAdapter | undefined {
-  return registry.get(id);
-}
-
 export function serveAdapterFor(id: string): ServeAdapter {
   const adapter = registry.get(id);
   if (!adapter) throw new Error(`Unsupported serve adapter: ${id}`);

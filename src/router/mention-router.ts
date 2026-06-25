@@ -1,4 +1,8 @@
-import type { RouteResult } from "./types.js";
+interface RoutePlan {
+  targets: string[];
+}
+
+type RouteResult = { ok: true; plan: RoutePlan } | { ok: false; unknown: string[] };
 
 const MENTION_PATTERN = /@([a-z0-9_-]+)/gi;
 
