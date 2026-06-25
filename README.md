@@ -43,9 +43,9 @@ Personas are durable. Projects add local context.
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
 
-Environment overrides: `GAIA_HOME` (global home, default `~/.gaia`), `GAIA_HOST`
-/ `GAIA_PORT` (web-server bind address, default `127.0.0.1:8787`; port `0` picks
-a free one), and `GAIA_SANDBOX_IMAGE` (container image for the sandbox).
+Environment overrides: `GAIA_HOME` (global home, default `~/.gaia`) and
+`GAIA_HOST` / `GAIA_PORT` (web-server bind address, default `127.0.0.1:8787`;
+port `0` picks a free one).
 
 ## Setup
 
@@ -315,27 +315,38 @@ knowledge of which harness is inside. Backends are swappable: adding one is a ne
 `src/runtime/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
 line, the daemon analogue of a single-file container-runtime swap.
 
-Three backends ship:
+Two backends ship (plus the swap seam for more):
 
-- **`macos-seatbelt`** (default real backend on macOS) — wraps the launch in
-  `sandbox-exec`. It ships with macOS, so it needs no image or daemon and works
-  out of the box. Posture: keep every capability the turn needs — read anything,
-  reach the network, spawn subprocesses — but confine **writes** to the workspace
-  (which is git-tracked and recoverable), temp, and regenerable caches, denying
-  writes to the rest of the host. So a confined agent can still edit the project
-  it was pointed at, but cannot touch the user's other files. Two carve-outs stay
-  read-only even inside the writable trees: the policy files (`config.json`,
-  project `agent.json`) and the pi credential store (`~/.pi/agent/auth.json`), so
-  a turn can neither rewrite its own governance nor tamper with keys it can read.
-  Residual, stated plainly: reads and network stay open, so this stops
-  destruction and tampering, not exfiltration.
-- **`apple-container`** — wraps the launch in Apple's `container run` (a Linux
-  VM): stronger isolation, but it needs the `container` binary, a running
-  `container system start`, and an image (`GAIA_SANDBOX_IMAGE`, default
-  `gaia-agent`) carrying node + the gaia runner. Until that's built it is
-  unavailable, and a policy that names it **fail-closes** (below).
+- **`macos-seatbelt`** (the default real backend; the only one shipped enabled) —
+  wraps the launch in `sandbox-exec`. It ships with macOS, so it needs no image or
+  daemon and works out of the box. Posture, two axes:
+  - **Writes (allowlist):** confined to the workspace (git-tracked, recoverable),
+    temp, and regenerable caches; the rest of the host is read-only. Two carve-outs
+    stay read-only even inside the writable trees — the policy files
+    (`config.json`, project `agent.json`) and the pi credential store
+    (`~/.pi/agent/auth.json`) — so a turn can neither rewrite its own governance
+    nor tamper with keys it can read.
+  - **Reads (denylist):** a sensitive set is denied — SSH / cloud / CI
+    credentials, keychains, `~/Documents`, `~/Desktop`, `~/Downloads` — with the
+    workspace and `GAIA_HOME` re-allowed on top, so a confined turn can't
+    exfiltrate unrelated secrets. Residual, stated plainly: it can't hide the
+    turn's *own* provider key (it's in the env), and non-sensitive host files stay
+    readable; airtight read-isolation is the deferred credential-proxy work
+    (see `HANDOFF-SANDBOX.md`).
 - **`none`** — the identity launch, no isolation. The posture for a *trusted*
   agent (see below).
+
+> The earlier `apple-container` (Linux-VM) backend was **dropped and uninstalled**
+> — it depended on host networking config it didn't own, cost a VM boot per turn,
+> and the "Seatbelt is deprecated" premise behind it was false. The swappable
+> registry stays as the seam for a future docker/Linux backend.
+
+**One confinement entrypoint.** `gaia __sandbox-exec --backend … --cwd …
+[--writable …] [--deny-read …] [--readonly-cwd] -- <argv>` builds a launch with
+the same resolver the daemon uses and execs it — the single place a sandbox is
+constructed. External callers (the pi skill's launcher) confine through it instead
+of rolling their own profile, so pi jobs and gaia summons get the identical
+posture from one source.
 
 Policy is resolved above the harness — an `agent.json` `sandbox` block overrides
 the workspace `.gaia/config.json` one (`enabled`, `backend`, `writable`, `net`).
@@ -350,9 +361,9 @@ Two rules sit above that config, driven by the agent's **trust** flag:
   override that — including back to `none` — but an untrusted one cannot.
 
 Resolution is **fail-closed**: if the chosen backend isn't available on this
-machine (e.g. `apple-container` with no image), the turn refuses to run rather
-than silently dropping isolation. A trusted top-level turn defaults to `none`
-(the trusted lead runs wide open).
+machine (e.g. an untrusted agent off macOS, where Seatbelt doesn't exist), the
+turn refuses to run rather than silently dropping isolation. A trusted top-level
+turn defaults to `none` (the trusted lead runs wide open).
 
 ## Summons
 
