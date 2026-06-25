@@ -1,0 +1,38 @@
+{
+  "id": "monad",
+  "displayName": "Monad (Gaia · Terry · Sidia)",
+  "description": "Dynamic Thinker/Worker/Verifier coordination loop. Answers as one; every step runs in a visible summoned child room.",
+  "version": "0.1.0",
+
+  "roomDefaults": { "maxSummonsPerRoom": 8 },
+
+  "monad": {
+    "policy": "prompt-driven",
+    "maxTurns": 5,
+    "roles": ["thinker", "worker", "verifier"],
+    "slots": [
+      { "index": 0, "agentId": "gaia",  "label": "thinker",  "defaultRole": "thinker" },
+      { "index": 1, "agentId": "terry", "label": "worker",   "defaultRole": "worker" },
+      { "index": 2, "agentId": "sidia", "label": "verifier", "defaultRole": "verifier" }
+    ],
+    "terminate": { "on": "verifier-accept", "acceptToken": "ACCEPT" }
+  },
+
+  "agents": [
+    { "ref": "gaia",  "role": "thinker" },
+    { "ref": "terry", "role": "worker" },
+    { "ref": "sidia", "role": "verifier" }
+  ],
+
+  "roles": {
+    "gaia":  "./roles/thinker.md",
+    "terry": "./roles/worker.md",
+    "sidia": "./roles/verifier.md"
+  },
+
+  "coordinator": {
+    "agent": { "ref": "monad", "from": "./agents/monad", "role": "coordinator" },
+    "role": "./roles/coordinator.md",
+    "skills": ["./skills/monad-loop"]
+  }
+}
