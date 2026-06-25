@@ -4,7 +4,7 @@ import { runHarnessCommand } from "./cli-harness.js";
 import { globalAgentsPath, initWorkspace } from "./workspace/workspace-loader.js";
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
+  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
 }
 
 async function main(): Promise<void> {
@@ -26,6 +26,18 @@ async function main(): Promise<void> {
 
   if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon") {
     process.exitCode = await runHarnessCommand(args);
+    return;
+  }
+
+  if (args[0] === "setup") {
+    const { runSetupCli } = await import("./setups/setup-cli.js");
+    process.exitCode = await runSetupCli(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "serve") {
+    const { runServeCli } = await import("./setups/serve-cli.js");
+    process.exitCode = await runServeCli(args.slice(1));
     return;
   }
 

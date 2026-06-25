@@ -16,6 +16,58 @@ without the prior conversation. Background/evidence lives in
 
 ---
 
+## 0. STATUS — BUILT (P1 + P2 + P3), 233/233 green, `tsc` clean
+
+The engine, both Fugu policies, the setup system, the serve seam, and the Fugu
+plugin are **implemented and tested**. This section is the source of truth; the
+spec below (§3–§7) is what was built, kept for rationale.
+
+**New files (core):**
+- `src/runtime/monad/types.ts` — all monad data types (value-free; no import cycle)
+- `src/runtime/monad/policy-registry.ts` — `RoutingPolicy` registry (mirrors harness-registry)
+- `src/runtime/monad/util.ts` — `replyAccepts` / `renderTranscript` / `extractJsonObject`
+- `src/runtime/monad/policies/prompt-driven.ts` — default policy: model-led routing + deterministic Thinker→Worker→Verifier fallback (no ML, works with no model)
+- `src/runtime/monad/policies/conductor-dag.ts` — **Conductor**: plans a workflow, replays one step/turn, threads `sees` (access_list). Pure TS.
+- `src/runtime/monad/policies/trinity-head.ts` — **TRINITY**: shells to a Python sidecar; pure `decisionFromRouter` mapping is unit-tested.
+- `src/runtime/monad/serve-registry.ts` + `serve/openai-compatible.ts` — the "answer as one" seam + a working adapter
+- `src/runtime/monad/index.ts` — barrel (self-registers policies + adapters)
+- `src/app/monad-engine.ts` — the loop + step-threading (`assembleTask`), reuses `SummonHost`
+- `src/setups/setup-loader.ts` — discovery + `activateSetup` (inlines role prompts into `RoomState.monad`)
+- `src/setups/setup-cli.ts` — `gaia setup list|activate|status|off`
+- `src/setups/serve-cli.ts` — `gaia serve <room>` (headless coordinator + engine + adapter)
+
+**Touched (core):** `src/room/state.ts` (`RoomState.monad?` + validating normalizer) ·
+`src/app/gaia-controller.ts` (monad-message routing → `runMonadTask`; `/setup` command) ·
+`src/app/commands.ts` (`/setup` parse + help) · `src/cli.ts` (`setup`, `serve` verbs).
+
+**Bundled data:** `setups/monad/` (prompt-driven) · `setups/fugu/` (conductor-dag, **runs today, no weights**) ·
+`setups/fugu-trinity/` (trinity-head; needs weights) · `plugins/fugu/` (py sidecar + fetch_artifacts + README with the 1-1 map).
+
+**Tests:** `test/monad.test.ts` — 12 tests: engine loop (REVISE→ACCEPT), model-led
+routing, max-turns, **step-threading proof** (P2: a later step sees only its
+access_list), conductor `parseWorkflow` (drops forward refs / unknown agents),
+trinity `decisionFromRouter`, state round-trip, util, registries, and **real
+bundled-setup discovery + activation** in a temp workspace.
+
+**How to run:**
+```
+gaia setup list
+gaia setup activate fugu        # or: monad | fugu-trinity   (→ this room is now a monad room)
+# then send a plain message in that room → the monad runs; each step is a visible child room
+gaia serve default --port 8799  # expose the room as one OpenAI-compatible model
+```
+
+**One honest caveat (the only deviation from "pure plugins"):** routing policies
+and serve adapters **register in-tree via the barrel**, exactly like harnesses
+(`runtime/index.ts`) — that IS Gaia's extensibility idiom, not a hack. The Fugu
+*setups* are pure drop-in config/data; what is NOT yet built is a *dynamic
+external policy loader* (drop a `.ts` policy folder with zero core edit). That is
+a clean follow-up (a `plugins/*/policies/*` import scan) and the seam is ready for
+it. `trinity-head` runs only once its Python sidecar + trained weights are
+installed (see `plugins/fugu/README.md`); everything else runs with no extra deps.
+
+---
+
 ## 1. Findings recap (one page)
 
 **OpenFugu** is an open reverse-engineering of Sakana AI's **Fugu** — an **LLM
