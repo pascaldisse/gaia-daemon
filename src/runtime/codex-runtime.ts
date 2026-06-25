@@ -1,5 +1,3 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { MemoryStore } from "../memory/memory-store.js";
@@ -7,6 +5,8 @@ import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
+import { missingBinaryError, spawnLineReader } from "./child-process.js";
+import { configuredModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
 
@@ -49,23 +49,61 @@ const DEFAULT_CAPABILITIES = {
 };
 
 function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
-  const proc: ChildProcess = spawn("codex", ["app-server"], {
-    cwd,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let nextId = 1;
   let notifHandler: ((msg: JsonRpcNotification) => void) | null = null;
-  let stderrAccum = "";
   let closed = false;
   let exitError: Error | null = null;
 
-  proc.stderr?.setEncoding("utf8");
-  proc.stderr?.on("data", (chunk: string) => {
-    stderrAccum += chunk;
+  function rejectAll(err: Error): void {
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+  }
+
+  function sendRaw(msg: { id?: number; method?: string; params?: unknown; error?: { code: number; message: string } }): void {
+    if (closed) return;
+    proc.stdin?.write(`${JSON.stringify(msg)}\n`);
+  }
+
+  // Shared spawn + stderr-accumulating line reader; the JSON-RPC framing on top
+  // (the onLine router below + sendRaw) is the only codex-specific part.
+  const { proc, rl, stderr } = spawnLineReader({
+    command: "codex",
+    args: ["app-server"],
+    cwd,
+    env,
+    onLine: (line) => {
+      let msg: { id?: number; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        return;
+      }
+
+      // Server-initiated request -> send error back
+      if (msg.id !== undefined && msg.method) {
+        sendRaw({ id: msg.id, error: { code: -32601, message: `Unsupported server request: ${msg.method}` } });
+        return;
+      }
+
+      // Response to one of our requests
+      if (msg.id !== undefined) {
+        const p = pending.get(msg.id);
+        if (!p) return;
+        pending.delete(msg.id);
+        if (msg.error) {
+          p.reject(new Error(msg.error.message ?? `codex app-server method failed.`));
+        } else {
+          p.resolve(msg.result ?? {});
+        }
+        return;
+      }
+
+      // Notification (no id)
+      if (msg.method && notifHandler) {
+        notifHandler(msg as JsonRpcNotification);
+      }
+    },
   });
 
   proc.on("error", (err) => {
@@ -80,51 +118,6 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
       );
     }
     rejectAll(exitError ?? new Error("codex app-server connection closed."));
-  });
-
-  function rejectAll(err: Error): void {
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
-  }
-
-  function sendRaw(msg: { id?: number; method?: string; params?: unknown; error?: { code: number; message: string } }): void {
-    if (closed) return;
-    proc.stdin?.write(`${JSON.stringify(msg)}\n`);
-  }
-
-  const rl = createInterface({ input: proc.stdout! });
-  rl.on("line", (line: string) => {
-    if (!line.trim()) return;
-    let msg: { id?: number; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } };
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      return;
-    }
-
-    // Server-initiated request -> send error back
-    if (msg.id !== undefined && msg.method) {
-      sendRaw({ id: msg.id, error: { code: -32601, message: `Unsupported server request: ${msg.method}` } });
-      return;
-    }
-
-    // Response to one of our requests
-    if (msg.id !== undefined) {
-      const p = pending.get(msg.id);
-      if (!p) return;
-      pending.delete(msg.id);
-      if (msg.error) {
-        p.reject(new Error(msg.error.message ?? `codex app-server method failed.`));
-      } else {
-        p.resolve(msg.result ?? {});
-      }
-      return;
-    }
-
-    // Notification (no id)
-    if (msg.method && notifHandler) {
-      notifHandler(msg as JsonRpcNotification);
-    }
   });
 
   return {
@@ -150,7 +143,7 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
       proc.stdin?.end();
     },
     get stderr() {
-      return stderrAccum;
+      return stderr();
     },
   };
 }
@@ -158,27 +151,6 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
 const defaultFactory: CodexClientFactory = async (cwd, env) => {
   return spawnCodexClient(cwd, env);
 };
-
-function isMissingCodexBinary(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-function codexStartupError(error: unknown, stderr?: string): Error {
-  if (isMissingCodexBinary(error)) {
-    return new Error("Codex app-server is unavailable: the `codex` CLI was not found in PATH.");
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  const details = stderr?.trim();
-  return new Error(
-    `Codex app-server is unavailable: ${message}${details ? `\n\ncodex stderr:\n${details}` : ""}`,
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Config-driven sandbox translation
@@ -502,14 +474,14 @@ export class CodexRuntime implements AgentRuntime {
             return client;
           } catch (error) {
             await client.close().catch(() => {});
-            throw codexStartupError(error, client.stderr);
+            throw missingBinaryError("codex", "Codex app-server", error, client.stderr);
           }
         })
         .catch((error) => {
           this.initPromise = null;
           throw error instanceof Error && error.message.startsWith("Codex app-server is unavailable:")
             ? error
-            : codexStartupError(error);
+            : missingBinaryError("codex", "Codex app-server", error);
         });
     }
     this.client = await this.initPromise;
@@ -545,10 +517,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private resolveModelLabel(): string {
-    const provider = this.agent.model?.provider;
-    const name = this.agent.model?.name;
-    if (!provider || !name) return "Codex default";
-    return `${provider}/${name}`;
+    return configuredModelLabel(this.agent.model, "Codex default");
   }
 }
 

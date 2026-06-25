@@ -1,9 +1,6 @@
-import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { MemoryStore } from "../memory/memory-store.js";
@@ -11,6 +8,9 @@ import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
 import { createEventChannel } from "./event-stream.js";
+import { killProcessTree, missingBinaryError, spawnLineReader } from "./child-process.js";
+import { resolveCliEntry, selfRelaunchArgv } from "./cli-entry.js";
+import { configuredModelLabel, liveModelLabel } from "./model-label.js";
 import { GAIA_TOOLS } from "../tools/gaia-tools.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
@@ -48,37 +48,26 @@ export type ClaudeProcessFactory = (options: ClaudeProcessOptions) => ClaudeProc
 // ---------------------------------------------------------------------------
 
 function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle {
+  let settled = false;
   // `detached: true` puts the child in its own process group so abort() can
   // signal the WHOLE tree (claude + any bash/tool grandchildren) via the
-  // negative-pid group kill below. Without this, SIGTERM hits only the `claude`
+  // group kill in killProcessTree. Without this, SIGTERM hits only the `claude`
   // parent and leaves its children running — which made agents unstoppable.
-  const proc: ChildProcess = spawn("claude", options.args, {
+  const { proc, rl, stderr } = spawnLineReader({
+    command: "claude",
+    args: options.args,
     cwd: options.cwd,
     env: options.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
     detached: true,
-  });
-
-  let stderr = "";
-  let settled = false;
-
-  proc.stderr?.setEncoding("utf8");
-  proc.stderr?.on("data", (chunk: string) => {
-    stderr += chunk;
-  });
-
-  const rl = createInterface({ input: proc.stdout! });
-  rl.on("line", (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      return; // ignore non-JSON noise
-    }
-    options.onMessage(parsed);
+    onLine: (line) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line.trim());
+      } catch {
+        return; // ignore non-JSON noise
+      }
+      options.onMessage(parsed);
+    },
   });
 
   proc.on("error", (err) => {
@@ -92,7 +81,7 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
     if (settled) return;
     settled = true;
     rl.close();
-    options.onExit({ code, signal, stderr });
+    options.onExit({ code, signal, stderr: stderr() });
   });
 
   // Deliver the prompt on stdin, then close it so the CLI starts the turn.
@@ -101,46 +90,13 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
 
   return {
     kill() {
-      const pid = proc.pid;
-      if (pid === undefined) return;
-      // Kill the whole process group (negative pid). Escalate to SIGKILL after a
-      // grace period in case claude or a child ignores SIGTERM, so abort is
-      // guaranteed to stop the agent.
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try {
-          process.kill(-pid, signal);
-        } catch {
-          try {
-            proc.kill(signal);
-          } catch {
-            // Already gone.
-          }
-        }
-      };
-      signalGroup("SIGTERM");
-      const grace = setTimeout(() => signalGroup("SIGKILL"), 2000);
-      grace.unref?.();
-      proc.once("exit", () => clearTimeout(grace));
+      killProcessTree(proc);
     },
   };
 }
 
-function isMissingClaudeBinary(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
 function claudeStartupError(error: unknown, stderr?: string): Error {
-  if (isMissingClaudeBinary(error)) {
-    return new Error("Claude Code is unavailable: the `claude` CLI was not found in PATH.");
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const details = stderr?.trim();
-  return new Error(`Claude Code is unavailable: ${message}${details ? `\n\nclaude stderr:\n${details}` : ""}`);
+  return missingBinaryError("claude", "Claude Code", error, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -240,19 +196,15 @@ function ensureGaiaShimDir(): string | undefined {
   if (gaiaShimResolved) return gaiaShimDir;
   gaiaShimResolved = true;
   try {
-    // The CLI entry is cli.js when built, cli.ts under tsx (dev / no-build);
-    // assuming a built cli.js sibling broke `gaia` whenever the daemon ran via
-    // tsx. Pick whichever exists.
-    const jsPath = fileURLToPath(new URL("../cli.js", import.meta.url));
-    const cliPath = existsSync(jsPath) ? jsPath : fileURLToPath(new URL("../cli.ts", import.meta.url));
+    const cliPath = resolveCliEntry();
     const dir = join(dirname(cliPath), ".bin");
     const shimPath = join(dir, "gaia");
-    // Re-launch the CLI exactly how THIS daemon was launched: execPath + the
-    // node flags in execArgv (which under tsx carry the TS loader, e.g.
-    // `--import …/tsx/loader.mjs`). So a plain `gaia <cmd>` works in both built
-    // mode (`node cli.js`) and dev/tsx mode (`node --import tsx … cli.ts`).
-    const runner = [process.execPath, ...process.execArgv].map(shellQuote).join(" ");
-    const contents = `#!/bin/sh\nexec ${runner} ${shellQuote(cliPath)} "$@"\n`;
+    // Re-launch the CLI exactly how THIS daemon was launched (execPath + the
+    // node flags in execArgv + the resolved entry — see selfRelaunchArgv), so a
+    // plain `gaia <cmd>` works in both built mode (`node cli.js`) and dev/tsx
+    // mode (`node --import tsx … cli.ts`).
+    const runner = selfRelaunchArgv().map(shellQuote).join(" ");
+    const contents = `#!/bin/sh\nexec ${runner} "$@"\n`;
     if (!existsSync(shimPath) || readFileSync(shimPath, "utf8") !== contents) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(shimPath, contents, { mode: 0o755 });
