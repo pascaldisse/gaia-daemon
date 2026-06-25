@@ -336,11 +336,6 @@ Two backends ship (plus the swap seam for more):
 - **`none`** — the identity launch, no isolation. The posture for a *trusted*
   agent (see below).
 
-> The earlier `apple-container` (Linux-VM) backend was **dropped and uninstalled**
-> — it depended on host networking config it didn't own, cost a VM boot per turn,
-> and the "Seatbelt is deprecated" premise behind it was false. The swappable
-> registry stays as the seam for a future docker/Linux backend.
-
 **One confinement entrypoint.** `gaia __sandbox-exec --backend … --cwd …
 [--writable …] [--deny-read …] [--readonly-cwd] -- <argv>` builds a launch with
 the same resolver the daemon uses and execs it — the single place a sandbox is
