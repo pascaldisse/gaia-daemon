@@ -562,4 +562,10 @@ registerHarness({
     modelProviderIds: ["openai-codex"],
   },
   create: (ctx) => new CodexRuntime(ctx),
+  // Codex reads OPENAI_BASE_URL + OPENAI_API_KEY. Point both at the loopback proxy
+  // + per-turn token; the daemon swaps in the real key. OAuth/ChatGPT-subscription
+  // logins have no key to hide, so the proxy resolver fail-closes for them.
+  credentialProxy: ({ proxyUrl, token }) => ({
+    env: { OPENAI_BASE_URL: proxyUrl, OPENAI_API_KEY: token },
+  }),
 });

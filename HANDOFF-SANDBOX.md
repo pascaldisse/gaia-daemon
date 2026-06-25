@@ -1,3 +1,5 @@
+> ⚠️ **HARNESS ABSTRACTION — ABSOLUTE RULE (see [AGENTS.md](AGENTS.md) §RULE #0).** pi/claude/codex are interchangeable harnesses behind ONE abstraction. Implement every capability ONCE at the abstraction layer (harness registry / RunnerHost / runner) so it applies to ALL harnesses — present, unimplemented, and future. NEVER special-case a harness, NEVER `if (harness === "pi")` in shared code, NEVER touch the thing underneath. A harness may ONLY declare its own wiring as DATA on its spec.
+
 # HANDOFF — Sandbox: drop apple-container, seatbelt-only, gaia↔pi dedup
 
 Status: 2026-06-25, branch `feat/sandbox-seatbelt-dedup` (off `main`).

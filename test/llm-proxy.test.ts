@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo } from "node:net";
 import { forwardLlmRequest, joinUrl, LLM_PROXY_MOUNT, llmProxySubpath, type UpstreamCredential } from "../src/app/llm-proxy.ts";
-import { resolvePiUpstream } from "../src/app/pi-credential-resolver.ts";
+import { resolveUpstreamCredential } from "../src/app/upstream-resolver.ts";
 import { PROVIDER_KEY_ENV_VARS, stripProviderKeys } from "../src/app/provider-key-env.ts";
 import { rewriteProviderUrl } from "../src/runtime/llm-proxy-fetch.ts";
 
@@ -131,8 +131,8 @@ test("forwardLlmRequest: fail-closed 502 when upstream is unreachable (never lea
   proxy.server.close();
 });
 
-test("resolvePiUpstream: builds upstream from the real registry baseUrl + resolved key", async () => {
-  const upstream = await resolvePiUpstream(
+test("resolveUpstreamCredential: builds upstream from the real registry baseUrl + resolved key", async () => {
+  const upstream = await resolveUpstreamCredential(
     { id: "a", model: { provider: "deepseek", name: "deepseek-chat" } } as never,
     {
       registry: { find: () => ({ baseUrl: "https://api.deepseek.com/v1" }) },
@@ -142,15 +142,15 @@ test("resolvePiUpstream: builds upstream from the real registry baseUrl + resolv
   assert.deepEqual(upstream, { baseUrl: "https://api.deepseek.com/v1", authHeaders: { authorization: "Bearer sk-REAL-KEY" } });
 });
 
-test("resolvePiUpstream: undefined (proxy refuses) when no key resolves — OAuth-only/unconfigured", async () => {
-  const upstream = await resolvePiUpstream(
+test("resolveUpstreamCredential: undefined (proxy refuses) when no key resolves — OAuth-only/unconfigured", async () => {
+  const upstream = await resolveUpstreamCredential(
     { id: "a", model: { provider: "x", name: "y" } } as never,
     { registry: { find: () => ({ baseUrl: "https://u" }) }, authStorage: { getApiKey: async () => undefined } },
   );
   assert.equal(upstream, undefined);
 });
 
-test("resolvePiUpstream: undefined when the agent has no configured model", async () => {
-  const upstream = await resolvePiUpstream({ id: "a" } as never, { registry: { find: () => undefined }, authStorage: { getApiKey: async () => "k" } });
+test("resolveUpstreamCredential: undefined when the agent has no configured model", async () => {
+  const upstream = await resolveUpstreamCredential({ id: "a" } as never, { registry: { find: () => undefined }, authStorage: { getApiKey: async () => "k" } });
   assert.equal(upstream, undefined);
 });

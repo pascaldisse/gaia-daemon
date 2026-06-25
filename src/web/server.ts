@@ -10,7 +10,7 @@ import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gai
 import { SummonCoordinator } from "../app/summon-coordinator.js";
 import { HarnessBridge } from "../app/harness-bridge.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../app/llm-proxy.js";
-import { resolvePiUpstream } from "../app/pi-credential-resolver.js";
+import { resolveUpstreamCredential } from "../app/upstream-resolver.js";
 import { MemoryStore, type MemoryAction } from "../memory/memory-store.js";
 import { reapOrphans } from "../runtime/orphan-reaper.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
@@ -666,7 +666,7 @@ export class GaiaWebServer {
     } catch {
       agent = undefined;
     }
-    const upstream = agent ? await resolvePiUpstream(agent) : undefined;
+    const upstream = agent ? await resolveUpstreamCredential(agent) : undefined;
     if (!upstream) {
       // No proxyable credential for this agent — refuse rather than leak/guess.
       response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
