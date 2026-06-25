@@ -72,33 +72,72 @@ codex → custom `base_url` + `OPENAI_API_KEY=<token>`. OAuth/subscription modes
 key to proxy — leave them as-is. The fetch-layer redirect pattern generalizes if a
 harness keys behavior off the base URL.
 
-## 2. Host-sweep / orphan-reaping
+## 2. Host-sweep / orphan-reaping (DONE)
 
 **nanoclaw mechanism:** every child is labeled `nanoclaw-install=SHA256(cwd)`;
 `host-sweep.ts` reaps only children carrying *this install's* label, so peer
 checkouts never reap each other. Dual stuck-detection: an absolute heartbeat-age
 ceiling, plus a per-claim stuck check; orphaned ack rows are deleted post-kill.
 
-**gaia gap:** only manual `pi-agent prune`. A daemon crash orphans pi managers and
-summon subprocesses; nothing reaps them on restart.
+**gaia gap (closed):** was only manual `pi-agent prune`. A SIGKILLed daemon could
+leave a wedged agent-runner behind (clean shutdown already self-exits children on
+the stdin EOF, so this is the crash case only).
 
-**Design:** tag spawned children with a per-install label, add a sweep on daemon
-start (and periodically) that reaps only this install's orphans whose parent is
-gone. Reuse the runner lifecycle in `src/runtime/` + the controller's process
-tracking.
+**What shipped** (`src/runtime/orphan-reaper.ts`, no docker / no two-DB — gaia is
+process-based, not nanoclaw's container model):
+- **Label:** every agent-runner carries a `--gaia-install <id>` argv marker, id =
+  `sha1(GAIA_HOME)[:12]` (`installId` / `currentInstallId`, memoized). The runner
+  ignores the flag — it's a pure, `ps`-visible label scoped to the checkout.
+  Appended in `RunnerHost.spawnChild`.
+- **Sweep:** `reapOrphans()` runs `ps axww -o pid=,ppid=,command=`, and
+  `selectOrphans` (pure, unit-tested) picks rows that carry THIS install's marker
+  AND whose parent is gone — ppid 1 or a ppid not present as a live pid in the
+  table — excluding the daemon itself and its own children. Matching on the marker
+  (not a recorded PID) makes PID reuse harmless. SIGTERM, best-effort: off
+  darwin/linux, a `ps` failure, or a per-pid kill error all just log and continue.
+- **Boot hook:** `GaiaWebServer.listen()` calls `reapOrphans()` first thing.
+- **Covers summons** (a summon is a child room through the same RunnerHost, so its
+  runner carries the marker too).
+- **Verified:** unit tests (parse/select purity, self/sibling safety, best-effort
+  guards) + an on-machine real-`ps` proof that a genuinely-orphaned (ppid 1) marked
+  sleeper is found and signalled.
+- **Known limit:** reaps the runner orphans, not their grandchildren (a runner's
+  own tool subprocesses), which carry no marker. Acceptable — they're short-lived
+  / die with the session; revisit with an inherited `GAIA_INSTALL_ID` env + `ps e`
+  if grandchild leakage ever shows up. No periodic re-sweep (boot-only) — the crash
+  window is restart-bounded; add a timer if long-uptime leakage appears.
 
-## 3. Circuit-breaker
+## 3. Circuit-breaker (DONE)
 
 **nanoclaw mechanism (`circuit-breaker.ts`):** a file-backed state machine —
 attempt counter + timestamp, backoff schedule `[0,0,10,30,120,300,900]s`, 1-hour
 reset window; runs before DB init; SIGTERM deletes the state file.
 
-**gaia gap:** no resilience layer — a flaky harness/provider is re-launched on every
-turn with no backoff or trip.
+**gaia gap (closed):** was no resilience layer — a flaky harness/provider was
+re-launched on every turn with no backoff or trip.
 
-**Design:** wrap harness/summon launches in a breaker keyed by target
-(harness/provider/agent); trip after N consecutive failures, fast-fail during the
-cooldown, half-open probe, reset after a clean window.
+**What shipped** (`src/runtime/circuit-breaker.ts`). NB nanoclaw's breaker guards
+daemon STARTUP across process restarts (hence file-backed); gaia's guards LAUNCHES
+within a running daemon, so it's **in-memory** — a restart resets every breaker,
+which is what you want (restarting *is* "try again").
+- **`CircuitBreaker`** keyed by target string, injectable clock. `closed` →
+  (N consecutive failures) → `open` (fast-fail with `retryInMs` for the backoff
+  `cooldownScheduleMs`) → after cooldown `half-open` (one probe) → `onSuccess`
+  closes + clears, a failed probe reopens with the next, longer cooldown. Idle past
+  `resetMs` (1h) → fresh. `canAttempt` / `onSuccess` / `onFailure` / `snapshot`.
+- **Shared** daemon-wide via `defaultBreaker` (a down provider fast-fails for every
+  room, not just the one that tripped it), overridable per-host for tests.
+- **Wired into `RunnerHost`** at the spawn→`ready` handshake (key
+  `harness:provider/model`): `ensureChild` fast-fails when the breaker is open;
+  `ready` = success; a `resolveSandboxLaunch` throw (fail-closed sandbox) / child
+  `error` / exit-before-`ready` (crash-on-start) = failure, settled exactly once
+  per attempt via a `launchSettled` guard. **Covers summons** (same RunnerHost).
+- **Scope:** launch health only, NOT mid-turn provider hiccups — a turn that fails
+  after a clean `ready` doesn't trip the breaker (avoids false trips on transient
+  in-turn errors).
+- **Verified:** `test/circuit-breaker.test.ts` (trip / cooldown / half-open / reopen
+  / reset / per-key isolation) + a crash-on-start integration test in
+  `test/runner-host.test.ts` (first turn trips, second fast-fails with "circuit open").
 
 ## Out of scope (core)
 

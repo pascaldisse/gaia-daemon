@@ -12,6 +12,7 @@ import { HarnessBridge } from "../app/harness-bridge.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../app/llm-proxy.js";
 import { resolvePiUpstream } from "../app/pi-credential-resolver.js";
 import { MemoryStore, type MemoryAction } from "../memory/memory-store.js";
+import { reapOrphans } from "../runtime/orphan-reaper.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
   classifyVoiceTurn,
@@ -267,6 +268,10 @@ export class GaiaWebServer {
   constructor(private readonly options: WebServerOptions) {}
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
+    // Reap agent-runner children a previous daemon for THIS install left orphaned
+    // (crash that missed the clean stdin-EOF teardown). Matched by per-install
+    // marker + dead parent, so peer checkouts and live siblings are untouched.
+    reapOrphans({ log: (message) => console.log(`[gaia] ${message}`) });
     await this.registerCwdIfInitialized();
     await ensureVoiceSettingsFile();
     if (this.options.dev) await this.startDevWatchers();

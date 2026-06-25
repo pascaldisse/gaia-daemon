@@ -4,6 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import "../src/runtime/index.ts"; // register harnesses (RunnerHost reads pi capabilities)
 import { RunnerHost } from "../src/runtime/runner-host.ts";
+import { CircuitBreaker } from "../src/runtime/circuit-breaker.ts";
 import type { AgentEvent } from "../src/runtime/types.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
@@ -64,6 +65,48 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "hello"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+// A runner that dies before ever reporting `ready` — a crash-on-start.
+const CRASH_STUB = `process.exit(7);\n`;
+
+test("RunnerHost trips the launch breaker on crash-on-start, then fast-fails", async () => {
+  const temp = await createTempDir();
+  try {
+    const stubPath = join(temp.path, "crash-runner.mjs");
+    await writeFile(stubPath, CRASH_STUB, "utf8");
+    const breaker = new CircuitBreaker({ threshold: 1, cooldownScheduleMs: [60_000], resetMs: 3_600_000 });
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "pi",
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+      breaker,
+    });
+
+    // First turn: the child exits before `ready`, so the stream throws AND the
+    // launch is recorded as a failure (threshold 1 → breaker trips open).
+    await assert.rejects(async () => {
+      for await (const _e of host.send({ roomId: "default", message: "hi", transcript: [] })) {
+        // drain
+      }
+    });
+    assert.equal(breaker.snapshot("pi:deepseek/x").state, "open");
+
+    // Second turn fast-fails from the open breaker — no second spawn attempt.
+    await assert.rejects(
+      async () => {
+        for await (const _e of host.send({ roomId: "default", message: "hi", transcript: [] })) {
+          // drain
+        }
+      },
+      /circuit open/i,
+    );
     host.dispose();
   } finally {
     await temp.cleanup();
