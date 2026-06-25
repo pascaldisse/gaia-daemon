@@ -2,6 +2,5 @@
 // registry API. Add a backend = new `sandbox/<x>.ts` + one import line here.
 import "./none.js";
 import "./macos-seatbelt.js";
-import "./apple-container.js";
 
 export * from "./registry.js";

@@ -9,6 +9,18 @@ function usage(): void {
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+
+  // Hidden: the shared confinement entrypoint. `gaia __sandbox-exec … -- argv`
+  // runs the child argv inside the SAME sandbox the daemon uses (one source of
+  // truth; the pi skill and any future harness call this instead of rolling
+  // their own profile). Parsed from rawArgs so flags meant for the CHILD (after
+  // `--`) are never touched — not even by the --dev filter below.
+  if (rawArgs[0] === "__sandbox-exec") {
+    const { runSandboxExec } = await import("./runtime/sandbox/exec-cli.js");
+    process.exitCode = await runSandboxExec(rawArgs.slice(1));
+    return;
+  }
+
   const devMode = rawArgs.includes("--dev");
   const args = rawArgs.filter((arg) => arg !== "--dev");
   if (args.includes("--help") || args.includes("-h")) {

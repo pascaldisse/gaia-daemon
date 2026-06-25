@@ -15,6 +15,12 @@ export interface SandboxSpec {
   writable: string[];
   /** Paths kept read-only even though they sit inside cwd (the policy files). */
   readonly: string[];
+  /** Extra paths to deny READ access to, on top of the backend's built-in
+   *  sensitive set (credentials, user documents). */
+  denyRead?: string[];
+  /** Is the cwd writable? Default true (a coding agent edits its project). The
+   *  pi skill runs its repo read-only and passes false. */
+  cwdWritable?: boolean;
   /** Network access. */
   net: "full" | "none";
 }
@@ -62,9 +68,12 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   return config;
 }
 
-/** The real (isolating) backend to force when isolation is required. */
-function defaultRealBackend(platform: string): string {
-  return platform === "darwin" ? "macos-seatbelt" : "apple-container";
+/** The real (isolating) backend to force when isolation is required. macOS
+ *  Seatbelt is the only real backend now (apple-container was dropped); off
+ *  darwin it is unavailable, so an untrusted turn fail-closes rather than
+ *  running naked — the safe outcome for a macOS-first tool. */
+function defaultRealBackend(): string {
+  return "macos-seatbelt";
 }
 
 /**
@@ -90,9 +99,8 @@ export function resolveSandboxPolicy(
 ): SandboxPolicy {
   const ws = workspace ?? {};
   const ag = agent ?? {};
-  const platform = opts.platform ?? process.platform;
   const trusted = opts.trusted !== false; // default trusted; only an explicit false is untrusted
-  const real = defaultRealBackend(platform);
+  const real = defaultRealBackend();
   const configuredBackend = ag.backend ?? ws.backend;
   const writable = ag.writable ?? ws.writable;
   const net = ag.net ?? ws.net;
@@ -144,13 +152,15 @@ export async function resolveSandboxLaunch(
   policy: SandboxPolicy,
   argv: string[],
   cwd: string,
-  extra: { writable?: string[]; readonly?: string[] } = {},
+  extra: { writable?: string[]; readonly?: string[]; denyRead?: string[]; cwdWritable?: boolean } = {},
 ): Promise<SandboxLaunch> {
   const spec: SandboxSpec = {
     argv,
     cwd,
     writable: [...(policy.writable ?? []), ...(extra.writable ?? [])],
     readonly: extra.readonly ?? [],
+    denyRead: extra.denyRead ?? [],
+    cwdWritable: extra.cwdWritable ?? true,
     net: policy.net ?? "full",
   };
   const backendId = policy.backend ?? "none";

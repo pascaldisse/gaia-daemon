@@ -1,23 +1,24 @@
 // macOS Seatbelt backend (`sandbox-exec`). It ships with macOS — no image, no
-// daemon, no plugin — so it is the isolation that actually runs on this machine
-// today, unlike apple-container (which needs a built image + a working
-// `container` install). It is the default real backend on darwin.
+// daemon, no plugin — so it is the isolation that actually runs on this machine.
+// Since apple-container was dropped, it is gaia's only real backend; off darwin
+// an isolated turn fail-closes (refuses to run) rather than running naked.
 //
-// Posture: keep every capability the turn legitimately needs — read anything,
-// reach the network, spawn subprocesses — but confine WRITES to the workspace it
-// was pointed at (plus temp and regenerable caches) and deny writes to the rest
-// of the host. That removes the blast radius that actually matters (the user's
-// other files, their documents, the system) while a coding agent can still edit
-// the project it is working on (which is git-tracked and recoverable).
+// Posture — two axes:
+//  • WRITES (allowlist): nothing is writable except the workspace (cwd, unless
+//    cwdWritable === false), temp, and regenerable caches. The policy files and
+//    the pi credential store are carved back to read-only inside those trees, so
+//    a confined turn can neither rewrite its own governance nor tamper with the
+//    keys it can read.
+//  • READS (denylist): reads stay open EXCEPT a sensitive set — SSH/cloud/CI
+//    credentials and the user's documents — which are denied, with the workspace
+//    and GAIA_HOME re-allowed on top. This curbs exfiltration of unrelated
+//    secrets by a buggy or prompt-injected turn.
 //
-// Two carve-outs are kept read-only even though they sit inside writable trees:
-// the policy files that govern the next turn (config.json, project agent.json —
-// passed in spec.readonly) and the pi credential store (~/.pi/agent/auth.json).
-// So a confined turn can neither rewrite its own governance nor tamper with the
-// API keys it can already read.
-//
-// Residual, named on purpose: reads and network stay open, so this stops
-// destruction and tampering, not exfiltration. That is the agreed trade.
+// Honest residual: the API key the turn itself uses is in its env by necessity,
+// so this cannot hide THAT key (the credential-proxy model would — deferred, see
+// HANDOFF-SANDBOX.md). Reads of OTHER projects under ~ are left open by default
+// because runtimes/installs live there and a blanket deny breaks module
+// resolution; pass extra paths via spec.denyRead to tighten case by case.
 import { existsSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { registerSandbox, type SandboxSpec } from "./registry.js";
@@ -26,7 +27,7 @@ const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 // Seatbelt matches canonical (symlink-resolved) paths — the classic /tmp ->
 // /private/tmp gotcha. Canonicalize everything we name; fall back to the literal
-// for paths that do not exist yet (a deny rule for a missing file is harmless).
+// for paths that do not exist yet (a deny rule for a missing path is harmless).
 function canon(path: string): string {
   try {
     return realpathSync(path);
@@ -44,10 +45,35 @@ function subpaths(paths: string[]): string {
   return paths.map((p) => `(subpath ${quote(p)})`).join(" ");
 }
 
+// Credential stores + personal data denied reads by default. Missing paths are
+// harmless (a deny on a nonexistent path never matches). Deliberately NOT here:
+// the pi auth.json the turn must read for its own key, and the ~/.pi caches the
+// harness writes.
+function defaultSensitiveReads(home: string): string[] {
+  return [
+    `${home}/.ssh`,
+    `${home}/.aws`,
+    `${home}/.gnupg`,
+    `${home}/.config/gcloud`,
+    `${home}/.config/gh`,
+    `${home}/.config/op`,
+    `${home}/.kube`,
+    `${home}/.docker`,
+    `${home}/.netrc`,
+    `${home}/.npmrc`,
+    `${home}/.pypirc`,
+    `${home}/Library/Keychains`,
+    `${home}/Documents`,
+    `${home}/Desktop`,
+    `${home}/Downloads`,
+  ];
+}
+
 export function buildSeatbeltProfile(spec: SandboxSpec): string {
   const home = canon(homedir());
+  const cwdWritable = spec.cwdWritable !== false;
   const writable = [
-    canon(spec.cwd),
+    ...(cwdWritable ? [canon(spec.cwd)] : []),
     canon(tmpdir()),
     "/private/tmp",
     "/private/var/folders",
@@ -63,15 +89,24 @@ export function buildSeatbeltProfile(spec: SandboxSpec): string {
   // Read-only even inside the writable trees above. Last match wins in SBPL, so
   // these denies override the allow.
   const readonly = [...spec.readonly.map(canon), canon(`${home}/.pi/agent/auth.json`)];
+  // Sensitive reads denied, then the workspace + GAIA_HOME re-allowed on top so
+  // a cwd that happens to sit under a denied tree (e.g. ~/Documents) still reads.
+  const denyRead = [...defaultSensitiveReads(home), ...(spec.denyRead ?? [])].map(canon);
+  const readAllow = [canon(spec.cwd)];
+  const gaiaHome = process.env.GAIA_HOME?.trim();
+  if (gaiaHome) readAllow.push(canon(gaiaHome));
+
   const lines = [
     "(version 1)",
     "(allow default)",
-    // Nothing is writable...
+    // Writes: deny-all, allow the workspace/temp/caches + character devices,
+    // then re-deny the policy files + credential store.
     "(deny file-write*)",
-    // ...except the workspace, temp, regenerable caches, and character devices.
     `(allow file-write* ${subpaths(writable)} (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (literal "/dev/dtracehelper") (literal "/dev/random") (literal "/dev/urandom") (regex #"^/dev/fd/"))`,
-    // ...but never the policy files or the credential store.
     `(deny file-write* ${subpaths(readonly)})`,
+    // Reads: deny the sensitive set, then re-allow the workspace + GAIA_HOME.
+    `(deny file-read* ${subpaths(denyRead)})`,
+    `(allow file-read* ${subpaths(readAllow)})`,
   ];
   if (spec.net === "none") lines.push("(deny network*)");
   return lines.join("\n");
