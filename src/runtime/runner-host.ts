@@ -16,8 +16,10 @@ import { stripProviderKeys } from "../app/provider-key-env.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
+import { CircuitBreaker, defaultBreaker } from "./circuit-breaker.js";
 import { createEventChannel, type EventChannel } from "./event-stream.js";
 import { harnessSpecFor } from "./harness-registry.js";
+import { installMarkerArgs } from "./orphan-reaper.js";
 import { RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./runner-protocol.js";
 import { resolveSandboxLaunch, type SandboxPolicy } from "./sandbox/index.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
@@ -41,6 +43,8 @@ export interface RunnerHostOptions {
   sandbox: () => SandboxPolicy;
   /** Test seam: override the argv launched (default is `gaia __run-agent`). */
   runnerArgv?: string[];
+  /** Launch breaker keyed by target; defaults to the daemon-wide shared one. */
+  breaker?: CircuitBreaker;
 }
 
 // The CLI entry is cli.js when built, cli.ts under tsx; the runner re-launches it
@@ -65,12 +69,22 @@ export class RunnerHost implements AgentRuntime {
   private activeChannel: EventChannel | null = null;
   private _modelLabel: string;
   private disposed = false;
+  // Launch breaker, keyed by target so a down provider/harness fast-fails for
+  // every room, not just the one that tripped it. Per-spawn handshake flags: a
+  // launch counts as success once the child reports `ready`, failure if it dies
+  // (or the sandbox fail-closes) before that — reported exactly once per attempt.
+  private readonly breaker: CircuitBreaker;
+  private readonly breakerKey: string;
+  private childReady = false;
+  private launchSettled = false;
 
   constructor(options: RunnerHostOptions) {
     this.options = options;
     this.agent = options.agent;
     this.capabilities = harnessSpecFor(options.harness).capabilities;
     this._modelLabel = configuredLabel(options.agent);
+    this.breaker = options.breaker ?? defaultBreaker;
+    this.breakerKey = `${options.harness}:${configuredLabel(options.agent)}`;
   }
 
   get modelLabel(): string {
@@ -117,6 +131,14 @@ export class RunnerHost implements AgentRuntime {
   private async ensureChild(roomId: string): Promise<void> {
     if (this.child) return;
     if (!this.spawnPromise) {
+      // Fast-fail while the breaker is open: after repeated launch failures a
+      // turn surfaces a clear "retry in Ns" instead of re-spawning every time.
+      const gate = this.breaker.canAttempt(this.breakerKey);
+      if (!gate.allowed) {
+        throw new Error(
+          `Launch circuit open for ${this.breakerKey} after repeated failures; retry in ${Math.ceil((gate.retryInMs ?? 0) / 1000)}s.`,
+        );
+      }
       // Clear the promise on failure (e.g. a fail-closed sandbox) so a later
       // turn can retry rather than wedging on a one-time spawn error.
       this.spawnPromise = this.spawnChild(roomId).catch((error) => {
@@ -127,8 +149,24 @@ export class RunnerHost implements AgentRuntime {
     await this.spawnPromise;
   }
 
+  // A launch is settled exactly once per spawn — on the first `ready` (success)
+  // or the first death-before-ready / fail-closed sandbox (failure) — so the
+  // breaker never double-counts a single attempt.
+  private settleLaunch(outcome: "success" | "failure"): void {
+    if (this.launchSettled) return;
+    this.launchSettled = true;
+    if (outcome === "success") this.breaker.onSuccess(this.breakerKey);
+    else this.breaker.onFailure(this.breakerKey);
+  }
+
   private async spawnChild(roomId: string): Promise<void> {
-    const argv = this.options.runnerArgv ?? [process.execPath, ...process.execArgv, resolveCliPath(), "__run-agent"];
+    this.childReady = false;
+    this.launchSettled = false;
+    // The install marker lets a later daemon's boot sweep find this child if we
+    // crash and leave it orphaned (see orphan-reaper). The runner ignores the
+    // flag; it is a pure, ps-visible label scoped to this checkout.
+    const base = this.options.runnerArgv ?? [process.execPath, ...process.execArgv, resolveCliPath(), "__run-agent"];
+    const argv = [...base, ...installMarkerArgs()];
     // The workspace (cwd) is writable, but its policy files are carved back to
     // read-only so a confined turn can't rewrite the governance that launches
     // the next one. Room scratch lives under cwd, so it needs no extra grant.
@@ -137,10 +175,17 @@ export class RunnerHost implements AgentRuntime {
     // Pi cred store on top of the backend's built-in sensitive set, so a summon
     // cannot exfiltrate the key the proxy is hiding. (A no-op when unsandboxed.)
     const denyRead = this.proxyEnabled(policy) ? [realPiAuthJson()] : undefined;
-    const launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
-      readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
-      denyRead,
-    });
+    let launch;
+    try {
+      launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
+        readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
+        denyRead,
+      });
+    } catch (error) {
+      // Fail-closed sandbox (e.g. off darwin) is a launch failure for the breaker.
+      this.settleLaunch("failure");
+      throw error;
+    }
     if (process.env.GAIA_DEBUG_SANDBOX) {
       process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} proxy=${this.proxyEnabled(policy)} launch=${launch.command}\n`);
     }
@@ -156,10 +201,17 @@ export class RunnerHost implements AgentRuntime {
     const rl = createInterface({ input: child.stdout! });
     rl.on("line", (line) => this.onMessage(line));
     child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(`[runner ${this.agent.id}] ${chunk}`));
-    child.on("error", (error) => this.failActive(error));
+    child.on("error", (error) => {
+      // e.g. ENOENT on the runner binary — a launch failure until proven ready.
+      this.settleLaunch("failure");
+      this.failActive(error);
+    });
     child.on("exit", (code, signal) => {
       this.child = null;
       this.spawnPromise = null;
+      // Dying before the first `ready` is a launch failure (crash-on-start);
+      // after that, an exit is a normal teardown and the breaker stays closed.
+      if (!this.childReady) this.settleLaunch("failure");
       if (this.activeChannel && !this.disposed) {
         this.failActive(new Error(`agent runner exited (${signal ? `signal ${signal}` : `code ${code}`}).`));
       }
@@ -177,6 +229,11 @@ export class RunnerHost implements AgentRuntime {
     }
     switch (message.type) {
       case "ready":
+        // The child is up and the harness initialized — a clean launch.
+        this.childReady = true;
+        this.settleLaunch("success");
+        this._modelLabel = message.modelLabel;
+        return;
       case "model-label":
         this._modelLabel = message.modelLabel;
         return;

@@ -1,4 +1,4 @@
-# Next steps — monad merged + credential-proxy done; nanoclaw §2/§3 remain
+# Next steps — monad + credential-proxy + nanoclaw §2/§3 all done
 
 ## Done
 
@@ -13,15 +13,23 @@
   `runner-host.ts`, `runner-protocol.ts`, `pi-runtime.ts`, `sandbox/registry.ts`.
   Tests: `test/llm-proxy.test.ts`, `test/llm-proxy-integration.test.ts`,
   `test/runner-host-proxy.test.ts`, `test/sandbox.test.ts`.
+- **nanoclaw §2 — orphan-reaping — complete.** `src/runtime/orphan-reaper.ts`:
+  every agent-runner carries a `--gaia-install <id>` argv marker (id = sha1 of
+  GAIA_HOME); `GaiaWebServer.listen()` `ps`-sweeps on boot and SIGTERMs marked
+  processes whose parent is dead (ppid 1 or no live ppid) — peer checkouts and a
+  live sibling daemon's children are untouched. Matching on the per-install marker
+  (not a bare PID) means PID reuse can't mis-kill. Verified by unit tests +
+  on-machine real-`ps` proof against a genuinely-orphaned marked sleeper.
+- **nanoclaw §3 — circuit-breaker — complete.** `src/runtime/circuit-breaker.ts`:
+  per-target (`harness:provider/model`) in-memory breaker shared daemon-wide
+  (`defaultBreaker`), wired into `RunnerHost`'s spawn→`ready` handshake. Trips
+  after N consecutive launch failures, fast-fails during a backoff cooldown,
+  half-opens for one probe, closes on a clean launch. Covers summons too (they
+  spawn through the same RunnerHost). Tests: `test/circuit-breaker.test.ts` +
+  a crash-on-start integration test in `test/runner-host.test.ts`.
 
-## Remaining
+## Remaining (optional)
 
-1. **nanoclaw §2 — host-sweep / orphan-reaping.** Tag spawned children with a
-   per-install label; sweep this install's orphans on daemon start. See
-   `HANDOFF-NANOCLAW.md` §2.
-2. **nanoclaw §3 — circuit-breaker.** Wrap harness/summon launches in a breaker
-   keyed by target; trip after N failures, fast-fail during cooldown, half-open
-   probe. See `HANDOFF-NANOCLAW.md` §3.
-3. **Credential-proxy follow-ups (optional):** a full-daemon e2e summon through the
-   proxy against a fake provider (the mechanism is already proven by the egress
-   integration test); then claude/codex redirect (`HANDOFF-NANOCLAW.md` §1 tail).
+- **Credential-proxy follow-ups:** a full-daemon e2e summon through the proxy
+  against a fake provider (the mechanism is already proven by the egress
+  integration test); then claude/codex redirect (`HANDOFF-NANOCLAW.md` §1 tail).
