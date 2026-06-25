@@ -572,18 +572,32 @@ export class GaiaController {
       await this.markPendingTurn(task, text, remaining, target, channel);
       let lastFlush = 0;
 
-      const turn = await runAgentTurn({
-        runtime,
-        input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
-        isCancelled: () => this.taskCancelled(task),
-        onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
-        onProgress: async (reply) => {
-          const now = Date.now();
-          if (now - lastFlush < PARTIAL_FLUSH_MS) return;
-          lastFlush = now;
-          await this.flushPartialReply(reply);
-        },
-      });
+      let turn: Awaited<ReturnType<typeof runAgentTurn>>;
+      try {
+        turn = await runAgentTurn({
+          runtime,
+          input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
+          isCancelled: () => this.taskCancelled(task),
+          onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
+          onProgress: async (reply) => {
+            const now = Date.now();
+            if (now - lastFlush < PARTIAL_FLUSH_MS) return;
+            lastFlush = now;
+            await this.flushPartialReply(reply);
+          },
+        });
+      } catch (error) {
+        // Terminal failure: the runtime threw (e.g. an upstream error). The error
+        // is the recorded outcome (the caller settles the task as "error"), NOT
+        // lost progress — so PRESERVE any partial that streamed, then CLEAR the
+        // marker. Leaving it would make init() replay an already-failed turn on
+        // every restart — a poison pill (see no-progress-lost: resume interrupted
+        // work, don't re-run terminally-failed work).
+        const partial = this.roomState.pendingTurn?.partialReply ?? "";
+        if (partial) await this.commitTurnReply(agent.id, partial, {}, channel, nextCursor);
+        await this.clearPendingTurn();
+        throw error;
+      }
 
       // Cancelled (user stop) or interrupted mid-stream: PRESERVE whatever was
       // produced — never discard it — then stop. The marker is cleared because a
