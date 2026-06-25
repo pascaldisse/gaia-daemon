@@ -18,11 +18,9 @@ export interface AgentScaffoldResult {
   soulPath: string;
   memoryDir: string;
   rolesDir: string;
-  /** Always empty: roles are user-added only. */
-  rolePaths: [];
 }
 
-function titleCase(id: string): string {
+export function titleCase(id: string): string {
   return id
     .split(/[-_]/)
     .filter(Boolean)
@@ -79,5 +77,5 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
   await new MemoryStore().init(memoryDir, displayName);
 
   // Roles are user-added only; the scaffold leaves the roles directory empty.
-  return { agentDir, configPath, soulPath, memoryDir, rolesDir, rolePaths: [] };
+  return { agentDir, configPath, soulPath, memoryDir, rolesDir };
 }

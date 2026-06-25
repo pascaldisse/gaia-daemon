@@ -18,18 +18,6 @@ export interface UpstreamCredential {
   authHeaders: Record<string, string>;
 }
 
-/** Resolve the real upstream + key for a proxied turn. Returns undefined when the
- *  agent has no proxyable credential (e.g. an OAuth harness), in which case the
- *  proxy refuses rather than leaking. Implemented by the daemon (it may read the
- *  real cred store / env); kept out of this module so the transport stays pure. */
-export type LlmCredentialResolver = (claims: ProxyClaims, provider: string | undefined) => Promise<UpstreamCredential | undefined>;
-
-export interface ProxyClaims {
-  workspaceId: string;
-  agentId: string;
-  roomId: string;
-}
-
 // Hop-by-hop headers are connection-scoped and must not be forwarded; Node also
 // recomputes length/encoding, so we let it own those.
 const STRIP_REQUEST_HEADERS = new Set(["host", "authorization", "connection", "content-length", "transfer-encoding", "proxy-authorization"]);

@@ -5,32 +5,10 @@
 // monad room as if it were a single model. Non-streaming for simplicity; the seam
 // (serve-registry) allows a richer adapter as a plugin.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
+import { json, parseBody } from "../../../lib/http.js";
 import { registerServeAdapter, type ServeHandle, type ServeStartOptions } from "../serve-registry.js";
 import type { ChatMessage } from "../types.js";
-
-function readBody(request: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 1024 * 1024) {
-        reject(new Error("Request body too large"));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      if (!body.trim()) return resolve({});
-      try {
-        resolve(JSON.parse(body));
-      } catch (error) {
-        reject(error);
-      }
-    });
-    request.on("error", reject);
-  });
-}
 
 function messagesFrom(body: unknown): ChatMessage[] {
   const raw = body && typeof body === "object" ? (body as { messages?: unknown }).messages : undefined;
@@ -38,11 +16,6 @@ function messagesFrom(body: unknown): ChatMessage[] {
   return raw
     .filter((entry): entry is { role?: unknown; content?: unknown } => Boolean(entry) && typeof entry === "object")
     .map((entry) => ({ role: typeof entry.role === "string" ? entry.role : "user", content: typeof entry.content === "string" ? entry.content : "" }));
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(value));
 }
 
 function completionPayload(id: string, content: string): unknown {
@@ -69,7 +42,7 @@ registerServeAdapter({
           return;
         }
         if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-          const messages = messagesFrom(await readBody(request));
+          const messages = messagesFrom(await parseBody(request));
           if (messages.length === 0) {
             json(response, 400, { error: { message: "Request contains no messages", type: "invalid_request_error" } });
             return;

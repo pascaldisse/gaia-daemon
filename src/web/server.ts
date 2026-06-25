@@ -26,7 +26,10 @@ import {
 import { ensureVoiceSettingsFile, readVoiceSettings, type VoiceSettings } from "../app/voice-settings.js";
 import { VoiceStackManager } from "../app/voice-stack.js";
 import { WorkspaceRegistry } from "../app/workspace-registry.js";
-import { gaiaHost, gaiaPort } from "../config/defaults.js";
+import { DEFAULTS, gaiaHost, gaiaPort } from "../config/defaults.js";
+import { capabilitiesFor } from "../runtime/index.js";
+import type { GaiaTool } from "../runtime/capabilities.js";
+import { bearerToken, json, parseBody, text } from "../lib/http.js";
 import { pathInside } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { scaffoldGlobalAgent } from "../agents/scaffold.js";
@@ -63,42 +66,6 @@ const MIME: Record<string, string> = {
   ".webp": "image/webp",
   ".wasm": "application/wasm",
 };
-
-function json(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
-}
-
-function text(response: ServerResponse, status: number, body: string): void {
-  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
-  response.end(body);
-}
-
-function parseBody(request: IncomingMessage): Promise<unknown> {
-  return new Promise((resolveBody, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 1024 * 1024) {
-        reject(new Error("Request body too large"));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      if (!body.trim()) {
-        resolveBody({});
-        return;
-      }
-      try {
-        resolveBody(JSON.parse(body));
-      } catch (error) {
-        reject(error);
-      }
-    });
-    request.on("error", reject);
-  });
-}
 
 function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
@@ -582,9 +549,7 @@ export class GaiaWebServer {
   // bearer token (minted per turn, see HarnessBridge) resolves the (workspace,
   // agent, room) the request acts on, so the body cannot spoof identity.
   private async handleHarness(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
-    const auth = request.headers.authorization;
-    const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
-    const claims = this.harnessBridge?.verify(token);
+    const claims = this.harnessBridge?.verify(bearerToken(request));
     if (!claims) {
       json(response, 401, { error: "Invalid or missing harness token." });
       return;
@@ -595,6 +560,17 @@ export class GaiaWebServer {
       controller = await this.controllerFor(claims.workspaceId, claims.roomId);
     } catch (error) {
       json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+
+    // Capability gate: the verb this endpoint serves (memory/summon) must be in
+    // the calling harness's DECLARED gaiaTools, else refuse. The endpoint segment
+    // IS the verb; checked as DATA against the harness registry — no per-harness
+    // branch — so a harness that omits a tool can never reach it server-side, and
+    // an unrecognized verb fails closed (it is in no harness's list).
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as GaiaTool;
+    if (!this.harnessGaiaTools(controller.workspace, claims.agentId).includes(verb)) {
+      json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
       return;
     }
 
@@ -650,9 +626,7 @@ export class GaiaWebServer {
   // streams the response back. Fail-closed: an unresolvable credential (OAuth-only,
   // unconfigured, unknown agent) is a 502, never a forward without auth.
   private async handleLlmProxy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const auth = request.headers.authorization;
-    const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
-    const claims = this.harnessBridge?.verify(token);
+    const claims = this.harnessBridge?.verify(bearerToken(request));
     if (!claims) {
       response.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
       response.end("llm proxy: invalid or missing harness token");
@@ -820,7 +794,7 @@ export class GaiaWebServer {
         workspace,
         workspacePath,
         (roomId) => this.controllerFor(workspaceId, roomId),
-        workspace.config.maxSummonsPerRoom ?? 8,
+        workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom,
       );
       this.summonCoordinators.set(workspaceId, coordinator);
     }
@@ -836,6 +810,15 @@ export class GaiaWebServer {
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     const workspace = await loadWorkspace(record.path);
     return this.summonCoordinatorFor(workspaceId, workspace, record.path);
+  }
+
+  // The gaia daemon tools an agent's EFFECTIVE harness declares (agent > workspace
+  // > default), read uniformly from the harness registry — never branched on the
+  // harness id. The harness gate on /api/harness/* uses this to refuse a verb the
+  // harness doesn't grant.
+  private harnessGaiaTools(workspace: Workspace, agentId: string): readonly GaiaTool[] {
+    const harness = workspace.agents[agentId]?.harness ?? workspace.config.harness ?? DEFAULTS.harness;
+    return capabilitiesFor(harness).gaiaTools;
   }
 
   private async selectWorkspaceRoom(workspaceId: string, roomId: string): Promise<{ snapshot: Awaited<ReturnType<GaiaController["getSnapshot"]>>; workspaceFiles: EditableFileDescriptor[]; voice: VoiceCallInfo | null }> {

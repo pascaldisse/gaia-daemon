@@ -155,7 +155,7 @@ test("PiRuntime exposes summon as a custom tool when enabled", async () => {
 
     assert.equal(customTools.length, 1);
     assert.equal(customTools[0].name, "summon");
-    const result = await customTools[0].execute("call_1", { agent: "sidia", task: "map routes", publish: "summary" });
+    const result = await customTools[0].execute("call_1", { agent: "sidia", task: "map routes" });
     assert.deepEqual(calls, [{ roomId: "default", agentId: "sidia", task: "map routes" }]);
     assert.deepEqual(result.content, [{ type: "text", text: "summon complete" }]);
   } finally {

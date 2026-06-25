@@ -9,22 +9,10 @@
 import { MemoryStore, type MemoryMutationResult, type MemoryAction } from "../memory/memory-store.js";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import { LLM_PROXY_MOUNT } from "../app/llm-proxy.js";
+import { daemonPost, type DaemonTarget } from "../lib/daemon-client.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 
-interface BridgeTarget {
-  url: string;
-  token: string;
-}
-
-async function daemonPost(target: BridgeTarget, path: string, body: unknown): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> }> {
-  const response = await fetch(`${target.url}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${target.token}` },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  return { ok: response.ok, status: response.status, payload };
-}
+type BridgeTarget = DaemonTarget;
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
 export class BridgeMemoryStore extends MemoryStore {
