@@ -46,6 +46,9 @@ export interface SandboxPolicy {
   backend?: string;
   writable?: string[];
   net?: "full" | "none";
+  /** Route this turn's LLM calls through the in-daemon credential proxy, so the
+   *  real provider key never enters the sandbox. Pi-only for now; default OFF. */
+  credentialProxy?: boolean;
 }
 
 /** The partial form written in config.json / agent.json (all fields optional). */
@@ -54,6 +57,7 @@ export interface SandboxConfig {
   backend?: string;
   writable?: string[];
   net?: "full" | "none";
+  credentialProxy?: boolean;
 }
 
 /** Validate a raw JSON value into a SandboxConfig (drops unknown/bad fields). */
@@ -65,6 +69,7 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (typeof obj.backend === "string") config.backend = obj.backend;
   if (Array.isArray(obj.writable)) config.writable = obj.writable.filter((value): value is string => typeof value === "string");
   if (obj.net === "full" || obj.net === "none") config.net = obj.net;
+  if (typeof obj.credentialProxy === "boolean") config.credentialProxy = obj.credentialProxy;
   return config;
 }
 
@@ -104,6 +109,9 @@ export function resolveSandboxPolicy(
   const configuredBackend = ag.backend ?? ws.backend;
   const writable = ag.writable ?? ws.writable;
   const net = ag.net ?? ws.net;
+  // Opt-in, default OFF. The proxy only matters once isolation is on, so it
+  // rides whatever backend the tiers below resolve.
+  const credentialProxy = ag.credentialProxy ?? ws.credentialProxy ?? false;
 
   if (!trusted) {
     return {
@@ -111,6 +119,7 @@ export function resolveSandboxPolicy(
       backend: configuredBackend && configuredBackend !== "none" ? configuredBackend : real,
       writable,
       net,
+      credentialProxy,
     };
   }
 
@@ -119,6 +128,7 @@ export function resolveSandboxPolicy(
     backend: configuredBackend ?? (isSummon ? real : "none"),
     writable,
     net,
+    credentialProxy,
   };
 }
 

@@ -12,58 +12,65 @@ mirrors its one-file runtime swap. Key files: `src/container-runtime.ts`,
 `src/container-runner.ts`, `src/providers/claude.ts`, `src/circuit-breaker.ts`,
 `src/host-sweep.ts`, `src/session-manager.ts`.
 
-## 1. Credential-proxy — in-daemon (decided with user), pi-harness first
+## 1. Credential-proxy — in-daemon, pi-harness (DONE)
 
-**Corrected premise (verified by source trace):** gaia does NOT inject provider
-keys — no `*_API_KEY` is set anywhere; all spawn sites spread full `process.env`;
-each harness uses its own auth (pi → `AuthStorage`/`~/.pi/agent/auth.json`, which is
-MULTI-PROVIDER; claude/codex → their CLI's env key or OAuth). So the real exfil
-risk is a sandboxed summon reading the cred store (esp. the whole `auth.json`) or an
-env-exported key. Hiding the turn's OWN key needs a proxy; OneCLI was rejected (it's
-a Docker stack + MITM CA, not "a brew install" — see §Out of scope rationale in
-memory). We build a minimal in-daemon proxy on the existing harness bridge instead.
+**Premise (verified by source trace):** gaia does NOT inject provider keys — no
+`*_API_KEY` is set anywhere; all spawn sites spread full `process.env`; each harness
+uses its own auth (pi → `AuthStorage`/`~/.pi/agent/auth.json`, MULTI-PROVIDER;
+claude/codex → their CLI's env key or OAuth). The exfil risk is a sandboxed summon
+reading the cred store (the whole `auth.json`) or an env-exported key. Hiding the
+turn's OWN key needs a proxy; OneCLI was rejected (a Docker stack + MITM CA, not "a
+brew install"). So: a minimal in-daemon proxy on the existing harness bridge.
 
-**Mechanism:** the daemon (unsandboxed) reads the real key; a redirected harness
-talks to a loopback endpoint carrying only its per-turn token; the daemon injects
-the real key and streams the response. Real `auth.json` is deny-read in the sandbox.
+**Mechanism:** the daemon (unsandboxed) reads the real key; a proxied turn talks to a
+loopback endpoint carrying only its per-turn token; the daemon injects the real key
+and streams the response. The real `auth.json` is both deny-read in the sandbox and
+side-stepped (Pi's agent dir relocated), and provider key env vars are stripped — so
+the turn cannot reach the key by file, env, or its own auth store.
 
-**DONE (built + tested, 233/233 green, additive — nothing routes through it yet):**
-- `src/app/llm-proxy.ts` — transport core: `forwardLlmRequest(req, res, upstream, subpath)`
-  streams to the real upstream, injects `upstream.authHeaders` (real key) over the
-  placeholder, strips hop-by-hop headers, fail-closed 502 (never echoes the key).
-  Plus `joinUrl`. SDK-free, unit-tested with a fake upstream.
-- `src/app/pi-credential-resolver.ts` — `resolvePiUpstream(agent, deps?)`: daemon-side
-  `AuthStorage.create()` + `ModelRegistry.create()` → `find(provider,name).baseUrl`
-  + `getApiKey(provider)` → `UpstreamCredential`; returns undefined (refuse) for
-  OAuth-only/unconfigured. Injectable deps for tests.
-- `test/llm-proxy.test.ts` — 6 tests (key-injection, streaming, fail-closed, resolver).
+**Default OFF**, opt-in via `sandbox.credentialProxy` (workspace or agent); resolved
+in `resolveSandboxPolicy` and gated to the pi harness in `RunnerHost`.
 
-**REMAINING wiring (verified APIs; do in isolation, never touch the real :8787 / ~/.gaia):**
-1. **Endpoint** in `src/web/server.ts`: add `url.pathname.startsWith("/api/harness/llm/")`
-   to `handleApi`; verify the bearer via `harnessBridge.verify` (mirror `handleHarness`,
-   ~line 568); load the agent for `claims.agentId`; `const up = await resolvePiUpstream(agent)`;
-   if `!up` → 502; else `await forwardLlmRequest(request, response, up, subpathAfterMount)`.
-2. **Expose the proxy URL** on `HarnessHost` (`src/app/harness-bridge.ts`): add e.g.
-   `llmProxyUrl = ${baseUrl}/api/harness/llm`; reuse the existing per-turn token.
-3. **Env plumb** `RunnerHost.buildEnv` (`src/runtime/runner-host.ts:190`): when the
-   proxy is enabled, set `GAIA_LLM_PROXY_URL` (+ reuse `GAIA_DAEMON_TOKEN`); add the
-   const to `RUNNER_ENV` (`src/runtime/runner-protocol.ts`).
-4. **Pi redirect** in `src/runtime/pi-runtime.ts`: when `GAIA_LLM_PROXY_URL` is set,
-   `modelRegistry.registerProvider(agent.model.provider, { baseUrl: <proxy>/v1, apiKey: <token>, authHeader: true })`
-   before `resolveModel()` (confirmed: placeholder apiKey wins over auth.json).
-5. **Cred-store isolation:** set `PI_CODING_AGENT_DIR` to a per-turn scratch dir with a
-   minimal/empty `auth.json`, and add the real `~/.pi/agent/auth.json` to the sandbox
-   **read-denylist** for proxied turns (`src/runtime/sandbox/macos-seatbelt.ts` +
-   `exec-cli.ts --deny-read`). Verify pi doesn't deadlock on the denied read.
-6. **Config gate** (default OFF): a `sandbox.credentialProxy` flag (or trust-tier
-   coupling) so existing turns are unchanged until opted in.
-7. **Isolated live verify:** separate `GAIA_HOME` + temp workspace + non-8787 port;
-   run a real pi summon through the proxy; confirm the reply works AND `auth.json` is
-   unreadable inside the turn AND the real key never appears in the child env.
+Three surfaces, all wired and tested:
+- **Transport** `src/app/llm-proxy.ts` — `forwardLlmRequest(req,res,upstream,subpath)`
+  streams to the real upstream, injects the real key over the token, strips hop-by-hop
+  headers, fail-closed 502 (never echoes the key). `joinUrl` + `llmProxySubpath` +
+  `LLM_PROXY_MOUNT` own the path math.
+- **Resolver** `src/app/pi-credential-resolver.ts` — daemon-side `resolvePiUpstream(agent)`:
+  real `ModelRegistry.find().baseUrl` + `AuthStorage.getApiKey()`; undefined (refuse)
+  for OAuth-only/unconfigured.
+- **Endpoint** `handleLlmProxy` in `src/web/server.ts` — verifies the bearer
+  (`harnessBridge.verify`), loads the agent, resolves the upstream (502 if none), forwards.
 
-**claude/codex (later):** claude api-key mode → `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN=<token>`
-(anthropic uses `x-api-key`/`authorization`); codex → custom `base_url` + `OPENAI_API_KEY=<token>`.
-OAuth/subscription modes have no key to proxy — leave them as-is.
+**Daemon→child plumb** (`RunnerHost`, gated to pi + `credentialProxy`): set
+`GAIA_LLM_PROXY_URL` (reusing `GAIA_DAEMON_TOKEN`); relocate Pi's store via
+`PI_CODING_AGENT_DIR` → a per-room scratch dir with an empty `auth.json`; deny-read the
+real `~/.pi/agent/auth.json`; `stripProviderKeys` removes every LLM provider key env
+var (`src/app/provider-key-env.ts`).
+
+**Pi redirect** (`pi-runtime.ts` `applyCredentialProxy`, two deliberately-split moves):
+- **Auth** `registerProvider(provider, { apiKey: <token>, authHeader: true })` — token
+  as the key. NOTE the corrections that drove this shape: (a) `AuthStorage` WINS over a
+  registered apiKey, so the empty `PI_CODING_AGENT_DIR` + stripped env are REQUIRED for
+  the token to be what's sent, not optional hardening; (b) `getApiKey` falls back to env
+  vars regardless of `includeFallback`, hence the env strip.
+- **Egress** redirect the provider origin to the proxy mount at the fetch layer
+  (`src/runtime/llm-proxy-fetch.ts`), leaving `model.baseUrl` REAL. This is deliberate:
+  pi-ai keys per-provider request compatibility off the baseUrl string (e.g. deepseek's
+  reasoning role / `store` param), and the dynamic `registerProvider` baseUrl-override
+  path ignores `compat`, so rewriting the baseUrl would silently corrupt the request.
+  Pi uses `globalThis.fetch` (openai SDK `getDefaultFetch`), so the wrapper intercepts.
+
+**Verified:** unit (transport, resolver, subpath, strip, redirect, policy) + an egress
+integration test driving the REAL openai SDK through redirect→proxy→inject→fake upstream
+(token in, real key out, stream back) + an on-machine seatbelt deny-read of an
+out-of-cwd secret + `buildEnv` strip/gate/scratch + a live isolated daemon confirming the
+endpoint is reachable and fail-closed on a bad token.
+
+**claude/codex (later):** claude api-key mode → `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN=<token>`;
+codex → custom `base_url` + `OPENAI_API_KEY=<token>`. OAuth/subscription modes have no
+key to proxy — leave them as-is. The fetch-layer redirect pattern generalizes if a
+harness keys behavior off the base URL.
 
 ## 2. Host-sweep / orphan-reaping
 

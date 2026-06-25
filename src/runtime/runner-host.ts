@@ -6,11 +6,13 @@
 // consumes, so nothing upstream knows a turn ran in a subprocess.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { HarnessHost } from "../app/harness-bridge.js";
+import { stripProviderKeys } from "../app/provider-key-env.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
@@ -19,6 +21,13 @@ import { harnessSpecFor } from "./harness-registry.js";
 import { RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./runner-protocol.js";
 import { resolveSandboxLaunch, type SandboxPolicy } from "./sandbox/index.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
+
+// The real Pi credential store the daemon hides from a proxied turn: Pi reads its
+// key here (and a dumb summon could `cat` it), so it is both read-denied in the
+// sandbox and side-stepped by relocating Pi's agent dir (PI_CODING_AGENT_DIR).
+function realPiAuthJson(): string {
+  return join(homedir(), ".pi", "agent", "auth.json");
+}
 
 export interface RunnerHostOptions {
   workspace: Workspace;
@@ -124,16 +133,21 @@ export class RunnerHost implements AgentRuntime {
     // read-only so a confined turn can't rewrite the governance that launches
     // the next one. Room scratch lives under cwd, so it needs no extra grant.
     const policy = this.options.sandbox();
+    // When the credential proxy is on, deny the sandbox read access to the real
+    // Pi cred store on top of the backend's built-in sensitive set, so a summon
+    // cannot exfiltrate the key the proxy is hiding. (A no-op when unsandboxed.)
+    const denyRead = this.proxyEnabled(policy) ? [realPiAuthJson()] : undefined;
     const launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
       readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
+      denyRead,
     });
     if (process.env.GAIA_DEBUG_SANDBOX) {
-      process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} launch=${launch.command}\n`);
+      process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} proxy=${this.proxyEnabled(policy)} launch=${launch.command}\n`);
     }
 
     const child = spawn(launch.command, launch.args, {
       cwd: this.options.workspace.rootDir,
-      env: this.buildEnv(roomId),
+      env: this.buildEnv(roomId, policy),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -187,7 +201,20 @@ export class RunnerHost implements AgentRuntime {
     this.activeChannel?.close();
   }
 
-  private buildEnv(roomId: string): NodeJS.ProcessEnv {
+  // The credential proxy is Pi-only for now (claude/codex redirect comes later).
+  private proxyEnabled(policy: SandboxPolicy): boolean {
+    return policy.credentialProxy === true && this.options.harness === "pi";
+  }
+
+  // A per-room scratch agent dir for a proxied Pi turn. Relocating Pi's agent dir
+  // here (empty auth.json) means Pi's AuthStorage resolves no real key, so the
+  // placeholder token registered against the proxy is what reaches the wire. It
+  // sits under the workspace rooms dir, which is inside the writable cwd.
+  private piAgentScratchDir(roomId: string): string {
+    return join(this.options.workspace.roomsDir, roomId, "pi-agent-dir");
+  }
+
+  private buildEnv(roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       [RUNNER_ENV.workspacePath]: this.options.workspace.rootDir,
@@ -201,7 +228,26 @@ export class RunnerHost implements AgentRuntime {
       const host = this.options.harnessHost({ allowSummon: this.options.allowSummon() });
       env[RUNNER_ENV.daemonUrl] = host.baseUrl;
       env[RUNNER_ENV.daemonToken] = host.mintToken({ agentId: this.agent.id, roomId });
+      if (this.proxyEnabled(policy)) {
+        // Point Pi at the loopback proxy (it bears GAIA_DAEMON_TOKEN), relocate
+        // its agent dir so it finds no real key, and strip every provider key
+        // env var — otherwise Pi's getApiKey() falls back to the env and uses the
+        // REAL key, bypassing the proxy and leaving the key in the sandbox.
+        env[RUNNER_ENV.llmProxyUrl] = host.llmProxyUrl;
+        env.PI_CODING_AGENT_DIR = this.ensurePiAgentScratch(roomId);
+        stripProviderKeys(env);
+      }
     }
     return env;
+  }
+
+  // Materialize the scratch agent dir + an empty auth.json so Pi's AuthStorage
+  // loads a valid-but-empty store (no key) rather than tripping on a missing dir.
+  private ensurePiAgentScratch(roomId: string): string {
+    const dir = this.piAgentScratchDir(roomId);
+    mkdirSync(dir, { recursive: true });
+    const authJson = join(dir, "auth.json");
+    if (!existsSync(authJson)) writeFileSync(authJson, "{}\n");
+    return dir;
   }
 }

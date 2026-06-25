@@ -8,6 +8,7 @@
 
 import { MemoryStore, type MemoryMutationResult, type MemoryAction } from "../memory/memory-store.js";
 import type { HarnessHost } from "../app/harness-bridge.js";
+import { LLM_PROXY_MOUNT } from "../app/llm-proxy.js";
 import type { SummonCreate } from "../tools/summon-tool.js";
 
 interface BridgeTarget {
@@ -80,5 +81,5 @@ export function bridgeSummonCreate(target: BridgeTarget): SummonCreate {
  *  per-(agent, room), so the one token already carries the right claims. Used by
  *  the subprocess-spawning harnesses (Claude/Codex) for their own `gaia` CLI. */
 export function fixedTokenHost(target: BridgeTarget): HarnessHost {
-  return { baseUrl: target.url, mintToken: () => target.token };
+  return { baseUrl: target.url, llmProxyUrl: `${target.url}${LLM_PROXY_MOUNT}`, mintToken: () => target.token };
 }
