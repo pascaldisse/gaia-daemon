@@ -9,8 +9,10 @@ import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { gaiaHome } from "../workspace/workspace-loader.js";
 
 // The unmute voice stack is vendored into the repo (unmute/, MIT licensed,
-// Copyright 2025 Kyutai), so the default checkout is the bundled one.
-function bundledUnmuteDir(): string {
+// Copyright 2025 Kyutai), so the default checkout is the bundled one. Resolved
+// at runtime (never persisted) so a renamed/moved repo can't leave a stale
+// absolute path baked into voice.json.
+export function bundledUnmuteDir(): string {
   return resolve(fileURLToPath(new URL("../../unmute", import.meta.url)));
 }
 
@@ -33,7 +35,9 @@ export interface VoiceSettings {
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   unmuteUrl: "ws://127.0.0.1:8000",
-  unmuteDir: bundledUnmuteDir(),
+  // Empty = use the bundled checkout, resolved at runtime by readVoiceSettings.
+  // Never seed an absolute path here: it would go stale if the repo is moved.
+  unmuteDir: "",
   autoStart: true,
   startTimeoutSec: 180,
   speakOnSilence: true,
@@ -62,5 +66,8 @@ export async function readVoiceSettings(home = gaiaHome()): Promise<VoiceSetting
   if (typeof raw.speakOnSilence === "boolean") settings.speakOnSilence = raw.speakOnSilence;
   if (typeof raw.silenceDelaySec === "number" && raw.silenceDelaySec > 0) settings.silenceDelaySec = raw.silenceDelaySec;
   if (typeof raw.disableThinking === "boolean") settings.disableThinking = raw.disableThinking;
+  // No explicit override → resolve the bundled checkout now, so the path tracks
+  // wherever the daemon currently runs from instead of a value frozen at seed time.
+  if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();
   return settings;
 }

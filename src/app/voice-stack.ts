@@ -198,7 +198,7 @@ export class VoiceStackManager {
       );
     }
     if (!existsSync(join(settings.unmuteDir, "macos"))) {
-      throw new Error(`unmute checkout not found at ${settings.unmuteDir} (set voice.unmuteDir in ~/.gaia/app.json)`);
+      throw new Error(`unmute checkout not found at ${settings.unmuteDir} (set voice.unmuteDir in ~/.gaia/voice.json)`);
     }
 
     mkdirSync(this.logDir, { recursive: true });
