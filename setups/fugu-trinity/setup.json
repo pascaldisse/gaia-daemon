@@ -1,0 +1,40 @@
+{
+  "id": "fugu-trinity",
+  "displayName": "Fugu (TRINITY head)",
+  "description": "OpenFugu's TRINITY variant as a setup: a trained Qwen3-0.6B + tiny linear head picks (agent, role) each turn from the raw transcript, via a Python sidecar. Needs the plugin's weights — see plugins/fugu/README.md. Set policyConfig.script to an ABSOLUTE path to plugins/fugu/py/route.py.",
+  "version": "0.1.0",
+
+  "roomDefaults": { "maxSummonsPerRoom": 8 },
+
+  "monad": {
+    "policy": "trinity-head",
+    "maxTurns": 5,
+    "coordinatorAgentId": "terry",
+    "roles": ["worker", "thinker", "verifier"],
+    "slots": [
+      { "index": 0, "agentId": "terry", "label": "worker",   "defaultRole": "worker" },
+      { "index": 1, "agentId": "gaia",  "label": "thinker",  "defaultRole": "thinker" },
+      { "index": 2, "agentId": "sidia", "label": "verifier", "defaultRole": "verifier" }
+    ],
+    "terminate": { "on": "verifier-accept", "acceptToken": "ACCEPT" },
+    "policyConfig": {
+      "python": "python3",
+      "script": "./plugins/fugu/py/route.py",
+      "weights": "~/.gaia/plugins/fugu/model_iter_60.npy",
+      "baseModel": "Qwen/Qwen3-0.6B",
+      "roles": "on"
+    }
+  },
+
+  "agents": [
+    { "ref": "terry", "role": "worker" },
+    { "ref": "gaia",  "role": "thinker" },
+    { "ref": "sidia", "role": "verifier" }
+  ],
+
+  "roles": {
+    "terry": "./roles/worker.md",
+    "gaia":  "./roles/thinker.md",
+    "sidia": "./roles/verifier.md"
+  }
+}

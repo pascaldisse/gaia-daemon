@@ -16,7 +16,9 @@ import type { AgentEvent, AgentRuntime } from "../runtime/types.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessHost } from "./harness-bridge.js";
 import { HELP_TEXT, parseCommand, SLASH_COMMANDS } from "./commands.js";
+import { MonadEngine } from "./monad-engine.js";
 import { sdkThinkingLevels } from "./settings-hints.js";
+import { activateSetup, deactivateMonad, discoverSetups } from "../setups/setup-loader.js";
 import type { SummonHost } from "./summon-coordinator.js";
 import { allowSummonForTurn, isTrusted } from "./summon-policy.js";
 import { runAgentTurn } from "./turn-runner.js";
@@ -310,7 +312,10 @@ export class GaiaController {
     // immediately, whether the turn runs now or is queued behind a busy one.
     let targets: string[] = [];
     if (command.type === "message") {
-      targets = options.targets ?? this.routeTargets(text);
+      // A monad room routes plain messages through the engine; the "target" is
+      // the coordinator that authors the single final answer. Explicit @mentions
+      // and host-set targets (voice/summon) bypass the monad to a direct turn.
+      targets = this.isMonadMessage(text, options) ? [this.monadAuthor()] : options.targets ?? this.routeTargets(text);
       for (const target of targets) {
         if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
       }
@@ -513,6 +518,14 @@ export class GaiaController {
   }
 
   private async runAgentTask(task: GaiaTask, text: string, options: SendMessageOptions = {}): Promise<void> {
+    // Monad rooms route a plain message through the engine instead of a single
+    // agent turn. Detected the same way as in sendMessage so targets and run
+    // path agree.
+    if (this.isMonadMessage(text, options)) {
+      await this.runMonadTask(task, text, options);
+      return;
+    }
+
     const channel = options.channel === "voice" ? "voice" : undefined;
     if (options.recordUserMessage !== false) {
       const userEvent = await this.room.addUserMessage(text, task.targets, channel);
@@ -561,6 +574,73 @@ export class GaiaController {
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
+  }
+
+  // A monad room turns a plain user message into a coordinated loop. True only
+  // when this room has an active monad, a summon host is available to run the
+  // steps, the host did not pin explicit targets (voice/summon), and the user
+  // did not @mention a specific agent (which addresses that agent directly).
+  private isMonadMessage(text: string, options: SendMessageOptions): boolean {
+    if (!this.roomState.monad || !this.options.summonHost) return false;
+    if (options.targets) return false;
+    return !this.hasExplicitMention(text);
+  }
+
+  private hasExplicitMention(text: string): boolean {
+    for (const match of text.matchAll(/@([a-z0-9_-]+)/gi)) {
+      if (this.workspace.agents[match[1].toLowerCase()]) return true;
+    }
+    return false;
+  }
+
+  // The agent that authors a monad room's single final answer.
+  private monadAuthor(): string {
+    const monad = this.roomState.monad;
+    return monad?.coordinatorAgentId ?? monad?.slots[0]?.agentId ?? this.workspace.config.defaultAgent;
+  }
+
+  // Runs the monad engine over a user message: each step is a real summon (a
+  // visible child room), and only the single final answer is posted to this
+  // room ("answer as one"). Never throws — settles its own task.
+  private async runMonadTask(task: GaiaTask, text: string, options: SendMessageOptions): Promise<void> {
+    try {
+      const monad = this.roomState.monad;
+      const summonHost = this.options.summonHost;
+      if (!monad || !summonHost) {
+        this.settleTask(task, "error", new Error("This room is not a monad room."));
+        return;
+      }
+
+      if (options.recordUserMessage !== false) {
+        const userEvent = await this.room.addUserMessage(text, task.targets);
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
+      }
+
+      const engine = new MonadEngine({
+        config: monad,
+        parentRoomId: this.room.id,
+        dispatch: (agentId, stepTask) => summonHost.summonAndWait(this.room.id, agentId, stepTask),
+        resolveRolePrompt: async (agentId, role) => {
+          const agent = this.workspace.agents[agentId];
+          if (!agent) return "";
+          const resolved = await resolveAgentRole(agent, role);
+          return resolved?.prompt ?? "";
+        },
+      });
+
+      const result = await engine.run(text, { isCancelled: () => this.taskCancelled(task) });
+      if (this.taskCancelled(task)) return;
+
+      const final = result.final.trim();
+      if (final) {
+        const agentEvent = await this.room.addAgentMessage(this.monadAuthor(), final);
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
+      }
+      this.settleTask(task, "complete");
+    } catch (error) {
+      if (this.taskCancelled(task)) return;
+      this.settleTask(task, "error", error);
+    }
   }
 
   // Cancellation mutates task.status from another call path mid-turn; a
@@ -618,6 +698,7 @@ export class GaiaController {
       if (command.type === "role") text = await this.setRole(command.agent, command.role);
       if (command.type === "thinking") text = await this.runThinkingCommand(command.agent, command.level);
       if (command.type === "summon") text = await this.runSummonCommand(command.agent, command.task);
+      if (command.type === "setup") text = await this.runSetupCommand(command);
       if (command.type === "clear") text = await this.runClearCommand();
       if (command.type === "fork") text = await this.runForkCommand();
       if (command.type === "unknown") text = `Unknown command: /${command.command}. Try /help.`;
@@ -761,6 +842,52 @@ export class GaiaController {
     if (!agent) return this.unknownAgentMessage(agentId);
     const childRoomId = await this.options.summonHost.summon(this.room.id, agent.id, task);
     return `Summoned @${agent.id} in room '${childRoomId}'. Open it from the rooms list (under this room) to watch or steer.`;
+  }
+
+  // /setup list|activate|status|off — load a saved multi-agent setup into a room.
+  // Activation writes the monad block onto room state; this controller then
+  // re-reads its own state so the next plain message routes through the engine.
+  async runSetupCommand(command: { sub?: string; id?: string; room?: string }): Promise<string> {
+    const sub = command.sub ?? "list";
+
+    if (sub === "list") {
+      const setups = await discoverSetups(this.workspace.rootDir);
+      if (setups.length === 0) return "No setups found. Bundled setups live under setups/, global under ~/.gaia/setups/, project under .gaia/setups/.";
+      return ["Available setups:", ...setups.map((s) => `  - ${s.id}${s.displayName && s.displayName !== s.id ? ` — ${s.displayName}` : ""} [${s.source}]${s.description ? `\n      ${s.description}` : ""}`)].join("\n");
+    }
+
+    if (sub === "status") {
+      const monad = this.roomState.monad;
+      if (!monad) return "This room is not a monad room. Activate a setup with /setup activate <id>.";
+      const pool = monad.slots.map((slot) => `${slot.agentId}${slot.defaultRole ? `(${slot.defaultRole})` : ""}`).join(" · ");
+      return `Monad active — policy: ${monad.policy}, maxTurns: ${monad.maxTurns}, coordinator: @${monad.coordinatorAgentId ?? monad.slots[0]?.agentId}\nPool: ${pool}`;
+    }
+
+    if (sub === "off") {
+      const cleared = await deactivateMonad(this.workspace, this.room.id);
+      this.roomState = await this.room.readState();
+      await this.emitSnapshot();
+      return cleared ? "Cleared the monad from this room. Plain messages now go to the default agent." : "This room had no active monad.";
+    }
+
+    if (sub === "activate") {
+      if (!command.id) return "Usage: /setup activate <id> [room]";
+      if (!this.options.summonHost) return "Setups need the summon system, which is unavailable here.";
+      const targetRoom = command.room ?? this.room.id;
+      try {
+        const result = await activateSetup(this.workspace, command.id, targetRoom);
+        if (targetRoom === this.room.id) {
+          this.roomState = await this.room.readState();
+          await this.emitSnapshot();
+        }
+        const pool = result.monad.slots.map((slot) => `@${slot.agentId}`).join(" · ");
+        return `Activated setup '${result.setupId}' into room '${targetRoom}' (policy: ${result.monad.policy}, pool: ${pool}). Send a message to run the monad; each step appears as a child room.`;
+      } catch (error) {
+        return `Setup activation failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+
+    return "Usage: /setup list | activate <id> [room] | status | off";
   }
 
   /** The most recent reply text from an agent in this room (for summon results). */

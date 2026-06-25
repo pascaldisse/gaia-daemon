@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeFileAtomic } from "../lib/fs.js";
+import type { MonadConfig, MonadSlot } from "../runtime/monad/types.js";
 
 export interface RoomState {
   activeRoles: Record<string, string>;
@@ -8,6 +9,10 @@ export interface RoomState {
   // Set on a summon's child sub-room: the room that spawned it. Drives the
   // nested (recursive, collapsed) rooms tree. Absent on top-level rooms.
   parentRoomId?: string;
+  // Set when a setup is activated into this room: the active monad config. Its
+  // presence makes the room a monad room — plain user messages route through
+  // MonadEngine instead of a single agent turn. Written by setup activation.
+  monad?: MonadConfig;
 }
 
 export interface RuntimeToolDetails {
@@ -91,14 +96,58 @@ function runtimeDetailsRecord(value: unknown): Record<string, RuntimeMessageDeta
   );
 }
 
+// Parse a persisted monad block, or undefined when malformed — a bad block must
+// never brick a room; it just stops being a monad room until re-activated.
+function monadConfigFrom(value: unknown): MonadConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.policy !== "string" || !value.policy.trim()) return undefined;
+  if (!Array.isArray(value.slots)) return undefined;
+
+  const slots: MonadSlot[] = [];
+  for (const raw of value.slots) {
+    if (!isRecord(raw) || typeof raw.agentId !== "string" || !raw.agentId.trim()) continue;
+    const index = typeof raw.index === "number" && Number.isFinite(raw.index) ? Math.floor(raw.index) : slots.length;
+    slots.push({
+      index,
+      agentId: raw.agentId,
+      ...(typeof raw.label === "string" && raw.label.trim() ? { label: raw.label } : {}),
+      ...(typeof raw.defaultRole === "string" && raw.defaultRole.trim() ? { defaultRole: raw.defaultRole } : {}),
+    });
+  }
+  if (slots.length === 0) return undefined;
+
+  const roles = Array.isArray(value.roles) ? value.roles.filter((role): role is string => typeof role === "string" && role.trim().length > 0) : [];
+  const maxTurns = typeof value.maxTurns === "number" && Number.isFinite(value.maxTurns) && value.maxTurns > 0 ? Math.floor(value.maxTurns) : 5;
+  const terminate =
+    isRecord(value.terminate) && value.terminate.on === "verifier-accept" && typeof value.terminate.acceptToken === "string"
+      ? { on: "verifier-accept" as const, acceptToken: value.terminate.acceptToken }
+      : undefined;
+  const rolePrompts = isRecord(value.rolePrompts)
+    ? Object.fromEntries(Object.entries(value.rolePrompts).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : undefined;
+
+  return {
+    policy: value.policy,
+    ...(value.policyConfig !== undefined ? { policyConfig: value.policyConfig } : {}),
+    slots,
+    roles,
+    maxTurns,
+    ...(typeof value.coordinatorAgentId === "string" && value.coordinatorAgentId.trim() ? { coordinatorAgentId: value.coordinatorAgentId } : {}),
+    ...(terminate ? { terminate } : {}),
+    ...(rolePrompts && Object.keys(rolePrompts).length > 0 ? { rolePrompts } : {}),
+  };
+}
+
 export function normalizeRoomState(value: unknown): RoomState {
   if (!isRecord(value)) return defaultRoomState();
 
+  const monad = monadConfigFrom(value.monad);
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
     runtimeDetails: runtimeDetailsRecord(value.runtimeDetails),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
+    ...(monad ? { monad } : {}),
   };
 }
 
