@@ -19,6 +19,7 @@ import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
+import { liveModelLabel } from "./model-label.js";
 import { redirectProviderFetch } from "./llm-proxy-fetch.js";
 import { RUNNER_ENV } from "./runner-protocol.js";
 import { createEventChannel } from "./event-stream.js";
@@ -169,7 +170,7 @@ export class PiRuntime implements AgentRuntime {
     if (sessionModel) {
       const registryModel = this.modelRegistry.find(sessionModel.provider, sessionModel.id);
       const subscription = registryModel ? this.modelRegistry.isUsingOAuth(registryModel) : false;
-      this.liveModelLabel = `${sessionModel.provider}/${sessionModel.id}${subscription ? " (oauth)" : ""}`;
+      this.liveModelLabel = liveModelLabel(sessionModel.provider, sessionModel.id, subscription);
       yield { type: "model-info", provider: sessionModel.provider, modelId: sessionModel.id, subscription };
     }
 

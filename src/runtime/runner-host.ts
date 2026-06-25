@@ -6,16 +6,17 @@
 // consumes, so nothing upstream knows a turn ran in a subprocess.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import type { HarnessHost } from "../app/harness-bridge.js";
 import { stripProviderKeys } from "../app/provider-key-env.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { CircuitBreaker, defaultBreaker } from "./circuit-breaker.js";
+import { selfRelaunchArgv } from "./cli-entry.js";
+import { configuredModelLabel, liveModelLabel } from "./model-label.js";
 import { createEventChannel, type EventChannel } from "./event-stream.js";
 import { type CredentialProxyWiring, harnessSpecFor } from "./harness-registry.js";
 import { installMarkerArgs } from "./orphan-reaper.js";
@@ -37,19 +38,6 @@ export interface RunnerHostOptions {
   runnerArgv?: string[];
   /** Launch breaker keyed by target; defaults to the daemon-wide shared one. */
   breaker?: CircuitBreaker;
-}
-
-// The CLI entry is cli.js when built, cli.ts under tsx; the runner re-launches it
-// with the `__run-agent` subcommand, exactly how this daemon was launched.
-function resolveCliPath(): string {
-  const jsPath = fileURLToPath(new URL("../cli.js", import.meta.url));
-  return existsSync(jsPath) ? jsPath : fileURLToPath(new URL("../cli.ts", import.meta.url));
-}
-
-function configuredLabel(agent: AgentDefinition): string {
-  const provider = agent.model?.provider;
-  const name = agent.model?.name;
-  return provider && name ? `${provider}/${name}` : "default";
 }
 
 export class RunnerHost implements AgentRuntime {
@@ -74,9 +62,9 @@ export class RunnerHost implements AgentRuntime {
     this.options = options;
     this.agent = options.agent;
     this.capabilities = harnessSpecFor(options.harness).capabilities;
-    this._modelLabel = configuredLabel(options.agent);
+    this._modelLabel = configuredModelLabel(options.agent.model, "default");
     this.breaker = options.breaker ?? defaultBreaker;
-    this.breakerKey = `${options.harness}:${configuredLabel(options.agent)}`;
+    this.breakerKey = `${options.harness}:${configuredModelLabel(options.agent.model, "default")}`;
   }
 
   get modelLabel(): string {
@@ -157,7 +145,7 @@ export class RunnerHost implements AgentRuntime {
     // The install marker lets a later daemon's boot sweep find this child if we
     // crash and leave it orphaned (see orphan-reaper). The runner ignores the
     // flag; it is a pure, ps-visible label scoped to this checkout.
-    const base = this.options.runnerArgv ?? [process.execPath, ...process.execArgv, resolveCliPath(), "__run-agent"];
+    const base = this.options.runnerArgv ?? [...selfRelaunchArgv(), "__run-agent"];
     const argv = [...base, ...installMarkerArgs()];
     // The workspace (cwd) is writable, but its policy files are carved back to
     // read-only so a confined turn can't rewrite the governance that launches
@@ -233,7 +221,7 @@ export class RunnerHost implements AgentRuntime {
         return;
       case "event":
         if (message.event.type === "model-info") {
-          this._modelLabel = `${message.event.provider}/${message.event.modelId}${message.event.subscription ? " (oauth)" : ""}`;
+          this._modelLabel = liveModelLabel(message.event.provider, message.event.modelId, message.event.subscription);
         }
         this.activeChannel?.push(message.event);
         return;
