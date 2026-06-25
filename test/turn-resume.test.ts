@@ -57,6 +57,24 @@ class AbortableRuntime implements AgentRuntime {
   }
 }
 
+// Streams one partial delta, then throws when released — stands in for a turn
+// the runtime fails terminally (e.g. an upstream usage-limit / network error).
+class FailingRuntime implements AgentRuntime {
+  readonly modelLabel = "fake/model";
+  readonly capabilities = { gaiaTools: [], granularTools: true };
+  fail?: () => void;
+  constructor(readonly agent: AgentDefinition) {}
+  resetRoom(): void {}
+  async *send(): AsyncGenerator<never> {
+    yield { type: "text-delta", delta: "partial before failure" } as never;
+    await new Promise<void>((_resolve, reject) => {
+      this.fail = () => reject(new Error("upstream exploded"));
+    });
+  }
+  async abort(): Promise<void> {}
+  dispose(): void {}
+}
+
 // Streams a full reply — the fresh process that picks the interrupted turn back up.
 class CompletingRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
@@ -110,6 +128,45 @@ test("an interrupted turn persists its partial reply and resumes to completion �
     // The user prompt is on disk exactly once (resume must not re-record it).
     assert.equal(texts.filter((t) => t === "do the thing").length, 1, "the user prompt is not duplicated on resume");
     c2.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("a terminally-failed turn clears its marker — no poison-pill replay on restart", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+
+    let runtime: FailingRuntime | undefined;
+    const c = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (a) => {
+        const r = new FailingRuntime(a);
+        if (a.id === "gaia") runtime = r;
+        return r;
+      },
+    });
+    const statePath = roomStatePath(workspace.roomsDir, c.roomId);
+    await c.sendMessage("do the thing", { targets: ["gaia"] });
+
+    // The turn started: a marker is on disk. Then release the failure.
+    await waitFor(async () => Boolean((await readRoomState(statePath)).pendingTurn));
+    await waitFor(() => Boolean(runtime?.fail));
+    runtime!.fail!();
+
+    // The runtime threw → the turn settles as an error. The marker MUST be gone:
+    // a restart should NOT replay an already-failed turn.
+    await waitFor(async () => !(await readRoomState(statePath)).pendingTurn);
+    assert.equal((await readRoomState(statePath)).pendingTurn, undefined, "the failed turn left no resumable marker");
+    c.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = originalHome;
