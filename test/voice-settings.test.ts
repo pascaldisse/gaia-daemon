@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { ensureVoiceSettingsFile, readVoiceSettings, voiceSettingsPath, VOICE_SETTINGS_DEFAULTS } from "../src/app/voice-settings.ts";
+import { bundledUnmuteDir, ensureVoiceSettingsFile, readVoiceSettings, voiceSettingsPath, VOICE_SETTINGS_DEFAULTS } from "../src/app/voice-settings.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
 test("ensureVoiceSettingsFile seeds defaults once and never overwrites", async () => {
@@ -45,7 +45,29 @@ test("readVoiceSettings overlays valid keys onto defaults", async () => {
 test("readVoiceSettings returns defaults when the file is missing", async () => {
   const temp = await createTempDir();
   try {
-    assert.deepEqual(await readVoiceSettings(temp.path), VOICE_SETTINGS_DEFAULTS);
+    // unmuteDir is the one default resolved at runtime (see below); everything else is verbatim.
+    assert.deepEqual(await readVoiceSettings(temp.path), { ...VOICE_SETTINGS_DEFAULTS, unmuteDir: bundledUnmuteDir() });
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("unmuteDir is never persisted as a stale absolute path — bundled checkout resolves at runtime", async () => {
+  const temp = await createTempDir();
+  try {
+    // The seeded file keeps unmuteDir empty, so moving/renaming the repo can't break voice.
+    await ensureVoiceSettingsFile(temp.path);
+    const onDisk = JSON.parse(await readFile(voiceSettingsPath(temp.path), "utf8"));
+    assert.equal(onDisk.unmuteDir, "", "seeded voice.json must not bake an absolute unmute path");
+
+    // ...but the resolved runtime settings point at the bundled checkout.
+    const resolved = await readVoiceSettings(temp.path);
+    assert.equal(resolved.unmuteDir, bundledUnmuteDir());
+    assert.ok(resolved.unmuteDir.endsWith("/unmute"));
+
+    // An explicit override is still honoured verbatim.
+    await writeFile(voiceSettingsPath(temp.path), JSON.stringify({ unmuteDir: "/custom/unmute" }), "utf8");
+    assert.equal((await readVoiceSettings(temp.path)).unmuteDir, "/custom/unmute");
   } finally {
     await temp.cleanup();
   }
