@@ -13,6 +13,27 @@ export interface RoomState {
   // presence makes the room a monad room — plain user messages route through
   // MonadEngine instead of a single agent turn. Written by setup activation.
   monad?: MonadConfig;
+  // Set for the duration of an in-flight turn, cleared when it settles. Its
+  // presence on a fresh read means a turn was INTERRUPTED (crash, kill, abrupt
+  // shutdown) and must be resumed — no progress is ever lost. The partial reply
+  // streamed so far is persisted here as it arrives. See no-progress-lost.
+  pendingTurn?: PendingTurn;
+}
+
+export interface PendingTurn {
+  /** Originating task id. */
+  id: string;
+  /** The user prompt that drove the turn — replayed verbatim to resume it. */
+  prompt: string;
+  /** Agents still to run (the in-flight one stays here until it completes). */
+  targets: string[];
+  /** The agent whose turn is currently streaming. */
+  agentId: string;
+  /** The reply text streamed so far for `agentId` — preserved on interruption. */
+  partialReply: string;
+  /** Voice turns resume as voice. */
+  channel?: "voice";
+  startedAt: string;
 }
 
 export interface RuntimeToolDetails {
@@ -138,16 +159,36 @@ function monadConfigFrom(value: unknown): MonadConfig | undefined {
   };
 }
 
+// Parse a persisted in-flight turn, or undefined when malformed/absent. A bad
+// block must never brick a room — it just means no resume is attempted.
+function pendingTurnFrom(value: unknown): PendingTurn | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.id !== "string" || typeof value.prompt !== "string" || typeof value.agentId !== "string") return undefined;
+  const targets = Array.isArray(value.targets) ? value.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0) : [];
+  if (targets.length === 0) return undefined;
+  return {
+    id: value.id,
+    prompt: value.prompt,
+    targets,
+    agentId: value.agentId,
+    partialReply: typeof value.partialReply === "string" ? value.partialReply : "",
+    ...(value.channel === "voice" ? { channel: "voice" as const } : {}),
+    startedAt: typeof value.startedAt === "string" ? value.startedAt : "",
+  };
+}
+
 export function normalizeRoomState(value: unknown): RoomState {
   if (!isRecord(value)) return defaultRoomState();
 
   const monad = monadConfigFrom(value.monad);
+  const pendingTurn = pendingTurnFrom(value.pendingTurn);
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
     runtimeDetails: runtimeDetailsRecord(value.runtimeDetails),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
     ...(monad ? { monad } : {}),
+    ...(pendingTurn ? { pendingTurn } : {}),
   };
 }
 

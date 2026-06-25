@@ -160,6 +160,11 @@ export interface SendMessageOptions {
 // instead of accumulating every tool result the room has ever seen.
 const RUNTIME_DETAILS_LIMIT = 50;
 
+// Min gap between durable partial-reply flushes during a streaming turn. Bounds
+// state.json write churn while keeping at most ~this much streamed text at risk on
+// an abrupt kill (the rest is already on disk). See no-progress-lost.
+const PARTIAL_FLUSH_MS = 1000;
+
 export class GaiaController {
   private readonly room: Room;
   // Workspace-scoped, shared across that workspace's room controllers so the
@@ -243,6 +248,11 @@ export class GaiaController {
     );
     this.roomState = await this.room.readState();
     this.initialized = true;
+
+    // A pendingTurn on a FRESH read means a prior process was interrupted mid-turn.
+    // Resume it in the background (re-entrant: resume calls sendMessage, which awaits
+    // init() — already true here, so no loop). Never blocks opening the room.
+    if (this.roomState.pendingTurn) void this.resumePendingTurn().catch(() => {});
   }
 
   subscribe(listener: (event: GaiaUiEvent) => void): () => void {
@@ -532,8 +542,14 @@ export class GaiaController {
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
     }
 
+    // Targets still to run; the in-flight one stays here until it completes, so a
+    // crash/kill leaves a pendingTurn that resumes the unfinished work.
+    const remaining = [...task.targets];
     for (const target of task.targets) {
-      if (this.taskCancelled(task)) return;
+      if (this.taskCancelled(task)) {
+        await this.clearPendingTurn();
+        return;
+      }
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       const cursor = this.roomState.agentCursors[target] ?? 0;
@@ -551,29 +567,118 @@ export class GaiaController {
         });
       }
 
+      // Record the in-flight turn on disk BEFORE it streams, so an interruption
+      // (crash, kill, abrupt shutdown) leaves a resumable marker — no progress lost.
+      await this.markPendingTurn(task, text, remaining, target, channel);
+      let lastFlush = 0;
+
       const turn = await runAgentTurn({
         runtime,
         input: { roomId: this.room.id, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
         isCancelled: () => this.taskCancelled(task),
         onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, event)),
+        onProgress: async (reply) => {
+          const now = Date.now();
+          if (now - lastFlush < PARTIAL_FLUSH_MS) return;
+          lastFlush = now;
+          await this.flushPartialReply(reply);
+        },
       });
-      if (turn.cancelled || this.taskCancelled(task)) return;
 
-      let appended = 0;
-      if (turn.reply.trim()) {
-        const agentEvent = await this.room.addAgentMessage(agent.id, turn.reply.trim(), channel);
-        this.persistRuntimeDetails(agentEvent, turn.details);
-        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
-        appended = 1;
+      // Cancelled (user stop) or interrupted mid-stream: PRESERVE whatever was
+      // produced — never discard it — then stop. The marker is cleared because a
+      // user cancel is a deliberate stop, not a resume.
+      if (turn.cancelled || this.taskCancelled(task)) {
+        await this.commitTurnReply(agent.id, turn.reply, turn.details, channel, nextCursor);
+        await this.clearPendingTurn();
+        return;
       }
 
-      // The room is single-writer while a task runs, so the new cursor is the
-      // line count at read time plus this agent's own reply.
-      this.roomState.agentCursors[agent.id] = nextCursor + appended;
-      await this.room.writeState(this.roomState);
+      await this.commitTurnReply(agent.id, turn.reply, turn.details, channel, nextCursor);
+      remaining.shift();
     }
 
+    await this.clearPendingTurn();
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
+  }
+
+  // Append the (possibly partial) reply, persist its runtime details, and advance
+  // the agent's cursor — the single commit path for both a completed turn and a
+  // preserved-on-interruption one.
+  private async commitTurnReply(
+    agentId: string,
+    reply: string,
+    details: RuntimeMessageDetails,
+    channel: "voice" | undefined,
+    nextCursor: number,
+  ): Promise<void> {
+    let appended = 0;
+    if (reply.trim()) {
+      const agentEvent = await this.room.addAgentMessage(agentId, reply.trim(), channel);
+      this.persistRuntimeDetails(agentEvent, details);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
+      appended = 1;
+    }
+    // The room is single-writer while a task runs, so the new cursor is the line
+    // count at read time plus this agent's own reply.
+    this.roomState.agentCursors[agentId] = nextCursor + appended;
+    await this.room.writeState(this.roomState);
+  }
+
+  private async markPendingTurn(task: GaiaTask, prompt: string, remaining: string[], agentId: string, channel: "voice" | undefined): Promise<void> {
+    this.roomState.pendingTurn = {
+      id: task.id,
+      prompt,
+      targets: [...remaining],
+      agentId,
+      partialReply: "",
+      ...(channel ? { channel } : {}),
+      startedAt: new Date().toISOString(),
+    };
+    await this.room.writeState(this.roomState);
+  }
+
+  // Throttled durable flush of the reply streamed so far (throttle lives in the caller).
+  private async flushPartialReply(reply: string): Promise<void> {
+    if (!this.roomState.pendingTurn) return;
+    this.roomState.pendingTurn.partialReply = reply;
+    await this.room.writeState(this.roomState);
+  }
+
+  private async clearPendingTurn(): Promise<void> {
+    if (!this.roomState.pendingTurn) return;
+    delete this.roomState.pendingTurn;
+    await this.room.writeState(this.roomState);
+  }
+
+  // Resume a turn that a prior process left in-flight (its pendingTurn survived).
+  // Preserve whatever streamed before the interruption, then re-dispatch the
+  // unfinished targets so the agent CONTINUES — no progress is ever lost.
+  private async resumePendingTurn(): Promise<void> {
+    const pending = this.roomState.pendingTurn;
+    if (!pending) return;
+    // Take the marker first so a crash during resume re-marks cleanly instead of
+    // looping on this stale record.
+    delete this.roomState.pendingTurn;
+    await this.room.writeState(this.roomState);
+
+    if (pending.partialReply.trim()) {
+      const cursor = this.roomState.agentCursors[pending.agentId] ?? 0;
+      const { nextCursor } = await this.room.eventsAfterCursor(cursor);
+      // Details weren't durably captured mid-turn; preserve the text (the progress).
+      await this.commitTurnReply(pending.agentId, pending.partialReply, {}, pending.channel, nextCursor);
+    }
+
+    if (pending.targets.length > 0) {
+      // The user prompt is already on disk — replay it to the unfinished targets
+      // without re-recording it. This re-enters the normal turn path (and re-marks
+      // a fresh pendingTurn), so an interrupted resume is itself resumable.
+      await this.sendMessage(pending.prompt, {
+        targets: pending.targets,
+        recordUserMessage: false,
+        ...(pending.channel ? { channel: pending.channel } : {}),
+      });
+    }
   }
 
   // A monad room turns a plain user message into a coordinated loop. True only

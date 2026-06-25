@@ -6,6 +6,11 @@ export interface AgentTurnOptions {
   input: AgentInput;
   isCancelled?: () => boolean;
   onEvent?: (event: AgentEvent) => void;
+  // Fires as the reply grows (after each text-delta) with the full running reply,
+  // so the caller can durably persist partial progress — an interrupted turn must
+  // never lose what was already produced. The caller throttles its own writes; it
+  // is awaited so persistence stays ordered with the stream (see no-progress-lost).
+  onProgress?: (reply: string) => void | Promise<void>;
 }
 
 export interface AgentTurnResult {
@@ -29,6 +34,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
     if (event.type === "text-delta") reply += event.delta;
     applyEventToDetails(details, event);
     options.onEvent?.(event);
+    if (event.type === "text-delta" && options.onProgress) await options.onProgress(reply);
   }
 
   return { reply, details, cancelled: isCancelled() };
