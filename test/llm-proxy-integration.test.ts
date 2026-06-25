@@ -1,7 +1,7 @@
 // End-to-end-ish integration of the credential proxy egress path, fully offline.
 // It wires the REAL pieces the way a proxied Pi turn does — the actual `openai`
 // SDK client Pi constructs, the real global-fetch redirect, the real transport
-// (forwardLlmRequest), the real host-side resolver (resolvePiUpstream) — against a
+// (forwardLlmRequest), the real host-side resolver (resolveUpstreamCredential) — against a
 // fake upstream. It proves the whole chain without a real provider, key, or daemon:
 //
 //   client (token) --redirect--> proxy --resolve+inject--> upstream (real key)
@@ -16,7 +16,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { type AddressInfo } from "node:net";
 import OpenAI from "openai";
 import { forwardLlmRequest } from "../src/app/llm-proxy.ts";
-import { resolvePiUpstream } from "../src/app/pi-credential-resolver.ts";
+import { resolveUpstreamCredential } from "../src/app/upstream-resolver.ts";
 import { redirectProviderFetch } from "../src/runtime/llm-proxy-fetch.ts";
 
 const REAL_KEY = "sk-REAL-UPSTREAM-KEY";
@@ -65,7 +65,7 @@ test("credential proxy egress: SDK→redirect→proxy→inject→upstream, token
   // the real key (this IS handleLlmProxy's body, minus the HMAC verify).
   const proxy = await listen(async (req, res) => {
     proxyAuthSeen = req.headers.authorization;
-    const upstreamCred = await resolvePiUpstream({ id: "a", model: { provider: "deepseek", name: "deepseek-v4-pro" } } as never, resolverDeps);
+    const upstreamCred = await resolveUpstreamCredential({ id: "a", model: { provider: "deepseek", name: "deepseek-v4-pro" } } as never, resolverDeps);
     if (!upstreamCred) {
       res.writeHead(502).end("no upstream");
       return;

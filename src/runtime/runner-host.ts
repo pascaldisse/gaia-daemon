@@ -6,8 +6,7 @@
 // consumes, so nothing upstream knows a turn ran in a subprocess.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -18,18 +17,11 @@ import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { CircuitBreaker, defaultBreaker } from "./circuit-breaker.js";
 import { createEventChannel, type EventChannel } from "./event-stream.js";
-import { harnessSpecFor } from "./harness-registry.js";
+import { type CredentialProxyWiring, harnessSpecFor } from "./harness-registry.js";
 import { installMarkerArgs } from "./orphan-reaper.js";
 import { RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./runner-protocol.js";
 import { resolveSandboxLaunch, type SandboxPolicy } from "./sandbox/index.js";
 import type { AgentEvent, AgentInput, AgentRuntime } from "./types.js";
-
-// The real Pi credential store the daemon hides from a proxied turn: Pi reads its
-// key here (and a dumb summon could `cat` it), so it is both read-denied in the
-// sandbox and side-stepped by relocating Pi's agent dir (PI_CODING_AGENT_DIR).
-function realPiAuthJson(): string {
-  return join(homedir(), ".pi", "agent", "auth.json");
-}
 
 export interface RunnerHostOptions {
   workspace: Workspace;
@@ -171,15 +163,17 @@ export class RunnerHost implements AgentRuntime {
     // read-only so a confined turn can't rewrite the governance that launches
     // the next one. Room scratch lives under cwd, so it needs no extra grant.
     const policy = this.options.sandbox();
-    // When the credential proxy is on, deny the sandbox read access to the real
-    // Pi cred store on top of the backend's built-in sensitive set, so a summon
-    // cannot exfiltrate the key the proxy is hiding. (A no-op when unsandboxed.)
-    const denyRead = this.proxyEnabled(policy) ? [realPiAuthJson()] : undefined;
+    // Resolve the bridge token + this harness's credential-proxy wiring ONCE, then
+    // use it for both the sandbox deny-read and the child env. The wiring is data
+    // the harness declares on its spec; applied uniformly with no branch on the
+    // harness id (AGENTS.md §RULE #0). denyRead carries any cred store the harness
+    // wants hidden so a summon can't exfiltrate the key the proxy is replacing.
+    const launchCtx = this.resolveProxyLaunch(roomId, policy);
     let launch;
     try {
       launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
         readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
-        denyRead,
+        denyRead: launchCtx.proxy?.denyRead,
       });
     } catch (error) {
       // Fail-closed sandbox (e.g. off darwin) is a launch failure for the breaker.
@@ -187,12 +181,12 @@ export class RunnerHost implements AgentRuntime {
       throw error;
     }
     if (process.env.GAIA_DEBUG_SANDBOX) {
-      process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} proxy=${this.proxyEnabled(policy)} launch=${launch.command}\n`);
+      process.stderr.write(`[sandbox ${this.agent.id}] enabled=${policy.enabled} backend=${policy.backend} proxy=${Boolean(launchCtx.proxy)} launch=${launch.command}\n`);
     }
 
     const child = spawn(launch.command, launch.args, {
       cwd: this.options.workspace.rootDir,
-      env: this.buildEnv(roomId, policy),
+      env: this.buildEnv(roomId, launchCtx),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -258,20 +252,25 @@ export class RunnerHost implements AgentRuntime {
     this.activeChannel?.close();
   }
 
-  // The credential proxy is Pi-only for now (claude/codex redirect comes later).
-  private proxyEnabled(policy: SandboxPolicy): boolean {
-    return policy.credentialProxy === true && this.options.harness === "pi";
+  // Resolve the daemon bridge + per-turn token + this harness's credential-proxy
+  // wiring in one place. The wiring is whatever the harness declared on its spec —
+  // RunnerHost applies it uniformly and never asks which harness it is.
+  private resolveProxyLaunch(roomId: string, policy: SandboxPolicy): ProxyLaunch {
+    const host = this.options.harnessHost?.({ allowSummon: this.options.allowSummon() });
+    if (!host) return { host: undefined, token: undefined, proxy: undefined };
+    const token = host.mintToken({ agentId: this.agent.id, roomId });
+    const proxy =
+      policy.credentialProxy === true
+        ? harnessSpecFor(this.options.harness).credentialProxy?.({
+            proxyUrl: host.llmProxyUrl,
+            token,
+            scratchDir: this.ensureProxyScratch(roomId),
+          })
+        : undefined;
+    return { host, token, proxy };
   }
 
-  // A per-room scratch agent dir for a proxied Pi turn. Relocating Pi's agent dir
-  // here (empty auth.json) means Pi's AuthStorage resolves no real key, so the
-  // placeholder token registered against the proxy is what reaches the wire. It
-  // sits under the workspace rooms dir, which is inside the writable cwd.
-  private piAgentScratchDir(roomId: string): string {
-    return join(this.options.workspace.roomsDir, roomId, "pi-agent-dir");
-  }
-
-  private buildEnv(roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
+  private buildEnv(roomId: string, ctx: ProxyLaunch): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       [RUNNER_ENV.workspacePath]: this.options.workspace.rootDir,
@@ -281,30 +280,42 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.memoryDir]: this.agent.memoryDir,
       [RUNNER_ENV.roomDir]: join(this.options.workspace.roomsDir, roomId),
     };
-    if (this.options.harnessHost) {
-      const host = this.options.harnessHost({ allowSummon: this.options.allowSummon() });
-      env[RUNNER_ENV.daemonUrl] = host.baseUrl;
-      env[RUNNER_ENV.daemonToken] = host.mintToken({ agentId: this.agent.id, roomId });
-      if (this.proxyEnabled(policy)) {
-        // Point Pi at the loopback proxy (it bears GAIA_DAEMON_TOKEN), relocate
-        // its agent dir so it finds no real key, and strip every provider key
-        // env var — otherwise Pi's getApiKey() falls back to the env and uses the
-        // REAL key, bypassing the proxy and leaving the key in the sandbox.
-        env[RUNNER_ENV.llmProxyUrl] = host.llmProxyUrl;
-        env.PI_CODING_AGENT_DIR = this.ensurePiAgentScratch(roomId);
+    if (ctx.host && ctx.token !== undefined) {
+      env[RUNNER_ENV.daemonUrl] = ctx.host.baseUrl;
+      env[RUNNER_ENV.daemonToken] = ctx.token;
+      if (ctx.proxy) {
+        // Route this harness's LLM egress through the loopback proxy (bearing the
+        // per-turn token). Order matters: strip every real provider key FIRST (else
+        // a harness could fall back to the real key in the env, bypassing the proxy
+        // and leaving the key in the sandbox), THEN apply the harness's declared
+        // wiring — which may legitimately set the token UNDER a provider-key name
+        // (e.g. codex's OPENAI_API_KEY=<token>). Uniform for every harness.
         stripProviderKeys(env);
+        env[RUNNER_ENV.llmProxyUrl] = ctx.host.llmProxyUrl;
+        Object.assign(env, ctx.proxy.env ?? {});
       }
     }
     return env;
   }
 
-  // Materialize the scratch agent dir + an empty auth.json so Pi's AuthStorage
-  // loads a valid-but-empty store (no key) rather than tripping on a missing dir.
-  private ensurePiAgentScratch(roomId: string): string {
-    const dir = this.piAgentScratchDir(roomId);
+  // Test seam: the full child env for a (room, policy), resolving the bridge token
+  // + harness proxy wiring exactly as spawnChild does.
+  private envFor(roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
+    return this.buildEnv(roomId, this.resolveProxyLaunch(roomId, policy));
+  }
+
+  // A per-room writable scratch dir a proxied harness may relocate its cred store
+  // into; it sits under the rooms dir, inside the writable cwd. Generic — the
+  // harness's descriptor decides what (if anything) to write here.
+  private ensureProxyScratch(roomId: string): string {
+    const dir = join(this.options.workspace.roomsDir, roomId, "proxy-scratch");
     mkdirSync(dir, { recursive: true });
-    const authJson = join(dir, "auth.json");
-    if (!existsSync(authJson)) writeFileSync(authJson, "{}\n");
     return dir;
   }
+}
+
+interface ProxyLaunch {
+  host: HarnessHost | undefined;
+  token: string | undefined;
+  proxy: CredentialProxyWiring | undefined;
 }

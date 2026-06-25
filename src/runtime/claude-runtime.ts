@@ -644,4 +644,11 @@ registerHarness({
     modelNameOptions: ["opus", "sonnet", "haiku"],
   },
   create: (ctx) => new ClaudeRuntime(ctx),
+  // Claude Code routes its API calls through ANTHROPIC_BASE_URL bearing
+  // ANTHROPIC_AUTH_TOKEN. Point both at the loopback proxy + per-turn token; the
+  // daemon swaps in the real anthropic key. Subscription/OAuth logins have no key
+  // to hide, so the proxy resolver fail-closes for them (correct, not special-cased).
+  credentialProxy: ({ proxyUrl, token }) => ({
+    env: { ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_AUTH_TOKEN: token },
+  }),
 });

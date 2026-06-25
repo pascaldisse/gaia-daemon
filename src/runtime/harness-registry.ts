@@ -40,12 +40,38 @@ export interface HarnessUi {
   modelNameOptions?: string[];
 }
 
+/** What a harness needs to route its LLM egress through the daemon's loopback proxy. */
+export interface CredentialProxyContext {
+  /** The loopback proxy mount the harness's LLM calls should hit. */
+  proxyUrl: string;
+  /** The per-turn token the harness presents instead of the real key. */
+  token: string;
+  /** A per-room writable scratch dir the harness may relocate its cred store into. */
+  scratchDir: string;
+}
+
+/** How a harness routes its egress through the proxy + which extra paths to deny-read. */
+export interface CredentialProxyWiring {
+  /** Env vars to set on the runner so this harness's LLM calls reach the proxy with the token. */
+  env?: Record<string, string>;
+  /** Extra paths to deny-read in the sandbox (e.g. this harness's real cred store). */
+  denyRead?: string[];
+}
+
 export interface HarnessSpec {
   id: string;
   capabilities: HarnessCapabilities;
   ui: HarnessUi;
   /** Build the runtime for this harness from the uniform construction context. */
   create(ctx: RuntimeCreateContext): AgentRuntime;
+  /**
+   * Credential-proxy wiring for this harness, as DATA on the spec. When the proxy
+   * is enabled `RunnerHost` calls this and applies the result UNIFORMLY for every
+   * harness — it never branches on the harness id. Absent ⇒ this harness needs no
+   * extra wiring (it has no API key to hide, e.g. an OAuth-only mode). See AGENTS.md
+   * §RULE #0: the shared layer must not special-case a harness.
+   */
+  credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
 }
 
 const registry = new Map<string, HarnessSpec>();

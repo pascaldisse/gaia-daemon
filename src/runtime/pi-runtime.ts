@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import {
@@ -380,9 +381,25 @@ export class PiRuntime implements AgentRuntime {
   }
 }
 
+// The real Pi credential store the proxy hides: Pi reads its key here (and a dumb
+// summon could `cat` it), so it is deny-read in the sandbox AND side-stepped by
+// relocating Pi's agent dir to an empty scratch (PI_CODING_AGENT_DIR).
+function realPiAuthJson(): string {
+  return join(homedir(), ".pi", "agent", "auth.json");
+}
+
 registerHarness({
   id: "pi",
   capabilities: PI_CAPABILITIES,
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
   create: (ctx) => new PiRuntime(ctx),
+  // Pi's proxy wiring (the in-process fetch redirect lives in applyCredentialProxy):
+  // relocate its agent dir to an empty store so AuthStorage resolves no real key
+  // (the token registered against the proxy is then what reaches the wire), and
+  // deny-read the real store. The runner sets GAIA_LLM_PROXY_URL uniformly.
+  credentialProxy: ({ scratchDir }) => {
+    const authJson = join(scratchDir, "auth.json");
+    if (!existsSync(authJson)) writeFileSync(authJson, "{}\n");
+    return { env: { PI_CODING_AGENT_DIR: scratchDir }, denyRead: [realPiAuthJson()] };
+  },
 });
