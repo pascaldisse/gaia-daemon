@@ -34,4 +34,8 @@ export const RUNNER_ENV = {
   daemonToken: "GAIA_DAEMON_TOKEN",
   memoryDir: "GAIA_MEMORY_DIR",
   roomDir: "GAIA_ROOM_DIR",
+  // Mount of the in-daemon LLM credential proxy. Set ONLY when the credential
+  // proxy is enabled for this turn; a harness redirects its provider calls here
+  // (with GAIA_DAEMON_TOKEN as the bearer) so the real key stays daemon-side.
+  llmProxyUrl: "GAIA_LLM_PROXY_URL",
 } as const;

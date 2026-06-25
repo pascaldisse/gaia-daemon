@@ -48,6 +48,16 @@ test("resolveSandboxPolicy: agent override beats workspace default", () => {
   assert.equal(policy.backend, "custom-real");
 });
 
+test("resolveSandboxPolicy: credentialProxy is off by default, opt-in via agent or workspace", () => {
+  assert.equal(resolveSandboxPolicy(undefined, undefined, true, DARWIN).credentialProxy, false);
+  assert.equal(resolveSandboxPolicy({ credentialProxy: true }, undefined, false, DARWIN).credentialProxy, true);
+  assert.equal(resolveSandboxPolicy(undefined, { credentialProxy: true }, false, DARWIN).credentialProxy, true);
+  // Agent override wins, including turning it back off.
+  assert.equal(resolveSandboxPolicy({ credentialProxy: true }, { credentialProxy: false }, false, DARWIN).credentialProxy, false);
+  // Survives the untrusted forced-sandbox path too.
+  assert.equal(resolveSandboxPolicy({ credentialProxy: true }, undefined, false, { ...DARWIN, trusted: false }).credentialProxy, true);
+});
+
 test("resolveSandboxLaunch: disabled or none backend is the identity launch", async () => {
   const off = await resolveSandboxLaunch({ enabled: false }, ARGV, "/work");
   assert.deepEqual(off, { command: "/usr/bin/node", args: ["cli.js", "__run-agent"] });

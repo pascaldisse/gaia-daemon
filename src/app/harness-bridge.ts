@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { LLM_PROXY_MOUNT } from "./llm-proxy.js";
 
 // Bridges harness subprocesses (Claude/Codex) to the daemon for memory writes
 // and summon. A subprocess receives a bearer token via env (GAIA_DAEMON_TOKEN);
@@ -18,6 +19,10 @@ export interface HarnessTokenClaims {
 /** Per-workspace handle passed into runtimes so they can mint turn tokens. */
 export interface HarnessHost {
   baseUrl: string;
+  /** Mount of the in-daemon LLM credential proxy; a redirected harness posts here
+   *  with its per-turn token (the same GAIA_DAEMON_TOKEN) and the daemon injects
+   *  the real key. See src/app/llm-proxy.ts. */
+  llmProxyUrl: string;
   mintToken(claims: { agentId: string; roomId: string }): string;
 }
 
@@ -33,6 +38,7 @@ export class HarnessBridge {
     const allowSummon = options.allowSummon !== false;
     return {
       baseUrl: this.baseUrl,
+      llmProxyUrl: `${this.baseUrl}${LLM_PROXY_MOUNT}`,
       mintToken: ({ agentId, roomId }) => this.sign({ workspaceId, agentId, roomId, allowSummon }),
     };
   }

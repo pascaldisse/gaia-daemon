@@ -9,6 +9,8 @@ import { EditableFileRegistry, type EditableFileContent, type EditableFileDescri
 import { GaiaController, type GaiaUiEvent, type VoiceCallInfo } from "../app/gaia-controller.js";
 import { SummonCoordinator } from "../app/summon-coordinator.js";
 import { HarnessBridge } from "../app/harness-bridge.js";
+import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../app/llm-proxy.js";
+import { resolvePiUpstream } from "../app/pi-credential-resolver.js";
 import { MemoryStore, type MemoryAction } from "../memory/memory-store.js";
 import { buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type FileHints, type HintSources, type ModelChoice } from "../app/settings-hints.js";
 import {
@@ -29,6 +31,7 @@ import { newId } from "../lib/ids.js";
 import { scaffoldGlobalAgent } from "../agents/scaffold.js";
 import { ensureWorkspaceRoom, gaiaHome, globalAgentsPath, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
+import type { AgentDefinition } from "../agents/types.js";
 
 interface WebServerOptions {
   cwd: string;
@@ -335,6 +338,14 @@ export class GaiaWebServer {
       return;
     }
 
+    // LLM credential proxy: a redirected harness posts here; the daemon injects
+    // the real key and streams the response. Dispatched before any body parsing
+    // so the request stream reaches the proxy untouched.
+    if (url.pathname === LLM_PROXY_MOUNT || url.pathname.startsWith(`${LLM_PROXY_MOUNT}/`)) {
+      await this.handleLlmProxy(request, response, url);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/pick-directory") {
       try {
         json(response, 200, { path: (await pickDirectoryWithSystem()) ?? null });
@@ -626,6 +637,41 @@ export class GaiaWebServer {
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  // In-daemon LLM credential proxy. The per-turn token (same one the memory/summon
+  // bridge uses) resolves the (workspace, agent); the daemon — unsandboxed — reads
+  // the real upstream + key and injects it on the wire (forwardLlmRequest), then
+  // streams the response back. Fail-closed: an unresolvable credential (OAuth-only,
+  // unconfigured, unknown agent) is a 502, never a forward without auth.
+  private async handleLlmProxy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const auth = request.headers.authorization;
+    const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
+    const claims = this.harnessBridge?.verify(token);
+    if (!claims) {
+      response.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
+      response.end("llm proxy: invalid or missing harness token");
+      return;
+    }
+
+    let agent: AgentDefinition | undefined;
+    try {
+      const controller = await this.controllerFor(claims.workspaceId, claims.roomId);
+      agent = controller.workspace.agents[claims.agentId];
+    } catch {
+      agent = undefined;
+    }
+    const upstream = agent ? await resolvePiUpstream(agent) : undefined;
+    if (!upstream) {
+      // No proxyable credential for this agent — refuse rather than leak/guess.
+      response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+      response.end("llm proxy: no resolvable upstream credential for this agent");
+      return;
+    }
+
+    // Strip the mount prefix; keep the api-relative suffix (+ any query) so it can
+    // be re-joined onto the real provider base URL.
+    await forwardLlmRequest(request, response, upstream, llmProxySubpath(url.pathname, url.search));
   }
 
   private async handleApp(response: ServerResponse, currentWorkspaceId?: string): Promise<void> {

@@ -42,6 +42,19 @@ export function joinUrl(baseUrl: string, subpath: string): string {
   return tail ? `${base}/${tail}` : base;
 }
 
+/** The mount the proxy is served under. The harness's redirected base URL is this
+ *  exact path (no trailing `/v1`): the harness appends the api-relative suffix, we
+ *  strip this prefix to recover that suffix, then re-join it onto the REAL provider
+ *  base URL — so the path is reconstructed identically regardless of provider. */
+export const LLM_PROXY_MOUNT = "/api/harness/llm";
+
+/** Recover the api-relative suffix (plus any query) from an inbound proxy request
+ *  path, e.g. `/api/harness/llm/chat/completions?x=1` -> `chat/completions?x=1`. */
+export function llmProxySubpath(pathname: string, search = ""): string {
+  const tail = pathname.startsWith(LLM_PROXY_MOUNT) ? pathname.slice(LLM_PROXY_MOUNT.length) : pathname;
+  return tail.replace(/^\/+/, "") + search;
+}
+
 function buildRequestHeaders(incoming: IncomingMessage["headers"], auth: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(incoming)) {

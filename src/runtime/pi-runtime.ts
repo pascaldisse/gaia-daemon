@@ -18,6 +18,8 @@ import type { SummonCreate } from "../tools/summon-tool.js";
 import type { Workspace } from "../workspace/types.js";
 import type { HarnessCapabilities } from "./capabilities.js";
 import { registerHarness } from "./harness-registry.js";
+import { redirectProviderFetch } from "./llm-proxy-fetch.js";
+import { RUNNER_ENV } from "./runner-protocol.js";
 import { createEventChannel } from "./event-stream.js";
 import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt-assembly.js";
 import type { AgentEvent, AgentInput, AgentRuntime, BaseRuntimeOptions } from "./types.js";
@@ -122,7 +124,33 @@ export class PiRuntime implements AgentRuntime {
     this.sessionFactory = options.sessionFactory;
     this.summonCreate = options.summonCreate;
     this.cwd = options.workspace.rootDir;
+    this.applyCredentialProxy();
     this.configuredModelLabel = this.resolveModelLabel();
+  }
+
+  // When the daemon enabled the credential proxy for this turn (GAIA_LLM_PROXY_URL
+  // set), route this agent's provider calls through the loopback proxy so the real
+  // key never enters this (sandboxed) process. Two moves, deliberately split:
+  //
+  //  1. Auth: register the provider with the per-turn token as its key (authHeader
+  //     so it rides as `Authorization: Bearer <token>`). This does NOT touch the
+  //     model's baseUrl — Pi detects per-provider request compatibility from the
+  //     baseUrl string (e.g. deepseek's reasoning/role quirks), so rewriting it
+  //     would silently corrupt the request. The empty cred store (PI_CODING_AGENT_DIR)
+  //     + stripped env keys ensure this token, not a real key, is what's sent.
+  //  2. Egress: redirect the provider's real origin to the proxy mount at the fetch
+  //     layer. The daemon strips the mount prefix and re-joins the suffix onto the
+  //     real provider base URL, reconstructing the exact upstream call — then swaps
+  //     the token for the real key host-side.
+  private applyCredentialProxy(): void {
+    const proxyUrl = process.env[RUNNER_ENV.llmProxyUrl]?.trim();
+    const token = process.env[RUNNER_ENV.daemonToken]?.trim();
+    const provider = this.agent.model?.provider;
+    const name = this.agent.model?.name;
+    if (!proxyUrl || !token || !provider || !name) return;
+    this.modelRegistry.registerProvider(provider, { apiKey: token, authHeader: true });
+    const realBaseUrl = this.modelRegistry.find(provider, name)?.baseUrl;
+    if (realBaseUrl) redirectProviderFetch(realBaseUrl, proxyUrl);
   }
 
   // Reports the model the live session actually uses once a turn has run;
