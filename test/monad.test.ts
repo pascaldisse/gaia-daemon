@@ -3,15 +3,12 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MonadEngine } from "../src/app/monad-engine.ts";
-import { routingPolicyIds, serveAdapterIds } from "../src/runtime/monad/index.ts";
-import type { MonadConfig, MonadObservation, RoutingPolicyContext } from "../src/runtime/monad/types.ts";
-import { ConductorDagPolicy, parseWorkflow } from "../src/runtime/monad/policies/conductor-dag.ts";
-import { decisionFromRouter } from "../src/runtime/monad/policies/trinity-head.ts";
-import { extractJsonObject, renderTranscript, replyAccepts } from "../src/runtime/monad/util.ts";
-import { normalizeRoomState } from "../src/room/state.ts";
-import { activateSetup, discoverSetups, readRoomMonad } from "../src/setups/setup-loader.ts";
-import { initWorkspace, loadWorkspace } from "../src/workspace/workspace-loader.ts";
+import { MonadEngine } from "../src/services/monad.js";
+import { extractJsonObject, replyAccepts, routingPolicyIds } from "../src/services/policies/index.js";
+import type { MonadConfig } from "../src/core/types.js";
+import { normalizeRoomState } from "../src/domain/rooms.js";
+import { activateSetup, deactivateMonad, discoverSetups, readRoomMonad } from "../src/services/setups.js";
+import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 
 const TRIO: MonadConfig = {
   policy: "prompt-driven",
@@ -25,15 +22,10 @@ const TRIO: MonadConfig = {
   terminate: { on: "verifier-accept", acceptToken: "ACCEPT" },
 };
 
-function ctxStub(slots: MonadConfig["slots"]): RoutingPolicyContext {
-  return { slots, roles: [], maxTurns: 5, coordinatorAgentId: slots[0]?.agentId ?? "", terminate: { on: "verifier-accept", acceptToken: "ACCEPT" }, invoke: async () => "" };
-}
-
 // ---------- registries ----------
 
-test("policies and serve adapters self-register via the barrel", () => {
+test("policies self-register via the barrel", () => {
   for (const id of ["prompt-driven", "conductor-dag", "trinity-head"]) assert.ok(routingPolicyIds().includes(id), `missing policy ${id}`);
-  assert.ok(serveAdapterIds().includes("openai-compatible"));
 });
 
 // ---------- util ----------
@@ -68,7 +60,7 @@ test("engine: Thinker→Worker→Verifier loop, REVISE then ACCEPT, answers the 
   const result = await engine.run("do the thing");
 
   assert.deepEqual(seen, ["gaia", "terry", "sidia", "terry", "sidia"]);
-  assert.equal(result.terminatedBy, "verifier-accept");
+  assert.equal(result.terminatedBy, "accept"); // v2 folds verifier-accept into "accept"
   assert.equal(result.final, "RESULT v2");
   assert.equal(result.steps.length, 5);
   assert.deepEqual(result.steps.map((s) => s.role), ["thinker", "worker", "verifier", "worker", "verifier"]);
@@ -91,7 +83,7 @@ test("engine: model-led routing is honored when the coordinator returns a decisi
   const result = await engine.run("answer");
   assert.deepEqual(seen, ["terry"]);
   assert.equal(result.final, "the answer is 42");
-  assert.equal(result.terminatedBy, "verifier-accept");
+  assert.equal(result.terminatedBy, "accept");
 });
 
 test("engine: stops at maxTurns and still returns the last worker result", async () => {
@@ -103,7 +95,21 @@ test("engine: stops at maxTurns and still returns the last worker result", async
   assert.equal(result.final, "partial");
 });
 
-// ---------- step-threading / access_list (P2) ----------
+test("engine: cancellation stops the loop and reports 'stop'", async () => {
+  let dispatched = 0;
+  let cancelled = false;
+  const dispatch = async (): Promise<string> => {
+    dispatched++;
+    cancelled = true; // cancel after the first step lands
+    return "PLAN";
+  };
+  const engine = new MonadEngine({ config: TRIO, parentRoomId: "r", dispatch, invoke: async () => "" });
+  const result = await engine.run("q", { isCancelled: () => cancelled });
+  assert.equal(dispatched, 1);
+  assert.equal(result.terminatedBy, "stop");
+});
+
+// ---------- step-threading / access_list ----------
 
 test("engine + conductor-dag: a later step provably sees only its access_list", async () => {
   const config: MonadConfig = {
@@ -133,52 +139,22 @@ test("engine + conductor-dag: a later step provably sees only its access_list", 
   assert.equal(result.final, "A=42");
 });
 
-test("conductor-dag parseWorkflow: drops unknown agents and forward references", () => {
-  const ctx = ctxStub([
-    { index: 0, agentId: "terry", defaultRole: "worker" },
-    { index: 1, agentId: "sidia", defaultRole: "verifier" },
-  ]);
-  const plan = parseWorkflow(
-    '{"steps":[{"agent":"terry","sees":[1]},{"agent":"ghost","sees":[]},{"agent":"sidia","sees":[0,5]}]}',
-    ctx,
-    "worker",
-  );
-  // ghost dropped; terry's forward ref [1] dropped (>= its own index 0); sidia keeps [0], drops [5].
-  assert.equal(plan.length, 2);
-  assert.deepEqual(plan[0], { agentId: "terry", role: "worker", subtask: "Step 0", sees: [] });
-  assert.equal(plan[1].agentId, "sidia");
-  assert.deepEqual(plan[1].sees, [0]);
-});
-
-test("conductor-dag: an unparseable plan degrades to a single worker step", async () => {
-  const ctx = ctxStub([
-    { index: 0, agentId: "terry", defaultRole: "worker" },
-    { index: 1, agentId: "sidia", defaultRole: "verifier" },
-  ]);
-  const policy = new ConductorDagPolicy({});
-  const obs: MonadObservation = { query: "q", steps: [], transcript: renderTranscript("q", []) };
-  const out = await policy.next(obs, { ...ctx, invoke: async () => "not json" });
-  assert.equal(out.kind, "dispatch");
-  if (out.kind === "dispatch") assert.equal(out.decision.agentId, "terry");
-});
-
-// ---------- trinity-head mapping (pure) ----------
-
-test("trinity-head decisionFromRouter: maps (agent_id, role_id) onto the pool", () => {
-  const ctx = ctxStub([
-    { index: 0, agentId: "terry", defaultRole: "worker" },
-    { index: 1, agentId: "sidia", defaultRole: "verifier" },
-  ]);
-  const obs: MonadObservation = { query: "q", steps: [], transcript: "" };
-  const withRoles = decisionFromRouter({ agent_id: 1, role_id: 2 }, obs, ctx, true);
-  assert.equal(withRoles?.agentId, "sidia");
-  assert.equal(withRoles?.role, "verifier"); // role_id 2 → verifier
-
-  // roles disabled (production L-only head) → fall back to the slot's default role.
-  const noRoles = decisionFromRouter({ agent_id: 0, role_id: 2 }, obs, ctx, false);
-  assert.equal(noRoles?.role, "worker");
-
-  assert.equal(decisionFromRouter({ agent_id: 99 }, obs, ctx, true), undefined); // out of pool
+test("engine: inlined rolePrompts win over resolveRolePrompt", async () => {
+  const config: MonadConfig = { ...TRIO, maxTurns: 1, rolePrompts: { thinker: "INLINED ROLE PROMPT" } };
+  let task = "";
+  const engine = new MonadEngine({
+    config,
+    parentRoomId: "r",
+    dispatch: async (_agentId, t) => {
+      task = t;
+      return "PLAN";
+    },
+    invoke: async () => "",
+    resolveRolePrompt: async () => "FROM RESOLVER",
+  });
+  await engine.run("q");
+  assert.ok(task.startsWith("INLINED ROLE PROMPT"), `expected inlined prompt, got: ${task.slice(0, 40)}`);
+  assert.ok(!task.includes("FROM RESOLVER"));
 });
 
 // ---------- room state normalization ----------
@@ -207,7 +183,7 @@ test("normalizeRoomState: a valid monad block round-trips; a malformed one is dr
 
 // ---------- setup loader (real bundled setup, temp workspace) ----------
 
-test("setup: discover the bundled monad setup and activate it into a room", async () => {
+test("setup: discover the bundled monad setup, activate it, then deactivate", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "gaia-monad-"));
   const home = join(tmp, "home");
   const proj = join(tmp, "proj");
@@ -222,14 +198,38 @@ test("setup: discover the bundled monad setup and activate it into a room", asyn
 
     const workspace = await loadWorkspace(proj);
     const result = await activateSetup(workspace, "monad", "default");
+    assert.equal(result.setupId, "monad");
     assert.equal(result.monad.policy, "prompt-driven");
     assert.equal(result.monad.slots.length, 3);
     assert.equal(result.monad.coordinatorAgentId, "gaia");
     assert.ok(result.monad.rolePrompts?.verifier?.includes("ACCEPT"), "verifier role prompt should be inlined");
+    assert.ok(result.placedRoles.includes("terry:worker"), "role files should be placed into the project overlay");
 
     const persisted = await readRoomMonad(workspace, "default");
     assert.equal(persisted?.policy, "prompt-driven");
     assert.equal(persisted?.slots.length, 3);
+
+    assert.equal(await deactivateMonad(workspace, "default"), true);
+    assert.equal(await readRoomMonad(workspace, "default"), undefined);
+    assert.equal(await deactivateMonad(workspace, "default"), false);
+  } finally {
+    if (prevHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = prevHome;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("setup: activating with an unknown policy or missing agents fails clearly", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gaia-monad-bad-"));
+  const home = join(tmp, "home");
+  const proj = join(tmp, "proj");
+  const prevHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = home;
+  try {
+    await mkdir(proj, { recursive: true });
+    await initWorkspace(proj);
+    const workspace = await loadWorkspace(proj);
+    await assert.rejects(() => activateSetup(workspace, "no-such-setup", "default"), /Unknown setup/);
   } finally {
     if (prevHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = prevHome;

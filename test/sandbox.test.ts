@@ -1,3 +1,7 @@
+// Sandbox layer: trust-tier policy resolution (untrusted can never weaken to
+// naked), fail-closed launches, the Seatbelt profile's write-allowlist /
+// read-denylist posture, and the `gaia __sandbox-exec` confinement entrypoint.
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -5,8 +9,9 @@ import {
   resolveSandboxLaunch,
   resolveSandboxPolicy,
   sandboxBackendIds,
-} from "../src/runtime/sandbox/index.ts";
-import { buildSeatbeltProfile } from "../src/runtime/sandbox/macos-seatbelt.ts";
+} from "../src/harness/sandbox/spec.js";
+import { buildSeatbeltProfile } from "../src/harness/sandbox/seatbelt.js";
+import "../src/harness/sandbox/none.js";
 
 const ARGV = ["/usr/bin/node", "cli.js", "__run-agent"];
 const DARWIN = { platform: "darwin" };
@@ -32,7 +37,12 @@ test("resolveSandboxPolicy: untrusted agents are forced into a real backend, top
 
 test("resolveSandboxPolicy: an untrusted agent CANNOT configure its way out of the sandbox", () => {
   // Every attempt to weaken isolation is ignored for an untrusted agent.
-  const off = resolveSandboxPolicy({ enabled: false, backend: "none" }, { enabled: false, backend: "none" }, false, { ...DARWIN, trusted: false });
+  const off = resolveSandboxPolicy(
+    { enabled: false, backend: "none" },
+    { enabled: false, backend: "none" },
+    false,
+    { ...DARWIN, trusted: false },
+  );
   assert.equal(off.enabled, true);
   assert.equal(off.backend, "macos-seatbelt");
 });
@@ -145,20 +155,20 @@ test("buildSeatbeltProfile: cwdWritable=false keeps the repo read-only but still
 });
 
 test("__sandbox-exec: backend none runs the child directly and propagates its exit code", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   const code = await runSandboxExec(["--backend", "none", "--", process.execPath, "-e", "process.exit(7)"]);
   assert.equal(code, 7);
 });
 
 test("__sandbox-exec: fails closed (child never runs) when the backend is unavailable", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   registerSandbox({ id: "exec-down", available: () => false, wrap: (spec) => ({ command: spec.argv[0], args: [] }) });
   const code = await runSandboxExec(["--backend", "exec-down", "--", process.execPath, "-e", "process.exit(0)"]);
   assert.equal(code, 1); // refused; the child (which would exit 0) never ran
 });
 
 test("__sandbox-exec: requires a -- separator before the child command", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   assert.equal(await runSandboxExec(["--backend", "none"]), 2);
 });
 

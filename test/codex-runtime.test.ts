@@ -1,21 +1,19 @@
+// v2 port of test/codex-runtime.test.ts — every v1 scenario, driven through
+// the injectable JSON-RPC client factory (scriptable notification sequences).
+
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { AgentDefinition } from "../src/agents/types.ts";
-import { MemoryStore } from "../src/memory/memory-store.ts";
+import { MemoryStore } from "../src/domain/memory.js";
 import {
   codexSandboxFor,
   CodexRuntime,
   type CodexClient,
   type CodexClientFactory,
-} from "../src/runtime/codex-runtime.ts";
-import type { AgentEvent } from "../src/runtime/types.ts";
-import type { Workspace } from "../src/workspace/types.ts";
-import { createTempDir } from "./helpers/temp.ts";
+} from "../src/harness/codex.js";
+import { collect, harnessFixture } from "./helpers/fixture.js";
 
 // ---------------------------------------------------------------------------
-// Fake JSON‑RPC client – scriptable notification sequences
+// Fake JSON-RPC client – scriptable notification sequences
 // ---------------------------------------------------------------------------
 
 type PendingRequest = {
@@ -37,17 +35,17 @@ class FakeCodexClient implements CodexClient {
   private _closed = false;
   stderr = "";
 
-  /** Pre‑scripted responses keyed by (method, invocation‑index). */
+  /** Pre-scripted responses keyed by (method, invocation-index). */
   private responses = new Map<string, Map<number, unknown>>();
 
-  /** Pre‑scripted notification sequences. */
+  /** Pre-scripted notification sequences. */
   private notifications: ScriptedNotification[][] = [];
 
   setNotificationHandler(handler: ((msg: { method: string; params: unknown }) => void) | null): void {
     this.notifHandler = handler;
   }
 
-  /** Script a response for the next call to `method`. Returns the count of scripts added. */
+  /** Script a response for the next call to `method`. */
   addResponse(method: string, result: unknown): void {
     let map = this.responses.get(method);
     if (!map) {
@@ -82,7 +80,6 @@ class FakeCodexClient implements CodexClient {
 
     // intercept turn/interrupt to track
     if (method === "turn/interrupt") {
-      // Let the caller verify via an assertion helper
       (this as Record<string, unknown>)._lastInterrupt = params;
       return {};
     }
@@ -117,56 +114,7 @@ class FakeCodexClient implements CodexClient {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function collect(iterable: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of iterable) events.push(event);
-  return events;
-}
-
-async function fixture() {
-  const temp = await createTempDir();
-  const project = join(temp.path, "project");
-  const gaiaDir = join(temp.path, "home", "agents", "gaia");
-  const personaDir = join(gaiaDir, "persona");
-  await mkdir(personaDir, { recursive: true });
-  await mkdir(join(project, ".gaia"), { recursive: true });
-  await writeFile(join(personaDir, "SOUL.md"), "Soul", "utf8");
-  await mkdir(join(personaDir, "memory"), { recursive: true });
-  await writeFile(join(personaDir, "memory", "MEMORY.md"), "# Memory\n", "utf8");
-
-  const agent: AgentDefinition = {
-    id: "gaia",
-    displayName: "Gaia",
-    icon: "☀️",
-    dir: gaiaDir,
-    configPath: join(gaiaDir, "agent.json"),
-    personaDir,
-    rolesDir: join(personaDir, "roles"),
-    soulPath: join(personaDir, "SOUL.md"),
-    memoryDir: join(personaDir, "memory"),
-    tools: [],
-    harness: "codex",
-    model: { provider: "openai", name: "gpt-5-codex" },
-  };
-
-  const workspace: Workspace = {
-    rootDir: project,
-    dir: join(project, ".gaia"),
-    configPath: join(project, ".gaia", "config.json"),
-    agentsOverrideDir: join(project, ".gaia", "agents"),
-    roomsDir: join(project, ".gaia", "rooms"),
-    globalAgentsDir: join(temp.path, "home", "agents"),
-    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
-    contextFiles: [],
-    agents: { gaia: agent },
-  };
-
-  return { temp, project, workspace, agent };
-}
+const fixture = () => harnessFixture({ tools: [], harness: "codex", model: { provider: "openai", name: "gpt-5-codex" } });
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -182,7 +130,7 @@ test("codexSandboxFor: read-only unless the agent can modify the workspace", () 
 });
 
 test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -190,21 +138,21 @@ test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
     fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
     fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
 
-    const writeAgent = { ...agent, tools: ["read", "write", "edit"] };
+    const writeAgent = { ...fx.agent, tools: ["read", "write", "edit"] };
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: writeAgent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: writeAgent, memoryStore: new MemoryStore(), clientFactory: factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     assert.equal((threadStart?.params as { sandbox?: string }).sandbox, "workspace-write");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime injects room-independent memory env + token and a gaia mem pointer", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -219,10 +167,11 @@ test("CodexRuntime injects room-independent memory env + token and a gaia mem po
     };
     const host = {
       baseUrl: "http://127.0.0.1:9999",
+      llmProxyUrl: "http://127.0.0.1:9999/llm",
       mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
     };
-    const memAgent = { ...agent, tools: ["read", "write", "edit", "memory"] };
-    const runtime = new CodexRuntime({ workspace, agent: memAgent, memoryStore: new MemoryStore(), clientFactory: factory, harnessHost: host });
+    const memAgent = { ...fx.agent, tools: ["read", "write", "edit", "memory"] };
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: memAgent, memoryStore: new MemoryStore(), clientFactory: factory, harnessHost: host });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     assert.equal(calls[0]?.env.GAIA_MEMORY_DIR, memAgent.memoryDir);
@@ -237,12 +186,12 @@ test("CodexRuntime injects room-independent memory env + token and a gaia mem po
     assert.match((threadStart?.params as { baseInstructions: string }).baseInstructions, /gaia mem/);
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime adds no daemon token when the agent lacks the memory tool", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -255,8 +204,14 @@ test("CodexRuntime adds no daemon token when the agent lacks the memory tool", a
       calls.push({ env });
       return fake;
     };
-    const host = { baseUrl: "http://127.0.0.1:9999", mintToken: () => "tok" };
-    const runtime = new CodexRuntime({ workspace, agent: { ...agent, tools: ["read"] }, memoryStore: new MemoryStore(), clientFactory: factory, harnessHost: host });
+    const host = { baseUrl: "http://127.0.0.1:9999", llmProxyUrl: "http://127.0.0.1:9999/llm", mintToken: () => "tok" };
+    const runtime = new CodexRuntime({
+      workspace: fx.workspace,
+      agent: { ...fx.agent, tools: ["read"] },
+      memoryStore: new MemoryStore(),
+      clientFactory: factory,
+      harnessHost: host,
+    });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, undefined);
@@ -264,12 +219,12 @@ test("CodexRuntime adds no daemon token when the agent lacks the memory tool", a
     assert.ok(!/gaia mem/.test((threadStart?.params as { baseInstructions: string }).baseInstructions));
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime yields model-info from thread/start response", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -285,7 +240,7 @@ test("CodexRuntime yields model-info from thread/start response", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
@@ -300,12 +255,12 @@ test("CodexRuntime yields model-info from thread/start response", async () => {
     assert.equal(runtime.modelLabel, "openai/gpt-5-codex");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime maps reasoning deltas to thinking-start/delta/end", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -324,7 +279,7 @@ test("CodexRuntime maps reasoning deltas to thinking-start/delta/end", async () 
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
@@ -337,12 +292,12 @@ test("CodexRuntime maps reasoning deltas to thinking-start/delta/end", async () 
     assert.deepEqual(relevant[4], { type: "text-delta", delta: "Done." });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime maps tool lifecycle: commandExecution start, update, end", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -361,7 +316,7 @@ test("CodexRuntime maps tool lifecycle: commandExecution start, update, end", as
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "list files", transcript: [] }));
 
@@ -373,12 +328,12 @@ test("CodexRuntime maps tool lifecycle: commandExecution start, update, end", as
     assert.deepEqual(relevant[3], { type: "text-delta", delta: "Files listed." });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime maps tool lifecycle: mcpToolCall start, progress, end", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -396,7 +351,7 @@ test("CodexRuntime maps tool lifecycle: mcpToolCall start, progress, end", async
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "read file", transcript: [] }));
 
@@ -407,12 +362,12 @@ test("CodexRuntime maps tool lifecycle: mcpToolCall start, progress, end", async
     assert.deepEqual(relevant[2], { type: "tool-end", toolName: "read_file", toolCallId: "mcp-1", result: "content here", isError: false });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime handles turn/completed with status failed", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -427,7 +382,7 @@ test("CodexRuntime handles turn/completed with status failed", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
@@ -435,12 +390,12 @@ test("CodexRuntime handles turn/completed with status failed", async () => {
     );
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime handles error notification", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -455,7 +410,7 @@ test("CodexRuntime handles error notification", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
@@ -463,12 +418,12 @@ test("CodexRuntime handles error notification", async () => {
     );
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime abort sends turn/interrupt", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -492,7 +447,7 @@ test("CodexRuntime abort sends turn/interrupt", async () => {
     };
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     // Start send() - it will hang waiting for turn/completed
     const sendPromise = collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
@@ -513,12 +468,12 @@ test("CodexRuntime abort sends turn/interrupt", async () => {
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime modelLabel reports configured model before first turn", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -534,7 +489,7 @@ test("CodexRuntime modelLabel reports configured model before first turn", async
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     // Before first send, modelLabel reports the configured model
     assert.equal(runtime.modelLabel, "openai/gpt-5-codex");
@@ -545,12 +500,12 @@ test("CodexRuntime modelLabel reports configured model before first turn", async
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime reuses thread across multiple turns", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -573,7 +528,7 @@ test("CodexRuntime reuses thread across multiple turns", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events1 = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     assert.equal(events1.length, 2); // model-info + text-delta
@@ -588,12 +543,12 @@ test("CodexRuntime reuses thread across multiple turns", async () => {
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime keeps persistent threads scoped by room", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -624,7 +579,7 @@ test("CodexRuntime keeps persistent threads scoped by room", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const first = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     const other = await collect(runtime.send({ roomId: "other", message: "two", transcript: [] }));
@@ -645,19 +600,19 @@ test("CodexRuntime keeps persistent threads scoped by room", async () => {
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime reports a clear error when codex app-server is unavailable", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const factory: CodexClientFactory = async () => {
       const error = new Error("spawn codex ENOENT") as Error & { code: string };
       error.code = "ENOENT";
       throw error;
     };
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
@@ -665,12 +620,12 @@ test("CodexRuntime reports a clear error when codex app-server is unavailable", 
     );
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime ignores item/completed for non-tool items (userMessage, agentMessage)", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -690,7 +645,7 @@ test("CodexRuntime ignores item/completed for non-tool items (userMessage, agent
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
@@ -708,12 +663,12 @@ test("CodexRuntime ignores item/completed for non-tool items (userMessage, agent
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("CodexRuntime model/rerouted updates live model label", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -730,7 +685,7 @@ test("CodexRuntime model/rerouted updates live model label", async () => {
     );
 
     const factory: CodexClientFactory = async () => fake;
-    const runtime = new CodexRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
@@ -740,6 +695,43 @@ test("CodexRuntime model/rerouted updates live model label", async () => {
     assert.deepEqual(modelInfos[1], { type: "model-info", provider: "openai", modelId: "gpt-5-mini", subscription: true });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime sends memory in the turn prompt only when it changed", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    fake.addResponse("turn/start", { turn: { id: "turn-2", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    fake.addResponse("turn/start", { turn: { id: "turn-3", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const store = new MemoryStore();
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: store, clientFactory: factory });
+
+    const turnText = (index: number): string => {
+      const turnStarts = fake.requests.filter((request) => request.method === "turn/start");
+      return (turnStarts[index].params as { input: Array<{ text: string }> }).input[0].text;
+    };
+
+    await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
+    await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
+    assert.match(turnText(0), /# Your persistent memory/);
+    assert.doesNotMatch(turnText(1), /# Your persistent memory/);
+
+    // A memory write flows into the NEXT turn prompt on the same thread.
+    await store.mutate(fx.agent.memoryDir, "MEMORY.md", "add", { content: "user prefers tabs" });
+    await collect(runtime.send({ roomId: "default", message: "three", transcript: [] }));
+    assert.match(turnText(2), /user prefers tabs/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
   }
 });

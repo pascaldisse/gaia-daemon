@@ -1,18 +1,21 @@
+// v2 port of test/pi-runtime.test.ts — every v1 scenario, driven through the
+// injectable sessionFactory against the REAL MemoryStore + prompt assembly.
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentDefinition } from "../src/agents/types.ts";
-import { MemoryStore } from "../src/memory/memory-store.ts";
-import { PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/runtime/pi-runtime.ts";
-import type { AgentEvent } from "../src/runtime/types.ts";
-import type { Workspace } from "../src/workspace/types.ts";
-import { createTempDir } from "./helpers/temp.ts";
+import { MemoryStore } from "../src/domain/memory.js";
+import type { SummonCreate } from "../src/harness/spec.js";
+import { PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
+import { collect, harnessFixture } from "./helpers/fixture.js";
+import { createTempDir } from "./helpers/temp.js";
 
 class FakeSession implements PiSessionLike {
   readonly sessionId: string;
   model: { provider: string; id: string } | undefined;
   listeners: Array<(event: any) => void> = [];
+  prompts: string[] = [];
   disposed = false;
   reloads = 0;
   aborts = 0;
@@ -35,7 +38,8 @@ class FakeSession implements PiSessionLike {
     };
   }
 
-  async prompt(): Promise<void> {
+  async prompt(text: string): Promise<void> {
+    this.prompts.push(text);
     for (const listener of this.listeners) {
       listener({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
     }
@@ -54,62 +58,20 @@ class FakeSession implements PiSessionLike {
   }
 }
 
-async function collect(iterable: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of iterable) events.push(event);
-  return events;
-}
-
-async function fixture() {
-  const temp = await createTempDir();
-  const project = join(temp.path, "project");
-  const gaiaDir = join(temp.path, "home", "agents", "gaia");
-  const personaDir = join(gaiaDir, "persona");
-  await mkdir(personaDir, { recursive: true });
-  await mkdir(join(project, ".gaia"), { recursive: true });
-  await writeFile(join(personaDir, "SOUL.md"), "Soul", "utf8");
-  await mkdir(join(personaDir, "memory"), { recursive: true });
-  await writeFile(join(personaDir, "memory", "MEMORY.md"), "# Memory\n", "utf8");
-
-  const agent: AgentDefinition = {
-    id: "gaia",
-    displayName: "Gaia",
-    icon: "☀️",
-    dir: gaiaDir,
-    configPath: join(gaiaDir, "agent.json"),
-    personaDir,
-    rolesDir: join(personaDir, "roles"),
-    soulPath: join(personaDir, "SOUL.md"),
-    memoryDir: join(personaDir, "memory"),
-    tools: [],
-  };
-
-  const workspace: Workspace = {
-    rootDir: project,
-    dir: join(project, ".gaia"),
-    configPath: join(project, ".gaia", "config.json"),
-    agentsOverrideDir: join(project, ".gaia", "agents"),
-    roomsDir: join(project, ".gaia", "rooms"),
-    globalAgentsDir: join(temp.path, "home", "agents"),
-    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
-    contextFiles: [],
-    agents: { gaia: agent },
-  };
-
-  return { temp, project, workspace, agent };
-}
-
 test("pi room session directory is scoped by room and agent", async () => {
   const temp = await createTempDir();
   try {
-    assert.equal(piRoomSessionDir({ roomsDir: join(temp.path, "rooms") }, "default", "gaia"), join(temp.path, "rooms", "default", "pi-sessions", "gaia"));
+    assert.equal(
+      piRoomSessionDir({ rootDir: temp.path }, "default", "gaia"),
+      join(temp.path, ".gaia", "rooms", "default", "pi-sessions", "gaia"),
+    );
   } finally {
     await temp.cleanup();
   }
 });
 
 test("PiRuntime reuses one persistent session for repeated room-agent turns", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     const sessions: FakeSession[] = [];
     const factory: PiRuntimeSessionFactory = async () => {
@@ -117,7 +79,7 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "one", transcript: [] })), [{ type: "text-delta", delta: "ok" }]);
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "two", transcript: [] })), [{ type: "text-delta", delta: "ok" }]);
@@ -126,29 +88,31 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
     runtime.dispose();
     assert.equal(sessions[0].disposed, true);
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime exposes summon as a custom tool when enabled", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture({ tools: ["summon"] });
   try {
-    agent.tools = ["summon"];
     let customTools: any[] = [];
     const calls: Array<{ roomId: string; agentId: string; task: string }> = [];
     const factory: PiRuntimeSessionFactory = async (options) => {
       customTools = options.customTools as any[];
       return { session: new FakeSession("s1") };
     };
+    // The live summon tool (services/tools-pi.ts) calls summonCreate with
+    // { roomId, agentId, task } and renders the result as a string.
+    const summonCreate: SummonCreate = async (params) => {
+      calls.push(params);
+      return "summon complete";
+    };
     const runtime = new PiRuntime({
-      workspace,
-      agent,
+      workspace: fx.workspace,
+      agent: fx.agent,
       memoryStore: new MemoryStore(),
       sessionFactory: factory,
-      summonCreate: async (params) => {
-        calls.push(params);
-        return "summon complete";
-      },
+      summonCreate,
     });
 
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
@@ -159,12 +123,12 @@ test("PiRuntime exposes summon as a custom tool when enabled", async () => {
     assert.deepEqual(calls, [{ roomId: "default", agentId: "sidia", task: "map routes" }]);
     assert.deepEqual(result.content, [{ type: "text", text: "summon complete" }]);
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime surfaces provider failures encoded as error-final messages", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => {
       const session = new FakeSession("s1");
@@ -178,19 +142,19 @@ test("PiRuntime surfaces provider failures encoded as error-final messages", asy
       };
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /usage limit/,
     );
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime treats aborted-final messages as non-fatal", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => {
       const session = new FakeSession("s1");
@@ -204,16 +168,16 @@ test("PiRuntime treats aborted-final messages as non-fatal", async () => {
       };
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     assert.deepEqual(await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })), []);
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime reloads an existing session when prompt changes but skills do not", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     const sessions: FakeSession[] = [];
     const factory: PiRuntimeSessionFactory = async () => {
@@ -221,7 +185,7 @@ test("PiRuntime reloads an existing session when prompt changes but skills do no
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], activeRole: { name: "plan", prompt: "A", skills: [], diagnostics: [] } }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [], activeRole: { name: "plan", prompt: "B", skills: [], diagnostics: [] } }));
@@ -229,38 +193,38 @@ test("PiRuntime reloads an existing session when prompt changes but skills do no
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].reloads, 1);
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime reports the session's actual model as a model-info event", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => {
       const session = new FakeSession("s1");
       session.model = { provider: "fake-provider", id: "fake-model" };
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     const events = await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     assert.deepEqual(events[0], { type: "model-info", provider: "fake-provider", modelId: "fake-model", subscription: false });
     assert.equal(runtime.modelLabel, "fake-provider/fake-model");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime applies a per-turn thinking override and restores the base level after", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await harnessFixture();
   try {
     let created: FakeSession | undefined;
     const factory: PiRuntimeSessionFactory = async () => {
       created = new FakeSession("s1");
       return { session: created };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     // Voice turn forces thinking off.
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], channel: "voice", thinking: "off" }));
@@ -276,20 +240,17 @@ test("PiRuntime applies a per-turn thinking override and restores the base level
     assert.deepEqual(created?.thinkingChanges, ["off", "medium"]);
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("PiRuntime recreates a session when active role skill paths change", async () => {
-  const { temp, workspace, agent } = await fixture();
-  const previousHome = process.env.GAIA_HOME;
+  const fx = await harnessFixture();
   try {
-    const home = join(temp.path, "home");
-    process.env.GAIA_HOME = home;
-    await mkdir(join(home, "skills", "a"), { recursive: true });
-    await mkdir(join(home, "skills", "b"), { recursive: true });
-    await writeFile(join(home, "skills", "a", "SKILL.md"), "# A\n", "utf8");
-    await writeFile(join(home, "skills", "b", "SKILL.md"), "# B\n", "utf8");
+    await mkdir(join(fx.home, "skills", "a"), { recursive: true });
+    await mkdir(join(fx.home, "skills", "b"), { recursive: true });
+    await writeFile(join(fx.home, "skills", "a", "SKILL.md"), "# A\n", "utf8");
+    await writeFile(join(fx.home, "skills", "b", "SKILL.md"), "# B\n", "utf8");
 
     const sessions: FakeSession[] = [];
     const factory: PiRuntimeSessionFactory = async () => {
@@ -297,7 +258,7 @@ test("PiRuntime recreates a session when active role skill paths change", async 
       sessions.push(session);
       return { session };
     };
-    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], activeRole: { name: "a", prompt: "A", skills: ["a"], diagnostics: [] } }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [], activeRole: { name: "b", prompt: "B", skills: ["b"], diagnostics: [] } }));
@@ -306,8 +267,40 @@ test("PiRuntime recreates a session when active role skill paths change", async 
     assert.equal(sessions[0].disposed, true);
     assert.equal(sessions[1].disposed, false);
   } finally {
-    if (previousHome === undefined) delete process.env.GAIA_HOME;
-    else process.env.GAIA_HOME = previousHome;
-    await temp.cleanup();
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime sends memory in the turn prompt only when it changed", async () => {
+  const fx = await harnessFixture();
+  try {
+    const sessions: FakeSession[] = [];
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession(`s${sessions.length + 1}`);
+      sessions.push(session);
+      return { session };
+    };
+    const store = new MemoryStore();
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: store, sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
+    await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
+    assert.match(sessions[0].prompts[0], /# Your persistent memory/);
+    assert.doesNotMatch(sessions[0].prompts[1], /# Your persistent memory/);
+
+    // A memory write flows into the NEXT turn prompt without a session reload.
+    await store.mutate(fx.agent.memoryDir, "MEMORY.md", "add", { content: "user prefers tabs" });
+    await collect(runtime.send({ roomId: "default", message: "three", transcript: [] }));
+    assert.match(sessions[0].prompts[2], /user prefers tabs/);
+    assert.equal(sessions.length, 1);
+
+    // The diff dies with the session: a reset room re-receives memory.
+    runtime.resetRoom("default");
+    await collect(runtime.send({ roomId: "default", message: "four", transcript: [] }));
+    assert.equal(sessions.length, 2);
+    assert.match(sessions[1].prompts[0], /# Your persistent memory/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
   }
 });

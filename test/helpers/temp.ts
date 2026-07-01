@@ -7,7 +7,7 @@ export interface TempDir {
   cleanup(): Promise<void>;
 }
 
-export async function createTempDir(prefix = "gaia-test-"): Promise<TempDir> {
+export async function createTempDir(prefix = "gaia2-test-"): Promise<TempDir> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   return {
     path,

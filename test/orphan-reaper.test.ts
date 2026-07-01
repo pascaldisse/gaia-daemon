@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { installId, parsePsTable, selectOrphans, reapOrphans, INSTALL_MARKER_FLAG } from "../src/runtime/orphan-reaper.ts";
+import { installId, parsePsTable, selectOrphans, reapOrphans, INSTALL_MARKER_FLAG } from "../src/harness/reaper.js";
 
 test("installId is deterministic per seed and differs across checkouts", () => {
   assert.equal(installId("/Users/a/.gaia"), installId("/Users/a/.gaia"));

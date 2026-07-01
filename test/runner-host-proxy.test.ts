@@ -9,9 +9,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import "../src/runtime/index.ts"; // register the real harnesses + their credentialProxy descriptors
-import { RunnerHost } from "../src/runtime/runner-host.ts";
-import type { SandboxPolicy } from "../src/runtime/sandbox/index.ts";
+import type { AgentDef, Workspace } from "../src/core/types.js";
+import "../src/harness/index.js"; // register the real harnesses + their credentialProxy descriptors
+import { RunnerHost } from "../src/harness/host.js";
+import type { SandboxPolicy } from "../src/harness/sandbox/spec.js";
 
 function makeHost(harness: string, root: string): RunnerHost {
   const workspace = {
@@ -19,8 +20,8 @@ function makeHost(harness: string, root: string): RunnerHost {
     roomsDir: join(root, ".gaia", "rooms"),
     configPath: join(root, ".gaia", "config.json"),
     agentsOverrideDir: join(root, ".gaia", "agents"),
-  } as never;
-  const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as never;
+  } as unknown as Workspace;
+  const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as unknown as AgentDef;
   return new RunnerHost({
     workspace,
     agent,
@@ -87,7 +88,7 @@ test("proxy ON, codex: SAME mechanism — strips keys, plus codex's declared OPE
     assert.equal(env.DEEPSEEK_API_KEY, undefined);
     assert.equal(env.GAIA_LLM_PROXY_URL, "http://127.0.0.1:9999/api/harness/llm");
     assert.equal(env.OPENAI_BASE_URL, "http://127.0.0.1:9999/api/harness/llm"); // codex's egress redirect
-    assert.equal(env.OPENAI_API_KEY, "tok-123"); // token in place of the real key
+    assert.equal(env.OPENAI_API_KEY, "tok-123"); // token in place of the real key (wiring applies AFTER the strip)
   });
 });
 
@@ -104,4 +105,18 @@ test("proxy OFF: every harness keeps its provider keys and no proxy wiring is ad
       assert.equal(env.PI_CODING_AGENT_DIR, undefined);
     });
   }
+});
+
+test("the runner env carries the uniform RUNNER_ENV keys for any harness", () => {
+  withTemp((root) => {
+    const env = envFor(makeHost("pi", root), "room1", PROXY_OFF);
+    assert.equal(env.GAIA_RUNNER_WORKSPACE, root);
+    assert.equal(env.GAIA_RUNNER_AGENT, "scout");
+    assert.equal(env.GAIA_RUNNER_HARNESS, "pi");
+    assert.equal(env.GAIA_ROOM_ID, "room1");
+    assert.equal(env.GAIA_MEMORY_DIR, join(root, "mem"));
+    assert.equal(env.GAIA_ROOM_DIR, join(root, ".gaia", "rooms", "room1"));
+    assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999"); // bridge target rides even without the proxy
+    assert.equal(env.GAIA_DAEMON_TOKEN, "tok-123");
+  });
 });

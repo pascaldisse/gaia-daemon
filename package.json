@@ -1,14 +1,14 @@
 {
-  "name": "gaia-pi-wrapper",
-  "version": "0.1.0",
-  "description": "GAIA local-first multi-agent workspace built on the Pi SDK.",
+  "name": "gaia-daemon",
+  "version": "2.0.0",
+  "description": "GAIA — local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json",
     "test": "tsx --test test/**/*.test.ts",
     "start": "node dist/cli.js",
     "stop": "pids=$(lsof -ti tcp:8787); if [ -n \"$pids\" ]; then kill $pids && echo \"stopped gaia (pid $pids) on :8787\"; else echo \"gaia not running on :8787\"; fi",

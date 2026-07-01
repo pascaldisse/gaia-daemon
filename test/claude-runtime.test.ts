@@ -1,18 +1,17 @@
+// v2 port of test/claude-runtime.test.ts — every v1 scenario, driven through
+// the injectable process factory (scriptable NDJSON message sequences).
+
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentDefinition } from "../src/agents/types.ts";
-import { MemoryStore } from "../src/memory/memory-store.ts";
+import { MemoryStore } from "../src/domain/memory.js";
 import {
   buildClaudeToolGrant,
   ClaudeRuntime,
   type ClaudeProcessFactory,
   type ClaudeProcessOptions,
-} from "../src/runtime/claude-runtime.ts";
-import type { AgentEvent } from "../src/runtime/types.ts";
-import type { Workspace } from "../src/workspace/types.ts";
-import { createTempDir } from "./helpers/temp.ts";
+} from "../src/harness/claude.js";
+import { collect, harnessFixture } from "./helpers/fixture.js";
 
 // ---------------------------------------------------------------------------
 // Fake process factory – scriptable NDJSON message sequences (one per turn)
@@ -84,60 +83,7 @@ const textDelta = (text: string) => ({
 
 const resultSuccess = (result = "ok") => ({ type: "result", subtype: "success", is_error: false, result });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function collect(iterable: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of iterable) events.push(event);
-  return events;
-}
-
-async function fixture() {
-  const temp = await createTempDir();
-  const project = join(temp.path, "project");
-  const gaiaDir = join(temp.path, "home", "agents", "gaia");
-  const personaDir = join(gaiaDir, "persona");
-  await mkdir(personaDir, { recursive: true });
-  await mkdir(join(project, ".gaia"), { recursive: true });
-  await writeFile(join(personaDir, "SOUL.md"), "Soul", "utf8");
-  await mkdir(join(personaDir, "memory"), { recursive: true });
-  await writeFile(join(personaDir, "memory", "MEMORY.md"), "# Memory\n", "utf8");
-
-  const agent: AgentDefinition = {
-    id: "gaia",
-    displayName: "Gaia",
-    icon: "☀️",
-    dir: gaiaDir,
-    configPath: join(gaiaDir, "agent.json"),
-    personaDir,
-    rolesDir: join(personaDir, "roles"),
-    soulPath: join(personaDir, "SOUL.md"),
-    memoryDir: join(personaDir, "memory"),
-    tools: ["read", "write", "edit", "memory", "recall"],
-    harness: "claude",
-    model: { provider: "anthropic", name: "claude-opus-4-8" },
-  };
-
-  const workspace: Workspace = {
-    rootDir: project,
-    dir: join(project, ".gaia"),
-    configPath: join(project, ".gaia", "config.json"),
-    agentsOverrideDir: join(project, ".gaia", "agents"),
-    roomsDir: join(project, ".gaia", "rooms"),
-    globalAgentsDir: join(temp.path, "home", "agents"),
-    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
-    contextFiles: [],
-    agents: { gaia: agent },
-  };
-
-  return { temp, project, workspace, agent };
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+const fixture = () => harnessFixture({ tools: ["read", "write", "edit", "memory", "recall"], harness: "claude", model: { provider: "anthropic", name: "claude-opus-4-8" } });
 
 // ---------------------------------------------------------------------------
 // buildClaudeToolGrant – the config-driven translator
@@ -185,13 +131,17 @@ test("buildClaudeToolGrant: summon maps to the narrow gaia summon grant", () => 
   assert.ok(!grant.allowedTools.includes("Bash"));
 });
 
+// ---------------------------------------------------------------------------
+// ClaudeRuntime
+// ---------------------------------------------------------------------------
+
 test("ClaudeRuntime yields model-info from init and text-delta from stream_event", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("Hello"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     assert.equal(events.length, 2);
@@ -200,29 +150,29 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime reports subscription:false when an API key is the source", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg("claude-opus-4-8", "ANTHROPIC_API_KEY"), textDelta("hi"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const info = events.find((e) => e.type === "model-info");
     assert.deepEqual(info, { type: "model-info", provider: "anthropic", modelId: "claude-opus-4-8", subscription: false });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([
@@ -236,7 +186,7 @@ test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () 
       resultSuccess(),
     ]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const relevant = events.filter((e) => e.type !== "model-info");
 
@@ -249,12 +199,12 @@ test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () 
     ]);
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-start/tool-end", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([
@@ -271,7 +221,7 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
       resultSuccess(),
     ]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "read", transcript: [] }));
     const relevant = events.filter((e) => e.type !== "model-info");
 
@@ -280,54 +230,54 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
     assert.deepEqual(relevant[2], { type: "text-delta", delta: "Read it." });
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime rejects on an error result", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), { type: "result", subtype: "error_during_execution", is_error: true, result: "rate limit exceeded" }]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /rate limit exceeded/,
     );
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime reports a clear error when the claude CLI is missing", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     const enoent = new Error("spawn claude ENOENT") as Error & { code: string };
     enoent.code = "ENOENT";
     fake.scriptSpawnError(enoent);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /Claude Code is unavailable: the `claude` CLI was not found in PATH\./,
     );
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime uses --session-id on the first turn and --resume after, with the same id", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("one"), resultSuccess()]);
     fake.script([initMsg(), textDelta("two"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
 
@@ -351,36 +301,36 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
 
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime passes --permission-mode from the agent config (plan mode as data)", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const planAgent = { ...agent, permissionMode: "plan" as const };
-    const runtime = new ClaudeRuntime({ workspace, agent: planAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const planAgent = { ...fx.agent, permissionMode: "plan" as const };
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: planAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
     assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime omits --permission-mode when unset and passes empty --tools for a no-tool agent", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const bareAgent = { ...agent, tools: [] };
-    const runtime = new ClaudeRuntime({ workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const bareAgent = { ...fx.agent, tools: [] };
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -389,12 +339,12 @@ test("ClaudeRuntime omits --permission-mode when unset and passes empty --tools 
     assert.ok(!args.includes("--allowedTools"), "no allow rules when there are no tools");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime keeps a separate session per room and restarts after a failed first turn", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     // room A ok, room B ok, then a failing first turn for room C, then a retry for C.
@@ -403,7 +353,7 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
     fake.script([initMsg(), { type: "result", subtype: "error_during_execution", is_error: true, result: "boom" }]);
     fake.script([initMsg(), textDelta("C"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "a", message: "x", transcript: [] }));
     await collect(runtime.send({ roomId: "b", message: "x", transcript: [] }));
     await assert.rejects(() => collect(runtime.send({ roomId: "c", message: "x", transcript: [] })), /boom/);
@@ -419,62 +369,69 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
     assert.ok(fake.calls[3].args.includes("--session-id"), "retry after failed first turn starts fresh");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime injects memory/room env for the gaia CLI and a daemon token when a host is present", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
     const host = {
       baseUrl: "http://127.0.0.1:9999",
+      llmProxyUrl: "http://127.0.0.1:9999/llm",
       mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
     };
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory, harnessHost: host });
+    const runtime = new ClaudeRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      processFactory: fake.factory,
+      harnessHost: host,
+    });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const env = fake.calls[0].env;
-    assert.equal(env.GAIA_MEMORY_DIR, agent.memoryDir);
-    assert.equal(env.GAIA_ROOM_DIR, join(workspace.roomsDir, "default"));
+    assert.equal(env.GAIA_MEMORY_DIR, fx.agent.memoryDir);
+    assert.equal(env.GAIA_ROOM_DIR, join(fx.workspace.roomsDir, "default"));
     assert.equal(env.GAIA_ROOM_ID, "default");
     assert.equal(env.GAIA_AGENT_ID, "gaia");
     assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
     assert.equal(env.GAIA_DAEMON_TOKEN, "tok:gaia:default");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime omits daemon env when no host is present but still sets read env", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const env = fake.calls[0].env;
-    assert.equal(env.GAIA_MEMORY_DIR, agent.memoryDir);
+    assert.equal(env.GAIA_MEMORY_DIR, fx.agent.memoryDir);
     assert.equal(env.GAIA_DAEMON_URL, undefined);
     assert.equal(env.GAIA_DAEMON_TOKEN, undefined);
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -483,18 +440,18 @@ test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/r
     assert.match(systemPrompt, /gaia recall/);
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime adds no gaia pointer when the agent has no gaia tools", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const bareAgent = { ...agent, tools: ["read"] };
-    const runtime = new ClaudeRuntime({ workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const bareAgent = { ...fx.agent, tools: ["read"] };
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: bareAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
@@ -502,18 +459,18 @@ test("ClaudeRuntime adds no gaia pointer when the agent has no gaia tools", asyn
     assert.ok(!/gaia mem/.test(systemPrompt), "no gaia pointer without gaia tools");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime abort kills the active process", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     // Open turn: emits init but never sends a result, so send() hangs.
     fake.scriptOpen([initMsg()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const sendPromise = collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     await new Promise((r) => setTimeout(r, 20));
@@ -525,22 +482,48 @@ test("ClaudeRuntime abort kills the active process", async () => {
     await sendPromise;
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
   }
 });
 
 test("ClaudeRuntime modelLabel reports the configured model before the first turn", async () => {
-  const { temp, workspace, agent } = await fixture();
+  const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
 
-    const runtime = new ClaudeRuntime({ workspace, agent: agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
     runtime.dispose();
   } finally {
-    await temp.cleanup();
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime sends memory in the turn prompt only when it changed", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("one"), resultSuccess()]);
+    fake.script([initMsg(), textDelta("two"), resultSuccess()]);
+    fake.script([initMsg(), textDelta("three"), resultSuccess()]);
+
+    const store = new MemoryStore();
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: store, processFactory: fake.factory });
+
+    await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
+    await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
+    assert.match(fake.calls[0].prompt, /# Your persistent memory/);
+    assert.doesNotMatch(fake.calls[1].prompt, /# Your persistent memory/);
+
+    // A memory write flows into the NEXT turn prompt.
+    await store.mutate(fx.agent.memoryDir, "MEMORY.md", "add", { content: "user prefers tabs" });
+    await collect(runtime.send({ roomId: "default", message: "three", transcript: [] }));
+    assert.match(fake.calls[2].prompt, /user prefers tabs/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
   }
 });

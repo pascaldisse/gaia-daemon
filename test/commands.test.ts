@@ -1,48 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCommand } from "../src/app/commands.ts";
+import { hasExplicitMention, parseCommand, planMentionRoute } from "../src/services/commands.js";
 
-test("parses plain input as a message", () => {
-  assert.deepEqual(parseCommand("hello Gaia"), { type: "message", text: "hello Gaia" });
+test("parseCommand: plain text is a message", () => {
+  assert.deepEqual(parseCommand("hello there"), { type: "message", text: "hello there" });
 });
 
-test("parses known slash commands", () => {
+test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/help"), { type: "help" });
   assert.deepEqual(parseCommand("/agents"), { type: "agents" });
-});
-
-test("parses role slash commands with arguments", () => {
-  assert.deepEqual(parseCommand("/roles gaia"), { type: "roles", agent: "gaia" });
+  assert.deepEqual(parseCommand("/roles @gaia"), { type: "roles", agent: "gaia" });
+  assert.deepEqual(parseCommand("/role brainstorm"), { type: "role", role: "brainstorm" });
   assert.deepEqual(parseCommand("/role gaia brainstorm"), { type: "role", agent: "gaia", role: "brainstorm" });
-  assert.deepEqual(parseCommand("/role gaia none"), { type: "role", agent: "gaia", role: "none" });
-});
-
-test("parses thinking slash commands", () => {
+  assert.deepEqual(parseCommand("/summon terry fix the tests"), { type: "summon", agent: "terry", task: "fix the tests" });
   assert.deepEqual(parseCommand("/thinking high"), { type: "thinking", level: "high" });
-  assert.deepEqual(parseCommand("/thinking gaia off"), { type: "thinking", agent: "gaia", level: "off" });
-  assert.deepEqual(parseCommand("/thinking @sidia low"), { type: "thinking", agent: "sidia", level: "low" });
-  assert.deepEqual(parseCommand("/thinking"), { type: "thinking", level: undefined });
+  assert.deepEqual(parseCommand("/thinking @gaia off"), { type: "thinking", agent: "gaia", level: "off" });
+  assert.deepEqual(parseCommand("/clear"), { type: "clear" });
+  assert.deepEqual(parseCommand("/fork"), { type: "fork" });
+  assert.deepEqual(parseCommand("/setup"), { type: "setup", sub: "list" });
+  assert.deepEqual(parseCommand("/setup activate monad room2"), { type: "setup", sub: "activate", id: "monad", room: "room2" });
+  assert.deepEqual(parseCommand("/setup off"), { type: "setup", sub: "off" });
+  assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 
-test("parses summon slash commands", () => {
-  assert.deepEqual(parseCommand("/summon scout map the codex"), {
-    type: "summon",
-    agent: "scout",
-    task: "map the codex",
-  });
-  assert.deepEqual(parseCommand("/summon reviewer inspect"), {
-    type: "summon",
-    agent: "reviewer",
-    task: "inspect",
-  });
-  assert.deepEqual(parseCommand("/summon"), { type: "summon", agent: undefined, task: undefined });
-  assert.deepEqual(parseCommand("/summon scout"), {
-    type: "summon",
-    agent: "scout",
-    task: undefined,
-  });
+test("planMentionRoute: dedupes mentions, keeps order, falls back to default", () => {
+  const agents = ["gaia", "terry", "sidia"];
+  assert.deepEqual(planMentionRoute("hello", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  assert.deepEqual(planMentionRoute("@terry then @sidia and @terry again", agents, "gaia"), { ok: true, targets: ["terry", "sidia"] });
+  assert.deepEqual(planMentionRoute("@nope hello", agents, "gaia"), { ok: false, unknown: ["nope"] });
+  // Case-insensitive matching.
+  assert.deepEqual(planMentionRoute("@Terry hi", agents, "gaia"), { ok: true, targets: ["terry"] });
 });
 
-test("reports unknown slash commands", () => {
-  assert.deepEqual(parseCommand("/dance now"), { type: "unknown", command: "dance" });
+test("hasExplicitMention: only known agents count", () => {
+  const agents = new Set(["gaia"]);
+  assert.equal(hasExplicitMention("ping @gaia", agents), true);
+  assert.equal(hasExplicitMention("email bob@gaia.dev", agents), true); // v1 parity: bare pattern match
+  assert.equal(hasExplicitMention("ping @unknown", agents), false);
+  assert.equal(hasExplicitMention("no mentions", agents), false);
 });
