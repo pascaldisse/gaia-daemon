@@ -30,6 +30,7 @@ import { runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, isTrusted, type SummonHost } from "./summons.js";
+import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
 import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
 import { sdkThinkingLevels } from "./hints.js";
@@ -430,13 +431,20 @@ export class RoomService {
       // miss and room-service treats "" as absent.
       const recall = (await this.options.memory?.autoRecallBlock(target, text)) || undefined;
 
+      this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
+
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         turn = await runAgentTurn({
           runtime,
           input: { roomId: this.roomId, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking, recall },
           isCancelled: () => this.taskCancelled(task),
-          onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, eventId, event)),
+          onEvent: (event) => {
+            this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
+            if (event.type === "tool-end") {
+              this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
+            }
+          },
           onProgress: async (reply) => {
             const now = Date.now();
             if (now - lastFlush < PARTIAL_FLUSH_MS) return;
@@ -463,6 +471,12 @@ export class RoomService {
 
       const cancelled = turn.cancelled || this.taskCancelled(task);
       if (reply) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      this.fireHooks("postTurn", {
+        agentId: target,
+        reply: reply.slice(0, HOOK_TEXT_CAP),
+        outcome: cancelled ? "cancelled" : "complete",
+        tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
+      });
 
       if (cancelled) return;
       remaining.shift();
@@ -975,6 +989,7 @@ export class RoomService {
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     if (this.activeTask?.id === task.id) this.activeTask = undefined;
     if (status === "error") {
+      this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });
     } else {
       this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
@@ -985,6 +1000,18 @@ export class RoomService {
 
   private taskCancelled(task: Task): boolean {
     return task.status === "cancelled";
+  }
+
+  /** Observer hooks (config.json `hooks`), fire-and-forget: run at the room
+   * layer, so they behave identically for every harness. Never awaited on the
+   * turn path — a hook can neither block nor fail a turn. */
+  private fireHooks(event: HookEvent, payload: Record<string, unknown>): void {
+    const hooks = this.workspace.config.hooks?.[event];
+    if (!hooks?.length) return;
+    void runHooks(hooks, event, { roomId: this.roomId, ...payload }, {
+      cwd: this.workspace.rootDir,
+      log: (message) => console.warn(`[gaia] ${message}`),
+    });
   }
 
   private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent {

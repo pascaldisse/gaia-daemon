@@ -137,6 +137,29 @@ export interface MemoryConfigPatch {
   decayHalfLifeDays?: number;
 }
 
+/** One observer hook: a shell command run by the daemon at a room-lifecycle
+ * point. The event payload arrives as JSON on stdin (+ GAIA_HOOK_* env).
+ * Fire-and-forget — a hook never blocks or fails a turn. */
+export interface HookCommand {
+  command: string;
+  /** Kill the hook after this many seconds (default 10). */
+  timeoutSec?: number;
+}
+
+/** Hooks run at the ROOM layer, so they are uniform for every harness by
+ * construction — no per-harness translation, no gating (the sandbox is the
+ * boundary; hooks observe). */
+export interface HooksConfig {
+  /** Before an agent turn is dispatched. */
+  preTurn?: HookCommand[];
+  /** After a reply commits (payload carries reply, outcome, tools). */
+  postTurn?: HookCommand[];
+  /** After each tool call inside a turn settles. */
+  toolUse?: HookCommand[];
+  /** A turn failed (payload carries the error). */
+  error?: HookCommand[];
+}
+
 /** One MCP server, workspace- or agent-scoped. `command` (stdio) or `url`
  * (remote) — each harness translates this shape onto its own MCP surface
  * (claude --mcp-config, codex mcp_servers config); pi has no core MCP. */
@@ -201,6 +224,7 @@ export interface WorkspaceConfig {
   maxSummonsPerRoom?: number;
   sandbox?: SandboxConfig;
   mcpServers?: Record<string, McpServerConfig>;
+  hooks?: HooksConfig;
 }
 
 export interface ContextFile {

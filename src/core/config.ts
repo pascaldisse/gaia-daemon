@@ -1,7 +1,7 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
-import type { McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 
 export const DEFAULTS = {
@@ -51,6 +51,36 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (raw.net === "full" || raw.net === "none") config.net = raw.net;
   if (typeof raw.credentialProxy === "boolean") config.credentialProxy = raw.credentialProxy;
   return Object.keys(config).length > 0 ? config : undefined;
+}
+
+const HOOK_EVENTS = ["preTurn", "postTurn", "toolUse", "error"] as const;
+
+function parseHookList(raw: unknown): HookCommand[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const hooks: HookCommand[] = [];
+  for (const entry of raw) {
+    // String shorthand or { command, timeoutSec }.
+    if (typeof entry === "string" && entry.trim()) {
+      hooks.push({ command: entry.trim() });
+    } else if (isRecord(entry) && typeof entry.command === "string" && entry.command.trim()) {
+      hooks.push({
+        command: entry.command.trim(),
+        ...(typeof entry.timeoutSec === "number" && entry.timeoutSec > 0 ? { timeoutSec: entry.timeoutSec } : {}),
+      });
+    }
+  }
+  return hooks.length > 0 ? hooks : undefined;
+}
+
+/** Parse the `hooks` section (config.json). Unknown events/bad entries drop. */
+export function parseHooksConfig(raw: unknown): HooksConfig | undefined {
+  if (!isRecord(raw)) return undefined;
+  const hooks: HooksConfig = {};
+  for (const event of HOOK_EVENTS) {
+    const list = parseHookList(raw[event]);
+    if (list) hooks[event] = list;
+  }
+  return Object.keys(hooks).length > 0 ? hooks : undefined;
 }
 
 /** Parse an `mcpServers` section (config.json or agent.json). A server needs
@@ -146,5 +176,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   if (sandbox) config.sandbox = sandbox;
   const mcpServers = parseMcpServers(obj.mcpServers);
   if (mcpServers) config.mcpServers = mcpServers;
+  const hooks = parseHooksConfig(obj.hooks);
+  if (hooks) config.hooks = hooks;
   return config;
 }

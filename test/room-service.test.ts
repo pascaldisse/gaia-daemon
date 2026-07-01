@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoomService } from "../src/services/room-service.js";
@@ -541,4 +541,27 @@ test("/rewind truncates after the n-th-last user message and resets cursors + se
   await service.sendMessage("/rewind 5");
   const untouched = await service.room.eventsFrom(0);
   assert.equal(untouched.events.length, 2);
+});
+
+test("postTurn hooks fire with the committed reply (uniform, room-layer)", async () => {
+  const { service, workspace, root } = await makeService();
+  const out = join(root, "hook-out.json");
+  workspace.config.hooks = { postTurn: [{ command: `cat > ${out}` }] };
+
+  await service.sendMessage("trigger the hook");
+  await service.waitForIdle();
+
+  // Fire-and-forget: poll briefly for the hook's write.
+  let body: { event?: string; agentId?: string; reply?: string; outcome?: string } | undefined;
+  for (let i = 0; i < 100 && !body; i++) {
+    try {
+      body = JSON.parse(await readFileText(out));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.equal(body?.event, "postTurn");
+  assert.equal(body?.agentId, "gaia");
+  assert.equal(body?.reply, "hello from agent");
+  assert.equal(body?.outcome, "complete");
 });
