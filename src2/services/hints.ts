@@ -19,7 +19,7 @@ import { CLAUDE_PERMISSION_MODES, type ThinkingLevel, type Workspace } from "../
 import { gaiaHome } from "../core/paths.js";
 import { ensureDir } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
-import { gaiaToolIds } from "./tools.js";
+import { gaiaToolIds } from "../harness/tools.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.

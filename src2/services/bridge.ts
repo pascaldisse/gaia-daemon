@@ -1,18 +1,15 @@
-// Bridges harness subprocesses to the daemon for memory writes and summon.
-// A subprocess receives a bearer token via env (GAIA_DAEMON_TOKEN); the daemon
-// verifies it on /api/harness/* and resolves the (workspace, agent, room) it
-// was minted for. Tokens are HMAC-signed with a per-process secret — valid
-// only for the daemon that spawned the subprocess and only for its lifetime.
+// Daemon-side token authority for harness subprocesses. A subprocess receives
+// a bearer token via env (GAIA_DAEMON_TOKEN); the daemon verifies it on
+// /api/harness/* and resolves the (workspace, agent, room) it was minted for.
+// Tokens are HMAC-signed with a per-process secret — valid only for the daemon
+// that spawned the subprocess and only for its lifetime.
 //
-// Also home of the bridge-backed runtime deps (BridgeMemoryStore etc.): every
-// harness writes memory and summons over the SAME HTTP surface the `gaia` CLI
-// uses; reads stay on disk (any read-only sandbox allows them).
+// The subprocess-side counterparts (BridgeMemoryStore, bridgeSummonCreate,
+// fixedTokenHost) live in harness/bridge-deps.ts — they run inside the runner.
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
-import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
-import type { HarnessHost, SummonCreate } from "../harness/spec.js";
-import { LLM_PROXY_MOUNT } from "./proxy.js";
+import { LLM_PROXY_MOUNT } from "../harness/protocol.js";
+import type { HarnessHost } from "../harness/spec.js";
 
 export interface HarnessTokenClaims {
   workspaceId: string;
@@ -65,54 +62,4 @@ export class HarnessBridge {
     const signature = createHmac("sha256", this.secret).update(payload).digest("base64url");
     return `${payload}.${signature}`;
   }
-}
-
-// --- bridge-backed runtime deps (used by the runner subprocess) ---------------
-
-/** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
-export class BridgeMemoryStore extends MemoryStore {
-  constructor(private readonly target: DaemonTarget) {
-    super();
-  }
-
-  override async mutate(dir: string, file: string, action: MemoryAction, options: { content?: string; oldText?: string }): Promise<MemoryMutationResult> {
-    try {
-      const { ok, payload } = await daemonPost(this.target, "/api/harness/memory", {
-        action,
-        file,
-        content: options.content ?? "",
-        old_text: options.oldText ?? "",
-      });
-      // The daemon performed (or rejected) the write; re-read from disk for the
-      // post-state the tool echoes back.
-      const state = await this.readState(dir, file);
-      if (!ok) return { ok: false, message: typeof payload.error === "string" ? payload.error : "memory write failed", state };
-      // Require the daemon's explicit ok:true — a 200 with an empty/non-JSON
-      // body (e.g. a mis-routed request the SPA answered) must NOT read as a
-      // successful write.
-      if (payload.ok !== true) {
-        return { ok: false, message: typeof payload.message === "string" ? payload.message : "memory write not confirmed by daemon", state };
-      }
-      return { ok: true, message: typeof payload.message === "string" ? payload.message : "ok", state };
-    } catch (error) {
-      const state = await this.readState(dir, file);
-      return { ok: false, message: `memory bridge error: ${error instanceof Error ? error.message : String(error)}`, state };
-    }
-  }
-}
-
-/** summonCreate that POSTs to the daemon's summon endpoint (the coordinator). */
-export function bridgeSummonCreate(target: DaemonTarget): SummonCreate {
-  return async ({ task, agentId }) => {
-    const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task });
-    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "summon failed");
-    return typeof payload.result === "string" ? payload.result : "(no output)";
-  };
-}
-
-/** A HarnessHost that re-uses the fixed token the daemon minted for this runner.
- * The subprocess can't mint (no HMAC secret) and doesn't need to: the token is
- * per-(agent, room) already. */
-export function fixedTokenHost(target: DaemonTarget): HarnessHost {
-  return { baseUrl: target.url, llmProxyUrl: `${target.url}${LLM_PROXY_MOUNT}`, mintToken: () => target.token };
 }

@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import type { AgentDef, ContextFile, RoomEvent, Workspace } from "../core/types.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { loadRoleSkillText } from "../domain/skills.js";
-import { GAIA_TOOLS, gaiaToolIds } from "../services/tools.js";
+import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
 
 export interface SystemPromptInput {
   agent: AgentDef;

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
-import { gaiaToolByVerb } from "./tools.js";
+import { gaiaToolByVerb } from "../harness/tools.js";
 
 const MEMORY_USAGE = `Usage:
   gaia mem list                      list memory files

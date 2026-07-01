@@ -181,9 +181,9 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
    shell layout
    ============================================================ */
 .shell, #app { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; overflow: hidden; }
-/* Overlay roots (theme palette, settings modal) are fixed-position backdrops;
-   the container itself must not participate in the app grid. */
-#overlays { display: contents; }
+/* The overlay container and its two mount slots must not participate in the
+   app grid; the backdrops inside them are fixed-position anyway. */
+#overlays, #overlays > div { display: contents; }
 .body { display: grid; min-height: 0; overflow: hidden; }
 
 .sidebar, .right {

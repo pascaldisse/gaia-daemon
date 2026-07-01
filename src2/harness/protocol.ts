@@ -20,6 +20,11 @@ export type RunnerMessage =
   | { type: "turn-end" }
   | { type: "turn-error"; message: string };
 
+/** The mount the in-daemon LLM credential proxy is served under. Part of the
+ * daemon↔subprocess wire contract: a redirected harness's base URL is exactly
+ * this path on the daemon, presented with the per-turn token. */
+export const LLM_PROXY_MOUNT = "/api/harness/llm";
+
 /** Env keys the daemon sets when spawning a runner (read by the runner). */
 export const RUNNER_ENV = {
   workspacePath: "GAIA_RUNNER_WORKSPACE",

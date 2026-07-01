@@ -10,7 +10,7 @@ import { delimiter, dirname, join } from "node:path";
 import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
-import { GAIA_TOOLS } from "../services/tools.js";
+import { GAIA_TOOLS } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,

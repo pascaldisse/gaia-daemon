@@ -50,10 +50,14 @@ export function spawnLineReader(options: SpawnLineReaderOptions): SpawnLineReade
 
   const proc: ChildProcess = spawn(options.command, options.args, spawnOptions);
 
+  // Diagnostics buffer, capped: a long-lived runner with a chatty harness must
+  // not grow daemon memory without bound. The most recent output is what a
+  // startup/crash error needs, so keep the tail.
+  const STDERR_CAP = 64 * 1024;
   let stderrAccum = "";
   proc.stderr?.setEncoding("utf8");
   proc.stderr?.on("data", (chunk: string) => {
-    stderrAccum += chunk;
+    stderrAccum = (stderrAccum + chunk).slice(-STDERR_CAP);
   });
 
   const rl = createInterface({ input: proc.stdout! });

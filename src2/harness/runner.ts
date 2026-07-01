@@ -12,7 +12,7 @@
 import { createInterface } from "node:readline";
 import { env } from "../core/env.js";
 import { loadWorkspace } from "../domain/workspace.js";
-import { BridgeMemoryStore, bridgeSummonCreate, fixedTokenHost } from "../services/bridge.js";
+import { BridgeMemoryStore, bridgeSummonCreate, fixedTokenHost } from "./bridge-deps.js";
 // Self-register every harness before the lookup — this subprocess starts with
 // an empty registry.
 import "./index.js";

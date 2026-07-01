@@ -117,7 +117,7 @@ export function closeThemePalette(commit) {
   markDirty("theme", "status");
 }
 
-function renderThemePalette() { console.log("THEME-RENDER", state.themePaletteOpen, !!document.querySelector("#overlays"));
+function renderThemePalette() {
   const slot = $("#overlay-theme");
   if (!slot) return;
   if (!state.themePaletteOpen) slot.replaceChildren();

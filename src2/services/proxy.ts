@@ -32,10 +32,10 @@ export function joinUrl(baseUrl: string, subpath: string): string {
   return tail ? `${base}/${tail}` : base;
 }
 
-/** The mount the proxy is served under. The harness's redirected base URL is
- * exactly this path; we strip the prefix to recover the api-relative suffix and
- * re-join it onto the REAL provider base URL. */
-export const LLM_PROXY_MOUNT = "/api/harness/llm";
+// The mount constant lives on the wire contract (harness/protocol.ts); this
+// re-export keeps the proxy module the one import for proxy-shaped concerns.
+export { LLM_PROXY_MOUNT } from "../harness/protocol.js";
+import { LLM_PROXY_MOUNT } from "../harness/protocol.js";
 
 /** `/api/harness/llm/chat/completions?x=1` → `chat/completions?x=1`. */
 export function llmProxySubpath(pathname: string, search = ""): string {

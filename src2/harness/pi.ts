@@ -20,7 +20,7 @@ import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { resolveSkillRefs } from "../domain/skills.js";
-import { buildPiTools } from "../services/tools.js";
+import { buildPiTools } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,
