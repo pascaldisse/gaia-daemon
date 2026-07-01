@@ -38,6 +38,7 @@ function flushRegions() {
   scheduled = false;
   const run = ORDER.filter((region) => dirty.has(region));
   dirty.clear();
+  console.log("FLUSH", run.join(","), [...renderers.keys()].join("|"));
   for (const region of run) renderers.get(region)?.();
 }
 
