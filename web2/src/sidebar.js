@@ -5,7 +5,7 @@
 import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
-import { registerRegion, render, setError } from "./render.js";
+import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
@@ -43,7 +43,7 @@ function renderSidebar() {
       class: "nav-action",
       onclick: () => {
         state.settingsOpen = true;
-        render("settings");
+        markDirty("settings");
       },
       text: "global settings",
     }),
@@ -84,7 +84,7 @@ function RoomNode(room, childrenOf, depth) {
     event.stopPropagation();
     if (expanded) state.expandedRooms.delete(room.id);
     else state.expandedRooms.add(room.id);
-    render("sidebar");
+    markDirty("sidebar");
   };
   const snapshot = state.snapshot;
   return h(

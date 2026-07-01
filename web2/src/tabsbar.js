@@ -3,7 +3,7 @@
 // working set without deleting the room.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
-import { registerRegion, render } from "./render.js";
+import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 import { moveTab, visibleTabs } from "./tabs.js";
 
@@ -22,7 +22,7 @@ function renderTabs() {
       title: state.sidebarCollapsed ? "show sessions (Ctrl+B)" : "hide sessions (Ctrl+B)",
       onclick: () => {
         state.sidebarCollapsed = !state.sidebarCollapsed;
-        render("layout", "tabs");
+        markDirty("layout", "tabs");
       },
       text: state.sidebarCollapsed ? "▸" : "◂",
     }),
@@ -39,7 +39,7 @@ function renderTabs() {
       title: state.rightCollapsed ? "show room panel (Ctrl+G)" : "hide room panel (Ctrl+G)",
       onclick: () => {
         state.rightCollapsed = !state.rightCollapsed;
-        render("layout", "tabs");
+        markDirty("layout", "tabs");
       },
       text: "▥",
     }),
@@ -68,14 +68,14 @@ function Tab(room, number, isActive, wsId) {
       },
       ondragend: () => {
         state.tabDragId = null;
-        render("tabs");
+        markDirty("tabs");
       },
       ondragover: (event) => event.preventDefault(),
       ondrop: (event) => {
         event.preventDefault();
         if (state.tabDragId && wsId) moveTab(state.tabDragId, room.id, wsId);
         state.tabDragId = null;
-        render("tabs");
+        markDirty("tabs");
       },
       onclick: isActive || !wsId ? null : () => void selectRoom(wsId, room.id),
     },

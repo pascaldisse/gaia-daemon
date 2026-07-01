@@ -270,7 +270,9 @@ export class RoomHandle {
     const legacy = state.runtimeDetails;
     const events = legacy
       ? page.items.map((event) => {
-          if (event.author === "user" || event.details) return event;
+          // The union is not discriminated by author (agent authors are plain
+          // strings), so narrow via the property instead.
+          if (event.author === "user" || ("details" in event && event.details)) return event;
           const details = legacy[event.id];
           return details ? { ...event, details } : event;
         })

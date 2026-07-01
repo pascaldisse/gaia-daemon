@@ -78,7 +78,13 @@ export async function forwardLlmRequest(request: IncomingMessage, response: Serv
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(target, { method, headers: buildRequestHeaders(request.headers, upstream.authHeaders), body });
+    upstreamResponse = await fetch(target, {
+      method,
+      headers: buildRequestHeaders(request.headers, upstream.authHeaders),
+      // Buffer satisfies fetch's body at runtime; the undici typing only admits
+      // Uint8Array views, which a Buffer is.
+      body: body ? new Uint8Array(body) : undefined,
+    });
   } catch (error) {
     fail(response, 502, `llm proxy: upstream request failed: ${error instanceof Error ? error.message : String(error)}`);
     return;

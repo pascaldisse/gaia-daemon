@@ -83,7 +83,7 @@ export function mountApp() {
       ),
     ),
     h("footer", { class: "statusbar", id: "statusbar" }),
-    h("div", { id: "overlays" }, h("div", { id: "overlay-settings" }), h("div", { id: "overlay-theme" })),
+    h("div", { id: "overlays" }),
   );
 }
 

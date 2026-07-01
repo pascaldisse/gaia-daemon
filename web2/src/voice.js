@@ -4,7 +4,7 @@
 // streams mic audio out as opus, plays TTS audio back, and renders the live
 // speech transcription into the composer. Opus worklets load from ./vendor/.
 import { api } from "./api.js";
-import { render, setError } from "./render.js";
+import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").VoiceCallInfo} VoiceCallInfo */
@@ -38,7 +38,7 @@ export function setMicMuted(muted) {
   } catch {
     // No live recorder; the flag still applies when one starts.
   }
-  render("composer");
+  markDirty("composer");
 }
 
 /** @param {string} agentId */
@@ -61,7 +61,7 @@ async function startCall(agentId) {
   let bound = false;
   try {
     state.voicePendingAgentId = agentId;
-    render("panel", "status");
+    markDirty("panel", "status");
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/voice/start`, {
       method: "POST",
       body: JSON.stringify({ agentId }),
@@ -72,7 +72,7 @@ async function startCall(agentId) {
     state.voicePendingAgentId = null;
     state.voiceStatusText = "";
     state.error = "";
-    render("panel", "status", "composer");
+    markDirty("panel", "status", "composer");
   } catch (error) {
     teardownAudio();
     state.voicePendingAgentId = null;
@@ -83,7 +83,7 @@ async function startCall(agentId) {
     if (bound) {
       void api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/voice/stop`, { method: "POST", body: "{}" }).catch(() => {});
     }
-    render("panel", "composer");
+    markDirty("panel", "composer");
     setError(error);
   }
 }
@@ -97,7 +97,7 @@ export async function endCall() {
   const hadCall = state.voice;
   state.voice = null;
   state.composerText = "";
-  render("panel", "status", "composer");
+  markDirty("panel", "status", "composer");
   const snapshot = state.snapshot;
   if (snapshot && hadCall) {
     try {
@@ -119,7 +119,7 @@ export function applyVoiceStatus(payload) {
   if (payload.pending) {
     state.voicePendingAgentId = payload.pending.agentId;
     state.voiceStatusText = payload.pending.message;
-    render("panel", "status");
+    markDirty("panel", "status");
     return;
   }
 
@@ -135,7 +135,7 @@ export function applyVoiceStatus(payload) {
     }
     state.voicePendingAgentId = null;
   }
-  render("panel", "status", "composer");
+  markDirty("panel", "status", "composer");
 }
 
 /**
@@ -146,7 +146,7 @@ export function voiceTurnCommitted() {
   if (!pendingTranscript) return;
   pendingTranscript = "";
   state.composerText = "";
-  render("composer");
+  markDirty("composer");
 }
 
 export function installVoiceLifecycle() {
@@ -282,7 +282,7 @@ function appendTranscriptionDelta(delta) {
   if (!word) return;
   pendingTranscript = pendingTranscript ? `${pendingTranscript} ${word}` : word;
   state.composerText = pendingTranscript;
-  render("composer");
+  markDirty("composer");
 }
 
 function teardownAudio() {

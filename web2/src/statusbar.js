@@ -4,7 +4,7 @@
 // owns the omarchy-style theme palette (the "theme" region).
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
-import { registerRegion, render } from "./render.js";
+import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
 
@@ -106,7 +106,7 @@ let themeCommitted = null;
 export function openThemePalette() {
   themeCommitted = currentThemeId();
   state.themePaletteOpen = true;
-  render("theme", "status");
+  markDirty("theme", "status");
 }
 
 /** @param {boolean} commit */
@@ -114,21 +114,14 @@ export function closeThemePalette(commit) {
   if (!commit && themeCommitted) applyTheme(themeCommitted);
   state.themePaletteOpen = false;
   themeCommitted = null;
-  render("theme", "status");
+  markDirty("theme", "status");
 }
 
 function renderThemePalette() {
-  const overlays = $("#overlays");
-  if (!overlays) return;
-  const existing = $("#palette-root");
-  if (!state.themePaletteOpen) {
-    existing?.remove();
-    return;
-  }
-  const next = ThemePalette();
-  next.id = "palette-root";
-  if (existing) existing.replaceWith(next);
-  else overlays.append(next);
+  const slot = $("#overlay-theme");
+  if (!slot) return;
+  if (!state.themePaletteOpen) slot.replaceChildren();
+  else slot.replaceChildren(ThemePalette());
 }
 
 registerRegion("theme", renderThemePalette);

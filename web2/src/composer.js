@@ -9,7 +9,7 @@
 import { sendMessage, stopAll } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
-import { registerRegion, render, setError } from "./render.js";
+import { markDirty, registerRegion, setError } from "./render.js";
 import { isBusy, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 
@@ -52,7 +52,7 @@ export function initComposer() {
         state.composerText = textarea.value;
         state.completionHidden = false;
         resizeComposer(textarea);
-        render("composer");
+        markDirty("composer");
       },
       onpaste: () => requestAnimationFrame(() => textarea && resizeComposer(textarea)),
       onkeydown: onComposerKeydown,
@@ -130,7 +130,7 @@ function submitComposer(options = {}) {
   state.composerText = "";
   state.completionIndex = 0;
   state.completionHidden = false;
-  render("composer");
+  markDirty("composer");
   if (options.focus) focusComposer();
   void sendMessage(text);
 }
@@ -145,7 +145,7 @@ function onComposerKeydown(event) {
     else if (event.key === "ArrowUp") state.completionIndex = (state.completionIndex - 1 + count) % count;
     else if (event.key === "Escape") state.completionHidden = true;
     else if (completion.options.length > 0) applyCompletion(completion, completion.options[state.completionIndex] ?? completion.options[0]);
-    render("composer");
+    markDirty("composer");
     return;
   }
 
@@ -218,7 +218,7 @@ function AutocompleteRows(completion) {
         onmousedown: (event) => event.preventDefault(),
         onclick: () => {
           applyCompletion(completion, option);
-          render("composer");
+          markDirty("composer");
           focusComposer();
         },
       },
@@ -286,7 +286,7 @@ async function postThinking(snapshot, agent, level, onCall) {
     if (onCall && state.voice) state.voice.thinking = level;
     else agent.thinking = level;
     state.thinkingMenuOpen = false;
-    render("composer");
+    markDirty("composer");
   } catch (error) {
     setError(error);
   }
@@ -332,7 +332,7 @@ function ThinkingControl(snapshot, text) {
     oncontextmenu: (event) => {
       event.preventDefault();
       state.thinkingMenuOpen = !state.thinkingMenuOpen;
-      render("composer");
+      markDirty("composer");
     },
     text: `\u{1F4AD} #${effective}`,
   });
@@ -426,7 +426,7 @@ export function installComposerRouting() {
       if (!state.thinkingMenuOpen) return;
       if (event.target instanceof HTMLElement && event.target.closest(".thinking-wrap")) return;
       state.thinkingMenuOpen = false;
-      render("composer");
+      markDirty("composer");
     },
     true,
   );
@@ -465,7 +465,7 @@ export function installComposerRouting() {
       }
 
       focusComposer();
-      render("composer");
+      markDirty("composer");
     },
     true,
   );

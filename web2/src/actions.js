@@ -3,7 +3,7 @@
 // state directly.
 import { api } from "./api.js";
 import { connectEvents } from "./events.js";
-import { render, setError } from "./render.js";
+import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
 import { activeTask, runningSummonRooms, state } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
@@ -26,7 +26,7 @@ async function applyAppPayload(body) {
   connectEvents();
   await loadInitialFiles();
   state.error = "";
-  render();
+  markDirty();
 }
 
 /** @param {string} [currentWorkspaceId] */
@@ -62,7 +62,7 @@ export async function loadWorkspace(workspaceId) {
     connectEvents();
     await loadSelectedWorkspaceFile();
     state.error = "";
-    render();
+    markDirty();
   } catch (error) {
     setError(error);
   }
@@ -101,7 +101,7 @@ export async function selectRoom(workspaceId, roomId) {
     connectEvents();
     await loadSelectedWorkspaceFile();
     state.error = "";
-    render();
+    markDirty();
   } catch (error) {
     setError(error);
   }
@@ -120,7 +120,7 @@ export async function setDefaultAgent(agentId) {
     connectEvents();
     await loadSelectedWorkspaceFile();
     state.error = "";
-    render();
+    markDirty();
   } catch (error) {
     setError(error);
   }
@@ -142,7 +142,7 @@ export async function setAgentRole(agentId, role) {
     connectEvents();
     await loadSelectedWorkspaceFile();
     state.error = body.message && /^Unknown|^Usage/.test(body.message) ? body.message : "";
-    render();
+    markDirty();
   } catch (error) {
     setError(error);
   }
@@ -172,7 +172,7 @@ export async function closeRoomTab(roomId) {
   const isActive = snapshot.room.id === roomId;
   const neighbour = closeTab(roomId, snapshot.workspace.id, isActive);
   if (isActive && neighbour && neighbour !== roomId) await selectRoom(snapshot.workspace.id, neighbour);
-  else render("tabs", "sidebar");
+  else markDirty("tabs", "sidebar");
 }
 
 /** @param {string} text */
@@ -187,7 +187,7 @@ export async function sendMessage(text) {
     // Reflect the accepted task immediately so busy state doesn't wait for SSE.
     if (body.task && state.snapshot === snapshot && !snapshot.tasks.some((task) => task.id === body.task.id)) {
       snapshot.tasks.push(body.task);
-      render("panel", "status", "composer");
+      markDirty("panel", "status", "composer");
     }
   } catch (error) {
     setError(error);

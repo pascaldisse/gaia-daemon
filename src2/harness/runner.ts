@@ -1,0 +1,116 @@
+// The agent-runner subprocess (`gaia __run-agent`). The daemon spawns exactly
+// this for EVERY harness (see host.ts) — Pi included, no longer privileged
+// in-process — so execution is uniform and the sandbox has one process to wrap.
+// It builds the real runtime via the harness registry (its translation code
+// untouched) with bridge-backed deps, then runs a single-flight loop: read a
+// command on stdin, stream the turn's AgentEvents back on stdout as protocol
+// JSON.
+//
+// stdout carries ONLY protocol lines, so every console.* is redirected to
+// stderr (the daemon forwards stderr to its own logs).
+
+import { createInterface } from "node:readline";
+import { env } from "../core/env.js";
+import { loadWorkspace } from "../domain/workspace.js";
+import { BridgeMemoryStore, bridgeSummonCreate, fixedTokenHost } from "../services/bridge.js";
+// Self-register every harness before the lookup — this subprocess starts with
+// an empty registry.
+import "./index.js";
+import { RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
+import { type AgentRuntime, harnessIdFor, harnessSpecFor } from "./spec.js";
+
+function send(message: RunnerMessage): void {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+export async function runAgentRunner(): Promise<void> {
+  // Keep stdout pristine for the protocol; everything else goes to stderr.
+  console.log = (...args: unknown[]) => process.stderr.write(`${args.join(" ")}\n`);
+  console.info = console.log;
+  console.warn = (...args: unknown[]) => process.stderr.write(`${args.join(" ")}\n`);
+
+  const workspacePath = env(RUNNER_ENV.workspacePath);
+  const agentId = env(RUNNER_ENV.agentId);
+  if (!workspacePath || !agentId) {
+    send({ type: "turn-error", message: "runner missing workspace/agent env" });
+    process.exit(1);
+  }
+
+  const workspace = await loadWorkspace(workspacePath);
+  const agent = workspace.agents[agentId];
+  if (!agent) {
+    send({ type: "turn-error", message: `runner unknown agent: ${agentId}` });
+    process.exit(1);
+  }
+
+  // Bridge target (daemon url + token) is present whenever the daemon has a
+  // harness bridge. memory reads are disk; writes + summon go to the daemon.
+  const url = env(RUNNER_ENV.daemonUrl);
+  const token = env(RUNNER_ENV.daemonToken);
+  const target = url && token ? { url, token } : undefined;
+
+  const memoryStore = target ? new BridgeMemoryStore(target) : new BridgeMemoryStore({ url: "", token: "" });
+  const summonCreate = target ? bridgeSummonCreate(target) : undefined;
+  const harnessHost = target ? fixedTokenHost(target) : undefined;
+
+  // The daemon already resolved the harness (agent > workspace > default) and
+  // passed it down; fall back to recomputing if the env is somehow absent.
+  const harness = env(RUNNER_ENV.harness) ?? harnessIdFor(agent, workspace);
+  const runtime: AgentRuntime = harnessSpecFor(harness).create({
+    workspace,
+    agent,
+    memoryStore,
+    summonCreate,
+    harnessHost,
+  });
+
+  send({ type: "ready", modelLabel: runtime.modelLabel });
+
+  let turnActive = false;
+
+  const runTurn = async (input: Parameters<AgentRuntime["send"]>[0]): Promise<void> => {
+    turnActive = true;
+    try {
+      for await (const event of runtime.send(input)) send({ type: "event", event });
+      send({ type: "model-label", modelLabel: runtime.modelLabel });
+      send({ type: "turn-end" });
+    } catch (error) {
+      send({ type: "turn-error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      turnActive = false;
+    }
+  };
+
+  const rl = createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let command: RunnerCommand;
+    try {
+      command = JSON.parse(trimmed) as RunnerCommand;
+    } catch {
+      return;
+    }
+    switch (command.type) {
+      case "turn":
+        if (!turnActive) void runTurn(command.input);
+        return;
+      case "abort":
+        void runtime.abort();
+        return;
+      case "reset":
+        runtime.resetRoom(command.roomId);
+        return;
+      case "dispose":
+        runtime.dispose();
+        rl.close();
+        process.exit(0);
+    }
+  });
+
+  // Daemon closed our stdin (killed us / shut down): dispose and exit.
+  rl.on("close", () => {
+    runtime.dispose();
+    process.exit(0);
+  });
+}

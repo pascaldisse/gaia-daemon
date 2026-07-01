@@ -7,7 +7,7 @@
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
-import { registerRegion, render, setError } from "./render.js";
+import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
@@ -37,31 +37,24 @@ function renderWorkspacePanel() {
     FileSelector(state.workspaceFiles, state.selectedWorkspaceFileId, async (id) => {
       state.selectedWorkspaceFileId = id;
       await loadSelectedWorkspaceFile();
-      render("settings");
+      markDirty("settings");
     }),
     FileSettingsEditor({
       file: state.workspaceFile,
       raw: state.workspaceRaw,
       setRaw: (value) => {
         state.workspaceRaw = value;
-        render("settings");
+        markDirty("settings");
       },
     }),
   );
 }
 
 function renderModal() {
-  const overlays = $("#overlays");
-  if (!overlays) return;
-  const existing = $("#settings-root");
-  if (!state.settingsOpen) {
-    existing?.remove();
-    return;
-  }
-  const next = SettingsModal();
-  next.id = "settings-root";
-  if (existing) existing.replaceWith(next);
-  else overlays.append(next);
+  const slot = $("#overlay-settings");
+  if (!slot) return;
+  if (!state.settingsOpen) slot.replaceChildren();
+  else slot.replaceChildren(SettingsModal());
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +139,7 @@ async function selectGlobalSection(sectionId) {
   const files = currentGlobalFiles();
   if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
   await loadSelectedGlobalFile();
-  render("settings");
+  markDirty("settings");
 }
 
 /** @param {string} agentId */
@@ -155,7 +148,7 @@ async function selectGlobalAgent(agentId) {
   const group = globalAgentGroups().find((candidate) => candidate.id === agentId);
   state.selectedGlobalFileId = group?.config[0]?.id ?? group?.files[0]?.id ?? null;
   await loadSelectedGlobalFile();
-  render("settings");
+  markDirty("settings");
 }
 
 /**
@@ -173,7 +166,7 @@ async function selectGlobalAgentView(view) {
   const group = selectedGlobalAgentGroup();
   state.selectedGlobalFileId = group?.[view]?.[0]?.id ?? state.selectedGlobalFileId;
   await loadSelectedGlobalFile();
-  render("settings");
+  markDirty("settings");
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +202,7 @@ async function saveFile(file, content) {
   });
   if (file.scope === "workspace") state.workspaceFile = body.file;
   else state.globalFile = body.file;
-  render("settings");
+  markDirty("settings");
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +212,7 @@ async function handleAddAgent() {
   const id = state.addAgentId.trim();
   if (!id) {
     state.addAgentError = "Agent id is required";
-    render("settings");
+    markDirty("settings");
     return;
   }
   try {
@@ -237,10 +230,10 @@ async function handleAddAgent() {
     syncGlobalSettingsSelection();
     await selectGlobalAgent(id);
     await loadSelectedGlobalFile();
-    render("settings");
+    markDirty("settings");
   } catch (error) {
     state.addAgentError = error instanceof Error ? error.message : String(error);
-    render("settings");
+    markDirty("settings");
   }
 }
 
@@ -293,7 +286,7 @@ function AddAgentForm() {
           state.addAgentId = "";
           state.addAgentName = "";
           state.addAgentError = "";
-          render("settings");
+          markDirty("settings");
         },
         text: "cancel",
       }),
@@ -311,7 +304,7 @@ function GlobalFileEditor(options = {}) {
         state.selectedGlobalFileId = id;
         syncGlobalSettingsSelection();
         await loadSelectedGlobalFile();
-        render("settings");
+        markDirty("settings");
       },
       options,
     ),
@@ -320,7 +313,7 @@ function GlobalFileEditor(options = {}) {
       raw: state.globalRaw,
       setRaw: (value) => {
         state.globalRaw = value;
-        render("settings");
+        markDirty("settings");
       },
     }),
   ];
@@ -350,7 +343,7 @@ function SettingsModal() {
         h("button", {
           onclick: () => {
             state.settingsOpen = false;
-            render("settings");
+            markDirty("settings");
           },
           text: "x",
         }),
@@ -400,7 +393,7 @@ function SettingsModal() {
                     class: "nav-action",
                     onclick: () => {
                       state.addAgentOpen = true;
-                      render("settings");
+                      markDirty("settings");
                     },
                     text: "+ add agent",
                   }),

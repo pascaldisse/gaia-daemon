@@ -8,7 +8,7 @@
 //   Alt+T           theme palette   ·   Alt+Shift+T  cycle theme
 //   Esc             close the theme palette
 import { addRoom, selectRoom } from "./actions.js";
-import { render } from "./render.js";
+import { markDirty } from "./render.js";
 import { state } from "./state.js";
 import { closeThemePalette, openThemePalette } from "./statusbar.js";
 import { visibleTabs } from "./tabs.js";
@@ -41,6 +41,13 @@ export function installKeybindings() {
         closeThemePalette(false);
         return;
       }
+      // Then the settings modal.
+      if (event.key === "Escape" && state.settingsOpen) {
+        event.preventDefault();
+        state.settingsOpen = false;
+        markDirty("settings");
+        return;
+      }
 
       const meta = event.metaKey || event.ctrlKey;
       const has = Boolean(state.snapshot);
@@ -55,13 +62,13 @@ export function installKeybindings() {
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
         state.sidebarCollapsed = !state.sidebarCollapsed;
-        render("layout", "tabs");
+        markDirty("layout", "tabs");
         return;
       }
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "g") {
         event.preventDefault();
         state.rightCollapsed = !state.rightCollapsed;
-        render("layout", "tabs");
+        markDirty("layout", "tabs");
         return;
       }
       // Themes.
@@ -69,7 +76,7 @@ export function installKeybindings() {
         event.preventDefault();
         if (event.shiftKey) {
           cycleTheme(1);
-          render("status");
+          markDirty("status");
         } else if (state.themePaletteOpen) closeThemePalette(false);
         else openThemePalette();
         return;

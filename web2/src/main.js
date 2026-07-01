@@ -5,7 +5,7 @@ import { focusComposerFromBackground, initComposer, installComposerRouting } fro
 import { $ } from "./dom.js";
 import { installKeybindings } from "./keys.js";
 import { installOpenModifierTracking } from "./links.js";
-import { mountApp, render } from "./render.js";
+import { markDirty, mountApp } from "./render.js";
 import { clockText } from "./statusbar.js";
 import { initTheme } from "./themes.js";
 import { installVoiceLifecycle } from "./voice.js";
@@ -31,7 +31,7 @@ installDevReload();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 
 // First paint of every region (empty states), then load the app.
-render();
+markDirty();
 
 // Keep the status-bar clock current without re-rendering anything else.
 setInterval(() => {

@@ -2,7 +2,9 @@
 // id the reply will commit under — so runtime details are keyed directly by
 // event id in state.streams. No author+text snapshot-merge heuristic exists:
 // the final room-event with the same id simply replaces the stream entry.
-import { render, setError } from "./render.js";
+import { api } from "./api.js";
+import { markDirty, setError } from "./render.js";
+import { loadSelectedGlobalFile, loadSelectedWorkspaceFile } from "./settings.js";
 import { state } from "./state.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
@@ -26,11 +28,21 @@ export function connectEvents() {
   const source = new EventSource(`/api/events?${params}`);
   state.eventSource = source;
 
+  // The server greets every (re)connection with "ready". EventSource
+  // reconnects on its own after a drop, but events broadcast while we were
+  // gone are lost — so a ready that isn't the first one resyncs with a
+  // fresh snapshot.
+  let connectedBefore = false;
+  source.addEventListener("ready", () => {
+    if (connectedBefore) void resyncSnapshot(snapshot.workspace.id);
+    connectedBefore = true;
+  });
+
   source.addEventListener("snapshot", (event) => {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
     state.snapshot = payload.snapshot;
     pruneStreams();
-    render();
+    markDirty();
   });
 
   source.addEventListener("room-event", (event) => {
@@ -44,7 +56,7 @@ export function connectEvents() {
     if (index === -1) events.push(payload.event);
     else events[index] = payload.event;
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
-    render("transcript", "panel", "status", "tabs", "sidebar");
+    markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
 
   source.addEventListener("voice-status", (event) => {
@@ -57,7 +69,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.details.model = `${payload.provider}/${payload.modelId}${payload.subscription ? " (oauth)" : ""}`;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("text-delta", (event) => {
@@ -66,7 +78,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.text += payload.delta;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("thinking-start", (event) => {
@@ -75,7 +87,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.details.thinkingStarted = true;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("thinking-delta", (event) => {
@@ -85,7 +97,7 @@ export function connectEvents() {
     stream.details.thinkingStarted = true;
     stream.details.thinking = `${stream.details.thinking ?? ""}${payload.delta}`;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("thinking-end", (event) => {
@@ -95,7 +107,7 @@ export function connectEvents() {
     stream.details.thinkingStarted = true;
     if (payload.content && !stream.details.thinking) stream.details.thinking = payload.content;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("tool-start", (event) => {
@@ -104,7 +116,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.details.tools = [...(stream.details.tools ?? []), toolDetail(payload, "running")];
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("tool-update", (event) => {
@@ -114,7 +126,7 @@ export function connectEvents() {
     const tool = findTool(stream, payload.toolCallId, payload.toolName);
     if (tool) tool.partialResult = payload.partialResult;
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("tool-end", (event) => {
@@ -129,19 +141,19 @@ export function connectEvents() {
       stream.details.tools = [...(stream.details.tools ?? []), toolDetail(payload, payload.isError ? "error" : "complete")];
     }
     stream.version += 1;
-    render("transcript");
+    markDirty("transcript");
   });
 
   source.addEventListener("task-start", (event) => {
     const payload = /** @type {Ev<"task-start">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
-    render("panel", "status", "composer", "tabs", "sidebar");
+    markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
   source.addEventListener("task-end", (event) => {
     const payload = /** @type {Ev<"task-end">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
-    render("panel", "status", "composer", "tabs", "sidebar");
+    markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
   source.addEventListener("task-error", (event) => {
@@ -154,12 +166,46 @@ export function connectEvents() {
     }
     const who = payload.task?.targets?.length ? ` (@${payload.task.targets.join(", @")})` : "";
     setError(`Turn failed${who}: ${payload.error || "unknown error"}`);
-    render("transcript", "panel", "composer", "tabs", "sidebar");
+    markDirty("transcript", "panel", "composer", "tabs", "sidebar");
   });
 
-  source.addEventListener("settings-saved", () => {
-    render("settings", "panel");
+  source.addEventListener("settings-saved", (event) => {
+    const payload = /** @type {Ev<"settings-saved">} */ (JSON.parse(event.data));
+    void refreshSavedFile(payload.fileId);
   });
+}
+
+/**
+ * Missed events are unrecoverable after an SSE drop; a fresh snapshot is the
+ * resync. Only applied if the user hasn't switched workspace in the meantime.
+ * @param {string} workspaceId
+ */
+async function resyncSnapshot(workspaceId) {
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
+    if (state.snapshot?.workspace.id !== workspaceId) return;
+    state.snapshot = body.snapshot;
+    state.voice = body.voice ?? null;
+    pruneStreams();
+    markDirty();
+  } catch {
+    // Server unreachable again — the next successful reconnect retries.
+  }
+}
+
+/**
+ * A save (this tab or another) invalidates the cached content of that file;
+ * refetch before re-rendering so the editor never rebuilds from a stale copy.
+ * @param {string} fileId
+ */
+async function refreshSavedFile(fileId) {
+  try {
+    if (state.workspaceFile?.id === fileId) await loadSelectedWorkspaceFile();
+    if (state.globalFile?.id === fileId) await loadSelectedGlobalFile();
+  } catch {
+    // Keep the cached copy if the refetch fails.
+  }
+  markDirty("settings");
 }
 
 /**
