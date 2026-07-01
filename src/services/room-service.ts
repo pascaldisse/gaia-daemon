@@ -94,6 +94,10 @@ const COMMANDS: Record<string, CommandHandler> = {
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
+  rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
+  // steer never reaches this registry: it must run WHILE a task is active, so
+  // sendMessage handles it before the busy-queue branch.
+  steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
   fork: (service) => service.runForkCommand(),
   unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
 };
@@ -228,6 +232,19 @@ export class RoomService {
     }
 
     const task = this.createTask(text, targets);
+
+    // /steer is the one command that must run WHILE a turn is active — it
+    // injects into the running turn instead of queueing behind it.
+    if (command.type === "steer") {
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      const reply = await this.runSteerCommand(command.text);
+      const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      task.status = "complete";
+      task.endedAt = new Date().toISOString();
+      this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      return task;
+    }
 
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
@@ -505,6 +522,44 @@ export class RoomService {
     const result = await this.options.memory.consolidate(target, { force: true });
     if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
+  }
+
+  /** /steer: inject guidance into the RUNNING turn (capability-gated data —
+   * pi session.steer, codex turn/steer; claude declines). The guidance is
+   * recorded as a user event for history, but the running harness already
+   * received it, and the commit cursor advances past it — so it is never
+   * replayed as fresh context. */
+  async runSteerCommand(text?: string): Promise<string> {
+    const guidance = text?.trim();
+    if (!guidance) return "Usage: /steer <guidance for the running turn>";
+    const task = this.activeTask;
+    const target = task?.targets.find((candidate) => this.runtimes[candidate]);
+    if (!task || !target) return "No agent turn is running — just send a normal message.";
+    const runtime = this.runtimes[target];
+    if (!runtime.capabilities.supportsSteer) return `@${target}'s harness does not support mid-turn steering. Cancel and resend instead.`;
+    const event = await this.room.addUserMessage(guidance, [target]);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const ok = (await runtime.steer?.(this.roomId, guidance)) ?? false;
+    return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
+  }
+
+  /** /rewind: room-level checkpoint rollback. Truncates the transcript after
+   * the n-th-last user message, resets every cursor and harness session, and
+   * lets the next turn replay the kept transcript — the one rewind mechanism
+   * that works identically for every harness (sessions cannot be rewound). */
+  async runRewindCommand(countRaw?: string): Promise<string> {
+    const count = countRaw ? Number.parseInt(countRaw, 10) : 1;
+    if (!Number.isInteger(count) || count < 1) return "Usage: /rewind [n] — undo the last n user turns and their replies.";
+    const dropped = await this.room.rewindTranscript(count);
+    if (!dropped) return `Nothing to rewind: this room has fewer than ${count} user message${count === 1 ? "" : "s"}.`;
+    for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.roomId);
+    await this.room.updateState((state) => {
+      state.agentCursors = {};
+      delete state.runtimeDetails;
+    });
+    this.recentTasks = [];
+    await this.emitSnapshot();
+    return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
   }
 
   async runScheduleCommand(sub: "list" | "run", jobId?: string): Promise<string> {

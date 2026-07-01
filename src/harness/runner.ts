@@ -99,6 +99,11 @@ export async function runAgentRunner(): Promise<void> {
       case "abort":
         void runtime.abort();
         return;
+      case "steer":
+        void (runtime.steer?.(command.roomId, command.message) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((ok) => send({ type: "steer-result", ok }));
+        return;
       case "reset":
         runtime.resetRoom(command.roomId);
         return;

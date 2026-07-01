@@ -9,6 +9,7 @@ import type { AgentInput } from "./spec.js";
 export type RunnerCommand =
   | { type: "turn"; input: AgentInput }
   | { type: "abort" }
+  | { type: "steer"; roomId: string; message: string }
   | { type: "reset"; roomId: string }
   | { type: "dispose" };
 
@@ -18,7 +19,8 @@ export type RunnerMessage =
   | { type: "event"; event: AgentEvent }
   | { type: "model-label"; modelLabel: string }
   | { type: "turn-end" }
-  | { type: "turn-error"; message: string };
+  | { type: "turn-error"; message: string }
+  | { type: "steer-result"; ok: boolean };
 
 /** The mount the in-daemon LLM credential proxy is served under. Part of the
  * daemon↔subprocess wire contract: a redirected harness's base URL is exactly
@@ -52,6 +54,8 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
       return { type: "turn-end" };
     case "turn-error":
       return { type: "turn-error", message: typeof msg.message === "string" ? msg.message : "turn failed" };
+    case "steer-result":
+      return { type: "steer-result", ok: msg.ok === true };
     default:
       return undefined;
   }

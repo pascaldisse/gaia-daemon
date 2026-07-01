@@ -93,6 +93,8 @@ export interface PiSessionLike {
   setThinkingLevel?(level: string): void;
   subscribe(listener: (event: any) => void): () => void;
   prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
+  /** Queue a steering message into the running prompt (pi SDK). */
+  steer?(text: string): Promise<void>;
   abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
@@ -159,6 +161,7 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   supportsPermissionMode: false,
   // Pi core has no MCP client (an adapter package exists but is not wired).
   supportsMcp: false,
+  supportsSteer: true,
 };
 
 export class PiRuntime implements AgentRuntime {
@@ -316,6 +319,14 @@ export class PiRuntime implements AgentRuntime {
 
   async abort(): Promise<void> {
     await Promise.all(this.sessions.rooms().map((roomId) => this.sessions.get(roomId)?.session.abort()));
+  }
+
+  /** Inject guidance into the room's running prompt (backs /steer). */
+  async steer(roomId: string, message: string): Promise<boolean> {
+    const session = this.sessions.get(roomId)?.session;
+    if (!session?.steer) return false;
+    await session.steer(message);
+    return true;
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {

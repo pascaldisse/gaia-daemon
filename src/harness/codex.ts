@@ -279,6 +279,7 @@ const CODEX_CAPABILITIES: HarnessCapabilities = {
   granularTools: false,
   supportsPermissionMode: false,
   supportsMcp: true,
+  supportsSteer: true,
 };
 
 export class CodexRuntime implements AgentRuntime {
@@ -543,6 +544,22 @@ export class CodexRuntime implements AgentRuntime {
       });
     } catch {
       // Best-effort
+    }
+  }
+
+  /** Inject guidance into the room's running turn via turn/steer. */
+  async steer(roomId: string, message: string): Promise<boolean> {
+    const thread = this.threads.get(roomId);
+    if (!this.client || !this.activeTurn || !thread || this.activeTurn.threadId !== thread.threadId) return false;
+    try {
+      await this.client.request("turn/steer", {
+        threadId: this.activeTurn.threadId,
+        expectedTurnId: this.activeTurn.turnId,
+        input: [{ type: "text", text: message, text_elements: [] }],
+      });
+      return true;
+    } catch {
+      return false; // turn just settled — the precondition failed
     }
   }
 

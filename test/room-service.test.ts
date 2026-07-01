@@ -53,6 +53,7 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
 async function makeService(options: {
   script?: () => AgentEvent[];
   agents?: string[];
+  runtimeFactory?: (agent: AgentDef) => AgentRuntime;
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
@@ -79,7 +80,7 @@ async function makeService(options: {
     workspace,
     memoryStore: new MemoryStore(),
     runtimeFactory: (agent) => {
-      const runtime = scriptedRuntime(agent, script);
+      const runtime = options.runtimeFactory ? (options.runtimeFactory(agent) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
       return runtime;
     },
@@ -424,4 +425,120 @@ test("slash commands emit a system room-event and settle synchronously", async (
   assert.ok(system, "system reply emitted");
   const unknown = await service.sendMessage("/nonsense");
   assert.equal(unknown.status, "complete");
+});
+
+test("/steer injects into the RUNNING turn without queueing behind it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const steerCalls: string[] = [];
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: true },
+    async *send() {
+      await gate;
+      yield { type: "text-delta", delta: "answer (steered)" } as AgentEvent;
+    },
+    async steer(_roomId: string, message: string) {
+      steerCalls.push(message);
+      return true;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service, root, events } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("start a long task");
+  const steerTask = await service.sendMessage("/steer focus only on the tests");
+  assert.equal(steerTask.status, "complete", "steer settles while the turn still runs");
+  assert.deepEqual(steerCalls, ["focus only on the tests"]);
+  const reply = events.find((event) => event.type === "room-event" && event.event.author === "system");
+  assert.match((reply as { event: { text: string } }).event.text, /Steering @gaia/);
+
+  // Not queued: the durable queue stays empty.
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
+  assert.equal(state.queue, undefined);
+
+  release();
+  await service.waitForIdle();
+
+  // The guidance is recorded in the transcript as a user event.
+  const { events: transcript } = await service.room.eventsFrom(0);
+  const steerEvent = transcript.find((event) => event.text === "focus only on the tests");
+  assert.ok(steerEvent, "steer text recorded for history");
+  assert.equal(steerEvent?.author, "user");
+});
+
+test("/steer declines gracefully when idle or unsupported", async () => {
+  const { service } = await makeService();
+  const idle = await service.sendMessage("/steer do it differently");
+  assert.equal(idle.status, "complete");
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    // claude-like: no steering.
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: true, supportsMcp: true, supportsSteer: false },
+    async *send() {
+      await gate;
+      yield { type: "text-delta", delta: "done" } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const second = await makeService({ runtimeFactory: factory });
+  await second.service.sendMessage("long task");
+  const declined = await second.service.sendMessage("/steer nope");
+  assert.equal(declined.status, "complete");
+  const reply = second.events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((reply as { event: { text: string } }).event.text, /does not support mid-turn steering/);
+  release();
+  await second.service.waitForIdle();
+});
+
+test("/rewind truncates after the n-th-last user message and resets cursors + sessions", async () => {
+  const resets: string[] = [];
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: false },
+    async *send() {
+      yield { type: "text-delta", delta: `reply from ${agent.id}` } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom(roomId: string) {
+      resets.push(`${agent.id}:${roomId}`);
+    },
+  });
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+  await service.sendMessage("second question");
+  await service.waitForIdle();
+
+  const before = await service.room.eventsFrom(0);
+  assert.equal(before.events.length, 4, "two exchanges committed");
+
+  const task = await service.sendMessage("/rewind");
+  assert.equal(task.status, "complete");
+
+  const after = await service.room.eventsFrom(0);
+  assert.equal(after.events.length, 2, "second exchange dropped");
+  assert.equal(after.events[0].text, "first question");
+  assert.match(after.events[1].text, /reply from gaia/);
+
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { agentCursors: Record<string, number> };
+  assert.deepEqual(state.agentCursors, {}, "cursors reset so the next turn replays kept history");
+  assert.ok(resets.includes("gaia:default"), "harness sessions reset");
+
+  // Rewinding past the beginning answers politely instead of corrupting.
+  await service.sendMessage("/rewind 5");
+  const untouched = await service.room.eventsFrom(0);
+  assert.equal(untouched.events.length, 2);
 });

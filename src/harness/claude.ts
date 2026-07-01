@@ -259,6 +259,8 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   granularTools: true,
   supportsPermissionMode: true,
   supportsMcp: true,
+  // claude -p offers no way to inject input into a running turn.
+  supportsSteer: false,
 };
 
 export class ClaudeRuntime implements AgentRuntime {

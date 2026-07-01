@@ -15,6 +15,8 @@ export type SlashCommand =
   | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "consolidate"; agent?: string }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
+  | { type: "steer"; text?: string }
+  | { type: "rewind"; count?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -30,6 +32,8 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
+  { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
+  { name: "rewind", type: "rewind", description: "undo the last user turn(s) and their replies: /rewind [n]" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -59,6 +63,10 @@ export function parseCommand(input: string): SlashCommand {
       return { type: "consolidate", agent: stripped[0] || undefined };
     case "schedule":
       return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
+    case "steer":
+      return { type: "steer", text: args.join(" ") || undefined };
+    case "rewind":
+      return { type: "rewind", count: stripped[0] };
     case "setup": {
       const sub = args[0]?.toLowerCase();
       if (sub === "activate") return { type: "setup", sub: "activate", id: args[1], room: args[2] };

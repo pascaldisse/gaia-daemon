@@ -113,6 +113,8 @@ export class RunnerHost implements AgentRuntime {
   private readonly breakerKey: string;
   private childReady = false;
   private launchSettled = false;
+  /** Resolver for the single in-flight /steer round trip. */
+  private steerWaiter: ((ok: boolean) => void) | undefined;
 
   constructor(options: RunnerHostOptions) {
     this.options = options;
@@ -141,6 +143,25 @@ export class RunnerHost implements AgentRuntime {
 
   async abort(): Promise<void> {
     this.write({ type: "abort" });
+  }
+
+  /** Forward /steer to the runner; resolves with the harness's answer (false
+   * when no child, no support, or no reply within the timeout). */
+  async steer(roomId: string, message: string): Promise<boolean> {
+    if (!this.child || !this.capabilities.supportsSteer) return false;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.steerWaiter = undefined;
+        resolve(false);
+      }, 5_000);
+      timer.unref?.();
+      this.steerWaiter = (ok) => {
+        clearTimeout(timer);
+        this.steerWaiter = undefined;
+        resolve(ok);
+      };
+      this.write({ type: "steer", roomId, message });
+    });
   }
 
   resetRoom(roomId: string): void {
@@ -290,6 +311,9 @@ export class RunnerHost implements AgentRuntime {
       case "turn-error":
         this.activeChannel?.fail(new Error(message.message));
         this.activeChannel?.close();
+        return;
+      case "steer-result":
+        this.steerWaiter?.(message.ok);
         return;
     }
   }

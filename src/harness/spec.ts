@@ -31,6 +31,10 @@ export interface AgentRuntime {
   readonly capabilities: HarnessCapabilities;
   send(input: AgentInput): AsyncIterable<AgentEvent>;
   abort(): Promise<void>;
+  /** Inject guidance into the room's RUNNING turn (backs /steer). Resolves
+   * false when there is nothing to steer. Only present when
+   * capabilities.supportsSteer. */
+  steer?(roomId: string, message: string): Promise<boolean>;
   dispose(): void;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
@@ -52,6 +56,9 @@ export interface HarnessCapabilities {
   /** Consumes the `mcpServers` config section (claude --mcp-config, codex
    * mcp_servers overrides)? The UI hides the section where unsupported. */
   readonly supportsMcp: boolean;
+  /** Can inject guidance into a RUNNING turn (pi session.steer, codex
+   * turn/steer)? Backs /steer; claude -p has no headless steering. */
+  readonly supportsSteer: boolean;
 }
 
 export interface HarnessUi {

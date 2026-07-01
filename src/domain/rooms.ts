@@ -263,6 +263,29 @@ export class RoomHandle {
     await writeText(this.transcriptPath, "");
   }
 
+  /** Rewind: drop the last `userTurns` user messages and every event after
+   * them (backs /rewind — the room-level checkpoint that works for every
+   * harness). Returns the dropped events, or undefined when the room has
+   * fewer user messages. Cursors/sessions are the caller's to reset; the
+   * per-room recall index rebuilds itself on shrink. */
+  async rewindTranscript(userTurns: number): Promise<RoomEvent[] | undefined> {
+    const { events } = await this.eventsFrom(0);
+    let cut = -1;
+    let seen = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].author !== "user") continue;
+      seen++;
+      if (seen >= userTurns) {
+        cut = i;
+        break;
+      }
+    }
+    if (cut < 0) return undefined;
+    const kept = events.slice(0, cut);
+    await writeText(this.transcriptPath, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""));
+    return events.slice(cut);
+  }
+
   async eventsFrom(cursor: number): Promise<RoomPage> {
     const page = await readJsonlFrom<RoomEvent>(this.transcriptPath, cursor, roomEventFrom);
     // Merge legacy v1 side-table details onto agent events that lack them.
