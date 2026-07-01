@@ -1,0 +1,533 @@
+// The composition root. Owns every cross-room, cross-workspace concern the v1
+// server buried inside HTTP handlers: workspace registry, per-room services
+// (LRU, busy-aware), per-workspace memory stores + summon coordinators, the
+// harness bridge, the voice call session, thinking scoping, settings
+// hot-reload, and the UI event bus. The HTTP server (server/http.ts) is a pure
+// route table over this class.
+
+import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { Bus } from "./core/bus.js";
+import { DEFAULTS } from "./core/config.js";
+import { gaiaHome, globalPaths } from "./core/paths.js";
+import { readJson, writeJsonAtomic } from "./core/store.js";
+import type { AgentDef, Snapshot, UiEvent, VoiceCallInfo, Workspace } from "./core/types.js";
+import { capabilitiesFor, type GaiaTool } from "./harness/spec.js";
+import { reapOrphans } from "./harness/reaper.js";
+import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
+import { MemoryStore } from "./domain/memory.js";
+import { ensureWorkspaceRoom, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { RoomService } from "./services/room-service.js";
+import { SummonCoordinator } from "./services/summons.js";
+import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
+import { resolveUpstreamCredential, type UpstreamCredential } from "./services/proxy.js";
+import { EditableFileRegistry, buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type EditableFileContent, type EditableFileDescriptor, type FileHints, type HintSources, type ModelChoice } from "./services/hints.js";
+import {
+  VoiceStackManager,
+  classifyVoiceTurn,
+  clearCallOverride,
+  ensureVoiceSettingsFile,
+  persistCallOverride,
+  readVoiceSettings,
+  sweepOrphanOverrides,
+  type VoiceSettings,
+} from "./services/voice.js";
+
+// --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
+
+export interface WorkspaceRecord {
+  id: string;
+  path: string;
+  name: string;
+  lastOpenedAt: string;
+  isInitialized: boolean;
+}
+
+function pathId(path: string, length: number): string {
+  return createHash("sha256").update(resolve(path)).digest("hex").slice(0, length);
+}
+
+function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString()): WorkspaceRecord {
+  const resolved = resolve(path);
+  const parts = resolved.split(/[\\/]/).filter(Boolean);
+  return {
+    id: pathId(resolved, 16),
+    path: resolved,
+    name: parts[parts.length - 1] ?? resolved,
+    lastOpenedAt,
+    isInitialized: existsSync(workspacePath(resolved)),
+  };
+}
+
+export class WorkspaceRegistry {
+  constructor(private readonly configPath = `${gaiaHome()}/app.json`) {}
+
+  async list(): Promise<WorkspaceRecord[]> {
+    const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    return (config.recentWorkspaces ?? [])
+      .map((record) => normalizeRecord(record.path, record.lastOpenedAt))
+      .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt));
+  }
+
+  async add(path: string): Promise<WorkspaceRecord> {
+    const record = normalizeRecord(path);
+    const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    const next = [record, ...(config.recentWorkspaces ?? []).filter((item) => item.id !== record.id)].slice(0, 30);
+    await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
+    return record;
+  }
+
+  async find(id: string): Promise<WorkspaceRecord | undefined> {
+    return (await this.list()).find((record) => record.id === id);
+  }
+}
+
+// --- the daemon -----------------------------------------------------------------
+
+/** Soft cap on simultaneously-resident room services. Idle rooms past this are
+ * evicted (transcripts persist on disk); busy ones are always kept. */
+const MAX_LIVE_SERVICES = 32;
+
+function serviceKey(workspaceId: string, roomId: string): string {
+  return `${workspaceId}::${roomId}`;
+}
+
+export interface DaemonOptions {
+  cwd: string;
+  log?: (message: string) => void;
+}
+
+export interface SelectionPayload {
+  snapshot: Snapshot;
+  workspaceFiles: EditableFileDescriptor[];
+  voice: VoiceCallInfo | null;
+}
+
+export class Daemon {
+  readonly registry = new WorkspaceRegistry();
+  readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
+  readonly voiceStack = new VoiceStackManager(globalPaths.voiceLogsDir());
+  private readonly services = new Map<string, RoomService>();
+  private readonly currentRoom = new Map<string, string>();
+  private readonly memoryStores = new Map<string, MemoryStore>();
+  private readonly summonCoordinators = new Map<string, SummonCoordinator>();
+  private readonly bus = new Bus<UiEvent>();
+  private readonly pendingReloads = new Set<string>();
+  private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
+  private bridge: HarnessBridge | undefined;
+  /** One voice call at a time; unmute's chat-completions requests bind to it. */
+  activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
+  voiceStarting = false;
+
+  constructor(private readonly options: DaemonOptions) {}
+
+  get cwd(): string {
+    return this.options.cwd;
+  }
+
+  private log(message: string): void {
+    (this.options.log ?? console.log)(`[gaia] ${message}`);
+  }
+
+  /** Boot-time sweeps. Called once the server knows its base URL. */
+  async boot(baseUrl: string): Promise<void> {
+    this.bridge = new HarnessBridge(baseUrl);
+    reapOrphans({ log: (message) => this.log(message) });
+    await ensureVoiceSettingsFile();
+    // A crash mid-call must never leave a "temporary" thinking override applied
+    // forever: restore any persisted override from a dead call.
+    await sweepOrphanOverrides(async (agentId, level) => {
+      for (const record of await this.registry.list()) {
+        try {
+          const service = await this.serviceFor(record.id);
+          if (service.workspace.agents[agentId]) {
+            await service.setAgentThinking(agentId, level);
+            return;
+          }
+        } catch {
+          // Workspace unloadable — try the next one.
+        }
+      }
+    }).catch(() => {});
+    const cwd = resolve(this.options.cwd);
+    if (existsSync(workspacePath(cwd))) await this.registry.add(cwd);
+  }
+
+  subscribe(listener: (event: UiEvent) => void): () => void {
+    return this.bus.on(listener);
+  }
+
+  broadcast(event: UiEvent): void {
+    this.bus.emit(event);
+  }
+
+  dispose(): void {
+    this.voiceStack.stop();
+    for (const service of this.services.values()) service.dispose();
+    this.services.clear();
+  }
+
+  // --- room services ------------------------------------------------------------
+
+  /** Get-or-create the long-lived service for a (workspace, room). Omitted room
+   * = the workspace's current room. LRU-bumped; creating past the soft cap
+   * evicts the least-recently-used idle room. */
+  async serviceFor(workspaceId: string, roomId?: string): Promise<RoomService> {
+    const resolvedRoom = roomId ?? (await this.resolveCurrentRoom(workspaceId));
+    const key = serviceKey(workspaceId, resolvedRoom);
+
+    const existing = this.services.get(key);
+    if (existing) {
+      this.services.delete(key);
+      this.services.set(key, existing);
+      return existing;
+    }
+
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    await ensureWorkspaceRoom(record.path, resolvedRoom);
+    const workspace = await loadWorkspace(record.path);
+    const service = await RoomService.open({
+      workspaceId,
+      workspace,
+      roomId: resolvedRoom,
+      memoryStore: this.memoryStoreFor(workspaceId),
+      summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
+      setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
+      harnessHost: this.bridge ? (opts) => this.bridge!.hostFor(workspaceId, opts) : undefined,
+    });
+    service.subscribe((event) => this.broadcast(event));
+    await service.init();
+    this.services.set(key, service);
+    this.evictIdleServices();
+    return service;
+  }
+
+  private async resolveCurrentRoom(workspaceId: string): Promise<string> {
+    const cached = this.currentRoom.get(workspaceId);
+    if (cached) return cached;
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    const workspace = await loadWorkspace(record.path);
+    this.currentRoom.set(workspaceId, workspace.config.room);
+    return workspace.config.room;
+  }
+
+  private evictIdleServices(): void {
+    for (const [key, service] of this.services) {
+      if (this.services.size <= MAX_LIVE_SERVICES) break;
+      if (service.isBusy) continue;
+      service.dispose();
+      this.services.delete(key);
+      this.log(`evicted idle room service ${key} (soft cap ${MAX_LIVE_SERVICES})`);
+    }
+  }
+
+  private memoryStoreFor(workspaceId: string): MemoryStore {
+    let store = this.memoryStores.get(workspaceId);
+    if (!store) {
+      store = new MemoryStore();
+      this.memoryStores.set(workspaceId, store);
+    }
+    return store;
+  }
+
+  private summonCoordinatorFor(workspaceId: string, workspace: Workspace, path: string): SummonCoordinator {
+    let coordinator = this.summonCoordinators.get(workspaceId);
+    if (!coordinator) {
+      coordinator = new SummonCoordinator(workspace, path, (roomId) => this.serviceFor(workspaceId, roomId), workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom);
+      this.summonCoordinators.set(workspaceId, coordinator);
+    }
+    return coordinator;
+  }
+
+  async coordinatorFor(workspaceId: string): Promise<SummonCoordinator> {
+    const existing = this.summonCoordinators.get(workspaceId);
+    if (existing) return existing;
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    const workspace = await loadWorkspace(record.path);
+    return this.summonCoordinatorFor(workspaceId, workspace, record.path);
+  }
+
+  // --- workspace/room operations ---------------------------------------------------
+
+  async addWorkspace(path: string): Promise<WorkspaceRecord> {
+    let record = await this.registry.add(path);
+    if (!record.isInitialized) {
+      // Adding through the UI is an explicit "make this a GAIA workspace".
+      await initWorkspace(record.path);
+      record = await this.registry.add(record.path);
+    }
+    await this.serviceFor(record.id);
+    return record;
+  }
+
+  async selectRoom(workspaceId: string, roomId: string): Promise<SelectionPayload> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    // Each room keeps its own long-lived service, so switching is always safe;
+    // only a live voice call (bound to one room) blocks it.
+    if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId !== roomId) {
+      throw new Error("Stop the active voice call before switching rooms.");
+    }
+
+    await ensureWorkspaceRoom(record.path, roomId);
+    await setWorkspaceRoom(record.path, roomId);
+    this.currentRoom.set(workspaceId, roomId);
+
+    const service = await this.serviceFor(workspaceId, roomId);
+    const snapshot = await service.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  async setAgentRole(workspaceId: string, roomId: string, agentId: string, role: string): Promise<SelectionPayload & { message: string }> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    const message = await service.setRole(agentId, role);
+    const snapshot = await service.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId), message };
+  }
+
+  async setDefaultAgent(workspaceId: string, agentId: string): Promise<SelectionPayload> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    const service = await this.serviceFor(workspaceId);
+    if (!service.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
+    await setWorkspaceDefaultAgent(record.path, agentId);
+
+    // The default is workspace-wide: rebuild every resident room service.
+    await Promise.all(this.workspaceServiceKeys(workspaceId).map((key) => this.reloadService(key)));
+    const rebuilt = await this.serviceFor(workspaceId);
+    const snapshot = await rebuilt.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  // --- settings hot-reload ----------------------------------------------------------
+
+  /** Settings files feed workspace/agent definitions cached at service
+   * creation. Rebuild affected services so saves apply without a restart. */
+  async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
+    this.hintSourcesCache = undefined;
+    const keys = scope === "global" ? [...this.services.keys()] : workspaceId ? this.workspaceServiceKeys(workspaceId) : [];
+    await Promise.all(keys.map((key) => this.reloadService(key)));
+  }
+
+  private workspaceServiceKeys(workspaceId: string): string[] {
+    const prefix = serviceKey(workspaceId, "");
+    return [...this.services.keys()].filter((key) => key.startsWith(prefix));
+  }
+
+  private async reloadService(key: string): Promise<void> {
+    const service = this.services.get(key);
+    if (!service) return;
+
+    if (service.hasActiveTask) {
+      // Deferred while a turn runs; re-attempted when it settles.
+      if (this.pendingReloads.has(key)) return;
+      this.pendingReloads.add(key);
+      void service
+        .waitForIdle()
+        .then(() => {
+          this.pendingReloads.delete(key);
+          return this.reloadService(key);
+        })
+        .catch(() => this.pendingReloads.delete(key));
+      return;
+    }
+
+    const { workspaceId, roomId } = service;
+    service.dispose();
+    this.services.delete(key);
+    const fresh = await this.serviceFor(workspaceId, roomId);
+    this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
+  }
+
+  // --- harness bridge (memory writes + summon for subprocesses) ----------------------
+
+  verifyHarnessToken(token: string | undefined): HarnessTokenClaims | null {
+    return this.bridge?.verify(token) ?? null;
+  }
+
+  /** The gaia tools an agent's EFFECTIVE harness declares — read uniformly from
+   * the registry, never branched on the harness id. Gates /api/harness/*. */
+  harnessGaiaTools(workspace: Workspace, agentId: string): readonly GaiaTool[] {
+    const harness = workspace.agents[agentId]?.harness ?? workspace.config.harness ?? DEFAULTS.harness;
+    return capabilitiesFor(harness).gaiaTools;
+  }
+
+  async harnessMemoryWrite(
+    claims: HarnessTokenClaims,
+    file: string,
+    action: MemoryAction,
+    options: { content?: string; oldText?: string },
+  ): Promise<MemoryMutationResult> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.mutateAgentMemory(claims.agentId, file, action, options);
+  }
+
+  async resolveProxyUpstream(claims: HarnessTokenClaims): Promise<UpstreamCredential | undefined> {
+    let agent: AgentDef | undefined;
+    try {
+      const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+      agent = service.workspace.agents[claims.agentId];
+    } catch {
+      agent = undefined;
+    }
+    return agent ? resolveUpstreamCredential(agent) : undefined;
+  }
+
+  // --- thinking (call-scoped vs persistent) --------------------------------------------
+
+  async applyThinking(workspaceId: string, agentId: string, level: string): Promise<{ scope: "call" | "agent"; message: string }> {
+    const levels = sdkThinkingLevels();
+    if (level !== "" && !levels.includes(level)) {
+      throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
+    }
+    const service = await this.serviceFor(workspaceId);
+
+    const call = this.activeCall;
+    if (call && call.workspaceId === workspaceId && call.info.agentId === agentId) {
+      if (level === "") delete call.info.thinking;
+      else call.info.thinking = level;
+      this.broadcast({ type: "voice-status", workspaceId, roomId: call.info.roomId, voice: call.info });
+      return { scope: "call", message: `Set @${agentId} thinking to ${level || "agent default"} for this call. It reverts on hang-up.` };
+    }
+
+    return { scope: "agent", message: await service.setAgentThinking(agentId, level) };
+  }
+
+  // --- voice call session -----------------------------------------------------------
+
+  voiceFor(workspaceId: string | undefined): VoiceCallInfo | null {
+    if (!workspaceId || !this.activeCall || this.activeCall.workspaceId !== workspaceId) return null;
+    return this.activeCall.info;
+  }
+
+  async startVoiceCall(workspaceId: string, agentId: string, gaiaUrl: string): Promise<VoiceCallInfo> {
+    const service = await this.serviceFor(workspaceId);
+    const agent = service.workspace.agents[agentId];
+    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
+    if (this.activeCall) throw new Error(`Voice call already active with @${this.activeCall.info.agentId}`);
+    if (this.voiceStarting) throw new Error("A voice call is already starting");
+
+    const settings = await readVoiceSettings();
+    this.voiceStarting = true;
+    let unmuteUrl: string;
+    try {
+      ({ unmuteUrl } = await this.voiceStack.ensureRunning(
+        {
+          unmuteUrl: settings.unmuteUrl,
+          unmuteDir: settings.unmuteDir,
+          autoStart: settings.autoStart,
+          startTimeoutMs: settings.startTimeoutSec * 1000,
+          silenceTimeoutSec: settings.speakOnSilence ? settings.silenceDelaySec : null,
+        },
+        gaiaUrl,
+        (message) => {
+          this.broadcast({ type: "voice-status", workspaceId, roomId: service.roomId, voice: null, pending: { agentId: agent.id, message } });
+        },
+      ));
+    } finally {
+      this.voiceStarting = false;
+    }
+
+    const info: VoiceCallInfo = {
+      agentId: agent.id,
+      roomId: service.roomId,
+      unmuteUrl,
+      ...(agent.voice ? { voice: agent.voice } : {}),
+      // Voice latency: thinking defaults off during the call; the agent's own
+      // level returns on hang-up (durably — survives a crash mid-call).
+      ...(settings.disableThinking ? { thinking: "off" } : {}),
+      startedAt: new Date().toISOString(),
+    };
+    if (settings.disableThinking) {
+      await persistCallOverride({ agentId: agent.id, previousThinking: agent.thinking ?? "" }).catch(() => {});
+    }
+    this.activeCall = { workspaceId, info, settings };
+    this.broadcast({ type: "voice-status", workspaceId, roomId: service.roomId, voice: info });
+    return info;
+  }
+
+  async stopVoiceCall(workspaceId: string): Promise<void> {
+    if (this.activeCall && this.activeCall.workspaceId === workspaceId) {
+      const ended = this.activeCall;
+      this.activeCall = undefined;
+      await clearCallOverride().catch(() => {});
+      this.broadcast({ type: "voice-status", workspaceId, roomId: ended.info.roomId, voice: null });
+    }
+    // Stops exactly the services GAIA spawned; external ones are left alone.
+    this.voiceStack.stop();
+  }
+
+  /** One voice turn from the unmute backend (OpenAI-compat chat completions).
+   * Returns the routing decision; the HTTP layer owns the response transport. */
+  classifyTurn(body: unknown): ReturnType<typeof classifyVoiceTurn> {
+    return classifyVoiceTurn(body);
+  }
+
+  // --- files + hints -------------------------------------------------------------------
+
+  async fileHints(file: EditableFileContent, workspaceId?: string): Promise<FileHints | undefined> {
+    if (file.kind !== "json") return undefined;
+
+    let agentIds: string[] = [];
+    let roomIds: string[] = [];
+    if (workspaceId) {
+      try {
+        const service = await this.serviceFor(workspaceId);
+        agentIds = Object.keys(service.workspace.agents);
+        roomIds = (await service.listRooms()).map((room) => room.id);
+      } catch {
+        // Hints degrade gracefully when the workspace cannot be loaded.
+      }
+    }
+
+    this.hintSourcesCache ??= { toolNames: sdkToolNames(this.options.cwd), models: readModelCatalog().models };
+    const sources: HintSources = {
+      agentIds,
+      roomIds,
+      toolNames: this.hintSourcesCache.toolNames,
+      thinkingLevels: sdkThinkingLevels(),
+      models: this.hintSourcesCache.models,
+    };
+    return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
+  }
+
+  async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {
+    const key = this.workspaceServiceKeys(workspaceId)[0];
+    const service = key ? this.services.get(key) : undefined;
+    if (service) return service.workspace;
+    const record = await this.registry.find(workspaceId);
+    if (!record?.isInitialized) return undefined;
+    return loadWorkspace(record.path);
+  }
+
+  // --- app payload -----------------------------------------------------------------------
+
+  async appPayload(currentWorkspaceId?: string): Promise<{
+    workspaces: WorkspaceRecord[];
+    currentWorkspaceId: string | undefined;
+    globalFiles: EditableFileDescriptor[];
+    snapshot: Snapshot | undefined;
+    workspaceFiles: EditableFileDescriptor[];
+    voice: VoiceCallInfo | null;
+  }> {
+    const workspaces = await this.registry.list();
+    const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
+    return {
+      workspaces,
+      currentWorkspaceId: current,
+      globalFiles: await this.files.listGlobal(),
+      snapshot: current ? await (await this.serviceFor(current)).getSnapshot() : undefined,
+      workspaceFiles: current ? await this.files.listWorkspace(current) : [],
+      voice: this.voiceFor(current),
+    };
+  }
+}
