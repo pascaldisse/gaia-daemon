@@ -16,7 +16,7 @@ import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@mariozechner/pi-coding-agent";
 import { CLAUDE_PERMISSION_MODES, type ThinkingLevel, type Workspace } from "../core/types.js";
-import { gaiaHome } from "../core/paths.js";
+import { gaiaHome, workspacePaths } from "../core/paths.js";
 import { ensureDir } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
@@ -257,6 +257,17 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
   };
 }
 
+function schedulesJsonHints(sources: HintSources): FileHints {
+  return {
+    enabled: { input: "boolean" },
+    "jobs.[].agent": select(values(sources.agentIds), { optional: true }),
+    "jobs.[].room": select(values(sources.roomIds), { optional: true }),
+    "jobs.[].enabled": { input: "boolean", optional: true },
+    "jobs.[].isolated": { input: "boolean", optional: true },
+    "jobs.[].chainOutput": { input: "boolean", optional: true },
+  };
+}
+
 function voiceJsonHints(): FileHints {
   return {
     autoStart: { input: "boolean" },
@@ -281,6 +292,7 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
   if (basename === "config.json") return configJsonHints(sources);
   if (basename === "agent.json") return agentJsonHints(sources, parsed);
   if (basename === "voice.json") return voiceJsonHints();
+  if (basename === "schedules.json") return schedulesJsonHints(sources);
   return undefined;
 }
 
@@ -392,7 +404,7 @@ export class EditableFileRegistry {
     const workspace = await this.workspaceById(workspaceId);
     if (!workspace) return [];
 
-    const files = [join(workspace.rootDir, "AGENTS.md"), workspace.configPath];
+    const files = [join(workspace.rootDir, "AGENTS.md"), workspace.configPath, workspacePaths.schedules(workspace.rootDir)];
     files.push(...(await walkEditable(workspace.agentsOverrideDir)));
     files.push(...(await walkEditable(join(workspace.dir, "skills"))));
 

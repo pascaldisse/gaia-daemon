@@ -20,6 +20,7 @@ import { MemoryStore } from "./domain/memory.js";
 import { ensureWorkspaceRoom, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { RoomService } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
+import { SchedulerService } from "./services/scheduler.js";
 import type { ConsolidateLlm } from "./services/consolidate.js";
 import { formatMemoryHits, type MemorySearchHit, type RoomSearchRef } from "./domain/memory-index.js";
 import { SummonCoordinator } from "./services/summons.js";
@@ -120,6 +121,7 @@ export class Daemon {
   private readonly pendingReloads = new Set<string>();
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
   private bridge: HarnessBridge | undefined;
+  private scheduler: SchedulerService | undefined;
   /** One voice call at a time; unmute's chat-completions requests bind to it. */
   activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   voiceStarting = false;
@@ -137,6 +139,15 @@ export class Daemon {
   /** Boot-time sweeps. Called once the server knows its base URL. */
   async boot(baseUrl: string): Promise<void> {
     this.bridge = new HarnessBridge(baseUrl);
+    // Proactive runs: one tick across every initialized workspace. The first
+    // tick also recovers runs a prior process left marked "running".
+    this.scheduler = new SchedulerService({
+      listWorkspaces: async () => (await this.registry.list()).filter((record) => record.isInitialized).map(({ id, path }) => ({ id, path })),
+      serviceFor: (workspaceId, roomId) => this.serviceFor(workspaceId, roomId),
+      summonHost: (workspaceId) => this.coordinatorFor(workspaceId),
+      log: (message) => this.log(message),
+    });
+    this.scheduler.start();
     reapOrphans({ log: (message) => this.log(message) });
     await ensureVoiceSettingsFile();
     // A crash mid-call must never leave a "temporary" thinking override applied
@@ -167,6 +178,7 @@ export class Daemon {
   }
 
   dispose(): void {
+    this.scheduler?.dispose();
     this.voiceStack.stop();
     for (const service of this.services.values()) service.dispose();
     this.services.clear();
@@ -203,6 +215,12 @@ export class Daemon {
       summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.bridge ? (opts) => this.bridge!.hostFor(workspaceId, opts) : undefined,
+      // Closures resolve this.scheduler per call: services built before boot()
+      // (or after dispose) answer gracefully instead of binding a stale ref.
+      scheduler: {
+        list: () => this.scheduler?.describeWorkspace(workspaceId, record.path) ?? Promise.resolve("The scheduler is not running."),
+        runNow: (jobId) => this.scheduler?.runNow(workspaceId, record.path, jobId) ?? Promise.resolve("The scheduler is not running."),
+      },
     });
     service.subscribe((event) => this.broadcast(event));
     await service.init();

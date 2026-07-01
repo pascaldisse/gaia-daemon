@@ -14,6 +14,7 @@ export type SlashCommand =
   | { type: "fork" }
   | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "consolidate"; agent?: string }
+  | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -28,6 +29,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
+  { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -55,6 +57,8 @@ export function parseCommand(input: string): SlashCommand {
       return stripped.length >= 2 ? { type: "thinking", agent: stripped[0], level: stripped[1] } : { type: "thinking", level: stripped[0] };
     case "consolidate":
       return { type: "consolidate", agent: stripped[0] || undefined };
+    case "schedule":
+      return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
     case "setup": {
       const sub = args[0]?.toLowerCase();
       if (sub === "activate") return { type: "setup", sub: "activate", id: args[1], room: args[2] };

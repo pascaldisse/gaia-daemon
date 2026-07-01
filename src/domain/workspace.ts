@@ -45,6 +45,12 @@ export async function ensureWorkspaceRoom(cwd: string, roomId: string): Promise<
   await writeIfMissing(workspacePaths.roomState(cwd, roomId), jsonText(normalizeRoomState(undefined)));
 }
 
+/** Scaffold schedules.json so proactive runs are one settings edit away —
+ * written on load too, so pre-scheduler workspaces gain the file. */
+async function ensureScheduleFile(cwd: string): Promise<void> {
+  await writeIfMissing(workspacePaths.schedules(cwd), jsonText({ enabled: true, jobs: [] }));
+}
+
 async function updateConfigField(cwd: string, mutate: (config: Record<string, unknown>) => void): Promise<void> {
   const configPath = workspacePaths.config(cwd);
   const raw = await readJson(configPath);
@@ -89,6 +95,7 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
     `# Project Instructions\n\nThis file is project-local context for GAIA agents.\n\nAdd repo conventions, commands, constraints, and preferences here.\nCanonical agent identity lives in global personas under ~/.gaia/agents/.\n`,
   );
   await ensureWorkspaceRoom(cwd, DEFAULT_ROOM);
+  await ensureScheduleFile(cwd);
 
   return { workspaceDir, globalAgentsDir: agentsDir };
 }
@@ -130,6 +137,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
 
   if (!agents[config.defaultAgent]) throw new Error(`Default agent not found: ${config.defaultAgent}`);
   await ensureWorkspaceRoom(cwd, config.room);
+  await ensureScheduleFile(cwd);
 
   return {
     rootDir: cwd,

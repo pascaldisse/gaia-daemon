@@ -50,6 +50,14 @@ export interface RoomServiceOptions {
   /** Memory v3 hooks (auto-recall, episodic capture, consolidation). Absent →
    * turns run exactly as before; the hooks are additive. */
   memory?: RoomMemoryHooks;
+  /** Workspace-scoped scheduler surface backing /schedule. */
+  scheduler?: RoomSchedulerHooks;
+}
+
+/** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
+export interface RoomSchedulerHooks {
+  list(): Promise<string>;
+  runNow(jobId: string): Promise<string>;
 }
 
 /** The narrow slice of MemoryService a room needs (kept as an interface so
@@ -85,6 +93,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
+  schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   fork: (service) => service.runForkCommand(),
   unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
 };
@@ -496,6 +505,26 @@ export class RoomService {
     const result = await this.options.memory.consolidate(target, { force: true });
     if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
+  }
+
+  async runScheduleCommand(sub: "list" | "run", jobId?: string): Promise<string> {
+    const hooks = this.options.scheduler;
+    if (!hooks) return "The scheduler is not available in this workspace.";
+    if (sub === "run") {
+      if (!jobId) return "Usage: /schedule run <id>";
+      return hooks.runNow(jobId);
+    }
+    return hooks.list();
+  }
+
+  /** Append an agent-authored event WITHOUT running a turn — how the scheduler
+   * delivers an isolated run's result into its target room. */
+  async postAgentNote(agentId: string, text: string): Promise<void> {
+    await this.init();
+    if (!this.workspace.agents[agentId]) throw new Error(this.unknownAgentMessage(agentId));
+    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: agentId, text };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
   }
 
   /** Resume a turn a prior process left in-flight. Three cases:

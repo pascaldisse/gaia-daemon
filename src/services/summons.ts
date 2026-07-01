@@ -73,16 +73,19 @@ export class SummonCoordinator implements SummonHost {
   }
 
   async summon(parentRoomId: string, agentId: string, task: string): Promise<string> {
-    const { childRoomId } = await this.start(parentRoomId, agentId, task);
-    return childRoomId;
+    const { roomId } = await this.launch(parentRoomId, agentId, task);
+    return roomId;
   }
 
   async summonAndWait(parentRoomId: string, agentId: string, task: string): Promise<string> {
-    const { done } = await this.start(parentRoomId, agentId, task);
+    const { done } = await this.launch(parentRoomId, agentId, task);
     return done;
   }
 
-  private async start(parentRoomId: string, agentId: string, task: string): Promise<{ childRoomId: string; done: Promise<string> }> {
+  /** Kick off a summon exposing BOTH the child room id and the settled-result
+   * promise — callers that must persist the room id before awaiting (the
+   * scheduler's crash-recovery mark) use this. */
+  async launch(parentRoomId: string, agentId: string, task: string): Promise<{ roomId: string; done: Promise<string> }> {
     if (!this.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
     if (this.runningChildren(parentRoomId).length >= this.maxPerRoom) {
       throw new Error(`Too many running summons in room ${parentRoomId}; wait for one to finish or cancel it first.`);
@@ -105,7 +108,7 @@ export class SummonCoordinator implements SummonHost {
     const done = this.runFirstTurn(child, agentId, task).finally(() => this.running.delete(childRoomId));
     // Don't crash on fire-and-forget summons whose result no one awaits.
     done.catch(() => {});
-    return { childRoomId, done };
+    return { roomId: childRoomId, done };
   }
 
   private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string): Promise<string> {
