@@ -36,6 +36,11 @@ const SECRET_PATTERNS = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
 ];
 
+/** The same filter guards every memory write surface (files and facts log). */
+export function looksLikeSecret(content: string): boolean {
+  return SECRET_PATTERNS.some((pattern) => pattern.test(content));
+}
+
 export interface MemoryState {
   file: string;
   path: string;
@@ -126,7 +131,7 @@ export class MemoryStore {
     if ((action === "replace" || action === "remove") && !oldText) {
       return { ok: false, message: "old_text is required", state };
     }
-    if (content && SECRET_PATTERNS.some((pattern) => pattern.test(content))) {
+    if (content && looksLikeSecret(content)) {
       return { ok: false, message: "memory rejected: content looks like a secret (key/token/credential material)", state };
     }
     if (action !== "add" && !existsSync(state.path)) {

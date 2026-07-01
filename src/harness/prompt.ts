@@ -28,6 +28,8 @@ export interface TurnPromptInput {
   // Persistent memory content, included only when it changed since the last
   // turn so memory writes do not force a session reload mid-conversation.
   memory?: string;
+  /** Auto-retrieved memories for THIS turn; already fenced by the service. */
+  recall?: string;
   channel?: "text" | "voice";
 }
 
@@ -149,6 +151,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     `Current agent: @${input.agentId}`,
     input.channel === "voice" ? VOICE_MODE_INSTRUCTIONS : "",
     input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
+    input.recall?.trim() ?? "",
     "New room events since your last turn:",
     renderRoomTranscript(input.events),
     "Newest user message:",

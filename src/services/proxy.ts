@@ -126,6 +126,11 @@ function authHeadersFor(provider: string, key: string): Record<string, string> {
   return { authorization: `Bearer ${key}` };
 }
 
+/** The real key for a provider from the Pi auth store (auth.json/OAuth/env). Daemon-side only. */
+export async function lookupProviderKey(providerId: string, store: NonNullable<UpstreamResolverDeps["authStorage"]> = AuthStorage.create()): Promise<string | undefined> {
+  return store.getApiKey(providerId);
+}
+
 export async function resolveUpstreamCredential(agent: AgentDef, deps: UpstreamResolverDeps = {}): Promise<UpstreamCredential | undefined> {
   const provider = agent.model?.provider;
   const name = agent.model?.name;
@@ -136,7 +141,7 @@ export async function resolveUpstreamCredential(agent: AgentDef, deps: UpstreamR
   const model = registry.find(provider, name);
   if (!model?.baseUrl) return undefined; // unknown model → can't pick an upstream
 
-  const key = await authStorage.getApiKey(provider);
+  const key = await lookupProviderKey(provider, authStorage);
   if (!key) return undefined; // OAuth/subscription/unconfigured → refuse rather than leak
 
   return { baseUrl: model.baseUrl, authHeaders: authHeadersFor(provider, key) };

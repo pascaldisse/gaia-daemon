@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
+import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
@@ -72,6 +72,9 @@ function defaultConfigJson(): WorkspaceConfig {
     room: DEFAULTS.room,
     transcriptWindow: DEFAULTS.transcriptWindow,
     maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
+    // Written out (not just implied) so the memory section is visible and
+    // editable in the settings UI from day one.
+    memory: MEMORY_DEFAULTS,
   };
 }
 

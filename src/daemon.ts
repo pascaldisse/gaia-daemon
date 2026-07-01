@@ -5,9 +5,9 @@
 // hot-reload, and the UI event bus. The HTTP server (server/http.ts) is a pure
 // route table over this class.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { gaiaHome, globalPaths } from "./core/paths.js";
@@ -19,6 +19,9 @@ import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { ensureWorkspaceRoom, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { RoomService } from "./services/room-service.js";
+import { MemoryService } from "./services/memory-service.js";
+import type { ConsolidateLlm } from "./services/consolidate.js";
+import { formatMemoryHits, type MemorySearchHit, type RoomSearchRef } from "./domain/memory-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
 import { resolveUpstreamCredential, type UpstreamCredential } from "./services/proxy.js";
@@ -111,6 +114,7 @@ export class Daemon {
   private readonly services = new Map<string, RoomService>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
+  private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
   private readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly bus = new Bus<UiEvent>();
   private readonly pendingReloads = new Set<string>();
@@ -166,6 +170,8 @@ export class Daemon {
     this.voiceStack.stop();
     for (const service of this.services.values()) service.dispose();
     this.services.clear();
+    for (const { service: memory } of this.memoryServices.values()) memory.dispose();
+    this.memoryServices.clear();
   }
 
   // --- room services ------------------------------------------------------------
@@ -193,6 +199,7 @@ export class Daemon {
       workspace,
       roomId: resolvedRoom,
       memoryStore: this.memoryStoreFor(workspaceId),
+      memory: this.memoryServiceFor(workspaceId, workspace, record.path),
       summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.bridge ? (opts) => this.bridge!.hostFor(workspaceId, opts) : undefined,
@@ -231,6 +238,52 @@ export class Daemon {
       this.memoryStores.set(workspaceId, store);
     }
     return store;
+  }
+
+  /** One MemoryService per workspace. Holds live workspace accessors so a
+   * settings reload changes behavior without a rebuild; the consolidation LLM
+   * runs daemon-side through the same credential store as the proxy. */
+  private memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService {
+    const existing = this.memoryServices.get(workspaceId);
+    if (existing) {
+      // Workspace objects are rebuilt on settings reload; the accessors close
+      // over `live`, so refreshing it here keeps the memory service current.
+      existing.live.workspace = workspace;
+      return existing.service;
+    }
+    const live = { workspace };
+    const service = new MemoryService({
+      workspaceMemory: () => live.workspace.config.memory,
+      agents: () => live.workspace.agents,
+      memoryStore: this.memoryStoreFor(workspaceId),
+      roomsFor: () => this.recentRoomRefs(path),
+      llm: consolidateLlm(),
+      log: (message) => this.log(message),
+    });
+    this.memoryServices.set(workspaceId, { service, live });
+    return service;
+  }
+
+  /** The most-recently-active room transcripts, for cross-room recall. */
+  private recentRoomRefs(workspaceRoot: string, cap = 12): RoomSearchRef[] {
+    const roomsDir = join(workspaceRoot, ".gaia", "rooms");
+    if (!existsSync(roomsDir)) return [];
+    const refs: Array<RoomSearchRef & { mtime: number }> = [];
+    for (const entry of readdirSync(roomsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const roomDir = join(roomsDir, entry.name);
+      const transcriptPath = join(roomDir, "transcript.jsonl");
+      if (!existsSync(transcriptPath)) continue;
+      try {
+        refs.push({ roomId: entry.name, transcriptPath, dbPath: join(roomDir, "recall.db"), mtime: statSync(transcriptPath).mtimeMs });
+      } catch {
+        // Room being deleted mid-scan; skip it.
+      }
+    }
+    return refs
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, cap)
+      .map(({ mtime: _mtime, ...ref }) => ref);
   }
 
   private summonCoordinatorFor(workspaceId: string, workspace: Workspace, path: string): SummonCoordinator {
@@ -369,6 +422,17 @@ export class Daemon {
   ): Promise<MemoryMutationResult> {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
     return service.mutateAgentMemory(claims.agentId, file, action, options);
+  }
+
+  /** Hybrid recall for a harness turn (capability-gated by the caller). Runs
+   * entirely daemon-side: index, embeddings key, and cross-room refs stay here. */
+  async harnessRecall(claims: HarnessTokenClaims, query: string, limit?: number): Promise<{ result: string; hits: MemorySearchHit[] }> {
+    const record = await this.registry.find(claims.workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
+    const workspace = (await this.serviceFor(claims.workspaceId, claims.roomId)).workspace;
+    const memory = this.memoryServiceFor(claims.workspaceId, workspace, record.path);
+    const hits = await memory.search(claims.agentId, query, { limit: limit && limit > 0 ? Math.min(limit, 25) : undefined });
+    return { result: hits.length ? formatMemoryHits(hits) : "no matches in memory or room history", hits };
   }
 
   async resolveProxyUpstream(claims: HarnessTokenClaims): Promise<UpstreamCredential | undefined> {
@@ -530,4 +594,36 @@ export class Daemon {
       voice: this.voiceFor(current),
     };
   }
+}
+
+// --- consolidation LLM (daemon-side, same credential store as the proxy) ---------
+
+/** Builds the completion function consolidation uses. Resolved lazily per call
+ * so key/model changes apply without a daemon restart; no key → the call
+ * throws and consolidation skips with the error as its reason. */
+function consolidateLlm(): ConsolidateLlm {
+  return async ({ system, user, model }) => {
+    const provider = model?.provider ?? DEFAULTS.model.provider;
+    const name = model?.name ?? DEFAULTS.model.name;
+    const [{ completeSimple }, { AuthStorage, ModelRegistry }] = await Promise.all([
+      import("@mariozechner/pi-ai"),
+      import("@mariozechner/pi-coding-agent"),
+    ]);
+    const authStorage = AuthStorage.create();
+    const resolved = ModelRegistry.create(authStorage).find(provider, name);
+    if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
+    const apiKey = await authStorage.getApiKey(provider);
+    const message = await completeSimple(
+      resolved,
+      { systemPrompt: system, messages: [{ role: "user", content: user, timestamp: Date.now() }] },
+      { ...(apiKey ? { apiKey } : {}), maxTokens: 4_000 },
+    );
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      throw new Error(message.errorMessage ?? "consolidation model call failed");
+    }
+    return message.content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  };
 }

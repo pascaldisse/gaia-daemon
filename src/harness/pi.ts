@@ -27,6 +27,7 @@ import {
   type HarnessCapabilities,
   registerHarness,
   type RuntimeCreateContext,
+  type RecallSearch,
   type SummonCreate,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
@@ -165,6 +166,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly memoryStore: MemoryStore;
   private readonly sessionFactory?: PiRuntimeSessionFactory;
   private readonly summonCreate?: SummonCreate;
+  private readonly recallSearch?: RecallSearch;
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
   private readonly sessions = new SessionMap<PiSessionMeta>((meta) => meta.session.dispose());
@@ -178,6 +180,7 @@ export class PiRuntime implements AgentRuntime {
     this.memoryStore = options.memoryStore;
     this.sessionFactory = options.sessionFactory;
     this.summonCreate = options.summonCreate;
+    this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.applyCredentialProxy();
     this.configuredModelLabel = this.resolveModelLabel();
@@ -272,6 +275,7 @@ export class PiRuntime implements AgentRuntime {
       message: input.message,
       events: input.transcript,
       memory: memoryChanged ? memory : undefined,
+      recall: input.recall,
       channel: input.channel,
     });
     session
@@ -357,6 +361,7 @@ export class PiRuntime implements AgentRuntime {
       roomId,
       roomDir,
       summonCreate: this.summonCreate,
+      recallSearch: this.recallSearch,
     });
     const systemPromptRef = { current: systemPrompt };
 

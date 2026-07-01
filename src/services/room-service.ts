@@ -27,6 +27,8 @@ import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { runAgentTurn } from "./turns.js";
+import type { EpisodeCapture } from "./memory-service.js";
+import type { ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, isTrusted, type SummonHost } from "./summons.js";
 import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
@@ -45,6 +47,17 @@ export interface RoomServiceOptions {
   setThinking?: (agentId: string, level: string) => Promise<string>;
   harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
   summonHost?: SummonHost;
+  /** Memory v3 hooks (auto-recall, episodic capture, consolidation). Absent →
+   * turns run exactly as before; the hooks are additive. */
+  memory?: RoomMemoryHooks;
+}
+
+/** The narrow slice of MemoryService a room needs (kept as an interface so
+ * tests can fake it and the room never learns about embeddings/LLMs). */
+export interface RoomMemoryHooks {
+  autoRecallBlock(agentId: string, query: string): Promise<string>;
+  capture(agentId: string, capture: EpisodeCapture): Promise<void>;
+  consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
 }
 
 export interface SendMessageOptions {
@@ -71,6 +84,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   fork: (service) => service.runForkCommand(),
   unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
 };
@@ -386,11 +400,15 @@ export class RoomService {
       });
       let lastFlush = 0;
 
+      // Auto-recall never blocks or fails a turn: the hook returns "" on any
+      // miss and room-service treats "" as absent.
+      const recall = (await this.options.memory?.autoRecallBlock(target, text)) || undefined;
+
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         turn = await runAgentTurn({
           runtime,
-          input: { roomId: this.roomId, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking },
+          input: { roomId: this.roomId, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking, recall },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => this.emit(this.toUiEvent(task.id, agent.id, eventId, event)),
           onProgress: async (reply) => {
@@ -407,6 +425,7 @@ export class RoomService {
         const partial = pending?.partialReply ?? "";
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel, nextCursor);
         else await this.room.clearPendingTurn();
+        await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
 
@@ -416,7 +435,10 @@ export class RoomService {
       if (reply) await this.commitReply(target, eventId, reply, turn.details, channel, nextCursor);
       else await this.room.clearPendingTurn();
 
-      if (turn.cancelled || this.taskCancelled(task)) return;
+      const cancelled = turn.cancelled || this.taskCancelled(task);
+      if (reply) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+
+      if (cancelled) return;
       remaining.shift();
     }
 
@@ -439,6 +461,41 @@ export class RoomService {
     // read time + this agent's own appended reply.
     await this.room.commitTurn(event, nextCursor + 1);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+  }
+
+  /** Episodic capture is best-effort derived data: a failure must never fail
+   * the turn that produced it. */
+  private async captureEpisode(
+    agentId: string,
+    task: string,
+    reply: string,
+    outcome: EpisodeCapture["outcome"],
+    details: EventDetails,
+    channel: "voice" | undefined,
+  ): Promise<void> {
+    if (!this.options.memory) return;
+    const tools = [...new Set((details.tools ?? []).map((tool) => tool.toolName))];
+    try {
+      await this.options.memory.capture(agentId, {
+        roomId: this.roomId,
+        task,
+        reply,
+        outcome,
+        ...(tools.length ? { tools } : {}),
+        ...(channel ? { channel } : {}),
+      });
+    } catch {
+      // Derived data; the transcript already has the full turn.
+    }
+  }
+
+  async runConsolidateCommand(agentId?: string): Promise<string> {
+    const target = agentId ?? this.workspace.config.defaultAgent;
+    if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;
+    if (!this.options.memory) return "Memory consolidation is not available in this workspace.";
+    const result = await this.options.memory.consolidate(target, { force: true });
+    if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
+    return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
   }
 
   /** Resume a turn a prior process left in-flight. Three cases:

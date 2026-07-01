@@ -1,7 +1,7 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
-import type { SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 
 export const DEFAULTS = {
@@ -15,6 +15,16 @@ export const DEFAULTS = {
   host: "127.0.0.1",
   port: 8787,
 } as const;
+
+// Memory v3 defaults (MEMORY-DESIGN.md): everything on, embeddings resolved
+// from whatever key exists, lexical-only when none does.
+export const MEMORY_DEFAULTS: MemoryConfig = {
+  autoRecall: true,
+  autoRecallBudget: 1_200,
+  embeddings: "auto",
+  consolidate: { enabled: true, idleMinutes: 30, maxPerDay: 8 },
+  decayHalfLifeDays: 60,
+};
 
 export function gaiaHost(): string {
   return env("GAIA_HOST") ?? DEFAULTS.host;
@@ -43,6 +53,51 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   return Object.keys(config).length > 0 ? config : undefined;
 }
 
+/** Parse a `memory` patch (agent.json override or config.json section).
+ * Unknown/bad fields drop; an empty patch returns undefined. */
+export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
+  if (!isRecord(raw)) return undefined;
+  const patch: MemoryConfigPatch = {};
+  if (typeof raw.autoRecall === "boolean") patch.autoRecall = raw.autoRecall;
+  if (typeof raw.autoRecallBudget === "number" && raw.autoRecallBudget >= 0) patch.autoRecallBudget = Math.floor(raw.autoRecallBudget);
+  if (raw.embeddings === "auto" || raw.embeddings === "off") patch.embeddings = raw.embeddings;
+  else if (isRecord(raw.embeddings) && typeof raw.embeddings.provider === "string" && raw.embeddings.provider.trim()) {
+    patch.embeddings = {
+      provider: raw.embeddings.provider.trim(),
+      ...(typeof raw.embeddings.model === "string" && raw.embeddings.model.trim() ? { model: raw.embeddings.model.trim() } : {}),
+      ...(typeof raw.embeddings.baseUrl === "string" && raw.embeddings.baseUrl.trim() ? { baseUrl: raw.embeddings.baseUrl.trim() } : {}),
+      ...(typeof raw.embeddings.envKey === "string" && raw.embeddings.envKey.trim() ? { envKey: raw.embeddings.envKey.trim() } : {}),
+    };
+  }
+  if (isRecord(raw.consolidate)) {
+    const consolidate: Partial<MemoryConfig["consolidate"]> = {};
+    if (typeof raw.consolidate.enabled === "boolean") consolidate.enabled = raw.consolidate.enabled;
+    if (typeof raw.consolidate.idleMinutes === "number" && raw.consolidate.idleMinutes > 0) consolidate.idleMinutes = raw.consolidate.idleMinutes;
+    if (typeof raw.consolidate.maxPerDay === "number" && raw.consolidate.maxPerDay > 0) consolidate.maxPerDay = Math.floor(raw.consolidate.maxPerDay);
+    if (isRecord(raw.consolidate.model)) {
+      const model: { provider?: string; name?: string } = {};
+      if (typeof raw.consolidate.model.provider === "string") model.provider = raw.consolidate.model.provider;
+      if (typeof raw.consolidate.model.name === "string") model.name = raw.consolidate.model.name;
+      if (Object.keys(model).length) consolidate.model = model;
+    }
+    if (Object.keys(consolidate).length) patch.consolidate = consolidate;
+  }
+  if (typeof raw.decayHalfLifeDays === "number" && raw.decayHalfLifeDays > 0) patch.decayHalfLifeDays = raw.decayHalfLifeDays;
+  return Object.keys(patch).length > 0 ? patch : undefined;
+}
+
+/** Layer a memory patch over a base config (defaults ← workspace ← agent). */
+export function resolveMemoryConfig(base: MemoryConfig, patch: MemoryConfigPatch | undefined): MemoryConfig {
+  if (!patch) return base;
+  return {
+    autoRecall: patch.autoRecall ?? base.autoRecall,
+    autoRecallBudget: patch.autoRecallBudget ?? base.autoRecallBudget,
+    embeddings: patch.embeddings ?? base.embeddings,
+    consolidate: { ...base.consolidate, ...patch.consolidate },
+    decayHalfLifeDays: patch.decayHalfLifeDays ?? base.decayHalfLifeDays,
+  };
+}
+
 /** Parse a raw config.json value over the defaults. Unknown/bad fields drop. */
 export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) => boolean): WorkspaceConfig {
   const obj = isRecord(raw) ? raw : {};
@@ -53,6 +108,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
       typeof obj.transcriptWindow === "number" && Number.isInteger(obj.transcriptWindow) && obj.transcriptWindow > 0
         ? obj.transcriptWindow
         : DEFAULTS.transcriptWindow,
+    memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
   };
   if (typeof obj.harness === "string" && validHarness(obj.harness)) config.harness = obj.harness;
   if (typeof obj.maxSummonsPerRoom === "number" && Number.isInteger(obj.maxSummonsPerRoom) && obj.maxSummonsPerRoom > 0) {

@@ -263,6 +263,7 @@ export class CodexRuntime implements AgentRuntime {
       message: input.message,
       events: input.transcript,
       memory: memoryChanged ? memory : undefined,
+      recall: input.recall,
       channel: input.channel,
     });
 

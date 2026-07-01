@@ -217,7 +217,7 @@ export class GaiaWebServer {
       return;
     }
 
-    if (method === "POST" && (path === "/api/harness/memory" || path === "/api/harness/summon")) {
+    if (method === "POST" && (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall")) {
       return this.handleHarness(request, response, path);
     }
 
@@ -437,7 +437,7 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon";
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall";
     if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
     }
@@ -456,6 +456,20 @@ export class GaiaWebServer {
         });
         const head = `${result.ok ? "OK" : "ERROR"}: ${result.message}`;
         json(response, 200, { result: result.ok ? `${head}\n\n${result.state.content}` : head, ok: result.ok, message: result.message });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (pathname === "/api/harness/recall") {
+      const query = stringField(body, "query")?.trim();
+      if (!query) return json(response, 400, { error: "query is required" });
+      const rawLimit = (body as Record<string, unknown>).limit;
+      const limit = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.floor(rawLimit) : undefined;
+      try {
+        const { result, hits } = await this.daemon.harnessRecall(claims, query, limit);
+        json(response, 200, { ok: true, result, hits });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

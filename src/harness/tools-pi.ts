@@ -2,12 +2,14 @@
 // (Pi SDK, typebox) live here, loaded lazily via tools.ts's makePiTool — the
 // registry itself stays cheap for the `gaia` CLI.
 
+import { join } from "node:path";
 import { Type } from "typebox";
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import type { AgentDef } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
-import { searchTranscript, type RecallHit } from "../domain/recall.js";
-import type { SummonCreate } from "../harness/spec.js";
+import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
+import { searchTranscript } from "../domain/recall.js";
+import type { RecallSearch, SummonCreate } from "../harness/spec.js";
 
 const MEMORY_DESCRIPTION = [
   "Persist long-term notes for the current agent across sessions.",
@@ -55,25 +57,39 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
   });
 }
 
-export function createRecallTool(transcriptPath: string, dbPath: string, roomId: string) {
+/** Fallback recall when no daemon bridge exists: the local per-room lexical
+ * transcript index, mapped onto the hybrid hit shape. */
+export function localRecallSearch(roomDir: string, roomId: string): RecallSearch {
+  return async (query, limit) => {
+    const hits = searchTranscript(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), query, limit ?? 8);
+    return hits.map((hit) => ({
+      kind: "transcript" as const,
+      text: hit.snippet,
+      ts: hit.timestamp,
+      score: 0,
+      author: hit.author,
+      roomId,
+    }));
+  };
+}
+
+export function createRecallTool(search: RecallSearch, roomId: string) {
   return defineTool({
     name: "recall",
     label: "Recall",
     description:
-      "Search the full room history (every past session, not just your current context) for messages matching a query. Use when the conversation references something you do not remember - an earlier decision, a name, a discussion from weeks ago.",
-    promptSnippet: `recall: full-text search over the complete ${roomId} room history.`,
+      "Search your long-term memory: distilled facts, past task episodes (with outcomes), and the full room history — every past session, not just your current context. Use when the conversation references something you do not remember: an earlier decision, a name, a lesson from a failed attempt, a discussion from weeks ago.",
+    promptSnippet: `recall: ranked search over your facts, episodes, and the complete ${roomId} room history.`,
     parameters: Type.Object({
       query: Type.String({ description: "Words or a phrase to search for." }),
       limit: Type.Optional(Type.Number({ description: "Max results (default 8)." })),
     }),
     execute: async (_toolCallId: string, params: { query: string; limit?: number }) => {
       let text: string;
-      let hits: RecallHit[] = [];
+      let hits: MemorySearchHit[] = [];
       try {
-        hits = searchTranscript(transcriptPath, dbPath, params.query, params.limit ?? 8);
-        text = hits.length
-          ? hits.map((hit) => `[${hit.timestamp}]${hit.channel === "voice" ? " 🎙" : ""} ${hit.author}: ${hit.snippet}`).join("\n")
-          : "no matches in the room history";
+        hits = await search(params.query, params.limit ?? 8);
+        text = hits.length ? formatMemoryHits(hits) : "no matches in memory or room history";
       } catch (error) {
         text = `ERROR: ${error instanceof Error ? error.message : String(error)}`;
       }

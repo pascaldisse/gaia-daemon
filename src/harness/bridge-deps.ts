@@ -5,8 +5,9 @@
 
 import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
+import type { MemorySearchHit } from "../domain/memory-index.js";
 import { LLM_PROXY_MOUNT } from "./protocol.js";
-import type { HarnessHost, SummonCreate } from "./spec.js";
+import type { HarnessHost, RecallSearch, SummonCreate } from "./spec.js";
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
 export class BridgeMemoryStore extends MemoryStore {
@@ -38,6 +39,16 @@ export class BridgeMemoryStore extends MemoryStore {
       return { ok: false, message: `memory bridge error: ${error instanceof Error ? error.message : String(error)}`, state };
     }
   }
+}
+
+/** recallSearch that POSTs to the daemon (hybrid search runs daemon-side:
+ * embeddings keys and the fact/episode index never enter this process). */
+export function bridgeRecallSearch(target: DaemonTarget): RecallSearch {
+  return async (query, limit) => {
+    const { ok, payload } = await daemonPost(target, "/api/harness/recall", { query, ...(limit ? { limit } : {}) });
+    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "recall failed");
+    return Array.isArray(payload.hits) ? (payload.hits as MemorySearchHit[]) : [];
+  };
 }
 
 /** summonCreate that POSTs to the daemon's summon endpoint (the coordinator). */

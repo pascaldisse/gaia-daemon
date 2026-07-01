@@ -6,6 +6,7 @@
 
 import type { AgentDef, AgentEvent, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
+import type { MemorySearchHit } from "../domain/memory-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
 
 // --- what a runtime consumes and produces ------------------------------------
@@ -19,6 +20,9 @@ export interface AgentInput {
   channel?: "text" | "voice";
   /** Per-turn thinking override (e.g. voice forcing it off). */
   thinking?: string;
+  /** Auto-retrieved memory block for this turn ("" / absent = nothing cleared
+   * the relevance gate). Turn-level overlay, never part of the session. */
+  recall?: string;
 }
 
 export interface AgentRuntime {
@@ -76,6 +80,13 @@ export interface RuntimeCreateContext {
   summonCreate?: SummonCreate;
   /** Daemon bridge for subprocess harnesses' memory/recall/summon CLI. */
   harnessHost?: HarnessHost;
+  /** Hybrid memory search (facts + episodes + room history), daemon-side. */
+  recallSearch?: RecallSearch;
+}
+
+/** Search long-term memory; hits are pre-ranked (see domain/memory-index). */
+export interface RecallSearch {
+  (query: string, limit?: number): Promise<MemorySearchHit[]>;
 }
 
 /** Create a summon from inside a turn; resolves with the worker's final reply. */

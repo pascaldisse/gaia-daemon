@@ -103,6 +103,40 @@ export interface AgentModelConfig {
   name?: string;
 }
 
+// Memory v3 (MEMORY-DESIGN.md): auto-recall, embeddings, consolidation.
+// Workspace config resolves to a full MemoryConfig over the defaults; agents
+// may override any subset via agent.json's `memory` patch.
+export interface MemoryEmbeddingsProviderConfig {
+  provider: string;
+  model?: string;
+  baseUrl?: string;
+  envKey?: string;
+}
+
+export interface MemoryConsolidateConfig {
+  enabled: boolean;
+  idleMinutes: number;
+  maxPerDay: number;
+  /** Consolidation model; unset = the agent's own model. */
+  model?: AgentModelConfig;
+}
+
+export interface MemoryConfig {
+  autoRecall: boolean;
+  autoRecallBudget: number;
+  embeddings: "auto" | "off" | MemoryEmbeddingsProviderConfig;
+  consolidate: MemoryConsolidateConfig;
+  decayHalfLifeDays: number;
+}
+
+export interface MemoryConfigPatch {
+  autoRecall?: boolean;
+  autoRecallBudget?: number;
+  embeddings?: MemoryConfig["embeddings"];
+  consolidate?: Partial<MemoryConsolidateConfig>;
+  decayHalfLifeDays?: number;
+}
+
 export interface SandboxConfig {
   enabled?: boolean;
   backend?: string;
@@ -139,6 +173,8 @@ export interface AgentDef {
   trust?: boolean;
   /** May summon further workers when itself a summon (default false). */
   allowNestedSummon?: boolean;
+  /** Per-agent memory overrides applied over the workspace MemoryConfig. */
+  memory?: MemoryConfigPatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +184,7 @@ export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
   transcriptWindow: number;
+  memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;
   sandbox?: SandboxConfig;

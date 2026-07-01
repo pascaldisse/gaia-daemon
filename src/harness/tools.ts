@@ -7,10 +7,9 @@
 // in tools-pi.ts and are imported lazily, so the lightweight `gaia` CLI can
 // use the registry for verb dispatch without paying for pi-coding-agent.
 
-import { join } from "node:path";
 import type { AgentDef } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
-import type { GaiaTool, SummonCreate } from "../harness/spec.js";
+import type { GaiaTool, RecallSearch, SummonCreate } from "../harness/spec.js";
 
 /** Everything the in-process Pi tool factories might need. */
 export interface PiToolContext {
@@ -19,6 +18,9 @@ export interface PiToolContext {
   roomId: string;
   roomDir: string;
   summonCreate?: SummonCreate;
+  /** Daemon-side hybrid search; absent → the tool falls back to the local
+   * transcript index (works without a bridge, lexical room-only). */
+  recallSearch?: RecallSearch;
 }
 
 export interface GaiaToolSpec {
@@ -46,8 +48,10 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     cliVerbs: ["recall"],
     grant: "Bash(gaia recall:*)",
     pointer: "- `gaia recall <query>` — full-text search of the room history",
-    makePiTool: async (ctx) =>
-      (await import("./tools-pi.js")).createRecallTool(join(ctx.roomDir, "transcript.jsonl"), join(ctx.roomDir, "recall.db"), ctx.roomId),
+    makePiTool: async (ctx) => {
+      const factory = await import("./tools-pi.js");
+      return factory.createRecallTool(ctx.recallSearch ?? factory.localRecallSearch(ctx.roomDir, ctx.roomId), ctx.roomId);
+    },
   },
   {
     id: "summon",

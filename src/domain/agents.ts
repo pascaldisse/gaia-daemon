@@ -9,7 +9,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDef, AgentModelConfig, ClaudePermissionMode, ThinkingLevel } from "../core/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../core/types.js";
-import { DEFAULTS, parseSandboxConfig } from "../core/config.js";
+import { DEFAULTS, parseMemoryPatch, parseSandboxConfig } from "../core/config.js";
 import { agentPaths } from "../core/paths.js";
 import { ensureDir, jsonText, readJson, writeText } from "../core/store.js";
 import { parseHarness } from "../harness/spec.js";
@@ -30,6 +30,7 @@ interface RawAgentConfig {
   sandbox?: unknown;
   trust?: unknown;
   allowNestedSummon?: unknown;
+  memory?: unknown;
 }
 
 // `harness` is canonical; older configs use `runtime`. Prefer harness, fall
@@ -210,6 +211,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
     harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
     permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
+    memory: override.memory !== undefined ? override.memory : base.memory,
   };
 }
 
@@ -266,6 +268,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
+      memory: parseMemoryPatch(raw.memory),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
       projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,

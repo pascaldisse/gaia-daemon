@@ -100,12 +100,23 @@ async function runRecall(args: string[]): Promise<number> {
   const { positional, flags } = parseFlags(args);
   const query = positional.join(" ").trim();
   if (!query) return fail(RECALL_USAGE);
+  const parsed = Number.parseInt(flags.limit ?? "", 10);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 8;
+
+  // Hybrid search runs daemon-side (facts + episodes + room history, with the
+  // embedding index the daemon owns); the subprocess never holds a key.
+  if (env("GAIA_DAEMON_URL") && env("GAIA_DAEMON_TOKEN")) {
+    const result = await daemonPost("/api/harness/recall", { query, limit });
+    console.log(result.text);
+    return result.ok ? 0 : 1;
+  }
+
+  // No daemon (bare CLI use): lexical room-history search, direct disk.
   const roomDir = env("GAIA_ROOM_DIR");
   if (!roomDir) return fail("ERROR: GAIA_ROOM_DIR is not set.");
-  const limit = Number.parseInt(flags.limit ?? "", 10);
   // Lazy import so `gaia mem` invocations never load node:sqlite for nothing.
   const { searchTranscript } = await import("../domain/recall.js");
-  const hits = searchTranscript(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), query, Number.isFinite(limit) && limit > 0 ? limit : 8);
+  const hits = searchTranscript(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), query, limit);
   console.log(
     hits.length
       ? hits.map((hit) => `[${hit.timestamp}]${hit.channel === "voice" ? " 🎙" : ""} ${hit.author}: ${hit.snippet}`).join("\n")

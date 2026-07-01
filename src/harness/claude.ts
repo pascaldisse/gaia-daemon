@@ -303,6 +303,7 @@ export class ClaudeRuntime implements AgentRuntime {
       message: input.message,
       events: input.transcript,
       memory: memoryChanged ? memory : undefined,
+      recall: input.recall,
       channel: input.channel,
     });
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking);

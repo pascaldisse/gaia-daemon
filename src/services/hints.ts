@@ -194,12 +194,33 @@ function fileHarnessMeta(): FileHints {
   return { _harness: harnessHintsMeta() };
 }
 
+// Memory v3 knobs (MEMORY-DESIGN.md). Shared verbatim between config.json
+// (workspace defaults) and agent.json (per-agent overrides — all optional).
+function memoryHints(optional: boolean): FileHints {
+  return {
+    "memory.autoRecall": { input: "boolean", optional },
+    "memory.autoRecallBudget": { input: "number", optional },
+    "memory.embeddings": select(
+      [
+        { value: "auto", description: "first provider with a usable key (openai, gemini); lexical-only when none" },
+        { value: "off", description: "lexical search only" },
+      ],
+      { optional },
+    ),
+    "memory.consolidate.enabled": { input: "boolean", optional },
+    "memory.consolidate.idleMinutes": { input: "number", optional },
+    "memory.consolidate.maxPerDay": { input: "number", optional },
+    "memory.decayHalfLifeDays": { input: "number", optional },
+  };
+}
+
 function configJsonHints(sources: HintSources): FileHints {
   return {
     defaultAgent: select(values(sources.agentIds)),
     room: select(values(sources.roomIds)),
     transcriptWindow: { input: "number" },
     harness: select(harnessSelectOptions(), { optional: true }),
+    ...memoryHints(false),
     ...fileHarnessMeta(),
   };
 }
@@ -231,6 +252,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
     "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),
+    ...memoryHints(true),
     ...fileHarnessMeta(),
   };
 }
