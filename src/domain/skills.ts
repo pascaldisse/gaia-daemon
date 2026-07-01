@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { Workspace } from "../core/types.js";
 import { gaiaHome } from "../core/paths.js";
 import type { ResolvedRole } from "./roles.js";

@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentDef } from "../core/types.js";
 import { readText } from "../core/store.js";
 

@@ -624,8 +624,9 @@ function consolidateLlm(): ConsolidateLlm {
     const provider = model?.provider ?? DEFAULTS.model.provider;
     const name = model?.name ?? DEFAULTS.model.name;
     const [{ completeSimple }, { AuthStorage, ModelRegistry }] = await Promise.all([
-      import("@mariozechner/pi-ai"),
-      import("@mariozechner/pi-coding-agent"),
+      // completeSimple moved to the compat subpath in pi-ai 0.80 (same shape).
+      import("@earendil-works/pi-ai/compat"),
+      import("@earendil-works/pi-coding-agent"),
     ]);
     const authStorage = AuthStorage.create();
     const resolved = ModelRegistry.create(authStorage).find(provider, name);

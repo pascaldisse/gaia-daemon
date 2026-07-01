@@ -10,7 +10,7 @@
 // forwarded unauthenticated.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AgentDef } from "../core/types.js";
 
 export interface UpstreamCredential {

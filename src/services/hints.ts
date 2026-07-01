@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
 import { CLAUDE_PERMISSION_MODES, type ThinkingLevel, type Workspace } from "../core/types.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
 import { ensureDir } from "../core/store.js";

@@ -4,7 +4,7 @@
 
 import { join } from "node:path";
 import { Type } from "typebox";
-import { defineTool } from "@mariozechner/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { AgentDef } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
 import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
