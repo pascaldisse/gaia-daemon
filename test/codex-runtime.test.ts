@@ -29,6 +29,8 @@ interface ScriptedNotification {
 class FakeCodexClient implements CodexClient {
   /** Exposed for tests to inject notifications after the handler is set. */
   notifHandler: ((msg: { method: string; params: unknown }) => void) | null = null;
+  /** Exposed for tests to drive server-initiated requests (item/tool/call). */
+  requestHandler: ((method: string, params: unknown) => Promise<unknown>) | null = null;
   requests: Array<{ method: string; params: unknown }> = [];
   private pending = new Map<string, PendingRequest>();
   private methodCounters = new Map<string, number>();
@@ -43,6 +45,10 @@ class FakeCodexClient implements CodexClient {
 
   setNotificationHandler(handler: ((msg: { method: string; params: unknown }) => void) | null): void {
     this.notifHandler = handler;
+  }
+
+  setRequestHandler(handler: ((method: string, params: unknown) => Promise<unknown>) | null): void {
+    this.requestHandler = handler;
   }
 
   /** Script a response for the next call to `method`. */
@@ -151,7 +157,66 @@ test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
   }
 });
 
-test("CodexRuntime injects room-independent memory env + token and a gaia mem pointer", async () => {
+test("CodexRuntime declares gaia dynamic tools on thread/start and answers item/tool/call", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const factory: CodexClientFactory = async () => fake;
+    const store = new MemoryStore();
+    const toolAgent = { ...fx.agent, tools: ["read", "memory", "recall"] };
+    await store.init(toolAgent.memoryDir, toolAgent.displayName);
+    const runtime = new CodexRuntime({
+      workspace: fx.workspace,
+      agent: toolAgent,
+      memoryStore: store,
+      clientFactory: factory,
+      recallSearch: async () => [{ kind: "fact" as const, text: "walrus-9 runs FreeBSD", ts: "2026-07-01T00:00:00Z", score: 1, source: "user_stated" }],
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    // The same tool factories Pi wires in-process, declared as dynamicTools.
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const dynamicTools = (threadStart?.params as { dynamicTools?: Array<{ type: string; name: string; inputSchema?: { type?: string } }> }).dynamicTools;
+    assert.deepEqual(dynamicTools?.map((tool) => tool.name).sort(), ["memory", "recall"]);
+    assert.ok(dynamicTools?.every((tool) => tool.type === "function" && tool.inputSchema?.type === "object"));
+    // No CLI pointer: dynamic tools are self-describing.
+    assert.ok(!/gaia mem/.test((threadStart?.params as { baseInstructions: string }).baseInstructions));
+
+    // Server-initiated item/tool/call executes the tool in-process.
+    const result = (await fake.requestHandler?.("item/tool/call", {
+      threadId: "th-1",
+      turnId: "turn-1",
+      callId: "call-1",
+      tool: "recall",
+      arguments: { query: "walrus" },
+    })) as { success: boolean; contentItems: Array<{ type: string; text: string }> };
+    assert.equal(result.success, true);
+    assert.match(result.contentItems[0].text, /walrus-9 runs FreeBSD/);
+
+    const unknown = (await fake.requestHandler?.("item/tool/call", {
+      threadId: "th-1",
+      turnId: "turn-1",
+      callId: "call-2",
+      tool: "nonexistent",
+      arguments: {},
+    })) as { success: boolean; contentItems: Array<{ type: string; text: string }> };
+    assert.equal(unknown.success, false);
+    assert.match(unknown.contentItems[0].text, /Unknown tool/);
+
+    // Other server requests stay unsupported.
+    await assert.rejects(() => fake.requestHandler!("applyPatchApproval", {}), /Unsupported server request/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime injects memory env + token; no dynamic tools without gaia tools", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
@@ -171,53 +236,95 @@ test("CodexRuntime injects room-independent memory env + token and a gaia mem po
       mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
     };
     const memAgent = { ...fx.agent, tools: ["read", "write", "edit", "memory"] };
-    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: memAgent, memoryStore: new MemoryStore(), clientFactory: factory, harnessHost: host });
+    const store = new MemoryStore();
+    await store.init(memAgent.memoryDir, memAgent.displayName);
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: memAgent, memoryStore: store, clientFactory: factory, harnessHost: host });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     assert.equal(calls[0]?.env.GAIA_MEMORY_DIR, memAgent.memoryDir);
     assert.equal(calls[0]?.env.GAIA_AGENT_ID, "gaia");
     assert.equal(calls[0]?.env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
-    // Token carries no room (room-independent memory only).
     assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, "tok:gaia:");
-    // No room env: recall/summon are intentionally unavailable under Codex.
-    assert.equal(calls[0]?.env.GAIA_ROOM_DIR, undefined);
-
-    const threadStart = fake.requests.find((request) => request.method === "thread/start");
-    assert.match((threadStart?.params as { baseInstructions: string }).baseInstructions, /gaia mem/);
     runtime.dispose();
+
+    // An agent without gaia tools declares no dynamicTools at all.
+    const fake2 = new FakeCodexClient();
+    fake2.addResponse("initialize", {});
+    fake2.addResponse("thread/start", { thread: { id: "th-2" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake2.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake2.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const bare = new CodexRuntime({
+      workspace: fx.workspace,
+      agent: { ...fx.agent, tools: ["read"] },
+      memoryStore: new MemoryStore(),
+      clientFactory: async () => fake2,
+    });
+    await collect(bare.send({ roomId: "bare", message: "hi", transcript: [] }));
+    const threadStart = fake2.requests.find((request) => request.method === "thread/start");
+    assert.equal((threadStart?.params as { dynamicTools?: unknown[] }).dynamicTools, undefined);
+    bare.dispose();
   } finally {
     await fx.cleanup();
   }
 });
 
-test("CodexRuntime adds no daemon token when the agent lacks the memory tool", async () => {
+test("CodexRuntime resumes a persisted thread after restart; failed resume starts fresh", async () => {
   const fx = await fixture();
   try {
-    const fake = new FakeCodexClient();
-    fake.addResponse("initialize", {});
-    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
-    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
-    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    // First life: start a thread, run a turn, dispose (daemon/runner restart).
+    const fake1 = new FakeCodexClient();
+    fake1.addResponse("initialize", {});
+    fake1.addResponse("thread/start", { thread: { id: "th-persist" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake1.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake1.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const first = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake1 });
+    await collect(first.send({ roomId: "default", message: "one", transcript: [] }));
+    first.dispose();
 
-    const calls: Array<{ env: NodeJS.ProcessEnv }> = [];
-    const factory: CodexClientFactory = async (_cwd, env) => {
-      calls.push({ env });
-      return fake;
+    // Second life: the persisted thread is resumed, not restarted.
+    const fake2 = new FakeCodexClient();
+    fake2.addResponse("initialize", {});
+    fake2.addResponse("thread/resume", { thread: { id: "th-persist" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake2.addResponse("turn/start", { turn: { id: "turn-2", status: "inProgress" } });
+    fake2.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const second = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake2 });
+    await collect(second.send({ roomId: "default", message: "two", transcript: [] }));
+    const resume = fake2.requests.find((request) => request.method === "thread/resume");
+    assert.equal((resume?.params as { threadId: string }).threadId, "th-persist");
+    assert.equal(fake2.requests.some((request) => request.method === "thread/start"), false);
+    second.dispose();
+
+    // Third life: the rollout is gone — resume fails, a fresh thread starts.
+    const fake3 = new FakeCodexClient();
+    fake3.addResponse("initialize", {});
+    fake3.addResponse("thread/start", { thread: { id: "th-fresh" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake3.addResponse("turn/start", { turn: { id: "turn-3", status: "inProgress" } });
+    fake3.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const origRequest = fake3.request.bind(fake3);
+    fake3.request = async (method, params) => {
+      if (method === "thread/resume") throw new Error("no rollout found for thread id th-persist");
+      return origRequest(method, params);
     };
-    const host = { baseUrl: "http://127.0.0.1:9999", llmProxyUrl: "http://127.0.0.1:9999/llm", mintToken: () => "tok" };
-    const runtime = new CodexRuntime({
-      workspace: fx.workspace,
-      agent: { ...fx.agent, tools: ["read"] },
-      memoryStore: new MemoryStore(),
-      clientFactory: factory,
-      harnessHost: host,
-    });
-    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const third = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake3 });
+    await collect(third.send({ roomId: "default", message: "three", transcript: [] }));
+    const starts = fake3.requests.filter((request) => request.method === "thread/start");
+    assert.equal(starts.length, 1);
+    const turnStart = fake3.requests.find((request) => request.method === "turn/start");
+    assert.equal((turnStart?.params as { threadId: string }).threadId, "th-fresh");
+    third.dispose();
 
-    assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, undefined);
-    const threadStart = fake.requests.find((request) => request.method === "thread/start");
-    assert.ok(!/gaia mem/.test((threadStart?.params as { baseInstructions: string }).baseInstructions));
-    runtime.dispose();
+    // /clear forgets the persisted handle: the next life starts fresh.
+    const fake4 = new FakeCodexClient();
+    fake4.addResponse("initialize", {});
+    fake4.addResponse("thread/start", { thread: { id: "th-clear" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake4.addResponse("turn/start", { turn: { id: "turn-4", status: "inProgress" } });
+    fake4.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const fourth = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake4 });
+    fourth.resetRoom("default");
+    await collect(fourth.send({ roomId: "default", message: "four", transcript: [] }));
+    assert.equal(fake4.requests.some((request) => request.method === "thread/resume"), false);
+    assert.equal(fake4.requests.some((request) => request.method === "thread/start"), true);
+    fourth.dispose();
   } finally {
     await fx.cleanup();
   }

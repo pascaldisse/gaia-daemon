@@ -20,7 +20,7 @@ import {
   type RuntimeCreateContext,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
-import { SessionMap } from "./sessions.js";
+import { fileSessionStore, SessionMap } from "./sessions.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt.js";
 
@@ -266,7 +266,9 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly memoryStore: MemoryStore;
   private readonly harnessHost?: HarnessHost;
   private readonly cwd: string;
-  private readonly sessions = new SessionMap<ClaudeRoomMeta>();
+  /** Persisted per room: --resume continues the same CLI session across
+   * daemon/runner restarts (the CLI keeps the conversation on disk). */
+  private readonly sessions: SessionMap<ClaudeRoomMeta>;
   private active: ClaudeProcessHandle | null = null;
   private readonly processFactory: ClaudeProcessFactory;
   private readonly configuredModelLabel: string;
@@ -278,6 +280,7 @@ export class ClaudeRuntime implements AgentRuntime {
     this.memoryStore = options.memoryStore;
     this.harnessHost = options.harnessHost;
     this.cwd = options.workspace.rootDir;
+    this.sessions = new SessionMap<ClaudeRoomMeta>(undefined, fileSessionStore(this.cwd, "claude"));
     this.processFactory = options.processFactory ?? spawnClaudeProcess;
     this.configuredModelLabel = this.resolveModelLabel();
   }
@@ -436,13 +439,18 @@ export class ClaudeRuntime implements AgentRuntime {
       // A failed first turn may never have created a resumable session; drop
       // the room so the next turn starts fresh instead of --resume'ing nothing.
       // (reset also drops the memory diff, so memory is re-sent then.)
-      if (firstTurn) this.sessions.reset(input.roomId);
+      // A resumed turn whose persisted session the CLI no longer knows (pruned
+      // conversation) is unrecoverable by retry — drop it too.
+      const message = err instanceof Error ? err.message : String(err);
+      if (firstTurn || /no conversation found/i.test(message)) this.sessions.reset(input.roomId);
       throw err;
     } finally {
       this.active = null;
     }
 
+    // set() (not a bare mutation) so the session store sees started=true.
     room.started = true;
+    this.sessions.set(input.roomId, room);
   }
 
   // -----------------------------------------------------------------------

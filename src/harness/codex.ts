@@ -1,23 +1,34 @@
-// The Codex harness: one persistent `codex app-server` JSON-RPC subprocess
-// shared across rooms, one thread per room, item/* notifications mapped onto
+// The Codex harness: one `codex app-server` JSON-RPC subprocess per runtime
+// (each runtime lives in a per-(room, agent) runner subprocess — see host.ts),
+// one persistent thread per room, item/* notifications mapped onto
 // AgentEvents. All codex-specific knowledge (RPC methods, wire shapes, sandbox
 // levels, cred env) lives HERE; shared code sees only the HarnessSpec.
+//
+// Gaia tools (memory/recall/summon) are wired as app-server dynamicTools: the
+// SAME tool factories the Pi harness uses (typebox schemas are JSON Schema),
+// declared on thread/start and executed here when the server calls back with
+// item/tool/call. Threads persist across restarts via the uniform SessionMap
+// store + thread/resume; a failed resume falls back to a fresh thread.
 
 import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
+import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import {
   type AgentInput,
   type AgentRuntime,
   type HarnessCapabilities,
   type HarnessHost,
+  type RecallSearch,
   registerHarness,
   type RuntimeCreateContext,
+  type SummonCreate,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
-import { SessionMap } from "./sessions.js";
+import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel } from "./model-label.js";
-import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt.js";
+import { buildInlineSystemPrompt, buildTurnPrompt } from "./prompt.js";
+import { buildPiTools } from "./tools.js";
 
 // ---------------------------------------------------------------------------
 // Internal JSON-RPC client abstraction (injectable for tests)
@@ -35,6 +46,10 @@ export interface CodexClient {
   notify(method: string, params: unknown): void;
   /** Register a handler for server-pushed notifications. */
   setNotificationHandler(handler: ((msg: JsonRpcNotification) => void) | null): void;
+  /** Register a handler for server-initiated REQUESTS (item/tool/call). The
+   * handler's resolution is sent back as the JSON-RPC result; a rejection
+   * becomes a JSON-RPC error. Unhandled methods are answered -32601. */
+  setRequestHandler(handler: ((method: string, params: unknown) => Promise<unknown>) | null): void;
   /** Gracefully shut down the transport. */
   close(): Promise<void>;
   /** Accumulated stderr from the child process (for diagnostics). */
@@ -53,14 +68,17 @@ const DEFAULT_CLIENT_INFO = {
   version: "0.0.0",
 };
 
+// experimentalApi opts into the dynamicTools field on thread/start (verified
+// against codex-cli 0.142.2: the field is accepted only on that surface).
 const DEFAULT_CAPABILITIES = {
-  experimentalApi: false,
+  experimentalApi: true,
 };
 
 function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let nextId = 1;
   let notifHandler: ((msg: JsonRpcNotification) => void) | null = null;
+  let requestHandler: ((method: string, params: unknown) => Promise<unknown>) | null = null;
   let closed = false;
   let exitError: Error | null = null;
 
@@ -69,7 +87,7 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
     pending.clear();
   }
 
-  function sendRaw(msg: { id?: number; method?: string; params?: unknown; error?: { code: number; message: string } }): void {
+  function sendRaw(msg: { id?: number; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } }): void {
     if (closed) return;
     proc.stdin?.write(`${JSON.stringify(msg)}\n`);
   }
@@ -89,9 +107,18 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
         return;
       }
 
-      // Server-initiated request -> send error back
+      // Server-initiated request -> dispatch to the handler (dynamic tool
+      // calls) or answer method-not-found.
       if (msg.id !== undefined && msg.method) {
-        sendRaw({ id: msg.id, error: { code: -32601, message: `Unsupported server request: ${msg.method}` } });
+        const id = msg.id;
+        if (requestHandler) {
+          requestHandler(msg.method, msg.params).then(
+            (result) => sendRaw({ id, result }),
+            (error: unknown) => sendRaw({ id, error: { code: -32603, message: error instanceof Error ? error.message : String(error) } }),
+          );
+        } else {
+          sendRaw({ id, error: { code: -32601, message: `Unsupported server request: ${msg.method}` } });
+        }
         return;
       }
 
@@ -145,6 +172,9 @@ function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
     setNotificationHandler(handler) {
       notifHandler = handler;
     },
+    setRequestHandler(handler) {
+      requestHandler = handler;
+    },
     async close() {
       if (closed) return;
       closed = true;
@@ -179,13 +209,41 @@ export function codexSandboxFor(tools: string[]): CodexSandbox {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent thread state (tracked by the uniform SessionMap)
+// Persistent thread state (tracked by the uniform SessionMap; serializable —
+// the file store carries it across restarts for thread/resume)
 // ---------------------------------------------------------------------------
 
 interface ThreadState {
   threadId: string;
   model: string;
   modelProvider: string;
+}
+
+// The shape a pi tool factory returns (defineTool), as far as codex needs it:
+// typebox `parameters` doubles as the dynamic tool's JSON Schema, and execute
+// runs in THIS process — same code path as the pi harness's in-process tools.
+interface PiToolLike {
+  name: string;
+  description: string;
+  parameters?: unknown;
+  execute(toolCallId: string, params: unknown): Promise<{ content?: Array<{ type: string; text?: string }>; details?: unknown }>;
+}
+
+interface DynamicToolCall {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  tool: string;
+  arguments?: unknown;
+}
+
+function dynamicToolSpec(tool: PiToolLike): { type: "function"; name: string; description: string; inputSchema: unknown } {
+  return {
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.parameters ?? { type: "object", properties: {} },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,11 +255,11 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
   clientFactory?: CodexClientFactory;
 }
 
-// The persistent app-server is shared across rooms, so room-coupled recall/
-// summon can't be wired (only room-independent memory); and Codex runs a coarse
+// Dynamic tools close the old asymmetry: memory/recall/summon are real
+// in-process tools under Codex, exactly like Pi. Codex still runs a coarse
 // sandbox rather than honoring a granular per-tool array.
 const CODEX_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory"],
+  gaiaTools: ["memory", "recall", "summon"],
   granularTools: false,
   supportsPermissionMode: false,
 };
@@ -212,10 +270,17 @@ export class CodexRuntime implements AgentRuntime {
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
   private readonly harnessHost?: HarnessHost;
+  private readonly summonCreate?: SummonCreate;
+  private readonly recallSearch?: RecallSearch;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
-  private readonly threads = new SessionMap<ThreadState>();
+  private readonly threads: SessionMap<ThreadState>;
+  /** In-process dynamic tools per room (rebuilt per process — not persisted). */
+  private readonly roomTools = new Map<string, Map<string, PiToolLike>>();
+  /** Thread ids live on the CURRENT app-server process; a persisted thread not
+   * in here must go through thread/resume before its next turn. */
+  private readonly attachedThreads = new Set<string>();
   private activeTurn: { threadId: string; turnId: string } | null = null;
   private readonly clientFactory: CodexClientFactory;
   private readonly configuredModelLabel: string;
@@ -226,7 +291,10 @@ export class CodexRuntime implements AgentRuntime {
     this.agent = options.agent;
     this.memoryStore = options.memoryStore;
     this.harnessHost = options.harnessHost;
+    this.summonCreate = options.summonCreate;
+    this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
+    this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex"));
     this.clientFactory = options.clientFactory ?? defaultFactory;
     this.configuredModelLabel = this.resolveModelLabel();
   }
@@ -242,11 +310,21 @@ export class CodexRuntime implements AgentRuntime {
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     const client = await this.ensureClient();
 
-    // Ensure a persistent thread exists for this room (lazy-start on first send).
+    // Ensure a persistent thread exists for this room. A thread hydrated from
+    // the session store (prior process) is resumed on this app-server first;
+    // a failed resume (rollout pruned) falls back to a fresh thread.
     let thread = this.threads.get(input.roomId);
+    let announce = false;
+    if (thread && !this.attachedThreads.has(thread.threadId)) {
+      thread = await this.resumeThread(client, thread, input);
+      announce = Boolean(thread);
+    }
     if (!thread) {
       thread = await this.startThread(client, input);
       this.threads.set(input.roomId, thread);
+      announce = true;
+    }
+    if (announce) {
       const { modelProvider, model } = thread;
       this.liveModelLabel = `${modelProvider}/${model}`;
       yield { type: "model-info", provider: modelProvider, modelId: model, subscription: true };
@@ -458,23 +536,31 @@ export class CodexRuntime implements AgentRuntime {
   dispose(): void {
     this.client?.close().catch(() => {});
     this.client = null;
+    // disposeAll keeps the persisted thread handles: the next process resumes.
     this.threads.disposeAll();
+    this.roomTools.clear();
+    this.attachedThreads.clear();
     this.activeTurn = null;
     this.initPromise = null;
   }
 
-  // Forget this room's Codex thread so the next turn opens a fresh one (/clear).
+  // Forget this room's Codex thread — everywhere, including the session store —
+  // so the next turn opens a fresh one (/clear).
   resetRoom(roomId: string): void {
+    const thread = this.threads.get(roomId);
+    if (thread) this.attachedThreads.delete(thread.threadId);
     this.threads.reset(roomId);
+    this.roomTools.delete(roomId);
   }
 
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  // Env for the persistent app-server: room-independent memory only. The token
-  // carries no room (roomId ""), so the daemon's memory endpoint — which is
-  // per-agent, not per-room — accepts it while room-scoped recall/summon do not.
+  // Env for the app-server child. Inside the runner subprocess the harness
+  // host is a fixed-token bridge (the daemon minted the room-scoped token at
+  // spawn), so the claims passed here are advisory; gaia tools themselves run
+  // in THIS process via dynamicTools, not through the child's env.
   private buildEnv(): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -491,6 +577,8 @@ export class CodexRuntime implements AgentRuntime {
   private async ensureClient(): Promise<CodexClient> {
     if (this.client) return this.client;
     if (!this.initPromise) {
+      // A fresh app-server process knows none of our persisted threads.
+      this.attachedThreads.clear();
       this.initPromise = this.clientFactory(this.cwd, this.buildEnv())
         .then(async (client) => {
           try {
@@ -499,6 +587,7 @@ export class CodexRuntime implements AgentRuntime {
               capabilities: DEFAULT_CAPABILITIES,
             });
             client.notify("initialized", {});
+            client.setRequestHandler((method, params) => this.handleServerRequest(method, params));
             return client;
           } catch (error) {
             await client.close().catch(() => {});
@@ -517,14 +606,15 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private async startThread(client: CodexClient, input: AgentInput): Promise<ThreadState> {
-    // The persistent app-server is shared across rooms, so only room-independent
-    // memory is wired under Codex; recall/summon stay unavailable (see buildEnv).
+    // Gaia tools are native dynamic tools here (self-describing, like Pi's
+    // in-process tools), so the system prompt carries no CLI pointer.
     const baseInstructions = await buildInlineSystemPrompt({
       workspace: this.workspace,
       agent: this.agent,
       role: input.activeRole,
-      toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
+      toolPointer: "",
     });
+    const tools = await this.buildRoomTools(input.roomId);
 
     const response = (await client.request("thread/start", {
       cwd: this.cwd,
@@ -535,13 +625,103 @@ export class CodexRuntime implements AgentRuntime {
       // Derived from agent.tools instead of a fixed read-only stance, so an
       // agent with write/edit/bash can actually modify the workspace.
       sandbox: codexSandboxFor(this.agent.tools),
+      ...(tools.size > 0 ? { dynamicTools: [...tools.values()].map(dynamicToolSpec) } : {}),
     })) as { thread: { id: string }; model: string; modelProvider: string };
 
+    this.attachedThreads.add(response.thread.id);
     return {
       threadId: response.thread.id,
       model: response.model,
       modelProvider: response.modelProvider,
     };
+  }
+
+  /** Re-attach a persisted thread to this app-server process. Returns the
+   * refreshed state, or undefined (store cleared) when the rollout is gone —
+   * the caller then starts a fresh thread. thread/resume cannot re-declare
+   * dynamicTools (0.142.2), but the thread keeps the specs it started with;
+   * the executor map is rebuilt here so item/tool/call still lands. */
+  private async resumeThread(client: CodexClient, state: ThreadState, input: AgentInput): Promise<ThreadState | undefined> {
+    try {
+      const baseInstructions = await buildInlineSystemPrompt({
+        workspace: this.workspace,
+        agent: this.agent,
+        role: input.activeRole,
+        toolPointer: "",
+      });
+      await this.buildRoomTools(input.roomId);
+      const response = (await client.request("thread/resume", {
+        threadId: state.threadId,
+        cwd: this.cwd,
+        model: this.agent.model?.name ?? null,
+        modelProvider: this.agent.model?.provider ?? null,
+        baseInstructions,
+        sandbox: codexSandboxFor(this.agent.tools),
+      })) as { thread: { id: string }; model: string; modelProvider: string };
+      const next: ThreadState = {
+        threadId: response.thread.id,
+        model: response.model,
+        modelProvider: response.modelProvider,
+      };
+      this.attachedThreads.add(next.threadId);
+      this.threads.set(input.roomId, next);
+      return next;
+    } catch {
+      this.threads.reset(input.roomId);
+      return undefined;
+    }
+  }
+
+  /** Build (and cache) this room's gaia tools — the same factories the Pi
+   * harness wires in-process, keyed by tool name for item/tool/call dispatch. */
+  private async buildRoomTools(roomId: string): Promise<Map<string, PiToolLike>> {
+    const existing = this.roomTools.get(roomId);
+    if (existing) return existing;
+    const built = (await buildPiTools(this.agent.tools, {
+      memoryStore: this.memoryStore,
+      agent: this.agent,
+      roomId,
+      roomDir: workspacePaths.roomDir(this.cwd, roomId),
+      summonCreate: this.summonCreate,
+      recallSearch: this.recallSearch,
+    })) as PiToolLike[];
+    const tools = new Map(built.map((tool) => [tool.name, tool]));
+    this.roomTools.set(roomId, tools);
+    return tools;
+  }
+
+  /** item/tool/call → execute the named gaia tool for the thread's room and
+   * hand the text result back as the JSON-RPC response. */
+  private async handleServerRequest(method: string, params: unknown): Promise<unknown> {
+    if (method !== "item/tool/call") throw new Error(`Unsupported server request: ${method}`);
+    const call = params as DynamicToolCall;
+    const roomId = this.roomForThread(call.threadId);
+    const tool = roomId !== undefined ? this.roomTools.get(roomId)?.get(call.tool) : undefined;
+    if (!tool) {
+      return { success: false, contentItems: [{ type: "inputText", text: `Unknown tool: ${call.tool}` }] };
+    }
+    try {
+      const result = await tool.execute(call.callId, call.arguments ?? {});
+      const text = (result.content ?? [])
+        .filter((item) => item.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n");
+      const details = result.details as { ok?: unknown } | undefined;
+      const failed = details?.ok === false || text.startsWith("ERROR");
+      return { success: !failed, contentItems: [{ type: "inputText", text: text || "(no output)" }] };
+    } catch (error) {
+      return {
+        success: false,
+        contentItems: [{ type: "inputText", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+
+  private roomForThread(threadId: string): string | undefined {
+    for (const roomId of this.threads.rooms()) {
+      if (this.threads.get(roomId)?.threadId === threadId) return roomId;
+    }
+    return undefined;
   }
 
   private resolveModelLabel(): string {
