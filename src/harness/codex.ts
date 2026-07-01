@@ -10,7 +10,8 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, McpServerConfig, Workspace } from "../core/types.js";
+import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import {
@@ -246,6 +247,21 @@ function dynamicToolSpec(tool: PiToolLike): { type: "function"; name: string; de
   };
 }
 
+/** GAIA's harness-neutral MCP shape → codex `mcp_servers` config overrides
+ * (the config.toml table, passed per thread). Exported for tests. */
+export function codexMcpServersConfig(servers: Record<string, McpServerConfig>): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    out[name] = {
+      ...(server.command ? { command: server.command } : {}),
+      ...(server.args?.length ? { args: server.args } : {}),
+      ...(server.env && Object.keys(server.env).length ? { env: server.env } : {}),
+      ...(server.url ? { url: server.url } : {}),
+    };
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // CodexRuntime
 // ---------------------------------------------------------------------------
@@ -262,6 +278,7 @@ const CODEX_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
   granularTools: false,
   supportsPermissionMode: false,
+  supportsMcp: true,
 };
 
 export class CodexRuntime implements AgentRuntime {
@@ -626,6 +643,7 @@ export class CodexRuntime implements AgentRuntime {
       // agent with write/edit/bash can actually modify the workspace.
       sandbox: codexSandboxFor(this.agent.tools),
       ...(tools.size > 0 ? { dynamicTools: [...tools.values()].map(dynamicToolSpec) } : {}),
+      ...this.mcpConfigOverride(),
     })) as { thread: { id: string }; model: string; modelProvider: string };
 
     this.attachedThreads.add(response.thread.id);
@@ -657,6 +675,7 @@ export class CodexRuntime implements AgentRuntime {
         modelProvider: this.agent.model?.provider ?? null,
         baseInstructions,
         sandbox: codexSandboxFor(this.agent.tools),
+        ...this.mcpConfigOverride(),
       })) as { thread: { id: string }; model: string; modelProvider: string };
       const next: ThreadState = {
         threadId: response.thread.id,
@@ -715,6 +734,14 @@ export class CodexRuntime implements AgentRuntime {
         contentItems: [{ type: "inputText", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }
+  }
+
+  /** Configured MCP servers as a per-thread codex config override; {} when
+   * none are configured so the spread adds nothing. */
+  private mcpConfigOverride(): { config?: { mcp_servers: Record<string, Record<string, unknown>> } } {
+    const servers = resolveMcpServers(this.workspace.config, this.agent);
+    if (Object.keys(servers).length === 0) return {};
+    return { config: { mcp_servers: codexMcpServersConfig(servers) } };
   }
 
   private roomForThread(threadId: string): string | undefined {

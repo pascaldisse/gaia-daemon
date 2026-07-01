@@ -305,6 +305,32 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
   }
 });
 
+test("ClaudeRuntime passes configured MCP servers as --mcp-config with mcp__ allow rules", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    fx.workspace.config.mcpServers = { linear: { url: "https://mcp.linear.app/sse" } };
+    const mcpAgent = { ...fx.agent, mcpServers: { fs: { command: "npx", args: ["-y", "server-filesystem"] } } };
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: mcpAgent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const args = fake.calls[0].args;
+    const mcpConfig = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+    // Workspace + agent sets merge (agent wins per name).
+    assert.deepEqual(Object.keys(mcpConfig.mcpServers).sort(), ["fs", "linear"]);
+    assert.equal(mcpConfig.mcpServers.fs.command, "npx");
+    assert.equal(mcpConfig.mcpServers.linear.url, "https://mcp.linear.app/sse");
+    const allowed = args[args.indexOf("--allowedTools") + 1];
+    assert.ok(allowed.includes("mcp__fs"));
+    assert.ok(allowed.includes("mcp__linear"));
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("ClaudeRuntime passes --permission-mode from the agent config (plan mode as data)", async () => {
   const fx = await fixture();
   try {

@@ -122,7 +122,7 @@ test("hints carry _harness meta with per-harness hidden fields and ui locks", ()
   assert.ok(hints?._harness);
   const configs = hints._harness.configs;
   assert.deepEqual(configs.codex?.hiddenFields.sort(), ["permissionMode", "tools"]);
-  assert.deepEqual(configs.pi?.hiddenFields, ["permissionMode"]);
+  assert.deepEqual(configs.pi?.hiddenFields.sort(), ["mcpServers", "permissionMode"]);
   assert.deepEqual(configs.claude?.hiddenFields, []);
   assert.equal(configs.claude?.lockedProvider, "anthropic");
   assert.deepEqual(configs.claude?.modelNameOptions, ["opus", "sonnet", "haiku"]);

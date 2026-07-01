@@ -157,6 +157,8 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
   granularTools: true,
   supportsPermissionMode: false,
+  // Pi core has no MCP client (an adapter package exists but is not wired).
+  supportsMcp: false,
 };
 
 export class PiRuntime implements AgentRuntime {

@@ -58,6 +58,7 @@ function hiddenFieldsFor(harnessId: string): string[] {
   const caps = capabilitiesFor(harnessId);
   if (!caps.granularTools) hidden.push("tools");
   if (!caps.supportsPermissionMode) hidden.push("permissionMode");
+  if (!caps.supportsMcp) hidden.push("mcpServers");
   return hidden;
 }
 

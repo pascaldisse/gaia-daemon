@@ -20,6 +20,7 @@ import {
   type RuntimeCreateContext,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
+import { resolveMcpServers } from "../core/config.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt.js";
@@ -257,6 +258,7 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
   granularTools: true,
   supportsPermissionMode: true,
+  supportsMcp: true,
 };
 
 export class ClaudeRuntime implements AgentRuntime {
@@ -523,6 +525,11 @@ export class ClaudeRuntime implements AgentRuntime {
 
   private buildArgs(sessionId: string, firstTurn: boolean, systemPrompt: string, thinkingOverride: string | undefined): string[] {
     const grant = buildClaudeToolGrant(this.agent.tools);
+    // Configured MCP servers ride in as an inline --mcp-config JSON (safe-mode
+    // already keeps the user's own MCP config out); `mcp__<name>` approves the
+    // server's tools in -p mode, where unapproved calls are silently denied.
+    const mcpServers = resolveMcpServers(this.workspace.config, this.agent);
+    const mcpAllowed = Object.keys(mcpServers).map((name) => `mcp__${name}`);
     const args = [
       "-p",
       "--output-format",
@@ -538,8 +545,11 @@ export class ClaudeRuntime implements AgentRuntime {
       "--tools",
       grant.tools.join(","),
     ];
-    if (grant.allowedTools.length > 0) {
-      args.push("--allowedTools", grant.allowedTools.join(","));
+    if (mcpAllowed.length > 0) {
+      args.push("--mcp-config", JSON.stringify({ mcpServers }));
+    }
+    if (grant.allowedTools.length > 0 || mcpAllowed.length > 0) {
+      args.push("--allowedTools", [...grant.allowedTools, ...mcpAllowed].join(","));
     }
     // Posture knob as data: plan/acceptEdits/etc. live in the agent config, not
     // a hardcoded branch. Default (unset) leaves Claude's default behavior.

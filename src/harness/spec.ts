@@ -49,6 +49,9 @@ export interface HarnessCapabilities {
   readonly granularTools: boolean;
   /** Honors the `permissionMode` posture knob? */
   readonly supportsPermissionMode: boolean;
+  /** Consumes the `mcpServers` config section (claude --mcp-config, codex
+   * mcp_servers overrides)? The UI hides the section where unsupported. */
+  readonly supportsMcp: boolean;
 }
 
 export interface HarnessUi {

@@ -137,6 +137,16 @@ export interface MemoryConfigPatch {
   decayHalfLifeDays?: number;
 }
 
+/** One MCP server, workspace- or agent-scoped. `command` (stdio) or `url`
+ * (remote) — each harness translates this shape onto its own MCP surface
+ * (claude --mcp-config, codex mcp_servers config); pi has no core MCP. */
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+}
+
 export interface SandboxConfig {
   enabled?: boolean;
   backend?: string;
@@ -175,6 +185,8 @@ export interface AgentDef {
   allowNestedSummon?: boolean;
   /** Per-agent memory overrides applied over the workspace MemoryConfig. */
   memory?: MemoryConfigPatch;
+  /** Per-agent MCP servers, merged over the workspace set (agent wins). */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +200,7 @@ export interface WorkspaceConfig {
   harness?: string;
   maxSummonsPerRoom?: number;
   sandbox?: SandboxConfig;
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 export interface ContextFile {

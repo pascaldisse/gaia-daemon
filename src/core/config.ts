@@ -1,7 +1,7 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
-import type { MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 
 export const DEFAULTS = {
@@ -51,6 +51,34 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (raw.net === "full" || raw.net === "none") config.net = raw.net;
   if (typeof raw.credentialProxy === "boolean") config.credentialProxy = raw.credentialProxy;
   return Object.keys(config).length > 0 ? config : undefined;
+}
+
+/** Parse an `mcpServers` section (config.json or agent.json). A server needs
+ * a `command` (stdio) or `url` (remote); everything else drops tolerantly. */
+export function parseMcpServers(raw: unknown): Record<string, McpServerConfig> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const servers: Record<string, McpServerConfig> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!isRecord(value) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) continue;
+    const server: McpServerConfig = {};
+    if (typeof value.command === "string" && value.command.trim()) server.command = value.command.trim();
+    if (Array.isArray(value.args)) server.args = value.args.filter((arg): arg is string => typeof arg === "string");
+    if (isRecord(value.env)) {
+      const env = Object.fromEntries(Object.entries(value.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      if (Object.keys(env).length > 0) server.env = env;
+    }
+    if (typeof value.url === "string" && value.url.trim()) server.url = value.url.trim();
+    if (server.command || server.url) servers[name] = server;
+  }
+  return Object.keys(servers).length > 0 ? servers : undefined;
+}
+
+/** Effective MCP servers for an agent: workspace set ∪ agent set (agent wins). */
+export function resolveMcpServers(
+  workspace: Pick<WorkspaceConfig, "mcpServers">,
+  agent: { mcpServers?: Record<string, McpServerConfig> },
+): Record<string, McpServerConfig> {
+  return { ...(workspace.mcpServers ?? {}), ...(agent.mcpServers ?? {}) };
 }
 
 /** Parse a `memory` patch (agent.json override or config.json section).
@@ -116,5 +144,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   }
   const sandbox = parseSandboxConfig(obj.sandbox);
   if (sandbox) config.sandbox = sandbox;
+  const mcpServers = parseMcpServers(obj.mcpServers);
+  if (mcpServers) config.mcpServers = mcpServers;
   return config;
 }

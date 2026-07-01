@@ -268,6 +268,32 @@ test("CodexRuntime injects memory env + token; no dynamic tools without gaia too
   }
 });
 
+test("CodexRuntime passes configured MCP servers as per-thread config overrides", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    fx.workspace.config.mcpServers = { linear: { url: "https://mcp.linear.app/sse" } };
+    const mcpAgent = { ...fx.agent, mcpServers: { fs: { command: "npx", args: ["-y", "server-filesystem"], env: { ROOT: "/tmp" } } } };
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: mcpAgent, memoryStore: new MemoryStore(), clientFactory: async () => fake });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: { mcp_servers: Record<string, Record<string, unknown>> } }).config;
+    assert.deepEqual(config?.mcp_servers, {
+      linear: { url: "https://mcp.linear.app/sse" },
+      fs: { command: "npx", args: ["-y", "server-filesystem"], env: { ROOT: "/tmp" } },
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("CodexRuntime resumes a persisted thread after restart; failed resume starts fresh", async () => {
   const fx = await fixture();
   try {
