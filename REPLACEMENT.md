@@ -1,5 +1,12 @@
 # REPLACEMENT.md — can GAIA fully replace Claude Code, Codex, pi, and Hermes?
 
+> **STATUS 2026-07-02: the priority list below is fully SHIPPED.** Memory v3,
+> the scheduler, Codex dynamicTools + thread/resume (+ uniform session
+> persistence for claude), MCP exposure, /steer + /rewind, room-layer hooks,
+> and the pi scope migration are all on branch v2 (commits c9226d1..231561d).
+> The matrix rows and gap list are kept as written for the historical
+> analysis; per-row updates are marked ✅ SHIPPED inline.
+
 Research date 2026-07-01, verified against the locally installed binaries
 (claude 2.1.198, codex 0.142.2, pi 0.79.10, hermes-agent v0.18.0 docs). The
 question is not "reimplement them" — GAIA spawns them as harnesses, so every
@@ -27,11 +34,11 @@ ways:
 | Full-history recall | partial (conversation_search) | ✗ | ✗ | a (FTS5, keyword-only) | ✅ FTS5 → **hybrid in v3** | v3 exceeds Hermes |
 | Subagents / parallel work | a+b (teams) | experimental | ✗ ("spawn pi via tmux") | a (MoA) | ✅ summons + whale swarms + monad routing (c) | done — ours is cross-harness, theirs isn't |
 | Multi-agent persistent rooms | ✗ | ✗ | ✗ | channels ≠ rooms | ✅ the core product | GAIA-only |
-| MCP servers | a+b (`--mcp-config`) | a+b (`[mcp_servers]`) | ✗ core (adapter pkg) | a | ❌ not exposed | **gap (b)** — one settings surface, mapped per harness as spec data |
-| Hooks | a+b (30 events) | a+b (now stable) | b (extension events) | ✗ | ❌ not exposed | gap (b/c) — a uniform gaia hook schema translated per harness |
-| Checkpoints / rewind | a-TUI only (not headless) | a (`thread/rollback` IS headless) | ✗ | ✗ | partial: transcript is append-only, `/clear`+fork exist | gap (c) — room-level rewind fits the WAL protocol naturally |
-| Mid-turn steering | ✗ headless | a (`turn/steer`) | a (SDK `steer`) | ✗ | ❌ | gap (b) — worth one uniform "steer" capability flag |
-| Scheduling / proactive runs | cloud-tied | ✗ | ✗ | **a — first-class local cron** | ❌ | **gap (c), the only row where no harness helps.** Hermes's design (60s tick, fresh isolated session per job, output chaining, deliver-to-room) maps 1:1 onto rooms + summons + sandbox/trust. |
+| MCP servers | a+b (`--mcp-config`) | a+b (`[mcp_servers]`) | ✗ core (adapter pkg) | a | ✅ SHIPPED: `mcpServers` in config.json/agent.json, translated per harness (claude --mcp-config, codex mcp_servers overrides, pi hidden via supportsMcp) | done |
+| Hooks | a+b (30 events) | a+b (now stable) | b (extension events) | ✗ | ✅ SHIPPED: observer hooks at the ROOM layer (preTurn/postTurn/toolUse/error) — uniform by construction, no per-harness translation | done |
+| Checkpoints / rewind | a-TUI only (not headless) | a (`thread/rollback` IS headless) | ✗ | ✗ | ✅ SHIPPED: `/rewind [n]` — transcript truncate + cursor/session reset on the WAL protocol, identical for every harness | done |
+| Mid-turn steering | ✗ headless | a (`turn/steer`) | a (SDK `steer`) | ✗ | ✅ SHIPPED: `/steer` via capabilities.supportsSteer (pi session.steer, codex turn/steer; claude declines) | done |
+| Scheduling / proactive runs | cloud-tied | ✗ | ✗ | **a — first-class local cron** | ✅ SHIPPED: schedules.json + 60s daemon tick, isolated/in-room runs under sandbox/trust, output chaining, crash recovery, `/schedule` | done |
 | Web search / browser | a | a | ✗ (bash/skills) | a | free where the harness has it | expose as capability data later |
 | Skills / slash commands | a+b | a+b | a+b | a | ✅ skills dir + registry commands | done |
 | Structured output / budgets (headless) | a (`--json-schema`, `--max-budget-usd`) | a (`--output-schema`) | a (rpc) | — | ❌ | nice-to-have (b) |
@@ -78,3 +85,12 @@ boundary).
 
 memory v3 → scheduler → Codex dynamicTools/resume → MCP exposure → steer +
 rollback → hooks → pi scope migration (safe anytime).
+
+**All seven shipped (2026-07-02, branch v2):**
+1. memory v3 — c9226d1
+2. scheduler — fd6e11d
+3. Codex dynamicTools + thread/resume (+ claude session persistence) — 0234ced
+4. MCP exposure — f56ed67
+5. /steer + /rewind — da63191
+6. room-layer hooks — a6587aa
+7. pi scope migration (@earendil-works 0.80.3) — 231561d
