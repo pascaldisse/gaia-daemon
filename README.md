@@ -4,6 +4,15 @@
 
 `gaia` is a local-first multi-agent workspace built on the Pi SDK.
 
+> **v2.** This is the from-scratch rewrite: same concepts, same on-disk
+> formats (v1 workspaces open unchanged), same HTTP+SSE surface — restructured
+> into strict layers (`core → domain → harness → services → daemon → server`),
+> with durability guaranteed by protocol (a write-ahead turn journal and a
+> persisted message queue), runtime details stored on transcript events
+> forever, and a web client that is honest, typed JavaScript. The autopsy of
+> v1 is in [CRITIQUE.md](CRITIQUE.md); the architecture in
+> [DESIGN.md](DESIGN.md).
+
 Its main idea is simple:
 
 - **Agent = hard control**: harness, model, tools, and sandbox/permission policy.
@@ -314,7 +323,7 @@ OpenAI-Codex models respectively.
 Because every harness runs a turn in the same `gaia __run-agent` subprocess, the
 daemon can wrap that one process in an OS-level sandbox — uniformly, with no
 knowledge of which harness is inside. Backends are swappable: adding one is a new
-`src/runtime/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
+`src/harness/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
 line, the daemon analogue of a single-file container-runtime swap.
 
 Two backends ship (plus the swap seam for more):

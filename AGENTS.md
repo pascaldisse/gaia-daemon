@@ -3,8 +3,9 @@
 ## ⚠️ RULE #0 — THE HARNESS ABSTRACTION IS ABSOLUTE
 
 **pi, claude, and codex are NOT different things. They are interchangeable agentic
-harnesses behind ONE abstraction.** (harness registry → `RunnerHost` → `gaia __run-agent`
-runner → the `AgentRuntime`/`AgentEvent` interface.)
+harnesses behind ONE abstraction.** (harness registry in `src/harness/spec.ts` →
+`RunnerHost` (`src/harness/host.ts`) → `gaia __run-agent` runner → the
+`AgentRuntime`/`AgentEvent` interface.)
 
 You implement a capability **ONCE, at the harness/runtime abstraction layer**, and it
 applies **uniformly to every harness** — the ones implemented today, the ones not yet
@@ -19,11 +20,11 @@ abstraction layer, full stop.
 - Any per-harness exception or special treatment anywhere in the shared layer.
 
 **THE ONLY allowed harness-specific code:** a harness's own registration
-(`registerHarness({...})` in `src/runtime/<x>.ts`) may declare its wiring as **DATA on the
+(`registerHarness({...})` in `src/harness/<x>.ts`) may declare its wiring as **DATA on the
 spec** — capabilities, ui, and the credential-proxy descriptor — read uniformly by the
-shared layer, which never learns which harness it is. `src/runtime/harness-registry.ts`
-says it directly: *"Differences between harnesses live as data on the spec … read
-uniformly — never as `=== "claude"` branches scattered across modules."*
+shared layer, which never learns which harness it is. `src/harness/spec.ts` says it
+directly: *"differences live as DATA on the spec … read uniformly — never as
+`=== "claude"` branches."*
 
 **Why:** the entire unify refactor exists to give every harness ONE uniform runner + one
 tool-IO bridge + swappable sandbox. A single special-case rots that into scattered
@@ -44,8 +45,17 @@ applies it with ZERO harness-id branches.
   bridges (Telegram/Discord/…) are plugins, never core.
 - **Summons run autonomously** behind the sandbox + trust tier. NEVER propose
   human-in-the-loop approval/command-gating for summons — the sandbox IS the boundary.
-- **No build step.** Daemon runs via `tsx`; `web/src` is type-annotation-free JS served as
-  `.ts`. `web/src` cannot import `src/`. Typecheck with `tsc --noEmit`.
+- **No build step.** Daemon runs via `tsx`; `web/src` is JSDoc-typed plain `.js` served
+  as-is and **typechecked** (`tsc -p web/tsconfig.json`, strict checkJs). Daemon types
+  reach the client only as JSDoc comment imports — never runtime imports of `src/`.
+  `npm run check` gates both worlds.
+- **Layering points down.** `server → daemon → services → harness → domain → core`.
+  No module imports upward. Wire contracts (runner protocol, proxy mount) live in
+  `src/harness/protocol.ts`.
+- **Durability is protocol, not care** (see DESIGN.md): queued messages persist in
+  `state.json.queue`; every turn reserves its transcript event id before streaming
+  (`pendingTurn.eventId`); commit = append then one atomic state write; resume is
+  idempotent. Never hold user work in memory only.
 - **Zero duplication.** Shared plumbing lives once. Don't re-implement it per harness.
 - **Trust is data, not a hardcoded id.** `trust: false` → forced real sandbox, never
   config-weakenable. Never hardcode a provider/model string as a security gate.
