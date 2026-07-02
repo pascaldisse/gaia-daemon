@@ -655,6 +655,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .json-nested { display: grid; gap: 9px; padding: 8px 0 0 14px; border-left: 1px solid var(--border); }
 .text-setting { min-height: 96px; resize: vertical; }
+.json-field { min-height: 60px; resize: vertical; }
 
 .multi-options { display: flex; flex-wrap: wrap; gap: 6px; }
 

@@ -39,7 +39,14 @@ function renderPanel() {
             h("span", { class: `dot ${agent.status}` }),
             h("strong", { text: `${agent.icon} @${agent.id}` }),
             h("small", {
-              text: [agent.isDefault ? "main" : "", agent.status === "running" ? "running" : "", agent.voice ? `voice:${agent.voice}` : "", agent.modelLabel]
+              text: [
+                // Only when it says more than the id already does.
+                agent.displayName && agent.displayName.toLowerCase() !== agent.id.toLowerCase() ? agent.displayName : "",
+                agent.isDefault ? "main" : "",
+                agent.status === "running" ? "running" : "",
+                agent.voice ? `voice:${agent.voice}` : "",
+                agent.modelLabel,
+              ]
                 .filter(Boolean)
                 .join(" / "),
             }),

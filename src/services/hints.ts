@@ -19,6 +19,7 @@ import { CLAUDE_PERMISSION_MODES, type ThinkingLevel, type Workspace } from "../
 import { gaiaHome, workspacePaths } from "../core/paths.js";
 import { ensureDir } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
+import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
@@ -28,7 +29,7 @@ type ToolName = keyof ToolsOptions;
 // ---------------------------------------------------------------------------
 // Field hints
 
-export type FieldInput = "select" | "multiselect" | "number" | "boolean" | "text";
+export type FieldInput = "select" | "multiselect" | "number" | "boolean" | "text" | "json";
 
 export interface FieldHintOption {
   value: string;
@@ -47,6 +48,8 @@ export interface FieldHint {
   groupBy?: string;
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
   hidden?: boolean;
+  /** Shown as the field's tooltip — what the setting does / example value. */
+  description?: string;
 }
 
 // Which agent.json fields the settings UI hides for a harness — derived from the
@@ -197,7 +200,7 @@ function fileHarnessMeta(): FileHints {
 
 // Memory v3 knobs (MEMORY-DESIGN.md). Shared verbatim between config.json
 // (workspace defaults) and agent.json (per-agent overrides — all optional).
-function memoryHints(optional: boolean): FileHints {
+function memoryHints(optional: boolean, models: ModelChoice[]): FileHints {
   return {
     "memory.autoRecall": { input: "boolean", optional },
     "memory.autoRecallBudget": { input: "number", optional },
@@ -211,7 +214,64 @@ function memoryHints(optional: boolean): FileHints {
     "memory.consolidate.enabled": { input: "boolean", optional },
     "memory.consolidate.idleMinutes": { input: "number", optional },
     "memory.consolidate.maxPerDay": { input: "number", optional },
+    // Unset = the agent's own model runs consolidation.
+    "memory.consolidate.model.provider": select(providerOptions(models), {
+      optional: true,
+      description: "model used to distill episodes into facts; unset = the agent's own model",
+    }),
+    "memory.consolidate.model.name": select(modelOptions(models), {
+      optional: true,
+      groupBy: "memory.consolidate.model.provider",
+    }),
     "memory.decayHalfLifeDays": { input: "number", optional },
+  };
+}
+
+// Sandbox knobs (SandboxConfig). Same shape on config.json (workspace default)
+// and agent.json (per-agent override); trust-tier resolution can force a real
+// backend regardless, so these are preferences, not the security boundary.
+function sandboxHints(): FileHints {
+  return {
+    "sandbox.enabled": { input: "boolean", optional: true, description: "run agent subprocesses inside the sandbox" },
+    "sandbox.backend": select(values(sandboxBackendIds()), {
+      optional: true,
+      description: "isolation backend; untrusted agents are always forced onto a real one",
+    }),
+    "sandbox.net": select(
+      [
+        { value: "full", description: "normal network access" },
+        { value: "none", description: "no network inside the sandbox" },
+      ],
+      { optional: true },
+    ),
+    "sandbox.writable": { input: "json", optional: true, description: 'extra writable paths, e.g. ["/some/dir"]' },
+    "sandbox.credentialProxy": {
+      input: "boolean",
+      optional: true,
+      description: "route LLM calls through the daemon so the sandboxed process never holds real API keys",
+    },
+  };
+}
+
+const HOOK_EXAMPLE = '["./notify.sh"] or [{"command": "…", "timeoutSec": 30}]';
+
+// Observer hooks (HooksConfig): fire-and-forget shell commands at room
+// lifecycle points — they observe, never gate.
+function hooksHints(): FileHints {
+  return {
+    "hooks.preTurn": { input: "json", optional: true, description: `run before each agent turn: ${HOOK_EXAMPLE}` },
+    "hooks.postTurn": { input: "json", optional: true, description: `run after a reply commits: ${HOOK_EXAMPLE}` },
+    "hooks.toolUse": { input: "json", optional: true, description: `run after each tool call settles: ${HOOK_EXAMPLE}` },
+    "hooks.error": { input: "json", optional: true, description: `run when a turn fails: ${HOOK_EXAMPLE}` },
+  };
+}
+
+function mcpServersHint(extra: Partial<FieldHint> = {}): FieldHint {
+  return {
+    input: "json",
+    optional: true,
+    description: 'MCP servers by name: {"docs": {"command": "npx", "args": ["-y", "some-server"]}} or {"api": {"url": "https://…"}}',
+    ...extra,
   };
 }
 
@@ -221,7 +281,11 @@ function configJsonHints(sources: HintSources): FileHints {
     room: select(values(sources.roomIds)),
     transcriptWindow: { input: "number" },
     harness: select(harnessSelectOptions(), { optional: true }),
-    ...memoryHints(false),
+    maxSummonsPerRoom: { input: "number", optional: true, description: "max concurrently running summons per room" },
+    mcpServers: mcpServersHint(),
+    ...sandboxHints(),
+    ...hooksHints(),
+    ...memoryHints(false, sources.models),
     ...fileHarnessMeta(),
   };
 }
@@ -253,7 +317,19 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
     "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),
-    ...memoryHints(true),
+    trust: {
+      input: "boolean",
+      optional: true,
+      description: "trust tier (default true); false forces a real sandbox and forbids summoning",
+    },
+    allowNestedSummon: {
+      input: "boolean",
+      optional: true,
+      description: "may summon further workers when itself running as a summon (default false)",
+    },
+    mcpServers: mcpServersHint({ hidden: hiddenByHarness.has("mcpServers") }),
+    ...sandboxHints(),
+    ...memoryHints(true, sources.models),
     ...fileHarnessMeta(),
   };
 }
@@ -261,11 +337,17 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
 function schedulesJsonHints(sources: HintSources): FileHints {
   return {
     enabled: { input: "boolean" },
+    "jobs.[].id": { input: "text", description: "unique job id (letters, digits, dashes)" },
+    "jobs.[].schedule": {
+      input: "text",
+      description: '5-field cron ("0 9 * * 1-5"), "every 30m" / "every 2h" / "every 1d", or @hourly/@daily/@weekly/@monthly',
+    },
+    "jobs.[].prompt": { input: "text", description: "the message sent to the agent on each run" },
     "jobs.[].agent": select(values(sources.agentIds), { optional: true }),
     "jobs.[].room": select(values(sources.roomIds), { optional: true }),
     "jobs.[].enabled": { input: "boolean", optional: true },
-    "jobs.[].isolated": { input: "boolean", optional: true },
-    "jobs.[].chainOutput": { input: "boolean", optional: true },
+    "jobs.[].isolated": { input: "boolean", optional: true, description: "run in a private child room (default); false runs in the target room" },
+    "jobs.[].chainOutput": { input: "boolean", optional: true, description: "feed the previous run's output into the next prompt" },
   };
 }
 
@@ -276,6 +358,8 @@ function voiceJsonHints(): FileHints {
     disableThinking: { input: "boolean" },
     startTimeoutSec: { input: "number" },
     silenceDelaySec: { input: "number" },
+    unmuteUrl: { input: "text", optional: true, description: "unmute backend the browser connects to (default ws://127.0.0.1:8000)" },
+    unmuteDir: { input: "text", optional: true, description: "local unmute checkout to auto-start; empty = the bundled one" },
   };
 }
 

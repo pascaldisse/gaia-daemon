@@ -542,7 +542,12 @@ function HintedSelect(entryPath, key, hint, currentValue, parsedRoot) {
   const groupValue = hint.groupBy ? getJsonPathValue(parsedRoot, hint.groupBy.split(".")) : undefined;
   buildSelectOptions(select, hint, currentValue === undefined || currentValue === null ? "" : String(currentValue), groupValue);
   hintOf.set(select, hint);
-  return h("label", { class: "setting-row" }, h("span", { text: key }), select);
+  return h("label", { class: "setting-row", ...rowTitle(hint) }, h("span", { text: key }), select);
+}
+
+/** Field description → title tooltip attrs for the setting row. @param {FieldHint} hint */
+function rowTitle(hint) {
+  return hint.description ? { title: hint.description } : {};
 }
 
 /**
@@ -567,14 +572,14 @@ function HintedMultiselect(entryPath, key, hint, currentValues) {
       ),
     ),
   );
-  return h("div", { class: "setting-row stacked" }, h("span", { text: key }), container);
+  return h("div", { class: "setting-row stacked", ...rowTitle(hint) }, h("span", { text: key }), container);
 }
 
-/** @param {JsonPath} entryPath @param {string} key @param {unknown} currentValue */
-function HintedNumber(entryPath, key, currentValue) {
+/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
+function HintedNumber(entryPath, key, hint, currentValue) {
   return h(
     "label",
-    { class: "setting-row" },
+    { class: "setting-row", ...rowTitle(hint) },
     h("span", { text: key }),
     h("input", {
       type: "number",
@@ -598,7 +603,46 @@ function HintedBoolean(entryPath, key, hint, currentValue) {
   select.append(h("option", { value: "true", text: "true" }));
   select.append(h("option", { value: "false", text: "false" }));
   select.value = currentValue === true ? "true" : currentValue === false ? "false" : "";
-  return h("label", { class: "setting-row" }, h("span", { text: key }), select);
+  return h("label", { class: "setting-row", ...rowTitle(hint) }, h("span", { text: key }), select);
+}
+
+/** Plain string field. Hinted so absent-but-known settings still render a row. */
+/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
+function HintedText(entryPath, key, hint, currentValue) {
+  return h(
+    "label",
+    { class: "setting-row", ...rowTitle(hint) },
+    h("span", { text: key }),
+    h("input", {
+      "data-json-path": JSON.stringify(entryPath),
+      "data-json-text": "1",
+      "data-path-key": pathKey(entryPath),
+      ...(hint.optional ? { "data-json-optional": "1" } : {}),
+      value: currentValue === undefined || currentValue === null ? "" : String(currentValue),
+      ...(hint.description ? { placeholder: hint.description } : {}),
+    }),
+  );
+}
+
+/**
+ * Structured subtree (mcpServers, hooks.*, sandbox.writable) edited as raw
+ * JSON in place. Empty clears the key; invalid JSON keeps the saved value.
+ * @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue
+ */
+function HintedJson(entryPath, key, hint, currentValue) {
+  return h(
+    "div",
+    { class: "setting-row stacked", ...rowTitle(hint) },
+    h("span", { text: key }),
+    h("textarea", {
+      class: "json-field",
+      "data-json-path": JSON.stringify(entryPath),
+      "data-json-json": "1",
+      "data-path-key": pathKey(entryPath),
+      value: currentValue === undefined ? "" : JSON.stringify(currentValue, null, 2),
+      ...(hint.description ? { placeholder: hint.description } : {}),
+    }),
+  );
 }
 
 /**
@@ -612,8 +656,10 @@ function HintedBoolean(entryPath, key, hint, currentValue) {
 function hintedField(entryPath, key, hint, currentValue, parsedRoot) {
   if (hint.input === "select") return HintedSelect(entryPath, key, hint, currentValue, parsedRoot);
   if (hint.input === "multiselect") return HintedMultiselect(entryPath, key, hint, currentValue);
-  if (hint.input === "number") return HintedNumber(entryPath, key, currentValue);
+  if (hint.input === "number") return HintedNumber(entryPath, key, hint, currentValue);
   if (hint.input === "boolean") return HintedBoolean(entryPath, key, hint, currentValue);
+  if (hint.input === "text") return HintedText(entryPath, key, hint, currentValue);
+  if (hint.input === "json") return HintedJson(entryPath, key, hint, currentValue);
   return null;
 }
 
@@ -979,6 +1025,27 @@ function serializeSettings(view, kind) {
         const input = /** @type {HTMLInputElement} */ (element);
         if (input.value.trim() === "") deleteJsonPathValue(next, path);
         else setJsonPathValue(next, path, Number(input.value));
+        continue;
+      }
+      if (element.dataset.jsonText !== undefined) {
+        const input = /** @type {HTMLInputElement} */ (element);
+        if (input.value === "" && element.dataset.jsonOptional !== undefined) deleteJsonPathValue(next, path);
+        else setJsonPathValue(next, path, input.value);
+        continue;
+      }
+      if (element.dataset.jsonJson !== undefined) {
+        const text = /** @type {HTMLTextAreaElement} */ (element).value.trim();
+        if (text === "") {
+          deleteJsonPathValue(next, path);
+          continue;
+        }
+        // Invalid JSON keeps whatever the file already holds rather than
+        // corrupting it; the raw editor is the escape hatch for fixing it.
+        try {
+          setJsonPathValue(next, path, JSON.parse(text));
+        } catch {
+          /* keep saved value */
+        }
         continue;
       }
       setJsonPathValue(next, path, parseJsonFieldValue(/** @type {HTMLInputElement} */ (element).value));

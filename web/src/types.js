@@ -56,11 +56,12 @@
 /**
  * Server-computed editing hint for one JSON path ("model.provider", "tools").
  * @typedef {Object} FieldHint
- * @property {"select"|"multiselect"|"number"|"boolean"|"text"} input
+ * @property {"select"|"multiselect"|"number"|"boolean"|"text"|"json"} input
  * @property {boolean} [optional]
  * @property {FieldHintOption[]} [options]
  * @property {string} [groupBy]
  * @property {boolean} [hidden]
+ * @property {string} [description]
  */
 
 /**
