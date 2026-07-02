@@ -49,7 +49,8 @@ Personas are durable. Projects add local context.
 - voice calls per agent through the vendored unmute stack (`unmute/`)
 - sample global agents: `@gaia`, `@sidia`, `@terry`
 - slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`,
-  `/thinking`, `/clear`, `/fork`
+  `/thinking`, `/clear`, `/fork`, `/setup`, `/consolidate`, `/recall`,
+  `/schedule`, `/steer`, `/cancel` (alias `/stop`), `/rewind`
 - dynamic selectable previews for `/` commands and `@` agents
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
@@ -309,14 +310,16 @@ keeping the daemon the single writer.
 - **`codex`** — drives your installed `codex` app-server, riding your **Codex
   subscription** (`codex` must be on `PATH`). It honors `tools` coarsely through
   a workspace sandbox: `write`/`edit`/`bash` → `workspace-write`, otherwise
-  `read-only`. `memory` works (via the `gaia` CLI); `recall` and `summon` are
-  not available under Codex yet.
+  `read-only`. `memory`, `recall`, and `summon` are real Codex tools: the same
+  tool implementations pi uses are declared as `dynamicTools` on the thread and
+  executed in-process by the daemon when Codex calls them.
 
-For the `claude` and `codex` harnesses, `memory`/`recall`/`summon` are delivered
-through a small `gaia` CLI the agent runs (reads go straight to disk; writes and
-summon call back to the running daemon, which stays the single writer) — no MCP.
-The `claude`/`codex` providers are locked in the settings UI to Anthropic /
-OpenAI-Codex models respectively.
+For the `claude` harness, `memory`/`recall`/`summon` are delivered through a
+small `gaia` CLI the agent runs (reads go straight to disk; writes and summon
+call back to the running daemon, which stays the single writer) — no MCP
+required for gaia's own tools, though external `mcpServers` from settings are
+passed through. The `claude`/`codex` providers are locked in the settings UI to
+Anthropic / OpenAI-Codex models respectively.
 
 ## Sandbox
 

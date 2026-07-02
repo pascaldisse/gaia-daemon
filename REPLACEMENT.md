@@ -50,36 +50,40 @@ rooms, cross-harness summon swarms, routing, and crash-proof turn durability.**
 Nothing in the matrix requires copying a competitor; the moat is real. To
 *fully replace* daily use of all four, the honest gap list is short:
 
-1. **Memory v3** (in progress, this branch) — after it lands, GAIA memory
+1. **Memory v3** (✅ shipped, c9226d1) — GAIA memory
    strictly dominates all four harnesses' built-ins: budgeted core (all have),
    hybrid lexical+semantic recall (none have), bi-temporal facts (none),
    outcome-grounded episodes + consolidation (Hermes has a weaker,
    complexity-triggered version).
-2. **Scheduler** — Hermes is the only one with real local cron, and it's the
-   feature that makes an agent *proactive*. Design: a `schedules.json` per
-   workspace, 60s tick in the daemon, each job = a normal room message (or
-   summon) under the existing sandbox/trust — no new security surface,
-   consistent with the no-approval-gating rule. This is the next big build
-   after memory v3.
-3. **MCP exposure** — one `mcpServers` section in workspace/agent settings;
-   each harness declares *how* it consumes MCP config as data on its spec
-   (Claude: `--mcp-config` JSON; Codex: `-c mcp_servers.*` overrides; pi:
-   adapter extension). Uniform surface, zero shared-code branches.
-4. **Codex parity wiring** — the app-server already offers what we haven't
-   consumed: `dynamicTools` + `item/tool/call` (gives Codex real
-   recall/summon, closing the last capabilities asymmetry), `thread/resume`
-   (room-coupled sessions), `turn/steer`, `thread/rollback`, per-thread
-   `permissions`.
-5. **Uniform hooks** (later) — a small gaia hook schema (pre-tool, post-turn,
-   session-start) translated per harness: Claude/Codex native hooks, pi
-   extension events.
-6. **Housekeeping** — migrate the pi SDK to its new npm scope
-   (`@earendil-works/pi-coding-agent`; old scope frozen at 0.73.1, API names
-   unchanged).
+2. **Scheduler** (✅ shipped, fd6e11d) — Hermes is the only one with real local
+   cron, and it's the feature that makes an agent *proactive*. As designed: a
+   `schedules.json` per workspace, 60s tick in the daemon, each job = a normal
+   room message (or summon) under the existing sandbox/trust — no new security
+   surface, consistent with the no-approval-gating rule.
+3. **MCP exposure** (✅ shipped, f56ed67) — one `mcpServers` section in
+   workspace/agent settings; each harness declares *how* it consumes MCP
+   config as data on its spec (Claude: `--mcp-config` JSON; Codex:
+   `mcp_servers` overrides; pi: hidden via `supportsMcp: false`). Uniform
+   surface, zero shared-code branches.
+4. **Codex parity wiring** (✅ shipped, 0234ced + da63191) — consumed
+   `dynamicTools` + `item/tool/call` (Codex gets real recall/summon, closing
+   the last capabilities asymmetry), `thread/resume` (room-coupled sessions),
+   and `turn/steer`. Deliberately NOT consumed: `thread/rollback` (GAIA's
+   `/rewind` is the uniform room-level mechanism) and per-thread
+   `permissions`/`approvalPolicy` (the GAIA sandbox is the boundary; still
+   open as data-exposure if ever wanted).
+5. **Uniform hooks** (✅ shipped, a6587aa) — implemented at the ROOM layer
+   (preTurn/postTurn/toolUse/error observer hooks) instead of per-harness
+   translation: uniform by construction.
+6. **Housekeeping** (✅ shipped, 231561d) — pi SDK migrated to
+   `@earendil-works/*` 0.80.3 (old scope frozen at 0.73.1; only drift:
+   `completeSimple` moved to `pi-ai/compat`).
 
 Everything else in the matrix is either already done, free by spawning, or
 deliberately rejected (per-harness approval popups — the sandbox is the
-boundary).
+boundary). Still deliberately open: headless structured output / budget flags
+(matrix row ❌, nice-to-have) and exposing web-search/browser availability as
+capability data.
 
 ## Priority order
 
@@ -94,3 +98,10 @@ rollback → hooks → pi scope migration (safe anytime).
 5. /steer + /rewind — da63191
 6. room-layer hooks — a6587aa
 7. pi scope migration (@earendil-works 0.80.3) — 231561d
+
+**Post-ship exposure sweep (same day):** every parsed setting now has a
+settings-UI hint (hooks, mcpServers, sandbox.*, trust, allowNestedSummon,
+maxSummonsPerRoom, consolidate model, voice unmute, schedule/prompt fields),
+and two commands closed the last command gaps: `/cancel` (alias `/stop`,
+panic-stops the running turn + queue from any client) and `/recall [@agent]
+<query>` (user-facing search over the memory index).
