@@ -24,6 +24,7 @@ import type { AgentDef, AgentEvent, EventDetails, PendingTurn, RoomEvent, Snapsh
 import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
+import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { runAgentTurn } from "./turns.js";
@@ -67,6 +68,8 @@ export interface RoomMemoryHooks {
   autoRecallBlock(agentId: string, query: string): Promise<string>;
   capture(agentId: string, capture: EpisodeCapture): Promise<void>;
   consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
+  /** Ranked search over facts, episodes, and room history — backs /recall. */
+  search(agentId: string, query: string, request?: { limit?: number }): Promise<MemorySearchHit[]>;
 }
 
 export interface SendMessageOptions {
@@ -79,6 +82,9 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+
+/** Max hits a /recall command reply lists. */
+const RECALL_COMMAND_LIMIT = 8;
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text. */
@@ -96,9 +102,11 @@ const COMMANDS: Record<string, CommandHandler> = {
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
-  // steer never reaches this registry: it must run WHILE a task is active, so
-  // sendMessage handles it before the busy-queue branch.
+  recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
+  // steer and cancel never reach this registry: both must run WHILE a task is
+  // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
+  cancel: (service) => service.runCancelCommand(),
   fork: (service) => service.runForkCommand(),
   unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
 };
@@ -234,11 +242,11 @@ export class RoomService {
 
     const task = this.createTask(text, targets);
 
-    // /steer is the one command that must run WHILE a turn is active — it
-    // injects into the running turn instead of queueing behind it.
-    if (command.type === "steer") {
+    // /steer and /cancel must run WHILE a turn is active — steer injects into
+    // the running turn, cancel stops it — so neither queues behind it.
+    if (command.type === "steer" || command.type === "cancel") {
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
-      const reply = await this.runSteerCommand(command.text);
+      const reply = command.type === "steer" ? await this.runSteerCommand(command.text) : await this.runCancelCommand();
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
       task.status = "complete";
@@ -555,6 +563,31 @@ export class RoomService {
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
     const ok = (await runtime.steer?.(this.roomId, guidance)) ?? false;
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
+  }
+
+  /** /cancel: panic stop from any client — drops the durable queue and cancels
+   * the running turn. Partial progress commits (WAL), so nothing is lost. */
+  async runCancelCommand(): Promise<string> {
+    const queued = this.queuedTasks.length;
+    const cancelled = await this.cancelActiveTask();
+    if (!cancelled && queued === 0) return "Nothing is running.";
+    const parts: string[] = [];
+    if (cancelled) parts.push("Cancelled the running turn (partial progress is kept)");
+    if (queued > 0) parts.push(`dropped ${queued} queued message${queued === 1 ? "" : "s"}`);
+    return `${parts.join("; ")}.`;
+  }
+
+  /** /recall: user-facing search over the same index the recall tool and
+   * auto-recall use — facts, episodes, and full room history. */
+  async runRecallCommand(agent?: string, query?: string): Promise<string> {
+    const trimmed = query?.trim();
+    if (!trimmed) return "Usage: /recall [@agent] <query> — search memory and room history.";
+    const target = agent ?? this.workspace.config.defaultAgent;
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    if (!this.options.memory) return "Memory recall is not available in this workspace.";
+    const hits = await this.options.memory.search(target, trimmed, { limit: RECALL_COMMAND_LIMIT });
+    if (!hits.length) return `No matches for "${trimmed}" in @${target}'s memory or room history.`;
+    return `Recall @${target} — "${trimmed}":\n${formatMemoryHits(hits)}`;
   }
 
   /** /rewind: room-level checkpoint rollback. Truncates the transcript after

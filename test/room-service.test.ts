@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomService } from "../src/services/room-service.js";
+import { RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
 import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson } from "../src/core/store.js";
@@ -54,6 +54,7 @@ async function makeService(options: {
   script?: () => AgentEvent[];
   agents?: string[];
   runtimeFactory?: (agent: AgentDef) => AgentRuntime;
+  memory?: RoomMemoryHooks;
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
@@ -79,6 +80,7 @@ async function makeService(options: {
     workspaceId: "ws1",
     workspace,
     memoryStore: new MemoryStore(),
+    ...(options.memory ? { memory: options.memory } : {}),
     runtimeFactory: (agent) => {
       const runtime = options.runtimeFactory ? (options.runtimeFactory(agent) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
@@ -498,6 +500,91 @@ test("/steer declines gracefully when idle or unsupported", async () => {
   assert.match((reply as { event: { text: string } }).event.text, /does not support mid-turn steering/);
   release();
   await second.service.waitForIdle();
+});
+
+test("/cancel stops the running turn and drops queued messages without queueing itself", async () => {
+  let started!: () => void;
+  const firstSend = new Promise<void>((resolve) => (started = resolve));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const factory = (agent: AgentDef): AgentRuntime => {
+    const runtime = {
+      agent,
+      modelLabel: "test/model",
+      capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: false },
+      aborted: false,
+      async *send() {
+        started();
+        await gate;
+        yield { type: "text-delta", delta: "never finished" } as AgentEvent;
+      },
+      async abort() {
+        runtime.aborted = true;
+      },
+      dispose() {},
+      resetRoom() {},
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root, events, runtimes } = await makeService({ runtimeFactory: factory });
+
+  // Idle: /cancel is a no-op, and it never queues.
+  const idle = await service.sendMessage("/cancel");
+  assert.equal(idle.status, "complete");
+  const idleReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((idleReply as { event: { text: string } }).event.text, /Nothing is running/);
+
+  await service.sendMessage("start a long task");
+  await firstSend;
+  const queued = await service.sendMessage("this waits in the queue");
+  const cancelTask = await service.sendMessage("/stop"); // alias for /cancel
+  assert.equal(cancelTask.status, "complete", "cancel settles while the turn is active");
+  const reply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((reply as { event: { text: string } }).event.text, /Cancelled the running turn/);
+  assert.match((reply as { event: { text: string } }).event.text, /dropped 1 queued message/);
+
+  assert.equal((runtimes.get("gaia") as unknown as { aborted: boolean }).aborted, true, "runtime abort requested");
+  assert.equal(queued.status, "cancelled");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
+  assert.ok(!state.queue || state.queue.length === 0, "durable queue emptied");
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
+test("/recall searches the target agent's memory and reports misses", async () => {
+  const searches: Array<{ agentId: string; query: string }> = [];
+  const memory: RoomMemoryHooks = {
+    async autoRecallBlock() {
+      return "";
+    },
+    async capture() {},
+    async consolidate() {
+      return { ran: false, episodesSeen: 0, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0 };
+    },
+    async search(agentId, query) {
+      searches.push({ agentId, query });
+      if (query.includes("nothing")) return [];
+      return [{ kind: "fact", text: "GAIA commits turns through a WAL", ts: "2026-07-01T00:00:00.000Z", score: 0.9 }];
+    },
+  };
+  const { service, events } = await makeService({ memory });
+
+  const usage = await service.sendMessage("/recall");
+  assert.equal(usage.status, "complete");
+  const usageReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((usageReply as { event: { text: string } }).event.text, /Usage: \/recall/);
+
+  await service.sendMessage("/recall @terry turn durability");
+  assert.deepEqual(searches, [{ agentId: "terry", query: "turn durability" }]);
+  const hitReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((hitReply as { event: { text: string } }).event.text, /Recall @terry/);
+  assert.match((hitReply as { event: { text: string } }).event.text, /WAL/);
+
+  await service.sendMessage("/recall nothing here");
+  const missReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
+  assert.match((missReply as { event: { text: string } }).event.text, /No matches/);
+  // Default agent used when no @mention.
+  assert.equal(searches[1].agentId, "gaia");
 });
 
 test("/rewind truncates after the n-th-last user message and resets cursors + sessions", async () => {

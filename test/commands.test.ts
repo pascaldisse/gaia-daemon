@@ -20,6 +20,11 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/setup"), { type: "setup", sub: "list" });
   assert.deepEqual(parseCommand("/setup activate monad room2"), { type: "setup", sub: "activate", id: "monad", room: "room2" });
   assert.deepEqual(parseCommand("/setup off"), { type: "setup", sub: "off" });
+  assert.deepEqual(parseCommand("/cancel"), { type: "cancel" });
+  assert.deepEqual(parseCommand("/stop"), { type: "cancel" }); // alias
+  assert.deepEqual(parseCommand("/recall the deploy incident"), { type: "recall", agent: undefined, query: "the deploy incident" });
+  assert.deepEqual(parseCommand("/recall @terry lessons learned"), { type: "recall", agent: "terry", query: "lessons learned" });
+  assert.deepEqual(parseCommand("/recall"), { type: "recall", agent: undefined, query: undefined });
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 

@@ -16,6 +16,8 @@ export type SlashCommand =
   | { type: "consolidate"; agent?: string }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
+  | { type: "cancel" }
+  | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
@@ -33,6 +35,8 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
   { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
+  { name: "cancel", type: "cancel", description: "stop the running turn and drop queued messages", aliases: ["stop"] },
+  { name: "recall", type: "recall", description: "search memory + room history: /recall [@agent] <query>" },
   { name: "rewind", type: "rewind", description: "undo the last user turn(s) and their replies: /rewind [n]" },
 ];
 
@@ -65,6 +69,15 @@ export function parseCommand(input: string): SlashCommand {
       return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
     case "steer":
       return { type: "steer", text: args.join(" ") || undefined };
+    case "recall": {
+      // Only an explicit @-prefix names an agent; anything else is the query.
+      const hasAgent = args[0]?.startsWith("@") ?? false;
+      return {
+        type: "recall",
+        agent: hasAgent ? stripped[0] : undefined,
+        query: args.slice(hasAgent ? 1 : 0).join(" ") || undefined,
+      };
+    }
     case "rewind":
       return { type: "rewind", count: stripped[0] };
     case "setup": {

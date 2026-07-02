@@ -166,6 +166,9 @@ function fakeHooks(calls: HookCalls, recallBlock = "MEMBLOCK"): RoomMemoryHooks 
       calls.consolidations.push({ agentId, ...(options ? { options } : {}) });
       return { ran: true, episodesSeen: 3, factsAdded: 2, factsInvalidated: 1, memoryEdits: 1, opsSkipped: 4 };
     },
+    async search() {
+      return [];
+    },
   };
 }
 
