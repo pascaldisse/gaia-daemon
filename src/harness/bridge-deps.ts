@@ -51,10 +51,15 @@ export function bridgeRecallSearch(target: DaemonTarget): RecallSearch {
   };
 }
 
-/** summonCreate that POSTs to the daemon's summon endpoint (the coordinator). */
+/** summonCreate that POSTs to the daemon's summon endpoint (the coordinator).
+ * In-process tool bridge (Pi/Codex swarm): passes `wait: true` so the call
+ * resolves with the worker's final reply — the whole point of a fan-out is to
+ * collect and synthesize. (The `gaia summon` CLI verb, on a Bash transport that
+ * would be SIGKILLed at the harness tool timeout, omits `wait` and returns as
+ * soon as the sub-room is launched.) */
 export function bridgeSummonCreate(target: DaemonTarget): SummonCreate {
   return async ({ task, agentId }) => {
-    const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task });
+    const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task, wait: true });
     if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "summon failed");
     return typeof payload.result === "string" ? payload.result : "(no output)";
   };

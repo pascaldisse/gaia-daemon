@@ -709,9 +709,25 @@ export class GaiaWebServer {
     const targetAgent = stringField(body, "agent") ?? stringField(body, "agentId");
     const task = stringField(body, "task");
     if (!targetAgent || !task?.trim()) return json(response, 400, { error: "Missing agent or task" });
+    // Default fire-and-forget: the worker runs in its own sub-room (nested under
+    // this one in the sidebar) and the caller's turn continues immediately. Only
+    // a caller that can afford to block for the whole worker turn passes
+    // `wait: true` (the in-process swarm bridge, which collects results in-turn);
+    // a Bash-transport caller (`gaia summon`) must NOT, or the harness's tool
+    // timeout SIGKILLs the command mid-summon. This is a data flag, never a
+    // per-harness branch.
+    const wait = (body as Record<string, unknown>).wait === true;
     try {
       const coordinator = await this.daemon.coordinatorFor(claims.workspaceId);
-      json(response, 200, { result: await coordinator.summonAndWait(claims.roomId, targetAgent, task.trim()) });
+      if (wait) {
+        json(response, 200, { result: await coordinator.summonAndWait(claims.roomId, targetAgent, task.trim()) });
+      } else {
+        const roomId = await coordinator.summon(claims.roomId, targetAgent, task.trim());
+        json(response, 200, {
+          roomId,
+          result: `Summoned @${targetAgent} — now running in sub-room '${roomId}', nested under this room in the sidebar. This returned immediately; the worker keeps going in the background. Read its sub-room transcript for the result.`,
+        });
+      }
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }

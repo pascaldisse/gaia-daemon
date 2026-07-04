@@ -57,7 +57,8 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     id: "summon",
     cliVerbs: ["summon"],
     grant: "Bash(gaia summon:*)",
-    pointer: '- `gaia summon <agent> "<task>"` — run a private worker agent (visible live in the summons drawer)',
+    pointer:
+      '- `gaia summon <agent> "<task>"` — spin up a private worker agent in its own sub-room (nested under this room in the sidebar); returns immediately and the worker runs in the background — read its sub-room transcript for the result',
     makePiTool: async (ctx) => (ctx.summonCreate ? (await import("./tools-pi.js")).createSummonTool(ctx.summonCreate, ctx.roomId) : null),
   },
 ];
