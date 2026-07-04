@@ -1,16 +1,25 @@
-// Read-aloud: the per-message play button. The server splits a message into
-// sentence chunks and synthesizes them on demand (cached on disk); this module
-// fetches the chunks one after the other and plays them back-to-back, always
-// prefetching the next chunk while the current one speaks — so long messages
-// start quickly and never depend on one giant fragile request. Fetched chunk
-// audio is kept per message, so replaying is instant and free.
+// Read-aloud: the per-message play button. Two playback paths, chosen by the
+// server (never by engine id here):
+//   • stream — the desktop-app path. The server synthesizes the WHOLE message
+//     as one continuous PCM pass; we play it frame-by-frame through the Web
+//     Audio API, scheduling each frame sample-accurately after the last, so the
+//     first audio starts the instant the first frame lands and there are no
+//     seams. Used by streaming engines (claude-voice).
+//   • chunks — the batch path (local TTS). The server splits the message into
+//     sentence chunks and synthesizes them on demand (cached on disk); we fetch
+//     them one after the other and play them back-to-back, prefetching the next
+//     while the current one speaks. Fetched chunk audio is kept per message so
+//     replaying is instant and free.
+// The server advertises the mode; this module dispatches on it, so no engine id
+// ever reaches the client.
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
 /**
- * One playback run. `stopped` flips on stop/restart so late fetches and
- * `onended` callbacks from an abandoned session never touch the UI state.
- * @typedef {Object} ReadAloudSession
+ * The batch (chunk) playback run. `stopped` flips on stop/restart so late
+ * fetches and `onended` callbacks from an abandoned session never touch state.
+ * @typedef {Object} ChunkSession
+ * @property {"chunk"} kind
  * @property {string} eventId
  * @property {number} total
  * @property {(string|undefined)[]} urls
@@ -20,11 +29,23 @@ import { state } from "./state.js";
  * @property {boolean} stopped
  */
 
-/** @type {ReadAloudSession|null} */
+/**
+ * The streaming playback run. `stopped` flips on stop/restart; teardown aborts
+ * the fetch, stops every scheduled source, and closes the AudioContext.
+ * @typedef {Object} StreamSession
+ * @property {"stream"} kind
+ * @property {string} eventId
+ * @property {boolean} stopped
+ * @property {AbortController} controller
+ * @property {AudioContext|null} ctx
+ * @property {AudioBufferSourceNode[]} sources
+ */
+
+/** @type {ChunkSession|StreamSession|null} */
 let session = null;
 
-/** Fetched chunk audio per message (object URLs), so replays skip the server
- * entirely. Small LRU: URLs are revoked when a message is evicted. */
+/** Fetched chunk audio per message (object URLs), so batch replays skip the
+ * server entirely. Small LRU: URLs are revoked when a message is evicted. */
 const MAX_CACHED_MESSAGES = 8;
 /** @type {Map<string, { urls: (string|undefined)[], total: number }>} */
 const audioCache = new Map();
@@ -43,9 +64,25 @@ export function stopReadAloud() {
   session = null;
   if (current) {
     current.stopped = true;
-    for (const controller of current.controllers) controller.abort();
-    current.audio?.pause();
-    rememberAudio(current);
+    if (current.kind === "stream") {
+      try {
+        current.controller.abort();
+      } catch {
+        // Fetch already settled.
+      }
+      for (const src of current.sources) {
+        try {
+          src.stop();
+        } catch {
+          // Not started / already stopped.
+        }
+      }
+      if (current.ctx) void current.ctx.close().catch(() => {});
+    } else {
+      for (const controller of current.controllers) controller.abort();
+      current.audio?.pause();
+      rememberAudio(current);
+    }
   }
   if (state.readAloud) {
     state.readAloud = null;
@@ -59,11 +96,156 @@ async function startReadAloud(eventId) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
 
+  const base = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}`;
+  const chunkEndpoint = `${base}/read-aloud`;
+
+  // Instant replay of a message we already streamed chunk audio for (batch path).
+  if (audioCache.has(eventId)) {
+    await runChunkSession(eventId, chunkEndpoint);
+    return;
+  }
+
+  // Ask the server how to speak this message. A streaming engine answers with a
+  // continuous PCM stream; a batch engine answers {mode:"chunks"} and we fall
+  // back to the per-chunk path below.
+  const controller = new AbortController();
+  /** @type {StreamSession} */
+  const stream = { kind: "stream", eventId, stopped: false, controller, ctx: null, sources: [] };
+  session = stream;
+  state.readAloud = { eventId, phase: "loading" };
+  markDirty("transcript");
+
+  try {
+    const response = await fetch(`${base}/read-aloud/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ eventId }),
+      signal: controller.signal,
+    });
+    if (stream.stopped) return;
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `Read aloud failed: ${response.status}`);
+    }
+    if (response.headers.get("x-tts-mode") === "stream" && response.body) {
+      await playPcmStream(stream, response);
+      return;
+    }
+    // Batch engine: hand off to the unchanged per-chunk path.
+    const info = await response.json().catch(() => ({}));
+    const total = Number.isInteger(info?.chunks) && info.chunks > 0 ? info.chunks : undefined;
+    await runChunkSession(eventId, chunkEndpoint, total);
+  } catch (error) {
+    if (stream.stopped) return;
+    stopReadAloud();
+    if (!(error instanceof DOMException && error.name === "AbortError")) setError(error);
+  }
+}
+
+/**
+ * Play a continuous PCM stream frame-by-frame through the Web Audio API,
+ * scheduling each decoded frame to start exactly where the previous one ends —
+ * so playback is gapless and starts as soon as the first frame arrives.
+ * @param {StreamSession} current
+ * @param {Response} response
+ */
+async function playPcmStream(current, response) {
+  const rate = Number(response.headers.get("x-tts-rate")) || 16000;
+  const channels = Number(response.headers.get("x-tts-channels")) || 1;
+  const ctx = new AudioContext();
+  current.ctx = ctx;
+  try {
+    await ctx.resume();
+  } catch {
+    // A suspended context still schedules; it resumes on the next gesture.
+  }
+
+  const reader = /** @type {ReadableStream<Uint8Array>} */ (response.body).getReader();
+  const frameBytes = 2 * channels; // s16le
+  /** @type {Uint8Array} */
+  let leftover = new Uint8Array(0);
+  let nextTime = 0;
+  let started = false;
+  /** @type {AudioBufferSourceNode|null} */
+  let lastSource = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (current.stopped) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Already cancelled.
+      }
+      return;
+    }
+    if (done) break;
+    if (!value || value.length === 0) continue;
+
+    // A read may split a sample across HTTP frames; carry the remainder.
+    let buf = value;
+    if (leftover.length) {
+      const merged = new Uint8Array(leftover.length + value.length);
+      merged.set(leftover);
+      merged.set(value, leftover.length);
+      buf = merged;
+      leftover = new Uint8Array(0);
+    }
+    const usable = buf.length - (buf.length % frameBytes);
+    if (usable < buf.length) leftover = buf.slice(usable);
+    if (usable === 0) continue;
+
+    const frameCount = usable / frameBytes;
+    const audioBuf = ctx.createBuffer(channels, frameCount, rate);
+    const view = new DataView(buf.buffer, buf.byteOffset, usable);
+    for (let ch = 0; ch < channels; ch++) {
+      const out = audioBuf.getChannelData(ch);
+      for (let i = 0; i < frameCount; i++) out[i] = view.getInt16((i * channels + ch) * 2, true) / 32768;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(ctx.destination);
+    // Small lead on the first frame absorbs scheduling jitter; after that each
+    // frame butts directly against the previous one (sample-accurate, no gap).
+    if (nextTime < ctx.currentTime + 0.02) nextTime = ctx.currentTime + 0.12;
+    src.start(nextTime);
+    nextTime += audioBuf.duration;
+    lastSource = src;
+    current.sources.push(src);
+
+    if (!started) {
+      started = true;
+      if (state.readAloud?.eventId === current.eventId && state.readAloud.phase !== "playing") {
+        state.readAloud = { eventId: current.eventId, phase: "playing" };
+        markDirty("transcript");
+      }
+    }
+  }
+
+  // Let the queued audio finish before tearing the context down.
+  if (!current.stopped && lastSource) {
+    await new Promise((resolve) => {
+      /** @type {AudioBufferSourceNode} */ (lastSource).onended = () => resolve(undefined);
+    });
+  }
+  if (!current.stopped) stopReadAloud();
+}
+
+/**
+ * The batch (chunk) playback path: fetch each chunk WAV in turn and play it,
+ * prefetching the next while the current speaks.
+ * @param {string} eventId
+ * @param {string} endpoint
+ * @param {number} [knownTotal] chunk count from the mode probe, if known
+ */
+async function runChunkSession(eventId, endpoint, knownTotal) {
   const cached = audioCache.get(eventId);
-  /** @type {ReadAloudSession} */
+  /** @type {ChunkSession} */
   const current = {
+    kind: "chunk",
     eventId,
-    total: cached?.total ?? Number.POSITIVE_INFINITY,
+    total: cached?.total ?? knownTotal ?? Number.POSITIVE_INFINITY,
     urls: cached ? [...cached.urls] : [],
     pending: new Map(),
     controllers: [],
@@ -74,7 +256,6 @@ async function startReadAloud(eventId) {
   state.readAloud = { eventId, phase: current.urls[0] ? "playing" : "loading" };
   markDirty("transcript");
 
-  const endpoint = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/read-aloud`;
   try {
     for (let index = 0; index < current.total && !current.stopped; index++) {
       const url = await fetchChunk(current, endpoint, index);
@@ -98,7 +279,7 @@ async function startReadAloud(eventId) {
 /**
  * Chunk audio as an object URL — from this session, the message cache, or the
  * server. Deduped so play-loop and prefetch never race the same chunk.
- * @param {ReadAloudSession} current
+ * @param {ChunkSession} current
  * @param {string} endpoint
  * @param {number} index
  * @returns {Promise<string>}
@@ -133,7 +314,7 @@ function fetchChunk(current, endpoint, index) {
 }
 
 /**
- * @param {ReadAloudSession} current
+ * @param {ChunkSession} current
  * @param {string} url
  * @returns {Promise<void>}
  */
@@ -148,7 +329,7 @@ function playUrl(current, url) {
 }
 
 /** Keep a finished/stopped session's chunk audio for instant replay.
- * @param {ReadAloudSession} current */
+ * @param {ChunkSession} current */
 function rememberAudio(current) {
   if (!current.urls.some(Boolean)) return;
   const total = Number.isFinite(current.total) ? current.total : current.urls.length;

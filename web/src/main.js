@@ -28,7 +28,6 @@ installOpenModifierTracking();
 installComposerRouting();
 installKeybindings();
 installVoiceLifecycle();
-installDevReload();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 
 // First paint of every region (empty states), then load the app.
@@ -52,24 +51,6 @@ function restoreColumnWidths() {
   }
 }
 
-// Live-reload while the daemon runs in dev mode. Guarded so a server-injected
-// snippet and this listener never double-connect; outside dev mode the first
-// failed connect closes the source for good (no reconnect spam).
-function installDevReload() {
-  const w = /** @type {any} */ (window);
-  if (w.__gaiaDevReload) return;
-  w.__gaiaDevReload = true;
-  let hadConnection = false;
-  let reconnectAfterDrop = false;
-  const source = new EventSource("/__dev/reload");
-  source.addEventListener("ready", () => {
-    if (hadConnection && reconnectAfterDrop) window.location.reload();
-    hadConnection = true;
-    reconnectAfterDrop = false;
-  });
-  source.addEventListener("reload", () => window.location.reload());
-  source.onerror = () => {
-    if (hadConnection) reconnectAfterDrop = true;
-    else source.close();
-  };
-}
+// Live-reload while the daemon runs in dev mode is provided by a server-injected
+// snippet (see devReloadSnippet in src/server/http.ts), added to index.html only
+// in dev — so it never fires, or connects to a non-existent route, outside dev.

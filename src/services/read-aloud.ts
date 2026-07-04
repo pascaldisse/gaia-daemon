@@ -24,9 +24,9 @@ import type { VoiceSettings, VoiceStackSettings } from "./voice.js";
 // Read-aloud speaks messages that were WRITTEN for the screen, so the
 // formatting must be stripped deterministically here.
 
-/** Longer messages are cut so one click can't queue many minutes of audio. */
-const MAX_SPEECH_CHARS = 8_000;
-
+// No length cap: the whole message is spoken, like the claude.ai desktop app.
+// Streaming plays the first audio in ~1s and stops on demand, so a long message
+// is never a blocking wait; the batch (local) path speaks it chunk by chunk.
 export function speakableText(markdown: string): string {
   let text = String(markdown ?? "");
   // Fenced code is never worth pronouncing; note what was skipped.
@@ -63,10 +63,6 @@ export function speakableText(markdown: string): string {
     .filter(Boolean)
     .join("\n")
     .trim();
-  if (text.length > MAX_SPEECH_CHARS) {
-    const cut = text.slice(0, MAX_SPEECH_CHARS);
-    text = `${cut.slice(0, Math.max(cut.lastIndexOf(" "), MAX_SPEECH_CHARS - 80))}... Message truncated.`;
-  }
   return text;
 }
 
@@ -281,6 +277,20 @@ export interface TtsAudio {
   contentType: string;
 }
 
+/** Raw-PCM stream shape for engines that synthesize the whole message in one
+ * continuous pass (the desktop-app path): the format up front, then frames as
+ * they are generated. Frames are s16le PCM at `sampleRate`/`channels`. */
+export interface TtsStreamFormat {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+}
+
+export interface TtsStream {
+  format: TtsStreamFormat;
+  frames: AsyncIterable<Buffer>;
+}
+
 export interface TtsSynthesisContext {
   /** Speech-ready text (already through speakableText). */
   text: string;
@@ -297,6 +307,12 @@ export interface TtsEngineSpec {
   /** Known voice ids, surfaced as settings hints ([] = free-form). */
   voices: string[];
   synthesize(context: TtsSynthesisContext): Promise<TtsAudio>;
+  /** Optional: synthesize the whole message as ONE continuous stream, played
+   * frame-by-frame as it arrives (matches the claude.ai desktop app). Declaring
+   * this is a pure capability — the shared read-aloud path checks for its
+   * presence, never for the engine id, and engines without it keep the batched
+   * per-chunk `synthesize` path (local TTS). */
+  synthesizeStream?(context: TtsSynthesisContext): Promise<TtsStream>;
 }
 
 const engines = new Map<string, TtsEngineSpec>();
@@ -347,14 +363,27 @@ async function readCachedAudio(dir: string, key: string): Promise<TtsAudio | und
   }
 }
 
-async function writeCachedAudio(dir: string, key: string, result: TtsAudio): Promise<void> {
+async function writeCachedAudio(dir: string, key: string, result: TtsAudio, format?: TtsStreamFormat): Promise<void> {
   try {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${key}.audio`), result.audio);
-    await writeFile(join(dir, `${key}.json`), JSON.stringify({ contentType: result.contentType }));
+    await writeFile(join(dir, `${key}.json`), JSON.stringify({ contentType: result.contentType, ...(format ? { format } : {}) }));
     void sweepTtsCache(dir).catch(() => {});
   } catch {
     // Cache is best-effort.
+  }
+}
+
+/** Cache read for the streaming path: the whole-message PCM plus its format
+ * (stored as an `.audio`/`.json` pair like every other entry, so the size
+ * sweep covers it too). Undefined when there is no PCM entry for this key. */
+async function readCachedPcm(dir: string, key: string): Promise<{ pcm: Buffer; format: TtsStreamFormat } | undefined> {
+  try {
+    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { format?: TtsStreamFormat };
+    if (!meta.format) return undefined;
+    return { pcm: await readFile(join(dir, `${key}.audio`)), format: meta.format };
+  } catch {
+    return undefined;
   }
 }
 
@@ -421,6 +450,76 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
   });
   await writeCachedAudio(cacheDir, key, result);
   return { ...result, chunks: chunks.length, chunk: index };
+}
+
+// ---------------------------------------------------------------------------
+// The streaming read-aloud path — the whole message synthesized as ONE
+// continuous pass and streamed frame-by-frame, played the instant the first
+// frame lands (matches the claude.ai desktop app). Used ONLY for engines that
+// declare `synthesizeStream`; batch-only engines report mode "chunks" so the
+// client keeps the per-chunk path. Dispatch is on the capability, never on the
+// engine id (RULE #0) — and the client, in turn, dispatches on `mode`.
+
+export type ReadAloudDelivery =
+  | { mode: "chunks"; chunks: number }
+  | ({ mode: "stream" } & TtsStream);
+
+/** ~32 KB PCM frames when replaying a cached whole-message stream. */
+const PCM_REPLAY_FRAME_BYTES = 32 * 1024;
+
+async function* framesFromBuffer(pcm: Buffer): AsyncGenerator<Buffer> {
+  for (let offset = 0; offset < pcm.length; offset += PCM_REPLAY_FRAME_BYTES) {
+    yield pcm.subarray(offset, offset + PCM_REPLAY_FRAME_BYTES);
+  }
+}
+
+/** Pass frames through untouched while collecting them; on a CLEAN completion
+ * (source exhausted, not a consumer break or error) write the whole PCM to the
+ * cache so replays are instant and free. Best-effort — a cache miss only costs
+ * a regeneration. */
+async function* teeFramesToCache(
+  frames: AsyncIterable<Buffer>,
+  dir: string,
+  key: string,
+  format: TtsStreamFormat,
+): AsyncGenerator<Buffer> {
+  const collected: Buffer[] = [];
+  let complete = false;
+  try {
+    for await (const frame of frames) {
+      collected.push(Buffer.from(frame));
+      yield frame;
+    }
+    complete = true;
+  } finally {
+    if (complete && collected.length) {
+      await writeCachedAudio(dir, key, { audio: Buffer.concat(collected), contentType: "audio/pcm" }, format).catch(() => {});
+    }
+  }
+}
+
+export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAloudDelivery> {
+  if (request.event.author === "user") throw new Error("Only agent messages can be read aloud");
+  const text = speakableText(request.event.text);
+  if (!text) throw new Error("Nothing to read aloud in this message");
+
+  const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
+  // Batch-only engine (local TTS): the client uses the chunked path unchanged.
+  if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length };
+
+  const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
+  const key = ttsCacheKey(`${engine.id}:stream`, voice, text);
+  const cached = await readCachedPcm(cacheDir, key);
+  if (cached) return { mode: "stream", format: cached.format, frames: framesFromBuffer(cached.pcm) };
+
+  const stream = await engine.synthesizeStream({
+    text,
+    voice,
+    settings: request.settings,
+    ensureTts: request.ensureTts,
+    log: request.log ?? (() => {}),
+  });
+  return { mode: "stream", format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, stream.format) };
 }
 
 /** VoiceSettings → the stack subset ensureTts needs (mirrors startVoiceCall). */
@@ -568,4 +667,49 @@ async function claudeSynthesize(context: TtsSynthesisContext): Promise<TtsAudio>
   };
 }
 
-registerTtsEngine({ id: "claude", voices: CLAUDE_VOICES, synthesize: claudeSynthesize });
+/** Stream the whole message as one continuous PCM pass (the desktop-app path).
+ * The daemon's /stream endpoint drives one claude.ai TTS socket for the entire
+ * text and forwards each PCM frame as it is generated; we surface the format
+ * from its headers and yield frames straight through. No AbortSignal timeout:
+ * the daemon's own idle/hard caps guarantee the stream terminates, and a client
+ * disconnect cancels the reader below. */
+async function claudeSynthesizeStream(context: TtsSynthesisContext): Promise<TtsStream> {
+  const baseUrl = await ensureClaudeVoiceDaemon(context);
+  const response = await fetch(`${baseUrl}/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: context.text, ...(context.voice ? { voice: context.voice } : {}) }),
+  });
+  if (response.status === 404) {
+    throw new Error("claude-voice daemon has no /stream endpoint - update the checkout and restart the daemon");
+  }
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`claude-voice stream failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const format: TtsStreamFormat = {
+    sampleRate: Number(response.headers.get("x-tts-rate")) || 16_000,
+    channels: Number(response.headers.get("x-tts-channels")) || 1,
+    bitsPerSample: Number(response.headers.get("x-tts-bits")) || 16,
+  };
+  return { format, frames: readableToFrames(response.body) };
+}
+
+async function* readableToFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<Buffer> {
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value && value.length) yield Buffer.from(value);
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Reader already closed.
+    }
+  }
+}
+
+registerTtsEngine({ id: "claude", voices: CLAUDE_VOICES, synthesize: claudeSynthesize, synthesizeStream: claudeSynthesizeStream });

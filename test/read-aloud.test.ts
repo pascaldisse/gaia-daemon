@@ -7,12 +7,14 @@ import {
   packMessage,
   pcmToWav,
   readAloud,
+  readAloudStream,
   registerTtsEngine,
   resolveTtsChoice,
   speakableText,
   splitSpeechChunks,
   ttsEngineIds,
   unpackMessage,
+  type TtsStream,
   type TtsSynthesisContext,
 } from "../src/services/read-aloud.js";
 import { VOICE_SETTINGS_DEFAULTS, VoiceStackManager, type SpawnedService, type VoiceSettings, type VoiceStackSettings } from "../src/services/voice.js";
@@ -50,10 +52,11 @@ test("speakableText: emojis vanish and whitespace collapses", () => {
   assert.equal(speakableText("🚀 ✨"), "");
 });
 
-test("speakableText: very long messages are truncated with a spoken note", () => {
+test("speakableText: long messages are spoken in full, never truncated (like the desktop app)", () => {
   const text = speakableText(`${"word ".repeat(3000)}tail`);
-  assert.ok(text.length < 8_200);
-  assert.ok(text.endsWith("... Message truncated."));
+  assert.ok(text.length > 14_000);
+  assert.ok(text.endsWith("tail"));
+  assert.ok(!text.includes("truncated"));
 });
 
 // ---------------------------------------------------------------------------
@@ -255,6 +258,126 @@ test("readAloud: chunked messages synthesize per chunk, cache replays without th
       () => readAloud({ ...request, chunk: 99 }),
       new RegExp(`Unknown chunk 99 \\(message has ${first.chunks}\\)`),
     );
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// readAloudStream — the desktop-app streaming path, dispatched on the engine's
+// capability (never its id)
+
+async function collect(frames: AsyncIterable<Buffer>): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  for await (const frame of frames) parts.push(Buffer.from(frame));
+  return Buffer.concat(parts);
+}
+
+test("readAloudStream: a batch-only engine reports chunks, so the client keeps the per-chunk path", async () => {
+  const temp = await createTempDir();
+  registerTtsEngine({
+    id: "test-batch-only",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+  });
+  const settings = voiceSettings({ ttsEngine: "test-batch-only" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+
+  try {
+    const delivery = await readAloudStream({ event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path });
+    assert.equal(delivery.mode, "chunks");
+    if (delivery.mode !== "chunks") throw new Error("unreachable");
+    assert.equal(delivery.chunks, splitSpeechChunks(speakableText(text)).length);
+    assert.ok(delivery.chunks > 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloudStream: a streaming engine synthesizes the whole message once, frames stream through, then replay hits the cache", async () => {
+  const temp = await createTempDir();
+  let synths = 0;
+  const seen: string[] = [];
+  registerTtsEngine({
+    id: "test-streamer",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+    synthesizeStream: async (context): Promise<TtsStream> => {
+      synths++;
+      seen.push(context.text);
+      const pcm = Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]); // 4 s16le samples
+      return {
+        format: { sampleRate: 16000, channels: 1, bitsPerSample: 16 },
+        frames: (async function* () {
+          yield pcm.subarray(0, 4);
+          yield pcm.subarray(4, 8);
+        })(),
+      };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-streamer" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  // Long enough that the batch path WOULD have chunked it — proving the stream
+  // path speaks the whole message in one pass instead.
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const first = await readAloudStream(request);
+    assert.equal(first.mode, "stream");
+    if (first.mode !== "stream") throw new Error("unreachable");
+    assert.deepEqual(first.format, { sampleRate: 16000, channels: 1, bitsPerSample: 16 });
+    const audio = await collect(first.frames);
+    assert.equal(audio.length, 8);
+    assert.equal(synths, 1);
+    assert.equal(seen[0], speakableText(text)); // whole message, not a chunk
+
+    // Replay: the whole-message PCM comes from the disk cache; no re-synthesis.
+    const replay = await readAloudStream(request);
+    assert.equal(replay.mode, "stream");
+    if (replay.mode !== "stream") throw new Error("unreachable");
+    assert.equal((await collect(replay.frames)).toString("hex"), audio.toString("hex"));
+    assert.equal(synths, 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloudStream: an aborted stream is not cached (no truncated replay)", async () => {
+  const temp = await createTempDir();
+  let synths = 0;
+  registerTtsEngine({
+    id: "test-streamer-abort",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+    synthesizeStream: async (): Promise<TtsStream> => {
+      synths++;
+      return {
+        format: { sampleRate: 16000, channels: 1, bitsPerSample: 16 },
+        frames: (async function* () {
+          yield Buffer.from([1, 0]);
+          yield Buffer.from([2, 0]);
+          yield Buffer.from([3, 0]);
+        })(),
+      };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-streamer-abort" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const request = { event: { author: "gaia", text: "Hello there friend." }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const first = await readAloudStream(request);
+    if (first.mode !== "stream") throw new Error("expected stream");
+    // Consume only the first frame, then break — simulates a client hang-up.
+    for await (const _frame of first.frames) break;
+
+    // Nothing was cached, so a second call re-synthesizes (no partial replay).
+    const second = await readAloudStream(request);
+    if (second.mode !== "stream") throw new Error("expected stream");
+    assert.equal((await collect(second.frames)).length, 6);
+    assert.equal(synths, 2);
   } finally {
     await temp.cleanup();
   }

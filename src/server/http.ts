@@ -19,6 +19,7 @@ import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
+import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
 
 export interface WebServerOptions {
@@ -517,6 +518,55 @@ export class GaiaWebServer {
           { error: message },
         );
       }
+      return;
+    }
+
+    // Read-aloud, streamed: the whole message as one continuous PCM pass, played
+    // frame-by-frame as it is generated (the claude.ai desktop-app path). The
+    // author's engine decides the mode — a batch-only engine answers "chunks",
+    // and the client keeps the per-chunk /read-aloud path above.
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud\/stream$/))) {
+      const body = await parseBody(request);
+      const eventId = stringField(body, "eventId");
+      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
+      let delivery: ReadAloudDelivery;
+      try {
+        delivery = await this.daemon.readAloudStream(params[0], params[1], eventId.trim());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return json(
+          response,
+          message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") ? 400 : 502,
+          { error: message },
+        );
+      }
+      if (delivery.mode === "chunks") return json(response, 200, { mode: "chunks", chunks: delivery.chunks });
+
+      response.writeHead(200, {
+        "content-type": "audio/pcm",
+        "cache-control": "no-store",
+        "x-tts-mode": "stream",
+        "x-tts-rate": String(delivery.format.sampleRate),
+        "x-tts-channels": String(delivery.format.channels),
+        "x-tts-bits": String(delivery.format.bitsPerSample),
+      });
+      let clientGone = false;
+      response.on("close", () => { clientGone = true; });
+      try {
+        for await (const frame of delivery.frames) {
+          if (clientGone || response.writableEnded) break;
+          if (!response.write(frame)) {
+            await new Promise<void>((resolve) => {
+              const done = (): void => { response.off("drain", done); response.off("close", done); resolve(); };
+              response.once("drain", done);
+              response.once("close", done);
+            });
+          }
+        }
+      } catch {
+        // Mid-stream failure: headers are already sent, so just close.
+      }
+      if (!response.writableEnded) response.end();
       return;
     }
 

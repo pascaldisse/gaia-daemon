@@ -37,7 +37,7 @@ import {
   sweepOrphanOverrides,
   type VoiceSettings,
 } from "./services/voice.js";
-import { readAloud, ttsStackSettings, type ReadAloudResult } from "./services/read-aloud.js";
+import { readAloud, readAloudStream, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 
@@ -573,6 +573,24 @@ export class Daemon {
       agent: service.workspace.agents[event.author],
       settings,
       chunk,
+      ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
+      log: (message) => this.log(message),
+    });
+  }
+
+  /** Read a message aloud as the desktop app does: for engines that stream, one
+   * continuous PCM pass played frame-by-frame (mode "stream"); for batch-only
+   * engines (local TTS), mode "chunks" so the client keeps the per-chunk path.
+   * The author's engine decides — this method never branches on the engine. */
+  async readAloudStream(workspaceId: string, roomId: string, eventId: string): Promise<ReadAloudDelivery> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    const event = await service.eventById(eventId);
+    if (!event) throw new Error(`Unknown event: ${eventId}`);
+    const settings = await readVoiceSettings();
+    return readAloudStream({
+      event,
+      agent: service.workspace.agents[event.author],
+      settings,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
       log: (message) => this.log(message),
     });
