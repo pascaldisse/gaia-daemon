@@ -91,7 +91,7 @@ ALL rooms (the previous 12-most-recent cap on `recentRoomRefs` is gone).
 107 conversations (2026-04-21 → 2026-07-03, 9,491 messages → 9,590 events
 incl. markers), 107 episodes, 19 facts, and 3 topic files imported for agent
 `nyari` (claude harness, model `fable`) into room `nyari` of the home
-workspace (`/Users/USER`), which was v2-initialized in the process
+workspace (`~`), which was v2-initialized in the process
 (`~/.gaia/config.json`, `~/AGENTS.md` scaffold). Verified end-to-end: 258/258
 tests, recall smoke over facts/episodes/transcript, and a live daemon turn
 committing `details.model: anthropic/claude-fable-5`.

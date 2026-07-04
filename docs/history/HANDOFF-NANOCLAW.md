@@ -8,8 +8,8 @@ Three patterns from nanoclaw to bring into gaia core, in build order:
 ## Reference
 
 nanoclaw (`qwibitai/nanoclaw`): a multi-agent daemon whose agents run
-docker-sandboxed. Source: `tmp/nanoclaw/` (snapshot in this repo) and
-`/Users/USER/Downloads/test/nanoclaw`. gaia's sandbox registry already
+docker-sandboxed. Source: `tmp/nanoclaw/` (snapshot in this repo).
+gaia's sandbox registry already
 mirrors its one-file runtime swap. Key files: `src/container-runtime.ts`,
 `src/container-runner.ts`, `src/providers/claude.ts`, `src/circuit-breaker.ts`,
 `src/host-sweep.ts`, `src/session-manager.ts`.

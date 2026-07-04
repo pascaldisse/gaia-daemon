@@ -25,10 +25,10 @@ import type { UiEvent, VoiceCallInfo } from "../core/types.js";
 // defaults on first boot so the tab always has something to show; missing or
 // invalid keys fall back to defaults.
 
-// The unmute voice stack is vendored into the repo (unmute/, MIT licensed,
-// Copyright 2025 Kyutai), so the default checkout is the bundled one. Resolved
-// at runtime (never persisted) so a renamed/moved repo can't leave a stale
-// absolute path baked into voice.json.
+// The unmute voice stack ships as a git submodule (unmute/, a fork of
+// kyutai-labs/unmute, MIT licensed, Copyright 2025 Kyutai), so the default
+// checkout is the bundled one. Resolved at runtime (never persisted) so a
+// renamed/moved repo can't leave a stale absolute path baked into voice.json.
 export function bundledUnmuteDir(): string {
   return bundledDir("unmute");
 }

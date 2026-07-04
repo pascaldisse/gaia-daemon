@@ -49,7 +49,7 @@ Personas are durable. Projects add local context.
   composer shows the target agent's live model + context-window usage — with
   a warning chip when the provider switched models mid-turn (e.g. a Fable →
   Opus capacity/safety fallback)
-- voice calls per agent through the vendored unmute stack (`unmute/`)
+- voice calls per agent through the unmute submodule (`unmute/`)
 - sample global agents: `@gaia`, `@sidia`, `@terry` (plus `@dario`, the
   thanks-dario reviewer — see below)
 - slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`,
@@ -89,10 +89,16 @@ port `0` picks a free one).
 ## Setup
 
 ```bash
+git clone --recursive https://github.com/pascaldisse/gaia-daemon
 npm install
 npm run build
 npm link   # optional, exposes `gaia`
 ```
+
+The `unmute/` voice stack is a git submodule and is only needed for voice
+calls. If you cloned without `--recursive`, pull it later with
+`git submodule update --init unmute` — or skip it entirely; the rest of the
+daemon runs without it.
 
 Configure Pi auth the same way you configure Pi itself.
 For example: `pi /login` or provider API-key environment variables.
@@ -214,9 +220,10 @@ room transcript as typed messages. The agent's text replies still appear in
 the chat (marked 🎙), you can still type, and what you say is transcribed
 live into the composer box.
 
-unmute ships inside this repo under `unmute/` (MIT licensed, Copyright 2025
-Kyutai — see `unmute/LICENSE`), including the macOS port that runs STT on
-Metal and TTS on MLX. Voice needs two host tools: `uv` (runs the Python
+unmute is a git submodule at `unmute/` — a fork of
+[kyutai-labs/unmute](https://github.com/kyutai-labs/unmute) (MIT licensed,
+Copyright 2025 Kyutai — see `unmute/LICENSE`) that adds the macOS port running
+STT on Metal and TTS on MLX. Voice needs two host tools: `uv` (runs the Python
 services) and `cargo` (builds `moshi-server` for STT on first use).
 
 There is nothing to start by hand. Clicking the call button boots whatever
