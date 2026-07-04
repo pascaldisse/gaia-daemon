@@ -16,11 +16,11 @@ import { BridgeMemoryStore, bridgeRecallSearch, bridgeSummonCreate, fixedTokenHo
 // Self-register every harness before the lookup — this subprocess starts with
 // an empty registry.
 import "./index.js";
-import { RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
+import { encodeFrame, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
 import { type AgentRuntime, harnessIdFor, harnessSpecFor } from "./spec.js";
 
 function send(message: RunnerMessage): void {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  process.stdout.write(`${encodeFrame(message)}\n`);
 }
 
 export async function runAgentRunner(): Promise<void> {
@@ -90,11 +90,20 @@ export async function runAgentRunner(): Promise<void> {
     try {
       command = JSON.parse(trimmed) as RunnerCommand;
     } catch {
+      // A frame that doesn't parse means the wire is corrupted — if it was a
+      // turn, the daemon is now waiting on a reply that will never come.
+      // turn-error unblocks it either way (harmless if no turn was in flight).
+      process.stderr.write(`runner: dropped unparseable frame (${trimmed.length} bytes): ${trimmed.slice(0, 80)}\n`);
+      send({ type: "turn-error", message: "runner received an unparseable protocol frame — turn dropped" });
       return;
     }
     switch (command.type) {
       case "turn":
-        if (!turnActive) void runTurn(command.input);
+        // Single-flight: a turn arriving while one is active means daemon and
+        // runner disagree about state. Failing fast beats a silent drop — the
+        // daemon would otherwise wait on this turn forever.
+        if (turnActive) send({ type: "turn-error", message: "runner busy — a turn is already active" });
+        else void runTurn(command.input);
         return;
       case "abort":
         void runtime.abort();

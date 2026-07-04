@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { AgentDef, AgentEvent, Workspace } from "../src/core/types.js";
 import { CircuitBreaker } from "../src/harness/breaker.js";
 import { RunnerHost } from "../src/harness/host.js";
+import { encodeFrame } from "../src/harness/protocol.js";
 import { registerHarness } from "../src/harness/spec.js";
 import { createTempDir } from "./helpers/temp.js";
 
@@ -26,30 +27,36 @@ registerHarness({
 // A stub runner that speaks the protocol without a model: ready on start, and on
 // each turn either streams a model-info + text-delta + turn-end, or a turn-error
 // when the message is "boom".
+// Reads stdin through readline exactly like the real runner (runner.ts) — that
+// is the layer the U+2028 frame-split regression lives in — and writes frames
+// through the same escaping contract (encodeFrame's replace, inlined).
 const STUB = `
-process.stdout.write(JSON.stringify({ type: "ready", modelLabel: "stub/model" }) + "\\n");
-let buf = "";
-process.stdin.on("data", (d) => {
-  buf += d;
-  let i;
-  while ((i = buf.indexOf("\\n")) >= 0) {
-    const line = buf.slice(0, i).trim();
-    buf = buf.slice(i + 1);
-    if (!line) continue;
-    const cmd = JSON.parse(line);
-    if (cmd.type === "turn") {
-      if (cmd.input.message === "boom") {
-        process.stdout.write(JSON.stringify({ type: "turn-error", message: "stub failure" }) + "\\n");
-        continue;
-      }
-      process.stdout.write(JSON.stringify({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } }) + "\\n");
-      process.stdout.write(JSON.stringify({ type: "event", event: { type: "text-delta", delta: "hello" } }) + "\\n");
-      process.stdout.write(JSON.stringify({ type: "turn-end" }) + "\\n");
-    } else if (cmd.type === "compact") {
-      process.stdout.write(JSON.stringify({ type: "compact-result", ok: true, message: "compacted " + cmd.roomId }) + "\\n");
-    } else if (cmd.type === "dispose") {
-      process.exit(0);
+import { createInterface } from "node:readline";
+const esc = (o) => JSON.stringify(o).replace(/\\u2028/g, "\\\\u2028").replace(/\\u2029/g, "\\\\u2029");
+const send = (o) => process.stdout.write(esc(o) + "\\n");
+send({ type: "ready", modelLabel: "stub/model" });
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let cmd;
+  try {
+    cmd = JSON.parse(line);
+  } catch {
+    send({ type: "turn-error", message: "stub received unparseable frame" });
+    return;
+  }
+  if (cmd.type === "turn") {
+    if (cmd.input.message === "boom") {
+      send({ type: "turn-error", message: "stub failure" });
+      return;
     }
+    send({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } });
+    send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
+    send({ type: "turn-end" });
+  } else if (cmd.type === "compact") {
+    send({ type: "compact-result", ok: true, message: "compacted " + cmd.roomId });
+  } else if (cmd.type === "dispose") {
+    process.exit(0);
   }
 });
 `;
@@ -87,9 +94,41 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     const events: AgentEvent[] = [];
     for await (const event of host.send({ roomId: "default", message: "hi", transcript: [] })) events.push(event);
 
-    assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "hello"));
+    assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("encodeFrame: U+2028/U+2029 in content never reach the wire raw", () => {
+  const frame = { type: "turn", input: { roomId: "r", message: "a\u2028b\u2029c", transcript: [] } } as Parameters<typeof encodeFrame>[0];
+  const wire = encodeFrame(frame);
+  assert.ok(!wire.includes("\u2028") && !wire.includes("\u2029"), "raw line separators must be escaped");
+  // Value-identical after parse — escaping changes bytes, never meaning.
+  assert.deepEqual(JSON.parse(wire), JSON.parse(JSON.stringify(frame)));
+});
+
+test("a turn whose content contains U+2028 survives the wire round trip (regression: frame split by readline)", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    // The Sidia-block paste that wedged a real room: raw LINE SEPARATOR chars
+    // inside a transcript event and the message itself.
+    const poison = "spirit animal: fractal\u2028violet\u2029safeword: violet melancholy\u2028end";
+    const events: AgentEvent[] = [];
+    for await (const event of host.send({
+      roomId: "default",
+      message: poison,
+      transcript: [{ id: "e1", timestamp: "2026-07-04T00:00:00.000Z", author: "user", text: poison }],
+    })) {
+      events.push(event);
+    }
+    const echo = events.find((e) => e.type === "text-delta");
+    assert.ok(echo && echo.type === "text-delta", "turn must stream back instead of wedging");
+    assert.equal(echo.delta, `echo:${poison}`, "content must arrive intact, separators included");
     host.dispose();
   } finally {
     await temp.cleanup();

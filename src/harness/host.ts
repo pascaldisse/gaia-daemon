@@ -16,7 +16,7 @@ import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
 import { configuredModelLabel, liveModelLabel } from "./model-label.js";
 import { selfRelaunchArgv, spawnLineReader } from "./proc.js";
-import { parseRunnerMessage, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
+import { encodeFrame, parseRunnerMessage, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
 import { installMarkerArgs } from "./reaper.js";
 // Side-effect imports: the backends resolveSandboxLaunch picks from.
 import "./sandbox/none.js";
@@ -210,7 +210,7 @@ export class RunnerHost implements AgentRuntime {
 
   private write(command: RunnerCommand): void {
     try {
-      this.child?.stdin?.write(`${JSON.stringify(command)}\n`);
+      this.child?.stdin?.write(`${encodeFrame(command)}\n`);
     } catch {
       // child already gone; the exit handler fails the active turn.
     }

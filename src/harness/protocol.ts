@@ -24,6 +24,21 @@ export type RunnerMessage =
   | { type: "steer-result"; ok: boolean }
   | { type: "compact-result"; ok: boolean; message: string };
 
+/** Serialize one protocol frame for the newline-delimited wire.
+ *
+ * JSON.stringify leaves U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH
+ * SEPARATOR) RAW inside strings, and node's readline treats them as line
+ * breaks — so a frame carrying user content with one of them (pasted rich
+ * text has them constantly) reaches the peer split into fragments, every
+ * fragment fails JSON.parse, and the frame silently vanishes: the turn never
+ * starts and the daemon waits on it forever. Escaping them is value-identical
+ * after parse and keeps every frame exactly one line regardless of content.
+ * BOTH directions must use this — a reply containing U+2028 would poison
+ * runner→daemon the same way. */
+export function encodeFrame(frame: RunnerCommand | RunnerMessage): string {
+  return JSON.stringify(frame).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
 /** The mount the in-daemon LLM credential proxy is served under. Part of the
  * daemon↔subprocess wire contract: a redirected harness's base URL is exactly
  * this path on the daemon, presented with the per-turn token. */
