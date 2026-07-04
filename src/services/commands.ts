@@ -117,40 +117,53 @@ export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${com
 )}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
 
 // --- mention routing -----------------------------------------------------------
+//
+// Mentions are ADDRESSES, not references: only the run of consecutive @id
+// tokens heading the message routes it ("@gaia @terry compare ..."), exactly
+// the /help examples. Past the first non-mention token, "@" is plain text —
+// pasted emails, npm scopes (@earendil-works/pi), decorators and quoted logs
+// must never reroute or reject a message. A leading token that LOOKS like an
+// address ("@nyri hello") still errors when unknown: that's a typo to catch,
+// not prose. Terminators: whitespace/end, optionally one comma or colon
+// ("@terry: do it"); anything else glued on (@scope/pkg, @user.name) reads as
+// prose, not an address.
 
-const MENTION_PATTERN = /@([a-z0-9_-]+)/gi;
+const LEADING_MENTION = /^@([a-z0-9_-]+)[,:]?(?=\s|$)/i;
+
+/** The @id tokens heading the message, lowercased ([] when it opens with prose). */
+function leadingMentions(message: string): string[] {
+  const ids: string[] = [];
+  let rest = message.trimStart();
+  for (;;) {
+    const match = LEADING_MENTION.exec(rest);
+    if (!match) return ids;
+    ids.push(match[1].toLowerCase());
+    rest = rest.slice(match[0].length).trimStart();
+  }
+}
 
 export type RouteResult = { ok: true; targets: string[] } | { ok: false; unknown: string[] };
 
 export function planMentionRoute(message: string, agentIds: string[], defaultAgent: string): RouteResult {
   const known = new Set(agentIds);
   const targets: string[] = [];
-  const seen = new Set<string>();
   const unknown: string[] = [];
-  const unknownSeen = new Set<string>();
 
-  for (const match of message.matchAll(MENTION_PATTERN)) {
-    const id = match[1].toLowerCase();
+  for (const id of leadingMentions(message)) {
     if (!known.has(id)) {
-      if (!unknownSeen.has(id)) {
-        unknown.push(id);
-        unknownSeen.add(id);
-      }
+      if (!unknown.includes(id)) unknown.push(id);
       continue;
     }
-    if (!seen.has(id)) {
-      seen.add(id);
-      targets.push(id);
-    }
+    if (!targets.includes(id)) targets.push(id);
   }
 
   if (unknown.length > 0) return { ok: false, unknown };
   return { ok: true, targets: targets.length > 0 ? targets : [defaultAgent] };
 }
 
+/** Did the user explicitly ADDRESS a known agent? (Leading mentions only —
+ * backs edit-rerouting and the monad bypass, same address semantics as
+ * planMentionRoute.) */
 export function hasExplicitMention(text: string, agentIds: Set<string>): boolean {
-  for (const match of text.matchAll(MENTION_PATTERN)) {
-    if (agentIds.has(match[1].toLowerCase())) return true;
-  }
-  return false;
+  return leadingMentions(text).some((id) => agentIds.has(id));
 }

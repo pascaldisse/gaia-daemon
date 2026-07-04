@@ -36,19 +36,37 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 
-test("planMentionRoute: dedupes mentions, keeps order, falls back to default", () => {
+test("planMentionRoute: leading mentions route (deduped, in order), else the default", () => {
   const agents = ["gaia", "terry", "sidia"];
   assert.deepEqual(planMentionRoute("hello", agents, "gaia"), { ok: true, targets: ["gaia"] });
-  assert.deepEqual(planMentionRoute("@terry then @sidia and @terry again", agents, "gaia"), { ok: true, targets: ["terry", "sidia"] });
+  assert.deepEqual(planMentionRoute("@terry @sidia @terry compare", agents, "gaia"), { ok: true, targets: ["terry", "sidia"] });
   assert.deepEqual(planMentionRoute("@nope hello", agents, "gaia"), { ok: false, unknown: ["nope"] });
-  // Case-insensitive matching.
+  // Case-insensitive matching; trailing , or : allowed on an address.
   assert.deepEqual(planMentionRoute("@Terry hi", agents, "gaia"), { ok: true, targets: ["terry"] });
+  assert.deepEqual(planMentionRoute("@terry, look at this", agents, "gaia"), { ok: true, targets: ["terry"] });
+  assert.deepEqual(planMentionRoute("  @terry: go", agents, "gaia"), { ok: true, targets: ["terry"] });
 });
 
-test("hasExplicitMention: only known agents count", () => {
+test("planMentionRoute: @ past the message head is prose — pastes never reroute or reject", () => {
+  const agents = ["gaia", "terry"];
+  // A mid-text KNOWN mention is a reference, not an address.
+  assert.deepEqual(planMentionRoute("I think @terry said so", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  // Pasted content full of @: emails, npm scopes, decorators, handles.
+  assert.deepEqual(planMentionRoute("mail pascal@icloud.com about it", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  assert.deepEqual(planMentionRoute("run npm i @earendil-works/pi-coding-agent", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  assert.deepEqual(planMentionRoute("code has @Override and @nope everywhere", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  // Even at the head, a token GLUED to more than [,:] is prose, not an address.
+  assert.deepEqual(planMentionRoute("@earendil-works/pi is the sdk", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  assert.deepEqual(planMentionRoute("@terry.txt is the file", agents, "gaia"), { ok: true, targets: ["gaia"] });
+  // The address run stops at the first prose token — no rejection after it.
+  assert.deepEqual(planMentionRoute("@terry see @nope above", agents, "gaia"), { ok: true, targets: ["terry"] });
+});
+
+test("hasExplicitMention: leading known addresses only", () => {
   const agents = new Set(["gaia"]);
-  assert.equal(hasExplicitMention("ping @gaia", agents), true);
-  assert.equal(hasExplicitMention("email bob@gaia.dev", agents), true); // v1 parity: bare pattern match
-  assert.equal(hasExplicitMention("ping @unknown", agents), false);
+  assert.equal(hasExplicitMention("@gaia ping", agents), true);
+  assert.equal(hasExplicitMention("ping @gaia", agents), false); // reference, not address
+  assert.equal(hasExplicitMention("email bob@gaia.dev", agents), false); // pasted email must not count
+  assert.equal(hasExplicitMention("@unknown ping", agents), false);
   assert.equal(hasExplicitMention("no mentions", agents), false);
 });

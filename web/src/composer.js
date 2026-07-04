@@ -348,6 +348,10 @@ function completionFor(text) {
   const separator = mention[1];
   const query = mention[2].toLowerCase();
   const start = mention.index + separator.length;
+  // Mentions only route at the message HEAD (see composerTargets); don't
+  // hijack an "@" typed mid-prose (emails, npm scopes) with the agent popup.
+  // The zone before the caret's @token must be only whitespace + addresses.
+  if (!/^(?:\s*@[a-z0-9_-]+[,:]?)*\s*$/i.test(text.slice(0, start))) return null;
   const options = (state.snapshot.agents ?? [])
     .filter((agent) => agent.id.toLowerCase().startsWith(query))
     .map((agent) => ({
@@ -409,18 +413,29 @@ function runningLabel(snapshot) {
   return label;
 }
 
+// Mirror of the server-side mention router (services/commands.ts): mentions
+// are ADDRESSES — only the run of consecutive @id tokens heading the message
+// routes it. "@" anywhere later is plain text (pasted emails, npm scopes,
+// quoted logs), so the preview must not claim it retargets the message.
+const LEADING_MENTION = /^@([a-z0-9_-]+)[,:]?(?=\s|$)/i;
+
+/** @param {string} text @returns {string[]} lowercased @ids heading the message */
+function leadingMentionIds(text) {
+  /** @type {string[]} */
+  const ids = [];
+  let rest = text.trimStart();
+  for (;;) {
+    const match = LEADING_MENTION.exec(rest);
+    if (!match) return ids;
+    ids.push(match[1].toLowerCase());
+    rest = rest.slice(match[0].length).trimStart();
+  }
+}
+
 /** @param {Snapshot|null} snapshot @param {string} text @returns {string[]} */
 function composerTargets(snapshot, text) {
   const knownAgents = new Set((snapshot?.agents ?? []).map((agent) => agent.id));
-  /** @type {string[]} */
-  const targets = [];
-  for (const match of text.matchAll(/@([a-z0-9_-]+)/gi)) {
-    // Lowercase like the server-side mention router so the preview matches
-    // the actual routing.
-    const id = match[1].toLowerCase();
-    if (!knownAgents.has(id) || targets.includes(id)) continue;
-    targets.push(id);
-  }
+  const targets = leadingMentionIds(text).filter((id, index, all) => knownAgents.has(id) && all.indexOf(id) === index);
   if (targets.length === 0 && snapshot) targets.push(snapshot.workspace.defaultAgent);
   return targets;
 }
@@ -429,6 +444,11 @@ function composerTargets(snapshot, text) {
 function composerTargetStatus(snapshot, text) {
   if (!snapshot) return "no room";
   if (text.trimStart().startsWith("/")) return "command mode";
+  // A leading mention that matches no agent will REJECT the send — say so in
+  // the chip instead of quietly previewing the default agent.
+  const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
+  const unknown = leadingMentionIds(text).filter((id) => !knownAgents.has(id));
+  if (unknown.length) return `unknown: ${unknown.map((id) => `@${id}`).join(", ")}`;
   return composerTargets(snapshot, text).map((target) => `@${target}`).join(", ");
 }
 
