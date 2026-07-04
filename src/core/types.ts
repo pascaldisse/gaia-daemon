@@ -299,6 +299,10 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Skills to load for this agent, by name — resolved against every
+   * auto-detected skill dir (gaia/pi/claude/codex/hermes). Merged with the
+   * active role's skills. Detected ≠ loaded: this is where you opt in. */
+  skills?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: string;

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
 import {
   buildClaudeToolGrant,
+  claudeModelArg,
   ClaudeRuntime,
   type ClaudeProcessFactory,
   type ClaudeProcessOptions,
@@ -117,6 +118,32 @@ test("buildClaudeToolGrant: bash grants the general shell", () => {
   assert.ok(grant.allowedTools.includes("Bash"));
   // memory/recall grants coexist with the general shell.
   assert.ok(grant.allowedTools.includes("Bash(gaia mem:*)"));
+});
+
+test("claudeModelArg: forces the 1M window on 1M-capable models, leaves haiku and pinned windows alone", () => {
+  // 1M-capable tiers (aliases + full names) get the [1m] suffix — Claude Code
+  // otherwise drops to 200k behind our proxy.
+  assert.equal(claudeModelArg("opus"), "opus[1m]");
+  assert.equal(claudeModelArg("sonnet"), "sonnet[1m]");
+  assert.equal(claudeModelArg("fable"), "fable[1m]");
+  assert.equal(claudeModelArg("claude-opus-4-8"), "claude-opus-4-8[1m]");
+  // haiku has no 1M window ([1m] errors) — left bare.
+  assert.equal(claudeModelArg("haiku"), "haiku");
+  assert.equal(claudeModelArg("claude-haiku-4-5"), "claude-haiku-4-5");
+  // An explicit suffix in config is the opt-out — passed through untouched.
+  assert.equal(claudeModelArg("claude-opus-4-8[1m]"), "claude-opus-4-8[1m]");
+  assert.equal(claudeModelArg("opus[200k]"), "opus[200k]");
+});
+
+test("buildClaudeToolGrant: web maps to Claude's built-in WebSearch/WebFetch (exposed and allowed)", () => {
+  const grant = buildClaudeToolGrant(["read", "web"]);
+  assert.ok(grant.tools.includes("WebSearch"));
+  assert.ok(grant.tools.includes("WebFetch"));
+  assert.ok(grant.allowedTools.includes("WebSearch"));
+  assert.ok(grant.allowedTools.includes("WebFetch"));
+  // No web in tools → no web grant.
+  const none = buildClaudeToolGrant(["read"]);
+  assert.ok(!none.tools.includes("WebSearch") && !none.tools.includes("WebFetch"));
 });
 
 test("buildClaudeToolGrant: an empty tools list yields no tools", () => {
@@ -487,7 +514,43 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
     assert.ok(first.includes("--system-prompt"));
     assert.equal(sessionFlagValue(first, "--tools"), "Read,Grep,Glob,Write,Edit,Bash");
     assert.equal(sessionFlagValue(first, "--allowedTools"), "Write,Edit,Bash(gaia mem:*),Bash(gaia recall:*)");
-    assert.equal(sessionFlagValue(first, "--model"), "claude-opus-4-8");
+    // The 1M-window suffix rides on the --model arg (Claude Code drops to 200k
+    // behind our proxy without it); the reported model id stays unsuffixed.
+    assert.equal(sessionFlagValue(first, "--model"), "claude-opus-4-8[1m]");
+
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime keeps the session when a first turn is stopped after init (next turn resumes, not blank)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.scriptOpen([initMsg()]); // first turn: init arrives, then it never completes (stopped mid-stream)
+    fake.script([initMsg(), textDelta("two"), resultSuccess()]); // the message AFTER the stop
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+
+    // Consume the first turn's init (model-info), then break — the exact early
+    // exit runAgentTurn performs on a user /stop. The generator's cleanup runs
+    // WITHOUT a clean finish. Before the fix this left started=false AND the
+    // first-turn catch reset dropped the session, so the next message started a
+    // brand-new blank session (the "it forgot" bug).
+    for await (const ev of runtime.send({ roomId: "default", message: "one", transcript: [] })) {
+      assert.equal(ev.type, "model-info");
+      break;
+    }
+
+    await collect(runtime.send({ roomId: "default", message: "two", transcript: [] }));
+
+    const first = fake.calls[0].args;
+    const second = fake.calls[1].args;
+    assert.ok(second.includes("--resume"), "next turn resumes the session the stopped turn established");
+    assert.ok(!second.includes("--session-id"), "next turn does not start a fresh (blank) session");
+    const startedId = first[first.indexOf("--session-id") + 1];
+    assert.equal(second[second.indexOf("--resume") + 1], startedId, "same session id carries across the stop");
 
     runtime.dispose();
   } finally {
@@ -563,10 +626,14 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
-    // room A ok, room B ok, then a failing first turn for room C, then a retry for C.
+    // room A ok, room B ok, then a first turn for room C that fails BEFORE init
+    // (no session ever created), then a retry for C. A failure before init is
+    // the only first-turn failure that still drops the session — an error AFTER
+    // init leaves a resumable session and is kept (see the "stopped after init"
+    // test), so this fails without ever emitting init.
     fake.script([initMsg(), textDelta("A"), resultSuccess()]);
     fake.script([initMsg(), textDelta("B"), resultSuccess()]);
-    fake.script([initMsg(), { type: "result", subtype: "error_during_execution", is_error: true, result: "boom" }]);
+    fake.script([{ type: "result", subtype: "error_during_execution", is_error: true, result: "boom" }]);
     fake.script([initMsg(), textDelta("C"), resultSuccess()]);
 
     const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
@@ -580,9 +647,11 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
     const idB = flagValue(fake.calls[1].args, "--session-id");
     assert.notEqual(idA, idB, "rooms get distinct session ids");
 
-    // The failed first turn for C dropped its session, so the retry is a fresh
-    // --session-id, not a --resume of a session that may not exist.
-    assert.ok(fake.calls[3].args.includes("--session-id"), "retry after failed first turn starts fresh");
+    // C failed before init established a session, so nothing resumable exists —
+    // the retry is a fresh --session-id, not a --resume of a session that was
+    // never created.
+    assert.ok(fake.calls[3].args.includes("--session-id"), "retry after a pre-init failure starts fresh");
+    assert.ok(!fake.calls[3].args.includes("--resume"), "retry does not resume a session that was never created");
     runtime.dispose();
   } finally {
     await fx.cleanup();

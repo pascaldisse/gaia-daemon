@@ -20,7 +20,7 @@ import { loadNativeImages } from "../core/attachments.js";
 import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
-import { resolveSkillRefs } from "../domain/skills.js";
+import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
 import { buildPiTools } from "./tools.js";
 import {
   type AgentInput,
@@ -369,7 +369,8 @@ export class PiRuntime implements AgentRuntime {
       role: input.activeRole,
       contextFiles: this.workspace.contextFiles,
     });
-    const skillResolution = input.activeRole ? resolveSkillRefs(this.workspace, input.activeRole.skills) : { paths: [], diagnostics: [] };
+    const skillNames = agentSkillNames(this.agent, input.activeRole);
+    const skillResolution = skillNames.length ? resolveSkillRefs(this.workspace, skillNames) : { paths: [], diagnostics: [] };
     for (const diagnostic of skillResolution.diagnostics) console.warn(diagnostic);
 
     const key = skillPathsKey(skillResolution.paths);

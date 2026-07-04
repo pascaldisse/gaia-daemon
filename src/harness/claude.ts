@@ -168,6 +168,14 @@ export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
     builtin.add("Edit");
     allowed.add("Edit");
   }
+  // `web` maps to Claude's own built-in web tools (codex uses its native
+  // web_search; pi uses the brave-search skill — each harness enables web its
+  // own native way). Read-only, but allow-list them so non-bypass agents can call.
+  if (has("web"))
+    for (const t of ["WebSearch", "WebFetch"]) {
+      builtin.add(t);
+      allowed.add(t);
+    }
 
   // memory/recall/summon need the Bash tool present (to invoke `gaia`) but only
   // the narrow, locked command prefix (the registry's grant), independent of the
@@ -248,6 +256,24 @@ function effortFor(level: string | undefined): string | undefined {
     default:
       return undefined;
   }
+}
+
+// Claude Code auto-selects the 1M-token window for Opus/Sonnet/Fable when it
+// talks to Anthropic DIRECTLY, but not when ANTHROPIC_BASE_URL is re-pointed:
+// our reveal-thinking and credential proxies do exactly that, so the CLI can't
+// confirm the endpoint supports 1M and silently falls back to the 200k default
+// (verified: plain `opus` direct → contextWindow 1000000; the same turn behind
+// our proxy → 200000). The documented override is the `[1m]` model-id suffix,
+// which forces the 1M window behind a gateway AND is a harmless no-op talking to
+// Anthropic direct (that model is already 1M). Applied to every model that HAS a
+// 1M window. Two opt-outs, both data: an explicit `[...]` suffix in the config is
+// passed through as-is (e.g. a pinned 200k variant), and haiku — the one tier
+// with no 1M window — errors on `[1m]`, so it's left bare. A capability hint, not
+// a security gate.
+export function claudeModelArg(name: string): string {
+  if (name.includes("[")) return name; // caller pinned an explicit context window
+  if (/haiku/i.test(name)) return name; // 200k-only tier — errors on [1m]
+  return `${name}[1m]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +404,21 @@ export class ClaudeRuntime implements AgentRuntime {
     let thinkingTextSeen = false; // did any *real* reasoning text stream?
     const toolNames = new Map<string, string>(); // tool_use id -> name
     const endedTools = new Set<string>();
+    let sessionEstablished = false; // did Claude create the resumable session this turn?
+
+    // Persist the session as "started" the moment Claude creates it (the init
+    // event), NOT only after a clean finish. A user stop aborts by killing the
+    // subprocess mid-turn (cancelActiveTask → abort() → kill), so the
+    // post-stream commit never runs; on a first turn the catch below would then
+    // also drop the session — together wiping the whole conversation even though
+    // the resumable session already exists on disk. Marking here fixes both: the
+    // next turn --resumes, and the catch keeps a session that got established.
+    const markStarted = (): void => {
+      sessionEstablished = true;
+      if (room.started) return;
+      room.started = true;
+      this.sessions.set(input.roomId, room); // set() (not a bare mutation) → store persists started=true
+    };
 
     const startThinking = (): void => {
       if (thinkingActive) return;
@@ -409,10 +450,15 @@ export class ClaudeRuntime implements AgentRuntime {
             originalModel?: string;
             fallbackModel?: string;
           };
-          if (sys.subtype === "init" && sys.model) {
-            subscription = sys.apiKeySource === "none";
-            this.liveModelLabel = `anthropic/${sys.model}`;
-            channel.push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+          if (sys.subtype === "init") {
+            // The resumable session now exists — persist "started" so a
+            // mid-turn stop/kill can't lose it (see markStarted).
+            markStarted();
+            if (sys.model) {
+              subscription = sys.apiKeySource === "none";
+              this.liveModelLabel = `anthropic/${sys.model}`;
+              channel.push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+            }
           } else if (sys.subtype === "model_fallback" || sys.subtype === "model_refusal_fallback") {
             // The CLI switched models server-side mid-turn: a capacity/availability
             // fallback (`model_fallback`, trigger e.g. "overloaded") or a safety-
@@ -542,21 +588,23 @@ export class ClaudeRuntime implements AgentRuntime {
     try {
       for await (const event of channel.stream()) yield event;
     } catch (err) {
-      // A failed first turn may never have created a resumable session; drop
-      // the room so the next turn starts fresh instead of --resume'ing nothing.
-      // (reset also drops the memory diff, so memory is re-sent then.)
-      // A resumed turn whose persisted session the CLI no longer knows (pruned
-      // conversation) is unrecoverable by retry — drop it too.
+      // Drop the session ONLY when it was never established this turn: a first
+      // turn whose Claude process died before init (nothing resumable was
+      // created), or a resume against a session the CLI no longer knows (pruned
+      // — "no conversation found", unrecoverable by retry). A stop/kill AFTER
+      // init established the session must KEEP it, so the next turn --resumes
+      // the conversation instead of starting blank. (reset also drops the
+      // memory diff, so memory is re-sent on the fresh session.)
       const message = err instanceof Error ? err.message : String(err);
-      if (firstTurn || /no conversation found/i.test(message)) this.sessions.reset(input.roomId);
+      if (!sessionEstablished && (firstTurn || /no conversation found/i.test(message))) this.sessions.reset(input.roomId);
       throw err;
     } finally {
       this.active = null;
     }
 
-    // set() (not a bare mutation) so the session store sees started=true.
-    room.started = true;
-    this.sessions.set(input.roomId, room);
+    // Clean finish also marks started — idempotent with the init-time persist,
+    // and a safety net if an init without a model field ever slips through.
+    markStarted();
   }
 
   // -----------------------------------------------------------------------
@@ -572,7 +620,7 @@ export class ClaudeRuntime implements AgentRuntime {
     if (!room?.started) return "nothing to compact — no active session for this room.";
     const args = ["-p", "--output-format", "stream-json", "--verbose", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
-    if (model) args.push("--model", model);
+    if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
     return new Promise<string>((resolve, reject) => {
       let preTokens: number | undefined;
@@ -733,7 +781,7 @@ export class ClaudeRuntime implements AgentRuntime {
     }
     args.push(firstTurn ? "--session-id" : "--resume", sessionId);
     const model = this.agent.model?.name;
-    if (model) args.push("--model", model);
+    if (model) args.push("--model", claudeModelArg(model));
     const effort = effortFor(thinkingOverride ?? this.agent.thinking);
     if (effort) args.push("--effort", effort);
     return args;

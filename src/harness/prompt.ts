@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { ResolvedRole } from "../domain/roles.js";
-import { loadRoleSkillText } from "../domain/skills.js";
+import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
 
 export interface SystemPromptInput {
@@ -144,7 +144,7 @@ export async function buildInlineSystemPrompt(params: {
     role: params.role,
     contextFiles: params.workspace.contextFiles,
   });
-  const skills = await loadRoleSkillText(params.workspace, params.role);
+  const skills = await loadSkillText(params.workspace, agentSkillNames(params.agent, params.role));
   for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
   return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
 }

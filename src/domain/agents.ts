@@ -22,6 +22,7 @@ interface RawAgentConfig {
   voice?: unknown;
   tts?: unknown;
   tools?: unknown;
+  skills?: unknown;
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: unknown;
@@ -314,6 +315,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       soulPath,
       memoryDir,
       tools: stringList(raw.tools, []),
+      skills: stringList(raw.skills, []),
       model: raw.model,
       thinking: raw.thinking,
       harness: parseHarness(raw.harness),

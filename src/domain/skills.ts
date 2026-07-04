@@ -1,19 +1,32 @@
-// Skill references resolve project-first (.gaia/skills/<name>/SKILL.md), then
-// global (~/.gaia/skills/<name>/SKILL.md). Unsafe or unknown names degrade to
-// diagnostics, never errors.
+// Skills are AUTO-DETECTED (never auto-loaded) by scanning every install
+// location and keying each by its SKILL.md frontmatter `name`:
+//   1. project  — <workspace>/skills/<name>/SKILL.md
+//   2. global   — ~/.gaia/skills/<name>/SKILL.md
+//   3. pi       — ~/.pi/agent/skills/**/SKILL.md  (pi's own library; nested one
+//                 level under collection dirs like pi-skills/, so name != dir)
+// Earlier sources win, so a project skill overrides a same-named pi skill.
+// Which detected skills actually load is set per agent/persona/role (config),
+// not here. Unsafe/unknown names degrade to diagnostics, never errors.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { Workspace } from "../core/types.js";
+import type { AgentDef, Workspace } from "../core/types.js";
 import { gaiaHome } from "../core/paths.js";
 import type { ResolvedRole } from "./roles.js";
+
+// The install location a skill was detected in. Known ecosystems are spelled
+// out for autocomplete; the `(string & {})` arm keeps it open for new roots.
+export type SkillSource = "project" | "global" | "pi" | "claude" | "codex" | "hermes" | (string & {});
 
 export interface ResolvedSkill {
   name: string;
   path: string;
-  source: "project" | "global";
+  source: SkillSource;
+  /** SKILL.md frontmatter description, when present (for UI/assignment). */
+  description?: string;
 }
 
 export interface SkillResolutionResult {
@@ -34,11 +47,86 @@ export function projectSkillsPath(workspace: Pick<Workspace, "dir">): string {
   return join(workspace.dir, "skills");
 }
 
-function skillFilePath(root: string, name: string): string {
-  return join(root, name, "SKILL.md");
+export interface SkillRoot {
+  path: string;
+  source: SkillSource;
+}
+
+/** Every skill directory gaia auto-detects, in precedence order (earlier wins).
+ * Covers the popular agent ecosystems — pi, Claude Code, Codex, Hermes — plus
+ * gaia's own. Non-existent dirs are skipped silently, so listing a tool you
+ * don't use costs nothing; add a line here to cover another. A detected skill is
+ * only AVAILABLE — which agent/persona/role loads it stays explicit config. */
+export function skillRoots(workspace: Pick<Workspace, "dir">, home = gaiaHome(), userHome = homedir()): SkillRoot[] {
+  return [
+    { path: projectSkillsPath(workspace), source: "project" },
+    { path: join(workspace.dir, ".claude", "skills"), source: "project" },
+    { path: globalSkillsPath(home), source: "global" },
+    { path: join(userHome, ".pi", "agent", "skills"), source: "pi" }, // pi nests under collection dirs (pi-skills/)
+    { path: join(userHome, ".claude", "skills"), source: "claude" },
+    { path: join(userHome, ".codex", "skills"), source: "codex" },
+    { path: join(userHome, ".hermes", "skills"), source: "hermes" },
+    { path: join(userHome, ".config", "hermes", "skills"), source: "hermes" },
+  ];
+}
+
+// Pull `name`/`description` out of a SKILL.md's YAML frontmatter. Regex, not a
+// YAML parser: the two fields are simple scalars and we must not throw on the
+// malformed files that show up in a scanned tree.
+function readSkillMeta(path: string): { name?: string; description?: string } {
+  try {
+    const raw = readFileSync(path, "utf8");
+    const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+    const field = (key: string): string | undefined => fm.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim();
+    return { name: field("name"), description: field("description") };
+  } catch {
+    return {};
+  }
+}
+
+// Scan a root for `<dir>/SKILL.md`, descending up to `depth` extra levels so a
+// collection dir (pi's pi-skills/) is walked into. Best-effort: an unreadable
+// dir yields nothing rather than throwing.
+function scanSkillRoot(root: string, source: SkillSource, depth = 1): ResolvedSkill[] {
+  const found: ResolvedSkill[] = [];
+  const walk = (dir: string, level: number): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue; // skip .git etc.
+      const sub = join(dir, entry.name);
+      const skillFile = join(sub, "SKILL.md");
+      if (existsSync(skillFile)) {
+        const meta = readSkillMeta(skillFile);
+        const name = meta.name ?? entry.name;
+        if (isSkillName(name)) found.push({ name, path: skillFile, source, ...(meta.description ? { description: meta.description } : {}) });
+      } else if (level < depth) {
+        walk(sub, level + 1); // a collection dir: look one level deeper
+      }
+    }
+  };
+  if (existsSync(root)) walk(root, 0);
+  return found;
+}
+
+/** Every detected skill across all locations, keyed by name (earlier source
+ * wins). This is the auto-detection surface — what's AVAILABLE to assign. */
+export function discoverSkills(workspace: Pick<Workspace, "dir">, home = gaiaHome(), userHome = homedir()): ResolvedSkill[] {
+  const byName = new Map<string, ResolvedSkill>();
+  for (const root of skillRoots(workspace, home, userHome)) {
+    for (const skill of scanSkillRoot(root.path, root.source)) {
+      if (!byName.has(skill.name)) byName.set(skill.name, skill);
+    }
+  }
+  return [...byName.values()];
 }
 
 export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: string[], home = gaiaHome()): SkillResolutionResult {
+  const registry = new Map(discoverSkills(workspace, home).map((skill) => [skill.name, skill]));
   const diagnostics: string[] = [];
   const skills: ResolvedSkill[] = [];
 
@@ -47,20 +135,9 @@ export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: 
       diagnostics.push(`Ignoring unsafe skill name: ${name}`);
       continue;
     }
-
-    const projectPath = skillFilePath(projectSkillsPath(workspace), name);
-    if (existsSync(projectPath)) {
-      skills.push({ name, path: projectPath, source: "project" });
-      continue;
-    }
-
-    const globalPath = skillFilePath(globalSkillsPath(home), name);
-    if (existsSync(globalPath)) {
-      skills.push({ name, path: globalPath, source: "global" });
-      continue;
-    }
-
-    diagnostics.push(`Unknown skill: ${name}`);
+    const found = registry.get(name);
+    if (found) skills.push(found);
+    else diagnostics.push(`Unknown skill: ${name}`);
   }
 
   return {
@@ -70,21 +147,27 @@ export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: 
   };
 }
 
+/** The skills an agent loads this turn: its own plus the active role's, deduped.
+ * Role and agent both opt in; detection alone never loads anything. */
+export function agentSkillNames(agent: Pick<AgentDef, "skills">, role: ResolvedRole | undefined): string[] {
+  return [...new Set([...(role?.skills ?? []), ...(agent.skills ?? [])])];
+}
+
 /**
- * Inline the text of a role's skills for harnesses that can't load skill files
+ * Inline the text of named skills for harnesses that can't load skill files
  * natively. Pi loads skills via the SDK (additionalSkillPaths); the Claude and
  * Codex harnesses run external CLIs that never see them, so we read each
  * SKILL.md, strip its frontmatter, and return a block to append to the system
- * prompt. Without this, a role that references a skill (e.g. matriarch) reaches
- * those agents as an instruction to use a skill they can't see.
+ * prompt. Without this, an assigned skill reaches those agents as an instruction
+ * to use a skill they can't see.
  */
-export async function loadRoleSkillText(
+export async function loadSkillText(
   workspace: Pick<Workspace, "dir">,
-  role: ResolvedRole | undefined,
+  skillNames: string[],
   home = gaiaHome(),
 ): Promise<{ text: string; diagnostics: string[] }> {
-  if (!role || role.skills.length === 0) return { text: "", diagnostics: [] };
-  const resolution = resolveSkillRefs(workspace, role.skills, home);
+  if (skillNames.length === 0) return { text: "", diagnostics: [] };
+  const resolution = resolveSkillRefs(workspace, skillNames, home);
   const blocks: string[] = [];
   for (const skill of resolution.skills) {
     try {
@@ -100,6 +183,6 @@ export async function loadRoleSkillText(
       resolution.diagnostics.push(`Failed to read skill ${skill.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const text = blocks.length ? `# Active Role Skills\n\n${blocks.join("\n\n")}` : "";
+  const text = blocks.length ? `# Skills\n\n${blocks.join("\n\n")}` : "";
   return { text, diagnostics: resolution.diagnostics };
 }
