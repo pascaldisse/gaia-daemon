@@ -125,9 +125,41 @@ export interface RoomState {
   monad?: MonadConfig;
   pendingTurn?: PendingTurn;
   queue?: QueuedMessage[];
+  /** Latest harness-reported context accounting per agent, keyed by agent id.
+   * Persisted so the composer's `ctx` chip survives a restart instead of
+   * blanking until the next turn re-reports. Harness-agnostic — every runtime
+   * feeds the same `context-usage` event. */
+  contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+  /** A held first turn for a newly-addressed agent whose transcript load would
+   * exceed the warn threshold; the human picks how much context to give it
+   * before it runs. Durable so the choice survives a restart. */
+  contextGate?: ContextGatePending;
   /** Thanks-Dario mode: when a provider-side safeguard reroutes the model
    * mid-turn, the reviewer persona is asked for redaction suggestions. */
   thanksDario?: boolean;
+}
+
+/** A NEW agent was addressed in a room whose transcript would exceed the
+ * configured warn threshold on its first load. The turn is held until the human
+ * chooses how much context to hand it — full, last-N messages, or a compacted
+ * summary. The compaction affects ONLY this agent's first seed; the transcript
+ * and every other agent's session are untouched. One pending per room. */
+export interface ContextGatePending {
+  agentId: string;
+  /** The user message the agent will answer once the choice is made (already in
+   * the transcript — replayed, never re-recorded). */
+  message: string;
+  /** Estimated tokens of the transcript it would load (visible text only — no
+   * tool calls or thinking, exactly what the agent would receive). */
+  estTokens: number;
+  /** The agent's context window, when the harness declares one — for the %
+   * display. Absent → the UI shows tokens only. */
+  window?: number;
+  /** Transcript length at gate time; last-N and compact position against it. */
+  totalEvents: number;
+  /** Attachments on the held message, replayed with the resumed turn. */
+  attachments?: MessageAttachment[];
+  at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +368,9 @@ export interface WorkspaceConfig {
   sandbox?: SandboxConfig;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HooksConfig;
+  /** Context-gate: warn before a NEWLY-addressed agent loads a transcript above
+   * this many (estimated) tokens. Omitted → the built-in default. 0 disables. */
+  contextGate?: { warnAboveTokens: number };
 }
 
 export interface ContextFile {
@@ -450,6 +485,8 @@ export interface Snapshot {
     thanksDario?: boolean;
     /** Last sanitize proposal, if any (full body via GET .../sanitize). */
     sanitize?: SanitizeStatus;
+    /** A held first turn awaiting the human's context-size choice (modal). */
+    contextGate?: ContextGatePending;
   };
   rooms: RoomSummary[];
   commands: SlashCommandDefinition[];

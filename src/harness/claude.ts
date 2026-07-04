@@ -276,6 +276,18 @@ export function claudeModelArg(name: string): string {
   return `${name}[1m]`;
 }
 
+/** A-priori context window for a claude model — the pre-flight figure the
+ * context gate shows before a turn runs. Mirrors claudeModelArg: haiku is the
+ * one 200k-only tier; a `[200k]`-style pin is honored; everything else runs the
+ * 1M window (opus/sonnet/fable/mythos). */
+export function claudeContextWindow(name: string | undefined): number {
+  if (!name) return 1_000_000;
+  const pin = /\[(\d+)(k|m)\]/i.exec(name);
+  if (pin) return Number(pin[1]) * (pin[2].toLowerCase() === "m" ? 1_000_000 : 1_000);
+  if (/haiku/i.test(name)) return 200_000;
+  return 1_000_000;
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeRuntime
 // ---------------------------------------------------------------------------
@@ -335,7 +347,7 @@ export class ClaudeRuntime implements AgentRuntime {
     this.memoryStore = options.memoryStore;
     this.harnessHost = options.harnessHost;
     this.cwd = options.workspace.rootDir;
-    this.sessions = new SessionMap<ClaudeRoomMeta>(undefined, fileSessionStore(this.cwd, "claude"));
+    this.sessions = new SessionMap<ClaudeRoomMeta>(undefined, fileSessionStore(this.cwd, "claude", this.agent.id));
     this.processFactory = options.processFactory ?? spawnClaudeProcess;
     this.configuredModelLabel = this.resolveModelLabel();
   }
@@ -864,6 +876,7 @@ registerHarness({
     modelNameOptions: ["fable", "opus", "sonnet", "haiku"],
   },
   create: (ctx) => new ClaudeRuntime(ctx),
+  contextWindow: (model) => claudeContextWindow(model),
   // Claude Code routes its API calls through ANTHROPIC_BASE_URL bearing
   // ANTHROPIC_AUTH_TOKEN. Point both at the loopback proxy + per-turn token; the
   // daemon swaps in the real anthropic key. Subscription/OAuth logins have no key

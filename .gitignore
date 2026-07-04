@@ -7,6 +7,11 @@ src/.bin/
 npm-debug.log*
 tmp/
 
+# gaia runtime + user-specific data — chat history, agent memory, sessions,
+# recall/index dbs. Lives under a workspace's .gaia/ (or ~/.gaia, outside the
+# repo). NEVER commit: it is per-user and often private.
+.gaia/
+
 # unmute runtime artifacts (the source is vendored; these are rebuilt locally)
 unmute/.uv-cache/
 unmute/.uv-python/

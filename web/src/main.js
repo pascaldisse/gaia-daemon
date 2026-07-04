@@ -11,6 +11,7 @@ import { initTheme } from "./themes.js";
 import { installVoiceLifecycle } from "./voice.js";
 // Region renderers registered by import side effect.
 import "./dario.js";
+import "./contextgate.js";
 import "./panel.js";
 import "./settings.js";
 import "./sidebar.js";

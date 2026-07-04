@@ -142,6 +142,11 @@ export interface HarnessSpec {
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
+  /** A-priori context window (tokens) for one of this harness's models, used by
+   * the context-gate warning BEFORE a turn runs (the harness only reports the
+   * real window mid-turn). Data on the spec, read uniformly — never id-branched.
+   * Undefined when the harness can't say, so the UI shows tokens without a %. */
+  contextWindow?(model: string | undefined): number | undefined;
 }
 
 const registry = new Map<string, HarnessSpec>();
@@ -168,6 +173,12 @@ export function capabilitiesFor(id: string): HarnessCapabilities {
   const spec = registry.get(id) ?? registry.get("pi");
   if (!spec) throw new Error("No harnesses registered");
   return spec.capabilities;
+}
+
+/** A-priori context window for a harness/model, or undefined when unknown.
+ * Read uniformly by the context gate — each harness declares its own. */
+export function contextWindowFor(id: string, model: string | undefined): number | undefined {
+  return registry.get(id)?.contextWindow?.(model);
 }
 
 /** The single harness parser: valid iff registered. */

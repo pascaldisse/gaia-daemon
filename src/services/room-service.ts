@@ -26,6 +26,7 @@ import type {
   AgentDef,
   AgentEvent,
   AgentModelConfig,
+  ContextGatePending,
   EventDetails,
   MessageAttachment,
   ModelFallback,
@@ -36,16 +37,20 @@ import type {
   UiEvent,
   Workspace,
 } from "../core/types.js";
+import { DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
+import { estimateTokens } from "../core/tokens.js";
 import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
+import { contextWindowFor, harnessIdFor } from "../harness/spec.js";
+import { renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
 import { runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
-import type { ConsolidateResult } from "./consolidate.js";
+import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, isTrusted, type SummonHost } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
 import { MonadEngine } from "./monad.js";
@@ -69,6 +74,10 @@ export interface RoomServiceOptions {
   /** Memory v3 hooks (auto-recall, episodic capture, consolidation). Absent →
    * turns run exactly as before; the hooks are additive. */
   memory?: RoomMemoryHooks;
+  /** One-shot LLM call (same caller consolidation uses) for the context-gate
+   * "compact" option — summarizes the room to seed a new agent. Absent → the
+   * compact choice degrades to a raw transcript slice. */
+  llm?: ConsolidateLlm;
   /** Workspace-scoped scheduler surface backing /schedule. */
   scheduler?: RoomSchedulerHooks;
   /** Daemon's settings-change reload (applySettingsChange): commands that
@@ -103,10 +112,30 @@ export interface SendMessageOptions {
   thinking?: string;
   /** Files attached to the message (already stored in the room's files dir). */
   attachments?: MessageAttachment[];
+  // --- context-gate resume knobs (set only when replaying a held turn) --------
+  /** Force this target's starting cursor (last-N loads a tail; compact loads
+   * nothing raw). Also signals "already decided" so the gate never re-triggers. */
+  cursorOverride?: number;
+  /** One-shot turn-level context overlay (the compact summary) — injected in the
+   * recall slot for this turn only, never part of the session. */
+  recallOverride?: string;
+  /** Skip the context-gate check for this run (the resumed turn already chose). */
+  bypassContextGate?: boolean;
 }
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+
+/** Default "load last N messages" when the human doesn't specify N. */
+const CONTEXT_GATE_LAST_N = 20;
+
+/** System prompt for the context-gate "compact" summary (option 1). */
+const CONTEXT_SUMMARY_SYSTEM = [
+  "You are compacting a group-chat room transcript so a NEW participant can catch up fast.",
+  "Write a tight briefing that preserves: the current topic, key facts and decisions, open questions,",
+  "who said what that still matters, and any commitments or next steps. Drop small talk and resolved tangents.",
+  "Use short sections or bullets. Do not add commentary about the summary itself.",
+].join(" ");
 
 /** Max hits a /recall command reply lists. */
 const RECALL_COMMAND_LIMIT = 8;
@@ -155,6 +184,9 @@ export class RoomService {
   private modelFallbacks: Record<string, ModelFallback> = {};
   /** Latest harness-reported context accounting per agent (transient). */
   private contextUsage: Record<string, { usedTokens: number; maxTokens?: number }> = {};
+  /** A held first turn awaiting the human's context-size choice (durable copy in
+   * state.contextGate); surfaced on the snapshot to drive the modal. */
+  private contextGate: ContextGatePending | undefined;
   private initPromise: Promise<void> | undefined;
 
   constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
@@ -223,6 +255,11 @@ export class RoomService {
     await Promise.all(Object.values(this.workspace.agents).map((agent) => this.options.memoryStore.init(agent.memoryDir, agent.displayName)));
     const state = await this.room.state();
     this.isSummonRoom = Boolean(state.parentRoomId);
+    // Restore the per-agent context accounting so the composer's `ctx` chip is
+    // present from first paint after a restart, not blank until the next turn.
+    if (state.contextUsage) this.contextUsage = { ...state.contextUsage };
+    // Reopen a held context-gate decision (the modal persists across a restart).
+    this.contextGate = state.contextGate;
 
     // Surface a previously saved sanitize proposal (popup reopens after restart).
     const savedProposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
@@ -458,8 +495,21 @@ export class RoomService {
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       const state = await this.room.state();
-      const cursor = state.agentCursors[target] ?? 0;
+      // A NEW agent (never spoke here → no cursor) is the only one that loads the
+      // whole back-transcript; gate that first load if it's large. Skipped on the
+      // resumed run (cursorOverride set / bypass) and in voice calls (no modal).
+      const isNewAgent = state.agentCursors[target] === undefined;
+      const cursor = options.cursorOverride ?? state.agentCursors[target] ?? 0;
       const { events, nextCursor } = await this.room.eventsFrom(cursor);
+      if (isNewAgent && options.cursorOverride === undefined && !options.bypassContextGate && channel !== "voice") {
+        const estTokens = estimateTokens(renderRoomTranscript(events));
+        const threshold = this.workspace.config.contextGate?.warnAboveTokens ?? DEFAULT_CONTEXT_WARN_TOKENS;
+        if (threshold > 0 && estTokens > threshold) {
+          await this.openContextGate(agent, text, estTokens, nextCursor, attachments);
+          remaining.shift();
+          continue; // hold this target; a resolveContextGate call replays it
+        }
+      }
       const activeRoleName = state.activeRoles[target];
       const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
       if (activeRoleName && !activeRole) {
@@ -489,8 +539,11 @@ export class RoomService {
       let lastFlush = 0;
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
-      // miss and room-service treats "" as absent.
-      const recall = (await this.options.memory?.autoRecallBlock(target, text)) || undefined;
+      // miss and room-service treats "" as absent. A context-gate "compact"
+      // resume overrides it with the room summary for this one turn.
+      const recall = options.recallOverride?.trim()
+        ? options.recallOverride
+        : (await this.options.memory?.autoRecallBlock(target, text)) || undefined;
 
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
@@ -514,7 +567,14 @@ export class RoomService {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
             }
             if (event.type === "context-usage") {
-              this.contextUsage[target] = { usedTokens: event.usedTokens, ...(event.maxTokens ? { maxTokens: event.maxTokens } : {}) };
+              const usage = { usedTokens: event.usedTokens, ...(event.maxTokens ? { maxTokens: event.maxTokens } : {}) };
+              this.contextUsage[target] = usage;
+              // Persist durably (best-effort) so the chip survives a restart.
+              void this.room
+                .updateState((current) => {
+                  current.contextUsage = { ...(current.contextUsage ?? {}), [target]: usage };
+                })
+                .catch(() => {});
             }
             this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
             if (event.type === "tool-end") {
@@ -563,6 +623,88 @@ export class RoomService {
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
+  }
+
+  // --- context gate ----------------------------------------------------------
+
+  /** Hold a new agent's first turn: persist the decision (durable + snapshot)
+   * and DON'T run it. The user message is already in the transcript; a later
+   * resolveContextGate replays the turn with the chosen amount of context. */
+  private async openContextGate(
+    agent: AgentDef,
+    message: string,
+    estTokens: number,
+    totalEvents: number,
+    attachments: MessageAttachment[] | undefined,
+  ): Promise<void> {
+    const window = contextWindowFor(harnessIdFor(agent, this.workspace), agent.model?.name);
+    const gate: ContextGatePending = {
+      agentId: agent.id,
+      message,
+      estTokens,
+      totalEvents,
+      ...(window ? { window } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      at: new Date().toISOString(),
+    };
+    await this.room.updateState((current) => {
+      current.contextGate = gate;
+    });
+    this.contextGate = gate;
+    await this.emitSnapshot();
+  }
+
+  /** Resolve a held gate: replay the new agent's turn with the chosen context.
+   * Affects ONLY this agent's first seed — the transcript and every other
+   * agent's session are untouched. */
+  async resolveContextGate(choice: "full" | "last" | "compact", n?: number): Promise<void> {
+    await this.init();
+    const gate = this.contextGate ?? (await this.room.state()).contextGate;
+    if (!gate) return;
+    await this.room.updateState((current) => {
+      delete current.contextGate;
+    });
+    this.contextGate = undefined;
+    await this.emitSnapshot();
+
+    const base: SendMessageOptions = {
+      targets: [gate.agentId],
+      recordUserMessage: false, // already recorded when the turn was first held
+      bypassContextGate: true,
+      ...(gate.attachments?.length ? { attachments: gate.attachments } : {}),
+    };
+    if (choice === "last") {
+      const keep = Number.isInteger(n) && (n as number) > 0 ? (n as number) : CONTEXT_GATE_LAST_N;
+      await this.sendMessage(gate.message, { ...base, cursorOverride: Math.max(0, gate.totalEvents - keep) });
+      return;
+    }
+    if (choice === "compact") {
+      const summary = await this.summarizeRoom(gate.agentId, gate.totalEvents);
+      await this.sendMessage(gate.message, {
+        ...base,
+        cursorOverride: gate.totalEvents, // no raw transcript — the summary IS the context
+        recallOverride: `Summary of the conversation so far (compacted for you only):\n\n${summary}`,
+      });
+      return;
+    }
+    // "full": load everything (a new agent's cursor is 0). bypass avoids re-gating.
+    await this.sendMessage(gate.message, { ...base, cursorOverride: 0 });
+  }
+
+  /** One LLM pass distilling the room (up to the gate point) into a briefing for
+   * a joining agent. Degrades to a raw transcript slice if no llm is wired. */
+  private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
+    const { events } = await this.room.eventsFrom(0);
+    const rendered = renderRoomTranscript(events.slice(0, uptoEvents));
+    const llm = this.options.llm;
+    if (!llm) return rendered.slice(0, 4000);
+    const model = this.workspace.agents[target]?.model;
+    try {
+      const summary = await llm({ system: CONTEXT_SUMMARY_SYSTEM, user: rendered, ...(model ? { model } : {}) });
+      return summary.trim() || rendered.slice(0, 4000);
+    } catch {
+      return rendered.slice(0, 4000); // summarizer failure never blocks the resume
+    }
   }
 
   /** WAL step 2: append the reply event (details ON it), then one atomic state
@@ -1283,6 +1425,7 @@ export class RoomService {
         eventTotal: all.length,
         ...(state.thanksDario ? { thanksDario: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
+        ...(this.contextGate ? { contextGate: this.contextGate } : {}),
       },
       rooms: await this.listRooms(),
       commands: SLASH_COMMANDS,

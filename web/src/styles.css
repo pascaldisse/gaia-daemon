@@ -937,6 +937,22 @@ body.resizing { cursor: col-resize; user-select: none; }
 .dario-apply:disabled { opacity: 0.5; cursor: not-allowed; }
 .redacted-tag { color: var(--warn); cursor: help; }
 
+/* Context-gate modal: a new agent joining a big room. */
+.contextgate-modal { width: min(620px, calc(100vw - 32px)); }
+.contextgate-lead { color: var(--fg2); line-height: 1.5; margin: 4px 0 4px; }
+.contextgate-error { color: var(--warn); margin: 4px 0; }
+.contextgate-options { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.contextgate-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); background: var(--bg2); }
+.contextgate-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.contextgate-option-text strong { color: var(--fg); }
+.contextgate-option-text span { color: var(--fg2); font-size: 12px; }
+.contextgate-last { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.contextgate-n { width: 64px; background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 5px 6px; }
+.contextgate-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 5px 12px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.contextgate-btn:hover { border-color: var(--accent); }
+.contextgate-btn.primary { border-color: var(--accent); color: var(--accent); }
+.contextgate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* --- chunked rooms list + transcript load-older pager ---------------------- */
 .room-label > span:last-child {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

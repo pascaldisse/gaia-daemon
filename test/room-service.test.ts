@@ -8,9 +8,10 @@ import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, SanitizeProposal, UiEvent, Workspace } from "../src/core/types.js";
-import type { AgentRuntime } from "../src/harness/spec.js";
+import type { AgentDef, AgentEvent, SanitizeProposal, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
+import type { ConsolidateLlm } from "../src/services/consolidate.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -61,6 +62,8 @@ async function makeService(options: {
   memory?: RoomMemoryHooks;
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
   summonHost?: SummonHost;
+  config?: Partial<WorkspaceConfig>;
+  llm?: ConsolidateLlm;
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
@@ -75,7 +78,7 @@ async function makeService(options: {
     agentsOverrideDir: join(root, ".gaia", "agents"),
     roomsDir: join(root, ".gaia", "rooms"),
     globalAgentsDir: join(root, "agents"),
-    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
+    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20, ...options.config },
     contextFiles: [],
     agents,
   };
@@ -89,6 +92,7 @@ async function makeService(options: {
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.settingsChanged ? { settingsChanged: options.settingsChanged } : {}),
     ...(options.summonHost ? { summonHost: options.summonHost } : {}),
+    ...(options.llm ? { llm: options.llm } : {}),
     runtimeFactory: (agent) => {
       const runtime = options.runtimeFactory ? (options.runtimeFactory(agent) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
@@ -950,4 +954,108 @@ test("listRooms surfaces imported-chat metadata (title + import date)", async ()
   const current = rooms.find((room) => room.id === "default");
   assert.equal(current?.title, undefined);
   assert.equal(current?.imported, undefined);
+});
+
+// --- context gate ------------------------------------------------------------
+
+/** Records every AgentInput it receives, so a test can assert exactly how much
+ * context a resolved gate handed the agent. */
+function capturingRuntime(agent: AgentDef, sink: AgentInput[]): AgentRuntime & { sends: number } {
+  const runtime = {
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    sends: 0,
+    async *send(input: AgentInput) {
+      runtime.sends += 1;
+      sink.push(input);
+      yield { type: "text-delta", delta: `${agent.id} ok` } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  };
+  return runtime as unknown as AgentRuntime & { sends: number };
+}
+
+// A word-padded line so a few messages clearly clear the threshold, while a
+// single short opener ("hi") stays well under it.
+const PAD = "padded with lots of extra words to grow the transcript well past the configured threshold";
+
+test("context gate: a new agent joining a big room is held until the human chooses (last-N replays a tail)", async () => {
+  const captured = new Map<string, AgentInput[]>();
+  const { service, runtimes } = await makeService({
+    agents: ["gaia", "nyari"],
+    config: { contextGate: { warnAboveTokens: 60 } },
+    runtimeFactory: (agent) => {
+      const sink: AgentInput[] = [];
+      captured.set(agent.id, sink);
+      return capturingRuntime(agent, sink);
+    },
+  });
+
+  // gaia opens with a short line (under threshold → runs, no longer "new"),
+  // then piles on — as an existing agent it's never gated, so the room grows.
+  await service.sendMessage("@gaia hi");
+  await service.waitForIdle();
+  for (let i = 0; i < 4; i++) {
+    await service.sendMessage(`@gaia message ${i} ${PAD}`);
+    await service.waitForIdle();
+  }
+  assert.equal(runtimes.get("gaia")!.sends, 5, "gaia ran every time — the first agent is never gated on a small opener");
+
+  // Address the NEW agent → held, not run; the gate is on the snapshot.
+  await service.sendMessage("@nyari please catch up");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("nyari")!.sends, 0, "new agent held, not run");
+  const gate = (await service.getSnapshot()).room.contextGate;
+  assert.equal(gate?.agentId, "nyari");
+  assert.ok((gate?.estTokens ?? 0) > 60, "estimate exceeded the threshold");
+  assert.equal(gate?.totalEvents, 11); // 2 (hi round) + 8 (4 rounds) + 1 nyari message
+
+  // Resolve: load only the last 2 messages.
+  await service.resolveContextGate("last", 2);
+  await service.waitForIdle();
+  assert.equal(runtimes.get("nyari")!.sends, 1, "nyari ran after the choice");
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
+  assert.equal(captured.get("nyari")!.at(-1)!.transcript.length, 2, "loaded only the last 2 events");
+  // gaia's own turns are untouched — the gate never re-ran it.
+  assert.equal(runtimes.get("gaia")!.sends, 5);
+});
+
+test("context gate: compact summarizes the room once and seeds ONLY the new agent (empty transcript + summary recall)", async () => {
+  const captured = new Map<string, AgentInput[]>();
+  const llmSeen: string[] = [];
+  const { service, runtimes } = await makeService({
+    agents: ["gaia", "nyari"],
+    config: { contextGate: { warnAboveTokens: 60 } },
+    llm: async ({ user }) => {
+      llmSeen.push(user);
+      return "ROOM BRIEF: they discussed the plan.";
+    },
+    runtimeFactory: (agent) => {
+      const sink: AgentInput[] = [];
+      captured.set(agent.id, sink);
+      return capturingRuntime(agent, sink);
+    },
+  });
+
+  await service.sendMessage("@gaia hi");
+  await service.waitForIdle();
+  await service.sendMessage(`@gaia now the real discussion ${PAD} ${PAD}`);
+  await service.waitForIdle();
+  await service.sendMessage("@nyari hop in");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("nyari")!.sends, 0, "new agent held");
+
+  await service.resolveContextGate("compact");
+  await service.waitForIdle();
+
+  assert.equal(llmSeen.length, 1, "summarized the room exactly once");
+  const turn = captured.get("nyari")!.at(-1)!;
+  assert.equal(turn.transcript.length, 0, "no raw transcript — the summary IS the context");
+  assert.match(turn.recall ?? "", /ROOM BRIEF/, "summary injected via the one-shot recall overlay");
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
+  // Only nyari was seeded; gaia was never re-run by the compaction.
+  assert.equal(runtimes.get("gaia")!.sends, 2);
 });

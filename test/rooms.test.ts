@@ -229,3 +229,40 @@ test("normalizeRoomState: title and imported survive the whitelist", () => {
   assert.equal(junk.title, undefined);
   assert.equal(junk.imported, undefined);
 });
+
+test("normalizeRoomState: a held contextGate survives the whitelist, malformed drops", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    contextGate: { agentId: "nyari", message: "@nyari hi", estTokens: 150_000, totalEvents: 42, window: 1_000_000, at: "2026-07-04T00:00:00Z" },
+  });
+  assert.equal(state.contextGate?.agentId, "nyari");
+  assert.equal(state.contextGate?.estTokens, 150_000);
+  assert.equal(state.contextGate?.totalEvents, 42);
+  assert.equal(state.contextGate?.window, 1_000_000);
+  // No agent id → the whole block drops (never blocks the room from opening).
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, contextGate: { message: "x" } }).contextGate, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).contextGate, undefined);
+});
+
+test("normalizeRoomState: per-agent contextUsage survives the whitelist, malformed entries drop", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    contextUsage: {
+      ari: { usedTokens: 22_000, maxTokens: 1_000_000 }, // claude, 1M window
+      terry: { usedTokens: 5_432.9 }, // codex — no window reported yet; floored, kept
+      bad1: { usedTokens: "lots" }, // non-numeric → dropped
+      bad2: { usedTokens: -1 }, // negative → dropped
+      bad3: { usedTokens: 10, maxTokens: 0 }, // zero window → usedTokens kept, maxTokens dropped
+    },
+  });
+  assert.deepEqual(state.contextUsage?.ari, { usedTokens: 22_000, maxTokens: 1_000_000 });
+  assert.deepEqual(state.contextUsage?.terry, { usedTokens: 5_432 });
+  assert.equal(state.contextUsage?.bad1, undefined);
+  assert.equal(state.contextUsage?.bad2, undefined);
+  assert.deepEqual(state.contextUsage?.bad3, { usedTokens: 10 });
+  // Nothing salvageable → the block is absent entirely, not an empty object.
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, contextUsage: { x: 1 } }).contextUsage, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).contextUsage, undefined);
+});

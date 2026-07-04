@@ -18,6 +18,7 @@
 /** @typedef {import("../../src/core/types.js").SanitizeProposal} SanitizeProposal */
 /** @typedef {import("../../src/core/types.js").SanitizeSuggestion} SanitizeSuggestion */
 /** @typedef {import("../../src/core/types.js").SanitizeOption} SanitizeOption */
+/** @typedef {import("../../src/core/types.js").ContextGatePending} ContextGatePending */
 
 /**
  * One SSE payload, narrowed by its `type` tag.

@@ -492,6 +492,24 @@ export class GaiaWebServer {
 
     // Read-aloud: one committed agent message → speech audio (the transcript
     // play button), one chunk per request. The daemon resolves the author's
+    // Context gate: resolve a held new-agent first turn with the chosen amount
+    // of context — "full", "last" (+ n messages), or "compact".
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/context-gate$/))) {
+      const body = await parseBody(request);
+      const choice = stringField(body, "choice");
+      if (choice !== "full" && choice !== "last" && choice !== "compact") {
+        return json(response, 400, { error: "choice must be full | last | compact" });
+      }
+      const nRaw = body && typeof body === "object" ? (body as Record<string, unknown>).n : undefined;
+      const n = typeof nRaw === "number" && Number.isInteger(nRaw) && nRaw > 0 ? nRaw : undefined;
+      try {
+        await this.daemon.resolveContextGate(params[0], params[1], choice, n);
+        return json(response, 200, { ok: true });
+      } catch (error) {
+        return json(response, 502, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     // engine+voice; this layer only streams the bytes. The x-tts-chunks
     // header tells the client how many chunks to fetch/play in sequence.
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud$/))) {

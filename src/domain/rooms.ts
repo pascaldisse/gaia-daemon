@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, ToolDetail } from "../core/types.js";
+import type { ContextGatePending, EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, ToolDetail } from "../core/types.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -44,6 +44,43 @@ function cursorRecord(value: unknown): Record<string, number> {
       .filter((e): e is [string, number] => typeof e[1] === "number" && Number.isFinite(e[1]) && e[1] >= 0)
       .map(([k, v]) => [k, Math.floor(v)]),
   );
+}
+
+/** Per-agent context accounting persisted in state.json. A malformed entry is
+ * dropped (never bricks the room); an entry needs a finite usedTokens, and a
+ * finite positive maxTokens is carried when present. */
+function contextUsageFrom(value: unknown): Record<string, { usedTokens: number; maxTokens?: number }> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, { usedTokens: number; maxTokens?: number }> = {};
+  for (const [id, raw] of Object.entries(value)) {
+    if (!isRecord(raw) || typeof raw.usedTokens !== "number" || !Number.isFinite(raw.usedTokens) || raw.usedTokens < 0) continue;
+    const usedTokens = Math.floor(raw.usedTokens);
+    const hasMax = typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens) && raw.maxTokens > 0;
+    out[id] = { usedTokens, ...(hasMax ? { maxTokens: Math.floor(raw.maxTokens as number) } : {}) };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A held context-gate decision persisted in state.json. Needs an agent id and
+ * message; malformed → absent (never blocks the room from opening). */
+function contextGateFrom(value: unknown): ContextGatePending | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.agentId !== "string" || !value.agentId.trim()) return undefined;
+  if (typeof value.message !== "string") return undefined;
+  const estTokens = typeof value.estTokens === "number" && value.estTokens >= 0 ? Math.floor(value.estTokens) : 0;
+  const totalEvents = typeof value.totalEvents === "number" && value.totalEvents >= 0 ? Math.floor(value.totalEvents) : 0;
+  const window = typeof value.window === "number" && value.window > 0 ? Math.floor(value.window) : undefined;
+  const attachments = attachmentsFrom(value.attachments);
+  const at = typeof value.at === "string" ? value.at : "";
+  return {
+    agentId: value.agentId,
+    message: value.message,
+    estTokens,
+    totalEvents,
+    ...(window ? { window } : {}),
+    ...(attachments ? { attachments } : {}),
+    at,
+  };
 }
 
 function toolDetail(value: unknown): ToolDetail | undefined {
@@ -169,6 +206,8 @@ export function normalizeRoomState(value: unknown): RoomState {
   const monad = monadFrom(value.monad);
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
   const queue = queueFrom(value.queue);
+  const contextUsage = contextUsageFrom(value.contextUsage);
+  const contextGate = contextGateFrom(value.contextGate);
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
@@ -179,6 +218,8 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(monad ? { monad } : {}),
     ...(pendingTurn ? { pendingTurn } : {}),
     ...(queue ? { queue } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
+    ...(contextGate ? { contextGate } : {}),
     ...(value.thanksDario === true ? { thanksDario: true } : {}),
   };
 }

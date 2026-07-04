@@ -193,5 +193,18 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   if (mcpServers) config.mcpServers = mcpServers;
   const hooks = parseHooksConfig(obj.hooks);
   if (hooks) config.hooks = hooks;
+  const contextGate = parseContextGate(obj.contextGate);
+  if (contextGate) config.contextGate = contextGate;
   return config;
+}
+
+/** Default context-gate threshold: warn a newly-addressed agent's first turn
+ * once the transcript it would load exceeds this many estimated tokens. */
+export const DEFAULT_CONTEXT_WARN_TOKENS = 100_000;
+
+function parseContextGate(raw: unknown): { warnAboveTokens: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const n = raw.warnAboveTokens;
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return undefined;
+  return { warnAboveTokens: Math.floor(n) };
 }

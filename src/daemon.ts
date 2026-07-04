@@ -213,6 +213,8 @@ export class Daemon {
       roomId: resolvedRoom,
       memoryStore: this.memoryStoreFor(workspaceId),
       memory: this.memoryServiceFor(workspaceId, workspace, record.path),
+      // Same LLM caller consolidation uses — backs the context-gate compact.
+      llm: consolidateLlm(),
       summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       // Same reload the settings-file save route uses: /model + /thinking
@@ -558,6 +560,13 @@ export class Daemon {
    * Returns the routing decision; the HTTP layer owns the response transport. */
   classifyTurn(body: unknown): ReturnType<typeof classifyVoiceTurn> {
     return classifyVoiceTurn(body);
+  }
+
+  /** Resolve a held context-gate: replay the new agent's first turn with the
+   * chosen amount of context (full / last-N / compacted). */
+  async resolveContextGate(workspaceId: string, roomId: string, choice: "full" | "last" | "compact", n?: number): Promise<void> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    await service.resolveContextGate(choice, n);
   }
 
   /** Read one committed agent message aloud: resolve the author's TTS engine +

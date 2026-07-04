@@ -51,6 +51,7 @@
  *   micMuted: boolean,
  *   readAloud: {eventId: string, phase: "loading"|"playing"}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
+ *   contextGate: {resolving: boolean, error: string, lastN: number},
  *   thinkingMenuOpen: boolean,
  *   addAgentOpen: boolean,
  *   addAgentId: string,
@@ -117,6 +118,10 @@ export const state = {
   // checked. knownAt tracks the last proposal timestamp this tab has seen so
   // a NEW proposal (e.g. from /thanks-dario) opens the popup exactly once.
   dario: { open: false, loading: false, proposal: null, error: "", selected: new Set(), knownAt: null, lastAutoEventId: "" },
+  // Context-gate modal (new agent joining a big room). Snapshot-driven (the
+  // pending gate lives on snapshot.room.contextGate); this only holds the
+  // in-flight resolve state and the "last N" input value.
+  contextGate: { resolving: false, error: "", lastN: 20 },
   thinkingMenuOpen: false,
   addAgentOpen: false,
   addAgentId: "",

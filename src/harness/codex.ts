@@ -321,7 +321,7 @@ export class CodexRuntime implements AgentRuntime {
     this.summonCreate = options.summonCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
-    this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex"));
+    this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex", this.agent.id));
     this.clientFactory = options.clientFactory ?? defaultFactory;
     this.configuredModelLabel = this.resolveModelLabel();
   }
@@ -845,6 +845,9 @@ registerHarness({
     modelProviderIds: ["openai-codex"],
   },
   create: (ctx) => new CodexRuntime(ctx),
+  // Codex's GPT-5-class models run a ~272k window; the exact real figure is
+  // reported per-turn (thread/tokenUsage) — this is only the pre-flight estimate.
+  contextWindow: () => 272_000,
   // Codex reads OPENAI_BASE_URL + OPENAI_API_KEY. Point both at the loopback proxy
   // + per-turn token; the daemon swaps in the real key. OAuth/ChatGPT-subscription
   // logins have no key to hide, so the proxy resolver fail-closes for them.

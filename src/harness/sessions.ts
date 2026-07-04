@@ -82,9 +82,17 @@ export class SessionMap<M> {
 }
 
 /** Durable per-room session handles: .gaia/rooms/<room>/harness-sessions.json,
- * one key per harness id. Best-effort — a read/write failure just means the
- * session starts fresh, exactly the pre-persistence behavior. */
-export function fileSessionStore<M>(rootDir: string, harnessId: string): SessionStore<M> {
+ * one key per (agent, harness). Two agents of the SAME harness in one room must
+ * NOT share a session — each keeps its own conversation — so the key carries the
+ * agent id, not just the harness. Best-effort: a read/write failure just means
+ * the session starts fresh, exactly the pre-persistence behavior.
+ *
+ * Legacy: rooms written before agent-scoping stored a bare `<harness>` key. It
+ * is read once as a fallback so an existing room keeps its session (losing it
+ * would drop pre-cursor history), then dropped on the next save. */
+export function fileSessionStore<M>(rootDir: string, harnessId: string, agentId: string): SessionStore<M> {
+  const key = `${harnessId}:${agentId}`;
+  const legacyKey = harnessId;
   const fileFor = (roomId: string): string => join(workspacePaths.roomDir(rootDir, roomId), "harness-sessions.json");
   const readAll = (roomId: string): Record<string, unknown> => {
     try {
@@ -103,12 +111,18 @@ export function fileSessionStore<M>(rootDir: string, harnessId: string): Session
   };
   return {
     load(roomId) {
-      const meta = readAll(roomId)[harnessId];
+      const all = readAll(roomId);
+      // Agent-scoped key wins; fall back to the legacy bare-harness entry once
+      // (only recovers a single-agent room — a multi-agent room's bare key was
+      // already ambiguous, and each agent diverges to its own key on save).
+      const meta = key in all ? all[key] : all[legacyKey];
       return meta === undefined ? undefined : (meta as M);
     },
     save(roomId, meta) {
       try {
-        writeAll(roomId, { ...readAll(roomId), [harnessId]: meta });
+        const all = readAll(roomId);
+        delete all[legacyKey]; // migrate: the ambiguous bare key is superseded
+        writeAll(roomId, { ...all, [key]: meta });
       } catch {
         // Best-effort: an unsaved handle only costs resume-after-restart.
       }
@@ -116,8 +130,9 @@ export function fileSessionStore<M>(rootDir: string, harnessId: string): Session
     clear(roomId) {
       try {
         const all = readAll(roomId);
-        if (!(harnessId in all)) return;
-        delete all[harnessId];
+        if (!(key in all) && !(legacyKey in all)) return;
+        delete all[key];
+        delete all[legacyKey];
         writeAll(roomId, all);
       } catch {
         // Best-effort.
