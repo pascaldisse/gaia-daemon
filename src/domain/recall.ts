@@ -55,12 +55,29 @@ export function searchTranscript(transcriptPath: string, dbPath: string, query: 
 
 // FTS5 has its own query syntax; quoting each token and OR-ing them turns
 // free-form questions into a ranked any-term match.
-function ftsQuery(query: string): string {
-  const tokens = query
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean)
-    .map((token) => `"${token}"`);
-  return tokens.join(" OR ");
+//
+// Bounded on purpose. An unbounded OR of every token is a denial-of-service on
+// ourselves: a long message (or a pasted document) expands into hundreds of
+// OR-terms, and because `ORDER BY rank` must score every matching row, a query
+// that matches most of the corpus makes snippet()/bm25 scan the whole table.
+// Run that synchronously across a workspace of many rooms and the daemon's
+// event loop freezes for minutes. We dedupe (case-insensitively), drop 1-char
+// noise, and cap the term count so any single query stays cheap regardless of
+// input size. Shared with memory-index.ts so both FTS paths get the same bound.
+export const MAX_FTS_TERMS = 24;
+
+export function ftsQuery(query: string): string {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const token of query.split(/[^\p{L}\p{N}]+/u)) {
+    if (token.length < 2) continue; // single chars are noise and match too broadly
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(`"${token}"`);
+    if (terms.length >= MAX_FTS_TERMS) break;
+  }
+  return terms.join(" OR ");
 }
 
 function syncIndex(db: DatabaseSync, transcriptPath: string): void {

@@ -14,7 +14,8 @@ import type { Episode } from "../src/domain/episodes.js";
 import { appendFactOp } from "../src/domain/facts.js";
 import type { FactSource } from "../src/domain/facts.js";
 import { formatMemoryHits, pendingEmbeddings, searchMemory, storeEmbeddings } from "../src/domain/memory-index.js";
-import type { MemorySearchHit } from "../src/domain/memory-index.js";
+import type { MemorySearchHit, RoomSearchRef } from "../src/domain/memory-index.js";
+import { ftsQuery, MAX_FTS_TERMS } from "../src/domain/recall.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -177,6 +178,51 @@ test("incremental sync picks up appended facts; a hand-truncated log forces a co
   await writeFile(factsPath, `${firstLine}\n`, "utf8");
   assert.equal(facts(await searchMemory("wombat", { memoryDir: dir, now: NOW })).length, 0, "truncated-away fact is gone");
   assert.equal(facts(await searchMemory("quokka", { memoryDir: dir, now: NOW })).length, 1, "surviving fact still served");
+});
+
+test("ftsQuery is bounded: dedupes, drops 1-char noise, and caps the term count", () => {
+  // Case-insensitive dedupe + single chars dropped: a common word can't be
+  // repeated into a giant OR that matches the whole corpus.
+  assert.equal(ftsQuery("You you YOU a b"), `"You"`);
+  assert.equal(ftsQuery("port PORT 8787"), `"port" OR "8787"`);
+
+  // A pasted document must not expand into an unbounded OR of every token.
+  const huge = Array.from({ length: 500 }, (_, i) => `term${i}`).join(" ");
+  const terms = ftsQuery(huge).split(" OR ");
+  assert.equal(terms.length, MAX_FTS_TERMS);
+
+  // All-noise input yields an empty match (caller treats "" as "no query").
+  assert.equal(ftsQuery("a . ! b"), "");
+});
+
+test("cross-room scan honors a wall-clock budget: newest room kept, older ones skipped + logged", async () => {
+  const dir = await memDir();
+  // Three rooms, all matching the query. recentRoomRefs sorts most-recent-first;
+  // the caller passes them in that order, so index 0 is the newest.
+  const rooms: RoomSearchRef[] = [];
+  for (const name of ["newest", "middle", "oldest"]) {
+    const roomDir = await mkdtemp(join(tmpdir(), `gaia-room-${name}-`));
+    const transcriptPath = join(roomDir, "transcript.jsonl");
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({ id: name, timestamp: RECENT_TS, author: "user", text: "shared marker token" })}\n`,
+      "utf8",
+    );
+    rooms.push({ roomId: name, transcriptPath, dbPath: join(roomDir, "recall.db") });
+  }
+
+  const logs: string[] = [];
+  // An impossible budget proves the guarantee: the first (newest) room is always
+  // scanned, every older room is skipped, and the shortfall is never silent.
+  const hits = await searchMemory("marker", { memoryDir: dir, rooms, roomScanBudgetMs: -1, now: NOW, log: (m) => logs.push(m) });
+  const scanned = [...new Set(hits.filter((hit) => hit.kind === "transcript").map((hit) => hit.roomId))];
+  assert.deepEqual(scanned, ["newest"]);
+  assert.ok(logs.some((m) => m.includes("budget") && m.includes("skipped")), `expected a skip log, got ${JSON.stringify(logs)}`);
+
+  // With a generous budget the same call reaches every room.
+  const all = await searchMemory("marker", { memoryDir: dir, rooms, roomScanBudgetMs: 60_000, now: NOW });
+  const reached = new Set(all.filter((hit) => hit.kind === "transcript").map((hit) => hit.roomId));
+  assert.deepEqual([...reached].sort(), ["middle", "newest", "oldest"]);
 });
 
 test("formatMemoryHits renders fact, episode, and transcript lines", () => {

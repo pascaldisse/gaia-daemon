@@ -17,7 +17,7 @@ import type { EpisodeOutcome } from "./episodes.js";
 import { readEpisodesFrom } from "./episodes.js";
 import type { FactSource } from "./facts.js";
 import { readFactOpsFrom } from "./facts.js";
-import { searchTranscript } from "./recall.js";
+import { ftsQuery, searchTranscript } from "./recall.js";
 
 export const MEMORY_INDEX_FILE = "index.db";
 
@@ -94,10 +94,26 @@ export interface MemorySearchOptions {
   halfLifeDays?: number;
   minScore?: number;
   now?: Date;
+  /** Wall-clock budget for the synchronous cross-room transcript scan. Rooms
+   * are scanned most-recent-first; once the budget is spent we stop and leave
+   * older rooms out of THIS turn's recall rather than block the event loop.
+   * The first (most recent) room is always scanned. Defaults to
+   * DEFAULT_ROOM_SCAN_BUDGET_MS. */
+  roomScanBudgetMs?: number;
+  /** Optional sink for a one-line note when the room-scan budget cuts the scan
+   * short (so a degraded scan is never silent). */
+  log?: (message: string) => void;
 }
 
 const LIST_DEPTH = 50;
 const RRF_K = 60;
+// Cross-room recall runs a synchronous FTS query per room. A workspace can hold
+// hundreds of rooms (e.g. an imported chat history), and running them all in one
+// uninterrupted synchronous burst freezes the daemon's single event loop. We
+// cap the total wall-clock spent scanning rooms and yield between each so the
+// daemon stays responsive; rooms are pre-sorted most-recent-first, so the budget
+// preserves the most relevant ones.
+const DEFAULT_ROOM_SCAN_BUDGET_MS = 1000;
 const DECAY_FLOOR = 0.25;
 const MIN_COSINE = 0.25;
 
@@ -123,16 +139,6 @@ function decay(ts: string, now: Date, halfLifeDays: number): number {
   const ageDays = Math.max(0, (now.getTime() - Date.parse(ts)) / 86_400_000);
   if (!Number.isFinite(ageDays)) return DECAY_FLOOR;
   return Math.max(DECAY_FLOOR, 0.5 ** (ageDays / halfLifeDays));
-}
-
-// FTS5 has its own query syntax; quoting each token and OR-ing them turns
-// free-form questions into a ranked any-term match (same as recall.ts).
-function ftsQuery(query: string): string {
-  return query
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean)
-    .map((token) => `"${token}"`)
-    .join(" OR ");
 }
 
 function openIndex(memoryDir: string): DatabaseSync {
@@ -346,7 +352,17 @@ export async function searchMemory(query: string, options: MemorySearchOptions):
       }
     }
 
-    for (const room of options.rooms ?? []) {
+    const rooms = options.rooms ?? [];
+    const roomBudgetMs = options.roomScanBudgetMs ?? DEFAULT_ROOM_SCAN_BUDGET_MS;
+    const scanStart = Date.now();
+    for (let i = 0; i < rooms.length; i += 1) {
+      // Always scan the most-recent room; after that, stop once the budget is
+      // spent rather than freeze the event loop on a very large workspace.
+      if (i > 0 && Date.now() - scanStart > roomBudgetMs) {
+        options.log?.(`recall: room-scan budget (${roomBudgetMs}ms) reached after ${i}/${rooms.length} rooms; ${rooms.length - i} older rooms skipped this turn`);
+        break;
+      }
+      const room = rooms[i];
       const hits = searchTranscript(room.transcriptPath, room.dbPath, query, LIST_DEPTH);
       hits.forEach((hit, rank) =>
         fold(`transcript:${room.roomId}:${sha256Hex(`${hit.timestamp}:${hit.author}:${hit.snippet}`)}`, rank, () => ({
@@ -362,6 +378,9 @@ export async function searchMemory(query: string, options: MemorySearchOptions):
           accessCount: 0,
         })),
       );
+      // Hand the event loop back between rooms so HTTP (health, /stop, other
+      // rooms' turns) is never starved by a long synchronous recall.
+      if (i < rooms.length - 1) await new Promise<void>((resolve) => setImmediate(resolve));
     }
 
     const results = [...candidates.values()]

@@ -124,6 +124,7 @@ export class MemoryService {
       includeInvalidated: request.includeInvalidated,
       halfLifeDays: config.decayHalfLifeDays,
       now: this.now(),
+      log: (message) => this.log(message),
     });
   }
 
