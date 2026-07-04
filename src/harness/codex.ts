@@ -284,6 +284,7 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
 // sandbox rather than honoring a granular per-tool array.
 const CODEX_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
+  nativeTools: ["web"],
   granularTools: false,
   supportsPermissionMode: false,
   supportsMcp: true,
@@ -722,7 +723,7 @@ export class CodexRuntime implements AgentRuntime {
       // agent with write/edit/bash can actually modify the workspace.
       sandbox: codexSandboxFor(this.agent.tools),
       ...(tools.size > 0 ? { dynamicTools: [...tools.values()].map(dynamicToolSpec) } : {}),
-      ...this.mcpConfigOverride(),
+      ...this.configOverride(),
     })) as { thread: { id: string }; model: string; modelProvider: string };
 
     this.attachedThreads.add(response.thread.id);
@@ -754,7 +755,7 @@ export class CodexRuntime implements AgentRuntime {
         modelProvider: this.agent.model?.provider ?? null,
         baseInstructions,
         sandbox: codexSandboxFor(this.agent.tools),
-        ...this.mcpConfigOverride(),
+        ...this.configOverride(),
       })) as { thread: { id: string }; model: string; modelProvider: string };
       const next: ThreadState = {
         threadId: response.thread.id,
@@ -815,12 +816,16 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  /** Configured MCP servers as a per-thread codex config override; {} when
-   * none are configured so the spread adds nothing. */
-  private mcpConfigOverride(): { config?: { mcp_servers: Record<string, Record<string, unknown>> } } {
+  /** Per-thread codex config override — the config.toml sections gaia drives as
+   * data: `mcp_servers` (configured MCP) and `tools.web_search` (the `web`
+   * tool → codex's native Responses web_search). Returns {} when nothing
+   * applies so the spread adds nothing. */
+  private configOverride(): { config?: Record<string, unknown> } {
+    const config: Record<string, unknown> = {};
     const servers = resolveMcpServers(this.workspace.config, this.agent);
-    if (Object.keys(servers).length === 0) return {};
-    return { config: { mcp_servers: codexMcpServersConfig(servers) } };
+    if (Object.keys(servers).length > 0) config.mcp_servers = codexMcpServersConfig(servers);
+    if (this.agent.tools.includes("web")) config.tools = { web_search: true };
+    return Object.keys(config).length > 0 ? { config } : {};
   }
 
   private roomForThread(threadId: string): string | undefined {
@@ -848,6 +853,9 @@ registerHarness({
   // Codex's GPT-5-class models run a ~272k window; the exact real figure is
   // reported per-turn (thread/tokenUsage) — this is only the pre-flight estimate.
   contextWindow: () => 272_000,
+  // A persisted ThreadState means thread/resume can restore the conversation.
+  // (A pruned rollout can still fail that resume mid-turn — undetectable here.)
+  hasDurableSession: (rootDir, roomId, agentId) => fileSessionStore<ThreadState>(rootDir, "codex", agentId).load(roomId) !== undefined,
   // Codex reads OPENAI_BASE_URL + OPENAI_API_KEY. Point both at the loopback proxy
   // + per-turn token; the daemon swaps in the real key. OAuth/ChatGPT-subscription
   // logins have no key to hide, so the proxy resolver fail-closes for them.

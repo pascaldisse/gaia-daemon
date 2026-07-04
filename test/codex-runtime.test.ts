@@ -3,7 +3,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
+import { findHarness } from "../src/harness/spec.js";
 import {
   codexSandboxFor,
   CodexRuntime,
@@ -11,6 +14,7 @@ import {
   type CodexClientFactory,
 } from "../src/harness/codex.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
+import { createTempDir } from "./helpers/temp.js";
 
 // ---------------------------------------------------------------------------
 // Fake JSON-RPC client – scriptable notification sequences
@@ -151,6 +155,52 @@ test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
 
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     assert.equal((threadStart?.params as { sandbox?: string }).sandbox, "workspace-write");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime enables native web_search on thread/start when the agent has the web tool", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const webAgent = { ...fx.agent, tools: ["read", "web"] };
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: webAgent, memoryStore: new MemoryStore(), clientFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: { tools?: { web_search?: boolean } } }).config;
+    assert.equal(config?.tools?.web_search, true);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime omits web_search config without the web tool", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const noWebAgent = { ...fx.agent, tools: ["read", "write"] };
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: noWebAgent, memoryStore: new MemoryStore(), clientFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: { tools?: { web_search?: boolean } } }).config;
+    assert.equal(config?.tools?.web_search, undefined);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -901,5 +951,32 @@ test("CodexRuntime attaches pasted images as localImage input items", async () =
     runtime.dispose();
   } finally {
     await fx.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// hasDurableSession — a persisted ThreadState is what thread/resume restores;
+// without it a deep cursor's history is gone and the turn loop must replay it
+// ---------------------------------------------------------------------------
+
+test("hasDurableSession: true iff a thread handle is persisted for (room, agent)", async () => {
+  const temp = await createTempDir();
+  try {
+    const spec = findHarness("codex")!;
+    const roomDir = join(temp.path, ".gaia", "rooms", "default");
+    await mkdir(roomDir, { recursive: true });
+
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "terry"), false, "no sessions file");
+
+    await writeFile(
+      join(roomDir, "harness-sessions.json"),
+      JSON.stringify({ "codex:terry": { threadId: "t1", model: "gpt-5.2-codex", modelProvider: "openai-codex" } }),
+      "utf8",
+    );
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "terry"), true);
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "other"), false, "someone else's thread doesn't count");
+    assert.equal(spec.hasDurableSession!(temp.path, "another-room", "terry"), false, "per room");
+  } finally {
+    await temp.cleanup();
   }
 });

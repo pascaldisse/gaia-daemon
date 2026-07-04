@@ -191,6 +191,14 @@ export class RunnerHost implements AgentRuntime {
     if (this.child) this.write({ type: "reset", roomId });
   }
 
+  /** Answered daemon-side from the spec's on-disk descriptor — the runner may
+   * not even be spawned yet, and a fresh process is exactly the case that
+   * matters (its cursor is only honest if the persisted handle survived). */
+  hasDurableSession(roomId: string): boolean {
+    const spec = harnessSpecFor(this.options.harness);
+    return spec.hasDurableSession?.(this.options.workspace.rootDir, roomId, this.agent.id) ?? true;
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.child) {

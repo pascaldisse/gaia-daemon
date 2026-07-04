@@ -49,6 +49,13 @@ export interface AgentRuntime {
   dispose(): void;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
+  /** Does a durable, resumable session for this room still exist? An agent's
+   * transcript cursor promises "everything before me lives in the harness
+   * session" — when the session is gone (crash, dropped handle, pruned store)
+   * that promise is broken, and the turn loop must replay the history instead
+   * of silently starting the agent mid-conversation. Absent ⇒ assume it does
+   * (fail-safe: never spuriously reload). */
+  hasDurableSession?(roomId: string): boolean;
 }
 
 // --- capabilities + ui (data on the spec) --------------------------------------
@@ -59,6 +66,12 @@ export interface HarnessCapabilities {
   /** Which gaia tools this harness can wire into a session; the agent's
    * configured tools are intersected with this. */
   readonly gaiaTools: readonly GaiaTool[];
+  /** Harness-agnostic native capability tools this harness fulfils beyond the
+   * base coding set — currently just `"web"` (claude: WebSearch+WebFetch;
+   * codex: native Responses web_search; pi: the brave-search skill). Declared
+   * as DATA here, unioned into the settings-UI tool vocabulary, and translated
+   * locally by each harness — never an `=== "claude"` branch in shared code. */
+  readonly nativeTools: readonly string[];
   /** Honors the granular per-tool array (read/write/edit/bash)? Codex is
    * coarse, so the UI hides the array there — derived, never id-branched. */
   readonly granularTools: boolean;
@@ -147,6 +160,14 @@ export interface HarnessSpec {
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
    * Undefined when the harness can't say, so the UI shows tokens without a %. */
   contextWindow?(model: string | undefined): number | undefined;
+  /** Does a durable session handle for (room, agent) survive on disk? Answered
+   * from the harness's own persistence (claude/codex harness-sessions.json, pi
+   * session files) WITHOUT spawning anything — a fresh daemon process is
+   * exactly the case that matters. Read uniformly by RunnerHost.hasDurableSession
+   * before a turn: false with a deep cursor ⇒ the conversation behind the
+   * cursor is gone and must be replayed (through the context gate when large).
+   * Absent ⇒ sessions are not detectable a-priori; treated as present. */
+  hasDurableSession?(rootDir: string, roomId: string, agentId: string): boolean;
 }
 
 const registry = new Map<string, HarnessSpec>();

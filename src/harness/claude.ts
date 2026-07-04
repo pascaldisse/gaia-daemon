@@ -311,6 +311,7 @@ interface ClaudeUsage {
 
 const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
+  nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: true,
   supportsMcp: true,
@@ -877,6 +878,11 @@ registerHarness({
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
+  // A deep transcript cursor is only honest while this handle survives: the
+  // session must have been ESTABLISHED (started) — a generated-but-never-run
+  // id resumes nothing. load() also honors the legacy bare-harness key.
+  hasDurableSession: (rootDir, roomId, agentId) =>
+    fileSessionStore<ClaudeRoomMeta>(rootDir, "claude", agentId).load(roomId)?.started === true,
   // Claude Code routes its API calls through ANTHROPIC_BASE_URL bearing
   // ANTHROPIC_AUTH_TOKEN. Point both at the loopback proxy + per-turn token; the
   // daemon swaps in the real anthropic key. Subscription/OAuth logins have no key

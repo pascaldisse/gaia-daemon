@@ -495,17 +495,26 @@ export class RoomService {
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       const state = await this.room.state();
-      // A NEW agent (never spoke here → no cursor) is the only one that loads the
-      // whole back-transcript; gate that first load if it's large. Skipped on the
-      // resumed run (cursorOverride set / bypass) and in voice calls (no modal).
+      // A NEW agent (never spoke here → no cursor) loads the whole back-transcript.
+      // An EXISTING agent normally loads only events since its cursor — everything
+      // earlier lives in its harness session. When that session is GONE (crash,
+      // dropped handle, pruned store) the cursor is a lie: trusting it would start
+      // the agent mid-conversation with silent amnesia, so replay from 0 instead.
+      // Either full load is gated if large. Skipped on the resumed run
+      // (cursorOverride set / bypass) and in voice calls (no modal).
       const isNewAgent = state.agentCursors[target] === undefined;
-      const cursor = options.cursorOverride ?? state.agentCursors[target] ?? 0;
+      const sessionLost =
+        !isNewAgent &&
+        (state.agentCursors[target] ?? 0) > 0 &&
+        options.cursorOverride === undefined &&
+        (runtime.hasDurableSession?.(this.roomId) ?? true) === false;
+      const cursor = options.cursorOverride ?? (sessionLost ? 0 : (state.agentCursors[target] ?? 0));
       const { events, nextCursor } = await this.room.eventsFrom(cursor);
-      if (isNewAgent && options.cursorOverride === undefined && !options.bypassContextGate && channel !== "voice") {
+      if ((isNewAgent || sessionLost) && options.cursorOverride === undefined && !options.bypassContextGate && channel !== "voice") {
         const estTokens = estimateTokens(renderRoomTranscript(events));
         const threshold = this.workspace.config.contextGate?.warnAboveTokens ?? DEFAULT_CONTEXT_WARN_TOKENS;
         if (threshold > 0 && estTokens > threshold) {
-          await this.openContextGate(agent, text, estTokens, nextCursor, attachments);
+          await this.openContextGate(agent, text, estTokens, nextCursor, attachments, sessionLost ? "session-lost" : "new-agent");
           remaining.shift();
           continue; // hold this target; a resolveContextGate call replays it
         }
@@ -627,15 +636,18 @@ export class RoomService {
 
   // --- context gate ----------------------------------------------------------
 
-  /** Hold a new agent's first turn: persist the decision (durable + snapshot)
-   * and DON'T run it. The user message is already in the transcript; a later
-   * resolveContextGate replays the turn with the chosen amount of context. */
+  /** Hold a big first-load turn — a new agent's first seed, or an existing
+   * agent replaying history because its harness session vanished. Persists the
+   * decision (durable + snapshot) and DOESN'T run it. The user message is
+   * already in the transcript; a later resolveContextGate replays the turn
+   * with the chosen amount of context. */
   private async openContextGate(
     agent: AgentDef,
     message: string,
     estTokens: number,
     totalEvents: number,
     attachments: MessageAttachment[] | undefined,
+    reason: "new-agent" | "session-lost",
   ): Promise<void> {
     const window = contextWindowFor(harnessIdFor(agent, this.workspace), agent.model?.name);
     const gate: ContextGatePending = {
@@ -645,6 +657,7 @@ export class RoomService {
       totalEvents,
       ...(window ? { window } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      reason,
       at: new Date().toISOString(),
     };
     await this.room.updateState((current) => {
@@ -654,9 +667,9 @@ export class RoomService {
     await this.emitSnapshot();
   }
 
-  /** Resolve a held gate: replay the new agent's turn with the chosen context.
-   * Affects ONLY this agent's first seed — the transcript and every other
-   * agent's session are untouched. */
+  /** Resolve a held gate: replay the held turn with the chosen context.
+   * Affects ONLY this agent's seed — the transcript and every other agent's
+   * session are untouched. */
   async resolveContextGate(choice: "full" | "last" | "compact", n?: number): Promise<void> {
     await this.init();
     const gate = this.contextGate ?? (await this.room.state()).contextGate;
@@ -687,7 +700,7 @@ export class RoomService {
       });
       return;
     }
-    // "full": load everything (a new agent's cursor is 0). bypass avoids re-gating.
+    // "full": load everything from the room's start. bypass avoids re-gating.
     await this.sendMessage(gate.message, { ...base, cursorOverride: 0 });
   }
 

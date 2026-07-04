@@ -68,6 +68,13 @@ function ContextGateModal(gate) {
   const percent = gate.window ? Math.round((gate.estTokens / gate.window) * 100) : null;
   const size = `~${gate.estTokens.toLocaleString()} tokens`;
   const ofWindow = gate.window ? ` — ${percent}% of @${gate.agentId}'s ${gate.window.toLocaleString()}-token window` : " (window size unknown until its first turn)";
+  // Same choice, two stories: a NEW agent's first seed vs an EXISTING agent
+  // whose harness session vanished (its history must be reloaded, not skipped).
+  const sessionLost = gate.reason === "session-lost";
+  const heading = sessionLost ? `🧠 Session lost — how much should @${gate.agentId} reload?` : `🧠 Big room — how much should @${gate.agentId} load?`;
+  const lead = sessionLost
+    ? `@${gate.agentId}'s harness session for this room is gone, so its memory of the conversation now lives only in the transcript (${size}${ofWindow}). Rather than silently continuing mid-stream, pick how much history to reload — this affects only @${gate.agentId}; every other agent and the transcript stay unchanged.`
+    : `@${gate.agentId} is joining a conversation carrying ${size}${ofWindow}. Its prompt cache is empty, so all of it loads on the first turn. Pick how much history to give it — this affects only @${gate.agentId}; every other agent and the transcript stay unchanged.`;
 
   return h(
     "div",
@@ -75,10 +82,10 @@ function ContextGateModal(gate) {
     h(
       "section",
       { class: "modal contextgate-modal" },
-      h("div", { class: "panel-head" }, h("h2", { text: "🧠 Big room — how much should @" + gate.agentId + " load?" })),
+      h("div", { class: "panel-head" }, h("h2", { text: heading })),
       h("p", {
         class: "contextgate-lead",
-        text: `@${gate.agentId} is joining a conversation carrying ${size}${ofWindow}. Its prompt cache is empty, so all of it loads on the first turn. Pick how much history to give it — this affects only @${gate.agentId}; every other agent and the transcript stay unchanged.`,
+        text: lead,
       }),
       state.contextGate.error ? h("p", { class: "contextgate-error", text: state.contextGate.error }) : null,
       h(

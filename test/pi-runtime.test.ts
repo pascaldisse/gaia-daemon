@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
-import type { SummonCreate } from "../src/harness/spec.js";
+import { findHarness, type SummonCreate } from "../src/harness/spec.js";
 import { PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
 import { createTempDir } from "./helpers/temp.js";
@@ -342,5 +342,28 @@ test("PiRuntime feeds pasted images to the SDK's native channel and breadcrumbs 
     runtime.dispose();
   } finally {
     await fx.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// hasDurableSession — pi self-persists sessions as files under the room's
+// pi-sessions/<agent>/ dir; any file there is what continueRecent resumes
+// ---------------------------------------------------------------------------
+
+test("hasDurableSession: true iff the room's pi session dir holds a session file", async () => {
+  const temp = await createTempDir();
+  try {
+    const spec = findHarness("pi")!;
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "gaia"), false, "no session dir yet");
+
+    const dir = piRoomSessionDir({ rootDir: temp.path }, "default", "gaia");
+    await mkdir(dir, { recursive: true });
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "gaia"), false, "empty dir ⇒ nothing to resume");
+
+    await writeFile(join(dir, "session-1.jsonl"), "{}\n", "utf8");
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "gaia"), true);
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "sidia"), false, "per agent");
+  } finally {
+    await temp.cleanup();
   }
 });

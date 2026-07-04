@@ -3,7 +3,7 @@
 // Everything harness-specific lives HERE; shared code sees only the
 // HarnessSpec registered at the bottom (AGENTS.md §RULE #0).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
@@ -163,6 +163,7 @@ function skillPathsKey(paths: string[]): string {
 
 const PI_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
+  nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
   // Pi core has no MCP client (an adapter package exists but is not wired).
@@ -370,6 +371,11 @@ export class PiRuntime implements AgentRuntime {
       contextFiles: this.workspace.contextFiles,
     });
     const skillNames = agentSkillNames(this.agent, input.activeRole);
+    // Pi's translation of the harness-agnostic `web` tool: claude/codex expose a
+    // native web tool, pi shells out to the brave-search skill (its search.js —
+    // so a `web` pi agent also needs `bash` + a BRAVE_API_KEY). Local mapping,
+    // never a shared-code branch. Deduped against explicitly assigned skills.
+    if (this.agent.tools.includes("web") && !skillNames.includes("brave-search")) skillNames.push("brave-search");
     const skillResolution = skillNames.length ? resolveSkillRefs(this.workspace, skillNames) : { paths: [], diagnostics: [] };
     for (const diagnostic of skillResolution.diagnostics) console.warn(diagnostic);
 
@@ -498,6 +504,17 @@ registerHarness({
   capabilities: PI_CAPABILITIES,
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
   create: (ctx) => new PiRuntime(ctx),
+  // Pi self-persists sessions as files under the room's pi-sessions/<agent>/
+  // dir (SessionManager.continueRecent resumes the most recent one). Any file
+  // there means the conversation behind the cursor is resumable; an empty or
+  // missing dir means a fresh session — its history must be replayed.
+  hasDurableSession: (rootDir, roomId, agentId) => {
+    try {
+      return readdirSync(piRoomSessionDir({ rootDir }, roomId, agentId)).length > 0;
+    } catch {
+      return false; // no dir ⇒ nothing to resume
+    }
+  },
   // Pi's proxy wiring (the in-process fetch redirect lives in applyCredentialProxy):
   // relocate its agent dir to an empty store so AuthStorage resolves no real key
   // (the token registered against the proxy is then what reaches the wire), and

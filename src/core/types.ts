@@ -159,6 +159,10 @@ export interface ContextGatePending {
   totalEvents: number;
   /** Attachments on the held message, replayed with the resumed turn. */
   attachments?: MessageAttachment[];
+  /** Why the turn was held: a new agent's first load (default when absent), or
+   * an existing agent whose harness session vanished — the history behind its
+   * cursor must be replayed rather than silently continuing mid-conversation. */
+  reason?: "new-agent" | "session-lost";
   at: string;
 }
 

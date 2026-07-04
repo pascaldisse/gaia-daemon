@@ -71,6 +71,7 @@ function contextGateFrom(value: unknown): ContextGatePending | undefined {
   const totalEvents = typeof value.totalEvents === "number" && value.totalEvents >= 0 ? Math.floor(value.totalEvents) : 0;
   const window = typeof value.window === "number" && value.window > 0 ? Math.floor(value.window) : undefined;
   const attachments = attachmentsFrom(value.attachments);
+  const reason = value.reason === "session-lost" || value.reason === "new-agent" ? value.reason : undefined;
   const at = typeof value.at === "string" ? value.at : "";
   return {
     agentId: value.agentId,
@@ -79,6 +80,7 @@ function contextGateFrom(value: unknown): ContextGatePending | undefined {
     totalEvents,
     ...(window ? { window } : {}),
     ...(attachments ? { attachments } : {}),
+    ...(reason ? { reason } : {}),
     at,
   };
 }

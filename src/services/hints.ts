@@ -103,9 +103,12 @@ const EXTRA_TOOL_NAMES: ToolName[] = ["grep", "find", "ls"];
 
 export function sdkToolNames(cwd: string): string[] {
   const coding = createCodingTools(cwd).map((tool) => tool.name);
-  // GAIA-provided custom tools come from the single tool registry (so this list
-  // can never drift from what the harnesses actually wire).
-  return [...new Set([...coding, ...EXTRA_TOOL_NAMES, ...gaiaToolIds()])];
+  // Harness-agnostic native tools (e.g. "web") come from the registered
+  // harnesses' declared capabilities — the UI offers a tool iff some harness
+  // fulfils it, never a hardcoded string. GAIA custom tools come from the
+  // single tool registry, so neither list can drift from what harnesses wire.
+  const nativeTools = harnessSpecs().flatMap((spec) => spec.capabilities.nativeTools ?? []);
+  return [...new Set([...coding, ...EXTRA_TOOL_NAMES, ...nativeTools, ...gaiaToolIds()])];
 }
 
 export function sdkThinkingLevels(): string[] {

@@ -3,9 +3,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
+import { findHarness } from "../src/harness/spec.js";
 import {
   buildClaudeToolGrant,
   claudeModelArg,
@@ -14,6 +15,7 @@ import {
   type ClaudeProcessOptions,
 } from "../src/harness/claude.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
+import { createTempDir } from "./helpers/temp.js";
 
 // ---------------------------------------------------------------------------
 // Fake process factory – scriptable NDJSON message sequences (one per turn)
@@ -110,6 +112,21 @@ test("buildClaudeToolGrant: memory/recall grant the narrow gaia CLI, not a gener
   assert.ok(!grant.allowedTools.includes("Bash"));
   assert.ok(grant.allowedTools.includes("Bash(gaia mem:*)"));
   assert.ok(grant.allowedTools.includes("Bash(gaia recall:*)"));
+});
+
+test("buildClaudeToolGrant: web exposes and auto-approves Claude's native web tools", () => {
+  const grant = buildClaudeToolGrant(["read", "web"]);
+  assert.ok(grant.tools.includes("WebSearch"));
+  assert.ok(grant.tools.includes("WebFetch"));
+  // Read-only but allow-listed so non-bypass agents can still call them.
+  assert.ok(grant.allowedTools.includes("WebSearch"));
+  assert.ok(grant.allowedTools.includes("WebFetch"));
+});
+
+test("buildClaudeToolGrant: no web tools without the web tool", () => {
+  const grant = buildClaudeToolGrant(["read", "write", "edit"]);
+  assert.ok(!grant.tools.includes("WebSearch"));
+  assert.ok(!grant.tools.includes("WebFetch"));
 });
 
 test("buildClaudeToolGrant: bash grants the general shell", () => {
@@ -912,5 +929,38 @@ test("ClaudeRuntime keeps the plain stdin prompt for non-image attachments", asy
     runtime.dispose();
   } finally {
     await fx.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// hasDurableSession — the on-disk descriptor the shared turn loop reads before
+// trusting a deep cursor (a lost session must replay history, never skip it)
+// ---------------------------------------------------------------------------
+
+test("hasDurableSession: only an ESTABLISHED handle counts; legacy bare key honored", async () => {
+  const temp = await createTempDir();
+  try {
+    const spec = findHarness("claude")!;
+    const roomDir = join(temp.path, ".gaia", "rooms", "default");
+    await mkdir(roomDir, { recursive: true });
+
+    // No sessions file at all → nothing to resume.
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "ari"), false);
+
+    // Agent-scoped handle, established → resumable.
+    await writeFile(join(roomDir, "harness-sessions.json"), JSON.stringify({ "claude:ari": { sessionId: "s1", started: true } }), "utf8");
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "ari"), true);
+    // Another agent's handle is NOT this agent's session.
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "nyari"), false);
+
+    // Generated-but-never-run id resumes nothing.
+    await writeFile(join(roomDir, "harness-sessions.json"), JSON.stringify({ "claude:ari": { sessionId: "s1", started: false } }), "utf8");
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "ari"), false);
+
+    // Legacy bare-harness key (rooms written before agent-scoping) still counts.
+    await writeFile(join(roomDir, "harness-sessions.json"), JSON.stringify({ claude: { sessionId: "s2", started: true } }), "utf8");
+    assert.equal(spec.hasDurableSession!(temp.path, "default", "ari"), true);
+  } finally {
+    await temp.cleanup();
   }
 });

@@ -56,6 +56,16 @@ test("agent.json gets tools multiselect and grouped model dropdowns", () => {
   assert.deepEqual(hint(hints, "thinking").options?.map((option) => option.value), ["off", "medium"]);
 });
 
+test("sdkToolNames offers `web` — derived from harness capabilities, not hardcoded", () => {
+  const names = sdkToolNames(process.cwd());
+  // Every registered harness declares nativeTools:["web"] (claude WebSearch,
+  // codex web_search, pi brave-search skill), so the vocabulary offers it once.
+  assert.ok(names.includes("web"), "web tool should appear in the settings vocabulary");
+  assert.equal(names.filter((name) => name === "web").length, 1, "web appears exactly once (deduped across harnesses)");
+  // Sanity: the gaia CLI tools and base coding tools still come through.
+  for (const expected of ["read", "memory", "recall", "summon"]) assert.ok(names.includes(expected), `${expected} present`);
+});
+
 test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "agents/gaia/persona/SOUL.md", kind: "markdown" }, sources), undefined);
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);

@@ -959,8 +959,10 @@ test("listRooms surfaces imported-chat metadata (title + import date)", async ()
 // --- context gate ------------------------------------------------------------
 
 /** Records every AgentInput it receives, so a test can assert exactly how much
- * context a resolved gate handed the agent. */
-function capturingRuntime(agent: AgentDef, sink: AgentInput[]): AgentRuntime & { sends: number } {
+ * context a resolved gate handed the agent. `sessionAlive` (optional) backs
+ * hasDurableSession — flip it to simulate a lost harness session; omitted ⇒
+ * the method is absent, exercising the fail-safe "assume alive" default. */
+function capturingRuntime(agent: AgentDef, sink: AgentInput[], sessionAlive?: () => boolean): AgentRuntime & { sends: number } {
   const runtime = {
     agent,
     modelLabel: "test/model",
@@ -974,6 +976,7 @@ function capturingRuntime(agent: AgentDef, sink: AgentInput[]): AgentRuntime & {
     async abort() {},
     dispose() {},
     resetRoom() {},
+    ...(sessionAlive ? { hasDurableSession: () => sessionAlive() } : {}),
   };
   return runtime as unknown as AgentRuntime & { sends: number };
 }
@@ -1010,6 +1013,7 @@ test("context gate: a new agent joining a big room is held until the human choos
   assert.equal(runtimes.get("nyari")!.sends, 0, "new agent held, not run");
   const gate = (await service.getSnapshot()).room.contextGate;
   assert.equal(gate?.agentId, "nyari");
+  assert.equal(gate?.reason, "new-agent");
   assert.ok((gate?.estTokens ?? 0) > 60, "estimate exceeded the threshold");
   assert.equal(gate?.totalEvents, 11); // 2 (hi round) + 8 (4 rounds) + 1 nyari message
 
@@ -1058,4 +1062,73 @@ test("context gate: compact summarizes the room once and seeds ONLY the new agen
   assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
   // Only nyari was seeded; gaia was never re-run by the compaction.
   assert.equal(runtimes.get("gaia")!.sends, 2);
+});
+
+// --- session loss --------------------------------------------------------------
+
+test("a lost harness session replays the full transcript instead of silently starting mid-conversation", async () => {
+  const captured: AgentInput[] = [];
+  let alive = true;
+  const { service } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => capturingRuntime(agent, captured, () => alive),
+  });
+
+  // Two normal rounds: turn 2 sees ONLY events since its cursor (the tail).
+  await service.sendMessage("@gaia hello");
+  await service.waitForIdle();
+  await service.sendMessage("@gaia and again");
+  await service.waitForIdle();
+  assert.equal(captured.at(-1)!.transcript.length, 1, "existing agent loads only the new user message");
+
+  // The session behind the cursor vanishes (crash / dropped handle / pruned
+  // store). The cursor is now a lie — the turn must replay from the start.
+  alive = false;
+  await service.sendMessage("@gaia what do you remember?");
+  await service.waitForIdle();
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "small room heals silently — no gate");
+  // 5 events: 2 user + 2 replies from the earlier rounds, + this user message.
+  assert.equal(captured.at(-1)!.transcript.length, 5, "full history replayed into the fresh session");
+
+  // The healed turn re-established a session; the next one is tail-only again.
+  alive = true;
+  await service.sendMessage("@gaia carry on");
+  await service.waitForIdle();
+  assert.equal(captured.at(-1)!.transcript.length, 1, "cursor semantics restored after the heal");
+});
+
+test("a lost session in a BIG room is held by the context gate (reason: session-lost) and full-reload replays everything", async () => {
+  const captured: AgentInput[] = [];
+  let alive = true;
+  const { service, runtimes } = await makeService({
+    agents: ["gaia"],
+    config: { contextGate: { warnAboveTokens: 60 } },
+    runtimeFactory: (agent) => capturingRuntime(agent, captured, () => alive),
+  });
+
+  // Grow the room past the threshold — an existing agent with a LIVE session
+  // is never gated, however big the room gets.
+  await service.sendMessage("@gaia hi");
+  await service.waitForIdle();
+  for (let i = 0; i < 4; i++) {
+    await service.sendMessage(`@gaia message ${i} ${PAD}`);
+    await service.waitForIdle();
+  }
+  assert.equal(runtimes.get("gaia")!.sends, 5, "live session ⇒ never gated");
+
+  // Session gone + big replay ⇒ held for the human's choice, like a first load.
+  alive = false;
+  await service.sendMessage("@gaia what happened so far?");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("gaia")!.sends, 5, "held, not run");
+  const gate = (await service.getSnapshot()).room.contextGate;
+  assert.equal(gate?.agentId, "gaia");
+  assert.equal(gate?.reason, "session-lost");
+  assert.equal(gate?.totalEvents, 11); // 10 from the 5 rounds + the held user message
+
+  await service.resolveContextGate("full");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("gaia")!.sends, 6, "ran after the choice");
+  assert.equal(captured.at(-1)!.transcript.length, 11, "full reload from event 0");
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
 });
