@@ -14,19 +14,35 @@
 //   50-entry LRU side-table: metadata amnesia by design).
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
-import type { AgentDef, AgentEvent, EventDetails, PendingTurn, RoomEvent, Snapshot, Task, UiEvent, Workspace } from "../core/types.js";
+import type { SanitizeProposal, SanitizeStatus } from "../core/types.js";
+import type {
+  AgentDef,
+  AgentEvent,
+  AgentModelConfig,
+  EventDetails,
+  MessageAttachment,
+  ModelFallback,
+  PendingTurn,
+  RoomEvent,
+  Snapshot,
+  Task,
+  UiEvent,
+  Workspace,
+} from "../core/types.js";
 import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
+import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
 import { runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateResult } from "./consolidate.js";
@@ -36,6 +52,7 @@ import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
 import { sdkThinkingLevels } from "./hints.js";
 import { createAgentRuntime } from "../harness/host.js";
+import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
 
 export interface RoomServiceOptions {
@@ -54,6 +71,12 @@ export interface RoomServiceOptions {
   memory?: RoomMemoryHooks;
   /** Workspace-scoped scheduler surface backing /schedule. */
   scheduler?: RoomSchedulerHooks;
+  /** Daemon's settings-change reload (applySettingsChange): commands that
+   * rewrite agent.json (/model, /thinking) fire this so every resident room
+   * service rebuilds and the next turn spawns a runner that reads the new
+   * config — runners snapshot agent.json at spawn, so an in-place mutation
+   * alone never reaches a live subprocess. */
+  settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
 }
 
 /** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
@@ -78,6 +101,8 @@ export interface SendMessageOptions {
   /** Synthetic prompts (call greetings, silence nudges) skip the user event. */
   recordUserMessage?: boolean;
   thinking?: string;
+  /** Files attached to the message (already stored in the room's files dir). */
+  attachments?: MessageAttachment[];
 }
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
@@ -96,13 +121,16 @@ const COMMANDS: Record<string, CommandHandler> = {
   roles: (service, command) => service.renderRoles(command.type === "roles" ? command.agent : undefined),
   role: (service, command) => (command.type === "role" ? service.setRole(command.agent, command.role) : Promise.resolve("")),
   thinking: (service, command) => (command.type === "thinking" ? service.runThinkingCommand(command.agent, command.level) : Promise.resolve("")),
+  model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
+  compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
+  "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -119,6 +147,14 @@ export class RoomService {
   private recentTasks: Task[] = [];
   /** Tasks mirroring the DURABLE queue (state.queue) for snapshot chips. */
   private queuedTasks: Task[] = [];
+  /** Last sanitize proposal marker (full body lives in sanitize.json). */
+  private sanitizeStatus: SanitizeStatus | undefined;
+  /** Last provider-side model switch per agent; cleared by the next turn that
+   * completes without one. Transient — the durable record is the transcript
+   * event's details.modelFallback. */
+  private modelFallbacks: Record<string, ModelFallback> = {};
+  /** Latest harness-reported context accounting per agent (transient). */
+  private contextUsage: Record<string, { usedTokens: number; maxTokens?: number }> = {};
   private initPromise: Promise<void> | undefined;
 
   constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
@@ -187,6 +223,16 @@ export class RoomService {
     await Promise.all(Object.values(this.workspace.agents).map((agent) => this.options.memoryStore.init(agent.memoryDir, agent.displayName)));
     const state = await this.room.state();
     this.isSummonRoom = Boolean(state.parentRoomId);
+
+    // Surface a previously saved sanitize proposal (popup reopens after restart).
+    const savedProposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
+    if (savedProposal?.at && Array.isArray(savedProposal.suggestions)) {
+      this.sanitizeStatus = {
+        at: savedProposal.at,
+        suggestions: savedProposal.suggestions.length,
+        ...(savedProposal.appliedAt ? { appliedAt: savedProposal.appliedAt } : {}),
+      };
+    }
 
     // Interrupted turn? Resume in the background — never blocks opening.
     if (state.pendingTurn) void this.resumePendingTurn(state.pendingTurn).catch(() => {});
@@ -264,6 +310,7 @@ export class RoomService {
         text,
         targets,
         ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+        ...(options.attachments?.length ? { attachments: options.attachments } : {}),
         queuedAt: task.startedAt,
       });
       this.queuedTasks.push(task);
@@ -317,7 +364,11 @@ export class RoomService {
         await this.runCommand(task, command);
         return;
       }
-      this.startTask(task, next.text, { targets: next.targets, ...(next.channel ? { channel: next.channel } : {}) });
+      this.startTask(task, next.text, {
+        targets: next.targets,
+        ...(next.channel ? { channel: next.channel } : {}),
+        ...(next.attachments?.length ? { attachments: next.attachments } : {}),
+      });
     } catch (error) {
       this.settleTask(task, "error", error);
     }
@@ -392,8 +443,9 @@ export class RoomService {
     }
 
     const channel = options.channel === "voice" ? ("voice" as const) : undefined;
+    const attachments = options.attachments?.length ? options.attachments : undefined;
     if (options.recordUserMessage !== false) {
-      const userEvent = await this.room.addUserMessage(text, task.targets, channel);
+      const userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
     }
 
@@ -427,6 +479,7 @@ export class RoomService {
         id: task.id,
         eventId,
         prompt: text,
+        ...(attachments ? { attachments } : {}),
         targets: [...remaining],
         agentId: target,
         partialReply: "",
@@ -445,9 +498,24 @@ export class RoomService {
       try {
         turn = await runAgentTurn({
           runtime,
-          input: { roomId: this.roomId, message: text, transcript: events, activeRole, channel: options.channel, thinking: options.thinking, recall },
+          input: {
+            roomId: this.roomId,
+            message: text,
+            ...(attachments ? { attachments } : {}),
+            transcript: events,
+            activeRole,
+            channel: options.channel,
+            thinking: options.thinking,
+            recall,
+          },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
+            if (event.type === "model-fallback") {
+              this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
+            }
+            if (event.type === "context-usage") {
+              this.contextUsage[target] = { usedTokens: event.usedTokens, ...(event.maxTokens ? { maxTokens: event.maxTokens } : {}) };
+            }
             this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
             if (event.type === "tool-end") {
               this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
@@ -470,6 +538,10 @@ export class RoomService {
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
+
+      // A turn that ran clean on the configured model retires the standing
+      // fallback warning; one that fell back (re)arms it.
+      if (!turn.details.modelFallback) delete this.modelFallbacks[target];
 
       // Cancelled or completed: both commit what was produced. A user cancel is
       // a deliberate stop, so the marker clears either way (commit does it).
@@ -565,6 +637,27 @@ export class RoomService {
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
   }
 
+  /** /compact: hand the agent's session to its HARNESS's own compaction
+   * (pi session.compact, claude /compact, codex thread/compact/start) — gaia
+   * never re-implements summarization. Uniform: capability-gated, never
+   * id-branched. */
+  async runCompactCommand(agent?: string): Promise<string> {
+    const target = agent ?? this.workspace.config.defaultAgent;
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    const runtime = this.runtimes[target];
+    if (!runtime.capabilities.supportsCompact || !runtime.compact) {
+      return `@${target}'s harness has no native session compaction.`;
+    }
+    if (this.activeTask) return "A turn is running — /cancel it first, or wait for it to finish.";
+    try {
+      const message = await runtime.compact(this.roomId);
+      await this.emitSnapshot();
+      return `@${target}: ${message}`;
+    } catch (error) {
+      return `Compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   /** /cancel: panic stop from any client — drops the durable queue and cancels
    * the running turn. Partial progress commits (WAL), so nothing is lost. */
   async runCancelCommand(): Promise<string> {
@@ -592,21 +685,183 @@ export class RoomService {
 
   /** /rewind: room-level checkpoint rollback. Truncates the transcript after
    * the n-th-last user message, resets every cursor and harness session, and
-   * lets the next turn replay the kept transcript — the one rewind mechanism
-   * that works identically for every harness (sessions cannot be rewound). */
+   * lets the next turn replay the kept transcript window — the one rewind
+   * mechanism that works identically for every harness (sessions cannot be
+   * rewound). */
   async runRewindCommand(countRaw?: string): Promise<string> {
     const count = countRaw ? Number.parseInt(countRaw, 10) : 1;
     if (!Number.isInteger(count) || count < 1) return "Usage: /rewind [n] — undo the last n user turns and their replies.";
     const dropped = await this.room.rewindTranscript(count);
     if (!dropped) return `Nothing to rewind: this room has fewer than ${count} user message${count === 1 ? "" : "s"}.`;
+    await this.resetAfterTruncation();
+    return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
+  }
+
+  /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
+  async runThanksDarioCommand(sub: "on" | "off" | "run"): Promise<string> {
+    if (sub === "on" || sub === "off") {
+      await this.room.updateState((state) => {
+        if (sub === "on") state.thanksDario = true;
+        else delete state.thanksDario;
+      });
+      await this.emitSnapshot();
+      return sub === "on"
+        ? "Thanks-Dario mode ON: when a provider-side safeguard reroutes this room's model, Dario reviews the transcript and proposes redactions — popup with a diff, nothing rewritten without your approval."
+        : "Thanks-Dario mode OFF.";
+    }
+    const proposal = await this.sanitizePreview();
+    const window = `${proposal.window} message${proposal.window === 1 ? "" : "s"}`;
+    if (proposal.parseError) {
+      return `Dario reviewed ${window} but his reply did not parse as suggestions (${proposal.parseError}). His raw notes are in the review popup.`;
+    }
+    if (proposal.suggestions.length === 0) {
+      return `Dario reviewed ${window} and found nothing that should trip a classifier. ${proposal.summary}`.trim();
+    }
+    return `Dario reviewed ${window}: ${proposal.suggestions.length} suggested edit${proposal.suggestions.length === 1 ? "" : "s"} ready in the review popup. Nothing is rewritten until you approve.`;
+  }
+
+  /** Run the reviewer persona over the events a fresh session would replay
+   * and persist his proposal. Read-only — apply is a separate, human-approved
+   * step. The reviewer runs through the ordinary summon path (sandboxed child
+   * room, any harness/provider), so there is nothing harness-specific here. */
+  async sanitizePreview(): Promise<SanitizeProposal> {
+    const host = this.options.summonHost;
+    if (!host) throw new Error("Summons are not available in this workspace — the reviewer needs them to run.");
+    if (!this.workspace.agents[SANITIZE_REVIEWER_ID]) {
+      throw new Error(`No "${SANITIZE_REVIEWER_ID}" persona is loaded — restart the daemon to seed it, then retry.`);
+    }
+    const events = await this.room.recentEvents(this.workspace.config.transcriptWindow);
+    if (events.length === 0) throw new Error("Nothing to review — this room's transcript is empty.");
+    const reply = await host.summonAndWait(this.roomId, SANITIZE_REVIEWER_ID, buildSanitizePrompt(events));
+    const proposal = parseSanitizeProposal(reply, events, {
+      roomId: this.roomId,
+      reviewer: SANITIZE_REVIEWER_ID,
+      at: new Date().toISOString(),
+    });
+    await writeJsonAtomic(this.sanitizeProposalPath, proposal);
+    this.sanitizeStatus = { at: proposal.at, suggestions: proposal.suggestions.length };
+    await this.emitSnapshot();
+    return proposal;
+  }
+
+  /** Apply approved edits: rewrite the selected events in place (originals
+   * preserved append-only in redactions.jsonl), then fresh sessions + capped
+   * cursors so the next turn replays the sanitized window. Every quote is
+   * re-validated against the live transcript — a stale or hallucinated quote
+   * is skipped, never guessed at. */
+  async sanitizeApply(edits: { eventId: string; quote: string; replacement: string }[]): Promise<{ applied: number; skipped: number }> {
+    if (this.activeTask) throw new Error("A turn is running — wait for it to finish (or /cancel) before rewriting context.");
+    if (edits.length === 0) throw new Error("No edits selected.");
+    const { events } = await this.room.eventsFrom(0);
+    const texts = new Map(events.map((event) => [event.id, event.text]));
+    const next = new Map<string, string>();
+    let skipped = 0;
+    for (const edit of edits) {
+      const current = next.get(edit.eventId) ?? texts.get(edit.eventId);
+      if (current === undefined || !edit.quote || !current.includes(edit.quote)) {
+        skipped++;
+        continue;
+      }
+      next.set(edit.eventId, current.replace(edit.quote, edit.replacement));
+    }
+    if (next.size === 0) throw new Error("None of the selected edits matched the current transcript.");
+    const edited = await this.room.redactEvents(next);
+
+    const proposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
+    if (proposal?.at) {
+      proposal.appliedAt = new Date().toISOString();
+      await writeJsonAtomic(this.sanitizeProposalPath, proposal);
+      this.sanitizeStatus = {
+        at: proposal.at,
+        suggestions: Array.isArray(proposal.suggestions) ? proposal.suggestions.length : 0,
+        appliedAt: proposal.appliedAt,
+      };
+    }
+    await this.resetAfterTruncation();
+    this.emit({
+      type: "room-event",
+      workspaceId: this.workspaceId,
+      roomId: this.roomId,
+      event: {
+        id: `system_sanitize_${Date.now().toString(36)}`,
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `✂ Rewrote ${edited.length} message${edited.length === 1 ? "" : "s"}${skipped > 0 ? ` (${skipped} skipped)` : ""}. Originals are preserved in redactions.jsonl; fresh sessions replay the sanitized history on the next turn.`,
+      },
+    });
+    return { applied: edited.length, skipped };
+  }
+
+  /** The last saved proposal (popup re-open + the GET route). */
+  async getSanitizeProposal(): Promise<SanitizeProposal | null> {
+    const proposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
+    return proposal?.at ? proposal : null;
+  }
+
+  private get sanitizeProposalPath(): string {
+    return join(workspacePaths.roomDir(this.workspace.rootDir, this.roomId), "sanitize.json");
+  }
+
+  /** Retry a reply: fork the room at the user message that produced the
+   * given event and re-run it verbatim. Works on an agent reply (regenerate
+   * it) or on a user message (re-send it). */
+  async retryMessage(eventId: string): Promise<Task> {
+    const origin = await this.forkAtUserMessage(eventId);
+    return this.sendMessage(origin.text, {
+      ...(origin.targets.length ? { targets: origin.targets } : {}),
+      ...(origin.attachments?.length ? { attachments: origin.attachments } : {}),
+    });
+  }
+
+  /** Edit a user message: fork the room at that message and re-run with the
+   * new text. An explicit @mention in the edited text wins; otherwise the
+   * original routing is kept. Original attachments ride along (claude.ai
+   * edit semantics: the text changes, the files stay). */
+  async editMessage(eventId: string, text: string): Promise<Task> {
+    const origin = await this.forkAtUserMessage(eventId);
+    const mentioned = hasExplicitMention(text, new Set(Object.keys(this.workspace.agents)));
+    return this.sendMessage(text, {
+      ...(!mentioned && origin.targets.length ? { targets: origin.targets } : {}),
+      ...(origin.attachments?.length ? { attachments: origin.attachments } : {}),
+    });
+  }
+
+  /** The fork-from-message primitive behind edit and retry: truncate the
+   * transcript at the originating USER message (dropped events are preserved
+   * in rewound.jsonl), reset every harness session, and cap cursors so the
+   * next turn replays the kept transcript window. Claude.ai-style "edit
+   * deletes the rest" — except nothing is actually lost. Uniform for every
+   * harness: the room WAL is the fork; native session forks are never used. */
+  private async forkAtUserMessage(eventId: string): Promise<{ text: string; targets: string[]; attachments?: MessageAttachment[] }> {
+    if (this.activeTask) throw new Error("A turn is running — cancel it first, then edit or retry.");
+    const { events } = await this.room.eventsFrom(0);
+    let index = events.findIndex((event) => event.id === eventId);
+    if (index < 0) throw new Error("Message not found in this room's transcript.");
+    while (index >= 0 && events[index].author !== "user") index--;
+    if (index < 0) throw new Error("No user message precedes that event to fork from.");
+    const origin = events[index];
+    await this.room.rewindToEvent(origin.id);
+    await this.resetAfterTruncation();
+    return {
+      text: origin.text,
+      targets: "targets" in origin ? origin.targets : [],
+      ...("attachments" in origin && origin.attachments?.length ? { attachments: origin.attachments } : {}),
+    };
+  }
+
+  /** After any transcript truncation: fresh harness sessions for every agent
+   * and cursors capped to the kept window, so the next turn replays recent
+   * history without ever flooding the prompt in a long room. */
+  private async resetAfterTruncation(): Promise<void> {
+    const kept = (await this.room.eventsFrom(0)).events.length;
+    const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
     for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.roomId);
     await this.room.updateState((state) => {
-      state.agentCursors = {};
+      state.agentCursors = Object.fromEntries(Object.keys(this.workspace.agents).map((id) => [id, base]));
       delete state.runtimeDetails;
     });
     this.recentTasks = [];
     await this.emitSnapshot();
-    return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
   }
 
   async runScheduleCommand(sub: "list" | "run", jobId?: string): Promise<string> {
@@ -663,6 +918,7 @@ export class RoomService {
         targets: remaining,
         recordUserMessage: false,
         ...(pending.channel ? { channel: pending.channel } : {}),
+        ...(pending.attachments?.length ? { attachments: pending.attachments } : {}),
       });
     }
   }
@@ -805,7 +1061,9 @@ export class RoomService {
   }
 
   /** Persists an agent's thinking level to the effective agent.json (project
-   * override wins) and hot-applies it — no session or service rebuild. */
+   * override wins). The in-place mutation updates THIS process's snapshot;
+   * the settingsChanged reload is what carries it into the runner
+   * subprocesses (they snapshot agent.json at spawn). */
   async setAgentThinking(agentId: string, level: string): Promise<string> {
     const levels = sdkThinkingLevels();
     if (level !== "" && !levels.includes(level)) {
@@ -822,7 +1080,71 @@ export class RoomService {
 
     agent.thinking = level === "" ? undefined : (level as AgentDef["thinking"]);
     await this.emitSnapshot();
+    await this.reloadAfterAgentConfigWrite(agent);
     return `Set @${agent.id} thinking to ${level || "unset"}.`;
+  }
+
+  /** After a command rewrites agent.json: rebuild the affected services so
+   * live runners respawn on the NEW config. Runners are subprocesses that
+   * read agent.json once at spawn — without this, /model and /thinking only
+   * changed the chip, never the next turn (the bug where /model opus kept
+   * running fable). The reload defers while a turn runs and harness sessions
+   * resume from their on-disk stores, so the conversation continues. */
+  private async reloadAfterAgentConfigWrite(agent: AgentDef): Promise<void> {
+    await this.options.settingsChanged?.(agent.projectConfigPath ? "workspace" : "global");
+  }
+
+  async runModelCommand(agentId: string | undefined, spec: string | undefined): Promise<string> {
+    const target = agentId ?? this.workspace.config.defaultAgent;
+    const agent = this.workspace.agents[target];
+    if (!agent) return this.unknownAgentMessage(target);
+    const current = agent.model ? `${agent.model.provider ?? "?"}/${agent.model.name ?? "?"}` : "workspace default";
+    if (!spec) {
+      return `Usage: /model [agent] <provider/name> (or "none" to clear)\n@${agent.id} model is ${current}.`;
+    }
+    try {
+      return await this.setAgentModel(agent.id, spec);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** Persists an agent's model to the effective agent.json (project override
+   * wins). "none"/"default"/"off" clears the override, falling back to the
+   * workspace default. A bare name keeps the current provider;
+   * "provider/name" sets both. The settingsChanged reload carries the change
+   * into the runner subprocesses — the manual pick sticks until the next
+   * /model, while a provider-side auto-reroute (fable → opus safeguard)
+   * stays per-message and never rewrites this config. */
+  async setAgentModel(agentId: string, spec: string): Promise<string> {
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+
+    const configPath = agent.projectConfigPath ?? agent.configPath;
+    const config = ((await readJson(configPath)) ?? {}) as Record<string, unknown>;
+
+    if (["none", "default", "off", ""].includes(spec.toLowerCase())) {
+      delete config.model;
+      await writeJsonAtomic(configPath, config);
+      agent.model = undefined;
+      await this.emitSnapshot();
+      await this.reloadAfterAgentConfigWrite(agent);
+      return `Cleared @${agent.id} model override — using workspace default. Applies from the next turn (the session continues).`;
+    }
+
+    const slash = spec.indexOf("/");
+    const model: AgentModelConfig =
+      slash > 0
+        ? { provider: spec.slice(0, slash), name: spec.slice(slash + 1) }
+        : { provider: agent.model?.provider ?? "anthropic", name: spec };
+    if (!model.name) throw new Error(`Invalid model: ${spec}. Use <name> or <provider/name>.`);
+
+    config.model = model;
+    await writeJsonAtomic(configPath, config);
+    agent.model = model;
+    await this.emitSnapshot();
+    await this.reloadAfterAgentConfigWrite(agent);
+    return `Set @${agent.id} model to ${model.provider}/${model.name}. Applies from the next turn (the session continues).`;
   }
 
   async runSummonCommand(agentId: string | undefined, task: string | undefined): Promise<string> {
@@ -923,9 +1245,29 @@ export class RoomService {
 
   // --- snapshot ---------------------------------------------------------------
 
+  /** One committed transcript event by id (read-aloud and similar lookups). */
+  async eventById(eventId: string): Promise<RoomEvent | undefined> {
+    await this.init();
+    const { events } = await this.room.eventsFrom(0);
+    return events.find((event) => event.id === eventId);
+  }
+
+  /** Page backwards through committed history: the `limit` events immediately
+   * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
+   * the transcript's "load older" — the snapshot only carries the tail window. */
+  async eventsBefore(beforeId: string | undefined, limit: number): Promise<{ events: RoomEvent[]; hasMore: boolean }> {
+    await this.init();
+    const { events } = await this.room.eventsFrom(0);
+    const found = beforeId ? events.findIndex((event) => event.id === beforeId) : -1;
+    const end = found >= 0 ? found : events.length;
+    const start = Math.max(0, end - Math.max(1, limit));
+    return { events: events.slice(start, end), hasMore: start > 0 };
+  }
+
   async getSnapshot(): Promise<Snapshot> {
     await this.init();
-    const events = await this.room.recentEvents(this.workspace.config.transcriptWindow);
+    const all = (await this.room.eventsFrom(0)).events;
+    const events = all.slice(-this.workspace.config.transcriptWindow);
     const state = await this.room.state();
     return {
       workspace: {
@@ -938,6 +1280,9 @@ export class RoomService {
         id: this.roomId,
         statePath: this.room.statePath,
         events,
+        eventTotal: all.length,
+        ...(state.thanksDario ? { thanksDario: true } : {}),
+        ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
       },
       rooms: await this.listRooms(),
       commands: SLASH_COMMANDS,
@@ -947,6 +1292,9 @@ export class RoomService {
           displayName: agent.displayName,
           icon: agent.icon,
           modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
+          configuredModel: configuredModelLabel(agent.model, "default"),
+          ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),
+          ...(this.contextUsage[agent.id] ? { context: this.contextUsage[agent.id] } : {}),
           tools: agent.tools,
           voice: agent.voice,
           thinking: agent.thinking,
@@ -972,17 +1320,29 @@ export class RoomService {
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => {
           const state = normalizeRoomState(await readJson(workspacePaths.roomState(this.workspace.rootDir, entry.name)));
+          // Rooms are chats: order by last transcript write, like a chat list.
+          // The importer stamps original chat dates onto imported transcripts,
+          // so archives sit at their historical position until touched again.
+          const activity = await stat(workspacePaths.transcript(this.workspace.rootDir, entry.name)).then(
+            (info) => info.mtimeMs,
+            () => 0,
+          );
           return {
-            id: entry.name,
-            path: join(roomsDir, entry.name),
-            isCurrent: entry.name === this.roomId,
-            ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-            ...(running.has(entry.name) ? { running: true } : {}),
+            activity,
+            summary: {
+              id: entry.name,
+              path: join(roomsDir, entry.name),
+              isCurrent: entry.name === this.roomId,
+              ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
+              ...(running.has(entry.name) ? { running: true } : {}),
+              ...(state.title ? { title: state.title } : {}),
+              ...(state.imported ? { imported: state.imported } : {}),
+            },
           };
         }),
     );
-    rooms.sort((a, b) => a.id.localeCompare(b.id));
-    return rooms.length > 0 ? rooms : fallback;
+    rooms.sort((a, b) => b.activity - a.activity || a.summary.id.localeCompare(b.summary.id));
+    return rooms.length > 0 ? rooms.map((room) => room.summary) : fallback;
   }
 
   /** The most recent reply text from an agent in this room (summon results). */
@@ -994,6 +1354,49 @@ export class RoomService {
       if (event.author === agentId && "text" in event) return event.text;
     }
     return "";
+  }
+
+  // --- attachments -------------------------------------------------------------
+
+  /** Persist a pasted file into this room's files/ dir (backs the upload
+   * route). The daemon issues the on-disk id; `name` stays the original
+   * client-side filename for display and prompts. */
+  async storeAttachment(name: string, data: Buffer, mime?: string): Promise<MessageAttachment & { id: string }> {
+    const safe = sanitizeAttachmentName(name);
+    const id = `${newId("f")}-${safe}`;
+    const dir = workspacePaths.roomFilesDir(this.workspace.rootDir, this.roomId);
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, id);
+    await writeFile(path, data);
+    return { id, name: name.trim() || safe, mime: mime?.trim() || attachmentMime(safe), size: data.byteLength, path };
+  }
+
+  /** Re-resolve client-sent attachment refs against this room's files dir.
+   * Only the server-issued id is trusted for path math (basename'd, must
+   * exist inside the dir); name/mime are display strings from the upload
+   * response. Throws on an unknown id so a bad send fails loudly. */
+  async resolveAttachments(refs: { id: string; name?: string; mime?: string }[]): Promise<MessageAttachment[]> {
+    const dir = workspacePaths.roomFilesDir(this.workspace.rootDir, this.roomId);
+    const attachments: MessageAttachment[] = [];
+    for (const ref of refs) {
+      const id = basename(ref.id.trim());
+      if (!id || id.startsWith(".")) throw new Error(`Invalid attachment id: ${ref.id}`);
+      const path = join(dir, id);
+      const info = await stat(path).catch(() => undefined);
+      if (!info?.isFile()) throw new Error(`Unknown attachment: ${id} — upload it first.`);
+      attachments.push({
+        name: ref.name?.trim() || id,
+        mime: ref.mime?.trim() || attachmentMime(id),
+        size: info.size,
+        path,
+      });
+    }
+    return attachments;
+  }
+
+  /** Absolute path of a stored attachment by id, for the serve route. */
+  attachmentPath(id: string): string {
+    return join(workspacePaths.roomFilesDir(this.workspace.rootDir, this.roomId), basename(id));
   }
 
   /** Memory write for a harness subprocess (the `gaia mem` CLI). The daemon is
@@ -1052,6 +1455,10 @@ export class RoomService {
     switch (event.type) {
       case "model-info":
         return { ...scope, type: "model-info", provider: event.provider, modelId: event.modelId, subscription: event.subscription };
+      case "model-fallback":
+        return { ...scope, type: "model-fallback", fromModel: event.fromModel, toModel: event.toModel, reason: event.reason };
+      case "context-usage":
+        return { ...scope, type: "context-usage", usedTokens: event.usedTokens, maxTokens: event.maxTokens };
       case "text-delta":
         return { ...scope, type: "text-delta", delta: event.delta };
       case "thinking-start":

@@ -22,6 +22,14 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/setup off"), { type: "setup", sub: "off" });
   assert.deepEqual(parseCommand("/cancel"), { type: "cancel" });
   assert.deepEqual(parseCommand("/stop"), { type: "cancel" }); // alias
+  assert.deepEqual(parseCommand("/compact"), { type: "compact", agent: undefined });
+  assert.deepEqual(parseCommand("/compact @nyari"), { type: "compact", agent: "nyari" });
+  assert.deepEqual(parseCommand("/model opus"), { type: "model", spec: "opus" });
+  assert.deepEqual(parseCommand("/model @nyari anthropic/opus"), { type: "model", agent: "nyari", spec: "anthropic/opus" });
+  assert.deepEqual(parseCommand("/thanks-dario"), { type: "thanks-dario", sub: "run" });
+  assert.deepEqual(parseCommand("/thanks-dario on"), { type: "thanks-dario", sub: "on" });
+  assert.deepEqual(parseCommand("/thanks-dario off"), { type: "thanks-dario", sub: "off" });
+  assert.deepEqual(parseCommand("/dario run"), { type: "thanks-dario", sub: "run" }); // alias
   assert.deepEqual(parseCommand("/recall the deploy incident"), { type: "recall", agent: undefined, query: "the deploy incident" });
   assert.deepEqual(parseCommand("/recall @terry lessons learned"), { type: "recall", agent: "terry", query: "lessons learned" });
   assert.deepEqual(parseCommand("/recall"), { type: "recall", agent: undefined, query: undefined });

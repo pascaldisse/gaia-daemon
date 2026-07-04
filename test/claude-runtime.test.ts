@@ -3,6 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
 import {
@@ -171,6 +172,132 @@ test("ClaudeRuntime reports subscription:false when an API key is the source", a
   }
 });
 
+test("ClaudeRuntime maps a model_fallback system message to model-info + model-fallback", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg("claude-fable-5"),
+      {
+        type: "system",
+        subtype: "model_fallback",
+        trigger: "overloaded",
+        original_model: "claude-fable-5",
+        fallback_model: "claude-opus-4-8",
+        content: "Switched to Opus 4.8 (Fable is overloaded)",
+      },
+      textDelta("hi"),
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const infos = events.filter((e) => e.type === "model-info");
+    assert.equal(infos.length, 2);
+    assert.deepEqual(infos[1], { type: "model-info", provider: "anthropic", modelId: "claude-opus-4-8", subscription: true });
+    assert.deepEqual(events.find((e) => e.type === "model-fallback"), {
+      type: "model-fallback",
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "Switched to Opus 4.8 (Fable is overloaded)",
+    });
+    // The runtime's own label follows the switch.
+    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime maps model_refusal_fallback (safety reroute) and builds a reason when content is absent", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg("claude-fable-5"),
+      {
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        original_model: "claude-fable-5",
+        fallback_model: "claude-opus-4-8",
+      },
+      textDelta("hi"),
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.deepEqual(events.find((e) => e.type === "model-fallback"), {
+      type: "model-fallback",
+      fromModel: "claude-fable-5",
+      toModel: "claude-opus-4-8",
+      reason: "switched to claude-opus-4-8 (refusal)",
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime reports context usage from the last assistant usage + result.modelUsage window", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg("claude-fable-5"),
+      {
+        type: "assistant",
+        message: {
+          usage: { input_tokens: 1_000, cache_creation_input_tokens: 200, cache_read_input_tokens: 5_000, output_tokens: 50 },
+          content: [],
+        },
+      },
+      textDelta("hi"),
+      { ...resultSuccess(), modelUsage: { "claude-fable-5": { contextWindow: 200_000 } } },
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    // input + both cache fields, output excluded — the CLI's own formula.
+    assert.deepEqual(events.find((e) => e.type === "context-usage"), { type: "context-usage", usedTokens: 6_200, maxTokens: 200_000 });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime.compact runs a headless /compact turn and reports the boundary", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("hello"), resultSuccess()]); // establishes the session
+    fake.script([
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 12_345 } },
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const message = await runtime.compact("default");
+    assert.equal(message, "session compacted (12345 tokens before).");
+    const compactCall = fake.calls[1];
+    assert.equal(compactCall.prompt, "/compact");
+    assert.ok(compactCall.args.includes("--resume"));
+    assert.ok(!compactCall.args.includes("--session-id"));
+    // A room with no started session never spawns a process.
+    assert.equal(await runtime.compact("other-room"), "nothing to compact — no active session for this room.");
+    assert.equal(fake.calls.length, 2);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () => {
   const fx = await fixture();
   try {
@@ -197,6 +324,69 @@ test("ClaudeRuntime maps thinking blocks to thinking-start/delta/end", async () 
       { type: "thinking-end" },
       { type: "text-delta", delta: "Done." },
     ]);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime ignores signature_delta (no event emitted mid-thinking-block)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg(),
+      { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } } },
+      { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } } },
+      // Trailing cryptographic signature on the plaintext block — no user-facing event.
+      { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-abc" } } },
+      { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+      { type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "text" } } },
+      { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Done." } } },
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const relevant = events.filter((e) => e.type !== "model-info");
+
+    assert.deepEqual(relevant, [
+      { type: "thinking-start" },
+      { type: "thinking-delta", delta: "reasoning" },
+      { type: "thinking-end" },
+      { type: "text-delta", delta: "Done." },
+    ]);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime surfaces a redacted_thinking block as thinking-start/end with a fallback note (no deltas ever arrive)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg(),
+      // Safety-redacted block: arrives already-opaque in content_block_start, no deltas at all.
+      { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "redacted_thinking", data: "opaque-blob" } } },
+      { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+      { type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "text" } } },
+      { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Done." } } },
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const relevant = events.filter((e) => e.type !== "model-info");
+
+    assert.deepEqual(relevant[0], { type: "thinking-start" });
+    assert.equal(relevant[1].type, "thinking-end");
+    // No plaintext ever streamed for a redacted block, so the disclosure falls
+    // back to thinkingNote()'s token-estimate note instead of being empty.
+    assert.ok((relevant[1] as { content?: string }).content, "redacted block should fall back to a token-estimate note");
+    assert.deepEqual(relevant[2], { type: "text-delta", delta: "Done." });
+    assert.equal(relevant.length, 3);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -451,6 +641,40 @@ test("ClaudeRuntime omits daemon env when no host is present but still sets read
   }
 });
 
+test("ClaudeRuntime routes egress through the thinking shim only when revealThinking is set", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const agent = { ...fx.agent, revealThinking: true };
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    // ANTHROPIC_BASE_URL is redirected to a fresh loopback proxy.
+    const base = fake.calls[0].env.ANTHROPIC_BASE_URL;
+    assert.match(String(base), /^http:\/\/127\.0\.0\.1:\d+$/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime leaves ANTHROPIC_BASE_URL untouched without revealThinking", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    // Passthrough: whatever the ambient env had (usually nothing), never a shim.
+    assert.equal(fake.calls[0].env.ANTHROPIC_BASE_URL, process.env.ANTHROPIC_BASE_URL);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
   const fx = await fixture();
   try {
@@ -548,6 +772,74 @@ test("ClaudeRuntime sends memory in the turn prompt only when it changed", async
     await store.mutate(fx.agent.memoryDir, "MEMORY.md", "add", { content: "user prefers tabs" });
     await collect(runtime.send({ roomId: "default", message: "three", transcript: [] }));
     assert.match(fake.calls[2].prompt, /user prefers tabs/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime sends pasted images as stream-json input with base64 blocks", async () => {
+  const fx = await fixture();
+  try {
+    const imagePath = join(fx.project, "shot.png");
+    const bytes = Buffer.from("fake-png-bytes");
+    await writeFile(imagePath, bytes);
+
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("I see it"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(
+      runtime.send({
+        roomId: "default",
+        message: "look",
+        transcript: [],
+        attachments: [{ name: "shot.png", mime: "image/png", size: bytes.length, path: imagePath }],
+      }),
+    );
+
+    const options = fake.lastOptions!;
+    assert.ok(options.args.join(" ").includes("--input-format stream-json"));
+    // stdin carries ONE stream-json user message: turn prompt + image block.
+    const line = JSON.parse(options.prompt) as {
+      type: string;
+      message: { role: string; content: Array<Record<string, unknown>> };
+    };
+    assert.equal(line.type, "user");
+    assert.equal(line.message.role, "user");
+    assert.equal(line.message.content[0].type, "text");
+    assert.match(String(line.message.content[0].text), /\[attached file: shot\.png \(image\/png, 14 B\) at /);
+    assert.deepEqual(line.message.content[1], {
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") },
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime keeps the plain stdin prompt for non-image attachments", async () => {
+  const fx = await fixture();
+  try {
+    const csvPath = join(fx.project, "data.csv");
+    await writeFile(csvPath, "a,b\n");
+
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(
+      runtime.send({
+        roomId: "default",
+        message: "read it",
+        transcript: [],
+        attachments: [{ name: "data.csv", mime: "text/csv; charset=utf-8", size: 4, path: csvPath }],
+      }),
+    );
+
+    const options = fake.lastOptions!;
+    assert.ok(!options.args.includes("--input-format"));
+    // Plain prompt (not JSON) with the uniform path breadcrumb.
+    assert.match(options.prompt, /\[attached file: data\.csv \(text\/csv; charset=utf-8, 4 B\) at /);
     runtime.dispose();
   } finally {
     await fx.cleanup();

@@ -374,6 +374,43 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .message-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
+.message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
+
+.msg-action {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 4px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.message:hover .msg-action { opacity: 1; }
+.msg-action:hover { color: var(--fg); }
+/* Without a model-tag pulling right, push the actions + time to the edge. */
+.message-meta .msg-action:first-of-type { margin-left: auto; }
+.message-meta .model-tag ~ .msg-action { margin-left: 8px; }
+/* Read-aloud stays visible while loading or speaking, not just on hover. */
+.msg-action.ra-loading,
+.msg-action.ra-playing { opacity: 1; color: var(--accent); }
+.msg-action.ra-loading { animation: ra-pulse 1s ease-in-out infinite; }
+@keyframes ra-pulse {
+  50% { opacity: 0.35; }
+}
+
+.editing-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--warn);
+  border-bottom: none;
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  font-size: 0.85em;
+  color: var(--warn);
+}
+.editing-banner .stop-btn { padding: 2px 10px; color: var(--warn); border: 1px solid var(--warn); background: transparent; }
 .message-meta .channel-tag { color: var(--muted); }
 
 .message pre { grid-column: 2; margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
@@ -526,6 +563,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 .thinking-toggle:hover { color: var(--fg); text-shadow: none; }
+
+.model-chip { color: var(--muted); white-space: nowrap; }
+.model-chip.fallback { color: var(--warn); font-weight: bold; }
+.model-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.context-chip { color: var(--muted); white-space: nowrap; }
+.context-chip.warn { color: var(--warn); font-weight: bold; }
 
 .thinking-menu {
   position: absolute;
@@ -838,3 +881,72 @@ body.resizing { cursor: col-resize; user-select: none; }
   .tab-brand { display: none; }
   .settings-split { grid-template-columns: 1fr; }
 }
+
+/* ============================================================
+   pasted-file attachments (composer strip + transcript gallery)
+   ============================================================ */
+/* Pending pastes above the input: image thumbnails and file chips, each with
+   an x. No attach button anywhere - the system paste IS the affordance. */
+.attachment-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 2px; }
+.attach-chip { position: relative; display: inline-flex; align-items: center; gap: 6px; max-width: 260px; padding: 4px 8px; background: var(--bg2); border: 1px solid var(--border); color: var(--fg); font-size: 12px; }
+.attach-chip.image { padding: 0; }
+.attach-chip .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip small { color: var(--muted); white-space: nowrap; }
+.attach-thumb { display: block; height: 56px; max-width: 120px; object-fit: cover; }
+.attach-remove { position: absolute; top: -7px; right: -7px; width: 16px; height: 16px; line-height: 14px; padding: 0; border-radius: 50%; background: var(--bg); border: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; }
+.attach-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Committed attachments on a user message. */
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.attachment-link { display: inline-block; line-height: 0; }
+.attachment-image { max-height: 240px; max-width: min(100%, 420px); border: 1px solid var(--border); }
+.attachment-image:hover { border-color: var(--accent); }
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; padding: 4px 8px; background: var(--bg2); border: 1px solid var(--border); color: var(--fg); font-size: 12px; text-decoration: none; }
+.attachment-chip:hover { border-color: var(--accent); }
+.attachment-chip .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip small { color: var(--muted); white-space: nowrap; }
+
+/* --- Thanks-Dario review popup ------------------------------------------- */
+.dario-modal { width: min(760px, calc(100vw - 32px)); }
+.dario-loading { color: var(--muted); padding: 12px 0; }
+.dario-loading::after { content: "…"; animation: dario-ellipsis 1.2s steps(4, end) infinite; }
+@keyframes dario-ellipsis { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "…"; } }
+.dario-error { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); padding: 6px 8px; font-size: 13px; }
+.dario-meta { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+.dario-summary { margin: 0 0 10px; line-height: 1.5; }
+.dario-raw pre { background: var(--ink); border: 1px solid var(--border); padding: 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.dario-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.dario-option { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.dario-option:hover { border-color: var(--accent); }
+.dario-option.active { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.dario-suggestion { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; margin-top: 8px; background: var(--ink); border: 1px solid var(--border); cursor: pointer; }
+.dario-suggestion:hover { border-color: var(--accent); }
+.dario-suggestion input { accent-color: var(--accent); margin-top: 3px; flex: none; }
+.dario-suggestion-body { min-width: 0; }
+.dario-who { color: var(--accent2); display: block; margin-bottom: 3px; }
+.dario-diff { line-height: 1.6; overflow-wrap: anywhere; }
+.dario-old { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); text-decoration: line-through; padding: 1px 4px; }
+.dario-arrow { color: var(--muted); }
+.dario-new { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); padding: 1px 4px; }
+.dario-reason { color: var(--muted); display: block; margin-top: 4px; }
+.dario-note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.dario-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.dario-actions button { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 5px 12px; cursor: pointer; }
+.dario-actions button:hover { border-color: var(--accent); }
+.dario-apply { border-color: var(--accent) !important; color: var(--accent) !important; }
+.dario-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+.redacted-tag { color: var(--warn); cursor: help; }
+
+/* --- chunked rooms list + transcript load-older pager ---------------------- */
+.room-label > span:last-child {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rooms-more { color: var(--muted); }
+.rooms-more:hover { color: var(--accent); }
+.load-older-row { display: flex; justify-content: center; padding: 6px 0 12px; }
+.load-older {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--muted);
+  padding: 4px 14px; cursor: pointer; font: inherit; font-size: 0.85em;
+}
+.load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.load-older:disabled { opacity: 0.6; cursor: wait; }

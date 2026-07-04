@@ -21,6 +21,7 @@ import { ensureDir } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
+import { findTtsEngine, ttsEngineIds } from "./read-aloud.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -328,6 +329,16 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       description: "may summon further workers when itself running as a summon (default false)",
     },
     mcpServers: mcpServersHint({ hidden: hiddenByHarness.has("mcpServers") }),
+    voice: { input: "text", optional: true, description: "voice-call TTS voice (an unmute voice id, e.g. unmute-prod-website/p329_022.wav)" },
+    "tts.engine": select(values(ttsEngineIds()), {
+      optional: true,
+      description: "read-aloud engine for this agent's messages (default: voice.json ttsEngine)",
+    }),
+    "tts.voice": {
+      input: "text",
+      optional: true,
+      description: `read-aloud voice for the engine (claude: ${findTtsEngine("claude")?.voices.join(" | ") ?? ""})`,
+    },
     ...sandboxHints(),
     ...memoryHints(true, sources.models),
     ...fileHarnessMeta(),
@@ -360,6 +371,12 @@ function voiceJsonHints(): FileHints {
     silenceDelaySec: { input: "number" },
     unmuteUrl: { input: "text", optional: true, description: "unmute backend the browser connects to (default ws://127.0.0.1:8000)" },
     unmuteDir: { input: "text", optional: true, description: "local unmute checkout to auto-start; empty = the bundled one" },
+    ttsEngine: select(values(ttsEngineIds()), {
+      optional: true,
+      description: "default read-aloud engine for the transcript play button (agents override via agent.json tts.engine)",
+    }),
+    claudeVoiceUrl: { input: "text", optional: true, description: "claude-voice daemon for the claude engine (default http://127.0.0.1:8778)" },
+    claudeVoiceDir: { input: "text", optional: true, description: "claude-voice checkout to auto-start when its daemon is down; empty = never auto-start" },
   };
 }
 

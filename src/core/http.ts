@@ -50,6 +50,29 @@ export function parseBody(request: IncomingMessage): Promise<unknown> {
   });
 }
 
+/**
+ * Buffer a raw (binary) request body up to `maxBytes` (rejects and destroys
+ * the request past it). Backs the attachment upload route — pasted files are
+ * sent as the bare body, not JSON.
+ */
+export function readRawBody(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error(`File too large (over ${Math.round(maxBytes / (1024 * 1024))} MiB)`));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks)));
+    request.on("error", reject);
+  });
+}
+
 /** The token from an `Authorization: Bearer <token>` header, or undefined. */
 export function bearerToken(request: IncomingMessage): string | undefined {
   const auth = request.headers.authorization;

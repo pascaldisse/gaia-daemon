@@ -3,6 +3,7 @@
 // state directly.
 import { api } from "./api.js";
 import { connectEvents } from "./events.js";
+import { stopReadAloud } from "./readaloud.js";
 import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
 import { activeTask, runningSummonRooms, state } from "./state.js";
@@ -16,6 +17,7 @@ async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
   state.snapshot = body.snapshot ?? null;
   state.streams.clear();
+  state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.globalFiles = body.globalFiles ?? state.globalFiles;
   state.voice = body.voice ?? null;
@@ -44,6 +46,8 @@ export async function loadApp(currentWorkspaceId) {
 function applySnapshotPayload(body) {
   state.snapshot = body.snapshot;
   state.streams.clear();
+  // Workspace/room switch: paged-in older history belongs to the old room.
+  state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.voice = body.voice ?? null;
 }
@@ -90,6 +94,7 @@ export async function addWorkspace() {
 /** @param {string} workspaceId @param {string} roomId */
 export async function selectRoom(workspaceId, roomId) {
   try {
+    stopReadAloud();
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/select`, {
       method: "POST",
       body: "{}",
@@ -175,16 +180,80 @@ export async function closeRoomTab(roomId) {
   else markDirty("tabs", "sidebar");
 }
 
-/** @param {string} text */
-export async function sendMessage(text) {
+/**
+ * Upload one pasted file into the current room's files dir. Raw fetch, not
+ * api(): the body is the file's bytes, not JSON.
+ * @param {File} file
+ * @param {string} name
+ * @returns {Promise<import("./types.js").UploadedAttachment>}
+ */
+export async function uploadAttachment(file, name) {
   const snapshot = state.snapshot;
-  if (!snapshot || !text.trim()) return;
+  if (!snapshot) throw new Error("No room selected");
+  const url = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files?name=${encodeURIComponent(name)}`;
+  const response = await fetch(url, {
+    method: "POST",
+    ...(file.type ? { headers: { "content-type": file.type } } : {}),
+    body: file,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error ?? `Upload failed: ${response.status}`);
+  return body.attachment;
+}
+
+/**
+ * @param {string} text
+ * @param {import("./types.js").UploadedAttachment[]} [attachments]
+ */
+export async function sendMessage(text, attachments = []) {
+  const snapshot = state.snapshot;
+  if (!snapshot || (!text.trim() && attachments.length === 0)) return;
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/messages`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        ...(attachments.length ? { attachments: attachments.map(({ id, name, mime }) => ({ id, name, mime })) } : {}),
+      }),
     });
     // Reflect the accepted task immediately so busy state doesn't wait for SSE.
+    if (body.task && state.snapshot === snapshot && !snapshot.tasks.some((task) => task.id === body.task.id)) {
+      snapshot.tasks.push(body.task);
+      markDirty("panel", "status", "composer");
+    }
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Retry: regenerate everything from the user message that produced `eventId`
+ * (works on an agent reply or a user message). The server forks the room
+ * there — later events move to rewound.jsonl — and re-runs the same text.
+ * @param {string} eventId
+ */
+export async function retryMessage(eventId) {
+  await forkMessage("retry", { eventId });
+}
+
+/**
+ * Edit: fork the room at the user message `eventId` and re-send it as `text`.
+ * @param {string} eventId
+ * @param {string} text
+ */
+export async function editMessage(eventId, text) {
+  await forkMessage("edit", { eventId, text });
+}
+
+/** @param {"retry"|"edit"} action @param {{ eventId: string, text?: string }} payload */
+async function forkMessage(action, payload) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(
+      `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/${action}`,
+      { method: "POST", body: JSON.stringify(payload) },
+    );
     if (body.task && state.snapshot === snapshot && !snapshot.tasks.some((task) => task.id === body.task.id)) {
       snapshot.tasks.push(body.task);
       markDirty("panel", "status", "composer");

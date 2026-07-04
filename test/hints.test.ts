@@ -125,7 +125,7 @@ test("hints carry _harness meta with per-harness hidden fields and ui locks", ()
   assert.deepEqual(configs.pi?.hiddenFields.sort(), ["mcpServers", "permissionMode"]);
   assert.deepEqual(configs.claude?.hiddenFields, []);
   assert.equal(configs.claude?.lockedProvider, "anthropic");
-  assert.deepEqual(configs.claude?.modelNameOptions, ["opus", "sonnet", "haiku"]);
+  assert.deepEqual(configs.claude?.modelNameOptions, ["fable", "opus", "sonnet", "haiku"]);
   assert.deepEqual(configs.codex?.modelProviderIds, ["openai-codex"]);
 });
 

@@ -868,3 +868,38 @@ test("CodexRuntime sends memory in the turn prompt only when it changed", async 
     await fx.cleanup();
   }
 });
+
+test("CodexRuntime attaches pasted images as localImage input items", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake });
+    await collect(
+      runtime.send({
+        roomId: "default",
+        message: "look",
+        transcript: [],
+        attachments: [
+          { name: "shot.png", mime: "image/png", size: 4, path: "/tmp/room-files/shot.png" },
+          // Non-image files stay breadcrumb-only — codex has no file item type.
+          { name: "notes.pdf", mime: "application/pdf", size: 9, path: "/tmp/room-files/notes.pdf" },
+        ],
+      }),
+    );
+
+    const turnStart = fake.requests.find((request) => request.method === "turn/start");
+    const input = (turnStart?.params as { input: Array<Record<string, unknown>> }).input;
+    assert.equal(input[0].type, "text");
+    assert.match(String(input[0].text), /\[attached file: shot\.png/);
+    assert.match(String(input[0].text), /\[attached file: notes\.pdf/);
+    assert.deepEqual(input.slice(1), [{ type: "localImage", path: "/tmp/room-files/shot.png" }]);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});

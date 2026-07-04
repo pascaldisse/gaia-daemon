@@ -3,6 +3,7 @@
 // payload shapes the daemon does not export are defined locally here.
 
 /** @typedef {import("../../src/core/types.js").RoomEvent} RoomEvent */
+/** @typedef {import("../../src/core/types.js").MessageAttachment} MessageAttachment */
 /** @typedef {import("../../src/core/types.js").UserRoomEvent} UserRoomEvent */
 /** @typedef {import("../../src/core/types.js").AgentRoomEvent} AgentRoomEvent */
 /** @typedef {import("../../src/core/types.js").EventDetails} EventDetails */
@@ -14,6 +15,9 @@
 /** @typedef {import("../../src/core/types.js").SlashCommandDefinition} SlashCommandDefinition */
 /** @typedef {import("../../src/core/types.js").VoiceCallInfo} VoiceCallInfo */
 /** @typedef {import("../../src/core/types.js").UiEvent} UiEvent */
+/** @typedef {import("../../src/core/types.js").SanitizeProposal} SanitizeProposal */
+/** @typedef {import("../../src/core/types.js").SanitizeSuggestion} SanitizeSuggestion */
+/** @typedef {import("../../src/core/types.js").SanitizeOption} SanitizeOption */
 
 /**
  * One SSE payload, narrowed by its `type` tag.
@@ -97,6 +101,26 @@
  * @property {FileDescriptor[]} [workspaceFiles]
  * @property {VoiceCallInfo|null} [voice]
  * @property {string} [message]
+ */
+
+/**
+ * A file pasted into the composer, held locally until send (uploads happen on
+ * submit, so an abandoned paste never litters the room's files dir).
+ * @typedef {Object} PendingAttachment
+ * @property {File} file
+ * @property {string} name
+ * @property {string} mime
+ * @property {number} size
+ * @property {string|null} previewUrl object URL for image thumbnails
+ */
+
+/**
+ * The upload route's response: the server-issued id the message send echoes.
+ * @typedef {Object} UploadedAttachment
+ * @property {string} id
+ * @property {string} name
+ * @property {string} mime
+ * @property {number} size
  */
 
 /**

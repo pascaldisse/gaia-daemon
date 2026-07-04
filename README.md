@@ -45,13 +45,40 @@ Personas are durable. Projects add local context.
 - summons run as nested child rooms (a `/summon` or the `summon` tool opens a
   sub-room in the tree); fan several out at once for a swarm — see **Summons**
 - model switching through Pi's registry (API-key, subscription/OAuth, local);
-  each agent message shows the model that actually produced it
+  each agent message shows the model that actually produced it, and the
+  composer shows the target agent's live model + context-window usage — with
+  a warning chip when the provider switched models mid-turn (e.g. a Fable →
+  Opus capacity/safety fallback)
 - voice calls per agent through the vendored unmute stack (`unmute/`)
-- sample global agents: `@gaia`, `@sidia`, `@terry`
+- sample global agents: `@gaia`, `@sidia`, `@terry` (plus `@dario`, the
+  thanks-dario reviewer — see below)
 - slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`,
-  `/thinking`, `/clear`, `/fork`, `/setup`, `/consolidate`, `/recall`,
-  `/schedule`, `/steer`, `/cancel` (alias `/stop`), `/rewind`
+  `/thinking`, `/clear`, `/fork`, `/setup`, `/consolidate`, `/compact`,
+  `/recall`, `/schedule`, `/steer`, `/cancel` (alias `/stop`), `/rewind`,
+  `/thanks-dario` (alias `/dario`)
+  (`/compact` invokes the harness's own session compaction — pi
+  `session.compact()`, claude's headless `/compact`, codex
+  `thread/compact/start` — never a gaia re-implementation)
+- claude.ai-style message forking, uniform across harnesses: ✎ edit any user
+  message (re-sends from that point) or ⟳ retry any reply (regenerates it);
+  later events are rewound — preserved in the room's `rewound.jsonl`, never
+  deleted — sessions reset, and the kept transcript window replays
+- paste images & files straight into the composer (plain system paste, no
+  button): previews above the input, bytes stored durably under the room's
+  `files/` dir, and every harness gets them uniformly — images natively
+  (pi prompt images, claude stream-json image blocks, codex `localImage`
+  items), everything else as on-disk path breadcrumbs any agent can open
+  with its file tools
 - dynamic selectable previews for `/` commands and `@` agents
+- **thanks-dario mode**: when a provider-side safety classifier keeps
+  rerouting a room's model (e.g. Fable → Opus), `/thanks-dario` summons
+  `@dario` — a seeded reviewer persona (DeepSeek by default, repointable with
+  `/model @dario …`) — who reads the replay window and proposes minimal
+  redactions; a popup shows his strategy options and a before/after diff, and
+  only approved edits are applied: originals are preserved in the room's
+  `redactions.jsonl` (rewritten messages carry a ✂ tag), sessions reset, and
+  the next turn replays the sanitized history. `/thanks-dario on` auto-runs
+  the review whenever a model-fallback lands in the room
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
 
@@ -219,6 +246,29 @@ runs the service on a free port instead.
 - interrupting the agent mid-sentence cancels its turn, like Esc on a text task
 - `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
   detect and reuse it instead of starting its own)
+
+### Read aloud (the transcript play button)
+
+Every committed agent message carries a ▶ button that speaks it: the server
+strips markdown for speech (code blocks, links, tables, emoji; tool calls are
+never part of the text), synthesizes with the author's TTS engine, and streams
+a WAV back. Engines are registered as data (`src/services/read-aloud.ts`) and
+selected per agent:
+
+- `kyutai` (default) — the bundled unmute TTS service, auto-started on demand
+- `claude` — a local claude-voice daemon (separate project) speaking with the
+  claude.ai "Read aloud" voices (`airy | buttery | mellow | glassy | rounded`)
+  through your own account; GAIA calls its `POST /synthesize` endpoint
+
+Per-agent choice lives in `agent.json`:
+
+```json
+"tts": { "engine": "claude", "voice": "airy" }
+```
+
+Global defaults live in `~/.gaia/voice.json`: `ttsEngine` (fallback engine),
+`claudeVoiceUrl` (default `http://127.0.0.1:8778`) and `claudeVoiceDir` (a
+claude-voice checkout to auto-start when its daemon is down; empty = never).
 
 ## Roles
 
@@ -425,6 +475,9 @@ Optional `agent.json` fields:
 - `thinking`: thinking effort (`off`...`xhigh`); also changeable from the
   composer's `💭 #level` control and `/thinking`
 - `voice`: TTS voice for calls (an unmute `voices.yaml` entry)
+- `tts`: read-aloud engine + voice for the transcript play button, e.g.
+  `{ "engine": "claude", "voice": "airy" }` (string shorthand `"claude:airy"`
+  also works); default engine comes from `voice.json`'s `ttsEngine`
 - `harness`: which backend runs the agent — `pi` (default), `codex`, or
   `claude`; falls back to `.gaia/config.json`'s `harness`, then `pi` (see
   **Harnesses**)

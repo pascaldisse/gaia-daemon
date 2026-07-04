@@ -16,6 +16,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { loadNativeImages } from "../core/attachments.js";
 import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -92,9 +93,14 @@ export interface PiSessionLike {
   readonly thinkingLevel?: string;
   setThinkingLevel?(level: string): void;
   subscribe(listener: (event: any) => void): () => void;
-  prompt(text: string, options?: { source?: "interactive" }): Promise<void>;
+  prompt(text: string, options?: { source?: "interactive"; images?: { type: "image"; data: string; mimeType: string }[] }): Promise<void>;
   /** Queue a steering message into the running prompt (pi SDK). */
   steer?(text: string): Promise<void>;
+  /** Window-relative context accounting (pi SDK getContextUsage). `tokens`
+   * is null right after a compaction, until the next assistant reply. */
+  getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+  /** Native session compaction — the same call the pi CLI's /compact runs. */
+  compact?(customInstructions?: string): Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
   abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
@@ -162,6 +168,7 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   // Pi core has no MCP client (an adapter package exists but is not wired).
   supportsMcp: false,
   supportsSteer: true,
+  supportsCompact: true,
 };
 
 export class PiRuntime implements AgentRuntime {
@@ -272,6 +279,14 @@ export class PiRuntime implements AgentRuntime {
       if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
         channel.fail(new Error(event.message.errorMessage || "model request failed"));
       }
+      // Window-relative context accounting after each assistant message; the
+      // SDK returns tokens:null right after a compaction (no fresh usage yet).
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        const usage = session.getContextUsage?.();
+        if (usage && usage.tokens !== null) {
+          channel.push({ type: "context-usage", usedTokens: usage.tokens, maxTokens: usage.contextWindow });
+        }
+      }
     });
 
     const prompt = buildTurnPrompt({
@@ -282,9 +297,18 @@ export class PiRuntime implements AgentRuntime {
       memory: memoryChanged ? memory : undefined,
       recall: input.recall,
       channel: input.channel,
+      attachments: input.attachments,
     });
+    // Pasted images ride the SDK's native channel (PromptOptions.images, the
+    // same ImageContent[] the pi CLI builds for clipboard pastes); the prompt
+    // text keeps the uniform path breadcrumbs for non-image files.
+    const images = (await loadNativeImages(input.attachments)).map(({ attachment, base64 }) => ({
+      type: "image" as const,
+      data: base64,
+      mimeType: attachment.mime,
+    }));
     session
-      .prompt(prompt, { source: "interactive" })
+      .prompt(prompt, { source: "interactive", ...(images.length ? { images } : {}) })
       .catch((cause) => channel.fail(cause))
       .finally(() => {
         unsubscribe();
@@ -327,6 +351,16 @@ export class PiRuntime implements AgentRuntime {
     if (!session?.steer) return false;
     await session.steer(message);
     return true;
+  }
+
+  /** Native pi compaction (backs /compact). The SDK call aborts any running
+   * prompt first and emits compaction_start/end on the session stream. */
+  async compact(roomId: string): Promise<string> {
+    const session = this.sessions.get(roomId)?.session;
+    if (!session?.compact) return "nothing to compact — no active session for this room.";
+    const result = await session.compact();
+    const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
+    return `session compacted (${result.tokensBefore} tokens before${after}).`;
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {

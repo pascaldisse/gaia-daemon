@@ -54,6 +54,9 @@ function renderSidebar() {
 
 registerRegion("sidebar", renderSidebar);
 
+// How many top-level rooms each "show more" click adds to the list.
+const ROOMS_CHUNK = 25;
+
 function RoomTree() {
   /** @type {RoomSummary[]} */
   const rooms = state.snapshot?.rooms ?? [{ id: "no room", path: "select a workspace", isCurrent: true }];
@@ -67,7 +70,28 @@ function RoomTree() {
     if (list) list.push(room);
     else childrenOf.set(parent, [room]);
   }
-  return h("div", { class: "room-tree" }, (childrenOf.get(null) ?? []).map((room) => RoomNode(room, childrenOf, 0)));
+  // Rooms ARE chats: the daemon lists them latest-activity first, so render a
+  // chunk at a time — a 100-chat history import must not flood the sidebar.
+  const top = childrenOf.get(null) ?? [];
+  const visible = top.slice(0, state.roomsShown);
+  const current = top.find((room) => room.isCurrent);
+  if (current && !visible.includes(current)) visible.push(current);
+  const remaining = top.length - visible.length;
+  return h(
+    "div",
+    { class: "room-tree" },
+    visible.map((room) => RoomNode(room, childrenOf, 0)),
+    remaining > 0
+      ? h("button", {
+          class: "nav-action rooms-more",
+          text: `↓ show ${Math.min(ROOMS_CHUNK, remaining)} more (${remaining} left)`,
+          onclick: () => {
+            state.roomsShown += ROOMS_CHUNK;
+            markDirty("sidebar");
+          },
+        })
+      : null,
+  );
 }
 
 /**
@@ -107,9 +131,9 @@ function RoomNode(room, childrenOf, depth) {
           "span",
           { class: "room-label" },
           room.running ? h("span", { class: "room-dot running", title: "summon running" }) : null,
-          h("span", { text: room.id }),
+          h("span", { text: room.title ?? room.id }),
         ),
-        h("small", {}, PathText(room.path)),
+        h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
     ),
     kids.length > 0 && expanded ? h("div", { class: "room-children" }, kids.map((kid) => RoomNode(kid, childrenOf, depth + 1))) : null,

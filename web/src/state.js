@@ -10,6 +10,9 @@
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
 /** @typedef {import("./types.js").EditableFile} EditableFile */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
+/** @typedef {import("./types.js").PendingAttachment} PendingAttachment */
+/** @typedef {import("./types.js").SanitizeProposal} SanitizeProposal */
+/** @typedef {import("./types.js").RoomEvent} RoomEvent */
 
 /**
  * @type {{
@@ -29,10 +32,14 @@
  *   eventSource: EventSource|null,
  *   error: string,
  *   composerText: string,
+ *   pendingAttachments: PendingAttachment[],
+ *   editingEventId: string|null,
  *   completionIndex: number,
  *   completionHidden: boolean,
  *   expandedActivities: Set<string>,
  *   expandedRooms: Set<string>,
+ *   roomsShown: number,
+ *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
  *   openTabs: string[],
  *   tabDragId: string|null,
  *   sidebarCollapsed: boolean,
@@ -42,6 +49,8 @@
  *   voicePendingAgentId: string|null,
  *   voiceStatusText: string,
  *   micMuted: boolean,
+ *   readAloud: {eventId: string, phase: "loading"|"playing"}|null,
+ *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   thinkingMenuOpen: boolean,
  *   addAgentOpen: boolean,
  *   addAgentId: string,
@@ -68,12 +77,25 @@ export const state = {
   eventSource: null,
   error: "",
   composerText: "",
+  // Files pasted into the composer (system paste, no button), shown as a
+  // preview strip; uploaded and attached when the message is sent.
+  pendingAttachments: [],
+  // Set while the composer is editing an existing user message (claude.ai
+  // style): submit forks the room at that message instead of appending.
+  editingEventId: null,
   completionIndex: 0,
   completionHidden: false,
   expandedActivities: new Set(),
   // Which parent rooms are expanded in the sidebar's nested rooms tree. Summon
   // sub-rooms are collapsed under their parent by default.
   expandedRooms: new Set(),
+  // How many top-level rooms the sidebar list renders before "show more" —
+  // rooms are chats, and a 100-chat history import must not flood the list.
+  roomsShown: 25,
+  // Older committed events paged in by the transcript's "load older" button,
+  // strictly preceding the snapshot's tail window. Cleared on room switch and
+  // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
+  older: { roomId: "", events: [], loading: false, lastTotal: 0 },
   // The tmux-style working set: room ids open as tabs, in user order. Persisted
   // per workspace; the sidebar tree remains the full list of every room.
   openTabs: [],
@@ -89,6 +111,12 @@ export const state = {
   voicePendingAgentId: null,
   voiceStatusText: "",
   micMuted: false,
+  // Transcript read-aloud playback (one message at a time, this tab only).
+  readAloud: null,
+  // The Thanks-Dario review popup: proposal + which suggestion ids are
+  // checked. knownAt tracks the last proposal timestamp this tab has seen so
+  // a NEW proposal (e.g. from /thanks-dario) opens the popup exactly once.
+  dario: { open: false, loading: false, proposal: null, error: "", selected: new Set(), knownAt: null, lastAutoEventId: "" },
   thinkingMenuOpen: false,
   addAgentOpen: false,
   addAgentId: "",

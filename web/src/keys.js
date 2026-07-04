@@ -41,6 +41,14 @@ export function installKeybindings() {
         closeThemePalette(false);
         return;
       }
+      // Then the Dario review popup.
+      if (event.key === "Escape" && state.dario.open) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        state.dario.open = false;
+        markDirty("dario");
+        return;
+      }
       // Then the settings modal.
       if (event.key === "Escape" && state.settingsOpen) {
         event.preventDefault();

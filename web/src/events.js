@@ -3,9 +3,11 @@
 // event id in state.streams. No author+text snapshot-merge heuristic exists:
 // the final room-event with the same id simply replaces the stream entry.
 import { api } from "./api.js";
+import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
 import { loadSelectedGlobalFile, loadSelectedWorkspaceFile } from "./settings.js";
 import { state } from "./state.js";
+import { syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
@@ -42,6 +44,8 @@ export function connectEvents() {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
     state.snapshot = payload.snapshot;
     pruneStreams();
+    syncDarioFromSnapshot();
+    syncOlderFromSnapshot();
     markDirty();
   });
 
@@ -56,6 +60,7 @@ export function connectEvents() {
     if (index === -1) events.push(payload.event);
     else events[index] = payload.event;
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
+    maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
 
@@ -65,9 +70,39 @@ export function connectEvents() {
 
   source.addEventListener("model-info", (event) => {
     const payload = /** @type {Ev<"model-info">} */ (JSON.parse(event.data));
+    // Keep the composer's model chip live: the label the snapshot carried may
+    // predate this turn's actual model (e.g. a fallback mid-turn).
+    const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
+    if (agent) {
+      agent.modelLabel = `${payload.provider}/${payload.modelId}${payload.subscription ? " (oauth)" : ""}`;
+      markDirty("composer");
+    }
     const stream = streamFor(payload);
     if (!stream) return;
     stream.details.model = `${payload.provider}/${payload.modelId}${payload.subscription ? " (oauth)" : ""}`;
+    stream.version += 1;
+    markDirty("transcript");
+  });
+
+  source.addEventListener("context-usage", (event) => {
+    const payload = /** @type {Ev<"context-usage">} */ (JSON.parse(event.data));
+    const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
+    if (!agent) return;
+    agent.context = { usedTokens: payload.usedTokens, ...(payload.maxTokens ? { maxTokens: payload.maxTokens } : {}) };
+    markDirty("composer");
+  });
+
+  source.addEventListener("model-fallback", (event) => {
+    const payload = /** @type {Ev<"model-fallback">} */ (JSON.parse(event.data));
+    const fallback = { from: payload.fromModel, to: payload.toModel, reason: payload.reason };
+    const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
+    if (agent) {
+      agent.modelFallback = fallback;
+      markDirty("composer");
+    }
+    const stream = streamFor(payload);
+    if (!stream) return;
+    stream.details.modelFallback = fallback;
     stream.version += 1;
     markDirty("transcript");
   });
@@ -187,6 +222,7 @@ async function resyncSnapshot(workspaceId) {
     state.snapshot = body.snapshot;
     state.voice = body.voice ?? null;
     pruneStreams();
+    syncOlderFromSnapshot();
     markDirty();
   } catch {
     // Server unreachable again — the next successful reconnect retries.

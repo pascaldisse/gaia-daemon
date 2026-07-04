@@ -15,11 +15,32 @@ export interface ToolDetail {
   result?: unknown;
 }
 
+/** A provider-side model switch during a turn (capacity fallback, safety
+ * reroute, model retirement). `reason` is the harness's human-readable
+ * explanation, passed through verbatim. */
+export interface ModelFallback {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+/** A file pasted into the composer and attached to a user message. The bytes
+ * live durably under the room's files/ dir; `path` is the absolute location on
+ * the daemon host (readable by every harness's tools), `name` the original
+ * client-side filename shown in the UI. */
+export interface MessageAttachment {
+  name: string;
+  mime: string;
+  size: number;
+  path: string;
+}
+
 /** Runtime metadata for one agent message. v2 stores this ON the transcript
  * event at commit, so history never forgets what produced it. (v1 kept a
  * 50-entry LRU in state.json; those legacy entries are still read.) */
 export interface EventDetails {
   model?: string;
+  modelFallback?: ModelFallback;
   thinkingStarted?: boolean;
   thinking?: string;
   tools?: ToolDetail[];
@@ -32,6 +53,10 @@ export interface UserRoomEvent {
   targets: string[];
   text: string;
   channel?: string; // "voice" for spoken turns
+  attachments?: MessageAttachment[];
+  /** Text was rewritten by a sanitize apply; the original line lives in
+   * redactions.jsonl beside the transcript. */
+  redacted?: boolean;
 }
 
 export interface AgentRoomEvent {
@@ -41,6 +66,9 @@ export interface AgentRoomEvent {
   text: string;
   channel?: string;
   details?: EventDetails;
+  /** Text was rewritten by a sanitize apply; the original line lives in
+   * redactions.jsonl beside the transcript. */
+  redacted?: boolean;
 }
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;
@@ -56,6 +84,8 @@ export interface PendingTurn {
   eventId?: string;
   /** The prompt that drove the turn — replayed verbatim to resume it. */
   prompt: string;
+  /** Files attached to the prompt — replayed with it on resume. */
+  attachments?: MessageAttachment[];
   /** Agents still to run (the in-flight one stays until it completes). */
   targets: string[];
   /** The agent whose turn is currently streaming. */
@@ -74,6 +104,7 @@ export interface QueuedMessage {
   text: string;
   targets: string[];
   channel?: "voice";
+  attachments?: MessageAttachment[];
   queuedAt: string;
 }
 
@@ -84,9 +115,71 @@ export interface RoomState {
    * transcript event itself). Preserved so old rooms keep their metadata. */
   runtimeDetails?: Record<string, EventDetails>;
   parentRoomId?: string;
+  /** Display name when the room id alone isn't it (e.g. an imported chat's
+   * original title). */
+  title?: string;
+  /** Set on rooms created by a history import (scripts/import-claude-export):
+   * the original conversation's created_at. The sidebar groups these into a
+   * collapsed archive section instead of the live rooms list. */
+  imported?: string;
   monad?: MonadConfig;
   pendingTurn?: PendingTurn;
   queue?: QueuedMessage[];
+  /** Thanks-Dario mode: when a provider-side safeguard reroutes the model
+   * mid-turn, the reviewer persona is asked for redaction suggestions. */
+  thanksDario?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Thanks-Dario context sanitize (services/sanitize.ts)
+
+/** One proposed rewrite of a past transcript event's text. `quote` must be an
+ * exact substring of the event's current text — apply validates it, so a
+ * hallucinated quote is skipped instead of corrupting the transcript. */
+export interface SanitizeSuggestion {
+  id: string;
+  eventId: string;
+  /** Author of the event being edited (display context for the review UI). */
+  author: string;
+  quote: string;
+  replacement: string;
+  reason: string;
+}
+
+/** A named strategy grouping a subset of the suggestions (e.g. "light touch"
+ * vs "full scrub") — the review UI preselects the chosen option's set. */
+export interface SanitizeOption {
+  id: string;
+  label: string;
+  description: string;
+  suggestionIds: string[];
+}
+
+/** A reviewer's full proposal for a room, persisted as sanitize.json in the
+ * room dir so a dismissed popup can be reopened. Nothing in it is applied
+ * until the human approves specific suggestions. */
+export interface SanitizeProposal {
+  at: string;
+  roomId: string;
+  reviewer: string;
+  /** How many transcript events the reviewer saw. */
+  window: number;
+  summary: string;
+  options: SanitizeOption[];
+  suggestions: SanitizeSuggestion[];
+  /** Suggestions discarded at parse time (unknown event or stale quote). */
+  discarded?: number;
+  /** Raw reviewer reply, kept when it did not parse as the JSON contract. */
+  raw?: string;
+  parseError?: string;
+  appliedAt?: string;
+}
+
+/** Lightweight sanitize state carried on the room snapshot. */
+export interface SanitizeStatus {
+  at: string;
+  suggestions: number;
+  appliedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,11 +271,20 @@ export interface SandboxConfig {
   credentialProxy?: boolean;
 }
 
+/** Per-agent read-aloud TTS choice (agent.json `tts`): which registered engine
+ * speaks this agent's messages, and the engine-specific voice to use. */
+export interface AgentTtsConfig {
+  engine?: string;
+  voice?: string;
+}
+
 export interface AgentDef {
   id: string;
   displayName: string;
   icon: string;
   voice?: string;
+  /** Read-aloud TTS for the transcript play button (voice calls use `voice`). */
+  tts?: AgentTtsConfig;
   // Resolved locations (global agent dir + optional project overlay).
   dir: string;
   configPath: string;
@@ -201,6 +303,11 @@ export interface AgentDef {
   thinking?: ThinkingLevel;
   harness?: string;
   permissionMode?: ClaudePermissionMode;
+  /** Reveal the model's extended-thinking text (claude harness). Opt-in: it
+   * injects thinking.display:"summarized" into the CLI's Anthropic egress so the
+   * otherwise-redacted reasoning streams. Off by default — mutates provider
+   * requests, so it's a knowing choice like the credential proxy. */
+  revealThinking?: boolean;
   sandbox?: SandboxConfig;
   /** Trust tier (default true). false → forced real sandbox, may never summon. */
   trust?: boolean;
@@ -249,6 +356,8 @@ export interface Workspace {
 
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
+  | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
+  | { type: "context-usage"; usedTokens: number; maxTokens?: number }
   | { type: "text-delta"; delta: string }
   | { type: "thinking-start" }
   | { type: "thinking-delta"; delta: string }
@@ -280,6 +389,15 @@ export interface AgentStatus {
   displayName: string;
   icon: string;
   modelLabel: string;
+  /** The model agent.json asks for, e.g. `anthropic/fable`. `modelLabel`
+   * tracks what live turns actually run; they diverge on a fallback. */
+  configuredModel: string;
+  /** The last turn's provider-side model switch, if any — cleared by the
+   * next turn that completes on the configured model. */
+  modelFallback?: ModelFallback;
+  /** Session context accounting from the harness's own reporting; absent
+   * until a turn reports it. maxTokens absent = window size unknown. */
+  context?: { usedTokens: number; maxTokens?: number };
   tools: string[];
   voice?: string;
   thinking?: string;
@@ -296,6 +414,9 @@ export interface RoomSummary {
   parentRoomId?: string;
   /** True while this room is a summon whose first turn is still streaming. */
   running?: boolean;
+  title?: string;
+  /** Original created_at of an imported chat (see RoomState.imported). */
+  imported?: string;
 }
 
 export interface SlashCommandDefinition {
@@ -318,6 +439,13 @@ export interface Snapshot {
     /** Events carry their runtime details on `details` (v1 sent side-band
      * underscore fields merged client-side; that heuristic is gone). */
     events: RoomEvent[];
+    /** Total committed events in the transcript; `events` is only the tail
+     * window, so the client knows how much "load older" can page in. */
+    eventTotal: number;
+    /** Thanks-Dario mode flag (auto-review on model fallback). */
+    thanksDario?: boolean;
+    /** Last sanitize proposal, if any (full body via GET .../sanitize). */
+    sanitize?: SanitizeStatus;
   };
   rooms: RoomSummary[];
   commands: SlashCommandDefinition[];
@@ -353,6 +481,8 @@ export type UiEvent =
   | { type: "task-end"; workspaceId: string; roomId: string; task: Task }
   | { type: "task-error"; workspaceId: string; roomId: string; task: Task; error: string }
   | ({ type: "model-info"; provider: string; modelId: string; subscription: boolean } & StreamScope)
+  | ({ type: "model-fallback"; fromModel: string; toModel: string; reason: string } & StreamScope)
+  | ({ type: "context-usage"; usedTokens: number; maxTokens?: number } & StreamScope)
   | ({ type: "text-delta"; delta: string } & StreamScope)
   | ({ type: "thinking-start" } & StreamScope)
   | ({ type: "thinking-delta"; delta: string } & StreamScope)

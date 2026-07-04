@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { sendMessage, stopAll } from "./actions.js";
+import { editMessage, sendMessage, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { markDirty, registerRegion, setError } from "./render.js";
@@ -29,9 +29,15 @@ let bannerEl = null;
 /** @type {HTMLElement|null} */
 let bannerLabelEl = null;
 /** @type {HTMLElement|null} */
+let editBannerEl = null;
+/** @type {HTMLElement|null} */
+let attachmentsEl = null;
+/** @type {HTMLElement|null} */
 let targetStatusEl = null;
 /** @type {HTMLElement|null} */
 let thinkingWrapEl = null;
+/** @type {HTMLElement|null} */
+let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
 
@@ -54,7 +60,10 @@ export function initComposer() {
         resizeComposer(textarea);
         markDirty("composer");
       },
-      onpaste: () => requestAnimationFrame(() => textarea && resizeComposer(textarea)),
+      onpaste: (event) => {
+        if (capturePastedFiles(event)) return;
+        requestAnimationFrame(() => textarea && resizeComposer(textarea));
+      },
       onkeydown: onComposerKeydown,
     })
   );
@@ -68,20 +77,30 @@ export function initComposer() {
     bannerLabelEl,
     h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
   );
+  editBannerEl = h(
+    "div",
+    { class: "editing-banner", hidden: true },
+    h("span", { text: "✎ editing message — Enter re-sends from that point, later replies are rewound" }),
+    h("button", { type: "button", class: "stop-btn", title: "cancel editing (Esc)", text: "cancel", onclick: () => cancelEditing() }),
+  );
+  attachmentsEl = h("div", { class: "attachment-strip", hidden: true });
   targetStatusEl = h("div", { class: "target-status" });
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
+  modelWrapEl = h("div", { class: "model-wrap" });
   voiceWrapEl = h("div", { class: "voice-wrap" });
 
   form.replaceChildren(
     autocompleteEl,
     bannerEl,
+    editBannerEl,
+    attachmentsEl,
     h("div", { class: "input-shell" }, textarea, sendButton),
-    h("div", { class: "composer-row" }, targetStatusEl, thinkingWrapEl, h("div", { class: "composer-spacer" }), voiceWrapEl),
+    h("div", { class: "composer-row" }, targetStatusEl, thinkingWrapEl, modelWrapEl, h("div", { class: "composer-spacer" }), voiceWrapEl),
   );
 }
 
 function renderComposer() {
-  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !targetStatusEl || !thinkingWrapEl || !voiceWrapEl) return;
+  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !editBannerEl || !attachmentsEl || !targetStatusEl || !thinkingWrapEl || !modelWrapEl || !voiceWrapEl) return;
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
 
@@ -104,6 +123,12 @@ function renderComposer() {
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
 
+  editBannerEl.hidden = !state.editingEventId;
+
+  // Pending pasted files (uploaded on send).
+  attachmentsEl.hidden = state.pendingAttachments.length === 0;
+  attachmentsEl.replaceChildren(...AttachmentChips());
+
   // Autocomplete.
   const completion = completionFor(state.composerText);
   if (completion && !state.completionHidden) {
@@ -119,6 +144,10 @@ function renderComposer() {
   const thinking = ThinkingControl(snapshot, state.composerText);
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
 
+  const model = ModelChip(snapshot, state.composerText);
+  const context = ContextChip(snapshot, state.composerText);
+  modelWrapEl.replaceChildren(...[model, context].filter((chip) => chip !== null));
+
   voiceWrapEl.replaceChildren(...VoiceButtons());
 }
 
@@ -127,12 +156,142 @@ registerRegion("composer", renderComposer);
 /** @param {{ focus?: boolean }} [options] */
 function submitComposer(options = {}) {
   const text = state.composerText;
+  const editing = state.editingEventId;
+  const pending = state.pendingAttachments;
   state.composerText = "";
+  state.editingEventId = null;
+  state.pendingAttachments = [];
   state.completionIndex = 0;
   state.completionHidden = false;
   markDirty("composer");
   if (options.focus) focusComposer();
-  void sendMessage(text);
+  if (editing && text.trim()) {
+    releasePreviews(pending);
+    void editMessage(editing, text);
+  } else if (pending.length > 0) {
+    void sendWithAttachments(text, pending);
+  } else {
+    void sendMessage(text);
+  }
+}
+
+/**
+ * Upload the pasted files, then send the message referencing them. Uploads
+ * happen at send time so an abandoned paste never reaches the server.
+ * @param {string} text
+ * @param {import("./types.js").PendingAttachment[]} pending
+ */
+async function sendWithAttachments(text, pending) {
+  try {
+    /** @type {import("./types.js").UploadedAttachment[]} */
+    const uploaded = [];
+    for (const item of pending) uploaded.push(await uploadAttachment(item.file, item.name));
+    await sendMessage(text, uploaded);
+  } catch (error) {
+    setError(error);
+  } finally {
+    releasePreviews(pending);
+  }
+}
+
+/**
+ * Capture files from a paste (the system-level paste — no attach button).
+ * Returns true when the event carried files and was consumed.
+ * @param {ClipboardEvent} event
+ */
+export function capturePastedFiles(event) {
+  const files = [...(event.clipboardData?.files ?? [])];
+  if (files.length === 0) return false;
+  event.preventDefault();
+  if (state.editingEventId) {
+    setError(new Error("Finish (or cancel) editing before attaching files — an edit keeps the original attachments."));
+    return true;
+  }
+  for (const file of files) {
+    state.pendingAttachments.push({
+      file,
+      name: file.name || pastedName(file.type),
+      mime: file.type || "application/octet-stream",
+      size: file.size,
+      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+    });
+  }
+  markDirty("composer");
+  return true;
+}
+
+/** A readable filename for clipboard data that has none (screenshots).
+ * @param {string} mime */
+function pastedName(mime) {
+  const ext = (mime.split("/")[1] ?? "bin").split("+")[0];
+  return `pasted-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.${ext}`;
+}
+
+/** @param {import("./types.js").PendingAttachment[]} pending */
+function releasePreviews(pending) {
+  for (const item of pending) {
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  }
+}
+
+/** @returns {HTMLElement[]} */
+function AttachmentChips() {
+  return state.pendingAttachments.map((item, index) => {
+    const remove = h("button", {
+      type: "button",
+      class: "attach-remove",
+      title: `remove ${item.name}`,
+      text: "×",
+      onclick: () => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        state.pendingAttachments.splice(index, 1);
+        markDirty("composer");
+      },
+    });
+    if (item.previewUrl) {
+      return h(
+        "div",
+        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        h("img", { class: "attach-thumb", src: item.previewUrl, alt: item.name }),
+        remove,
+      );
+    }
+    return h(
+      "div",
+      { class: "attach-chip", title: item.name },
+      h("span", { class: "attach-icon", text: "📎" }),
+      h("span", { class: "attach-name", text: item.name }),
+      h("small", { text: humanSize(item.size) }),
+      remove,
+    );
+  });
+}
+
+/** @param {number} bytes */
+export function humanSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Enter claude.ai-style edit mode for a user message: the composer takes the
+ * message text and submit forks the room at that message (transcript.js's ✎).
+ * @param {string} eventId
+ * @param {string} text
+ */
+export function beginEditMessage(eventId, text) {
+  state.editingEventId = eventId;
+  state.composerText = text;
+  state.completionHidden = true;
+  markDirty("composer");
+  focusComposer();
+}
+
+function cancelEditing() {
+  state.editingEventId = null;
+  state.composerText = "";
+  markDirty("composer");
 }
 
 /** @param {KeyboardEvent} event */
@@ -146,6 +305,12 @@ function onComposerKeydown(event) {
     else if (event.key === "Escape") state.completionHidden = true;
     else if (completion.options.length > 0) applyCompletion(completion, completion.options[state.completionIndex] ?? completion.options[0]);
     markDirty("composer");
+    return;
+  }
+
+  if (event.key === "Escape" && state.editingEventId) {
+    event.preventDefault();
+    cancelEditing();
     return;
   }
 
@@ -361,6 +526,72 @@ function ThinkingControl(snapshot, text) {
   );
 }
 
+/**
+ * The agent the composer currently targets (the voice-call peer, else the
+ * first mention, else the default agent).
+ * @param {Snapshot|null} snapshot
+ * @param {string} text
+ * @returns {AgentStatus|undefined}
+ */
+function composerAgent(snapshot, text) {
+  if (!snapshot) return undefined;
+  const targetId = state.voice ? state.voice.agentId : composerTargets(snapshot, text)[0];
+  return (snapshot.agents ?? []).find((candidate) => candidate.id === targetId);
+}
+
+/**
+ * Model indicator for the composer's target agent: what live turns actually
+ * run (`modelLabel`, falling back to the configured model before the first
+ * turn). Warning state when the provider switched models mid-turn — e.g.
+ * fable rerouted to opus by a capacity fallback or safety classifier.
+ * @param {Snapshot|null} snapshot
+ * @param {string} text
+ * @returns {HTMLElement|null}
+ */
+function ModelChip(snapshot, text) {
+  const agent = composerAgent(snapshot, text);
+  if (!agent) return null;
+  const fallback = agent.modelFallback;
+  if (fallback) {
+    // The reroute is per message: every turn re-requests the configured
+    // model, so the next clean turn reverts by itself — say so, or the
+    // automatic flip back looks like a display glitch.
+    return h("span", {
+      class: "model-chip fallback",
+      title:
+        `provider switched models on the last turn: ${fallback.from} → ${fallback.to} — ${fallback.reason} ` +
+        `(configured: ${agent.configuredModel}; each turn re-requests it, so this usually reverts on the next clean turn — ` +
+        `this chip and each message's model tag always show what actually ran)`,
+      text: `⚠ ${agent.modelLabel}`,
+    });
+  }
+  return h("span", {
+    class: "model-chip",
+    title: `model for @${agent.id} (configured: ${agent.configuredModel})`,
+    text: agent.modelLabel,
+  });
+}
+
+/**
+ * Context-window usage for the composer's target agent, as its harness last
+ * reported. Percentage when the window size is known; warn tint from 80%.
+ * @param {Snapshot|null} snapshot
+ * @param {string} text
+ * @returns {HTMLElement|null}
+ */
+function ContextChip(snapshot, text) {
+  const context = composerAgent(snapshot, text)?.context;
+  if (!context) return null;
+  const percent = context.maxTokens ? Math.round((context.usedTokens / context.maxTokens) * 100) : null;
+  return h("span", {
+    class: percent !== null && percent >= 80 ? "context-chip warn" : "context-chip",
+    title: context.maxTokens
+      ? `context used: ${context.usedTokens.toLocaleString()} of ${context.maxTokens.toLocaleString()} tokens — /compact frees it`
+      : `context used: ${context.usedTokens.toLocaleString()} tokens (window size unknown)`,
+    text: percent !== null ? `ctx ${percent}%` : `ctx ${Math.round(context.usedTokens / 1000)}k`,
+  });
+}
+
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
   if (!state.voice) return [];
@@ -412,7 +643,7 @@ export function isEditableElement(element) {
 
 /** @param {KeyboardEvent} event */
 function shouldRouteKeyToComposer(event) {
-  if (!state.snapshot || state.settingsOpen) return false;
+  if (!state.snapshot || state.settingsOpen || state.dario.open) return false;
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
   if (isEditableElement(event.target)) return false;
   if (event.key.length === 1) return true;
@@ -420,6 +651,19 @@ function shouldRouteKeyToComposer(event) {
 }
 
 export function installComposerRouting() {
+  // Paste-anywhere: files pasted while no input is focused land in the
+  // composer, exactly like bare typing does. Text pastes into the composer's
+  // own textarea are left to the browser; file pastes are captured there too
+  // (its own onpaste handler runs first and consumes the event).
+  window.addEventListener(
+    "paste",
+    (event) => {
+      if (!state.snapshot || state.settingsOpen || state.dario.open) return;
+      if (event.defaultPrevented || isEditableElement(event.target)) return;
+      if (capturePastedFiles(event)) focusComposer();
+    },
+    true,
+  );
   window.addEventListener(
     "pointerdown",
     (event) => {
@@ -440,7 +684,9 @@ export function installComposerRouting() {
         void stopAll();
         return;
       }
-      if (event.key === "Escape" && isBusy()) {
+      // With the Dario popup open, Escape means "close the popup" (keys.js),
+      // not panic-stop — his own review summon would be collateral otherwise.
+      if (event.key === "Escape" && isBusy() && !state.dario.open) {
         event.preventDefault();
         void stopAll();
         return;
@@ -473,7 +719,7 @@ export function installComposerRouting() {
 
 /** @param {PointerEvent} event */
 export function focusComposerFromBackground(event) {
-  if (state.settingsOpen) return;
+  if (state.settingsOpen || state.dario.open) return;
   if (isEditableElement(event.target)) return;
   if (event.target instanceof HTMLElement && event.target.closest("button")) return;
   focusComposer();

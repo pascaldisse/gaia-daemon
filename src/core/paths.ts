@@ -22,6 +22,8 @@ export const globalPaths = {
    * mid-call can never leave a "temporary" override applied forever. */
   voiceState: () => join(gaiaHome(), "voice-state.json"),
   voiceLogsDir: () => join(gaiaHome(), "logs", "voice"),
+  /** Derived read-aloud audio, content-addressed per speech chunk. */
+  ttsCacheDir: () => join(gaiaHome(), "cache", "tts"),
 };
 
 // --- per-agent layout (inside an agent dir, global or project overlay) ------
@@ -50,6 +52,7 @@ export const workspacePaths = {
   transcript: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "transcript.jsonl"),
   roomState: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "state.json"),
   recallDb: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "recall.db"),
+  roomFilesDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "files"),
   piSessionsDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "pi-sessions"),
 };
 

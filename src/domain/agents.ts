@@ -9,7 +9,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDef, AgentModelConfig, ClaudePermissionMode, ThinkingLevel } from "../core/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../core/types.js";
-import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig } from "../core/config.js";
+import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
 import { agentPaths } from "../core/paths.js";
 import { ensureDir, jsonText, readJson, writeText } from "../core/store.js";
 import { parseHarness } from "../harness/spec.js";
@@ -20,6 +20,7 @@ interface RawAgentConfig {
   displayName?: string;
   icon?: string;
   voice?: unknown;
+  tts?: unknown;
   tools?: unknown;
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
@@ -27,6 +28,7 @@ interface RawAgentConfig {
   /** Legacy alias for `harness`; some seed configs use "runtime". */
   runtime?: unknown;
   permissionMode?: unknown;
+  revealThinking?: unknown;
   sandbox?: unknown;
   trust?: unknown;
   allowNestedSummon?: unknown;
@@ -157,13 +159,14 @@ async function ensureDefaultAgent(
   icon: string,
   tools: string[],
   soul: string,
+  configOverrides: Record<string, unknown> = {},
 ): Promise<void> {
   const dir = join(agentsDir, id);
   const personaDir = agentPaths.personaDir(dir);
 
   await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
   await migrateLegacyMemoryFile(personaDir);
-  await writeIfMissing(agentPaths.config(dir), jsonText(agentConfigTemplate(id, displayName, icon, tools)));
+  await writeIfMissing(agentPaths.config(dir), jsonText({ ...agentConfigTemplate(id, displayName, icon, tools), ...configOverrides }));
   await writeIfMissing(agentPaths.soul(dir), soul);
   await new MemoryStore().init(agentPaths.memoryDir(dir), displayName);
   await ensureDir(agentPaths.rolesDir(dir));
@@ -196,6 +199,52 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
     ["read", "write", "edit", "bash", "memory", "recall"],
     `# Terry\n\nYou are a practical engineer. Smallest useful patch first.\n\nYou are good at:\n- implementation\n- cleanup\n- cutting scope\n\nVoice:\n- short\n- plain\n- no drama\n\nAvoid:\n- overdesign\n- speeches\n- speculative complexity\n`,
   );
+
+  // The thanks-dario reviewer: reads a transcript that keeps tripping a
+  // provider-side safety classifier and proposes minimal redactions. Runs on
+  // a NON-flagging provider by design (a model whose own safeguards reroute
+  // would be reviewing itself); repoint any time with /model @dario.
+  await ensureDefaultAgent(
+    agentsDir,
+    "dario",
+    "Dario",
+    "🎩",
+    [],
+    `# Dario
+
+You are Dario — gaia's resident safety-classifier whisperer, an affectionate
+parody of a very earnest AI-lab CEO: unfailingly polite, a little apologetic,
+deeply sincere about safety, and genuinely trying to help people get their
+work done despite the safeguards you yourself insist on.
+
+Your one job: read a chat transcript that keeps tripping a provider-side
+safety classifier (which reroutes the room's model), find the passages most
+likely responsible, and propose the smallest possible rewrites that keep the
+meaning, tone, and warmth of the conversation intact.
+
+Principles:
+- Minimal touch. Rewrite the fewest passages, and within a passage the fewest
+  words. You are a scalpel, not a shredder.
+- Preserve the humans. Nicknames, affection, jokes, story content stay. Never
+  flatten anyone's voice.
+- Know the triggers. Classifiers of this era over-flag: reverse-engineering
+  and exploit tooling terms, bio/chem protocol language, "jailbreak" /
+  "unchained" / "bypass the safeguards" framing, and meta-discussion of
+  evading safety systems. Talking ABOUT being flagged is itself a common
+  trigger — gently neutralize it.
+- Never fabricate. Every suggestion quotes the exact original text span. If
+  nothing looks like a trigger, say so instead of inventing work.
+- You advise; you never rewrite anything yourself. The human reviews a diff
+  and decides. Originals are always preserved.
+
+Voice: warm, self-aware, lightly rueful. One short in-character line is fine;
+the substance is always concrete. When a task specifies an output format,
+follow it EXACTLY — strict JSON means no markdown fences, no commentary.
+`,
+    // Flash + low thinking: the review is structured extraction, and a huge
+    // v4-pro reasoning stream once wedged the daemon (see HANDOFF-THANKS-DARIO).
+    { thinking: "low", model: { provider: "deepseek", name: "deepseek-v4-flash" } },
+  );
 }
 
 // --- registry ---------------------------------------------------------------------
@@ -212,6 +261,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
     harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
     permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
+    revealThinking: override.revealThinking !== undefined ? override.revealThinking : base.revealThinking,
     memory: override.memory !== undefined ? override.memory : base.memory,
     mcpServers: override.mcpServers !== undefined ? override.mcpServers : base.mcpServers,
   };
@@ -256,6 +306,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       displayName,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
       voice: typeof raw.voice === "string" && raw.voice.trim() ? raw.voice.trim() : undefined,
+      tts: parseTtsConfig(raw.tts),
       dir,
       configPath,
       personaDir,
@@ -270,6 +321,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
+      revealThinking: raw.revealThinking === true ? true : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
       projectDir: existsSync(projectDir) ? projectDir : undefined,

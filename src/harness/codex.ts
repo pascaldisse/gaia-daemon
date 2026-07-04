@@ -11,6 +11,7 @@
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
 import type { AgentDef, AgentEvent, McpServerConfig, Workspace } from "../core/types.js";
+import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -220,6 +221,13 @@ interface ThreadState {
   modelProvider: string;
 }
 
+/** thread/tokenUsage/updated payload (app-server protocol v2). */
+interface CodexTokenUsage {
+  total?: { totalTokens?: number };
+  last?: { totalTokens?: number };
+  modelContextWindow?: number | null;
+}
+
 // The shape a pi tool factory returns (defineTool), as far as codex needs it:
 // typebox `parameters` doubles as the dynamic tool's JSON Schema, and execute
 // runs in THIS process — same code path as the pi harness's in-process tools.
@@ -280,6 +288,7 @@ const CODEX_CAPABILITIES: HarnessCapabilities = {
   supportsPermissionMode: false,
   supportsMcp: true,
   supportsSteer: true,
+  supportsCompact: true,
 };
 
 export class CodexRuntime implements AgentRuntime {
@@ -361,12 +370,17 @@ export class CodexRuntime implements AgentRuntime {
       memory: memoryChanged ? memory : undefined,
       recall: input.recall,
       channel: input.channel,
+      attachments: input.attachments,
     });
 
-    // Start the turn
+    // Start the turn. Pasted images ride as localImage input items (the same
+    // shape `codex -i <file>` produces); the app-server reads the paths itself.
     const turnResponse = (await client.request("turn/start", {
       threadId: thread.threadId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: [
+        { type: "text", text: prompt, text_elements: [] },
+        ...nativeImageAttachments(input.attachments).map((file) => ({ type: "localImage", path: file.path })),
+      ],
       model: this.agent.model?.name ?? null,
     })) as { turn: { id: string; status: string } };
 
@@ -382,12 +396,38 @@ export class CodexRuntime implements AgentRuntime {
       const { method, params } = msg;
       switch (method) {
         case "model/rerouted": {
-          const p = params as { toModel: string; threadId: string; turnId: string };
+          const p = params as { fromModel?: string; toModel: string; reason?: string; threadId: string; turnId: string };
           const currentThread = this.threads.get(input.roomId);
           if (p.toModel && currentThread) {
+            const from = p.fromModel ?? currentThread.model;
             currentThread.model = p.toModel;
             this.liveModelLabel = `${currentThread.modelProvider}/${p.toModel}`;
             channel.push({ type: "model-info", provider: currentThread.modelProvider, modelId: p.toModel, subscription: true });
+            if (from && from !== p.toModel) {
+              channel.push({
+                type: "model-fallback",
+                fromModel: from,
+                toModel: p.toModel,
+                reason: p.reason?.trim() || `rerouted to ${p.toModel} by the provider`,
+              });
+            }
+          }
+          break;
+        }
+
+        case "thread/tokenUsage/updated": {
+          // usage.total is cumulative for the thread; modelContextWindow the
+          // window size. (Accept `tokenUsage` too — the wrapper field name is
+          // the one part of the v2 shape not string-confirmed in the binary.)
+          const p = params as { usage?: CodexTokenUsage; tokenUsage?: CodexTokenUsage };
+          const usage = p.usage ?? p.tokenUsage;
+          const used = usage?.total?.totalTokens;
+          if (typeof used === "number") {
+            channel.push({
+              type: "context-usage",
+              usedTokens: used,
+              ...(typeof usage?.modelContextWindow === "number" ? { maxTokens: usage.modelContextWindow } : {}),
+            });
           }
           break;
         }
@@ -561,6 +601,28 @@ export class CodexRuntime implements AgentRuntime {
     } catch {
       return false; // turn just settled — the precondition failed
     }
+  }
+
+  /** Native codex compaction (backs /compact): thread/compact/start returns
+   * `{}` immediately; completion is the thread/compacted notification. Runs
+   * only between turns (room-service gates on an idle room), so temporarily
+   * owning the notification handler is safe — the next send() replaces it. */
+  async compact(roomId: string): Promise<string> {
+    const thread = this.threads.get(roomId);
+    const client = this.client;
+    if (!thread || !client || !this.attachedThreads.has(thread.threadId)) {
+      return "nothing to compact — no active session for this room.";
+    }
+    const done = new Promise<void>((resolve) => {
+      client.setNotificationHandler((msg) => {
+        if (msg.method === "thread/compacted" && (msg.params as { threadId?: string } | undefined)?.threadId === thread.threadId) {
+          resolve();
+        }
+      });
+    });
+    await client.request("thread/compact/start", { threadId: thread.threadId });
+    await done; // the RunnerHost round-trip timeout bounds this wait
+    return "thread compacted by codex.";
   }
 
   // -----------------------------------------------------------------------

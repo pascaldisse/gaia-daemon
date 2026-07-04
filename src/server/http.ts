@@ -11,7 +11,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gaiaHost, gaiaPort } from "../core/config.js";
 import { newId } from "../core/ids.js";
-import { bearerToken, json, parseBody, text } from "../core/http.js";
+import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
+import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
@@ -49,6 +50,44 @@ function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+/** Attachment references on a message body: `[{ id, name?, mime? }]`. Only the
+ * server-issued id matters for path resolution; name/mime are display echoes. */
+function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const raw = (body as Record<string, unknown>).attachments;
+  if (!Array.isArray(raw)) return undefined;
+  const refs: { id: string; name?: string; mime?: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== "string" || !record.id.trim()) continue;
+    refs.push({
+      id: record.id,
+      ...(typeof record.name === "string" ? { name: record.name } : {}),
+      ...(typeof record.mime === "string" ? { mime: record.mime } : {}),
+    });
+  }
+  return refs.length > 0 ? refs : undefined;
+}
+
+/** Sanitize-apply edits: `[{ eventId, quote, replacement }]`. The service
+ * re-validates every quote against the live transcript before rewriting. */
+function sanitizeEditRefs(body: unknown): { eventId: string; quote: string; replacement: string }[] {
+  if (!body || typeof body !== "object") return [];
+  const raw = (body as Record<string, unknown>).edits;
+  if (!Array.isArray(raw)) return [];
+  const edits: { eventId: string; quote: string; replacement: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.eventId !== "string" || !record.eventId.trim()) continue;
+    if (typeof record.quote !== "string" || record.quote.length === 0) continue;
+    if (typeof record.replacement !== "string") continue;
+    edits.push({ eventId: record.eventId, quote: record.quote, replacement: record.replacement });
+  }
+  return edits;
 }
 
 function titleCaseId(id: string): string {
@@ -329,13 +368,103 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.setAgentRole(params![0], params![1], agentId.trim(), role.trim()));
     }
 
+    // Attachment upload: the pasted file's bytes as the raw body, original
+    // filename in ?name=. Returns the server-issued id the client echoes back
+    // on the message send. Serving is GET on the same path + /<id>.
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/files$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const name = url.searchParams.get("name")?.trim() || "pasted-file";
+      const contentType = request.headers["content-type"];
+      const mime = typeof contentType === "string" && contentType !== "application/octet-stream" ? contentType.split(";")[0].trim() : undefined;
+      try {
+        const data = await readRawBody(request, ATTACHMENT_MAX_BYTES);
+        if (data.length === 0) return json(response, 400, { error: "Empty file" });
+        const stored = await service.storeAttachment(name, data, mime);
+        json(response, 201, { attachment: { id: stored.id, name: stored.name, mime: stored.mime, size: stored.size } });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/files\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const filePath = service.attachmentPath(params[2]);
+      if (!existsSync(filePath) || !(await stat(filePath)).isFile()) return json(response, 404, { error: "Not found" });
+      // Ids are unique per upload, so the bytes are immutable — cache hard.
+      response.writeHead(200, { "content-type": attachmentMime(params[2]), "cache-control": "max-age=31536000, immutable" });
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/messages$/))) {
       const service = await this.daemon.serviceFor(params[0], params[1]);
       const body = await parseBody(request);
-      const textValue = stringField(body, "text");
-      if (!textValue?.trim()) return json(response, 400, { error: "Missing message text" });
-      const task = await service.sendMessage(textValue);
+      const textValue = stringField(body, "text") ?? "";
+      const refs = attachmentRefs(body);
+      // A picture with no words is a valid message; no words and no files is not.
+      if (!textValue.trim() && !refs) return json(response, 400, { error: "Missing message text" });
+      let attachments;
+      if (refs) {
+        try {
+          attachments = await service.resolveAttachments(refs);
+        } catch (error) {
+          return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      const task = await service.sendMessage(textValue, attachments ? { attachments } : {});
       json(response, 202, { task });
+      return;
+    }
+
+    // Fork-from-message: retry regenerates the reply produced by a user
+    // message; edit re-sends it with new text. Both truncate the transcript
+    // at that message (dropped events preserved in rewound.jsonl).
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(retry|edit)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const body = await parseBody(request);
+      const eventId = stringField(body, "eventId");
+      const text = stringField(body, "text");
+      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
+      if (params[2] === "edit" && !text?.trim()) return json(response, 400, { error: "Missing message text" });
+      try {
+        const task =
+          params[2] === "edit" ? await service.editMessage(eventId.trim(), text!) : await service.retryMessage(eventId.trim());
+        json(response, 202, { task });
+      } catch (error) {
+        json(response, 409, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // Backwards paging through committed history ("load older" in the
+    // transcript): the events immediately before ?before=<eventId>.
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const before = url.searchParams.get("before")?.trim() || undefined;
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+      return this.respond(response, async () => service.eventsBefore(before, limit));
+    }
+
+    // Thanks-Dario context sanitize. POST runs the reviewer persona and
+    // returns his proposal (slow — a real agent turn); GET returns the last
+    // saved proposal; POST /apply rewrites the approved events (originals
+    // preserved in redactions.jsonl) and resets sessions.
+    if ((params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/sanitize$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      if (method === "GET") return this.respond(response, async () => ({ proposal: await service.getSanitizeProposal() }));
+      if (method === "POST") return this.respond(response, async () => ({ proposal: await service.sanitizePreview() }));
+    }
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/sanitize\/apply$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const body = await parseBody(request);
+      const edits = sanitizeEditRefs(body);
+      if (edits.length === 0) return json(response, 400, { error: "No edits provided" });
+      try {
+        json(response, 200, await service.sanitizeApply(edits));
+      } catch (error) {
+        json(response, 409, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -357,6 +486,37 @@ export class GaiaWebServer {
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/))) {
       const service = await this.daemon.serviceFor(params[0], params[1]);
       json(response, 202, { task: await service.cancelActiveTask() });
+      return;
+    }
+
+    // Read-aloud: one committed agent message → speech audio (the transcript
+    // play button), one chunk per request. The daemon resolves the author's
+    // engine+voice; this layer only streams the bytes. The x-tts-chunks
+    // header tells the client how many chunks to fetch/play in sequence.
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud$/))) {
+      const body = await parseBody(request);
+      const eventId = stringField(body, "eventId");
+      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
+      const chunkRaw = body && typeof body === "object" ? (body as Record<string, unknown>).chunk : undefined;
+      const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
+      try {
+        const audio = await this.daemon.readAloud(params[0], params[1], eventId.trim(), chunk);
+        response.writeHead(200, {
+          "content-type": audio.contentType,
+          "content-length": audio.audio.length,
+          "cache-control": "no-store",
+          "x-tts-chunks": String(audio.chunks),
+          "x-tts-chunk": String(audio.chunk),
+        });
+        response.end(audio.audio);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        json(
+          response,
+          message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") || message.startsWith("Unknown chunk") ? 400 : 502,
+          { error: message },
+        );
+      }
       return;
     }
 

@@ -6,9 +6,9 @@
 import { $, h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"settings"|"theme"} Region */
+/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"settings"|"dario"|"theme"} Region */
 
-const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "settings", "theme"]);
+const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "settings", "dario", "theme"]);
 
 /** @type {Map<Region, () => void>} */
 const renderers = new Map();
@@ -85,7 +85,7 @@ export function mountApp() {
     h("footer", { class: "statusbar", id: "statusbar" }),
     // Overlay slots: the settings modal and theme palette render into their
     // own mount points, so neither region's re-render can touch the other.
-    h("div", { id: "overlays" }, h("div", { id: "overlay-settings" }), h("div", { id: "overlay-theme" })),
+    h("div", { id: "overlays" }, h("div", { id: "overlay-settings" }), h("div", { id: "overlay-dario" }), h("div", { id: "overlay-theme" })),
   );
 }
 

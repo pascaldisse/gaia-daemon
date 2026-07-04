@@ -43,6 +43,9 @@ export function applyEventToDetails(details: EventDetails, event: AgentEvent): v
     case "model-info":
       details.model = `${event.provider}/${event.modelId}${event.subscription ? " (oauth)" : ""}`;
       return;
+    case "model-fallback":
+      details.modelFallback = { from: event.fromModel, to: event.toModel, reason: event.reason };
+      return;
     case "thinking-start":
       details.thinkingStarted = true;
       return;

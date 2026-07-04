@@ -16,6 +16,7 @@ class FakeSession implements PiSessionLike {
   model: { provider: string; id: string } | undefined;
   listeners: Array<(event: any) => void> = [];
   prompts: string[] = [];
+  promptOptions: Array<{ source?: string; images?: { type: string; data: string; mimeType: string }[] } | undefined> = [];
   disposed = false;
   reloads = 0;
   aborts = 0;
@@ -38,8 +39,9 @@ class FakeSession implements PiSessionLike {
     };
   }
 
-  async prompt(text: string): Promise<void> {
+  async prompt(text: string, options?: { source?: "interactive"; images?: { type: "image"; data: string; mimeType: string }[] }): Promise<void> {
     this.prompts.push(text);
+    this.promptOptions.push(options);
     for (const listener of this.listeners) {
       listener({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
     }
@@ -299,6 +301,44 @@ test("PiRuntime sends memory in the turn prompt only when it changed", async () 
     await collect(runtime.send({ roomId: "default", message: "four", transcript: [] }));
     assert.equal(sessions.length, 2);
     assert.match(sessions[1].prompts[0], /# Your persistent memory/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime feeds pasted images to the SDK's native channel and breadcrumbs every file", async () => {
+  const fx = await harnessFixture();
+  try {
+    const imagePath = join(fx.project, "shot.png");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    await writeFile(imagePath, bytes);
+
+    const sessions: FakeSession[] = [];
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      sessions.push(session);
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(
+      runtime.send({
+        roomId: "default",
+        message: "what is this?",
+        transcript: [],
+        attachments: [
+          { name: "shot.png", mime: "image/png", size: bytes.length, path: imagePath },
+          // Non-image: breadcrumb only, no native channel.
+          { name: "notes.csv", mime: "text/csv; charset=utf-8", size: 5, path: join(fx.project, "notes.csv") },
+        ],
+      }),
+    );
+
+    const session = sessions[0];
+    assert.deepEqual(session.promptOptions[0]?.images, [{ type: "image", data: bytes.toString("base64"), mimeType: "image/png" }]);
+    // The uniform prompt breadcrumbs list BOTH files with their on-disk paths.
+    assert.match(session.prompts[0], /\[attached file: shot\.png \(image\/png, 4 B\) at /);
+    assert.match(session.prompts[0], /\[attached file: notes\.csv /);
     runtime.dispose();
   } finally {
     await fx.cleanup();

@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json",
     "test": "tsx --test test/**/*.test.ts",
-    "start": "node dist/cli.js",
+    "start": "tsx src/cli.ts",
     "stop": "pids=$(lsof -ti tcp:8787); if [ -n \"$pids\" ]; then kill $pids && echo \"stopped gaia (pid $pids) on :8787\"; else echo \"gaia not running on :8787\"; fi",
     "restart": "npm run stop; npm start",
     "dev": "tsx src/cli.ts --dev",

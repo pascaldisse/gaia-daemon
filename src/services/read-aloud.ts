@@ -1,0 +1,571 @@
+// Read-aloud: the transcript play button. Turns one committed agent message
+// into speech audio, uniformly across TTS engines:
+//   1. speakableText — deterministic markdown→speech formatting (tool calls
+//      never reach here at all: they live in event.details, not event.text)
+//   2. engine registry — engines register as DATA (id + synthesize), the
+//      shared path never branches on an engine id (same law as harnesses)
+//   3. kyutai engine — the bundled unmute TTS service (msgpack WebSocket)
+//   4. claude engine — the claude-voice daemon (claude.ai "Read aloud" voices)
+// Voice calls are a different pipeline (services/voice.ts): live and duplex.
+// This module is one-shot: text in, a finished WAV out.
+
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, openSync } from "node:fs";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { globalPaths } from "../core/paths.js";
+import type { AgentTtsConfig } from "../core/types.js";
+import type { VoiceSettings, VoiceStackSettings } from "./voice.js";
+
+// ---------------------------------------------------------------------------
+// Speakable text. Voice calls avoid pronouncing tool calls structurally (only
+// text deltas ever reach TTS) and lean on a prompt instruction for formatting.
+// Read-aloud speaks messages that were WRITTEN for the screen, so the
+// formatting must be stripped deterministically here.
+
+/** Longer messages are cut so one click can't queue many minutes of audio. */
+const MAX_SPEECH_CHARS = 8_000;
+
+export function speakableText(markdown: string): string {
+  let text = String(markdown ?? "");
+  // Fenced code is never worth pronouncing; note what was skipped.
+  text = text.replace(/```([^\n`]*)\n[\s\S]*?(?:```|$)/g, (_match, lang) => {
+    const name = String(lang).trim().split(/\s+/)[0];
+    return name ? ` (${name} code omitted) ` : " (code omitted) ";
+  });
+  // Inline code usually names a short identifier — keep the content.
+  text = text.replace(/`([^`\n]+)`/g, "$1");
+  // Images speak their alt text; links speak their label; bare URLs are noise.
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
+  text = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  text = text.replace(/https?:\/\/[^\s)>\]]+/g, "(link)");
+  // Table separator rows vanish; remaining pipes become pauses. Line-anchored
+  // rules use [ \t] (never \s): \s matches newlines and would merge lines.
+  text = text.replace(/^[ \t]*\|?[ \t:|-]+\|?[ \t]*$/gm, "");
+  text = text.replace(/^[ \t]*\||\|[ \t]*$/gm, "");
+  text = text.replace(/[ \t]*\|[ \t]*/g, ", ");
+  // Headings, blockquotes, list markers (horizontal rules die with the
+  // separator-row rule above).
+  text = text.replace(/^#{1,6}[ \t]+/gm, "");
+  text = text.replace(/^[ \t]{0,3}>[ \t]?/gm, "");
+  text = text.replace(/^[ \t]*[-*+][ \t]+/gm, "");
+  text = text.replace(/^[ \t]*\d+[.)][ \t]+/gm, "");
+  // Emphasis and strikethrough markers.
+  text = text.replace(/(\*\*\*|\*\*|__|~~)([\s\S]*?)\1/g, "$2");
+  text = text.replace(/([*_])([^*_\n]+)\1/g, "$2");
+  // Emoji and pictographs are pronounced literally by TTS — drop them.
+  text = text.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu, "");
+  // Collapse whitespace, keeping line breaks as sentence pauses.
+  text = text
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (text.length > MAX_SPEECH_CHARS) {
+    const cut = text.slice(0, MAX_SPEECH_CHARS);
+    text = `${cut.slice(0, Math.max(cut.lastIndexOf(" "), MAX_SPEECH_CHARS - 80))}... Message truncated.`;
+  }
+  return text;
+}
+
+/** Engines synthesize in batch, so one long message = a long wait and one
+ * fragile request. Playback instead runs over sentence-packed chunks of this
+ * size (≈25-30 s of speech each), fetched one after the other. */
+const SPEECH_CHUNK_CHARS = 400;
+
+/** Nothing plays until chunk 0 is fully synthesized, so the first chunks ramp
+ * up from small: a ~120-char opener speaks in ~3 s instead of ~11. Engines
+ * generate ~2.5x faster than speech plays, so each chunk still finishes well
+ * inside the previous one's playback (the client prefetches one ahead). */
+const SPEECH_CHUNK_RAMP = [120, 200, 300];
+
+/**
+ * Split speech-ready text into sentence-packed chunks of at most `maxChars`
+ * (the first chunks cap lower — see SPEECH_CHUNK_RAMP). Sentences never split
+ * mid-way unless a single sentence exceeds the cap (then it breaks at the last
+ * comma/space before it).
+ */
+export function splitSpeechChunks(text: string, maxChars = SPEECH_CHUNK_CHARS): string[] {
+  const sentences = String(text ?? "")
+    .split(/(?<=[.!?][")\]]?)\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  const chunks: string[] = [];
+  let current = "";
+  // Non-decreasing per chunk index, so a piece cut for one cap fits the next.
+  const cap = (): number => Math.min(maxChars, SPEECH_CHUNK_RAMP[chunks.length] ?? maxChars);
+  const flush = (): void => {
+    if (current) chunks.push(current);
+    current = "";
+  };
+  const append = (piece: string): void => {
+    if (current && current.length + 1 + piece.length > cap()) flush();
+    current = current ? `${current} ${piece}` : piece;
+  };
+
+  for (const sentence of sentences) {
+    let rest = sentence;
+    for (let limit = cap(); rest.length > limit; limit = cap()) {
+      const slice = rest.slice(0, limit);
+      let cut = slice.lastIndexOf(", ");
+      if (cut < limit * 0.4) cut = slice.lastIndexOf(" ");
+      if (cut < limit * 0.4) cut = limit - 1;
+      append(rest.slice(0, cut + 1).trim());
+      flush();
+      rest = rest.slice(cut + 1).trim();
+    }
+    if (rest) append(rest);
+  }
+  flush();
+  return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Minimal msgpack — exactly the subset the unmute TTS websocket speaks
+// (string-keyed maps out; maps/arrays/strings/numbers/bools back in). Local so
+// the daemon gains no dependency for one wire format.
+
+export function packMessage(message: Record<string, string>): Buffer {
+  const keys = Object.keys(message);
+  if (keys.length > 15) throw new Error("packMessage supports at most 15 keys");
+  const chunks: Buffer[] = [Buffer.from([0x80 | keys.length])];
+  for (const key of keys) chunks.push(packString(key), packString(message[key]));
+  return Buffer.concat(chunks);
+}
+
+function packString(value: string): Buffer {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length < 32) return Buffer.concat([Buffer.from([0xa0 | bytes.length]), bytes]);
+  if (bytes.length < 0x100) return Buffer.concat([Buffer.from([0xd9, bytes.length]), bytes]);
+  const head = Buffer.alloc(bytes.length < 0x10000 ? 3 : 5);
+  if (bytes.length < 0x10000) {
+    head[0] = 0xda;
+    head.writeUInt16BE(bytes.length, 1);
+  } else {
+    head[0] = 0xdb;
+    head.writeUInt32BE(bytes.length, 1);
+  }
+  return Buffer.concat([head, bytes]);
+}
+
+export function unpackMessage(data: Uint8Array): unknown {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  const take = (bytes: number): number => {
+    const at = offset;
+    offset += bytes;
+    return at;
+  };
+
+  const decode = (): unknown => {
+    const byte = view.getUint8(take(1));
+    if (byte <= 0x7f) return byte;
+    if (byte >= 0xe0) return byte - 0x100;
+    if ((byte & 0xf0) === 0x80) return decodeMap(byte & 0x0f);
+    if ((byte & 0xf0) === 0x90) return decodeArray(byte & 0x0f);
+    if ((byte & 0xe0) === 0xa0) return decodeString(byte & 0x1f);
+    switch (byte) {
+      case 0xc0:
+        return null;
+      case 0xc2:
+        return false;
+      case 0xc3:
+        return true;
+      case 0xc4:
+        return decodeBin(view.getUint8(take(1)));
+      case 0xc5:
+        return decodeBin(view.getUint16(take(2)));
+      case 0xc6:
+        return decodeBin(view.getUint32(take(4)));
+      case 0xca:
+        return view.getFloat32(take(4));
+      case 0xcb:
+        return view.getFloat64(take(8));
+      case 0xcc:
+        return view.getUint8(take(1));
+      case 0xcd:
+        return view.getUint16(take(2));
+      case 0xce:
+        return view.getUint32(take(4));
+      case 0xcf:
+        return Number(view.getBigUint64(take(8)));
+      case 0xd0:
+        return view.getInt8(take(1));
+      case 0xd1:
+        return view.getInt16(take(2));
+      case 0xd2:
+        return view.getInt32(take(4));
+      case 0xd3:
+        return Number(view.getBigInt64(take(8)));
+      case 0xd9:
+        return decodeString(view.getUint8(take(1)));
+      case 0xda:
+        return decodeString(view.getUint16(take(2)));
+      case 0xdb:
+        return decodeString(view.getUint32(take(4)));
+      case 0xdc:
+        return decodeArray(view.getUint16(take(2)));
+      case 0xdd:
+        return decodeArray(view.getUint32(take(4)));
+      case 0xde:
+        return decodeMap(view.getUint16(take(2)));
+      case 0xdf:
+        return decodeMap(view.getUint32(take(4)));
+      default:
+        throw new Error(`Unsupported msgpack type 0x${byte.toString(16)}`);
+    }
+  };
+  const decodeString = (length: number): string => Buffer.from(data.subarray(offset, (offset += length))).toString("utf8");
+  const decodeBin = (length: number): Uint8Array => data.subarray(offset, (offset += length));
+  const decodeArray = (length: number): unknown[] => Array.from({ length }, () => decode());
+  const decodeMap = (length: number): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    for (let i = 0; i < length; i++) {
+      const key = decode();
+      result[String(key)] = decode();
+    }
+    return result;
+  };
+
+  return decode();
+}
+
+// ---------------------------------------------------------------------------
+// WAV plumbing shared by engines that return raw PCM.
+
+export function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
+  const header = Buffer.alloc(44);
+  const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE((channels * bitsPerSample) / 8, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function floatFramesToWav(frames: number[][], sampleRate: number): Buffer {
+  const total = frames.reduce((sum, frame) => sum + frame.length, 0);
+  const pcm = Buffer.alloc(total * 2);
+  let offset = 0;
+  for (const frame of frames) {
+    for (const sample of frame) {
+      const clamped = Math.max(-1, Math.min(1, sample));
+      pcm.writeInt16LE(Math.round(clamped * 32767), offset);
+      offset += 2;
+    }
+  }
+  return pcmToWav(pcm, sampleRate);
+}
+
+// ---------------------------------------------------------------------------
+// Engine registry. An engine is DATA: an id plus a synthesize function over
+// the uniform context. The shared read-aloud path resolves engines from this
+// registry only — adding an engine is one registerTtsEngine call, and no
+// shared code may ever branch on a specific engine id.
+
+export interface TtsAudio {
+  audio: Buffer;
+  contentType: string;
+}
+
+export interface TtsSynthesisContext {
+  /** Speech-ready text (already through speakableText). */
+  text: string;
+  /** Engine-specific voice id; undefined = the engine's default voice. */
+  voice?: string;
+  settings: VoiceSettings;
+  /** Bring up the bundled unmute TTS service if needed → its HTTP base URL. */
+  ensureTts(onStatus: (message: string) => void): Promise<{ ttsUrl: string }>;
+  log(message: string): void;
+}
+
+export interface TtsEngineSpec {
+  id: string;
+  /** Known voice ids, surfaced as settings hints ([] = free-form). */
+  voices: string[];
+  synthesize(context: TtsSynthesisContext): Promise<TtsAudio>;
+}
+
+const engines = new Map<string, TtsEngineSpec>();
+
+export function registerTtsEngine(spec: TtsEngineSpec): void {
+  engines.set(spec.id, spec);
+}
+
+export function findTtsEngine(id: string): TtsEngineSpec | undefined {
+  return engines.get(id);
+}
+
+export function ttsEngineIds(): string[] {
+  return [...engines.keys()];
+}
+
+/** The engine+voice one agent's messages speak with: agent tts config over the
+ * workspace default engine; tts.voice over the agent's call voice. */
+export function resolveTtsChoice(
+  agent: { voice?: string; tts?: AgentTtsConfig } | undefined,
+  settings: VoiceSettings,
+): { engine: TtsEngineSpec; voice?: string } {
+  const engineId = agent?.tts?.engine ?? settings.ttsEngine;
+  const engine = findTtsEngine(engineId);
+  if (!engine) throw new Error(`Unknown TTS engine "${engineId}" (available: ${ttsEngineIds().join(", ")})`);
+  return { engine, voice: agent?.tts?.voice ?? agent?.voice };
+}
+
+// ---------------------------------------------------------------------------
+// Chunk cache: derived data, content-addressed on (engine, voice, chunk text)
+// so replays — and identical chunks anywhere — never re-synthesize. Best
+// effort: a cache failure only costs a regeneration, never the request.
+
+/** Newest cache entries kept by the size sweep (audio+meta pairs). */
+const TTS_CACHE_MAX_ENTRIES = 500;
+
+function ttsCacheKey(engineId: string, voice: string | undefined, text: string): string {
+  return createHash("sha256").update([engineId, voice ?? "", text].join("\n")).digest("hex");
+}
+
+async function readCachedAudio(dir: string, key: string): Promise<TtsAudio | undefined> {
+  try {
+    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { contentType?: string };
+    const audio = await readFile(join(dir, `${key}.audio`));
+    return { audio, contentType: meta.contentType ?? "audio/wav" };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeCachedAudio(dir: string, key: string, result: TtsAudio): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `${key}.audio`), result.audio);
+    await writeFile(join(dir, `${key}.json`), JSON.stringify({ contentType: result.contentType }));
+    void sweepTtsCache(dir).catch(() => {});
+  } catch {
+    // Cache is best-effort.
+  }
+}
+
+async function sweepTtsCache(dir: string): Promise<void> {
+  const names = (await readdir(dir)).filter((name) => name.endsWith(".audio"));
+  if (names.length <= TTS_CACHE_MAX_ENTRIES) return;
+  const dated = await Promise.all(
+    names.map(async (name) => ({ name, mtime: (await stat(join(dir, name))).mtimeMs })),
+  );
+  dated.sort((a, b) => b.mtime - a.mtime);
+  for (const { name } of dated.slice(TTS_CACHE_MAX_ENTRIES)) {
+    await unlink(join(dir, name)).catch(() => {});
+    await unlink(join(dir, name.replace(/\.audio$/, ".json"))).catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The shared read-aloud path (daemon calls this; server streams the result).
+// One call = one CHUNK of the message: the client asks for chunk 0, learns the
+// total from the result, and fetches/plays the rest back-to-back.
+
+export interface ReadAloudRequest {
+  event: { author: string; text: string };
+  agent?: { voice?: string; tts?: AgentTtsConfig };
+  settings: VoiceSettings;
+  ensureTts: TtsSynthesisContext["ensureTts"];
+  log?: (message: string) => void;
+  /** Which speech chunk to synthesize (default 0). */
+  chunk?: number;
+  /** Cache directory override (tests); default ~/.gaia/cache/tts. */
+  cacheDir?: string;
+}
+
+export interface ReadAloudResult extends TtsAudio {
+  /** Total speech chunks in this message. */
+  chunks: number;
+  /** The chunk this audio is for. */
+  chunk: number;
+}
+
+export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudResult> {
+  if (request.event.author === "user") throw new Error("Only agent messages can be read aloud");
+  const text = speakableText(request.event.text);
+  if (!text) throw new Error("Nothing to read aloud in this message");
+
+  const chunks = splitSpeechChunks(text);
+  const index = request.chunk ?? 0;
+  if (!Number.isInteger(index) || index < 0 || index >= chunks.length) {
+    throw new Error(`Unknown chunk ${index} (message has ${chunks.length})`);
+  }
+
+  const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
+  const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
+  const key = ttsCacheKey(engine.id, voice, chunks[index]);
+  const cached = await readCachedAudio(cacheDir, key);
+  if (cached) return { ...cached, chunks: chunks.length, chunk: index };
+
+  const result = await engine.synthesize({
+    text: chunks[index],
+    voice,
+    settings: request.settings,
+    ensureTts: request.ensureTts,
+    log: request.log ?? (() => {}),
+  });
+  await writeCachedAudio(cacheDir, key, result);
+  return { ...result, chunks: chunks.length, chunk: index };
+}
+
+/** VoiceSettings → the stack subset ensureTts needs (mirrors startVoiceCall). */
+export function ttsStackSettings(settings: VoiceSettings): VoiceStackSettings {
+  return {
+    unmuteUrl: settings.unmuteUrl,
+    unmuteDir: settings.unmuteDir,
+    autoStart: settings.autoStart,
+    startTimeoutMs: settings.startTimeoutSec * 1000,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// kyutai — the bundled unmute TTS service ("our" TTS). One websocket per
+// request: send the text and Eos, collect 24 kHz float PCM frames until the
+// server closes, wrap as WAV. The MLX adapter speaks with its configured
+// voice; a per-agent voice is accepted but ignored by that server.
+
+const KYUTAI_SAMPLE_RATE = 24_000;
+const KYUTAI_IDLE_TIMEOUT_MS = 60_000;
+
+interface WsLike {
+  binaryType: string;
+  send(data: Uint8Array): void;
+  close(): void;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: (() => void) | null;
+  onclose: (() => void) | null;
+}
+
+function webSocketCtor(): new (url: string) => WsLike {
+  const ctor = (globalThis as Record<string, unknown>).WebSocket;
+  if (typeof ctor !== "function") throw new Error("The kyutai read-aloud engine needs Node >= 22 (global WebSocket)");
+  return ctor as new (url: string) => WsLike;
+}
+
+async function kyutaiSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
+  const { ttsUrl } = await context.ensureTts((message) => context.log(message));
+  const Ws = webSocketCtor();
+  const socket = new Ws(`${ttsUrl.replace(/^http/, "ws")}/api/tts_streaming`);
+  socket.binaryType = "arraybuffer";
+  const frames: number[][] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    let idleTimer: NodeJS.Timeout | undefined;
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      try {
+        socket.close();
+      } catch {
+        // Already closed.
+      }
+      error ? reject(error) : resolve();
+    };
+    const bumpIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => finish(new Error("kyutai TTS timed out while generating audio")), KYUTAI_IDLE_TIMEOUT_MS);
+    };
+    bumpIdle();
+    socket.onopen = () => {
+      socket.send(packMessage({ type: "Text", text: context.text }));
+      socket.send(packMessage({ type: "Eos" }));
+    };
+    socket.onmessage = (event) => {
+      bumpIdle();
+      if (!(event.data instanceof ArrayBuffer)) return;
+      const message = unpackMessage(new Uint8Array(event.data)) as { type?: string; pcm?: unknown; message?: unknown };
+      if (message.type === "Audio" && Array.isArray(message.pcm)) frames.push(message.pcm.map(Number));
+      if (message.type === "Error") finish(new Error(`kyutai TTS: ${String(message.message ?? "unknown error")}`));
+    };
+    socket.onerror = () => finish(new Error(`Could not reach the kyutai TTS service at ${ttsUrl}`));
+    socket.onclose = () => finish(frames.length ? undefined : new Error("kyutai TTS returned no audio"));
+  });
+
+  return { audio: floatFramesToWav(frames, KYUTAI_SAMPLE_RATE), contentType: "audio/wav" };
+}
+
+registerTtsEngine({ id: "kyutai", voices: [], synthesize: kyutaiSynthesize });
+
+// ---------------------------------------------------------------------------
+// claude — the claude-voice daemon (claude.ai "Read aloud" voices through the
+// user's own account). POST /synthesize returns a finished WAV. When the
+// daemon is down and a checkout is configured, it is spawned like the unmute
+// services — detached, logged, and never killed by GAIA (it outlives calls).
+
+const CLAUDE_VOICES = ["airy", "buttery", "mellow", "glassy", "rounded"];
+const CLAUDE_SYNTH_TIMEOUT_MS = 180_000;
+
+async function claudeVoiceHealthy(baseUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<string> {
+  const baseUrl = context.settings.claudeVoiceUrl.replace(/\/+$/, "");
+  if (await claudeVoiceHealthy(baseUrl)) return baseUrl;
+
+  const dir = context.settings.claudeVoiceDir;
+  if (!dir) {
+    throw new Error(`claude-voice daemon is not reachable at ${baseUrl} (start it, or set voice.claudeVoiceDir in ~/.gaia/voice.json to auto-start it)`);
+  }
+  const script = join(dir, "voiced.js");
+  if (!existsSync(script)) throw new Error(`claude-voice checkout not found at ${dir} (no voiced.js)`);
+
+  context.log(`voice: starting claude-voice daemon from ${dir}...`);
+  mkdirSync(globalPaths.voiceLogsDir(), { recursive: true });
+  const log = openSync(join(globalPaths.voiceLogsDir(), "claude-voice.log"), "a");
+  const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", log, log], detached: true });
+  child.unref();
+
+  const deadline = Date.now() + context.settings.startTimeoutSec * 1000;
+  while (Date.now() < deadline) {
+    if (await claudeVoiceHealthy(baseUrl)) return baseUrl;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error(`claude-voice daemon did not become healthy at ${baseUrl} - see ${join(globalPaths.voiceLogsDir(), "claude-voice.log")}`);
+}
+
+async function claudeSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
+  const baseUrl = await ensureClaudeVoiceDaemon(context);
+  const response = await fetch(`${baseUrl}/synthesize`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: context.text, ...(context.voice ? { voice: context.voice } : {}) }),
+    signal: AbortSignal.timeout(CLAUDE_SYNTH_TIMEOUT_MS),
+  });
+  if (response.status === 404) {
+    throw new Error("claude-voice daemon has no /synthesize endpoint - update the checkout and restart the daemon");
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`claude-voice synthesis failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  return {
+    audio: Buffer.from(await response.arrayBuffer()),
+    contentType: response.headers.get("content-type") ?? "audio/wav",
+  };
+}
+
+registerTtsEngine({ id: "claude", voices: CLAUDE_VOICES, synthesize: claudeSynthesize });

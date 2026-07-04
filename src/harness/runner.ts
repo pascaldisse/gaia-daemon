@@ -104,6 +104,13 @@ export async function runAgentRunner(): Promise<void> {
           .catch(() => false)
           .then((ok) => send({ type: "steer-result", ok }));
         return;
+      case "compact":
+        void (runtime.compact?.(command.roomId) ?? Promise.reject(new Error("compaction not supported")))
+          .then((message) => send({ type: "compact-result", ok: true, message }))
+          .catch((error: unknown) =>
+            send({ type: "compact-result", ok: false, message: error instanceof Error ? error.message : String(error) }),
+          );
+        return;
       case "reset":
         runtime.resetRoom(command.roomId);
         return;

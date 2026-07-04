@@ -4,7 +4,7 @@
 // DATA on the spec (capabilities, ui, credentialProxy), read uniformly — never
 // as `=== "claude"` branches. This rule is absolute (AGENTS.md §RULE #0).
 
-import type { AgentDef, AgentEvent, RoomEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/memory-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -14,6 +14,12 @@ import type { ResolvedRole } from "../domain/roles.js";
 export interface AgentInput {
   roomId: string;
   message: string;
+  /** Files attached to the message (pasted into the composer). The shared
+   * prompt builder lists them as path breadcrumbs for every harness; a
+   * harness with a native image channel additionally attaches the bytes
+   * (pi prompt images, claude stream-json image blocks, codex localImage
+   * items) — its own translation, never a shared-code branch. */
+  attachments?: MessageAttachment[];
   transcript: RoomEvent[];
   activeRole?: ResolvedRole;
   /** "voice" turns come from a live call: the reply is spoken aloud by TTS. */
@@ -35,6 +41,11 @@ export interface AgentRuntime {
    * false when there is nothing to steer. Only present when
    * capabilities.supportsSteer. */
   steer?(roomId: string, message: string): Promise<boolean>;
+  /** Compact the room's session context using the HARNESS's own compaction
+   * (backs /compact — gaia never re-implements summarization). Resolves with
+   * a human-readable result line. Only present when
+   * capabilities.supportsCompact. */
+  compact?(roomId: string): Promise<string>;
   dispose(): void;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
@@ -59,6 +70,10 @@ export interface HarnessCapabilities {
   /** Can inject guidance into a RUNNING turn (pi session.steer, codex
    * turn/steer)? Backs /steer; claude -p has no headless steering. */
   readonly supportsSteer: boolean;
+  /** Has a native session-compaction the runtime can invoke (pi
+   * session.compact, claude /compact, codex thread compaction)? Backs
+   * /compact. */
+  readonly supportsCompact: boolean;
 }
 
 export interface HarnessUi {

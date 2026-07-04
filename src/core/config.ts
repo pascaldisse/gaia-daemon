@@ -1,7 +1,7 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
-import type { HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 
 export const DEFAULTS = {
@@ -50,6 +50,21 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (Array.isArray(raw.writable)) config.writable = raw.writable.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
   if (raw.net === "full" || raw.net === "none") config.net = raw.net;
   if (typeof raw.credentialProxy === "boolean") config.credentialProxy = raw.credentialProxy;
+  return Object.keys(config).length > 0 ? config : undefined;
+}
+
+/** Parse an agent.json `tts` section: `{ engine, voice }` (both optional) or
+ * the string shorthand `"engine:voice"` / `"engine"`. */
+export function parseTtsConfig(raw: unknown): AgentTtsConfig | undefined {
+  if (typeof raw === "string" && raw.trim()) {
+    const [engine, ...rest] = raw.trim().split(":");
+    const voice = rest.join(":").trim();
+    return { ...(engine.trim() ? { engine: engine.trim() } : {}), ...(voice ? { voice } : {}) };
+  }
+  if (!isRecord(raw)) return undefined;
+  const config: AgentTtsConfig = {};
+  if (typeof raw.engine === "string" && raw.engine.trim()) config.engine = raw.engine.trim();
+  if (typeof raw.voice === "string" && raw.voice.trim()) config.voice = raw.voice.trim();
   return Object.keys(config).length > 0 ? config : undefined;
 }
 

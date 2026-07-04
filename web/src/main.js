@@ -10,6 +10,7 @@ import { clockText } from "./statusbar.js";
 import { initTheme } from "./themes.js";
 import { installVoiceLifecycle } from "./voice.js";
 // Region renderers registered by import side effect.
+import "./dario.js";
 import "./panel.js";
 import "./settings.js";
 import "./sidebar.js";

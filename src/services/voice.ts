@@ -48,6 +48,14 @@ export interface VoiceSettings {
   silenceDelaySec: number;
   /** Force thinking off during voice calls; restored on hang-up. */
   disableThinking: boolean;
+  /** Default read-aloud TTS engine for the transcript play button; agents
+   * override per-persona via agent.json `tts.engine`. */
+  ttsEngine: string;
+  /** claude-voice daemon the "claude" read-aloud engine talks to. */
+  claudeVoiceUrl: string;
+  /** claude-voice checkout to auto-start when its daemon is down ("" = never
+   * auto-start; the engine then requires the daemon to already be running). */
+  claudeVoiceDir: string;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -60,6 +68,9 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   speakOnSilence: true,
   silenceDelaySec: 7,
   disableThinking: true,
+  ttsEngine: "kyutai",
+  claudeVoiceUrl: "http://127.0.0.1:8778",
+  claudeVoiceDir: "",
 };
 
 export async function ensureVoiceSettingsFile(): Promise<void> {
@@ -79,6 +90,9 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.speakOnSilence === "boolean") settings.speakOnSilence = raw.speakOnSilence;
   if (typeof raw.silenceDelaySec === "number" && raw.silenceDelaySec > 0) settings.silenceDelaySec = raw.silenceDelaySec;
   if (typeof raw.disableThinking === "boolean") settings.disableThinking = raw.disableThinking;
+  if (typeof raw.ttsEngine === "string" && raw.ttsEngine.trim()) settings.ttsEngine = raw.ttsEngine.trim();
+  if (typeof raw.claudeVoiceUrl === "string" && raw.claudeVoiceUrl.trim()) settings.claudeVoiceUrl = raw.claudeVoiceUrl.trim();
+  if (typeof raw.claudeVoiceDir === "string" && raw.claudeVoiceDir.trim()) settings.claudeVoiceDir = raw.claudeVoiceDir.trim();
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();
@@ -324,6 +338,48 @@ export class VoiceStackManager {
     const unmuteUrl = `ws://127.0.0.1:${backend.port}`;
     await this.waitForHealthy(settings, wsToHttp(unmuteUrl), onStatus);
     return { unmuteUrl };
+  }
+
+  /**
+   * Read-aloud path: makes sure just the TTS service is reachable (reusing a
+   * live one — ours or external — or spawning it), and returns its HTTP base
+   * URL. The spawned child joins `children`, so a later full-stack call reuses
+   * it and hang-up/exit cleanup applies uniformly.
+   */
+  async ensureTts(settings: VoiceStackSettings, onStatus: (message: string) => void): Promise<{ ttsUrl: string }> {
+    const tts = await this.resolveService("tts", TTS_PORT, onStatus);
+    const ttsUrl = `http://127.0.0.1:${tts.port}`;
+    if (tts.spawn) {
+      if (!settings.autoStart) throw new Error("TTS service is not running and voice auto-start is disabled");
+      if (!existsSync(join(settings.unmuteDir, "macos"))) {
+        throw new Error(`unmute checkout not found at ${settings.unmuteDir} (set voice.unmuteDir in ~/.gaia/voice.json)`);
+      }
+      mkdirSync(this.logDir, { recursive: true });
+      const spawnService = this.hooks.spawnService ?? defaultSpawnService;
+      onStatus("voice: starting tts...");
+      const spec: ServiceSpec = { name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } };
+      this.children.set("tts", { handle: spawnService(spec, settings.unmuteDir, join(this.logDir, "tts.log")), port: tts.port });
+      this.installExitHooks();
+    }
+
+    const probeHttpOk = this.hooks.probeHttpOk ?? defaultProbeHttpOk;
+    const interval = this.hooks.pollIntervalMs ?? 1500;
+    const deadline = Date.now() + settings.startTimeoutMs;
+    let announced = false;
+    while (Date.now() < deadline) {
+      const child = this.children.get("tts");
+      if (child?.handle.exited) {
+        this.children.delete("tts");
+        throw new Error(`voice service tts exited during startup - see ${join(this.logDir, "tts.log")}`);
+      }
+      if (await probeHttpOk(`${ttsUrl}${CHECK_PATHS.tts}`)) return { ttsUrl };
+      if (!announced) {
+        announced = true;
+        onStatus("voice: waiting for tts... (first start loads models)");
+      }
+      await sleep(interval);
+    }
+    throw new Error(`TTS service did not become healthy within ${Math.round(settings.startTimeoutMs / 1000)}s - logs in ${this.logDir}`);
   }
 
   // Hang-up: stop only the services GAIA itself spawned.

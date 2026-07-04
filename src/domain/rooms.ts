@@ -16,7 +16,8 @@
 //      re-run the turn from partialReply. Idempotent either way.
 
 import { existsSync } from "node:fs";
-import type { EventDetails, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, ToolDetail } from "../core/types.js";
+import { join } from "node:path";
+import type { EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, ToolDetail } from "../core/types.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -70,6 +71,21 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
   return details.model || details.thinkingStarted || details.thinking || details.tools?.length ? details : undefined;
 }
 
+function attachmentsFrom(value: unknown): MessageAttachment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attachments: MessageAttachment[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || typeof raw.name !== "string" || typeof raw.path !== "string" || !raw.path.trim()) continue;
+    attachments.push({
+      name: raw.name,
+      mime: typeof raw.mime === "string" && raw.mime ? raw.mime : "application/octet-stream",
+      size: typeof raw.size === "number" && Number.isFinite(raw.size) && raw.size >= 0 ? Math.floor(raw.size) : 0,
+      path: raw.path,
+    });
+  }
+  return attachments.length > 0 ? attachments : undefined;
+}
+
 // A bad persisted block must never brick a room — it degrades to absent.
 function monadFrom(value: unknown): MonadConfig | undefined {
   if (!isRecord(value) || typeof value.policy !== "string" || !value.policy.trim() || !Array.isArray(value.slots)) return undefined;
@@ -108,10 +124,12 @@ function pendingTurnFrom(value: unknown): PendingTurn | undefined {
   if (typeof value.id !== "string" || typeof value.prompt !== "string" || typeof value.agentId !== "string") return undefined;
   const targets = Array.isArray(value.targets) ? value.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0) : [];
   if (targets.length === 0) return undefined;
+  const attachments = attachmentsFrom(value.attachments);
   return {
     id: value.id,
     ...(typeof value.eventId === "string" && value.eventId ? { eventId: value.eventId } : {}),
     prompt: value.prompt,
+    ...(attachments ? { attachments } : {}),
     targets,
     agentId: value.agentId,
     partialReply: typeof value.partialReply === "string" ? value.partialReply : "",
@@ -126,11 +144,13 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
   for (const raw of value) {
     if (!isRecord(raw) || typeof raw.taskId !== "string" || typeof raw.text !== "string") continue;
     const targets = Array.isArray(raw.targets) ? raw.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0) : [];
+    const attachments = attachmentsFrom(raw.attachments);
     queue.push({
       taskId: raw.taskId,
       text: raw.text,
       targets,
       ...(raw.channel === "voice" ? { channel: "voice" as const } : {}),
+      ...(attachments ? { attachments } : {}),
       queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
     });
   }
@@ -154,9 +174,12 @@ export function normalizeRoomState(value: unknown): RoomState {
     agentCursors: cursorRecord(value.agentCursors),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
+    ...(typeof value.title === "string" && value.title.trim() ? { title: value.title } : {}),
+    ...(typeof value.imported === "string" && value.imported.trim() ? { imported: value.imported } : {}),
     ...(monad ? { monad } : {}),
     ...(pendingTurn ? { pendingTurn } : {}),
     ...(queue ? { queue } : {}),
+    ...(value.thanksDario === true ? { thanksDario: true } : {}),
   };
 }
 
@@ -172,10 +195,12 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
     timestamp: raw.timestamp,
     text: raw.text,
     ...(typeof raw.channel === "string" && raw.channel ? { channel: raw.channel } : {}),
+    ...(raw.redacted === true ? { redacted: true } : {}),
   };
   if (raw.author === "user") {
     const targets = Array.isArray(raw.targets) ? raw.targets.filter((t): t is string => typeof t === "string") : [];
-    return { ...base, author: "user", targets };
+    const attachments = attachmentsFrom(raw.attachments);
+    return { ...base, author: "user", targets, ...(attachments ? { attachments } : {}) };
   }
   const details = eventDetailsFrom(raw.details);
   return { ...base, author: raw.author, ...(details ? { details } : {}) };
@@ -245,7 +270,7 @@ export class RoomHandle {
     await appendJsonl(this.transcriptPath, event);
   }
 
-  async addUserMessage(text: string, targets: string[], channel?: string): Promise<RoomEvent> {
+  async addUserMessage(text: string, targets: string[], channel?: string, attachments?: MessageAttachment[]): Promise<RoomEvent> {
     const event: RoomEvent = {
       id: newRoomEventId(),
       timestamp: new Date().toISOString(),
@@ -253,6 +278,7 @@ export class RoomHandle {
       targets,
       text,
       ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     };
     await this.appendEvent(event);
     return event;
@@ -281,9 +307,51 @@ export class RoomHandle {
       }
     }
     if (cut < 0) return undefined;
+    return this.truncateAt(events, cut);
+  }
+
+  /** Rewind to a specific event: drop it and everything after (backs message
+   * edit and reply retry — the fork-from-here primitive). Returns the dropped
+   * events, or undefined when the id is not in the transcript. */
+  async rewindToEvent(eventId: string): Promise<RoomEvent[] | undefined> {
+    const { events } = await this.eventsFrom(0);
+    const cut = events.findIndex((event) => event.id === eventId);
+    if (cut < 0) return undefined;
+    return this.truncateAt(events, cut);
+  }
+
+  /** All transcript truncation funnels through here. Dropped events are
+   * preserved append-only in rewound.jsonl beside the transcript — a rewind
+   * discards them from the conversation, never from disk. */
+  private async truncateAt(events: RoomEvent[], cut: number): Promise<RoomEvent[]> {
     const kept = events.slice(0, cut);
+    const dropped = events.slice(cut);
+    const rewoundPath = join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "rewound.jsonl");
+    for (const event of dropped) await appendJsonl(rewoundPath, event);
     await writeText(this.transcriptPath, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""));
-    return events.slice(cut);
+    return dropped;
+  }
+
+  /** Rewrite the text of specific events in place (backs the thanks-dario
+   * context sanitize). Each edited event's ORIGINAL line is appended to
+   * redactions.jsonl beside the transcript BEFORE the rewrite — a redaction
+   * changes what replays into prompts, never what exists on disk. The line
+   * count is unchanged, so every existing cursor stays valid. Returns the
+   * ids actually edited (unknown ids and no-op texts are ignored). */
+  async redactEvents(edits: Map<string, string>): Promise<string[]> {
+    const { events } = await this.eventsFrom(0);
+    const edited = new Set<string>();
+    const redactionsPath = join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "redactions.jsonl");
+    for (const event of events) {
+      const text = edits.get(event.id);
+      if (text === undefined || text === event.text) continue;
+      await appendJsonl(redactionsPath, event);
+      edited.add(event.id);
+    }
+    if (edited.size === 0) return [];
+    const next = events.map((event) => (edited.has(event.id) ? { ...event, text: edits.get(event.id)!, redacted: true } : event));
+    await writeText(this.transcriptPath, next.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    return [...edited];
   }
 
   async eventsFrom(cursor: number): Promise<RoomPage> {

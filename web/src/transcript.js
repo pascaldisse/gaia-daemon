@@ -7,14 +7,19 @@
 // rebuilding the whole transcript. v1's author+text merge heuristic is gone:
 // when the final room-event commits under the same id, the stream entry is
 // dropped and the keyed node swaps to the committed version in place.
+import { retryMessage } from "./actions.js";
+import { api } from "./api.js";
+import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";
 import { MarkdownMessage } from "./markdown.js";
-import { registerRegion } from "./render.js";
+import { toggleReadAloud } from "./readaloud.js";
+import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").UserRoomEvent} UserRoomEvent */
+/** @typedef {import("./types.js").MessageAttachment} MessageAttachment */
 /** @typedef {import("./types.js").AgentRoomEvent} AgentRoomEvent */
 /** @typedef {import("./types.js").EventDetails} EventDetails */
 /** @typedef {import("./types.js").ToolDetail} ToolDetail */
@@ -30,6 +35,8 @@ import { state } from "./state.js";
  * @property {string} [channel]
  * @property {string} text
  * @property {EventDetails} [details]
+ * @property {MessageAttachment[]} [attachments]
+ * @property {boolean} [redacted]
  * @property {boolean} streaming
  */
 
@@ -38,20 +45,101 @@ function viewOfEvent(event) {
   const isUser = event.author === "user";
   return {
     id: event.id,
-    version: "c",
+    version: event.redacted ? "c-redacted" : "c",
     timestamp: event.timestamp,
     author: event.author,
     targets: isUser ? (/** @type {UserRoomEvent} */ (event).targets ?? []) : [],
     channel: event.channel,
     text: event.text,
     details: isUser ? undefined : /** @type {AgentRoomEvent} */ (event).details,
+    attachments: isUser ? /** @type {UserRoomEvent} */ (event).attachments : undefined,
+    redacted: event.redacted,
     streaming: false,
   };
 }
 
+/**
+ * Committed events the client holds: paged-in older history followed by the
+ * snapshot's tail window, deduped by id (the windows can overlap after new
+ * turns shift the snapshot).
+ * @returns {import("./types.js").RoomEvent[]}
+ */
+function committedEvents() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return [];
+  const older = state.older.roomId === snapshot.room.id ? state.older.events : [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {import("./types.js").RoomEvent[]} */
+  const merged = [];
+  for (const event of [...older, ...snapshot.room.events]) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    merged.push(event);
+  }
+  return merged;
+}
+
+/** How many committed events exist before the oldest one the client holds. */
+function olderRemaining() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return 0;
+  return Math.max(0, snapshot.room.eventTotal - committedEvents().length);
+}
+
+/**
+ * Reconcile the pager with a fresh snapshot: drop paged-in history when the
+ * room changed or the transcript shrank (rewind/truncate/fork) — kept events
+ * would otherwise resurrect what the server removed.
+ */
+export function syncOlderFromSnapshot() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const older = state.older;
+  if (older.roomId !== snapshot.room.id || snapshot.room.eventTotal < older.lastTotal) {
+    state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+  } else {
+    older.lastTotal = snapshot.room.eventTotal;
+  }
+}
+
+/** Page one chunk of older committed events in above the current history. */
+async function loadOlderEvents() {
+  const snapshot = state.snapshot;
+  if (!snapshot || state.older.loading) return;
+  const oldest = committedEvents()[0];
+  if (!oldest) return;
+  state.older.loading = true;
+  markDirty("transcript");
+  const container = $("#transcript");
+  const heightBefore = container ? container.scrollHeight : 0;
+  try {
+    const base = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/events`;
+    const body = await api(`${base}?before=${encodeURIComponent(oldest.id)}&limit=100`);
+    /** @type {import("./types.js").RoomEvent[]} */
+    const events = body.events ?? [];
+    if (state.older.roomId !== snapshot.room.id) state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+    const have = new Set(committedEvents().map((event) => event.id));
+    state.older.events = [...events.filter((event) => !have.has(event.id)), ...state.older.events];
+  } catch (error) {
+    setError(error instanceof Error ? error.message : String(error));
+  } finally {
+    state.older.loading = false;
+    markDirty("transcript");
+    // Keep the viewport anchored on the message the user was reading: the
+    // render runs in its own rAF, so adjust one frame after it.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const el = $("#transcript");
+        if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
+      }),
+    );
+  }
+}
+
 /** @returns {MessageView[]} */
 function messageViews() {
-  const events = state.snapshot?.room.events ?? [];
+  const events = committedEvents();
   const views = events.map(viewOfEvent);
   const committed = new Set(events.map((event) => event.id));
   for (const stream of state.streams.values()) {
@@ -90,13 +178,41 @@ function renderTranscript() {
   }
 
   const nextNodes = views.map((view) => {
+    // Read-aloud playback state folds into the version stamp so exactly the
+    // affected message re-renders when loading/playing starts or stops.
+    const version = view.version + (state.readAloud?.eventId === view.id ? `:ra-${state.readAloud.phase}` : "");
     const current = existing.get(view.id);
-    if (current && current.dataset.v === view.version) return current;
+    if (current && current.dataset.v === version) return current;
     const node = Message(view);
     node.dataset.eventId = view.id;
-    node.dataset.v = view.version;
+    node.dataset.v = version;
     return node;
   });
+
+  // "load older" pager above the history, keyed like a message so the sync
+  // below keeps it. Only shown while committed events precede what we hold.
+  const remaining = olderRemaining();
+  if (remaining > 0) {
+    const version = `older:${state.older.loading ? "loading" : remaining}`;
+    const current = existing.get("__load-older");
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h(
+            "div",
+            { class: "load-older-row" },
+            h("button", {
+              type: "button",
+              class: "load-older",
+              text: state.older.loading ? "loading older messages..." : `↑ load older messages (${remaining.toLocaleString()} more)`,
+              ...(state.older.loading ? { disabled: true } : {}),
+              onclick: () => void loadOlderEvents(),
+            }),
+          );
+    node.dataset.eventId = "__load-older";
+    node.dataset.v = version;
+    nextNodes.unshift(node);
+  }
 
   // Keyed sync: drop nodes that are gone, then walk the desired order and
   // insert/move only where the DOM differs.
@@ -126,6 +242,9 @@ function Message(view) {
   const text = isUser ? stripLeadingRouteMentions(view.text, view.targets) : view.text;
   const details = view.details ?? {};
   const showThinking = details.thinkingStarted || details.thinking;
+  // Claude.ai-style fork actions: ✎ edits a user message, ⟳ regenerates a
+  // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
+  const canFork = !view.streaming && view.author !== "system";
   return h(
     "article",
     { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""}` },
@@ -135,6 +254,39 @@ function Message(view) {
       h("span", { text: label }),
       view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: "🎙" }) : null,
       details.model ? h("small", { class: "model-tag", text: details.model }) : null,
+      details.modelFallback
+        ? h("small", {
+            class: "model-tag fallback",
+            title: details.modelFallback.reason,
+            text: `⚠ ${details.modelFallback.from} → ${details.modelFallback.to}`,
+          })
+        : null,
+      view.redacted
+        ? h("small", {
+            class: "redacted-tag",
+            title: "sanitized by thanks-dario — the original text is preserved in the room's redactions.jsonl",
+            text: "✂",
+          })
+        : null,
+      canFork && isUser
+        ? h("button", {
+            type: "button",
+            class: "msg-action",
+            title: "edit & re-send from here — later replies are rewound",
+            text: "✎",
+            onclick: () => beginEditMessage(view.id, view.text),
+          })
+        : null,
+      canFork && !isUser
+        ? h("button", {
+            type: "button",
+            class: "msg-action",
+            title: "retry — regenerate from the message that produced this reply",
+            text: "⟳",
+            onclick: () => void retryMessage(view.id),
+          })
+        : null,
+      isAgent && !view.streaming ? ReadAloudButton(view.id) : null,
       h("time", { text: formatTime(view.timestamp) }),
     ),
     showThinking
@@ -150,8 +302,66 @@ function Message(view) {
         )
       : null,
     details.tools?.length ? ToolActivityList(details.tools) : null,
+    view.attachments?.length ? AttachmentGallery(view.attachments) : null,
     text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
   );
+}
+
+/**
+ * Attached files on a user message: image thumbnails inline (click opens the
+ * full file, served from the room's files dir), other files as download chips.
+ * @param {MessageAttachment[]} attachments
+ */
+function AttachmentGallery(attachments) {
+  return h(
+    "div",
+    { class: "msg-attachments" },
+    attachments.map((file) => {
+      const url = attachmentUrl(file);
+      if (file.mime.startsWith("image/")) {
+        return h(
+          "a",
+          { class: "attachment-link", href: url, target: "_blank", rel: "noopener", title: `${file.name} (${humanSize(file.size)})` },
+          h("img", { class: "attachment-image", src: url, alt: file.name, loading: "lazy" }),
+        );
+      }
+      return h(
+        "a",
+        { class: "attachment-chip", href: url, target: "_blank", rel: "noopener", title: file.path },
+        h("span", { text: "📎" }),
+        h("span", { class: "attach-name", text: file.name }),
+        h("small", { text: humanSize(file.size) }),
+      );
+    }),
+  );
+}
+
+/**
+ * Serve URL for a committed attachment: the on-disk id (path basename) under
+ * the current room's files route.
+ * @param {MessageAttachment} file
+ */
+function attachmentUrl(file) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return "#";
+  const id = file.path.split("/").pop() ?? "";
+  return `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Play/stop toggle for reading one agent message aloud with the author's TTS
+ * voice (the server strips markdown and never speaks tool calls).
+ * @param {string} eventId
+ */
+function ReadAloudButton(eventId) {
+  const active = state.readAloud?.eventId === eventId ? state.readAloud : null;
+  return h("button", {
+    type: "button",
+    class: `msg-action read-aloud ${active ? `ra-${active.phase}` : ""}`,
+    title: active ? (active.phase === "loading" ? "generating audio... — click to cancel" : "stop reading") : "read this message aloud",
+    text: active ? (active.phase === "loading" ? "◌" : "⏹") : "▶",
+    onclick: () => toggleReadAloud(eventId),
+  });
 }
 
 /** @param {ToolDetail[]} tools */

@@ -7,7 +7,7 @@
 // (buildInlineSystemPrompt) because they cannot load Pi-style skill files.
 
 import { readFile } from "node:fs/promises";
-import type { AgentDef, ContextFile, RoomEvent, Workspace } from "../core/types.js";
+import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { loadRoleSkillText } from "../domain/skills.js";
 import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
@@ -31,6 +31,8 @@ export interface TurnPromptInput {
   /** Auto-retrieved memories for THIS turn; already fenced by the service. */
   recall?: string;
   channel?: "text" | "voice";
+  /** Files attached to the newest message (pasted into the composer). */
+  attachments?: MessageAttachment[];
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -44,6 +46,20 @@ const VOICE_MODE_INSTRUCTIONS = [
   "You can still use your tools; the user only hears your final text.",
 ].join("\n");
 
+function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** One breadcrumb line per attached file: name, mime, size, and the on-disk
+ * path — the file stays readable there, so any agent can open it with its
+ * tools even on a replayed/rewound transcript. Uniform for every harness;
+ * harnesses with a native image channel attach the bytes IN ADDITION. */
+export function renderAttachmentLines(attachments: MessageAttachment[]): string {
+  return attachments.map((file) => `[attached file: ${file.name} (${file.mime}, ${humanSize(file.size)}) at ${file.path}]`).join("\n");
+}
+
 /** Render room events for a turn prompt (v1's room.ts renderer, verbatim). */
 export function renderRoomTranscript(events: RoomEvent[]): string {
   if (events.length === 0) return "(empty room)";
@@ -54,7 +70,8 @@ export function renderRoomTranscript(events: RoomEvent[]): string {
         "targets" in event
           ? `user -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
-      return `[${event.timestamp}] ${header}:\n${event.text}`;
+      const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
+      return `[${event.timestamp}] ${header}:\n${event.text}${attachments}`;
     })
     .join("\n\n");
 }
@@ -155,7 +172,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     "New room events since your last turn:",
     renderRoomTranscript(input.events),
     "Newest user message:",
-    input.message,
+    [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
     "Respond to the newest user message in your own voice. Be concise and useful.",
   ]
     .filter(Boolean)

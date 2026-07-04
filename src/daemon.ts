@@ -37,6 +37,7 @@ import {
   sweepOrphanOverrides,
   type VoiceSettings,
 } from "./services/voice.js";
+import { readAloud, ttsStackSettings, type ReadAloudResult } from "./services/read-aloud.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 
@@ -214,6 +215,10 @@ export class Daemon {
       memory: this.memoryServiceFor(workspaceId, workspace, record.path),
       summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
+      // Same reload the settings-file save route uses: /model + /thinking
+      // rewrite agent.json, and only a service rebuild reaches the runner
+      // subprocesses (they snapshot the config at spawn).
+      settingsChanged: (scope) => this.applySettingsChange(scope, workspaceId),
       harnessHost: this.bridge ? (opts) => this.bridge!.hostFor(workspaceId, opts) : undefined,
       // Closures resolve this.scheduler per call: services built before boot()
       // (or after dispose) answer gracefully instead of binding a stale ref.
@@ -282,8 +287,12 @@ export class Daemon {
     return service;
   }
 
-  /** The most-recently-active room transcripts, for cross-room recall. */
-  private recentRoomRefs(workspaceRoot: string, cap = 12): RoomSearchRef[] {
+  /** Every room transcript in the workspace, most-recently-active first, for
+   * cross-room recall. Uncapped on purpose: rooms are chats, and an agent must
+   * be able to recall ANY of them by full text — including a 100-chat history
+   * import — not just the recently touched ones. Per-room indexes build
+   * lazily inside searchTranscript, so cold rooms cost one build each. */
+  private recentRoomRefs(workspaceRoot: string): RoomSearchRef[] {
     const roomsDir = join(workspaceRoot, ".gaia", "rooms");
     if (!existsSync(roomsDir)) return [];
     const refs: Array<RoomSearchRef & { mtime: number }> = [];
@@ -298,10 +307,7 @@ export class Daemon {
         // Room being deleted mid-scan; skip it.
       }
     }
-    return refs
-      .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, cap)
-      .map(({ mtime: _mtime, ...ref }) => ref);
+    return refs.sort((a, b) => b.mtime - a.mtime).map(({ mtime: _mtime, ...ref }) => ref);
   }
 
   private summonCoordinatorFor(workspaceId: string, workspace: Workspace, path: string): SummonCoordinator {
@@ -552,6 +558,24 @@ export class Daemon {
    * Returns the routing decision; the HTTP layer owns the response transport. */
   classifyTurn(body: unknown): ReturnType<typeof classifyVoiceTurn> {
     return classifyVoiceTurn(body);
+  }
+
+  /** Read one committed agent message aloud: resolve the author's TTS engine +
+   * voice, format the text for speech, and return one chunk of the audio
+   * (cached on disk; the result carries the chunk count for the client). */
+  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0): Promise<ReadAloudResult> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    const event = await service.eventById(eventId);
+    if (!event) throw new Error(`Unknown event: ${eventId}`);
+    const settings = await readVoiceSettings();
+    return readAloud({
+      event,
+      agent: service.workspace.agents[event.author],
+      settings,
+      chunk,
+      ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
+      log: (message) => this.log(message),
+    });
   }
 
   // --- files + hints -------------------------------------------------------------------

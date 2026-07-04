@@ -115,6 +115,8 @@ export class RunnerHost implements AgentRuntime {
   private launchSettled = false;
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
+  /** Resolver for the single in-flight /compact round trip. */
+  private compactWaiter: ((result: { ok: boolean; message: string }) => void) | undefined;
 
   constructor(options: RunnerHostOptions) {
     this.options = options;
@@ -161,6 +163,27 @@ export class RunnerHost implements AgentRuntime {
         resolve(ok);
       };
       this.write({ type: "steer", roomId, message });
+    });
+  }
+
+  /** Forward /compact to the runner and relay the harness's own result line.
+   * Generous timeout: compaction is an LLM summarization pass. */
+  async compact(roomId: string): Promise<string> {
+    if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
+    if (!this.child) return "nothing to compact — no active session yet.";
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.compactWaiter = undefined;
+        reject(new Error("compaction timed out after 180s"));
+      }, 180_000);
+      timer.unref?.();
+      this.compactWaiter = (result) => {
+        clearTimeout(timer);
+        this.compactWaiter = undefined;
+        if (result.ok) resolve(result.message);
+        else reject(new Error(result.message || "compaction failed"));
+      };
+      this.write({ type: "compact", roomId });
     });
   }
 
@@ -314,6 +337,9 @@ export class RunnerHost implements AgentRuntime {
         return;
       case "steer-result":
         this.steerWaiter?.(message.ok);
+        return;
+      case "compact-result":
+        this.compactWaiter?.({ ok: message.ok, message: message.message });
         return;
     }
   }

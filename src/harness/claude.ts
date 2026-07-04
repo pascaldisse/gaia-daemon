@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { loadNativeImages } from "../core/attachments.js";
 import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -24,6 +25,7 @@ import { resolveMcpServers } from "../core/config.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt.js";
+import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
 
 // ---------------------------------------------------------------------------
 // Process abstraction (injectable for tests)
@@ -179,10 +181,16 @@ export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
   return { tools: [...builtin], allowedTools: [...allowed] };
 }
 
-// Note shown in the thinking disclosure when the CLI redacted the reasoning text.
-function thinkingNote(tokens: number): string {
+// Note shown in the thinking disclosure when no reasoning TEXT streamed — the
+// model redacted it (thinking.display defaults to "omitted" on newer models),
+// leaving only an encrypted signature. Names the real cause + the lever, rather
+// than the old (wrong) "it's -p mode" story.
+function thinkingNote(tokens: number, revealEnabled: boolean): string {
   const spend = tokens > 0 ? `~${tokens} tokens` : "a moment";
-  return `Reasoned for ${spend} before answering. (Claude hides reasoning text in -p mode.)`;
+  const why = revealEnabled
+    ? "no reasoning text returned for this turn"
+    : "this model returns encrypted reasoning — set the agent's revealThinking to show it";
+  return `Reasoned for ${spend} before answering (${why}).`;
 }
 
 function shellQuote(value: string): string {
@@ -254,6 +262,15 @@ export interface ClaudeRuntimeOptions extends RuntimeCreateContext {
   processFactory?: ClaudeProcessFactory;
 }
 
+/** The API usage block on assistant messages (snake_case wire). Context
+ * footprint = input + both cache fields; output_tokens is excluded. */
+interface ClaudeUsage {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
+}
+
 const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
   granularTools: true,
@@ -261,6 +278,9 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: true,
   // claude -p offers no way to inject input into a running turn.
   supportsSteer: false,
+  // /compact is supportsNonInteractive in the CLI: a headless resumed turn
+  // with the prompt "/compact" compacts the session file durably.
+  supportsCompact: true,
 };
 
 export class ClaudeRuntime implements AgentRuntime {
@@ -277,6 +297,11 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly processFactory: ClaudeProcessFactory;
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
+  /** Loopback egress shim that un-redacts thinking text (agent.revealThinking).
+   * Started once, lazily; memoized so a start failure fails open (turns proceed
+   * without thinking text rather than breaking). */
+  private thinkingProxy: ThinkingProxyHandle | undefined;
+  private thinkingProxyPromise: Promise<ThinkingProxyHandle | undefined> | undefined;
 
   constructor(options: ClaudeRuntimeOptions) {
     this.workspace = options.workspace;
@@ -312,13 +337,42 @@ export class ClaudeRuntime implements AgentRuntime {
       memory: memoryChanged ? memory : undefined,
       recall: input.recall,
       channel: input.channel,
+      attachments: input.attachments,
     });
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking);
+
+    // Pasted images go in natively via stream-json INPUT: one user message
+    // whose content pairs the turn prompt with base64 image blocks (the same
+    // wire the Agent SDK uses). Text-only turns keep the plain stdin prompt —
+    // the long-proven path stays untouched.
+    const images = await loadNativeImages(input.attachments);
+    if (images.length > 0) args.push("--input-format", "stream-json");
+    const stdinPayload =
+      images.length > 0
+        ? `${JSON.stringify({
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                ...images.map(({ attachment, base64 }) => ({
+                  type: "image",
+                  source: { type: "base64", media_type: attachment.mime, data: base64 },
+                })),
+              ],
+            },
+          })}\n`
+        : prompt;
 
     const channel = createEventChannel();
 
     // Per-turn parse state.
     const blockTypes = new Map<number, string>(); // content-block index -> type
+    let subscription = false; // from init's apiKeySource; reused on fallback
+    // Context accounting: the LAST assistant usage is the session's context
+    // footprint (input + both cache fields; output excluded — the CLI's own
+    // statusline formula). The window size arrives on result.modelUsage.
+    let lastUsage: ClaudeUsage | undefined;
     let thinkingActive = false;
     let thinkingTokens = 0; // best estimate of reasoning tokens spent this turn
     let thinkingTextSeen = false; // did any *real* reasoning text stream?
@@ -335,7 +389,7 @@ export class ClaudeRuntime implements AgentRuntime {
       thinkingActive = false;
       // When no real reasoning text streamed (the usual -p case), hand the UI a
       // short note + token estimate so the thinking disclosure isn't empty.
-      const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens);
+      const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens, this.agent.revealThinking === true);
       channel.push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
     };
 
@@ -343,11 +397,40 @@ export class ClaudeRuntime implements AgentRuntime {
       const msg = raw as { type?: string };
       switch (msg.type) {
         case "system": {
-          const sys = raw as { subtype?: string; model?: string; apiKeySource?: string; estimated_tokens?: number };
+          const sys = raw as {
+            subtype?: string;
+            model?: string;
+            apiKeySource?: string;
+            estimated_tokens?: number;
+            trigger?: string;
+            content?: string;
+            original_model?: string;
+            fallback_model?: string;
+            originalModel?: string;
+            fallbackModel?: string;
+          };
           if (sys.subtype === "init" && sys.model) {
-            const subscription = sys.apiKeySource === "none";
+            subscription = sys.apiKeySource === "none";
             this.liveModelLabel = `anthropic/${sys.model}`;
             channel.push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+          } else if (sys.subtype === "model_fallback" || sys.subtype === "model_refusal_fallback") {
+            // The CLI switched models server-side mid-turn: a capacity/availability
+            // fallback (`model_fallback`, trigger e.g. "overloaded") or a safety-
+            // classifier reroute (`model_refusal_fallback`, e.g. fable → opus).
+            // Field names are snake_case on the stream-json wire; accept the
+            // camelCase spelling too (session-file replays use it).
+            const from = sys.original_model ?? sys.originalModel ?? this.agent.model?.name ?? "configured model";
+            const to = sys.fallback_model ?? sys.fallbackModel;
+            if (to) {
+              this.liveModelLabel = `anthropic/${to}`;
+              channel.push({ type: "model-info", provider: "anthropic", modelId: to, subscription });
+              channel.push({
+                type: "model-fallback",
+                fromModel: from,
+                toModel: to,
+                reason: sys.content?.trim() || `switched to ${to}${sys.trigger ? ` (${sys.trigger})` : ""}`,
+              });
+            }
           } else if (sys.subtype === "thinking_tokens") {
             // The CLI redacts reasoning *text* in -p mode (it streams encrypted
             // thinking blocks), but reports a live token estimate. Surface that
@@ -368,6 +451,8 @@ export class ClaudeRuntime implements AgentRuntime {
         }
 
         case "assistant": {
+          const usage = (raw as { message?: { usage?: ClaudeUsage } }).message?.usage;
+          if (usage) lastUsage = usage;
           // Tool calls: emit tool-start from completed tool_use blocks (full
           // input). Text/thinking already streamed via stream_event, so skip.
           const content = (raw as { message?: { content?: unknown } }).message?.content;
@@ -401,7 +486,20 @@ export class ClaudeRuntime implements AgentRuntime {
         }
 
         case "result": {
-          const res = raw as { subtype?: string; is_error?: boolean; result?: string };
+          const res = raw as {
+            subtype?: string;
+            is_error?: boolean;
+            result?: string;
+            modelUsage?: Record<string, { contextWindow?: number }>;
+          };
+          if (lastUsage) {
+            const used =
+              (lastUsage.input_tokens ?? 0) + (lastUsage.cache_creation_input_tokens ?? 0) + (lastUsage.cache_read_input_tokens ?? 0);
+            const windows = Object.values(res.modelUsage ?? {})
+              .map((m) => m.contextWindow)
+              .filter((n): n is number => typeof n === "number");
+            channel.push({ type: "context-usage", usedTokens: used, ...(windows.length ? { maxTokens: Math.max(...windows) } : {}) });
+          }
           if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
             channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
           }
@@ -413,9 +511,13 @@ export class ClaudeRuntime implements AgentRuntime {
       }
     };
 
+    // Bring up the thinking shim (no-op unless the agent opted in) before we
+    // snapshot env — buildEnv reads its resolved URL.
+    await this.ensureThinkingProxy();
+
     const handle = this.processFactory({
       args,
-      prompt,
+      prompt: stdinPayload,
       cwd: this.cwd,
       env: this.buildEnv(input.roomId),
       onMessage,
@@ -458,6 +560,66 @@ export class ClaudeRuntime implements AgentRuntime {
   }
 
   // -----------------------------------------------------------------------
+  // compact — a headless "/compact" turn against the resumed session
+  // -----------------------------------------------------------------------
+
+  /** Native Claude Code compaction (backs /compact): the CLI's own /compact
+   * slash command is supportsNonInteractive, so one `-p --resume` invocation
+   * with the prompt "/compact" summarizes and persists the compacted session.
+   * Completion is the compact_boundary system message. */
+  async compact(roomId: string): Promise<string> {
+    const room = this.sessions.get(roomId);
+    if (!room?.started) return "nothing to compact — no active session for this room.";
+    const args = ["-p", "--output-format", "stream-json", "--verbose", SAFE_MODE, "--resume", room.sessionId];
+    const model = this.agent.model?.name;
+    if (model) args.push("--model", model);
+    await this.ensureThinkingProxy();
+    return new Promise<string>((resolve, reject) => {
+      let preTokens: number | undefined;
+      let compacted = false;
+      let failed: string | undefined;
+      this.processFactory({
+        args,
+        prompt: "/compact",
+        cwd: this.cwd,
+        env: this.buildEnv(roomId),
+        onMessage: (raw) => {
+          const msg = raw as {
+            type?: string;
+            subtype?: string;
+            compact_metadata?: { pre_tokens?: number };
+            compact_result?: string;
+            compact_error?: string;
+            is_error?: boolean;
+            result?: string;
+          };
+          if (msg.type === "system" && msg.subtype === "compact_boundary") {
+            compacted = true;
+            preTokens = msg.compact_metadata?.pre_tokens;
+          } else if (msg.type === "system" && msg.subtype === "status" && msg.compact_result === "failed") {
+            failed = msg.compact_error || "compaction failed";
+          } else if (msg.type === "result" && msg.is_error === true) {
+            failed ??= msg.result || "compaction failed";
+          }
+        },
+        onExit: ({ code, signal, stderr }) => {
+          if (failed) reject(new Error(failed));
+          else if (compacted) resolve(`session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.`);
+          else if (code === 0) resolve("session compacted.");
+          else
+            reject(
+              claudeStartupError(
+                new Error(`claude exited (${signal ? `signal ${signal}` : `exit ${code}`}) before compacting.`),
+                stderr,
+              ),
+            );
+        },
+        onError: (err) => reject(claudeStartupError(err)),
+      });
+    });
+  }
+
+  // -----------------------------------------------------------------------
   // abort / dispose
   // -----------------------------------------------------------------------
 
@@ -468,6 +630,9 @@ export class ClaudeRuntime implements AgentRuntime {
   dispose(): void {
     this.active?.kill();
     this.active = null;
+    this.thinkingProxy?.close();
+    this.thinkingProxy = undefined;
+    this.thinkingProxyPromise = undefined;
     this.sessions.disposeAll();
   }
 
@@ -500,8 +665,13 @@ export class ClaudeRuntime implements AgentRuntime {
         if (typeof e.index === "number" && e.content_block?.type) {
           state.blockTypes.set(e.index, e.content_block.type);
           // The reasoning block opens here even when its text is redacted, so
-          // light up the thinking indicator as soon as it appears.
-          if (e.content_block.type === "thinking") state.startThinking();
+          // light up the thinking indicator as soon as it appears. A
+          // "redacted_thinking" block (the model's own safety-triggered
+          // redaction, distinct from -p mode's blanket text suppression)
+          // arrives as an already-opaque blob with no deltas at all — it
+          // still deserves the same start/end indicator so the user sees
+          // Claude reasoned, not that it silently skipped ahead.
+          if (e.content_block.type === "thinking" || e.content_block.type === "redacted_thinking") state.startThinking();
         }
         break;
       case "content_block_delta": {
@@ -515,11 +685,14 @@ export class ClaudeRuntime implements AgentRuntime {
             push({ type: "thinking-delta", delta: e.delta.thinking });
           }
         }
+        // "signature_delta" (the thinking block's trailing cryptographic
+        // signature, needed only to replay the block back verbatim on a
+        // later turn) carries nothing user-facing — intentionally a no-op.
         break;
       }
       case "content_block_stop": {
         const type = typeof e.index === "number" ? state.blockTypes.get(e.index) : undefined;
-        if (type === "thinking") state.endThinking();
+        if (type === "thinking" || type === "redacted_thinking") state.endThinking();
         break;
       }
     }
@@ -577,6 +750,22 @@ export class ClaudeRuntime implements AgentRuntime {
     });
   }
 
+  // Start (once) the loopback shim that un-redacts extended-thinking text, when
+  // the agent opted in. Fails open: on any start error we return undefined and
+  // the turn runs straight to Anthropic (no thinking text, but unbroken). The
+  // upstream is whatever ANTHROPIC_BASE_URL would otherwise be — the credential
+  // proxy when it's on, else Anthropic direct — so this composes with that path.
+  private async ensureThinkingProxy(): Promise<ThinkingProxyHandle | undefined> {
+    if (!this.agent.revealThinking) return undefined;
+    if (this.thinkingProxy) return this.thinkingProxy;
+    if (!this.thinkingProxyPromise) {
+      const upstream = process.env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com";
+      this.thinkingProxyPromise = startThinkingProxy(upstream).catch(() => undefined);
+    }
+    this.thinkingProxy = await this.thinkingProxyPromise;
+    return this.thinkingProxy;
+  }
+
   // Per-turn env for the subprocess: reads work straight off disk (memory dir,
   // room dir); writes/summon go to the daemon with a token scoped to this
   // (agent, room). Only added when a daemon bridge is present.
@@ -591,6 +780,9 @@ export class ClaudeRuntime implements AgentRuntime {
     // Prepend our `gaia` shim so plain `gaia <cmd>` runs THIS daemon's CLI.
     const shimDir = ensureGaiaShimDir();
     if (shimDir) env.PATH = `${shimDir}${delimiter}${process.env.PATH ?? ""}`;
+    // Route Claude Code's Anthropic egress through the thinking shim when up (it
+    // forwarded the prior ANTHROPIC_BASE_URL as its own upstream at start time).
+    if (this.thinkingProxy) env.ANTHROPIC_BASE_URL = this.thinkingProxy.url;
     if (this.harnessHost) {
       env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
       env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId });
@@ -621,7 +813,7 @@ registerHarness({
     label: "claude",
     description: "Claude Code CLI (claude -p, subscription auth)",
     lockedProvider: "anthropic",
-    modelNameOptions: ["opus", "sonnet", "haiku"],
+    modelNameOptions: ["fable", "opus", "sonnet", "haiku"],
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   // Claude Code routes its API calls through ANTHROPIC_BASE_URL bearing

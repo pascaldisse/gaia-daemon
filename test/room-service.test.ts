@@ -8,8 +8,9 @@ import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, UiEvent, Workspace } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, SanitizeProposal, UiEvent, Workspace } from "../src/core/types.js";
 import type { AgentRuntime } from "../src/harness/spec.js";
+import type { SummonHost } from "../src/services/summons.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -30,13 +31,14 @@ function makeAgent(id: string, root: string): AgentDef {
 }
 
 /** Scripted runtime: replies with fixed events per send() call. */
-function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number } {
+function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number; resets: number } {
   const runtime = {
     agent,
     modelLabel: "test/model",
     capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
     aborted: false,
     sends: 0,
+    resets: 0,
     async *send() {
       runtime.sends += 1;
       for (const event of script()) yield event;
@@ -45,9 +47,11 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
       runtime.aborted = true;
     },
     dispose() {},
-    resetRoom() {},
+    resetRoom() {
+      runtime.resets += 1;
+    },
   };
-  return runtime as AgentRuntime & { aborted: boolean; sends: number };
+  return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number };
 }
 
 async function makeService(options: {
@@ -55,6 +59,8 @@ async function makeService(options: {
   agents?: string[];
   runtimeFactory?: (agent: AgentDef) => AgentRuntime;
   memory?: RoomMemoryHooks;
+  settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
+  summonHost?: SummonHost;
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
@@ -81,6 +87,8 @@ async function makeService(options: {
     workspace,
     memoryStore: new MemoryStore(),
     ...(options.memory ? { memory: options.memory } : {}),
+    ...(options.settingsChanged ? { settingsChanged: options.settingsChanged } : {}),
+    ...(options.summonHost ? { summonHost: options.summonHost } : {}),
     runtimeFactory: (agent) => {
       const runtime = options.runtimeFactory ? (options.runtimeFactory(agent) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
@@ -621,7 +629,7 @@ test("/rewind truncates after the n-th-last user message and resets cursors + se
   assert.match(after.events[1].text, /reply from gaia/);
 
   const state = (await readJson(workspacePaths.roomState(root, "default"))) as { agentCursors: Record<string, number> };
-  assert.deepEqual(state.agentCursors, {}, "cursors reset so the next turn replays kept history");
+  assert.deepEqual(state.agentCursors, { gaia: 0, terry: 0 }, "cursors capped to the kept window so the next turn replays it");
   assert.ok(resets.includes("gaia:default"), "harness sessions reset");
 
   // Rewinding past the beginning answers politely instead of corrupting.
@@ -651,4 +659,295 @@ test("postTurn hooks fire with the committed reply (uniform, room-layer)", async
   assert.equal(body?.agentId, "gaia");
   assert.equal(body?.reply, "hello from agent");
   assert.equal(body?.outcome, "complete");
+});
+
+test("retryMessage forks at the originating user message and regenerates the reply", async () => {
+  let n = 0;
+  const { service, root, runtimes } = await makeService({
+    script: () => [{ type: "text-delta", delta: `reply ${++n}` } as AgentEvent],
+  });
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+  await service.sendMessage("second question");
+  await service.waitForIdle();
+
+  const before = (await service.room.eventsFrom(0)).events;
+  assert.equal(before.length, 4);
+  const secondReply = before[3];
+  assert.equal(before[3].text, "reply 2");
+
+  // Retry targets the AGENT reply; the fork lands on the user message above it.
+  await service.retryMessage(secondReply.id);
+  await service.waitForIdle();
+
+  const after = (await service.room.eventsFrom(0)).events;
+  assert.equal(after.length, 4, "same shape: question re-sent, reply regenerated");
+  assert.equal(after[2].text, "second question");
+  assert.notEqual(after[2].id, before[2].id, "the re-sent user message is a new event");
+  assert.equal(after[3].text, "reply 3");
+  assert.equal(runtimes.get("gaia")?.sends, 3);
+
+  // No progress ever lost: the dropped exchange is preserved beside the transcript.
+  const rewound = (await readFileText(join(root, ".gaia", "rooms", "default", "rewound.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { text: string });
+  assert.deepEqual(rewound.map((event) => event.text), ["second question", "reply 2"]);
+});
+
+test("editMessage forks at the edited user message and re-sends the new text with kept routing", async () => {
+  const { service } = await makeService({ agents: ["gaia", "terry"] });
+  await service.sendMessage("@terry original question");
+  await service.waitForIdle();
+
+  const before = (await service.room.eventsFrom(0)).events;
+  assert.equal(before.length, 2);
+  assert.equal(before[1].author, "terry");
+
+  // No mention in the edited text -> the original @terry routing is kept.
+  await service.editMessage(before[0].id, "edited question");
+  await service.waitForIdle();
+
+  const after = (await service.room.eventsFrom(0)).events;
+  assert.equal(after.length, 2);
+  assert.equal(after[0].text, "edited question");
+  assert.equal(after[1].author, "terry");
+
+  // Unknown event ids refuse cleanly.
+  await assert.rejects(() => service.editMessage("evt_nope", "x"), /not found/i);
+});
+
+test("attachments: stored on the user event, handed to the runtime, kept across retry", async () => {
+  const inputs: Array<{ attachments?: unknown }> = [];
+  const { service, root } = await makeService({
+    runtimeFactory: (agent) => {
+      const runtime = {
+        agent,
+        modelLabel: "test/model",
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: false },
+        async *send(input: { attachments?: unknown }) {
+          inputs.push(input);
+          yield { type: "text-delta", delta: "seen" } as AgentEvent;
+        },
+        async abort() {},
+        dispose() {},
+        resetRoom() {},
+      };
+      return runtime as unknown as AgentRuntime;
+    },
+  });
+
+  // Store bytes the way the upload route does, then re-resolve the ref the
+  // way the messages route does — only the server-issued id is trusted.
+  const stored = await service.storeAttachment("shot.png", Buffer.from("png-bytes"), "image/png");
+  const resolved = await service.resolveAttachments([{ id: stored.id, name: stored.name, mime: stored.mime }]);
+  assert.deepEqual(resolved, [{ name: "shot.png", mime: "image/png", size: 9, path: stored.path }]);
+  assert.ok(stored.path.startsWith(join(root, ".gaia", "rooms", "default", "files")));
+
+  await service.sendMessage("look at this", { attachments: resolved });
+  await service.waitForIdle();
+
+  // The runtime received them on AgentInput…
+  assert.deepEqual(inputs[0]?.attachments, resolved);
+  // …and the user event carries them durably (fresh handle = disk parse).
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.deepEqual((transcript[0] as { attachments?: unknown }).attachments, resolved);
+
+  // Retry forks at the user message and re-sends WITH the attachments.
+  await service.retryMessage(transcript[1].id);
+  await service.waitForIdle();
+  assert.deepEqual(inputs[1]?.attachments, resolved);
+
+  // Unknown ids fail loudly instead of sending a dangling reference.
+  await assert.rejects(() => service.resolveAttachments([{ id: "nope.png" }]), /Unknown attachment/);
+});
+
+test("/model rewrites agent.json AND fires the settings reload that reaches live runners", async () => {
+  const reloads: string[] = [];
+  const { service, workspace, root } = await makeService({
+    settingsChanged: async (scope) => {
+      reloads.push(scope);
+    },
+  });
+  await service.init();
+
+  const reply = await service.runModelCommand(undefined, "opus");
+  assert.match(reply, /Set @gaia model to anthropic\/opus/);
+  assert.match(reply, /next turn/);
+
+  // Persisted to agent.json (a bare name keeps/derives the provider)…
+  const config = (await readJson(join(root, "agents", "gaia", "agent.json"))) as { model?: { provider?: string; name?: string } };
+  assert.deepEqual(config.model, { provider: "anthropic", name: "opus" });
+  // …mirrored in-process for the snapshot chip…
+  assert.deepEqual(workspace.agents.gaia.model, { provider: "anthropic", name: "opus" });
+  // …and the daemon reload fired: runners snapshot agent.json at spawn, so
+  // ONLY a service rebuild makes the next turn actually run the new model.
+  assert.deepEqual(reloads, ["global"]);
+
+  // Clearing the override goes through the same reload.
+  const cleared = await service.runModelCommand(undefined, "none");
+  assert.match(cleared, /Cleared @gaia model override/);
+  const after = (await readJson(join(root, "agents", "gaia", "agent.json"))) as { model?: unknown };
+  assert.equal(after.model, undefined);
+  assert.deepEqual(reloads, ["global", "global"]);
+});
+
+test("/thinking fires the same settings reload (it rewrites agent.json too)", async () => {
+  const reloads: string[] = [];
+  const { service } = await makeService({
+    settingsChanged: async (scope) => {
+      reloads.push(scope);
+    },
+  });
+  await service.init();
+  const reply = await service.setAgentThinking("gaia", "high");
+  assert.match(reply, /Set @gaia thinking to high/);
+  assert.deepEqual(reloads, ["global"]);
+});
+
+// --- thanks-dario context sanitize ------------------------------------------
+
+function fakeSummonHost(reply: (agentId: string, task: string) => string): SummonHost & { calls: { agentId: string; task: string }[] } {
+  const host = {
+    calls: [] as { agentId: string; task: string }[],
+    async summon() {
+      return "child-room";
+    },
+    async summonAndWait(_parent: string, agentId: string, task: string) {
+      host.calls.push({ agentId, task });
+      return reply(agentId, task);
+    },
+    runningChildren() {
+      return [];
+    },
+  };
+  return host;
+}
+
+test("/thanks-dario on|off persists the room flag and surfaces it on the snapshot", async () => {
+  const { service } = await makeService();
+  await service.init();
+  const on = await service.runThanksDarioCommand("on");
+  assert.match(on, /Thanks-Dario mode ON/);
+  assert.equal((await service.getSnapshot()).room.thanksDario, true);
+  const off = await service.runThanksDarioCommand("off");
+  assert.match(off, /OFF/);
+  assert.equal((await service.getSnapshot()).room.thanksDario, undefined);
+});
+
+test("sanitize preview runs the reviewer through the summon host; apply rewrites, preserves, resets", async () => {
+  // The fake reviewer reads the event id out of the prompt it was given —
+  // proving the prompt labels events the way apply expects them back.
+  const host = fakeSummonHost((_agentId, task) => {
+    const eventId = task.match(/\[event (evt_[^\]]+)\]/)?.[1] ?? "missing";
+    return JSON.stringify({
+      summary: "The tooling shorthand is the likely trigger.",
+      options: [{ id: "light", label: "Light touch", description: "", suggestionIds: ["s1"] }],
+      suggestions: [
+        { id: "s1", eventId, quote: "IDA Pro", replacement: "the disassembler", reason: "tooling term" },
+        { id: "s2", eventId, quote: "NOT PRESENT", replacement: "x", reason: "hallucinated" },
+      ],
+    });
+  });
+  const { service, root, runtimes } = await makeService({ agents: ["gaia", "terry", "dario"], summonHost: host });
+  await service.sendMessage("please discuss IDA Pro internals");
+  await service.waitForIdle();
+
+  const proposal = await service.sanitizePreview();
+  assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0].agentId, "dario");
+  assert.equal(proposal.parseError, undefined);
+  assert.deepEqual(proposal.suggestions.map((suggestion) => suggestion.id), ["s1"]);
+  assert.equal(proposal.discarded, 1); // the hallucinated quote never survives parsing
+  const snapshot = await service.getSnapshot();
+  assert.equal(snapshot.room.sanitize?.at, proposal.at);
+  assert.equal(snapshot.room.sanitize?.suggestions, 1);
+  const saved = (await readJson(join(root, ".gaia", "rooms", "default", "sanitize.json"))) as SanitizeProposal;
+  assert.equal(saved.at, proposal.at);
+
+  // Apply the approved edit.
+  const target = proposal.suggestions[0];
+  const result = await service.sanitizeApply([{ eventId: target.eventId, quote: target.quote, replacement: target.replacement }]);
+  assert.deepEqual(result, { applied: 1, skipped: 0 });
+
+  const room = await RoomHandle.open(root, "default");
+  const { events } = await room.eventsFrom(0);
+  const edited = events.find((event) => event.id === target.eventId);
+  assert.equal(edited?.text, "please discuss the disassembler internals");
+  assert.equal(edited?.redacted, true);
+  // Original preserved beside the transcript.
+  const preserved = (await readFileText(join(root, ".gaia", "rooms", "default", "redactions.jsonl"), "utf8")).trim();
+  assert.match(preserved, /please discuss IDA Pro internals/);
+  // Every runtime got a fresh session and cursors were capped to the window.
+  for (const runtime of runtimes.values()) assert.ok(runtime.resets >= 1);
+  const state = await room.state();
+  assert.equal(state.agentCursors.gaia, 0);
+  // The saved proposal is stamped applied (popup shows the ✂ state).
+  assert.ok((await service.getSanitizeProposal())?.appliedAt);
+
+  // Stale quotes never rewrite anything.
+  await assert.rejects(
+    service.sanitizeApply([{ eventId: target.eventId, quote: "IDA Pro", replacement: "x" }]),
+    /None of the selected edits matched/,
+  );
+});
+
+test("sanitize preview without a summon host or reviewer persona fails with a clear error", async () => {
+  const { service: noHost } = await makeService();
+  await noHost.sendMessage("hello");
+  await noHost.waitForIdle();
+  await assert.rejects(noHost.sanitizePreview(), /Summons are not available/);
+
+  const { service: noDario } = await makeService({ summonHost: fakeSummonHost(() => "{}") });
+  await noDario.sendMessage("hello");
+  await noDario.waitForIdle();
+  await assert.rejects(noDario.sanitizePreview(), /No "dario" persona/);
+});
+
+test("snapshot carries eventTotal beyond the tail window; eventsBefore pages backwards", async () => {
+  const { service, root } = await makeService();
+  await service.init();
+  const lines = Array.from({ length: 25 }, (_, i) =>
+    JSON.stringify({ id: `evt_${i}`, timestamp: "2026-01-01T00:00:00Z", author: i % 2 ? "gaia" : "user", targets: [], text: `m${i}` }),
+  );
+  await writeFile(join(root, ".gaia", "rooms", "default", "transcript.jsonl"), lines.join("\n") + "\n", "utf8");
+
+  const snapshot = await service.getSnapshot();
+  assert.equal(snapshot.room.eventTotal, 25);
+  assert.equal(snapshot.room.events.length, 20); // transcriptWindow
+  assert.equal(snapshot.room.events[0]?.id, "evt_5");
+
+  const page = await service.eventsBefore("evt_5", 4);
+  assert.deepEqual(page.events.map((event) => event.id), ["evt_1", "evt_2", "evt_3", "evt_4"]);
+  assert.equal(page.hasMore, true);
+
+  const first = await service.eventsBefore("evt_1", 4);
+  assert.deepEqual(first.events.map((event) => event.id), ["evt_0"]);
+  assert.equal(first.hasMore, false);
+
+  // Unknown/absent anchor pages from the tail.
+  const tail = await service.eventsBefore(undefined, 3);
+  assert.deepEqual(tail.events.map((event) => event.id), ["evt_22", "evt_23", "evt_24"]);
+  assert.equal(tail.hasMore, true);
+});
+
+test("listRooms surfaces imported-chat metadata (title + import date)", async () => {
+  const { service, root } = await makeService();
+  await service.init();
+  const dir = join(root, ".gaia", "rooms", "claude-20260421-first-chat");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "transcript.jsonl"), "", "utf8");
+  await writeFile(
+    join(dir, "state.json"),
+    JSON.stringify({ activeRoles: {}, agentCursors: {}, title: "Your first chat with Claude", imported: "2026-04-21T22:50:19Z" }),
+    "utf8",
+  );
+  const rooms = await service.listRooms();
+  const imported = rooms.find((room) => room.id === "claude-20260421-first-chat");
+  assert.equal(imported?.title, "Your first chat with Claude");
+  assert.equal(imported?.imported, "2026-04-21T22:50:19Z");
+  const current = rooms.find((room) => room.id === "default");
+  assert.equal(current?.title, undefined);
+  assert.equal(current?.imported, undefined);
 });

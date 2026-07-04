@@ -81,7 +81,7 @@ function Tab(room, number, isActive, wsId) {
     },
     h("span", { class: "tab-num", text: String(number) }),
     room.running ? h("span", { class: "tab-dot" }) : null,
-    h("span", { class: "tab-name", text: room.id }),
+    h("span", { class: "tab-name", text: room.title ?? room.id }),
     h("button", {
       class: "tab-close",
       title: "close tab (room is kept)",

@@ -153,3 +153,79 @@ test("single-writer: concurrent state updates serialize", async () => {
   const state = await RoomHandle.open(room.workspaceRoot, room.roomId).then((r) => r.state());
   assert.equal(state.agentCursors.total, 20);
 });
+
+test("attachments survive normalization on pendingTurn and queue; malformed entries drop", () => {
+  const good = { name: "a.png", mime: "image/png", size: 3, path: "/x/a.png" };
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    pendingTurn: {
+      id: "t1",
+      prompt: "p",
+      targets: ["gaia"],
+      agentId: "gaia",
+      partialReply: "",
+      startedAt: "",
+      attachments: [good, { bad: true }],
+    },
+    queue: [{ taskId: "q1", text: "hi", targets: [], attachments: [good], queuedAt: "" }],
+  });
+  assert.deepEqual(state.pendingTurn?.attachments, [good]);
+  assert.deepEqual(state.queue?.[0].attachments, [good]);
+});
+
+test("redactEvents: rewrites text in place, preserves originals in redactions.jsonl, keeps line count", async () => {
+  const room = await openRoom();
+  const first = await room.addUserMessage("talk about IDA Pro exploits", ["gaia"]);
+  const reply: RoomEvent = { id: newRoomEventId(), timestamp: "2026-01-01", author: "gaia", text: "sure, IDA Pro it is" };
+  await room.appendEvent(reply);
+  const second = await room.addUserMessage("and more reversing", ["gaia"]);
+
+  const edited = await room.redactEvents(
+    new Map([
+      [first.id, "talk about retro games"],
+      [reply.id, reply.text], // no-op text → ignored
+      ["evt_unknown", "whatever"], // unknown id → ignored
+    ]),
+  );
+  assert.deepEqual(edited, [first.id]);
+
+  const { events, nextCursor } = await room.eventsFrom(0);
+  assert.equal(events.length, 3); // same line count — cursors stay valid
+  assert.equal(nextCursor, 3);
+  assert.equal(events[0].text, "talk about retro games");
+  assert.equal(events[0].redacted, true);
+  assert.equal(events[1].text, "sure, IDA Pro it is");
+  assert.equal(events[1].redacted, undefined);
+  assert.equal(events[2].id, second.id);
+
+  // Original preserved verbatim, append-only, beside the transcript.
+  const preserved = (await readFile(join(room.workspaceRoot, ".gaia", "rooms", room.roomId, "redactions.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(preserved.length, 1);
+  assert.equal(preserved[0].id, first.id);
+  assert.equal(preserved[0].text, "talk about IDA Pro exploits");
+  assert.equal(preserved[0].redacted, undefined);
+
+  // The redacted flag survives a re-read from disk (roomEventFrom passthrough).
+  const reopened = await RoomHandle.open(room.workspaceRoot, room.roomId);
+  const fresh = await reopened.eventsFrom(0);
+  assert.equal(fresh.events[0].redacted, true);
+});
+
+test("normalizeRoomState: thanksDario flag survives the whitelist", () => {
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, thanksDario: true }).thanksDario, true);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, thanksDario: "yes" }).thanksDario, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).thanksDario, undefined);
+});
+
+test("normalizeRoomState: title and imported survive the whitelist", () => {
+  const state = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "My chat", imported: "2026-04-21T00:00:00Z" });
+  assert.equal(state.title, "My chat");
+  assert.equal(state.imported, "2026-04-21T00:00:00Z");
+  const junk = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "   ", imported: 42 });
+  assert.equal(junk.title, undefined);
+  assert.equal(junk.imported, undefined);
+});

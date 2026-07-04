@@ -16,7 +16,7 @@ import { createTempDir } from "./helpers/temp.js";
 
 registerHarness({
   id: "stub",
-  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
   ui: { label: "Stub", description: "protocol test double" },
   create: () => {
     throw new Error("not used: the runner subprocess is stubbed");
@@ -45,6 +45,8 @@ process.stdin.on("data", (d) => {
       process.stdout.write(JSON.stringify({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } }) + "\\n");
       process.stdout.write(JSON.stringify({ type: "event", event: { type: "text-delta", delta: "hello" } }) + "\\n");
       process.stdout.write(JSON.stringify({ type: "turn-end" }) + "\\n");
+    } else if (cmd.type === "compact") {
+      process.stdout.write(JSON.stringify({ type: "compact-result", ok: true, message: "compacted " + cmd.roomId }) + "\\n");
     } else if (cmd.type === "dispose") {
       process.exit(0);
     }
@@ -88,6 +90,20 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "hello"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost forwards /compact over the wire and relays the harness's result", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    // No child yet → nothing to compact, no spawn.
+    assert.equal(await host.compact("default"), "nothing to compact — no active session yet.");
+    for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+    assert.equal(await host.compact("default"), "compacted default");
     host.dispose();
   } finally {
     await temp.cleanup();
