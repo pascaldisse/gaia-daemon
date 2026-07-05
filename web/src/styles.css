@@ -897,8 +897,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .attach-remove { position: absolute; top: -7px; right: -7px; width: 16px; height: 16px; line-height: 14px; padding: 0; border-radius: 50%; background: var(--bg); border: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; }
 .attach-remove:hover { color: var(--danger); border-color: var(--danger); }
 
-/* Committed attachments on a user message. */
-.msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+/* Committed attachments on a user message. Sit in the content column (2), above
+   the message text — without grid-column they auto-flow into the 12px marker
+   column and overlap the text to their right. */
+.msg-attachments { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .attachment-link { display: inline-block; line-height: 0; }
 .attachment-image { max-height: 240px; max-width: min(100%, 420px); border: 1px solid var(--border); }
 .attachment-image:hover { border-color: var(--accent); }
