@@ -202,7 +202,7 @@ function fileHarnessMeta(): FileHints {
   return { _harness: harnessHintsMeta() };
 }
 
-// Memory v3 knobs (MEMORY-DESIGN.md). Shared verbatim between config.json
+// Memory v4 knobs (MEMORY-DESIGN.md). Shared verbatim between config.json
 // (workspace defaults) and agent.json (per-agent overrides — all optional).
 function memoryHints(optional: boolean, models: ModelChoice[]): FileHints {
   return {
@@ -210,8 +210,15 @@ function memoryHints(optional: boolean, models: ModelChoice[]): FileHints {
     "memory.autoRecallBudget": { input: "number", optional },
     "memory.embeddings": select(
       [
-        { value: "auto", description: "first provider with a usable key (openai, gemini); lexical-only when none" },
+        { value: "auto", description: "local llama.cpp sidecar (nothing leaves this machine); lexical-only when unavailable — NEVER cloud" },
         { value: "off", description: "lexical search only" },
+      ],
+      { optional },
+    ),
+    "memory.reranker": select(
+      [
+        { value: "auto", description: "local reranker sharpens deep recall (gaia recall, /recall); fusion order when unavailable" },
+        { value: "off", description: "deep recall uses fusion order only" },
       ],
       { optional },
     ),

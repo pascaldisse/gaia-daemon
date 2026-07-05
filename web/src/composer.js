@@ -146,7 +146,8 @@ function renderComposer() {
 
   const model = ModelChip(snapshot, state.composerText);
   const context = ContextChip(snapshot, state.composerText);
-  modelWrapEl.replaceChildren(...[model, context].filter((chip) => chip !== null));
+  const memory = MemoryChip(snapshot);
+  modelWrapEl.replaceChildren(...[model, context, memory].filter((chip) => chip !== null));
 
   voiceWrapEl.replaceChildren(...VoiceButtons());
 }
@@ -337,7 +338,9 @@ function completionFor(text) {
         label: command.name,
         value: `/${command.name}`,
         description: command.description,
-        suffix: command.name === "role" || command.name === "roles" ? " " : "",
+        // Commands that take an argument (roles, and native passthrough like
+        // /deep-research <query>) get a trailing space to keep typing.
+        suffix: command.native || command.name === "role" || command.name === "roles" ? " " : "",
       }));
     state.completionIndex = Math.min(state.completionIndex, Math.max(0, options.length - 1));
     return { kind: "/", start: 0, query, options };
@@ -447,7 +450,14 @@ function composerTargets(snapshot, text) {
 /** @param {Snapshot|null} snapshot @param {string} text */
 function composerTargetStatus(snapshot, text) {
   if (!snapshot) return "no room";
-  if (text.trimStart().startsWith("/")) return "command mode";
+  if (text.trimStart().startsWith("/")) {
+    // A native passthrough command (/deep-research …) runs as a turn to the
+    // active agent, so preview the target like a message; gaia commands show
+    // "command mode".
+    const name = text.trimStart().slice(1).split(/\s+/)[0]?.toLowerCase();
+    const isNative = (snapshot.commands ?? []).some((command) => command.native && command.name.toLowerCase() === name);
+    if (!isNative) return "command mode";
+  }
   // A leading mention that matches no agent will REJECT the send — say so in
   // the chip instead of quietly previewing the default agent.
   const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
@@ -613,6 +623,24 @@ function ContextChip(snapshot, text) {
       ? `context used: ${context.usedTokens.toLocaleString()} of ${context.maxTokens.toLocaleString()} tokens — /compact frees it`
       : `context used: ${context.usedTokens.toLocaleString()} tokens (window size unknown)`,
     text: percent !== null ? `ctx ${percent}%` : `ctx ${Math.round(context.usedTokens / 1000)}k`,
+  });
+}
+
+/**
+ * Memory-subsystem degradation warning (MEMORY-DESIGN.md §10 — degradation is
+ * loud). The daemon puts short chips on the snapshot ("embedder dead", "index
+ * degraded"); healthy memory renders nothing. Same visual family as the
+ * model-fallback warning: a glance, not a buried log line.
+ * @param {Snapshot|null} snapshot
+ * @returns {HTMLElement|null}
+ */
+function MemoryChip(snapshot) {
+  const chips = snapshot?.memoryChips ?? [];
+  if (!chips.length) return null;
+  return h("span", {
+    class: "model-chip fallback",
+    title: `memory subsystem degraded: ${chips.join("; ")} — run \`gaia memory status\` in the workspace for detail`,
+    text: `⚠ memory: ${chips.join(", ")}`,
   });
 }
 

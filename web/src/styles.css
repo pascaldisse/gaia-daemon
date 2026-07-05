@@ -214,7 +214,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ============================================================
    tmux window bar — rooms as windows
    ============================================================ */
-.tabbar { display: flex; align-items: stretch; height: 38px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+/* min-width:0 + overflow:hidden keep the tab row from dictating the shared
+   #app grid column: without them, an unshrinkable tab-strip (below) makes the
+   bar's min-content exceed the viewport, widening every row and shoving the
+   right panel off-screen. The strip itself scrolls; the bar never grows. */
+.tabbar { display: flex; align-items: stretch; height: 38px; min-width: 0; overflow: hidden; background: var(--bg2); border-bottom: 1px solid var(--border); }
 
 .chrome-btn {
   border: none;
@@ -242,7 +246,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .tab-logo { color: var(--accent); text-shadow: 0 0 12px var(--glow); }
 
-.tab-strip { display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 0 1 auto; scrollbar-width: none; }
+/* min-width:0 is what actually lets a flex item scroll: without it the item's
+   min-width defaults to its content size, so overflow-x:auto never engages and
+   the tabs push the layout wide instead of scrolling within the strip. */
+.tab-strip { display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 0 1 auto; min-width: 0; scrollbar-width: none; }
 .tab-strip::-webkit-scrollbar { height: 0; }
 
 .tab {

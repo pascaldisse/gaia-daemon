@@ -24,7 +24,7 @@ import {
   type ScheduleRunRecord,
   type ScheduleState,
 } from "../domain/schedules.js";
-import { SUMMON_TIMEOUT_MS } from "./summons.js";
+import { awaitTask, SUMMON_TIMEOUT_MS } from "./summons.js";
 
 const TICK_MS = 60_000;
 /** Chained/last output kept in state, capped like episode fields. */
@@ -314,25 +314,4 @@ export class SchedulerService {
     ));
     return next;
   }
-}
-
-/** Resolve when `task` settles (its object is live-mutated by the service) or
- * after timeoutMs — a run past the cap keeps going in its room, like summons. */
-function awaitTask(room: ScheduleRoomAccess, task: Task, timeoutMs: number): Promise<void> {
-  const settled = (): boolean => task.status !== "running" && task.status !== "queued";
-  if (settled()) return Promise.resolve();
-  return new Promise((resolve) => {
-    const finish = (): void => {
-      clearTimeout(timer);
-      unsubscribe();
-      resolve();
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    timer.unref?.();
-    const unsubscribe = room.subscribe((event) => {
-      if ((event.type === "task-end" || event.type === "task-error") && event.task.id === task.id) finish();
-    });
-    // Settled in the window before subscribing? The live object tells us.
-    if (settled()) finish();
-  });
 }

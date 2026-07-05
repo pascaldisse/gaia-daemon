@@ -1,8 +1,10 @@
 // MemoryService (src/services/memory-service.ts) as the daemon-side memory
 // surface: mechanical episodic capture, the fenced/gated/budgeted auto-recall
-// block, and the RoomService wiring (RoomMemoryHooks) that carries a turn's
-// recall into the runtime input and its settlement into an episode. Hooks are
-// faked at the interface boundary; embeddings stay "off" — no network ever.
+// block over the v4 workspace index, structural self-match exclusion, loud
+// degradation, and the RoomService wiring (RoomMemoryHooks) that carries a
+// turn's recall into the runtime input and its settlement into an episode.
+// Hooks are faked at the interface boundary; embeddings stay "off"/"auto"
+// with no sidecar — no network ever.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +15,6 @@ import { MEMORY_DEFAULTS } from "../src/core/config.js";
 import type { AgentDef, AgentEvent, MemoryConfig, UiEvent, Workspace } from "../src/core/types.js";
 import { appendFactOp } from "../src/domain/facts.js";
 import { MemoryStore } from "../src/domain/memory.js";
-import type { RoomSearchRef } from "../src/domain/memory-index.js";
 import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
 import { buildFileHints } from "../src/services/hints.js";
 import type { FieldHint, HintSources } from "../src/services/hints.js";
@@ -43,26 +44,46 @@ function makeAgent(id: string, root: string): AgentDef {
 // --- MemoryService: capture + autoRecallBlock ---------------------------------
 
 async function makeMemoryService(
-  options: { config?: Partial<MemoryConfig>; rooms?: RoomSearchRef[]; now?: () => Date } = {},
-): Promise<{ service: MemoryService; agent: AgentDef }> {
+  options: {
+    config?: Partial<MemoryConfig>;
+    rooms?: Array<{ roomId: string; events: Array<{ author: string; text: string; ts?: string }> }>;
+    now?: () => Date;
+    embedderDeps?: import("../src/services/embeddings.js").EmbedderDeps;
+  } = {},
+): Promise<{ service: MemoryService; agent: AgentDef; root: string }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-memsvc-"));
   const agent = makeAgent("gaia", root);
+  await mkdir(agent.memoryDir, { recursive: true });
+  const roomRefs: Array<{ roomId: string; transcriptPath: string }> = [];
+  for (const room of options.rooms ?? []) {
+    const dir = join(root, ".gaia", "rooms", room.roomId);
+    await mkdir(dir, { recursive: true });
+    const transcriptPath = join(dir, "transcript.jsonl");
+    const lines = room.events.map((event, i) =>
+      JSON.stringify({ id: `${room.roomId}_e${i}`, timestamp: event.ts ?? new Date().toISOString(), author: event.author, text: event.text }),
+    );
+    await writeFile(transcriptPath, `${lines.join("\n")}\n`, "utf8");
+    roomRefs.push({ roomId: room.roomId, transcriptPath });
+  }
   const config: MemoryConfig = {
     autoRecall: true,
     autoRecallBudget: 1200,
     embeddings: "off",
+    reranker: "off",
     consolidate: { enabled: false, idleMinutes: 30, maxPerDay: 8 },
     decayHalfLifeDays: 60,
     ...options.config,
   };
   const service = new MemoryService({
+    workspaceRoot: root,
     workspaceMemory: () => config,
     agents: () => ({ gaia: agent }),
     memoryStore: new MemoryStore(),
-    ...(options.rooms ? { roomsFor: () => options.rooms as RoomSearchRef[] } : {}),
+    ...(roomRefs.length ? { roomsFor: () => roomRefs } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.embedderDeps ? { embedderDeps: options.embedderDeps } : {}),
   });
-  return { service, agent };
+  return { service, agent, root };
 }
 
 async function seedFact(memoryDir: string, text: string, ts = new Date().toISOString()): Promise<void> {
@@ -103,7 +124,7 @@ test("autoRecallBlock: no matches → ''", async () => {
   service.dispose();
 });
 
-test("autoRecallBlock: a matching fact yields the fenced header + text within budget", async () => {
+test("autoRecallBlock: a matching fact yields the fenced header + text within budget; embeddings 'off' adds no degradation noise", async () => {
   const { service, agent } = await makeMemoryService();
   const text = "The deploy pipeline runs on fly.io in region fra";
   await seedFact(agent.memoryDir, text);
@@ -113,32 +134,60 @@ test("autoRecallBlock: a matching fact yields the fenced header + text within bu
   const [header] = block.split("\n");
   assert.ok(header.includes("Possibly relevant memories"), `fenced header present (got: ${header})`);
   assert.ok(block.includes(text), "fact text injected");
-  // Budget: line chars ≤ autoRecallBudget; the header + ≤5 joins ride on top.
+  assert.ok(!block.includes("degraded"), "explicit 'off' is a chosen mode, not a degradation");
   assert.ok(block.length <= 1200 + header.length + 5, `block within budget (${block.length})`);
   service.dispose();
 });
 
-test("autoRecallBlock: fresh transcript hits are excluded, old ones included", async () => {
-  const roomDir = await mkdtemp(join(tmpdir(), "gaia-room-"));
-  const transcriptPath = join(roomDir, "transcript.jsonl");
+test("self-match exclusion: the asking room is dropped; other rooms and compacted-away content come back", async () => {
   const oldTs = new Date(Date.now() - 3 * 86_400_000).toISOString();
-  const freshTs = new Date(Date.now() - 10 * 60_000).toISOString();
-  const lines = [
-    { id: "e1", timestamp: oldTs, author: "user", text: "the zephyr protocol was archived long ago" },
-    { id: "e2", timestamp: freshTs, author: "user", text: "the zephyr protocol just came up again" },
-  ];
-  await writeFile(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+  // Pad the old event past the chunk max so the compaction floor falls on a
+  // chunk boundary (a straddling chunk is conservatively in-context).
+  const padding = " we debated the rollout order and the naming for quite some time back then.".repeat(15);
+  const { service } = await makeMemoryService({
+    rooms: [
+      {
+        roomId: "current",
+        events: [
+          { author: "user", ts: oldTs, text: `the zephyr protocol was archived long ago in this room.${padding}` },
+          { author: "user", text: "hey, what do you know about the zephyr protocol?" },
+        ],
+      },
+      { roomId: "june-room", events: [{ author: "nyari", ts: oldTs, text: "the zephyr protocol discussion also lives in another room" }] },
+    ],
+  });
 
-  const { service } = await makeMemoryService({ rooms: [{ roomId: "default", transcriptPath, dbPath: join(roomDir, "recall.db") }] });
-  const block = await service.autoRecallBlock("gaia", "zephyr protocol");
-  assert.ok(block.includes("archived long ago"), `old transcript hit included (got: ${block})`);
-  assert.ok(!block.includes("just came up again"), "sub-hour transcript hit excluded (already in context)");
+  // Active context = the whole current room (floor 0): only june-room returns.
+  const block = await service.autoRecallBlock("gaia", "zephyr protocol", { roomId: "current", floorIdx: 0 });
+  assert.ok(block.includes("another room"), `other-room hit included (got: ${block})`);
+  assert.ok(!block.includes("archived long ago"), "current-room content is a self-match while in context");
+
+  // After compaction the floor rises past the old event — it's recallable again.
+  const compacted = await service.autoRecallBlock("gaia", "zephyr protocol", { roomId: "current", floorIdx: 1 });
+  assert.ok(compacted.includes("archived long ago"), `compacted-away content reachable (got: ${compacted})`);
   service.dispose();
 });
 
-test("autoRecallBlock: a broken index returns '' instead of throwing", async () => {
+test("search surfaces degradation honestly: 'auto' without a sidecar reports lexical-only", async () => {
+  // A dead fetch — a REAL llama-server may be listening on this machine, and
+  // this test is about the sidecar-missing story.
+  const deadFetch = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  const { service, agent } = await makeMemoryService({ config: { embeddings: "auto" }, embedderDeps: { fetchImpl: deadFetch } });
+  await seedFact(agent.memoryDir, "the daemon port is 8787");
+  const { hits, degraded } = await service.search("gaia", "daemon port");
+  assert.ok(hits.length >= 1);
+  assert.ok(degraded.some((note) => note.includes("lexical-only")), `lexical-only degradation stated (got: ${JSON.stringify(degraded)})`);
+  assert.ok(degraded.some((note) => note.includes("never uses cloud")), "and the auto-never-cloud rule is spelled out");
+  const chips = await service.healthChips();
+  assert.ok(chips.some((chip) => chip.startsWith("embedder")), `embedder chip visible (got: ${JSON.stringify(chips)})`);
+  service.dispose();
+});
+
+test("autoRecallBlock: a broken source returns '' instead of throwing", async () => {
   const { service, agent } = await makeMemoryService();
-  // facts.jsonl as a DIRECTORY forces a read error inside the search path.
+  // facts.jsonl as a DIRECTORY forces a read error inside the sync path.
   await mkdir(join(agent.memoryDir, "facts.jsonl"), { recursive: true });
   const block = await service.autoRecallBlock("gaia", "anything at all");
   assert.equal(block, "");
@@ -148,15 +197,15 @@ test("autoRecallBlock: a broken index returns '' instead of throwing", async () 
 // --- RoomService integration (RoomMemoryHooks) --------------------------------
 
 interface HookCalls {
-  recall: Array<{ agentId: string; query: string }>;
+  recall: Array<{ agentId: string; query: string; context?: { roomId: string; floorIdx: number } }>;
   captures: Array<{ agentId: string } & EpisodeCapture>;
   consolidations: Array<{ agentId: string; options?: { force?: boolean } }>;
 }
 
 function fakeHooks(calls: HookCalls, recallBlock = "MEMBLOCK"): RoomMemoryHooks {
   return {
-    async autoRecallBlock(agentId, query) {
-      calls.recall.push({ agentId, query });
+    async autoRecallBlock(agentId, query, context) {
+      calls.recall.push({ agentId, query, ...(context ? { context } : {}) });
       return recallBlock;
     },
     async capture(agentId, capture) {
@@ -167,7 +216,7 @@ function fakeHooks(calls: HookCalls, recallBlock = "MEMBLOCK"): RoomMemoryHooks 
       return { ran: true, episodesSeen: 3, factsAdded: 2, factsInvalidated: 1, memoryEdits: 1, opsSkipped: 4 };
     },
     async search() {
-      return [];
+      return { hits: [], degraded: [] };
     },
   };
 }
@@ -221,14 +270,14 @@ async function makeRoomService(options: { memory: RoomMemoryHooks; script?: () =
   return { service, events, inputs };
 }
 
-test("a message turn: auto-recall reaches the runtime input; the settled turn is captured complete", async () => {
+test("a message turn: auto-recall (with the room's context ref) reaches the runtime input; the settled turn is captured complete", async () => {
   const calls: HookCalls = { recall: [], captures: [], consolidations: [] };
   const { service, inputs } = await makeRoomService({ memory: fakeHooks(calls) });
 
   await service.sendMessage("what is the port?");
   await service.waitForIdle();
 
-  assert.deepEqual(calls.recall, [{ agentId: "gaia", query: "what is the port?" }]);
+  assert.deepEqual(calls.recall, [{ agentId: "gaia", query: "what is the port?", context: { roomId: "default", floorIdx: 0 } }]);
   assert.equal(inputs.length, 1);
   assert.equal(inputs[0].recall, "MEMBLOCK", "the hook's block rode into the runtime input");
 
@@ -299,4 +348,71 @@ test("memory knobs surface as field hints in config.json and agent.json (optiona
   assert.equal((agentHints["memory.autoRecall"] as FieldHint).optional, true, "per-agent overrides are optional");
   assert.equal((agentHints["memory.embeddings"] as FieldHint).optional, true);
   assert.equal((agentHints["memory.consolidate.maxPerDay"] as FieldHint).input, "number");
+});
+
+// --- deep path (P3, §8) ---------------------------------------------------------------
+
+test("deepSearch: the local reranker reorders the head — a poor-fusion true match rises above lexical noise", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  const { service } = await makeMemoryService({
+    config: { reranker: "auto" },
+    rooms: [
+      { roomId: "noise", events: [{ author: "user", text: `pineapple pizza pineapple pizza pineapple opinions all day long.${pad}` }] },
+      { roomId: "truth", events: [{ author: "user", text: `the daemon restart procedure: stop it, then pineapple start detached.${pad}` }] },
+    ],
+    embedderDeps: {
+      // Embedder unreachable → lexical-only fused list; the reranker decides.
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("/rerank")) {
+          const documents = JSON.parse(init!.body as string).documents as string[];
+          const results = documents.map((doc, index) => ({ index, relevance_score: doc.includes("restart procedure") ? 5.0 : -5.0 }));
+          return new Response(JSON.stringify({ results }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalReranker: async () => ({ baseUrl: "http://127.0.0.1:4245/v1", model: "bge-reranker-v2-m3" }),
+    },
+  });
+  // "pineapple" matches the noise room 3× and the truth room once — fusion
+  // alone ranks noise first; the fake reranker knows better.
+  const { hits } = await service.deepSearch("gaia", "pineapple restart");
+  assert.ok(hits.length >= 2, `expected both rooms (got ${hits.length})`);
+  assert.equal(hits[0].roomId, "truth", `reranker should put the true match first (got ${hits[0].roomId})`);
+});
+
+test("deepSearch kill switch: reranker unavailable → fused order survives with a LOUD note (§8)", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  const { service } = await makeMemoryService({
+    config: { reranker: "auto" },
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+    embedderDeps: {
+      fetchImpl: (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalReranker: async () => undefined,
+    },
+  });
+  const { hits, degraded } = await service.deepSearch("gaia", "marker phrase");
+  assert.ok(hits.length >= 1, "fusion-order results still come back");
+  assert.ok(degraded.some((note) => note.includes("fusion order")), `expected a fusion-order note (got ${JSON.stringify(degraded)})`);
+});
+
+test("deepSearch: explicit reranker 'off' is a chosen mode — no degradation note", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  const { service } = await makeMemoryService({
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+  });
+  const { hits, degraded } = await service.deepSearch("gaia", "marker phrase");
+  assert.ok(hits.length >= 1);
+  assert.ok(!degraded.some((note) => note.includes("rerank")), `off is not degraded (got ${JSON.stringify(degraded)})`);
+});
+
+test("summarizeSearch without an LLM: raw listing + a loud unavailable note", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  const { service } = await makeMemoryService({
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+  });
+  const { text, degraded } = await service.summarizeSearch("gaia", "marker phrase");
+  assert.ok(text.includes("marker phrase"), "raw results still delivered");
+  assert.ok(degraded.some((note) => note.includes("summarize unavailable")));
 });

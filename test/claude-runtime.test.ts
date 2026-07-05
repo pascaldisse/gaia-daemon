@@ -199,6 +199,63 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
   }
 });
 
+// A claude agent that granted the web tool, for native-command turns.
+const webFixture = () =>
+  harnessFixture({ tools: ["read", "web"], harness: "claude", model: { provider: "anthropic", name: "claude-opus-4-8" } });
+
+test("native command: raw stdin + skills-enabled flag profile (no --safe-mode)", async () => {
+  const fx = await webFixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("researching"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "/deep-research when was the transistor invented", transcript: [], nativeCommand: true }));
+
+    const { args, prompt } = fake.lastOptions!;
+    // The command is handed to the CLI verbatim — NOT wrapped in the usual
+    // "Room:/Newest user message" prompt, or the slash command wouldn't resolve.
+    assert.equal(prompt, "/deep-research when was the transistor invented");
+    assert.ok(!prompt.includes("Newest user message"));
+    // Skills need the surface --safe-mode kills; isolate the other way instead.
+    assert.ok(!args.includes("--safe-mode"));
+    assert.ok(args.includes("--setting-sources") && args.includes("--strict-mcp-config"));
+    // Broad tool exposure so a skill reaches its toolset...
+    assert.equal(args[args.indexOf("--tools") + 1], "default");
+    // ...but execution stays gated by the agent's grant, plus ToolSearch.
+    const allowed = args[args.indexOf("--allowedTools") + 1];
+    assert.ok(allowed.includes("ToolSearch"));
+    assert.ok(allowed.includes("WebSearch"), "granted web tool auto-approves for the skill");
+    // The harness's own fan-out (Task/Agent/Workflow) is suppressed even on the
+    // "default" toolset: all fan-out routes through gaia summons — visible
+    // sub-rooms with result callback, never opaque in-CLI workers.
+    assert.equal(args[args.indexOf("--disallowedTools") + 1], "Task,Agent,Workflow");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("normal turn is unchanged: --safe-mode + wrapped prompt (native-command regression guard)", async () => {
+  const fx = await webFixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("hi"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hello", transcript: [] }));
+
+    const { args, prompt } = fake.lastOptions!;
+    assert.ok(args.includes("--safe-mode"));
+    assert.ok(!args.includes("--setting-sources"));
+    assert.notEqual(args[args.indexOf("--tools") + 1], "default");
+    assert.ok(prompt.includes("Newest user message"));
+    // Fan-out suppression applies on EVERY turn, not just native ones.
+    assert.equal(args[args.indexOf("--disallowedTools") + 1], "Task,Agent,Workflow");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("ClaudeRuntime reports subscription:false when an API key is the source", async () => {
   const fx = await fixture();
   try {

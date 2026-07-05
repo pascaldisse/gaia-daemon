@@ -3,23 +3,38 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SummonCoordinator, allowSummonForTurn, isTrusted, mayNestSummon, type SummonRoomAccess } from "../src/services/summons.js";
-import { normalizeRoomState } from "../src/domain/rooms.js";
-import { readJson } from "../src/core/store.js";
+import {
+  SummonCoordinator,
+  allowSummonForTurn,
+  awaitTask,
+  isTrusted,
+  mayNestSummon,
+  summonAck,
+  type SummonRoomAccess,
+  type SummonTaskEvent,
+} from "../src/services/summons.js";
+import { RoomService } from "../src/services/room-service.js";
+import { normalizeRoomState, RoomHandle } from "../src/domain/rooms.js";
+import { MemoryStore } from "../src/domain/memory.js";
+import { readJson, writeJsonAtomic } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, Workspace } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, Workspace } from "../src/core/types.js";
+import type { AgentRuntime } from "../src/harness/spec.js";
+
+process.env.GAIA_HOME ??= await mkdtemp(join(tmpdir(), "gaia-home-"));
 
 function agent(overrides: Partial<AgentDef> = {}): AgentDef {
+  const id = overrides.id ?? "gaia";
   return {
-    id: "gaia",
-    displayName: "Gaia",
+    id,
+    displayName: id[0].toUpperCase() + id.slice(1),
     icon: "🌍",
-    dir: "/tmp/x",
-    configPath: "/tmp/x/agent.json",
-    personaDir: "/tmp/x/persona",
-    rolesDir: "/tmp/x/persona/roles",
-    soulPath: "/tmp/x/persona/SOUL.md",
-    memoryDir: "/tmp/x/persona/memory",
+    dir: `/tmp/x-${id}`,
+    configPath: `/tmp/x-${id}/agent.json`,
+    personaDir: `/tmp/x-${id}/persona`,
+    rolesDir: `/tmp/x-${id}/persona/roles`,
+    soulPath: `/tmp/x-${id}/persona/SOUL.md`,
+    memoryDir: `/tmp/x-${id}/persona/memory`,
     tools: [],
     ...overrides,
   };
@@ -58,76 +73,271 @@ async function makeWorkspace(): Promise<{ workspace: Workspace; path: string }> 
   return { workspace, path: root };
 }
 
-function fakeRoom(reply: string): SummonRoomAccess & { sent: string[] } {
-  const sent: string[] = [];
-  return {
-    sent,
-    async sendMessage(text) {
-      sent.push(text);
+/** A controllable fake room: sendMessage returns a live task the test settles;
+ * delivery + bookkeeping calls are recorded. */
+function fakeRoom(reply: string): SummonRoomAccess & {
+  sent: string[];
+  delivered: { from: string; text: string; trigger?: string[] }[];
+  markedDelivered: number;
+  settle: (status?: string, error?: string) => void;
+} {
+  const listeners = new Set<(event: SummonTaskEvent) => void>();
+  const task = { id: "t1", status: "running" as string, error: undefined as string | undefined };
+  const room = {
+    sent: [] as string[],
+    delivered: [] as { from: string; text: string; trigger?: string[] }[],
+    markedDelivered: 0,
+    settle(status = "complete", error?: string) {
+      task.status = status;
+      task.error = error;
+      for (const listener of listeners) listener({ type: status === "error" ? "task-error" : "task-end", task: { id: task.id } });
     },
-    async waitForIdle() {},
+    async sendMessage(text: string) {
+      room.sent.push(text);
+      return task;
+    },
+    subscribe(listener: (event: SummonTaskEvent) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     async latestReplyFrom() {
       return reply;
     },
+    async waitForSettled() {},
+    async deliverAgentResult(from: string, text: string, trigger?: string[]) {
+      room.delivered.push({ from, text, ...(trigger ? { trigger } : {}) });
+    },
+    async markSummonDelivered() {
+      room.markedDelivered += 1;
+    },
   };
+  return room;
 }
 
-test("summon creates a linked child room and returns the worker's reply", async () => {
+test("summonAndWait creates a linked child room and returns the worker's reply", async () => {
   const { workspace, path } = await makeWorkspace();
   const room = fakeRoom("worker says done");
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8);
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8, () => {});
 
-  const reply = await coordinator.summonAndWait("default", "terry", "do a thing");
+  const pending = coordinator.summonAndWait("default", "terry", "do a thing");
+  // Let launch reach the turn, then settle it.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  room.settle();
+  const reply = await pending;
   assert.equal(reply, "worker says done");
   assert.equal(room.sent[0], "do a thing");
+  assert.equal(room.delivered.length, 0); // deliver-less mode: caller consumed the promise
+  assert.equal(coordinator.runningChildren().length, 0); // settled
 
   // The child room exists on disk, stamped with its parent BEFORE first turn.
-  const children = coordinator.runningChildren();
-  assert.equal(children.length, 0); // settled
-  const dirs = (await import("node:fs/promises")).readdir(workspace.roomsDir);
-  const childId = (await dirs).find((name) => name.startsWith("terry-"));
+  const dirs = await (await import("node:fs/promises")).readdir(workspace.roomsDir);
+  const childId = dirs.find((name) => name.startsWith("terry-"));
   assert.ok(childId, "child room dir exists");
   const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childId!)));
   assert.equal(state.parentRoomId, "default");
+  assert.equal(state.summon, undefined); // no delivery record without a deliver mode
+});
+
+test("background summon never blocks: launch resolves first, then the result is delivered as a caller turn", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const child = fakeRoom("scouting report: all clear");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([["default", parent]]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, 8, () => {});
+
+  const { roomId, done } = await coordinator.launch("default", "terry", "scout ahead", { deliver: "turn", callerAgentId: "gaia" });
+  // Launch resolved while the worker is still running — the caller's turn is free.
+  assert.equal(coordinator.runningChildren("default").length, 1);
+  assert.equal(parent.delivered.length, 0);
+
+  // The durable delivery record is stamped BEFORE the first turn.
+  const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
+  assert.equal(state.summon?.status, "running");
+  assert.equal(state.summon?.deliver, "turn");
+  assert.equal(state.summon?.callerAgentId, "gaia");
+  assert.equal(state.summon?.agentId, "terry");
+
+  child.settle();
+  await done;
+  assert.equal(parent.delivered.length, 1);
+  assert.equal(parent.delivered[0].from, "terry");
+  assert.match(parent.delivered[0].text, /scouting report: all clear/);
+  assert.match(parent.delivered[0].text, new RegExp(roomId));
+  assert.deepEqual(parent.delivered[0].trigger, ["gaia"]); // the subagent callback re-invokes the caller
+  assert.equal(child.markedDelivered, 1);
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("a failed worker turn is delivered loudly, never swallowed", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const child = fakeRoom("");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([["default", parent]]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, 8, () => {});
+
+  const { done } = await coordinator.launch("default", "terry", "doomed task", { deliver: "note" });
+  child.settle("error", "sandbox exploded");
+  await done.catch(() => {}); // done rejects; the failure still got delivered
+  assert.equal(parent.delivered.length, 1);
+  assert.match(parent.delivered[0].text, /FAILED/);
+  assert.match(parent.delivered[0].text, /sandbox exploded/);
+  assert.equal(parent.delivered[0].trigger, undefined); // note mode: no turn trigger
+  assert.equal(child.markedDelivered, 1); // delivered (the failure IS the result)
 });
 
 test("summon refuses unknown agents and enforces the per-room cap", async () => {
   const { workspace, path } = await makeWorkspace();
-  let release: () => void = () => {};
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const room: SummonRoomAccess = {
-    async sendMessage() {},
-    async waitForIdle() {
-      await blocked;
-    },
-    async latestReplyFrom() {
-      return "ok";
-    },
-  };
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 1);
+  const room = fakeRoom("ok");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, 1, () => {});
 
   await assert.rejects(() => coordinator.summon("default", "nobody", "task"), /Unknown agent/);
 
   await coordinator.summon("default", "terry", "long task");
   assert.equal(coordinator.runningChildren("default").length, 1);
   await assert.rejects(() => coordinator.summon("default", "gaia", "another"), /Too many running summons/);
-  release();
+  room.settle();
 });
 
-test("summon timeout returns a timeout message instead of hanging", async () => {
+test("awaitTask resolves on the timeout arm while the task keeps running (summonAndWait's cap)", async () => {
+  const task = { id: "x", status: "running" };
+  const start = Date.now();
+  await awaitTask({ subscribe: () => () => {} }, task, 50);
+  assert.ok(Date.now() - start >= 45);
+  assert.equal(task.status, "running"); // the turn keeps going in its room
+});
+
+test("recoverUndelivered re-arms a stranded summon and delivers its surviving reply", async () => {
   const { workspace, path } = await makeWorkspace();
-  const room: SummonRoomAccess = {
-    async sendMessage() {},
-    async waitForIdle() {
-      throw new Error("Room is busy with another task");
+  const childRoomId = "terry-stranded1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "running", launchedAt: new Date().toISOString() },
+  });
+
+  const child = fakeRoom("recovered result ✓");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => {
+    const service = services.get(roomId);
+    if (!service) throw new Error(`unexpected room: ${roomId}`);
+    return service;
+  }, 8, () => {});
+
+  await coordinator.recoverUndelivered();
+  // Recovery runs in the background — wait for the delivery to land.
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(parent.delivered.length, 1);
+  assert.match(parent.delivered[0].text, /recovered result/);
+  assert.deepEqual(parent.delivered[0].trigger, ["gaia"]);
+  assert.equal(child.markedDelivered, 1);
+});
+
+test("recoverUndelivered skips delivered records and non-summon rooms", async () => {
+  const { workspace, path } = await makeWorkspace();
+  await mkdir(join(workspace.roomsDir, "plain-room"), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, "plain-room"), { activeRoles: {}, agentCursors: {} });
+  await mkdir(join(workspace.roomsDir, "terry-done1"), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, "terry-done1"), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+
+  const coordinator = new SummonCoordinator(workspace, path, async () => {
+    throw new Error("recovery must not open settled rooms");
+  }, 8, () => {});
+  await coordinator.recoverUndelivered();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("summonAck names the sub-room and forbids waiting", () => {
+  const ack = summonAck("terry", "terry-abc123");
+  assert.match(ack, /terry-abc123/);
+  assert.match(ack, /Do NOT wait or poll/);
+  assert.match(ack, /posted back to this room/);
+});
+
+// --- end-to-end: real RoomServices, real queue, real callback turn ------------
+
+/** Scripted runtime capturing every AgentInput message it is sent. */
+function scriptedRuntime(agentDef: AgentDef, reply: () => string): AgentRuntime & { messages: string[] } {
+  const runtime = {
+    agent: agentDef,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    messages: [] as string[],
+    async *send(input: { message: string }) {
+      runtime.messages.push(input.message);
+      yield { type: "text-delta", delta: reply() } as AgentEvent;
     },
-    async latestReplyFrom() {
-      return "never read";
-    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
   };
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8);
-  const reply = await coordinator.summonAndWait("default", "terry", "slow");
-  assert.match(reply, /timed out/);
+  return runtime as unknown as AgentRuntime & { messages: string[] };
+}
+
+test("end-to-end: a background summon posts its result into the parent room and re-invokes the caller", async () => {
+  const { workspace, path } = await makeWorkspace();
+  await mkdir(join(workspace.roomsDir, "default"), { recursive: true });
+
+  const runtimes = new Map<string, ReturnType<typeof scriptedRuntime>>();
+  const services = new Map<string, Promise<RoomService>>();
+  const serviceFor = (roomId: string): Promise<RoomService> => {
+    let service = services.get(roomId);
+    if (!service) {
+      service = RoomService.open({
+        workspaceId: "ws1",
+        workspace,
+        roomId,
+        memoryStore: new MemoryStore(),
+        runtimeFactory: (agentDef) => {
+          const runtime = scriptedRuntime(agentDef, () => (agentDef.id === "terry" ? "the tide tables say: go at dawn" : "synthesized."));
+          runtimes.set(`${roomId}:${agentDef.id}`, runtime);
+          return runtime;
+        },
+      }).then(async (svc) => {
+        await svc.init();
+        return svc;
+      });
+      services.set(roomId, service);
+    }
+    return service;
+  };
+
+  const coordinator = new SummonCoordinator(workspace, path, serviceFor, 8, () => {});
+  const { roomId: childRoomId, done } = await coordinator.launch("default", "terry", "check the tides", {
+    deliver: "turn",
+    callerAgentId: "gaia",
+  });
+  await done;
+
+  // The parent room got the worker-authored result...
+  const parent = await serviceFor("default");
+  await parent.waitForSettled();
+  const parentRoom = await RoomHandle.open(path, "default");
+  const { events } = await parentRoom.eventsFrom(0);
+  const note = events.find((event) => event.author === "terry");
+  assert.ok(note, "worker result posted into the parent room");
+  assert.match(note!.text, /the tide tables say: go at dawn/);
+  assert.match(note!.text, new RegExp(childRoomId));
+
+  // ...and the CALLER ran a real turn processing it (the subagent callback).
+  const caller = runtimes.get("default:gaia");
+  assert.ok(caller, "caller runtime exists");
+  assert.equal(caller!.messages.length, 1);
+  assert.match(caller!.messages[0], /the tide tables say: go at dawn/);
+
+  // The child's durable record is closed out.
+  const childState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(childState.summon?.status, "delivered");
 });

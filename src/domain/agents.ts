@@ -30,6 +30,7 @@ interface RawAgentConfig {
   runtime?: unknown;
   permissionMode?: unknown;
   revealThinking?: unknown;
+  nativeCommands?: unknown;
   sandbox?: unknown;
   trust?: unknown;
   allowNestedSummon?: unknown;
@@ -324,6 +325,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
       revealThinking: raw.revealThinking === true ? true : undefined,
+      nativeCommands: raw.nativeCommands === true ? true : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
       projectDir: existsSync(projectDir) ? projectDir : undefined,

@@ -10,7 +10,7 @@ regression when broken.
 
 - `AGENTS.md` — project rules (imported above)
 - `DESIGN.md` — v2 architecture: layering, WAL turn protocol, durable queue
-- `MEMORY-DESIGN.md` — Memory v3: episodic capture, bi-temporal facts, hybrid RRF recall
+- `MEMORY-DESIGN.md` — Memory v4: union store, local-first embeddings, global hybrid recall, loud health (v3 archived in `docs/history/`)
 - `REPLACEMENT.md` — feature-parity roadmap (all gaps shipped)
 - `README.md` — user-facing overview + CLI
 - `docs/IMPORT.md` — importing a claude.ai data export (`scripts/import-claude-export.ts`)

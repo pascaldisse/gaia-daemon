@@ -20,9 +20,10 @@ import { MemoryStore } from "./domain/memory.js";
 import { ensureWorkspaceRoom, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { RoomService } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
+import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
 import type { ConsolidateLlm } from "./services/consolidate.js";
-import { formatMemoryHits, type MemorySearchHit, type RoomSearchRef } from "./domain/memory-index.js";
+import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
 import { resolveUpstreamCredential, type UpstreamCredential } from "./services/proxy.js";
@@ -117,6 +118,16 @@ export class Daemon {
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
   private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
+  /** One local embedding sidecar per daemon (model server shared across
+   * workspaces); MemoryService reaches it through EmbedderDeps. Download and
+   * startup progress fans out to every workspace's health table — a 300MB
+   * model pull must be visible, not a buried log line (§10). */
+  private readonly embedSidecar = new EmbedSidecar({
+    log: (message) => this.log(message),
+    onProgress: (state, detail, role) => {
+      for (const { service } of this.memoryServices.values()) service.noteSidecarProgress(role === "rerank" ? "reranker" : "embedder", state, detail);
+    },
+  });
   private readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly bus = new Bus<UiEvent>();
   private readonly pendingReloads = new Set<string>();
@@ -150,6 +161,11 @@ export class Daemon {
     });
     this.scheduler.start();
     reapOrphans({ log: (message) => this.log(message) });
+    // Summon recovery: a prior process may have died with background summons
+    // running or finished-but-undelivered. Re-arm each one (the child room's
+    // WAL resumes its turn; the coordinator re-delivers the result to the
+    // parent room) — a summon result is never silently lost.
+    void this.recoverSummons();
     await ensureVoiceSettingsFile();
     // A crash mid-call must never leave a "temporary" thinking override applied
     // forever: restore any persisted override from a dead call.
@@ -181,6 +197,7 @@ export class Daemon {
   dispose(): void {
     this.scheduler?.dispose();
     this.voiceStack.stop();
+    this.embedSidecar.dispose();
     for (const service of this.services.values()) service.dispose();
     this.services.clear();
     for (const { service: memory } of this.memoryServices.values()) memory.dispose();
@@ -278,47 +295,55 @@ export class Daemon {
     }
     const live = { workspace };
     const service = new MemoryService({
+      workspaceRoot: path,
       workspaceMemory: () => live.workspace.config.memory,
       agents: () => live.workspace.agents,
       memoryStore: this.memoryStoreFor(workspaceId),
       roomsFor: () => this.recentRoomRefs(path),
       llm: consolidateLlm(),
       log: (message) => this.log(message),
+      embedderDeps: {
+        ensureLocalSidecar: (modelId) => this.embedSidecar.ensure(modelId),
+        ensureLocalReranker: (modelId) => this.embedSidecar.ensureRerank(modelId),
+      },
     });
     this.memoryServices.set(workspaceId, { service, live });
     return service;
   }
 
   /** Every room transcript in the workspace, most-recently-active first, for
-   * cross-room recall. Uncapped on purpose: rooms are chats, and an agent must
-   * be able to recall ANY of them by full text — including a 100-chat history
-   * import — not just the recently touched ones. Per-room indexes build
-   * lazily inside searchTranscript, so cold rooms cost one build each. */
-  private recentRoomRefs(workspaceRoot: string): RoomSearchRef[] {
-    const roomsDir = join(workspaceRoot, ".gaia", "rooms");
-    if (!existsSync(roomsDir)) return [];
-    const refs: Array<RoomSearchRef & { mtime: number }> = [];
-    for (const entry of readdirSync(roomsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const roomDir = join(roomsDir, entry.name);
-      const transcriptPath = join(roomDir, "transcript.jsonl");
-      if (!existsSync(transcriptPath)) continue;
-      try {
-        refs.push({ roomId: entry.name, transcriptPath, dbPath: join(roomDir, "recall.db"), mtime: statSync(transcriptPath).mtimeMs });
-      } catch {
-        // Room being deleted mid-scan; skip it.
-      }
-    }
-    return refs.sort((a, b) => b.mtime - a.mtime).map(({ mtime: _mtime, ...ref }) => ref);
+   * the workspace memory index (one shared definition: workspaceRoomRefs). */
+  private recentRoomRefs(workspaceRoot: string): RoomRef[] {
+    return workspaceRoomRefs(workspaceRoot);
   }
 
   private summonCoordinatorFor(workspaceId: string, workspace: Workspace, path: string): SummonCoordinator {
     let coordinator = this.summonCoordinators.get(workspaceId);
     if (!coordinator) {
-      coordinator = new SummonCoordinator(workspace, path, (roomId) => this.serviceFor(workspaceId, roomId), workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom);
+      coordinator = new SummonCoordinator(
+        workspace,
+        path,
+        (roomId) => this.serviceFor(workspaceId, roomId),
+        workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom,
+        (message) => this.log(message),
+      );
       this.summonCoordinators.set(workspaceId, coordinator);
     }
     return coordinator;
+  }
+
+  /** Boot sweep: re-arm undelivered summons in every initialized workspace
+   * (see SummonCoordinator.recoverUndelivered). Failures are logged, never
+   * thrown — recovery must not take the daemon down. */
+  private async recoverSummons(): Promise<void> {
+    for (const record of await this.registry.list()) {
+      if (!record.isInitialized) continue;
+      try {
+        await (await this.coordinatorFor(record.id)).recoverUndelivered();
+      } catch (error) {
+        this.log(`summon recovery skipped for workspace ${record.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   async coordinatorFor(workspaceId: string): Promise<SummonCoordinator> {
@@ -449,6 +474,15 @@ export class Daemon {
     return capabilitiesFor(harness).gaiaTools;
   }
 
+  async harnessMemoryBatch(
+    claims: HarnessTokenClaims,
+    file: string,
+    operations: Array<{ action: MemoryAction; content?: string; oldText?: string }>,
+  ): Promise<MemoryMutationResult> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.mutateAgentMemoryBatch(claims.agentId, file, operations);
+  }
+
   async harnessMemoryWrite(
     claims: HarnessTokenClaims,
     file: string,
@@ -459,15 +493,49 @@ export class Daemon {
     return service.mutateAgentMemory(claims.agentId, file, action, options);
   }
 
-  /** Hybrid recall for a harness turn (capability-gated by the caller). Runs
-   * entirely daemon-side: index, embeddings key, and cross-room refs stay here. */
-  async harnessRecall(claims: HarnessTokenClaims, query: string, limit?: number): Promise<{ result: string; hits: MemorySearchHit[] }> {
+  /** Hybrid DEEP recall for a harness turn (capability-gated by the caller;
+   * §8: explicit invocation tolerates seconds, so it earns the reranker +
+   * chunk-window expansion). Runs entirely daemon-side: index, embedder,
+   * reranker, and room refs stay here. The asking room's active context
+   * window is excluded (self-match, CALMem) and any degradation is stated in
+   * the result — never silent. */
+  async harnessRecall(
+    claims: HarnessTokenClaims,
+    query: string,
+    limit?: number,
+    options: { summarize?: boolean } = {},
+  ): Promise<{ result: string; hits: MemorySearchHit[] }> {
     const record = await this.registry.find(claims.workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const workspace = (await this.serviceFor(claims.workspaceId, claims.roomId)).workspace;
-    const memory = this.memoryServiceFor(claims.workspaceId, workspace, record.path);
-    const hits = await memory.search(claims.agentId, query, { limit: limit && limit > 0 ? Math.min(limit, 25) : undefined });
-    return { result: hits.length ? formatMemoryHits(hits) : "no matches in memory or room history", hits };
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
+    const context = await service.recallContext(claims.agentId);
+    const request = { limit: limit && limit > 0 ? Math.min(limit, 25) : undefined, context };
+    if (options.summarize) {
+      const { text, degraded } = await memory.summarizeSearch(claims.agentId, query, request);
+      const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
+      return { result: text ? `${header}${text}` : `${header}no matches in memory or room history`, hits: [] };
+    }
+    const { hits, degraded } = await memory.deepSearch(claims.agentId, query, request);
+    const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
+    return { result: hits.length ? `${header}${formatMemoryHits(hits, { full: true })}` : `${header}no matches in memory or room history`, hits };
+  }
+
+  /** The scroll pager (§8): raw transcript window around a previous recall
+   * hit. No LLM, no ranking — just the surrounding conversation. */
+  async harnessRecallScroll(claims: HarnessTokenClaims, hitId: number, options: { span?: number; offset?: number } = {}): Promise<string> {
+    const record = await this.registry.find(claims.workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
+    const window = await scrollTranscriptWindow(record.path, hitId, options);
+    return window ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`;
+  }
+
+  /** Memory health rows for `gaia memory status` and the web status surface. */
+  async memoryHealth(workspaceId: string): Promise<MemoryHealthRow[]> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    const workspace = await loadWorkspace(record.path);
+    return this.memoryServiceFor(workspaceId, workspace, record.path).health();
   }
 
   async resolveProxyUpstream(claims: HarnessTokenClaims): Promise<UpstreamCredential | undefined> {

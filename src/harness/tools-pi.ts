@@ -2,13 +2,12 @@
 // (Pi SDK, typebox) live here, loaded lazily via tools.ts's makePiTool — the
 // registry itself stays cheap for the `gaia` CLI.
 
-import { join } from "node:path";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import { workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
-import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
-import { searchTranscript } from "../domain/recall.js";
+import { bareWorkspaceRecall, formatMemoryHits, scrollTranscriptWindow, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { RecallSearch, SummonCreate } from "../harness/spec.js";
 
 const MEMORY_DESCRIPTION = [
@@ -25,12 +24,31 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
     description: MEMORY_DESCRIPTION,
     promptSnippet: `memory: add, replace, or remove notes in your memory files (${CORE_MEMORY_FILE}, ${USER_MEMORY_FILE}, topic files); read and list topic files on demand.`,
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove"), Type.Literal("read"), Type.Literal("list")]),
+      action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove"), Type.Literal("read"), Type.Literal("list"), Type.Literal("batch")]),
       file: Type.Optional(Type.String({ description: `Memory file to act on, relative to your memory dir. Defaults to ${CORE_MEMORY_FILE}.` })),
       content: Type.Optional(Type.String({ description: "New memory content for add or replace." })),
       old_text: Type.Optional(Type.String({ description: "Exact existing text for replace or remove." })),
+      operations: Type.Optional(
+        Type.Array(
+          Type.Object({
+            action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove")]),
+            content: Type.Optional(Type.String()),
+            old_text: Type.Optional(Type.String()),
+          }),
+          { description: "Batch mode: apply ALL operations to one file atomically, validated together against the file's budget — use this to consolidate (several replaces + removes) in ONE call instead of retrying op-by-op." },
+        ),
+      ),
     }),
-    execute: async (_toolCallId: string, params: { action: "add" | "replace" | "remove" | "read" | "list"; file?: string; content?: string; old_text?: string }) => {
+    execute: async (
+      _toolCallId: string,
+      params: {
+        action: "add" | "replace" | "remove" | "read" | "list" | "batch";
+        file?: string;
+        content?: string;
+        old_text?: string;
+        operations?: Array<{ action: "add" | "replace" | "remove"; content?: string; old_text?: string }>;
+      },
+    ) => {
       const file = params.file?.trim() || CORE_MEMORY_FILE;
       let text: string;
       let details: unknown;
@@ -43,6 +61,15 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
           const state = await store.readState(agent.memoryDir, file);
           text = state.content || `(empty: ${file})`;
           details = state;
+        } else if (params.action === "batch" || params.operations?.length) {
+          const operations = (params.operations ?? []).map((op) => ({
+            action: op.action,
+            ...(op.content !== undefined ? { content: op.content } : {}),
+            ...(op.old_text !== undefined ? { oldText: op.old_text } : {}),
+          }));
+          const result = await store.mutateBatch(agent.memoryDir, file, operations);
+          text = `${result.ok ? "OK" : "ERROR"}: ${result.message}\n\n${result.state.content}`;
+          details = result;
         } else {
           const result = await store.mutate(agent.memoryDir, file, params.action, { content: params.content, oldText: params.old_text });
           text = `${result.ok ? "OK" : "ERROR"}: ${result.message}\n\n${result.state.content}`;
@@ -57,20 +84,20 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
   });
 }
 
-/** Fallback recall when no daemon bridge exists: the local per-room lexical
- * transcript index, mapped onto the hybrid hit shape. */
-export function localRecallSearch(roomDir: string, roomId: string): RecallSearch {
-  return async (query, limit) => {
-    const hits = searchTranscript(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), query, limit ?? 8);
-    return hits.map((hit) => ({
-      kind: "transcript" as const,
-      text: hit.snippet,
-      ts: hit.timestamp,
-      score: 0,
-      author: hit.author,
-      roomId,
-    }));
-  };
+/** Fallback recall when no daemon bridge exists: the workspace memory index
+ * opened directly (lexical-only, whole workspace — v3's per-room recall.db
+ * fallback retired with the rest of the v3 engine). */
+export function localRecallSearch(roomDir: string, _roomId: string, agent?: { id: string; memoryDir: string }): RecallSearch {
+  const root = workspaceRootFromRoomDir(roomDir);
+  const search = async (query: string, limit?: number) =>
+    bareWorkspaceRecall(root, query, {
+      ...(agent ? { agentId: agent.id, memoryDir: agent.memoryDir } : {}),
+      limit: limit ?? 8,
+    });
+  return Object.assign(search, {
+    scroll: async (hitId: number, options?: { span?: number; offset?: number }) =>
+      (await scrollTranscriptWindow(root, hitId, options ?? {})) ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`,
+  });
 }
 
 export function createRecallTool(search: RecallSearch, roomId: string) {
@@ -78,18 +105,28 @@ export function createRecallTool(search: RecallSearch, roomId: string) {
     name: "recall",
     label: "Recall",
     description:
-      "Search your long-term memory: distilled facts, past task episodes (with outcomes), and the full room history — every past session, not just your current context. Use when the conversation references something you do not remember: an earlier decision, a name, a lesson from a failed attempt, a discussion from weeks ago.",
-    promptSnippet: `recall: ranked search over your facts, episodes, and the complete ${roomId} room history.`,
+      "Search your long-term memory: distilled facts, past task episodes (with outcomes), and the full history of EVERY room — every past session, not just your current context. Use when the conversation references something you do not remember: an earlier decision, a name, a lesson from a failed attempt, a discussion from weeks ago. To read the raw conversation around a transcript result, call again with `around` set to that hit's id.",
+    promptSnippet: `recall: deep ranked search over your facts, episodes, and all room history (not just ${roomId}); pass around=<hit id> to scroll the raw transcript at a hit.`,
     parameters: Type.Object({
-      query: Type.String({ description: "Words or a phrase to search for." }),
+      query: Type.String({ description: "Words or a phrase to search for (ignored when `around` is set)." }),
       limit: Type.Optional(Type.Number({ description: "Max results (default 8)." })),
+      around: Type.Optional(Type.Number({ description: "Scroll mode: a transcript hit id from a previous recall — returns the raw conversation around it." })),
+      span: Type.Optional(Type.Number({ description: "Scroll window: events each side of the hit (default 12)." })),
+      offset: Type.Optional(Type.Number({ description: "Scroll shift: move the window by this many events (negative = earlier)." })),
     }),
-    execute: async (_toolCallId: string, params: { query: string; limit?: number }) => {
+    execute: async (_toolCallId: string, params: { query: string; limit?: number; around?: number; span?: number; offset?: number }) => {
       let text: string;
       let hits: MemorySearchHit[] = [];
       try {
-        hits = await search(params.query, params.limit ?? 8);
-        text = hits.length ? formatMemoryHits(hits) : "no matches in memory or room history";
+        if (params.around !== undefined && search.scroll) {
+          text = await search.scroll(params.around, {
+            ...(params.span !== undefined ? { span: params.span } : {}),
+            ...(params.offset !== undefined ? { offset: params.offset } : {}),
+          });
+        } else {
+          hits = await search(params.query, params.limit ?? 8);
+          text = hits.length ? formatMemoryHits(hits, { full: true }) : "no matches in memory or room history";
+        }
       } catch (error) {
         text = `ERROR: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -99,10 +136,11 @@ export function createRecallTool(search: RecallSearch, roomId: string) {
 }
 
 const SUMMON_DESCRIPTION = [
-  'Summon private worker agents ("whales") to handle tasks in separate sessions.',
+  'Summon background worker agents ("whales") to handle tasks in their own sub-rooms.',
   "Pass a single { agent, task } for one worker, or a `whales` list to fan out MANY workers IN PARALLEL.",
-  "Each worker runs independently; its transcript stays private (not injected into the room) and it returns a compact result.",
-  "Use this to decompose a goal and swarm it: cheap workers for reading/search/triage, heavy workers for reasoning, a codegen worker for large edits.",
+  "This tool returns IMMEDIATELY with each worker's sub-room id — workers run in the background and never block your turn.",
+  "When a worker finishes, its result is posted back into this room and you are invoked again to continue — do NOT wait, poll, or re-summon while workers run.",
+  "Use this to decompose a goal and swarm it: cheap workers for reading/search/triage, heavy workers for reasoning, a codegen worker for large edits; end your turn after summoning (tell the user what you launched) and synthesize when the results come back.",
 ].join(" ");
 
 export function createSummonTool(summonCreate: SummonCreate, roomId: string) {
@@ -110,7 +148,7 @@ export function createSummonTool(summonCreate: SummonCreate, roomId: string) {
     name: "summon",
     label: "Summon",
     description: SUMMON_DESCRIPTION,
-    promptSnippet: `summon: fan out private worker agents (whales) — one { agent, task } or a parallel \`whales\` list; returns each worker's final result.`,
+    promptSnippet: `summon: fan out background worker agents (whales) — one { agent, task } or a parallel \`whales\` list; returns immediately, and each worker's result is posted back to this room when it finishes (you'll be invoked again — never block on workers).`,
     parameters: Type.Object({
       agent: Type.Optional(Type.String({ description: "Single worker agent id to summon (e.g. whale-flash, whale-deep, whale-codex)." })),
       task: Type.Optional(Type.String({ description: "Task for the single summoned agent to complete." })),

@@ -21,12 +21,18 @@ export function jsonText(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** Per-process tmp-name uniquifier: pid + timestamp alone COLLIDE when two
+ * atomic writes land in the same directory in the same millisecond (e.g. a
+ * room's state.json vs its sanitize.json) — one rename then steals or drops
+ * the other's tmp file. The counter makes every tmp name unique. */
+let tmpSeq = 0;
+
 /** Write-then-rename so readers never observe a torn file, fsynced so a crash
  * right after the call cannot lose the payload. This is what makes "one atomic
  * state write" in the WAL protocol true. */
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
-  const tmp = join(dirname(path), `.${process.pid}.${Date.now().toString(36)}.tmp`);
+  const tmp = join(dirname(path), `.${process.pid}.${(tmpSeq++).toString(36)}.${Date.now().toString(36)}.tmp`);
   await writeFile(tmp, jsonText(value), "utf8");
   const fd = openSync(tmp, "r");
   try {

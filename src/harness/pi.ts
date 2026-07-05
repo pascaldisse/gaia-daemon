@@ -170,6 +170,10 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: false,
   supportsSteer: true,
   supportsCompact: true,
+  // Pi has no claude-style slash-command passthrough surface.
+  supportsNativeCommands: false,
+  // Pi's only fan-out surface IS the gaia summon tool — nothing to suppress.
+  fanOutTools: [],
 };
 
 export class PiRuntime implements AgentRuntime {

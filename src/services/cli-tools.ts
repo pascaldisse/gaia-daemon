@@ -9,9 +9,11 @@
 //   GAIA_MEMORY_DIR, GAIA_ROOM_DIR, GAIA_ROOM_ID, GAIA_AGENT_ID,
 //   GAIA_DAEMON_URL, GAIA_DAEMON_TOKEN
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
+import { workspaceRootFromRoomDir } from "../core/paths.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
 import { gaiaToolByVerb } from "../harness/tools.js";
 
@@ -19,21 +21,30 @@ const MEMORY_USAGE = `Usage:
   gaia mem list                      list memory files
   gaia mem read [file]               print a memory file (default ${CORE_MEMORY_FILE})
   gaia mem add [--file F] <content>  append a memory entry
+  gaia mem batch [--file F] '<json>' atomic batch: [{"action":"add|replace|remove","content":"…","old_text":"…"},…]
   gaia mem replace [--file F] --old <text> <content>
-  gaia mem remove [--file F] --old <text>`;
+  gaia mem remove [--file F] --old <text>
+  gaia memory status                 memory index + embedder health
+  gaia memory eval [file]            run the recall eval probes (.gaia/memory/eval.json)`;
 
-const RECALL_USAGE = `Usage: gaia recall [--limit N] <query>`;
+const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
+       gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
 const SUMMON_USAGE = `Usage: gaia summon <agent> <task>`;
 
 // Minimal flag parser: --name value pairs plus positionals.
-function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string> } {
+function parseFlags(args: string[], booleans: ReadonlySet<string> = new Set()): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg.startsWith("--")) {
-      flags[arg.slice(2)] = args[i + 1] ?? "";
-      i++;
+      const name = arg.slice(2);
+      if (booleans.has(name)) {
+        flags[name] = "true";
+      } else {
+        flags[name] = args[i + 1] ?? "";
+        i++;
+      }
     } else {
       positional.push(arg);
     }
@@ -61,10 +72,45 @@ async function daemonPost(path: string, body: unknown): Promise<{ ok: boolean; t
   }
 }
 
+/** Workspace root for user-facing memory commands: inside an agent turn the
+ * room dir is in env; from a shell, the cwd must be a GAIA workspace. */
+function resolveWorkspaceRoot(): string | undefined {
+  const roomDir = env("GAIA_ROOM_DIR");
+  if (roomDir) return workspaceRootFromRoomDir(roomDir);
+  return existsSync(join(process.cwd(), ".gaia")) ? process.cwd() : undefined;
+}
+
 async function runMem(args: string[]): Promise<number> {
   const sub = args[0];
   const rest = parseFlags(args.slice(1));
   const file = rest.flags.file?.trim() || CORE_MEMORY_FILE;
+
+  // Workspace-level surfaces (health + eval) — read the index directly; they
+  // work with or without a running daemon. Lazy import keeps `gaia mem add`
+  // from paying for node:sqlite.
+  if (sub === "status" || sub === "eval") {
+    const root = resolveWorkspaceRoot();
+    if (!root) return fail("ERROR: not inside a GAIA workspace (no .gaia/ here and no GAIA_ROOM_DIR).");
+    const { printMemoryStatus, runMemoryEval } = await import("./memory-eval.js");
+    if (sub === "status") {
+      console.log(await printMemoryStatus(root));
+      return 0;
+    }
+    // The eval measures the deployed pipeline, so it gets the same managed
+    // sidecar bring-up the daemon has (an already-listening server is reused;
+    // only a child spawned here is stopped on the way out).
+    const { EmbedSidecar } = await import("./embed-sidecar.js");
+    const sidecar = new EmbedSidecar({ log: (message) => console.error(message) });
+    try {
+      const report = await runMemoryEval(root, rest.positional[0]?.trim() || undefined, {
+        ensureLocalSidecar: (modelId) => sidecar.ensure(modelId),
+      });
+      console.log(report.text);
+      return report.ok ? 0 : 1;
+    } finally {
+      sidecar.dispose();
+    }
+  }
 
   // Reads: direct disk via the shared MemoryStore core.
   if (sub === "list" || sub === "read") {
@@ -93,35 +139,68 @@ async function runMem(args: string[]): Promise<number> {
     return result.ok ? 0 : 1;
   }
 
-  return fail(MEMORY_USAGE);
-}
-
-async function runRecall(args: string[]): Promise<number> {
-  const { positional, flags } = parseFlags(args);
-  const query = positional.join(" ").trim();
-  if (!query) return fail(RECALL_USAGE);
-  const parsed = Number.parseInt(flags.limit ?? "", 10);
-  const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 8;
-
-  // Hybrid search runs daemon-side (facts + episodes + room history, with the
-  // embedding index the daemon owns); the subprocess never holds a key.
-  if (env("GAIA_DAEMON_URL") && env("GAIA_DAEMON_TOKEN")) {
-    const result = await daemonPost("/api/harness/recall", { query, limit });
+  // Atomic batch (§5): all ops validate against the final budget, one commit.
+  if (sub === "batch") {
+    let operations: unknown;
+    try {
+      operations = JSON.parse(rest.positional.join(" ").trim() || "[]");
+    } catch (error) {
+      return fail(`ERROR: operations must be valid JSON: ${error instanceof Error ? error.message : String(error)}\n\n${MEMORY_USAGE}`);
+    }
+    if (!Array.isArray(operations) || !operations.length) return fail(`ERROR: operations must be a non-empty JSON array.\n\n${MEMORY_USAGE}`);
+    const result = await daemonPost("/api/harness/memory", { file, operations });
     console.log(result.text);
     return result.ok ? 0 : 1;
   }
 
-  // No daemon (bare CLI use): lexical room-history search, direct disk.
+  return fail(MEMORY_USAGE);
+}
+
+async function runRecall(args: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(args, new Set(["summarize"]));
+  const around = Number.parseInt(flags.around ?? "", 10);
+  const query = positional.join(" ").trim();
+  if (!query && !Number.isFinite(around)) return fail(RECALL_USAGE);
+  const parsed = Number.parseInt(flags.limit ?? "", 10);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 8;
+  const span = Number.parseInt(flags.span ?? "", 10);
+  const offset = Number.parseInt(flags.offset ?? "", 10);
+
+  // Deep search + scroll run daemon-side (facts + episodes + room history,
+  // with the embedding index and reranker the daemon owns); the subprocess
+  // never holds a key.
+  if (env("GAIA_DAEMON_URL") && env("GAIA_DAEMON_TOKEN")) {
+    const result = Number.isFinite(around)
+      ? await daemonPost("/api/harness/recall", {
+          around,
+          ...(Number.isFinite(span) ? { span } : {}),
+          ...(Number.isFinite(offset) ? { offset } : {}),
+        })
+      : await daemonPost("/api/harness/recall", { query, limit, ...(flags.summarize !== undefined ? { summarize: true } : {}) });
+    console.log(result.text);
+    return result.ok ? 0 : 1;
+  }
+
+  // No daemon (bare CLI use): the workspace memory index, direct disk,
+  // lexical-only. Lazy import so `gaia mem` never loads node:sqlite for nothing.
   const roomDir = env("GAIA_ROOM_DIR");
   if (!roomDir) return fail("ERROR: GAIA_ROOM_DIR is not set.");
-  // Lazy import so `gaia mem` invocations never load node:sqlite for nothing.
-  const { searchTranscript } = await import("../domain/recall.js");
-  const hits = searchTranscript(join(roomDir, "transcript.jsonl"), join(roomDir, "recall.db"), query, limit);
-  console.log(
-    hits.length
-      ? hits.map((hit) => `[${hit.timestamp}]${hit.channel === "voice" ? " 🎙" : ""} ${hit.author}: ${hit.snippet}`).join("\n")
-      : "no matches in the room history",
-  );
+  const { bareWorkspaceRecall, formatMemoryHits, scrollTranscriptWindow } = await import("../domain/workspace-index.js");
+  if (Number.isFinite(around)) {
+    const window = await scrollTranscriptWindow(workspaceRootFromRoomDir(roomDir), around, {
+      ...(Number.isFinite(span) ? { span } : {}),
+      ...(Number.isFinite(offset) ? { offset } : {}),
+    });
+    console.log(window ?? `no transcript hit with id ${around} — ids come from recall results ("hit N")`);
+    return 0;
+  }
+  const agentId = env("GAIA_AGENT_ID");
+  const memoryDir = env("GAIA_MEMORY_DIR");
+  const hits = await bareWorkspaceRecall(workspaceRootFromRoomDir(roomDir), query, {
+    ...(agentId && memoryDir ? { agentId, memoryDir } : {}),
+    limit,
+  });
+  console.log(hits.length ? formatMemoryHits(hits, { full: true }) : "no matches in memory or room history");
   return 0;
 }
 

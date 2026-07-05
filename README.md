@@ -433,16 +433,32 @@ turn defaults to `none` (the trusted lead runs wide open).
 
 ## Summons
 
-A summon is a private worker turn that runs as a **nested child room**. Trigger
-one from the composer with `/summon <agent> <task>`, or give an agent the
-`summon` tool and let it call workers itself. Each summon opens a sub-room under
-the calling room in the tabs tree; its transcript is its own, and the parent sees
-the worker's final result.
+A summon is a background worker turn that runs as a **nested child room** —
+gaia's subagent, and the ONE fan-out primitive for every harness. Trigger one
+from the composer with `/summon <agent> <task>`, or give an agent the `summon`
+tool and let it call workers itself. Launching **never blocks**: the caller's
+turn continues immediately, the worker runs in the background, and you can
+watch it live by opening its sub-room under the calling room in the tabs tree.
+
+When a worker finishes, its result is **delivered back into the calling room**:
+posted as a message from the worker, and — for agent-initiated summons — a turn
+is queued so the calling agent is re-invoked with the result (the callback).
+Failures are delivered the same way, loudly. Delivery is durable: it is stamped
+on the child room's state at launch, and a daemon restart resumes the worker's
+turn from the WAL and re-arms the delivery — a summon result is never lost.
 
 Fan several summons out at once and they run in parallel — that is the swarm.
 `maxSummonsPerRoom` in `.gaia/config.json` (default 8) bounds how many run
 concurrently per room. Summoned workers run sandboxed by default (see
 **Sandbox**).
+
+A harness's own subagent surface is suppressed and routed here instead: each
+harness declares its native fan-out tool names as data on its spec
+(`fanOutTools` — claude: Task/Agent/Workflow, what `/deep-research` used to
+fan out through), and its runtime disallows them on every turn. Opaque
+in-harness workers — invisible, unresumable, blocking the room for hours —
+don't exist anymore; all fan-out gets sub-rooms, durability, the sandbox +
+trust tier, and the callback.
 
 A summoned worker **cannot summon further workers by default** — it gets a scoped
 task, not the keys to spawn its own swarm (this bounds runaway fan-out). An agent

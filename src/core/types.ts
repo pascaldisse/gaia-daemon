@@ -109,16 +109,46 @@ export interface QueuedMessage {
    * another), not typed by a human — drain must treat it as plain text, never
    * parse it as a slash command, and it doesn't reset the dialogue hop count. */
   fromAgentDialogue?: boolean;
+  /** A harness-native command (e.g. "/deep-research …") that queued behind a
+   * busy turn — drain must run it as a command turn to its pinned target, not
+   * re-parse it as a slash command (which would just error). */
+  nativeCommand?: boolean;
   queuedAt: string;
+}
+
+/** Durable record on a summon CHILD room: how its result gets back to the
+ * parent room. Stamped at launch, marked "delivered" only after the callback
+ * landed — a daemon restart re-arms delivery from this record (the summon
+ * coordinator's boot sweep), so a summon result is never silently lost. */
+export interface SummonDelivery {
+  /** The summoned worker agent (authors the result message in the parent). */
+  agentId: string;
+  /** "note": result appended to the parent room; "turn": the note plus a
+   * queued turn for callerAgentId — the subagent callback. */
+  deliver: "note" | "turn";
+  /** Parent-room agent re-invoked with the result (deliver: "turn"). */
+  callerAgentId?: string;
+  status: "running" | "delivered";
+  launchedAt: string;
 }
 
 export interface RoomState {
   activeRoles: Record<string, string>;
   agentCursors: Record<string, number>;
+  /** Per-agent active-context floor: the transcript line index below which
+   * content is NOT in the agent's live context (never loaded via a context-gate
+   * choice, or evicted by /compact). Recall's self-match exclusion (CALMem,
+   * MEMORY-DESIGN.md §7) drops same-room hits AT/ABOVE the floor and keeps
+   * everything below it — compacted-away history must stay recallable.
+   * Absent = 0 = the whole room is in the agent's context. */
+  contextFloors?: Record<string, number>;
   /** Legacy v1 per-event details, read-only in v2 (new details go on the
    * transcript event itself). Preserved so old rooms keep their metadata. */
   runtimeDetails?: Record<string, EventDetails>;
   parentRoomId?: string;
+  /** Present on summon child rooms whose result must reach the parent room;
+   * see SummonDelivery. */
+  summon?: SummonDelivery;
   /** Display name when the room id alone isn't it (e.g. an imported chat's
    * original title). */
   title?: string;
@@ -267,6 +297,8 @@ export interface MemoryConfig {
   autoRecall: boolean;
   autoRecallBudget: number;
   embeddings: "auto" | "off" | MemoryEmbeddingsProviderConfig;
+  /** Deep-path reranker (local-only; "auto" = managed sidecar or GAIA_RERANK_URL). */
+  reranker: "auto" | "off";
   consolidate: MemoryConsolidateConfig;
   decayHalfLifeDays: number;
 }
@@ -275,6 +307,7 @@ export interface MemoryConfigPatch {
   autoRecall?: boolean;
   autoRecallBudget?: number;
   embeddings?: MemoryConfig["embeddings"];
+  reranker?: MemoryConfig["reranker"];
   consolidate?: Partial<MemoryConsolidateConfig>;
   decayHalfLifeDays?: number;
 }
@@ -361,6 +394,13 @@ export interface AgentDef {
    * otherwise-redacted reasoning streams. Off by default — mutates provider
    * requests, so it's a knowing choice like the credential proxy. */
   revealThinking?: boolean;
+  /** Opt in to harness-native slash commands (claude skills like
+   * `/deep-research`): an unrecognized `/command` is passed through to this
+   * agent's harness CLI verbatim instead of erroring. Off by default — it drops
+   * the harness's config isolation for that turn (claude runs with its skill
+   * surface enabled), so it's a knowing choice like revealThinking. Toggle with
+   * `/native`. Only harnesses that declare `supportsNativeCommands` honor it. */
+  nativeCommands?: boolean;
   sandbox?: SandboxConfig;
   /** Trust tier (default true). false → forced real sandbox, may never summon. */
   trust?: boolean;
@@ -480,6 +520,10 @@ export interface SlashCommandDefinition {
   type: string;
   description: string;
   aliases?: string[];
+  /** A harness-native passthrough command (advertised by a harness, not a gaia
+   * command): typing it routes a command turn to the active agent instead of
+   * being parsed by gaia. Drives autocomplete hints. */
+  native?: boolean;
 }
 
 export interface Snapshot {
@@ -515,6 +559,10 @@ export interface Snapshot {
   agents: AgentStatus[];
   tasks: Task[];
   thinkingLevels: string[];
+  /** Memory-subsystem degradation chips ("embedder dead", "index degraded") —
+   * absent/empty when healthy. Degradation is loud (MEMORY-DESIGN.md §10):
+   * the composer renders these like the model-fallback warning. */
+  memoryChips?: string[];
 }
 
 /** Active voice call binding, broadcast to clients and returned by voice/start. */

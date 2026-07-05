@@ -33,6 +33,14 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/recall the deploy incident"), { type: "recall", agent: undefined, query: "the deploy incident" });
   assert.deepEqual(parseCommand("/recall @terry lessons learned"), { type: "recall", agent: "terry", query: "lessons learned" });
   assert.deepEqual(parseCommand("/recall"), { type: "recall", agent: undefined, query: undefined });
+  assert.deepEqual(parseCommand("/native"), { type: "native", agent: undefined });
+  assert.deepEqual(parseCommand("/native on"), { type: "native", sub: "on" });
+  assert.deepEqual(parseCommand("/native list"), { type: "native", sub: "list" });
+  assert.deepEqual(parseCommand("/native @ari off"), { type: "native", agent: "ari", sub: "off" });
+  assert.deepEqual(parseCommand("/native ari"), { type: "native", agent: "ari" });
+  // A harness-native passthrough command (claude skill) is "unknown" to the
+  // parser — room-service decides whether to forward it based on agent config.
+  assert.deepEqual(parseCommand("/deep-research the topic"), { type: "unknown", command: "deep-research" });
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 

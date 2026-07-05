@@ -16,12 +16,14 @@ export const DEFAULTS = {
   port: 8787,
 } as const;
 
-// Memory v3 defaults (MEMORY-DESIGN.md): everything on, embeddings resolved
-// from whatever key exists, lexical-only when none does.
+// Memory v4 defaults (MEMORY-DESIGN.md): everything on. `auto` embeddings =
+// LOCAL sidecar or off — never a cloud key that happens to be lying in the
+// environment (§6). Budget is chars (~600 tokens, the context-rot sweet spot).
 export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecall: true,
-  autoRecallBudget: 1_200,
+  autoRecallBudget: 2_400,
   embeddings: "auto",
+  reranker: "auto",
   consolidate: { enabled: true, idleMinutes: 30, maxPerDay: 8 },
   decayHalfLifeDays: 60,
 };
@@ -142,6 +144,7 @@ export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
       ...(typeof raw.embeddings.envKey === "string" && raw.embeddings.envKey.trim() ? { envKey: raw.embeddings.envKey.trim() } : {}),
     };
   }
+  if (raw.reranker === "auto" || raw.reranker === "off") patch.reranker = raw.reranker;
   if (isRecord(raw.consolidate)) {
     const consolidate: Partial<MemoryConfig["consolidate"]> = {};
     if (typeof raw.consolidate.enabled === "boolean") consolidate.enabled = raw.consolidate.enabled;
@@ -166,6 +169,7 @@ export function resolveMemoryConfig(base: MemoryConfig, patch: MemoryConfigPatch
     autoRecall: patch.autoRecall ?? base.autoRecall,
     autoRecallBudget: patch.autoRecallBudget ?? base.autoRecallBudget,
     embeddings: patch.embeddings ?? base.embeddings,
+    reranker: patch.reranker ?? base.reranker,
     consolidate: { ...base.consolidate, ...patch.consolidate },
     decayHalfLifeDays: patch.decayHalfLifeDays ?? base.decayHalfLifeDays,
   };

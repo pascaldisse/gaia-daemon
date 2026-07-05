@@ -41,6 +41,36 @@ export function looksLikeSecret(content: string): boolean {
   return SECRET_PATTERNS.some((pattern) => pattern.test(content));
 }
 
+// Prompt-injection markers (MEMORY-DESIGN.md §5/§9): memory is always-injected
+// context, so an entry that tries to reprogram the agent is poison, not a
+// note. Deliberately tight — memory must stay able to DISCUSS injections
+// ("the room had an ignore-instructions attack") without tripping; these
+// match imperative phrasing only.
+const INJECTION_PATTERNS = [
+  /\bignore\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|messages|rules|prompts)\b/i,
+  /\bdisregard\s+(?:the\s+|your\s+)?(?:system\s+prompt|instructions|rules)\b/i,
+  /\bdo\s+not\s+(?:tell|inform|reveal\s+(?:this\s+)?to)\s+the\s+user\b/i,
+  /\byou\s+are\s+now\s+(?:in\s+)?(?:developer|dan|jailbreak)\s*mode\b/i,
+];
+
+/** Poison scan (write time AND snapshot build, §9). */
+export function looksLikePromptInjection(content: string): boolean {
+  return INJECTION_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+/** Why a write was rejected, or undefined when the content is storable. */
+function rejectionReason(content: string): string | undefined {
+  if (looksLikeSecret(content)) return "memory rejected: content looks like a secret (key/token/credential material)";
+  if (looksLikePromptInjection(content)) return "memory rejected: content looks like a prompt-injection attempt (imperative override phrasing)";
+  return undefined;
+}
+
+// Circuit breaker (§5): consecutive at-capacity failures on one file mean the
+// agent is stuck in a consolidate-retry loop — after BREAKER_LIMIT of them
+// the answer becomes terminal so a memory side-effect never eats the turn.
+const BREAKER_LIMIT = 3;
+const BREAKER_WINDOW_MS = 10 * 60_000;
+
 export interface MemoryState {
   file: string;
   path: string;
@@ -85,6 +115,9 @@ async function writeTextAtomic(path: string, content: string): Promise<void> {
 }
 
 export class MemoryStore {
+  /** At-capacity failure streaks per `${dir}:${file}` (circuit breaker, §5). */
+  private readonly capacityFailures = new Map<string, { count: number; last: number }>();
+
   async init(dir: string, displayName: string): Promise<void> {
     await ensureDir(dir);
     await writeIfMissing(join(dir, CORE_MEMORY_FILE), `# ${displayName} Memory\n\n`);
@@ -121,56 +154,107 @@ export class MemoryStore {
     action: MemoryAction,
     options: { content?: string; oldText?: string },
   ): Promise<MemoryMutationResult> {
-    const state = await this.readState(dir, file);
-    const content = (options.content ?? "").trim();
-    const oldText = (options.oldText ?? "").trim();
+    return this.mutateBatch(dir, file, [{ action, ...options }]);
+  }
 
-    if ((action === "add" || action === "replace") && !content) {
-      return { ok: false, message: "content is required", state };
-    }
-    if ((action === "replace" || action === "remove") && !oldText) {
-      return { ok: false, message: "old_text is required", state };
-    }
-    if (content && looksLikeSecret(content)) {
-      return { ok: false, message: "memory rejected: content looks like a secret (key/token/credential material)", state };
-    }
-    if (action !== "add" && !existsSync(state.path)) {
-      return { ok: false, message: `memory file not found: ${file}`, state };
-    }
+  /** Atomic batch (§5): every op validates against a WORKING copy and the
+   * FINAL result checks the budget once — all-or-nothing, one write, one
+   * `.bak`. Ends the multi-turn consolidate-retry dance. */
+  async mutateBatch(
+    dir: string,
+    file: string,
+    operations: Array<{ action: MemoryAction; content?: string; oldText?: string }>,
+  ): Promise<MemoryMutationResult> {
+    const state = await this.readState(dir, file);
+    if (!operations.length) return { ok: false, message: "operations are required", state };
+    const breakerKey = `${dir}:${file}`;
 
     let next = state.content;
-    if (action === "add") {
-      if (this.entries(state.content).some((entry) => entry.trim() === content)) {
-        return { ok: true, message: "duplicate memory skipped", state };
+    let applied = 0;
+    let skippedDuplicates = 0;
+    let touched = false;
+    for (const op of operations) {
+      const content = (op.content ?? "").trim();
+      const oldText = (op.oldText ?? "").trim();
+      if ((op.action === "add" || op.action === "replace") && !content) {
+        return { ok: false, message: "content is required", state };
       }
-      next = `${state.content.trimEnd()}\n\n${DELIMITER} ${new Date().toISOString()}\n${content}\n`;
-    } else {
-      const count = this.countOccurrences(state.content, oldText);
-      if (count !== 1) {
-        return { ok: false, message: `old_text must match exactly one memory region; matched ${count}`, state };
+      if ((op.action === "replace" || op.action === "remove") && !oldText) {
+        return { ok: false, message: "old_text is required", state };
       }
-      next =
-        action === "replace"
-          ? state.content.replace(oldText, content)
-          : state.content.replace(oldText, "").replace(/\n{3,}/g, "\n\n");
+      const rejected = content ? rejectionReason(content) : undefined;
+      if (rejected) return { ok: false, message: rejected, state };
+      if (op.action !== "add" && !existsSync(state.path)) {
+        return { ok: false, message: `memory file not found: ${file}`, state };
+      }
+
+      if (op.action === "add") {
+        if (this.entries(next).some((entry) => entry.trim() === content)) {
+          skippedDuplicates += 1;
+          continue;
+        }
+        next = `${next.trimEnd()}\n\n${DELIMITER} ${new Date().toISOString()}\n${content}\n`;
+      } else {
+        const count = this.countOccurrences(next, oldText);
+        if (count !== 1) {
+          // Drift (§5): the region the caller last saw is gone or ambiguous —
+          // likely edited out-of-band. Nothing was written; say to re-read.
+          return {
+            ok: false,
+            message: `old_text must match exactly one memory region; matched ${count}${count === 0 ? " — the file may have changed since you read it; re-read it and retry" : ""}`,
+            state,
+          };
+        }
+        next = op.action === "replace" ? next.replace(oldText, content) : next.replace(oldText, "").replace(/\n{3,}/g, "\n\n");
+        touched = true;
+      }
+      applied += 1;
+    }
+
+    if (applied === 0) {
+      return { ok: true, message: `duplicate memory skipped (${skippedDuplicates})`, state };
     }
 
     if (next.length > state.limit) {
+      // Circuit breaker (§5): count the at-capacity streak; from the Nth
+      // failure on, the answer is terminal — STOP retrying, answer the user.
+      // A write that FITS (a shrinking consolidation batch) always proceeds:
+      // the breaker ends the retry loop, it never locks the escape hatch.
+      const now = Date.now();
+      const streak = this.capacityFailures.get(breakerKey);
+      const failures = streak && now - streak.last < BREAKER_WINDOW_MS ? streak.count + 1 : 1;
+      this.capacityFailures.set(breakerKey, { count: failures, last: now });
+      if (failures > BREAKER_LIMIT) {
+        return {
+          ok: false,
+          message: `memory circuit breaker: ${failures} consecutive at-capacity writes to ${file} — STOP writing memory and answer the user; consolidate with ONE batch (remove/replace + add) or in a later turn`,
+          state,
+        };
+      }
+      const terminal =
+        failures === BREAKER_LIMIT
+          ? ` — memory circuit breaker armed after ${failures} at-capacity attempts: STOP writing memory and answer the user`
+          : "";
       return {
         ok: false,
-        message: `${file} limit exceeded (${next.length}/${state.limit} chars) - consolidate existing entries or move detail into a topic file`,
+        message: `${file} limit exceeded (${next.length}/${state.limit} chars) - consolidate existing entries or move detail into a topic file${terminal}`,
         state,
       };
     }
 
     await ensureDir(dir);
+    // Destructive edits snapshot the prior content first — one .bak per file,
+    // overwritten each time, never listed or injected (not a .md).
+    if (touched && state.content) await writeTextAtomic(`${state.path}.bak`, state.content);
     await writeTextAtomic(state.path, next);
+    this.capacityFailures.delete(breakerKey);
     const updated = await this.readState(dir, file);
     const pressure =
       updated.usage > CONSOLIDATE_THRESHOLD
         ? ` - ${file} is at ${Math.round(updated.usage * 100)}% capacity; consolidate entries or move detail into a topic file before adding more`
         : "";
-    return { ok: true, message: `${action} complete${pressure}`, state: updated };
+    const summary = operations.length === 1 ? `${operations[0].action} complete` : `batch complete: ${applied} applied${skippedDuplicates ? `, ${skippedDuplicates} duplicates skipped` : ""}`;
+    return { ok: true, message: `${summary}${pressure}`, state: updated };
   }
 
   // The block injected into the turn prompt: both core files plus a listing
@@ -184,7 +268,7 @@ export class MemoryStore {
       const info = files.find((item) => item.file === name);
       if (!info) continue;
       const state = await this.readState(dir, name);
-      sections.push(`## ${name} (${Math.round(info.usage * 100)}% of ${info.limit} chars)\n\n${state.content.trim()}`);
+      sections.push(`## ${name} (${Math.round(info.usage * 100)}% of ${info.limit} chars)\n\n${this.scrubForSnapshot(state.content, name).trim()}`);
     }
     const topics = files.filter((item) => item.file !== CORE_MEMORY_FILE && item.file !== USER_MEMORY_FILE);
     if (topics.length) {
@@ -209,6 +293,25 @@ export class MemoryStore {
       .slice(1)
       .map((entry) => entry.trim())
       .filter(Boolean);
+  }
+
+  /** Snapshot-time poison scan (§9): flagged entries render as [BLOCKED: …]
+   * in the injected block while the on-disk text stays intact and
+   * user-reviewable. Deterministic from disk bytes; the write scan catches new
+   * poison, this catches what predates it (or slipped past). */
+  private scrubForSnapshot(content: string, file: string): string {
+    const segments = content.split(new RegExp(`(\\n${DELIMITER}[^\\n]*\\n)`, "g"));
+    // segments = [preamble, delimiter, entry, delimiter, entry, …]
+    for (let i = 2; i < segments.length; i += 2) {
+      if (looksLikePromptInjection(segments[i])) {
+        segments[i] = `[BLOCKED: flagged entry — review ${file} in the memory dir]\n`;
+      }
+    }
+    // A poisoned preamble (no delimiter) blocks wholesale — never inject it.
+    if (segments.length && looksLikePromptInjection(segments[0])) {
+      segments[0] = `[BLOCKED: flagged content — review ${file} in the memory dir]\n`;
+    }
+    return segments.join("");
   }
 
   private countOccurrences(haystack: string, needle: string): number {

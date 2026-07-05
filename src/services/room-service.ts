@@ -33,6 +33,7 @@ import type {
   ModelFallback,
   PendingTurn,
   RoomEvent,
+  SlashCommandDefinition,
   Snapshot,
   Task,
   UiEvent,
@@ -43,9 +44,9 @@ import { estimateTokens } from "../core/tokens.js";
 import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
-import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.js";
+import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
-import { contextWindowFor, harnessIdFor } from "../harness/spec.js";
+import { capabilitiesFor, contextWindowFor, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
 import { renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
@@ -98,11 +99,19 @@ export interface RoomSchedulerHooks {
 /** The narrow slice of MemoryService a room needs (kept as an interface so
  * tests can fake it and the room never learns about embeddings/LLMs). */
 export interface RoomMemoryHooks {
-  autoRecallBlock(agentId: string, query: string): Promise<string>;
+  /** `context` is the asking agent's active window — same-room hits inside it
+   * are self-matches and excluded (MEMORY-DESIGN.md §7). */
+  autoRecallBlock(agentId: string, query: string, context?: ActiveContextRef): Promise<string>;
   capture(agentId: string, capture: EpisodeCapture): Promise<void>;
   consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
-  /** Ranked search over facts, episodes, and room history — backs /recall. */
-  search(agentId: string, query: string, request?: { limit?: number }): Promise<MemorySearchHit[]>;
+  /** Ranked search over facts, episodes, and room history — backs /recall.
+   * `degraded` notes are rendered, never dropped (§10). */
+  search(agentId: string, query: string, request?: { limit?: number; context?: ActiveContextRef }): Promise<{ hits: MemorySearchHit[]; degraded: string[] }>;
+  /** Deep-path variant (§8: reranked, chunk-window expanded) — explicit
+   * invocations (/recall) prefer it; absent → search. */
+  deepSearch?(agentId: string, query: string, request?: { limit?: number; context?: ActiveContextRef }): Promise<{ hits: MemorySearchHit[]; degraded: string[] }>;
+  /** Composer chips when the memory subsystem is degraded ([] = healthy). */
+  healthChips?(): Promise<string[]>;
 }
 
 export interface SendMessageOptions {
@@ -125,6 +134,10 @@ export interface SendMessageOptions {
   recallOverride?: string;
   /** Skip the context-gate check for this run (the resumed turn already chose). */
   bypassContextGate?: boolean;
+  /** This turn is a harness-native command (e.g. "/deep-research …") routed to
+   * the active agent: the runtime runs it as a raw command, and monad routing is
+   * bypassed. Set by sendMessage's native-passthrough detection. */
+  nativeCommand?: boolean;
 }
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
@@ -173,6 +186,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
+  native: (service, command) => (command.type === "native" ? service.runNativeCommand(command.agent, command.sub) : Promise.resolve("")),
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -339,12 +353,29 @@ export class RoomService {
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<Task> {
     await this.init();
 
-    const command = parseCommand(text);
+    let command = parseCommand(text);
+    // Harness-native passthrough: an unrecognized `/command` becomes a command
+    // TURN to the active agent when that agent opted into nativeCommands and its
+    // harness can run them (claude skills like /deep-research). Anything else
+    // stays the "unknown command" reply. Rewritten to a message turn here so it
+    // rides the normal WAL/queue/streaming path — just flagged nativeCommand.
+    if (command.type === "unknown") {
+      const target = await this.nativeCommandTarget();
+      const agent = this.workspace.agents[target];
+      if (agent?.nativeCommands && capabilitiesFor(harnessIdFor(agent, this.workspace)).supportsNativeCommands) {
+        command = { type: "message", text };
+        options = { ...options, targets: [target], nativeCommand: true };
+      }
+    }
     // Validate routing up-front so unknown-agent errors surface immediately,
     // whether the turn runs now or is queued behind a busy one.
     let targets: string[] = [];
     if (command.type === "message") {
-      targets = (await this.isMonadMessage(text, options)) ? await this.monadAuthor() : (options.targets ?? (await this.routeTargets(text)));
+      targets = options.nativeCommand
+        ? (options.targets ?? [])
+        : (await this.isMonadMessage(text, options))
+          ? await this.monadAuthor()
+          : (options.targets ?? (await this.routeTargets(text)));
       for (const target of targets) {
         if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
       }
@@ -375,6 +406,7 @@ export class RoomService {
         targets,
         ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
         ...(options.attachments?.length ? { attachments: options.attachments } : {}),
+        ...(options.nativeCommand ? { nativeCommand: true } : {}),
         queuedAt: task.startedAt,
       });
       this.queuedTasks.push(task);
@@ -421,8 +453,11 @@ export class RoomService {
     const task = chip ?? this.createTask(next.text, next.targets);
     try {
       // Agent-dialogue hand-offs are agent-authored text, never slash commands —
-      // skip command parsing (a reply opening with "/" is prose, not /clear).
-      const command = next.fromAgentDialogue ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
+      // skip command parsing (a reply opening with "/" is prose, not /clear). A
+      // native command already decided it's a command turn to a pinned target;
+      // re-parsing would just "unknown"-error it, so run it as a message too.
+      const command =
+        next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
       if (command.type !== "message") {
         task.status = "running";
         task.startedAt = new Date().toISOString();
@@ -436,6 +471,7 @@ export class RoomService {
         ...(next.channel ? { channel: next.channel } : {}),
         ...(next.attachments?.length ? { attachments: next.attachments } : {}),
         ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
+        ...(next.nativeCommand ? { nativeCommand: true } : {}),
       });
     } catch (error) {
       this.settleTask(task, "error", error);
@@ -491,10 +527,12 @@ export class RoomService {
     await this.enqueueAgentDialogue(targets, reply);
   }
 
-  /** Queue an agent→agent hand-off durably (runs when the current turn settles).
-   * The addressing reply is already in the transcript, so the turn replays it as
-   * the "newest message" WITHOUT re-recording (recordUserMessage:false, set by
-   * drain from the fromAgentDialogue flag). Never command-parsed. */
+  /** Queue an agent-authored turn durably. The addressing text is already in
+   * the transcript, so the turn replays it as the "newest message" WITHOUT
+   * re-recording (recordUserMessage:false, set by drain from the
+   * fromAgentDialogue flag). Never command-parsed. Backs both agent-dialogue
+   * hand-offs (queued mid-turn; settle drains) and summon callbacks (queued
+   * from outside; kick drain when idle). */
   private async enqueueAgentDialogue(targets: string[], text: string): Promise<void> {
     const task = this.createTask(text, targets);
     task.status = "queued";
@@ -502,6 +540,51 @@ export class RoomService {
     this.queuedTasks.push(task);
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
     void this.emitSnapshot();
+    if (!this.activeTask) void this.drain();
+  }
+
+  /** Deliver a background worker's result into this room (the summon callback):
+   * append the worker-authored message, then — when triggerTargets is given —
+   * queue a turn so the calling agent is re-invoked with the result. Rides the
+   * durable queue: a busy room runs it when the current turn settles; a crash
+   * in between re-drains it on boot. */
+  async deliverAgentResult(fromAgentId: string, text: string, triggerTargets?: string[]): Promise<void> {
+    await this.init();
+    await this.postAgentNote(fromAgentId, text);
+    const targets = (triggerTargets ?? []).filter((id) => this.workspace.agents[id]);
+    if (targets.length > 0) await this.enqueueAgentDialogue(targets, text);
+  }
+
+  /** Resolves when the room has FULLY settled: no running task, no durable
+   * pending turn, an empty queue — stable across two consecutive checks
+   * (init() resumes a prior process's turn asynchronously, so a single
+   * idle observation right after open can be a lie). Unlike waitForIdle
+   * (one task), this covers everything the room is still going to run —
+   * the summon-recovery wait. */
+  async waitForSettled(): Promise<void> {
+    await this.init();
+    let stable = 0;
+    for (;;) {
+      if (this.activeTask) {
+        stable = 0;
+        await this.waitForIdle();
+      }
+      const state = await this.room.state();
+      const settled = !this.activeTask && !state.pendingTurn && (state.queue?.length ?? 0) === 0;
+      stable = settled ? stable + 1 : 0;
+      if (stable >= 2) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  /** Mark this (summon child) room's durable delivery record as delivered —
+   * called by the coordinator AFTER the result landed in the parent room, so
+   * a crash in between re-delivers instead of losing the result. */
+  async markSummonDelivered(): Promise<void> {
+    await this.init();
+    await this.room.updateState((state) => {
+      if (state.summon) state.summon.status = "delivered";
+    });
   }
 
   /** A live-only system line in the room (not persisted) — used for transient
@@ -578,7 +661,9 @@ export class RoomService {
   // --- the turn --------------------------------------------------------------
 
   private async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    if (await this.isMonadMessage(text, options)) {
+    // A native command is already pinned to the active agent — it never fans out
+    // through the monad.
+    if (!options.nativeCommand && (await this.isMonadMessage(text, options))) {
       await this.runMonadTask(task, text, options);
       return;
     }
@@ -663,10 +748,15 @@ export class RoomService {
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
       // miss and room-service treats "" as absent. A context-gate "compact"
-      // resume overrides it with the room summary for this one turn.
+      // resume overrides it with the room summary for this one turn. The
+      // active-context ref lets recall drop self-matches from THIS room while
+      // keeping compacted-away history reachable.
       const recall = options.recallOverride?.trim()
         ? options.recallOverride
-        : (await this.options.memory?.autoRecallBlock(target, text)) || undefined;
+        : (await this.options.memory?.autoRecallBlock(target, text, {
+            roomId: this.roomId,
+            floorIdx: state.contextFloors?.[target] ?? 0,
+          })) || undefined;
 
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
@@ -683,6 +773,7 @@ export class RoomService {
             channel: options.channel,
             thinking: options.thinking,
             recall,
+            ...(options.nativeCommand ? { nativeCommand: true } : {}),
           },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
@@ -804,11 +895,18 @@ export class RoomService {
     };
     if (choice === "last") {
       const keep = Number.isInteger(n) && (n as number) > 0 ? (n as number) : CONTEXT_GATE_LAST_N;
-      await this.sendMessage(gate.message, { ...base, cursorOverride: Math.max(0, gate.totalEvents - keep) });
+      const start = Math.max(0, gate.totalEvents - keep);
+      // Everything before the loaded tail never reaches this agent's context —
+      // recall may (must) reach it (active-context floor, MEMORY-DESIGN.md §7).
+      await this.setContextFloor(gate.agentId, start);
+      await this.sendMessage(gate.message, { ...base, cursorOverride: start });
       return;
     }
     if (choice === "compact") {
       const summary = await this.summarizeRoom(gate.agentId, gate.totalEvents);
+      // The agent gets a summary, not the raw history — the raw events below
+      // the gate point stay recall-reachable.
+      await this.setContextFloor(gate.agentId, gate.totalEvents);
       await this.sendMessage(gate.message, {
         ...base,
         cursorOverride: gate.totalEvents, // no raw transcript — the summary IS the context
@@ -817,7 +915,30 @@ export class RoomService {
       return;
     }
     // "full": load everything from the room's start. bypass avoids re-gating.
+    await this.setContextFloor(gate.agentId, 0);
     await this.sendMessage(gate.message, { ...base, cursorOverride: 0 });
+  }
+
+  /** Persist an agent's active-context floor: the transcript line index below
+   * which content is NOT in its live context (context-gate choice or /compact).
+   * Recall keeps everything below the floor reachable and treats everything at
+   * or above it as already-in-context (self-match exclusion). */
+  private async setContextFloor(agentId: string, floorIdx: number): Promise<void> {
+    await this.room.updateState((current) => {
+      if (floorIdx <= 0) {
+        if (current.contextFloors) delete current.contextFloors[agentId];
+        return;
+      }
+      current.contextFloors = { ...(current.contextFloors ?? {}), [agentId]: floorIdx };
+    });
+  }
+
+  /** The asking agent's active-context window in THIS room — what recall's
+   * self-match exclusion needs (daemon passes it for harness recall calls). */
+  async recallContext(agentId: string): Promise<ActiveContextRef> {
+    await this.init();
+    const state = await this.room.state();
+    return { roomId: this.roomId, floorIdx: state.contextFloors?.[agentId] ?? 0 };
   }
 
   /** One LLM pass distilling the room (up to the gate point) into a briefing for
@@ -928,6 +1049,10 @@ export class RoomService {
     await this.emitSnapshot();
     try {
       const message = await runtime.compact(this.roomId);
+      // The harness just evicted this agent's raw history into a summary —
+      // everything up to now is recall-reachable again (active-context floor).
+      const { nextCursor } = await this.room.eventsFrom(0);
+      await this.setContextFloor(target, nextCursor);
       return `@${target}: ${message}`;
     } catch (error) {
       return `Compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
@@ -957,9 +1082,12 @@ export class RoomService {
     const target = agent ?? this.workspace.config.defaultAgent;
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     if (!this.options.memory) return "Memory recall is not available in this workspace.";
-    const hits = await this.options.memory.search(target, trimmed, { limit: RECALL_COMMAND_LIMIT });
-    if (!hits.length) return `No matches for "${trimmed}" in @${target}'s memory or room history.`;
-    return `Recall @${target} — "${trimmed}":\n${formatMemoryHits(hits)}`;
+    const context = await this.recallContext(target);
+    const deep = this.options.memory.deepSearch?.bind(this.options.memory) ?? this.options.memory.search.bind(this.options.memory);
+    const { hits, degraded } = await deep(target, trimmed, { limit: RECALL_COMMAND_LIMIT, context });
+    const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
+    if (!hits.length) return `${header}No matches for "${trimmed}" in @${target}'s memory or room history.`;
+    return `Recall @${target} — "${trimmed}":\n${header}${formatMemoryHits(hits)}`;
   }
 
   /** /rewind: room-level checkpoint rollback. Truncates the transcript after
@@ -1283,6 +1411,71 @@ export class RoomService {
     }
   }
 
+  // --- harness-native commands (passthrough) ------------------------------------
+
+  /** The agent a bare `/native-command` routes to: whoever the room is actively
+   * addressing, else the workspace default. */
+  private async nativeCommandTarget(): Promise<string> {
+    const state = await this.room.state();
+    const active = state.activeAgent;
+    if (active && this.workspace.agents[active]) return active;
+    return this.workspace.config.defaultAgent;
+  }
+
+  /** Does this agent accept harness-native slash-command passthrough right now? */
+  private agentAllowsNativeCommands(agent: AgentDef): boolean {
+    return agent.nativeCommands === true && capabilitiesFor(harnessIdFor(agent, this.workspace)).supportsNativeCommands;
+  }
+
+  /** The `/`-command palette: gaia commands + the harness-native commands
+   * advertised by every agent that opted in (deduped, gaia names win). Native
+   * ones are hints only — passthrough still forwards anything typed. */
+  private paletteCommands(): SlashCommandDefinition[] {
+    const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
+    const native: SlashCommandDefinition[] = [];
+    for (const agent of Object.values(this.workspace.agents)) {
+      if (!this.agentAllowsNativeCommands(agent)) continue;
+      for (const command of nativeCommandsFor(harnessIdFor(agent, this.workspace))) {
+        if (seen.has(command.name)) continue;
+        seen.add(command.name);
+        native.push({ name: command.name, type: "native", description: command.description, native: true });
+      }
+    }
+    return native.length ? [...SLASH_COMMANDS, ...native] : SLASH_COMMANDS;
+  }
+
+  /** /native: toggle harness-native slash-command passthrough for an agent, or
+   * list what its harness advertises. Persists to agent.json like /thinking. */
+  async runNativeCommand(agentId: string | undefined, sub: "on" | "off" | "list" | undefined): Promise<string> {
+    const target = agentId ?? (await this.nativeCommandTarget());
+    const agent = this.workspace.agents[target];
+    if (!agent) return this.unknownAgentMessage(target);
+    const harnessId = harnessIdFor(agent, this.workspace);
+    if (!capabilitiesFor(harnessId).supportsNativeCommands) {
+      return `@${agent.id}'s harness (${harnessId}) has no native slash commands to pass through.`;
+    }
+    if (sub === "list" || !sub) {
+      const advertised = nativeCommandsFor(harnessId);
+      const state = agent.nativeCommands ? "on" : "off";
+      const list = advertised.length
+        ? advertised.map((command) => `  /${command.name} — ${command.description}`).join("\n")
+        : "  (none advertised — any /command still passes through)";
+      return `Native commands for @${agent.id}: ${state}.\nGrant the agent web/read/bash tools so a skill can act.\n${list}\n\nToggle: /native ${agent.id} on|off`;
+    }
+    const enabled = sub === "on";
+    const configPath = agent.projectConfigPath ?? agent.configPath;
+    const config = ((await readJson(configPath)) ?? {}) as Record<string, unknown>;
+    if (enabled) config.nativeCommands = true;
+    else delete config.nativeCommands;
+    await writeJsonAtomic(configPath, config);
+    agent.nativeCommands = enabled ? true : undefined;
+    await this.emitSnapshot();
+    await this.reloadAfterAgentConfigWrite(agent);
+    return enabled
+      ? `Enabled native commands for @${agent.id}. Type e.g. /deep-research <query>. (Grant web/read/bash tools for a skill to act.)`
+      : `Disabled native commands for @${agent.id}.`;
+  }
+
   async renderAgentsList(): Promise<string> {
     const state = await this.room.state();
     return Object.values(this.workspace.agents)
@@ -1437,8 +1630,10 @@ export class RoomService {
     if (!agentId || !task) return "Usage: /summon <agent> <task>";
     const agent = this.workspace.agents[agentId];
     if (!agent) return this.unknownAgentMessage(agentId);
-    const childRoomId = await this.options.summonHost.summon(this.roomId, agent.id, task);
-    return `Summoned @${agent.id} in room '${childRoomId}'. Open it from the rooms list (under this room) to watch or steer.`;
+    // Human-initiated: the result comes back as a note in THIS room (no agent
+    // turn to trigger — the human reads it).
+    const childRoomId = await this.options.summonHost.summon(this.roomId, agent.id, task, { deliver: "note" });
+    return `Summoned @${agent.id} in room '${childRoomId}'. Open it from the rooms list (under this room) to watch or steer; its result will be posted back here when it finishes.`;
   }
 
   async runSetupCommand(command: { sub?: string; id?: string; room?: string }): Promise<string> {
@@ -1573,7 +1768,7 @@ export class RoomService {
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
       },
       rooms: await this.listRooms(),
-      commands: SLASH_COMMANDS,
+      commands: this.paletteCommands(),
       agents: await Promise.all(
         Object.values(this.workspace.agents).map(async (agent) => ({
           id: agent.id,
@@ -1598,7 +1793,19 @@ export class RoomService {
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
       thinkingLevels: sdkThinkingLevels(),
+      // Degradation is loud (§10): the composer shows these like the
+      // model-fallback warning. Best-effort — health can never break a snapshot.
+      ...(await this.memoryChips()),
     };
+  }
+
+  private async memoryChips(): Promise<{ memoryChips?: string[] }> {
+    try {
+      const chips = (await this.options.memory?.healthChips?.()) ?? [];
+      return chips.length ? { memoryChips: chips } : {};
+    } catch {
+      return {};
+    }
   }
 
   async listRooms(): Promise<Snapshot["rooms"]> {
@@ -1702,6 +1909,18 @@ export class RoomService {
     const agent = this.workspace.agents[agentId];
     if (!agent) throw new Error(this.unknownAgentMessage(agentId));
     return this.options.memoryStore.mutate(agent.memoryDir, file, action, options);
+  }
+
+  /** Atomic batch memory write (§5): validated against the FINAL budget,
+   * committed under one write — same guarded path as single ops. */
+  async mutateAgentMemoryBatch(
+    agentId: string,
+    file: string,
+    operations: Array<{ action: MemoryAction; content?: string; oldText?: string }>,
+  ): Promise<MemoryMutationResult> {
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+    return this.options.memoryStore.mutateBatch(agent.memoryDir, file, operations);
   }
 
   // --- internals ---------------------------------------------------------------

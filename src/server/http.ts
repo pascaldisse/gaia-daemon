@@ -19,6 +19,7 @@ import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
+import { summonAck } from "../services/summons.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
 
@@ -343,6 +344,10 @@ export class GaiaWebServer {
       return;
     }
 
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/memory\/status$/))) {
+      return this.respond(response, async () => ({ health: await this.daemon.memoryHealth(params![0]) }));
+    }
+
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms$/))) {
       const body = await parseBody(request);
       const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
@@ -482,7 +487,8 @@ export class GaiaWebServer {
       if (!agentId || !taskText?.trim()) return json(response, 400, { error: "Missing agentId or task" });
       try {
         const coordinator = await this.daemon.coordinatorFor(params[0]);
-        const childRoomId = await coordinator.summon(params[1], agentId, taskText.trim());
+        // UI-initiated: the human reads the result as a note in the parent room.
+        const childRoomId = await coordinator.summon(params[1], agentId, taskText.trim(), { deliver: "note" });
         json(response, 202, { roomId: childRoomId });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -679,6 +685,28 @@ export class GaiaWebServer {
     const body = await parseBody(request);
 
     if (pathname === "/api/harness/memory") {
+      // Batch mode (§5): operations validate together against the FINAL
+      // budget and commit atomically — one write, all-or-nothing.
+      const rawOps = (body as Record<string, unknown>).operations;
+      if (Array.isArray(rawOps)) {
+        const operations = rawOps
+          .filter((op): op is Record<string, unknown> => !!op && typeof op === "object")
+          .filter((op) => op.action === "add" || op.action === "replace" || op.action === "remove")
+          .map((op) => ({
+            action: op.action as MemoryAction,
+            ...(typeof op.content === "string" ? { content: op.content } : {}),
+            ...(typeof op.old_text === "string" ? { oldText: op.old_text } : typeof op.oldText === "string" ? { oldText: op.oldText } : {}),
+          }));
+        if (!operations.length) return json(response, 400, { error: "operations must be a non-empty array of {action, content?, old_text?}" });
+        try {
+          const result = await this.daemon.harnessMemoryBatch(claims, stringField(body, "file") ?? "MEMORY.md", operations);
+          const head = `${result.ok ? "OK" : "ERROR"}: ${result.message}`;
+          json(response, 200, { result: result.ok ? `${head}\n\n${result.state.content}` : head, ok: result.ok, message: result.message });
+        } catch (error) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
       const action = stringField(body, "action") as MemoryAction | undefined;
       if (action !== "add" && action !== "replace" && action !== "remove") {
         return json(response, 400, { error: "action must be add, replace, or remove" });
@@ -697,12 +725,31 @@ export class GaiaWebServer {
     }
 
     if (pathname === "/api/harness/recall") {
+      const numberField = (name: string): number | undefined => {
+        const raw = (body as Record<string, unknown>)[name];
+        return typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : undefined;
+      };
+      // Scroll mode (§8): a raw transcript window around a prior hit id.
+      const around = numberField("around");
+      if (around !== undefined) {
+        const span = numberField("span");
+        const offset = numberField("offset");
+        try {
+          const result = await this.daemon.harnessRecallScroll(claims, around, {
+            ...(span !== undefined ? { span } : {}),
+            ...(offset !== undefined ? { offset } : {}),
+          });
+          json(response, 200, { ok: true, result, hits: [] });
+        } catch (error) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
       const query = stringField(body, "query")?.trim();
       if (!query) return json(response, 400, { error: "query is required" });
-      const rawLimit = (body as Record<string, unknown>).limit;
-      const limit = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.floor(rawLimit) : undefined;
       try {
-        const { result, hits } = await this.daemon.harnessRecall(claims, query, limit);
+        const summarize = (body as Record<string, unknown>).summarize === true;
+        const { result, hits } = await this.daemon.harnessRecall(claims, query, numberField("limit"), { summarize });
         json(response, 200, { ok: true, result, hits });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -710,30 +757,24 @@ export class GaiaWebServer {
       return;
     }
 
-    // /api/harness/summon
+    // /api/harness/summon — ALWAYS fire-and-forget, for every harness and every
+    // transport: the caller's turn never blocks on a worker. The worker runs in
+    // its own sub-room (nested in the sidebar, watchable live); when it settles,
+    // the coordinator posts its result back into the calling room and queues a
+    // turn for the calling agent — the subagent callback, durable across
+    // restarts. (The old `wait: true` blocking mode is gone: it froze the
+    // calling room for the whole worker run.)
     if (!claims.allowSummon) return json(response, 403, { error: "Summoned agents cannot summon." });
     const targetAgent = stringField(body, "agent") ?? stringField(body, "agentId");
     const task = stringField(body, "task");
     if (!targetAgent || !task?.trim()) return json(response, 400, { error: "Missing agent or task" });
-    // Default fire-and-forget: the worker runs in its own sub-room (nested under
-    // this one in the sidebar) and the caller's turn continues immediately. Only
-    // a caller that can afford to block for the whole worker turn passes
-    // `wait: true` (the in-process swarm bridge, which collects results in-turn);
-    // a Bash-transport caller (`gaia summon`) must NOT, or the harness's tool
-    // timeout SIGKILLs the command mid-summon. This is a data flag, never a
-    // per-harness branch.
-    const wait = (body as Record<string, unknown>).wait === true;
     try {
       const coordinator = await this.daemon.coordinatorFor(claims.workspaceId);
-      if (wait) {
-        json(response, 200, { result: await coordinator.summonAndWait(claims.roomId, targetAgent, task.trim()) });
-      } else {
-        const roomId = await coordinator.summon(claims.roomId, targetAgent, task.trim());
-        json(response, 200, {
-          roomId,
-          result: `Summoned @${targetAgent} — now running in sub-room '${roomId}', nested under this room in the sidebar. This returned immediately; the worker keeps going in the background. Read its sub-room transcript for the result.`,
-        });
-      }
+      const roomId = await coordinator.summon(claims.roomId, targetAgent, task.trim(), {
+        deliver: "turn",
+        callerAgentId: claims.agentId,
+      });
+      json(response, 200, { roomId, result: summonAck(targetAgent, roomId) });
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }

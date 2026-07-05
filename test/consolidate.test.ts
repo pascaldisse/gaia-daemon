@@ -291,6 +291,7 @@ test("MemoryService.consolidate: concurrent calls are guarded per agent", async 
     release = resolve;
   });
   const service = new MemoryService({
+    workspaceRoot: root,
     workspaceMemory: memConfig,
     agents: () => ({ gaia: agent }),
     memoryStore: new MemoryStore(),
@@ -309,4 +310,85 @@ test("MemoryService.consolidate: concurrent calls are guarded per agent", async 
   const firstResult = await first;
   assert.equal(firstResult.ran, true, "the in-flight run completes normally");
   service.dispose();
+});
+
+// --- P4: two-scope facts + user_stated immutability (§5, §13) ---------------------------
+
+test("scope routing: workspace-scope adds land in the shared store with actor; agent scope stays home", async () => {
+  const dir = await memDir();
+  const shared = await memDir();
+  const store = new MemoryStore();
+  await appendEpisode(dir, episode());
+  const llm = cannedLlm(
+    JSON.stringify([
+      { kind: "fact-add", text: "The user prefers absolute dates everywhere in notes and facts", scope: "workspace" },
+      { kind: "fact-add", text: "I read the user as trusting me more after the June repair", scope: "agent" },
+      { kind: "fact-add", text: "Default scope stays agent when the model names none" },
+    ]),
+  );
+  const result = await runConsolidation({ memoryDir: dir, agentId: "gaia", memoryStore: store, llm, maxPerDay: 8, sharedFactsDir: shared, now: NOW });
+  assert.equal(result.factsAdded, 3);
+
+  const sharedFacts = replayFacts((await readFactOpsFrom(shared, 0)).items).active;
+  assert.equal(sharedFacts.length, 1);
+  assert.match(sharedFacts[0].text, /absolute dates/);
+  assert.equal(sharedFacts[0].scope, "workspace");
+  assert.equal(sharedFacts[0].actor, "agent:gaia");
+
+  const agentFacts = replayFacts((await readFactOpsFrom(dir, 0)).items).active;
+  assert.equal(agentFacts.length, 2);
+  assert.ok(agentFacts.every((fact) => fact.scope === undefined), "agent-scope facts carry no scope field (v3-compatible)");
+});
+
+test("shared facts feed dedupe and the prompt; a workspace fact can be superseded in ITS store", async () => {
+  const dir = await memDir();
+  const shared = await memDir();
+  const store = new MemoryStore();
+  await appendFactOp(shared, {
+    op: "add", id: "f_shared_old", ts: "2026-06-01T00:00:00.000Z",
+    text: "the user works from Berlin", source: "consolidator", scope: "workspace", actor: "agent:gaia", validFrom: "2026-06-01T00:00:00.000Z",
+  });
+  await appendEpisode(dir, episode());
+  const calls: ConsolidateLlmInput[] = [];
+  const llm = cannedLlm(
+    JSON.stringify([
+      { kind: "fact-add", text: "The user works from Berlin" }, // dup of the SHARED fact → skip
+      { kind: "fact-add", text: "The user relocated to Hamburg in June 2026", scope: "workspace", invalidates: "f_shared_old" },
+    ]),
+    calls,
+  );
+  const result = await runConsolidation({ memoryDir: dir, agentId: "gaia", memoryStore: store, llm, maxPerDay: 8, sharedFactsDir: shared, now: NOW });
+  assert.ok(calls[0].user.includes("works from Berlin"), "shared facts render in the prompt");
+  assert.ok(calls[0].user.includes("· workspace]"), "scope marker shown");
+  assert.equal(result.opsSkipped, 1, "cross-store duplicate dropped");
+  assert.equal(result.factsAdded, 1);
+  assert.equal(result.factsInvalidated, 1);
+
+  const { all } = replayFacts((await readFactOpsFrom(shared, 0)).items);
+  const old = all.get("f_shared_old");
+  assert.ok(old?.validTo, "superseded in the shared store");
+  assert.ok(old?.supersededBy);
+});
+
+test("user_stated is immutable to the consolidator: bare invalidate drops; supersession is allowed", async () => {
+  const dir = await memDir();
+  const store = new MemoryStore();
+  await seedFact(dir, "f_user", "the user said the daemon must keep running on :8787");
+  await appendEpisode(dir, episode());
+
+  // Bare invalidate → skipped.
+  const bare = await run(dir, store, cannedLlm(JSON.stringify([{ kind: "fact-invalidate", id: "f_user" }])));
+  assert.equal(bare.factsInvalidated, 0);
+  assert.equal(bare.opsSkipped, 1);
+  let facts = replayFacts((await readFactOpsFrom(dir, 0)).items);
+  assert.equal(facts.all.get("f_user")?.validTo, undefined, "user_stated fact untouched");
+
+  // Supersession (fact-add + invalidates) → allowed, record preserved.
+  await appendEpisode(dir, episode({ id: `ep_${(seq += 1)}` }));
+  const supersede = await run(dir, store, cannedLlm(JSON.stringify([{ kind: "fact-add", text: "The user moved the daemon to port 9900 on 2026-06-30", invalidates: "f_user" }])), { force: true });
+  assert.equal(supersede.factsAdded, 1);
+  assert.equal(supersede.factsInvalidated, 1);
+  facts = replayFacts((await readFactOpsFrom(dir, 0)).items);
+  assert.ok(facts.all.get("f_user")?.validTo, "superseded, not erased");
+  assert.ok(facts.all.get("f_user")?.supersededBy, "points at the newer truth");
 });

@@ -24,6 +24,8 @@ export const globalPaths = {
   voiceLogsDir: () => join(gaiaHome(), "logs", "voice"),
   /** Derived read-aloud audio, content-addressed per speech chunk. */
   ttsCacheDir: () => join(gaiaHome(), "cache", "tts"),
+  /** Local model files (embedding/reranker GGUFs) pulled once, checksummed. */
+  modelsCacheDir: () => join(gaiaHome(), "cache", "models"),
 };
 
 // --- per-agent layout (inside an agent dir, global or project overlay) ------
@@ -51,10 +53,20 @@ export const workspacePaths = {
   roomDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId),
   transcript: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "transcript.jsonl"),
   roomState: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "state.json"),
-  recallDb: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "recall.db"),
+  /** Memory v4 (MEMORY-DESIGN.md): ONE derived index per workspace. */
+  memoryDir: (rootDir: string) => join(rootDir, ".gaia", "memory"),
+  memoryIndexDb: (rootDir: string) => join(rootDir, ".gaia", "memory", "index.db"),
+  memoryEval: (rootDir: string) => join(rootDir, ".gaia", "memory", "eval.json"),
   roomFilesDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "files"),
   piSessionsDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "pi-sessions"),
 };
+
+/** Invert workspacePaths.roomDir: <root>/.gaia/rooms/<id> → <root>. The bare
+ * CLI fallbacks (no daemon) only get GAIA_ROOM_DIR and need the workspace
+ * memory index, which is root-scoped. */
+export function workspaceRootFromRoomDir(roomDir: string): string {
+  return resolve(roomDir, "..", "..", "..");
+}
 
 /** Bundled resources (setups/, web/) shipped inside the install itself. */
 export function bundledDir(...segments: string[]): string {

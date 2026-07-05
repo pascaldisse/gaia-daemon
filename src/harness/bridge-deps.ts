@@ -5,7 +5,7 @@
 
 import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
-import type { MemorySearchHit } from "../domain/memory-index.js";
+import type { MemorySearchHit } from "../domain/workspace-index.js";
 import { LLM_PROXY_MOUNT } from "./protocol.js";
 import type { HarnessHost, RecallSearch, SummonCreate } from "./spec.js";
 
@@ -41,27 +41,35 @@ export class BridgeMemoryStore extends MemoryStore {
   }
 }
 
-/** recallSearch that POSTs to the daemon (hybrid search runs daemon-side:
- * embeddings keys and the fact/episode index never enter this process). */
+/** recallSearch that POSTs to the daemon (deep search + reranker run
+ * daemon-side: embeddings keys and the fact/episode index never enter this
+ * process). `scroll` rides the same endpoint via `around`. */
 export function bridgeRecallSearch(target: DaemonTarget): RecallSearch {
-  return async (query, limit) => {
+  const search = async (query: string, limit?: number) => {
     const { ok, payload } = await daemonPost(target, "/api/harness/recall", { query, ...(limit ? { limit } : {}) });
     if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "recall failed");
     return Array.isArray(payload.hits) ? (payload.hits as MemorySearchHit[]) : [];
   };
+  return Object.assign(search, {
+    scroll: async (hitId: number, options?: { span?: number; offset?: number }) => {
+      const { ok, payload } = await daemonPost(target, "/api/harness/recall", { around: hitId, ...(options?.span ? { span: options.span } : {}), ...(options?.offset ? { offset: options.offset } : {}) });
+      if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "recall scroll failed");
+      return typeof payload.result === "string" ? payload.result : "";
+    },
+  });
 }
 
 /** summonCreate that POSTs to the daemon's summon endpoint (the coordinator).
- * In-process tool bridge (Pi/Codex swarm): passes `wait: true` so the call
- * resolves with the worker's final reply — the whole point of a fan-out is to
- * collect and synthesize. (The `gaia summon` CLI verb, on a Bash transport that
- * would be SIGKILLed at the harness tool timeout, omits `wait` and returns as
- * soon as the sub-room is launched.) */
+ * ALWAYS fire-and-forget — a summon never blocks the calling turn, on any
+ * harness or transport. The call resolves with a launch acknowledgment; the
+ * worker's result is delivered back into the calling room by the coordinator
+ * (a message from the worker plus a queued turn for the caller) when it
+ * settles — the subagent callback. */
 export function bridgeSummonCreate(target: DaemonTarget): SummonCreate {
   return async ({ task, agentId }) => {
-    const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task, wait: true });
+    const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task });
     if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "summon failed");
-    return typeof payload.result === "string" ? payload.result : "(no output)";
+    return typeof payload.result === "string" ? payload.result : "summon launched";
   };
 }
 

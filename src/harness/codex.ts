@@ -290,6 +290,10 @@ const CODEX_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: true,
   supportsSteer: true,
   supportsCompact: true,
+  // Codex has no skill/slash-command passthrough surface.
+  supportsNativeCommands: false,
+  // Codex has no native subagent tool — its only fan-out is the gaia summon tool.
+  fanOutTools: [],
 };
 
 export class CodexRuntime implements AgentRuntime {

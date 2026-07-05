@@ -40,17 +40,20 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     id: "memory",
     cliVerbs: ["mem", "memory"],
     grant: "Bash(gaia mem:*)",
-    pointer: "- `gaia mem list|read|add|replace|remove` — your persistent memory",
+    pointer: "- `gaia mem list|read|add|replace|remove|batch` — your persistent memory (batch = several edits to one file, atomic, validated together)",
     makePiTool: async (ctx) => (await import("./tools-pi.js")).createMemoryTool(ctx.memoryStore, ctx.agent),
   },
   {
     id: "recall",
     cliVerbs: ["recall"],
     grant: "Bash(gaia recall:*)",
-    pointer: "- `gaia recall <query>` — full-text search of the room history",
+    pointer: "- `gaia recall <query>` — deep memory search (every room + your facts/episodes, semantically reranked); `gaia recall --around <hitId>` scrolls the raw transcript around a hit",
     makePiTool: async (ctx) => {
       const factory = await import("./tools-pi.js");
-      return factory.createRecallTool(ctx.recallSearch ?? factory.localRecallSearch(ctx.roomDir, ctx.roomId), ctx.roomId);
+      return factory.createRecallTool(
+        ctx.recallSearch ?? factory.localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir }),
+        ctx.roomId,
+      );
     },
   },
   {
@@ -58,7 +61,7 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     cliVerbs: ["summon"],
     grant: "Bash(gaia summon:*)",
     pointer:
-      '- `gaia summon <agent> "<task>"` — spin up a private worker agent in its own sub-room (nested under this room in the sidebar); returns immediately and the worker runs in the background — read its sub-room transcript for the result',
+      '- `gaia summon <agent> "<task>"` — spin up a background worker agent in its own sub-room (nested under this room in the sidebar); returns immediately, and when the worker finishes its result is posted back to this room and you are invoked to continue — never wait or poll for it',
     makePiTool: async (ctx) => (ctx.summonCreate ? (await import("./tools-pi.js")).createSummonTool(ctx.summonCreate, ctx.roomId) : null),
   },
 ];

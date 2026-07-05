@@ -3,7 +3,7 @@
 // claude-specific knowledge (flags, grants, wire shapes, cred env) lives HERE;
 // shared code sees only the HarnessSpec registered at the bottom.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -17,6 +17,7 @@ import {
   type AgentRuntime,
   type HarnessCapabilities,
   type HarnessHost,
+  type NativeCommandDef,
   registerHarness,
   type RuntimeCreateContext,
 } from "./spec.js";
@@ -320,6 +321,19 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   // /compact is supportsNonInteractive in the CLI: a headless resumed turn
   // with the prompt "/compact" compacts the session file durably.
   supportsCompact: true,
+  // Claude Code resolves skills/slash commands (/deep-research, /code-review, …)
+  // from a raw `-p` stdin when its command surface is enabled — so gaia can pass
+  // an unrecognized slash command straight through (see the native branch in
+  // send() + buildArgs). Off under --safe-mode, so a native turn swaps the
+  // isolation flags for --setting-sources ""/--strict-mcp-config.
+  supportsNativeCommands: true,
+  // Claude Code's own subagent surfaces: the Task/Agent tool and the Workflow
+  // orchestrator (what /deep-research fans out through). All suppressed via
+  // --disallowedTools on EVERY turn (see buildArgs) so fan-out routes through
+  // `gaia summon` instead: visible sub-rooms, durable turns, sandbox + trust,
+  // result callback — instead of opaque in-CLI workers that block the room
+  // thread for hours and die silently with the process.
+  fanOutTools: ["Task", "Agent", "Workflow"],
 };
 
 export class ClaudeRuntime implements AgentRuntime {
@@ -367,24 +381,32 @@ export class ClaudeRuntime implements AgentRuntime {
     const firstTurn = !room.started;
     const memoryChanged = this.sessions.memoryChanged(input.roomId, memory);
 
+    // A native command (/deep-research …) is handed to the CLI VERBATIM: the
+    // slash command only resolves when it is the whole stdin, so we skip the
+    // usual room/memory/transcript wrapping and run the skills-enabled flag
+    // profile (see buildArgs). The resumed session still carries prior context.
+    const native = input.nativeCommand === true;
     const systemPrompt = await this.buildSystemPrompt(input);
-    const prompt = buildTurnPrompt({
-      roomId: input.roomId,
-      agentId: this.agent.id,
-      message: input.message,
-      events: input.transcript,
-      memory: memoryChanged ? memory : undefined,
-      recall: input.recall,
-      channel: input.channel,
-      attachments: input.attachments,
-    });
-    const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking);
+    const prompt = native
+      ? input.message.trim()
+      : buildTurnPrompt({
+          roomId: input.roomId,
+          agentId: this.agent.id,
+          message: input.message,
+          events: input.transcript,
+          memory: memoryChanged ? memory : undefined,
+          recall: input.recall,
+          channel: input.channel,
+          attachments: input.attachments,
+        });
+    const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking, native);
 
     // Pasted images go in natively via stream-json INPUT: one user message
     // whose content pairs the turn prompt with base64 image blocks (the same
     // wire the Agent SDK uses). Text-only turns keep the plain stdin prompt —
-    // the long-proven path stays untouched.
-    const images = await loadNativeImages(input.attachments);
+    // the long-proven path stays untouched. A native command is pure command
+    // text, so it never carries an image payload.
+    const images = native ? [] : await loadNativeImages(input.attachments);
     if (images.length > 0) args.push("--input-format", "stream-json");
     const stdinPayload =
       images.length > 0
@@ -759,7 +781,13 @@ export class ClaudeRuntime implements AgentRuntime {
     }
   }
 
-  private buildArgs(sessionId: string, firstTurn: boolean, systemPrompt: string, thinkingOverride: string | undefined): string[] {
+  private buildArgs(
+    sessionId: string,
+    firstTurn: boolean,
+    systemPrompt: string,
+    thinkingOverride: string | undefined,
+    native = false,
+  ): string[] {
     const grant = buildClaudeToolGrant(this.agent.tools);
     // Configured MCP servers ride in as an inline --mcp-config JSON (safe-mode
     // already keeps the user's own MCP config out); `mcp__<name>` approves the
@@ -772,20 +800,38 @@ export class ClaudeRuntime implements AgentRuntime {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      SAFE_MODE,
+      // Isolation: normal turns use --safe-mode (no user CLAUDE.md/skills/hooks/
+      // commands). A native command NEEDS the skill/slash-command surface that
+      // --safe-mode kills, so it isolates a different way — no user setting
+      // sources + only gaia's --mcp-config — which keeps built-in skills
+      // (/deep-research …) resolving while still dropping the user's own config.
+      ...(native ? ["--setting-sources", "", "--strict-mcp-config"] : [SAFE_MODE]),
       "--system-prompt",
       systemPrompt,
       // Single comma-joined token: --tools/--allowedTools are variadic, so a
       // joined value keeps them from swallowing later flags. Tool/pattern names
       // contain no commas. "" disables all tools when the agent has none.
+      // A skill fans out across the built-in toolset (ToolSearch, Task, …), so a
+      // native turn exposes them all ("default") and still gates EXECUTION on the
+      // agent's own allow grant below — exposed-but-unapproved calls are denied.
       "--tools",
-      grant.tools.join(","),
+      native ? "default" : grant.tools.join(","),
+      // The harness's own fan-out tools are suppressed on EVERY turn (normal
+      // turns never expose them via --tools, but a native turn's "default"
+      // toolset would): all fan-out goes through `gaia summon`. Declared as
+      // capability data (fanOutTools), applied by this harness's own runtime.
+      ...(this.capabilities.fanOutTools.length > 0 ? ["--disallowedTools", this.capabilities.fanOutTools.join(",")] : []),
     ];
     if (mcpAllowed.length > 0) {
       args.push("--mcp-config", JSON.stringify({ mcpServers }));
     }
-    if (grant.allowedTools.length > 0 || mcpAllowed.length > 0) {
-      args.push("--allowedTools", [...grant.allowedTools, ...mcpAllowed].join(","));
+    // ToolSearch (the read-only "load more tool schemas" step every skill relies
+    // on) is auto-approved for native turns so a skill can reach its toolset; all
+    // other tools stay gated by the agent's configured grant (grant web/read/…
+    // to let a skill actually search/read).
+    const allowed = native ? [...grant.allowedTools, "ToolSearch"] : grant.allowedTools;
+    if (allowed.length > 0 || mcpAllowed.length > 0) {
+      args.push("--allowedTools", [...allowed, ...mcpAllowed].join(","));
     }
     // Posture knob as data: plan/acceptEdits/etc. live in the agent config, not
     // a hardcoded branch. Default (unset) leaves Claude's default behavior.
@@ -864,6 +910,71 @@ function realClaudeCredentials(): string {
   return join(homedir(), ".claude", ".credentials.json");
 }
 
+// ---------------------------------------------------------------------------
+// Native command discovery (autocomplete hints only)
+// ---------------------------------------------------------------------------
+//
+// Passthrough forwards ANY unrecognized slash command to the CLI, so this list
+// is a convenience for the composer's `/`-autocomplete — never a gate. It's
+// DISCOVERED, not a fixed table: on-disk skills/commands are enumerated, and a
+// small seed names the useful skills that ship INSIDE the claude binary (no
+// SKILL.md on disk to find). Memoized — this is claude-local knowledge the
+// shared layer only reads as NativeCommandDef data.
+
+// Skills shipped in the claude binary (not discoverable on disk). Seed, not a
+// hard list — anything typed still passes through even if absent here.
+const CLAUDE_BUILTIN_COMMANDS: NativeCommandDef[] = [
+  { name: "deep-research", description: "fan-out web research → a cited, fact-checked report" },
+  { name: "code-review", description: "review the current diff for bugs and cleanups" },
+  { name: "security-review", description: "security review of the pending changes" },
+  { name: "review", description: "review a GitHub pull request" },
+  { name: "run", description: "launch and drive this project's app to see a change working" },
+  { name: "verify", description: "exercise a change end-to-end and observe behavior" },
+  { name: "init", description: "initialize a CLAUDE.md with codebase documentation" },
+];
+
+/** Pull `description:` out of a SKILL.md frontmatter block (first line wins),
+ * trimmed to one short line. "" when absent/unreadable. */
+function skillDescription(skillMdPath: string): string {
+  try {
+    const text = readFileSync(skillMdPath, "utf8");
+    const match = /^description:\s*(.+)$/im.exec(text);
+    const raw = match?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+    return raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
+  } catch {
+    return "";
+  }
+}
+
+/** Skill directories (each holds a SKILL.md) directly under `dir`. */
+function skillCommandsIn(dir: string): NativeCommandDef[] {
+  if (!existsSync(dir)) return [];
+  const out: NativeCommandDef[] = [];
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const skillMd = join(dir, entry.name, "SKILL.md");
+      if (!existsSync(skillMd)) continue;
+      out.push({ name: entry.name, description: skillDescription(skillMd) || "harness skill" });
+    }
+  } catch {
+    /* unreadable dir — skip */
+  }
+  return out;
+}
+
+let claudeCommandsCache: NativeCommandDef[] | undefined;
+function discoverClaudeCommands(): NativeCommandDef[] {
+  if (claudeCommandsCache) return claudeCommandsCache;
+  const byName = new Map<string, NativeCommandDef>();
+  // Built-in seed first; discovered on-disk skills override with real descriptions.
+  for (const cmd of [...CLAUDE_BUILTIN_COMMANDS, ...skillCommandsIn(join(homedir(), ".claude", "skills"))]) {
+    byName.set(cmd.name, cmd);
+  }
+  claudeCommandsCache = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return claudeCommandsCache;
+}
+
 registerHarness({
   id: "claude",
   capabilities: CLAUDE_CAPABILITIES,
@@ -878,6 +989,7 @@ registerHarness({
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
+  nativeCommands: () => discoverClaudeCommands(),
   // A deep transcript cursor is only honest while this handle survives: the
   // session must have been ESTABLISHED (started) — a generated-but-never-run
   // id resumes nothing. load() also honors the legacy bare-harness key.

@@ -5,9 +5,13 @@
 import { join } from "node:path";
 import type { JsonlPage } from "../core/store.js";
 import { appendJsonl, readJsonlFrom } from "../core/store.js";
-import { looksLikeSecret } from "./memory.js";
+import { looksLikePromptInjection, looksLikeSecret } from "./memory.js";
 
 export type FactSource = "user_stated" | "outcome_verified" | "agent_inferred" | "consolidator";
+
+/** Where a fact lives (§5): agent = the persona's private memoryDir store;
+ * workspace = the shared store every persona's recall reads. */
+export type FactScope = "agent" | "workspace";
 
 export interface Fact {
   id: string;
@@ -16,6 +20,10 @@ export interface Fact {
   text: string;
   entities?: string[];
   source: FactSource;
+  /** Absent = agent-scope (v3 files are forward-compatible, §14). */
+  scope?: FactScope;
+  /** Who stated/learned it: "user:<name>" or "agent:<id>". */
+  actor?: string;
   validFrom: string;
   validTo?: string;
   supersededBy?: string;
@@ -27,6 +35,14 @@ export type FactOp =
 
 export const FACTS_FILE = "facts.jsonl";
 
+/** The workspace-shared store (§5): facts about the user/world, readable by
+ * every persona. Lives under <workspace>/.gaia/memory/shared/ so it rides the
+ * exact same reader/writer/indexer as an agent memoryDir — zero duplication. */
+export const WORKSPACE_FACTS_AGENT = "@workspace";
+export function sharedFactsDir(workspaceMemoryDir: string): string {
+  return join(workspaceMemoryDir, "shared");
+}
+
 export interface FactWriteResult {
   ok: boolean;
   message: string;
@@ -37,6 +53,9 @@ export async function appendFactOp(dir: string, op: FactOp): Promise<FactWriteRe
     if (!op.text.trim()) return { ok: false, message: "fact rejected: text is required" };
     if (looksLikeSecret(op.text)) {
       return { ok: false, message: "fact rejected: content looks like a secret" };
+    }
+    if (looksLikePromptInjection(op.text)) {
+      return { ok: false, message: "fact rejected: content looks like a prompt-injection attempt" };
     }
   }
   await appendJsonl(join(dir, FACTS_FILE), op);
@@ -61,6 +80,8 @@ function factOpFrom(raw: unknown): FactOp | undefined {
   if (record.op !== "add") return undefined;
   if (typeof record.text !== "string" || !SOURCES.includes(record.source as string)) return undefined;
   if (typeof record.validFrom !== "string") record.validFrom = record.ts;
+  if (record.scope !== undefined && record.scope !== "agent" && record.scope !== "workspace") delete record.scope;
+  if (record.actor !== undefined && typeof record.actor !== "string") delete record.actor;
   return record as unknown as FactOp;
 }
 

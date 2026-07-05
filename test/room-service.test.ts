@@ -649,8 +649,8 @@ test("/recall searches the target agent's memory and reports misses", async () =
     },
     async search(agentId, query) {
       searches.push({ agentId, query });
-      if (query.includes("nothing")) return [];
-      return [{ kind: "fact", text: "GAIA commits turns through a WAL", ts: "2026-07-01T00:00:00.000Z", score: 0.9 }];
+      if (query.includes("nothing")) return { hits: [], degraded: [] };
+      return { hits: [{ kind: "fact" as const, text: "GAIA commits turns through a WAL", ts: "2026-07-01T00:00:00.000Z", score: 0.9 }], degraded: [] };
     },
   };
   const { service, events } = await makeService({ memory });

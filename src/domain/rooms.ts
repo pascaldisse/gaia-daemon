@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ContextGatePending, EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, ToolDetail } from "../core/types.js";
+import type { ContextGatePending, EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -191,10 +191,28 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(raw.channel === "voice" ? { channel: "voice" as const } : {}),
       ...(attachments ? { attachments } : {}),
       ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
+      ...(raw.nativeCommand === true ? { nativeCommand: true } : {}),
       queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
     });
   }
   return queue.length > 0 ? queue : undefined;
+}
+
+/** A summon child room's pending result delivery (see SummonDelivery). A
+ * malformed record is dropped — the room still opens; only the callback is
+ * forfeited (and the coordinator logs recovery misses loudly). */
+function summonDeliveryFrom(value: unknown): SummonDelivery | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.agentId !== "string" || !value.agentId.trim()) return undefined;
+  const deliver = value.deliver === "turn" ? "turn" : value.deliver === "note" ? "note" : undefined;
+  if (!deliver) return undefined;
+  return {
+    agentId: value.agentId,
+    deliver,
+    ...(typeof value.callerAgentId === "string" && value.callerAgentId.trim() ? { callerAgentId: value.callerAgentId } : {}),
+    status: value.status === "delivered" ? "delivered" : "running",
+    launchedAt: typeof value.launchedAt === "string" ? value.launchedAt : new Date().toISOString(),
+  };
 }
 
 export function normalizeRoomState(value: unknown): RoomState {
@@ -207,15 +225,19 @@ export function normalizeRoomState(value: unknown): RoomState {
       )
     : undefined;
   const monad = monadFrom(value.monad);
+  const summon = summonDeliveryFrom(value.summon);
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
   const queue = queueFrom(value.queue);
   const contextUsage = contextUsageFrom(value.contextUsage);
   const contextGate = contextGateFrom(value.contextGate);
+  const contextFloors = cursorRecord(value.contextFloors);
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
+    ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
+    ...(summon ? { summon } : {}),
     ...(typeof value.title === "string" && value.title.trim() ? { title: value.title } : {}),
     ...(typeof value.imported === "string" && value.imported.trim() ? { imported: value.imported } : {}),
     ...(monad ? { monad } : {}),

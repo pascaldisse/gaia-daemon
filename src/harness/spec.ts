@@ -6,7 +6,7 @@
 
 import type { AgentDef, AgentEvent, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
-import type { MemorySearchHit } from "../domain/memory-index.js";
+import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
 
 // --- what a runtime consumes and produces ------------------------------------
@@ -29,6 +29,13 @@ export interface AgentInput {
   /** Auto-retrieved memory block for this turn ("" / absent = nothing cleared
    * the relevance gate). Turn-level overlay, never part of the session. */
   recall?: string;
+  /** This turn is a raw harness-native command (e.g. "/deep-research ..."):
+   * the harness hands `message` to its underlying CLI VERBATIM — no prompt
+   * wrapping, no memory/transcript overlay — with its own skill/slash-command
+   * surface enabled, so the CLI executes it as a command turn. Shared code only
+   * sets this for harnesses that declare `supportsNativeCommands`; any other
+   * harness ignores it and runs `message` as an ordinary turn. */
+  nativeCommand?: boolean;
 }
 
 export interface AgentRuntime {
@@ -87,6 +94,31 @@ export interface HarnessCapabilities {
    * session.compact, claude /compact, codex thread compaction)? Backs
    * /compact. */
   readonly supportsCompact: boolean;
+  /** Passes an UNRECOGNIZED gaia slash command through to its underlying CLI as
+   * a native command turn (claude runs it as a skill/slash-command with the
+   * command surface enabled). Backs "/deep-research"-style passthrough, gated
+   * per agent by AgentDef.nativeCommands. Harnesses with no such surface
+   * (codex, pi) declare false and never receive one. Absent on a runtime double
+   * ⇒ treated as false. */
+  readonly supportsNativeCommands: boolean;
+  /** The harness's OWN subagent/fan-out tool names (claude: Task/Agent/
+   * Workflow). gaia has exactly ONE fan-out primitive — the summon tool: every
+   * worker gets a visible sub-room, a durable resumable turn, the sandbox +
+   * trust tier, and result callback into the calling room. A harness's native
+   * fan-out would spawn OPAQUE workers inside the harness process (invisible,
+   * unresumable, blocking the room thread), so each harness declares the tools
+   * here as data and its own runtime suppresses them on every turn — never an
+   * id branch in shared code. Empty when the harness has no such surface. */
+  readonly fanOutTools: readonly string[];
+}
+
+/** A native (passthrough) slash command a harness advertises for the composer's
+ * `/`-autocomplete. Best-effort + non-exhaustive: passthrough forwards ANY
+ * unrecognized command, so an absent entry only means "not hinted", never
+ * "unavailable". */
+export interface NativeCommandDef {
+  name: string;
+  description: string;
 }
 
 export interface HarnessUi {
@@ -122,12 +154,18 @@ export interface RuntimeCreateContext {
   recallSearch?: RecallSearch;
 }
 
-/** Search long-term memory; hits are pre-ranked (see domain/memory-index). */
+/** Search long-term memory; hits are pre-ranked (see domain/workspace-index).
+ * `scroll` (optional capability) pages the raw transcript around a prior
+ * transcript hit id — the deep path's no-LLM pager (§8). */
 export interface RecallSearch {
   (query: string, limit?: number): Promise<MemorySearchHit[]>;
+  scroll?(hitId: number, options?: { span?: number; offset?: number }): Promise<string>;
 }
 
-/** Create a summon from inside a turn; resolves with the worker's final reply. */
+/** Create a background summon from inside a turn. Resolves IMMEDIATELY with a
+ * launch acknowledgment (never the result — a summon must not block the
+ * calling turn); the worker's result is delivered back into the calling room
+ * by the summon coordinator when it settles, re-invoking the caller. */
 export interface SummonCreate {
   (params: { roomId: string; agentId: string; task: string }): Promise<string>;
 }
@@ -160,6 +198,12 @@ export interface HarnessSpec {
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
    * Undefined when the harness can't say, so the UI shows tokens without a %. */
   contextWindow?(model: string | undefined): number | undefined;
+  /** Native passthrough commands this harness advertises for `/`-autocomplete
+   * (claude: its discoverable skills/commands). Data on the spec, read uniformly
+   * by the snapshot builder and unioned into the command palette only for agents
+   * that opted into nativeCommands. Non-exhaustive by design (see
+   * NativeCommandDef). Absent ⇒ the harness advertises none. */
+  nativeCommands?(): NativeCommandDef[];
   /** Does a durable session handle for (room, agent) survive on disk? Answered
    * from the harness's own persistence (claude/codex harness-sessions.json, pi
    * session files) WITHOUT spawning anything — a fresh daemon process is
@@ -200,6 +244,12 @@ export function capabilitiesFor(id: string): HarnessCapabilities {
  * Read uniformly by the context gate — each harness declares its own. */
 export function contextWindowFor(id: string, model: string | undefined): number | undefined {
   return registry.get(id)?.contextWindow?.(model);
+}
+
+/** Native passthrough commands a harness advertises for autocomplete ([] when
+ * none / unregistered). Read uniformly by the snapshot builder. */
+export function nativeCommandsFor(id: string): NativeCommandDef[] {
+  return registry.get(id)?.nativeCommands?.() ?? [];
 }
 
 /** The single harness parser: valid iff registered. */

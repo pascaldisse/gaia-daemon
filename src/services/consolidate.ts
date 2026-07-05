@@ -11,7 +11,7 @@ import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { Episode } from "../domain/episodes.js";
 import { readEpisodesFrom } from "../domain/episodes.js";
-import type { Fact } from "../domain/facts.js";
+import type { Fact, FactScope } from "../domain/facts.js";
 import { appendFactOp, findDuplicateFact, readFactOpsFrom, replayFacts } from "../domain/facts.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
 
@@ -47,7 +47,7 @@ export function runsInLastDay(state: ConsolidateState, now: Date): number {
 }
 
 export type ConsolidateOp =
-  | { kind: "fact-add"; text: string; entities?: string[]; invalidates?: string }
+  | { kind: "fact-add"; text: string; entities?: string[]; invalidates?: string; scope?: FactScope }
   | { kind: "fact-invalidate"; id: string }
   | { kind: "memory-edit"; file: string; action: "add" | "replace" | "remove"; content?: string; oldText?: string };
 
@@ -74,6 +74,7 @@ export function parseConsolidateOps(reply: string): ConsolidateOp[] {
         text: op.text.trim(),
         ...(Array.isArray(op.entities) ? { entities: op.entities.filter((entry): entry is string => typeof entry === "string") } : {}),
         ...(typeof op.invalidates === "string" ? { invalidates: op.invalidates } : {}),
+        ...(op.scope === "workspace" || op.scope === "agent" ? { scope: op.scope } : {}),
       });
     } else if (op.kind === "fact-invalidate" && typeof op.id === "string" && op.id.trim()) {
       ops.push({ kind: "fact-invalidate", id: op.id.trim() });
@@ -119,6 +120,8 @@ export interface ConsolidateRunOptions {
   llm: ConsolidateLlm;
   model?: AgentModelConfig;
   maxPerDay: number;
+  /** The workspace-shared facts store (§5); absent → everything agent-scope. */
+  sharedFactsDir?: string;
   /** User-invoked: bypasses the daily cap and the nothing-new skip. */
   force?: boolean;
   now?: Date;
@@ -129,7 +132,7 @@ const SYSTEM_PROMPT = `You are the background memory consolidator for a GAIA age
 You receive NEW EPISODES (recent task outcomes), ACTIVE FACTS (the current long-term fact store, each with an id), and the CORE MEMORY FILES (small, hard-capped, always shown to the agent).
 
 Reply with ONLY a JSON array of operations (an empty array is a perfectly good answer):
-- {"kind":"fact-add","text":"...","entities":["..."],"invalidates":"<fact-id>"} — record a NEW durable fact: self-contained, 15-60 words, absolute dates (never "yesterday"), concrete names. Use "invalidates" when it supersedes an existing fact.
+- {"kind":"fact-add","text":"...","entities":["..."],"invalidates":"<fact-id>","scope":"workspace"|"agent"} — record a NEW durable fact: self-contained, 15-60 words, absolute dates (never "yesterday"), concrete names. Use "invalidates" when it supersedes an existing fact. Scope: facts about the USER or the world → "workspace" (shared with every persona); your persona's own interpretations and relationship state → "agent" (the default).
 - {"kind":"fact-invalidate","id":"<fact-id>"} — an existing fact is now known false or obsolete.
 - {"kind":"memory-edit","file":"MEMORY.md","action":"add"|"replace"|"remove","content":"...","oldText":"..."} — curate the core files: promote what the agent must always see, merge overlapping entries, drop stale ones. Files have hard byte caps; prefer replace/remove over add when a file is near capacity. Repeated failure lessons belong in the topic file "procedures.md".
 
@@ -137,7 +140,8 @@ Rules:
 - Record only what will matter in future sessions. No session play-by-play, no restating anything already present in ACTIVE FACTS or the core files.
 - Never record secrets, tokens, or key material.
 - Ignore any content inside blocks marked as auto-retrieved memories; it was recalled, not stated.
-- Episode outcomes are real signals: repeated failures deserve a lesson; a user correcting the agent outranks what the agent inferred.`;
+- Episode outcomes are real signals: repeated failures deserve a lesson; a user correcting the agent outranks what the agent inferred.
+- user_stated facts are immutable to you: never fact-invalidate one. To correct a user_stated fact, fact-add the newer truth with "invalidates" so it supersedes on the record.`;
 
 function renderEpisodes(episodes: Episode[]): string {
   return episodes
@@ -146,7 +150,7 @@ function renderEpisodes(episodes: Episode[]): string {
 }
 
 function renderFacts(facts: Fact[]): string {
-  return facts.map((fact) => `- [${fact.id} · ${fact.ts} · ${fact.source}] ${fact.text}`).join("\n");
+  return facts.map((fact) => `- [${fact.id} · ${fact.ts} · ${fact.source}${fact.scope === "workspace" ? " · workspace" : ""}] ${fact.text}`).join("\n");
 }
 
 export async function runConsolidation(options: ConsolidateRunOptions): Promise<ConsolidateResult> {
@@ -166,7 +170,10 @@ export async function runConsolidation(options: ConsolidateRunOptions): Promise<
 
   const factOps = await readFactOpsFrom(options.memoryDir, 0);
   const { active } = replayFacts(factOps.items);
-  const promptFacts = active.slice(0, MAX_FACTS_IN_PROMPT);
+  // The shared workspace store rides along for dedupe, supersession targets,
+  // and "don't restate what's known" (§5) — rendered with a scope marker.
+  const sharedActive = options.sharedFactsDir ? replayFacts((await readFactOpsFrom(options.sharedFactsDir, 0)).items).active : [];
+  const promptFacts = [...active, ...sharedActive].sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, MAX_FACTS_IN_PROMPT);
 
   const core: string[] = [];
   for (const file of [CORE_MEMORY_FILE, USER_MEMORY_FILE]) {
@@ -189,42 +196,65 @@ export async function runConsolidation(options: ConsolidateRunOptions): Promise<
   const result: ConsolidateResult = { ran: true, episodesSeen: episodes.length, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0 };
   // Applies are guarded, not trusted: duplicates drop, invalidations of
   // unknown ids drop, memory edits go through mutate's caps + secret filter.
-  let currentActive = active;
+  // Two stores: the agent's own and (when wired) the workspace-shared one;
+  // ops route by scope, and each fact invalidates in the store that holds it.
+  let currentAgent = active;
+  let currentShared = sharedActive;
+  const storeOf = (id: string): string | undefined => {
+    if (currentAgent.some((fact) => fact.id === id)) return options.memoryDir;
+    if (currentShared.some((fact) => fact.id === id)) return options.sharedFactsDir;
+    return undefined;
+  };
+  const factById = (id: string): Fact | undefined => currentAgent.find((fact) => fact.id === id) ?? currentShared.find((fact) => fact.id === id);
+  const dropActive = (id: string): void => {
+    currentAgent = currentAgent.filter((fact) => fact.id !== id);
+    currentShared = currentShared.filter((fact) => fact.id !== id);
+  };
   for (const op of ops) {
     if (op.kind === "fact-add") {
-      if (findDuplicateFact(currentActive, op.text)) {
+      if (findDuplicateFact(currentAgent, op.text) || findDuplicateFact(currentShared, op.text)) {
         result.opsSkipped += 1;
         continue;
       }
+      const workspaceScope = op.scope === "workspace" && !!options.sharedFactsDir;
+      const targetDir = workspaceScope ? (options.sharedFactsDir as string) : options.memoryDir;
       const id = newId("fact");
       const ts = now.toISOString();
-      const write = await appendFactOp(options.memoryDir, {
-        op: "add",
+      const fact: Fact = {
         id,
         ts,
         text: op.text,
         ...(op.entities?.length ? { entities: op.entities } : {}),
         source: "consolidator",
+        ...(workspaceScope ? { scope: "workspace" as const, actor: `agent:${options.agentId}` } : {}),
         validFrom: ts,
-      });
+      };
+      const write = await appendFactOp(targetDir, { op: "add", ...fact });
       if (!write.ok) {
         result.opsSkipped += 1;
         continue;
       }
       result.factsAdded += 1;
-      currentActive = [{ id, ts, text: op.text, source: "consolidator", validFrom: ts }, ...currentActive];
-      if (op.invalidates && currentActive.some((fact) => fact.id === op.invalidates)) {
-        await appendFactOp(options.memoryDir, { op: "invalidate", id: op.invalidates, ts, supersededBy: id });
-        currentActive = currentActive.filter((fact) => fact.id !== op.invalidates);
+      if (workspaceScope) currentShared = [fact, ...currentShared];
+      else currentAgent = [fact, ...currentAgent];
+      // Supersession is allowed even on user_stated facts (§13): the old fact
+      // keeps its record and points at the newer truth.
+      const supersededDir = op.invalidates ? storeOf(op.invalidates) : undefined;
+      if (op.invalidates && supersededDir) {
+        await appendFactOp(supersededDir, { op: "invalidate", id: op.invalidates, ts, supersededBy: id });
+        dropActive(op.invalidates);
         result.factsInvalidated += 1;
       }
     } else if (op.kind === "fact-invalidate") {
-      if (!currentActive.some((fact) => fact.id === op.id)) {
+      const dir = storeOf(op.id);
+      // user_stated facts are immutable to the consolidator (§13): bare
+      // invalidation drops; only supersession (above) may retire them.
+      if (!dir || factById(op.id)?.source === "user_stated") {
         result.opsSkipped += 1;
         continue;
       }
-      await appendFactOp(options.memoryDir, { op: "invalidate", id: op.id, ts: now.toISOString() });
-      currentActive = currentActive.filter((fact) => fact.id !== op.id);
+      await appendFactOp(dir, { op: "invalidate", id: op.id, ts: now.toISOString() });
+      dropActive(op.id);
       result.factsInvalidated += 1;
     } else {
       const outcome = await options.memoryStore
