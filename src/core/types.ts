@@ -446,7 +446,7 @@ export interface AgentStatus {
   thinking?: string;
   activeRole?: string;
   roles: string[];
-  status: "idle" | "running" | "error";
+  status: "idle" | "running" | "error" | "compacting";
   isDefault: boolean;
 }
 

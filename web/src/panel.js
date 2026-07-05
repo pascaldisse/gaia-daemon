@@ -32,7 +32,7 @@ function renderPanel() {
         const roles = agent.roles ?? [];
         return h(
           "div",
-          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" ? "running" : ""} ${agent.activeRole ? "has-role" : ""}` },
+          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${agent.activeRole ? "has-role" : ""}` },
           h(
             "button",
             { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
@@ -44,6 +44,7 @@ function renderPanel() {
                 agent.displayName && agent.displayName.toLowerCase() !== agent.id.toLowerCase() ? agent.displayName : "",
                 agent.isDefault ? "main" : "",
                 agent.status === "running" ? "running" : "",
+                agent.status === "compacting" ? "compacting…" : "",
                 agent.voice ? `voice:${agent.voice}` : "",
                 agent.modelLabel,
               ]

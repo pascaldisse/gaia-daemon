@@ -170,7 +170,13 @@ export class RunnerHost implements AgentRuntime {
    * Generous timeout: compaction is an LLM summarization pass. */
   async compact(roomId: string): Promise<string> {
     if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
-    if (!this.child) return "nothing to compact — no active session yet.";
+    // A durable session on disk can be compacted even from a cold daemon (no
+    // turn since restart): spawn the runner so its harness resumes the persisted
+    // handle. Only when there's neither a live child NOR a durable session is
+    // there genuinely nothing to compact. hasDurableSession reads the spec's
+    // on-disk descriptor — uniform across harnesses, no id branch.
+    if (!this.child && !this.hasDurableSession(roomId)) return "nothing to compact — no active session yet.";
+    await this.ensureChild(roomId);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.compactWaiter = undefined;
@@ -308,6 +314,12 @@ export class RunnerHost implements AgentRuntime {
       if (this.activeChannel && !this.disposed) {
         this.failActive(new Error(`agent runner exited (${signal ? `signal ${signal}` : `code ${code}`}).`));
       }
+      // A death mid-request must settle any pending single-shot waiter too, or a
+      // /compact (or /steer) that spawned the runner would hang until its timeout.
+      if (this.compactWaiter && !this.disposed) {
+        this.compactWaiter({ ok: false, message: `agent runner exited during compaction (${signal ? `signal ${signal}` : `code ${code}`}).` });
+      }
+      if (this.steerWaiter && !this.disposed) this.steerWaiter(false);
     });
   }
 

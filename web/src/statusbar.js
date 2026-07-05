@@ -54,7 +54,7 @@ function renderStatusbar() {
   /** @type {Seg[]} */
   const segs = [];
   if (snapshot) {
-    const runningAgents = (snapshot.agents ?? []).filter((agent) => agent.status === "running").length;
+    const runningAgents = (snapshot.agents ?? []).filter((agent) => agent.status === "running" || agent.status === "compacting").length;
     const runningRooms = (snapshot.rooms ?? []).filter((room) => room.running).length;
     const running = runningAgents + runningRooms;
     segs.push({ text: snapshot.workspace.rootDir.split("/").filter(Boolean).pop() ?? snapshot.workspace.id, cls: "seg-head", title: snapshot.workspace.rootDir });

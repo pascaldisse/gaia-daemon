@@ -403,10 +403,12 @@ function AutocompleteRows(completion) {
 /** @param {Snapshot|null} snapshot */
 function runningLabel(snapshot) {
   const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
+  const compacting = (snapshot?.agents ?? []).filter((agent) => agent.status === "compacting").map((agent) => `@${agent.id}`);
   const summons = (snapshot?.rooms ?? []).filter((room) => room.running).length;
   const queued = (snapshot?.tasks ?? []).filter((task) => task.status === "queued").length;
   const parts = [];
   if (agents.length) parts.push(agents.join(", "));
+  if (compacting.length) parts.push(`compacting ${compacting.join(", ")}…`);
   if (summons) parts.push(`${summons} summon${summons === 1 ? "" : "s"}`);
   let label = parts.length ? `running: ${parts.join(" + ")}` : "running…";
   if (queued) label += ` · ${queued} queued`;

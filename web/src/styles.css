@@ -680,6 +680,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .dot { width: 7px; height: 7px; margin-top: 4px; background: var(--muted); box-shadow: 0 0 8px currentColor; }
 .dot.running { background: var(--warn); }
+.dot.compacting { background: var(--accent); animation: dot-pulse 1.2s ease-in-out infinite; }
 
 /* ============================================================
    settings editors (workspace panel + global modal)

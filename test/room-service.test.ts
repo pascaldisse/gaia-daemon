@@ -441,6 +441,80 @@ test("slash commands emit a system room-event and settle synchronously", async (
   assert.equal(unknown.status, "complete");
 });
 
+test("/compact runs on an idle room (does not self-block), shows a compacting status mid-pass, and persists its reply", async () => {
+  let serviceRef: RoomService | undefined;
+  let compactCalls = 0;
+  let statusDuringCompact: string | undefined;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+    // Declare native compaction and capture the live agent status mid-pass — the
+    // command must not trip on its own task, and the UI must see "compacting".
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: (roomId: string) => Promise<string> }).compact = async () => {
+      compactCalls += 1;
+      const snapshot = await serviceRef!.getSnapshot();
+      statusDuringCompact = snapshot.agents.find((agent) => agent.id === "gaia")?.status;
+      return "session compacted (999 tokens before).";
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  serviceRef = service;
+
+  const task = await service.sendMessage("/compact");
+  assert.equal(task.status, "complete");
+  assert.equal(compactCalls, 1, "harness compaction actually ran — the command did not self-block");
+  assert.equal(statusDuringCompact, "compacting", "the agent shows a compacting status while the pass runs");
+
+  // After settling, the status clears back to idle...
+  const after = await service.getSnapshot();
+  assert.equal(after.agents.find((agent) => agent.id === "gaia")?.status, "idle");
+
+  // ...and the reply is persisted so it survives a reload (not just a live flash).
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.ok(
+    transcript.some((event) => event.author === "system" && /session compacted \(999 tokens before\)/.test(event.text)),
+    "compaction reply is written to the transcript",
+  );
+});
+
+test("persisted system command replies are kept out of the agent's replayed context", async () => {
+  let seenTranscript: AgentInput["transcript"] | undefined;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "ok" } as AgentEvent]);
+    const original = runtime.send.bind(runtime);
+    runtime.send = async function* (input: AgentInput) {
+      seenTranscript = input.transcript;
+      yield* original(input);
+    } as typeof runtime.send;
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("hello"); // a normal exchange (user + agent)
+  await service.waitForIdle();
+  await service.sendMessage("/help"); // persists an @system reply to the transcript
+  await service.waitForIdle();
+
+  // A fresh agent joins → full replay from cursor 0. Its transcript must carry
+  // the human/agent turns but NOT the persisted /help system reply.
+  await service.sendMessage("@terry catch up");
+  await service.waitForIdle();
+
+  assert.ok(seenTranscript, "agent turn ran");
+  assert.ok(seenTranscript!.some((event) => event.author === "user"), "human events reach the agent");
+  assert.ok(!seenTranscript!.some((event) => event.author === "system"), "system command replies are filtered out of agent context");
+
+  // The /help reply is still on disk for the UI to render on reload.
+  const room = await RoomHandle.open(root, "default");
+  const { events: raw } = await room.eventsFrom(0);
+  assert.ok(
+    raw.some((event) => event.author === "system"),
+    "system reply persisted for the UI",
+  );
+});
+
 test("/steer injects into the RUNNING turn without queueing behind it", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));

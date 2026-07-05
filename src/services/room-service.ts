@@ -26,6 +26,7 @@ import type {
   AgentDef,
   AgentEvent,
   AgentModelConfig,
+  AgentStatus,
   ContextGatePending,
   EventDetails,
   MessageAttachment,
@@ -140,6 +141,11 @@ const CONTEXT_SUMMARY_SYSTEM = [
 /** Max hits a /recall command reply lists. */
 const RECALL_COMMAND_LIMIT = 8;
 
+/** Commands that rewrite the transcript itself (wipe / branch / truncate).
+ * Their reply is a live-only confirmation — persisting it would drop a stray
+ * event back into the history they just reset. */
+const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
+
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text. */
 type CommandHandler = (service: RoomService, command: SlashCommand) => Promise<string>;
@@ -173,6 +179,15 @@ export class RoomService {
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly bus = new Bus<UiEvent>();
   private activeTask: Task | undefined;
+  /** The active task ONLY when it's a streaming agent turn (via startTask) —
+   * never a synchronous slash command. `activeTask` covers both, so guards that
+   * mean "an agent is mid-turn" (e.g. /compact) must consult this instead, or
+   * they trip on the command's own task. */
+  private activeAgentTurn: Task | undefined;
+  /** Agents whose harness is mid-compaction, so the snapshot can show a live
+   * "compacting" status. Set around the uniform runtime.compact() call — every
+   * harness that declares supportsCompact gets it, with no harness branches. */
+  private readonly compactingAgents = new Set<string>();
   private recentTasks: Task[] = [];
   /** Tasks mirroring the DURABLE queue (state.queue) for snapshot chips. */
   private queuedTasks: Task[] = [];
@@ -375,6 +390,7 @@ export class RoomService {
     task.status = "running";
     task.startedAt = new Date().toISOString();
     this.activeTask = task;
+    this.activeAgentTurn = task;
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
 
     void this.runAgentTask(task, text, options).catch((error) => {
@@ -509,7 +525,13 @@ export class RoomService {
         options.cursorOverride === undefined &&
         (runtime.hasDurableSession?.(this.roomId) ?? true) === false;
       const cursor = options.cursorOverride ?? (sessionLost ? 0 : (state.agentCursors[target] ?? 0));
-      const { events, nextCursor } = await this.room.eventsFrom(cursor);
+      const { events: rawEvents, nextCursor } = await this.room.eventsFrom(cursor);
+      // System events (slash-command replies) are persisted for the human UI
+      // but are room chrome, not conversation — keep them out of what the agent
+      // sees so /help, /recall, /compact results never pollute its context. The
+      // cursor still counts them (nextCursor is from the raw page) so paging
+      // stays aligned with the on-disk transcript.
+      const events = rawEvents.filter((event) => event.author !== "system");
       if ((isNewAgent || sessionLost) && options.cursorOverride === undefined && !options.bypassContextGate && channel !== "voice") {
         const estTokens = estimateTokens(renderRoomTranscript(events));
         const threshold = this.workspace.config.contextGate?.warnAboveTokens ?? DEFAULT_CONTEXT_WARN_TOKENS;
@@ -803,13 +825,21 @@ export class RoomService {
     if (!runtime.capabilities.supportsCompact || !runtime.compact) {
       return `@${target}'s harness has no native session compaction.`;
     }
-    if (this.activeTask) return "A turn is running — /cancel it first, or wait for it to finish.";
+    // `activeTask` here is the /compact command's own task; only a real
+    // streaming agent turn should block compaction.
+    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    // Mark the agent "compacting" and push a snapshot so the UI shows progress
+    // for the whole (possibly long) harness pass, then clear it either way.
+    this.compactingAgents.add(target);
+    await this.emitSnapshot();
     try {
       const message = await runtime.compact(this.roomId);
-      await this.emitSnapshot();
       return `@${target}: ${message}`;
     } catch (error) {
       return `Compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      this.compactingAgents.delete(target);
+      await this.emitSnapshot();
     }
   }
 
@@ -1145,7 +1175,13 @@ export class RoomService {
     try {
       const handler = COMMANDS[command.type];
       const text = handler ? await handler(this, command) : `Unknown command. Try /help.`;
+      // Persist the reply so a command result (e.g. /compact) survives a reload
+      // instead of only flashing on the live stream. appendEvent both writes it
+      // to the transcript and emits the room-event to connected clients. Skip the
+      // transcript-structural commands: they reset/truncate history themselves, so
+      // a leftover confirmation would re-seed the room they just emptied.
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
+      if (!TRANSCRIPT_STRUCTURAL_COMMANDS.has(command.type)) await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
       this.settleTask(task, "complete");
     } catch (error) {
@@ -1456,7 +1492,11 @@ export class RoomService {
           thinking: agent.thinking,
           activeRole: state.activeRoles[agent.id],
           roles: await listAgentRoles(agent),
-          status: (this.activeTask?.targets.includes(agent.id) ? "running" : "idle") as "running" | "idle",
+          status: (this.compactingAgents.has(agent.id)
+            ? "compacting"
+            : this.activeTask?.targets.includes(agent.id)
+              ? "running"
+              : "idle") as AgentStatus["status"],
           isDefault: agent.id === this.workspace.config.defaultAgent,
         })),
       ),
@@ -1580,6 +1620,7 @@ export class RoomService {
     if (error !== undefined) task.error = error instanceof Error ? error.message : String(error);
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     if (this.activeTask?.id === task.id) this.activeTask = undefined;
+    if (this.activeAgentTurn?.id === task.id) this.activeAgentTurn = undefined;
     if (status === "error") {
       this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });

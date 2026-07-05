@@ -19,6 +19,20 @@ registerHarness({
   id: "stub",
   capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
   ui: { label: "Stub", description: "protocol test double" },
+  // No durable session on disk → a cold /compact has nothing to resume.
+  hasDurableSession: () => false,
+  create: () => {
+    throw new Error("not used: the runner subprocess is stubbed");
+  },
+});
+
+// Same protocol double, but it reports a durable on-disk session — so a cold
+// /compact (no child yet) must spawn the runner and compact the persisted handle.
+registerHarness({
+  id: "stub-durable",
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
+  ui: { label: "Stub (durable)", description: "protocol test double with a persisted session" },
+  hasDurableSession: () => true,
   create: () => {
     throw new Error("not used: the runner subprocess is stubbed");
   },
@@ -139,9 +153,31 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
   const temp = await createTempDir();
   try {
     const host = await makeHost(temp.path);
-    // No child yet → nothing to compact, no spawn.
+    // No child AND no durable session on disk → nothing to compact, no spawn.
     assert.equal(await host.compact("default"), "nothing to compact — no active session yet.");
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+    assert.equal(await host.compact("default"), "compacted default");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost /compact cold-spawns the runner when a durable session exists (no prior turn)", async () => {
+  const temp = await createTempDir();
+  try {
+    const stubPath = join(temp.path, "stub-runner.mjs");
+    await writeFile(stubPath, STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub-durable", // reports a persisted session
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+    });
+    // No turn has run this process-lifetime, but the harness has a durable
+    // session — /compact must spawn the runner and resume it, not bail.
     assert.equal(await host.compact("default"), "compacted default");
     host.dispose();
   } finally {
