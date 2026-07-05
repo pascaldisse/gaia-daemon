@@ -369,6 +369,12 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.setAgentRole(params![0], params![1], agentId.trim(), role.trim()));
     }
 
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/agent-dialogue$/))) {
+      const body = await parseBody(request);
+      const on = (body as { on?: unknown }).on === true;
+      return this.respond(response, () => this.daemon.setRoomAgentDialogue(params![0], params![1], on));
+    }
+
     // Attachment upload: the pasted file's bytes as the raw body, original
     // filename in ?name=. Returns the server-issued id the client echoes back
     // on the message send. Serving is GET on the same path + /<id>.

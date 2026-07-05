@@ -105,6 +105,10 @@ export interface QueuedMessage {
   targets: string[];
   channel?: "voice";
   attachments?: MessageAttachment[];
+  /** This message was produced by room agent-dialogue (one agent addressing
+   * another), not typed by a human — drain must treat it as plain text, never
+   * parse it as a slash command, and it doesn't reset the dialogue hop count. */
+  fromAgentDialogue?: boolean;
   queuedAt: string;
 }
 
@@ -137,6 +141,15 @@ export interface RoomState {
   /** Thanks-Dario mode: when a provider-side safeguard reroutes the model
    * mid-turn, the reviewer persona is asked for redaction suggestions. */
   thanksDario?: boolean;
+  /** The agent this room is currently talking to — the last one addressed
+   * (via @mention, a summon target, or an agent hand-off). A message with no
+   * leading @mention routes here; absent → the workspace defaultAgent seeds it.
+   * Per-room, unlike the workspace-wide defaultAgent. */
+  activeAgent?: string;
+  /** Room agent-dialogue: when on, an agent's reply that @mentions another
+   * known agent triggers that agent to respond in this room (bounded by a
+   * hop cap). Off by default — opt-in per room to avoid runaway loops. */
+  agentDialogue?: boolean;
 }
 
 /** A NEW agent was addressed in a room whose transcript would exceed the
@@ -491,6 +504,11 @@ export interface Snapshot {
     sanitize?: SanitizeStatus;
     /** A held first turn awaiting the human's context-size choice (modal). */
     contextGate?: ContextGatePending;
+    /** The agent this room is currently addressing — drives the composer's
+     * default target. Absent → the workspace defaultAgent stands in. */
+    activeAgent?: string;
+    /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
+    agentDialogue?: boolean;
   };
   rooms: RoomSummary[];
   commands: SlashCommandDefinition[];

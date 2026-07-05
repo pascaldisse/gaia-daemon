@@ -371,6 +371,15 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId), message };
   }
 
+  /** Toggle room agent-dialogue (agents replying to each other's @mentions). */
+  async setRoomAgentDialogue(workspaceId: string, roomId: string, on: boolean): Promise<SelectionPayload> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    await service.setAgentDialogue(on);
+    const snapshot = await service.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
   async setDefaultAgent(workspaceId: string, agentId: string): Promise<SelectionPayload> {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);

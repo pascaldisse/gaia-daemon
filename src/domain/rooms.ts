@@ -190,6 +190,7 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       targets,
       ...(raw.channel === "voice" ? { channel: "voice" as const } : {}),
       ...(attachments ? { attachments } : {}),
+      ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
       queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
     });
   }
@@ -223,6 +224,8 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(contextUsage ? { contextUsage } : {}),
     ...(contextGate ? { contextGate } : {}),
     ...(value.thanksDario === true ? { thanksDario: true } : {}),
+    ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
+    ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
   };
 }
 

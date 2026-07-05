@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
+import { AGENT_DIALOGUE_MAX_HOPS, RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
 import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson } from "../src/core/store.js";
@@ -1205,4 +1205,94 @@ test("a lost session in a BIG room is held by the context gate (reason: session-
   assert.equal(runtimes.get("gaia")!.sends, 6, "ran after the choice");
   assert.equal(captured.at(-1)!.transcript.length, 11, "full reload from event 0");
   assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll until `cond` holds — used to let an agent-dialogue chain drain, since
+ * waitForIdle only unblocks on the FIRST task to settle, not the hand-offs. */
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await cond()) return;
+    await sleep(10);
+  }
+  throw new Error("waitFor: timed out");
+}
+
+test("a bare message follows the room's active agent, not the workspace default", async () => {
+  const { service, root } = await makeService(); // gaia (default) + terry
+  await service.sendMessage("@terry hi there");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  assert.equal((await room.state()).activeAgent, "terry", "addressing terry makes it this room's active agent");
+  assert.equal((await service.getSnapshot()).room.activeAgent, "terry");
+
+  // No @mention → routes to the active agent (terry), NOT the workspace default (gaia).
+  const task = await service.sendMessage("you still there?");
+  await service.waitForIdle();
+  assert.equal(task.targets[0], "terry");
+  assert.deepEqual(
+    (await room.eventsFrom(0)).events.map((event) => event.author),
+    ["user", "terry", "user", "terry"],
+  );
+});
+
+test("agent-dialogue hands off to an @mentioned agent only when the room toggle is on", async () => {
+  const { service, root, runtimes } = await makeService({
+    runtimeFactory: (agent) =>
+      scriptedRuntime(agent, () =>
+        agent.id === "gaia"
+          ? [{ type: "text-delta", delta: "good question — @terry, your call" } as AgentEvent]
+          : [{ type: "text-delta", delta: "on it" } as AgentEvent],
+      ),
+  });
+  const room = await RoomHandle.open(root, "default");
+
+  // OFF (default): gaia's @terry is inert prose — no hand-off.
+  await service.sendMessage("@gaia kick off");
+  await service.waitForIdle();
+  assert.deepEqual((await room.eventsFrom(0)).events.map((event) => event.author), ["user", "gaia"]);
+  assert.equal(runtimes.get("terry")!.sends, 0, "no hand-off while the toggle is off");
+
+  // ON: gaia's @terry triggers terry to respond (gaia's reply is already in the
+  // transcript, so terry replays it as the newest message without re-recording).
+  await service.setAgentDialogue(true);
+  await service.sendMessage("@gaia kick off again");
+  // Wait for terry's reply to actually COMMIT (sends++ fires at send() start, before commit).
+  await waitFor(async () => (await room.eventsFrom(0)).events.some((event) => event.author === "terry"));
+  assert.equal(runtimes.get("terry")!.sends, 1);
+  const authors = (await room.eventsFrom(0)).events.map((event) => event.author);
+  assert.equal(authors.filter((a) => a === "terry").length, 1, "terry answered exactly once");
+  // Read the authoritative service snapshot (a fresh RoomHandle would cache a
+  // mid-chain state from the eventsFrom polling above).
+  assert.equal((await service.getSnapshot()).room.activeAgent, "terry", "the hand-off target becomes active");
+});
+
+test("agent-dialogue mutual @mentions terminate at the hop cap, and a human resets it", async () => {
+  const { service, runtimes } = await makeService({
+    runtimeFactory: (agent) =>
+      scriptedRuntime(agent, () =>
+        agent.id === "gaia"
+          ? [{ type: "text-delta", delta: "ping @terry" } as AgentEvent]
+          : [{ type: "text-delta", delta: "pong @gaia" } as AgentEvent],
+      ),
+  });
+  await service.setAgentDialogue(true);
+
+  const totalSends = () => runtimes.get("gaia")!.sends + runtimes.get("terry")!.sends;
+  await service.sendMessage("@gaia start the loop");
+  // 1 human-driven turn + AGENT_DIALOGUE_MAX_HOPS hand-offs, then the guard pauses it.
+  await waitFor(() => totalSends() >= 1 + AGENT_DIALOGUE_MAX_HOPS);
+  await sleep(150); // it must STOP, not keep looping
+  assert.equal(totalSends(), 1 + AGENT_DIALOGUE_MAX_HOPS, "the loop ran to the cap then halted");
+
+  // A human message ends the chain and re-arms the hop budget.
+  await service.sendMessage("@gaia go again");
+  await waitFor(() => totalSends() >= 2 * (1 + AGENT_DIALOGUE_MAX_HOPS));
+  await sleep(150);
+  assert.equal(totalSends(), 2 * (1 + AGENT_DIALOGUE_MAX_HOPS), "the human reset re-armed the dialogue");
 });

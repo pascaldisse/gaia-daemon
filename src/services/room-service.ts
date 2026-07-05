@@ -47,7 +47,7 @@ import { formatMemoryHits, type MemorySearchHit } from "../domain/memory-index.j
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { contextWindowFor, harnessIdFor } from "../harness/spec.js";
 import { renderRoomTranscript } from "../harness/prompt.js";
-import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
+import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
 import { runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
@@ -113,6 +113,9 @@ export interface SendMessageOptions {
   thinking?: string;
   /** Files attached to the message (already stored in the room's files dir). */
   attachments?: MessageAttachment[];
+  /** This turn was produced by room agent-dialogue (one agent addressing
+   * another), not a human — it doesn't reset the dialogue hop count. */
+  fromAgentDialogue?: boolean;
   // --- context-gate resume knobs (set only when replaying a held turn) --------
   /** Force this target's starting cursor (last-N loads a tail; compact loads
    * nothing raw). Also signals "already decided" so the gate never re-triggers. */
@@ -140,6 +143,10 @@ const CONTEXT_SUMMARY_SYSTEM = [
 
 /** Max hits a /recall command reply lists. */
 const RECALL_COMMAND_LIMIT = 8;
+
+/** Max consecutive agent→agent hand-offs before room agent-dialogue pauses and
+ * waits for a human. The toggle is the on/off; this is the runaway backstop. */
+export const AGENT_DIALOGUE_MAX_HOPS = 8;
 
 /** Commands that rewrite the transcript itself (wipe / branch / truncate).
  * Their reply is a live-only confirmation — persisting it would drop a stray
@@ -202,6 +209,11 @@ export class RoomService {
   /** A held first turn awaiting the human's context-size choice (durable copy in
    * state.contextGate); surfaced on the snapshot to drive the modal. */
   private contextGate: ContextGatePending | undefined;
+  /** Consecutive agent→agent hand-offs since the last human message. Bounds
+   * room agent-dialogue so a mutual @mention can't loop forever; reset to 0
+   * whenever a human speaks. In-memory (a runaway chain shouldn't outlive a
+   * restart anyway). */
+  private agentDialogueHops = 0;
   private initPromise: Promise<void> | undefined;
 
   constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
@@ -332,7 +344,7 @@ export class RoomService {
     // whether the turn runs now or is queued behind a busy one.
     let targets: string[] = [];
     if (command.type === "message") {
-      targets = (await this.isMonadMessage(text, options)) ? await this.monadAuthor() : options.targets ?? this.routeTargets(text);
+      targets = (await this.isMonadMessage(text, options)) ? await this.monadAuthor() : (options.targets ?? (await this.routeTargets(text)));
       for (const target of targets) {
         if (!this.workspace.agents[target]) throw new Error(this.unknownAgentMessage(target));
       }
@@ -408,7 +420,9 @@ export class RoomService {
     this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
     const task = chip ?? this.createTask(next.text, next.targets);
     try {
-      const command = parseCommand(next.text);
+      // Agent-dialogue hand-offs are agent-authored text, never slash commands —
+      // skip command parsing (a reply opening with "/" is prose, not /clear).
+      const command = next.fromAgentDialogue ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
       if (command.type !== "message") {
         task.status = "running";
         task.startedAt = new Date().toISOString();
@@ -421,14 +435,15 @@ export class RoomService {
         targets: next.targets,
         ...(next.channel ? { channel: next.channel } : {}),
         ...(next.attachments?.length ? { attachments: next.attachments } : {}),
+        ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
       });
     } catch (error) {
       this.settleTask(task, "error", error);
     }
   }
 
-  private routeTargets(text: string): string[] {
-    const route = planMentionRoute(text, Object.keys(this.workspace.agents), this.workspace.config.defaultAgent);
+  private async routeTargets(text: string): Promise<string[]> {
+    const route = planMentionRoute(text, Object.keys(this.workspace.agents), await this.roomDefaultTarget());
     if (!route.ok) {
       throw new Error(
         `Unknown agent: ${route.unknown.map((id) => `@${id}`).join(", ")}. Available agents: ${Object.keys(this.workspace.agents)
@@ -437,6 +452,79 @@ export class RoomService {
       );
     }
     return route.targets;
+  }
+
+  /** Fallback target for a message with no leading @mention: the room's active
+   * agent (the last one addressed here), or the workspace defaultAgent when the
+   * room has none yet — or its active agent was since removed. Per-room, so
+   * every room remembers who you were last talking to independently. */
+  private async roomDefaultTarget(): Promise<string> {
+    const active = (await this.room.state()).activeAgent;
+    return active && this.workspace.agents[active] ? active : this.workspace.config.defaultAgent;
+  }
+
+  /** Remember the agent a turn addressed as this room's active agent (persisted,
+   * best-effort). The last target of a broadcast wins — that's who a bare next
+   * message goes to. Skips unknown ids so a stale write can't wedge routing. */
+  private async rememberActiveAgent(targets: string[]): Promise<void> {
+    const next = [...targets].reverse().find((id) => this.workspace.agents[id]);
+    if (!next) return;
+    if ((await this.room.state()).activeAgent === next) return;
+    await this.room.updateState((state) => {
+      state.activeAgent = next;
+    });
+  }
+
+  /** Room agent-dialogue: after @author's reply commits, if the room toggle is
+   * on, let any OTHER known agent it @mentioned (anywhere in the reply) respond
+   * in this room. Bounded by AGENT_DIALOGUE_MAX_HOPS consecutive hand-offs since
+   * the last human message so a mutual @mention can't loop forever. */
+  private async maybeDispatchAgentDialogue(author: string, reply: string): Promise<void> {
+    if (!(await this.room.state()).agentDialogue) return;
+    const targets = mentionedAgents(reply, new Set(Object.keys(this.workspace.agents))).filter((id) => id !== author);
+    if (targets.length === 0) return;
+    if (this.agentDialogueHops >= AGENT_DIALOGUE_MAX_HOPS) {
+      this.emitSystemNote(`Agent dialogue paused after ${AGENT_DIALOGUE_MAX_HOPS} hops (loop guard) — send a message to continue.`);
+      return;
+    }
+    this.agentDialogueHops += 1;
+    await this.enqueueAgentDialogue(targets, reply);
+  }
+
+  /** Queue an agent→agent hand-off durably (runs when the current turn settles).
+   * The addressing reply is already in the transcript, so the turn replays it as
+   * the "newest message" WITHOUT re-recording (recordUserMessage:false, set by
+   * drain from the fromAgentDialogue flag). Never command-parsed. */
+  private async enqueueAgentDialogue(targets: string[], text: string): Promise<void> {
+    const task = this.createTask(text, targets);
+    task.status = "queued";
+    await this.room.enqueue({ taskId: task.id, text, targets, fromAgentDialogue: true, queuedAt: task.startedAt });
+    this.queuedTasks.push(task);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+    void this.emitSnapshot();
+  }
+
+  /** A live-only system line in the room (not persisted) — used for transient
+   * room notices like the agent-dialogue loop-guard pause. */
+  private emitSystemNote(text: string): void {
+    this.emit({
+      type: "room-event",
+      workspaceId: this.workspaceId,
+      roomId: this.roomId,
+      event: { id: newRoomEventId(), timestamp: new Date().toISOString(), author: "system", text },
+    });
+  }
+
+  /** Toggle room agent-dialogue (agents replying to each other's @mentions).
+   * Persisted per-room; resets the hop budget so a fresh enable starts clean. */
+  async setAgentDialogue(on: boolean): Promise<void> {
+    await this.init();
+    await this.room.updateState((state) => {
+      if (on) state.agentDialogue = true;
+      else delete state.agentDialogue;
+    });
+    this.agentDialogueHops = 0;
+    await this.emitSnapshot();
   }
 
   async cancelActiveTask(): Promise<Task | undefined> {
@@ -501,6 +589,10 @@ export class RoomService {
       const userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
     }
+    // A human message ends any agent-dialogue chain and resets its hop budget.
+    if (!options.fromAgentDialogue) this.agentDialogueHops = 0;
+    // This room is now talking to whoever this turn addresses.
+    await this.rememberActiveAgent(task.targets);
 
     const remaining = [...task.targets];
     for (const target of task.targets) {
@@ -651,6 +743,8 @@ export class RoomService {
 
       if (cancelled) return;
       remaining.shift();
+      // Let another agent this reply @mentions pick it up (room toggle + cap).
+      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -1473,6 +1567,8 @@ export class RoomService {
         events,
         eventTotal: all.length,
         ...(state.thanksDario ? { thanksDario: true } : {}),
+        ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
+        ...(state.agentDialogue ? { agentDialogue: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
       },

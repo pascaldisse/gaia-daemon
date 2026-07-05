@@ -167,3 +167,20 @@ export function planMentionRoute(message: string, agentIds: string[], defaultAge
 export function hasExplicitMention(text: string, agentIds: Set<string>): boolean {
   return leadingMentions(text).some((id) => agentIds.has(id));
 }
+
+// A known agent @mentioned ANYWHERE in the text. The `(?<![\w@])` guard skips
+// email locals (pascal@ari.com) and `@@` so only genuine addresses count.
+const ANY_MENTION = /(?<![\w@])@([a-z0-9_-]+)/gi;
+
+/** Every known agent @mentioned anywhere in `text`, lowercased and deduped in
+ * first-appearance order. Backs room agent-dialogue: an agent naming another
+ * agent anywhere in its reply hands off to them (unlike routing, which only
+ * honours the LEADING run). */
+export function mentionedAgents(text: string, agentIds: Set<string>): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(ANY_MENTION)) {
+    const id = match[1].toLowerCase();
+    if (agentIds.has(id) && !found.includes(id)) found.push(id);
+  }
+  return found;
+}

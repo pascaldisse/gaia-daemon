@@ -34,7 +34,7 @@ function renderTopbar() {
       text: state.voiceStatusText
         ? state.voiceStatusText
         : snapshot
-          ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.workspace.defaultAgent}`}`
+          ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
           : "idle",
     }),
   );

@@ -1,7 +1,7 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks. The workspace settings panel below it is owned by
 // the settings region, so streaming re-renders here never wipe an edit there.
-import { setAgentRole, setDefaultAgent } from "./actions.js";
+import { setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { registerRegion } from "./render.js";
@@ -15,12 +15,32 @@ function renderPanel() {
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
   const tasks = snapshot?.tasks ?? [];
+  // The agent this room is currently addressing: its remembered active agent,
+  // or the workspace default when it has none yet. Marks the "active" row and
+  // is who a bare next message goes to.
+  const activeAgent = snapshot ? (snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent) : undefined;
   panel.replaceChildren(
     h(
       "div",
       { class: "panel-head" },
       h("h2", { text: "Room" }),
       h("small", {}, snapshot?.room.statePath ? PathText(snapshot.room.statePath) : LinkedText("no room")),
+    ),
+    h(
+      "div",
+      { class: "room-toggle-wrap" },
+      snapshot
+        ? h(
+            "label",
+            { class: "room-toggle", title: "Let agents in this room reply to each other's @mentions. Off by default; bounded by a loop guard." },
+            h("input", {
+              type: "checkbox",
+              checked: Boolean(snapshot.room.agentDialogue),
+              onchange: (event) => void setRoomAgentDialogue(/** @type {HTMLInputElement} */ (event.target).checked),
+            }),
+            h("span", { text: "agents talk to each other" }),
+          )
+        : null,
     ),
     h("h3", { text: "agents" }),
     h(
@@ -32,7 +52,7 @@ function renderPanel() {
         const roles = agent.roles ?? [];
         return h(
           "div",
-          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${agent.activeRole ? "has-role" : ""}` },
+          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${agent.activeRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
           h(
             "button",
             { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
@@ -42,7 +62,8 @@ function renderPanel() {
               text: [
                 // Only when it says more than the id already does.
                 agent.displayName && agent.displayName.toLowerCase() !== agent.id.toLowerCase() ? agent.displayName : "",
-                agent.isDefault ? "main" : "",
+                agent.id === activeAgent ? "active" : "",
+                agent.isDefault ? "default" : "",
                 agent.status === "running" ? "running" : "",
                 agent.status === "compacting" ? "compacting…" : "",
                 agent.voice ? `voice:${agent.voice}` : "",
@@ -66,7 +87,9 @@ function renderPanel() {
             : null,
           h("button", {
             class: `main-button ${agent.isDefault ? "active" : ""}`,
-            title: agent.isDefault ? `@${agent.id} is the main agent` : `make @${agent.id} the main agent`,
+            title: agent.isDefault
+              ? `@${agent.id} is the default agent — it seeds the active agent in a new room`
+              : `make @${agent.id} the default agent (seeds new rooms; doesn't change who this room is talking to)`,
             disabled: agent.isDefault,
             onclick: () => void setDefaultAgent(agent.id),
             text: agent.isDefault ? "★" : "☆",

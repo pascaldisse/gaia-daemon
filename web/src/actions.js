@@ -153,6 +153,24 @@ export async function setAgentRole(agentId, role) {
   }
 }
 
+/** Toggle room agent-dialogue (agents responding to each other's @mentions).
+ * @param {boolean} on */
+export async function setRoomAgentDialogue(on) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(
+      `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/agent-dialogue`,
+      { method: "POST", body: JSON.stringify({ on }) },
+    );
+    applySnapshotPayload(body);
+    state.error = "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
 export async function addRoom() {
   const snapshot = state.snapshot;
   if (!snapshot) return;

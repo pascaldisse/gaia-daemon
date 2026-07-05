@@ -631,6 +631,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .agent-row.on-call { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
 .agent-row.running { border-color: var(--accent); animation: agent-pulse 1.2s ease-in-out infinite; }
 .agent-row.has-role { border-left: 3px solid var(--warn); }
+/* The room's active agent — who a bare next message goes to. Inset bar so it
+   composes with has-role's left border instead of fighting it. */
+.agent-row.active-agent { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* Per-room toggle row in the panel head (agent-to-agent dialogue). */
+.room-toggle { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.room-toggle input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.room-toggle:hover { color: var(--fg); }
 
 @keyframes agent-pulse {
   0%, 100% { box-shadow: 0 0 6px var(--glow); }

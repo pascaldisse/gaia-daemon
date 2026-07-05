@@ -438,7 +438,9 @@ function leadingMentionIds(text) {
 function composerTargets(snapshot, text) {
   const knownAgents = new Set((snapshot?.agents ?? []).map((agent) => agent.id));
   const targets = leadingMentionIds(text).filter((id, index, all) => knownAgents.has(id) && all.indexOf(id) === index);
-  if (targets.length === 0 && snapshot) targets.push(snapshot.workspace.defaultAgent);
+  // No leading mention → the room's active agent (who you're last talking to),
+  // falling back to the workspace default when the room hasn't set one yet.
+  if (targets.length === 0 && snapshot) targets.push(snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent);
   return targets;
 }
 
