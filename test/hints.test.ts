@@ -79,12 +79,12 @@ test("agent.json gets harness select (optional, pi/codex/claude)", () => {
   assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["claude", "codex", "pi"]);
 });
 
-test("agent.json always includes tools hint; hidden flag set when harness is codex", () => {
+test("agent.json tools hint visible for codex (the array controls its gaia/native tools)", () => {
   const codexHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, sources);
   assert.ok(codexHints);
   assert.ok(codexHints.tools, "tools hint always present");
   assert.equal(hint(codexHints, "tools").input, "multiselect");
-  assert.equal(hint(codexHints, "tools").hidden, true, "tools hidden when saved harness is codex");
+  assert.equal(hint(codexHints, "tools").hidden, false, "tools visible for codex (memory/recall/summon/web are honored)");
   assert.ok(codexHints.harness);
   assert.ok(codexHints["model.provider"]);
 });
@@ -131,7 +131,7 @@ test("hints carry _harness meta with per-harness hidden fields and ui locks", ()
   const hints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
   assert.ok(hints?._harness);
   const configs = hints._harness.configs;
-  assert.deepEqual(configs.codex?.hiddenFields.sort(), ["permissionMode", "tools"]);
+  assert.deepEqual(configs.codex?.hiddenFields.sort(), ["permissionMode"]);
   assert.deepEqual(configs.pi?.hiddenFields.sort(), ["mcpServers", "permissionMode"]);
   assert.deepEqual(configs.claude?.hiddenFields, []);
   assert.equal(configs.claude?.lockedProvider, "anthropic");

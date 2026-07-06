@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness } from "../src/harness/spec.js";
 import {
-  codexSandboxFor,
+  CODEX_SANDBOX_MODE,
   CodexRuntime,
   type CodexClient,
   type CodexClientFactory,
@@ -130,16 +130,11 @@ const fixture = () => harnessFixture({ tools: [], harness: "codex", model: { pro
 // Tests
 // ---------------------------------------------------------------------------
 
-test("codexSandboxFor: read-only unless the agent can modify the workspace", () => {
-  assert.equal(codexSandboxFor([]), "read-only");
-  assert.equal(codexSandboxFor(["read"]), "read-only");
-  assert.equal(codexSandboxFor(["read", "memory", "recall"]), "read-only");
-  assert.equal(codexSandboxFor(["read", "write"]), "workspace-write");
-  assert.equal(codexSandboxFor(["read", "edit"]), "workspace-write");
-  assert.equal(codexSandboxFor(["read", "bash"]), "workspace-write");
+test("codex defers confinement to the host sandbox (always danger-full-access)", () => {
+  assert.equal(CODEX_SANDBOX_MODE, "danger-full-access");
 });
 
-test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
+test("CodexRuntime runs the thread at danger-full-access regardless of agent.tools", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeCodexClient();
@@ -154,7 +149,7 @@ test("CodexRuntime derives the thread sandbox from agent.tools", async () => {
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
-    assert.equal((threadStart?.params as { sandbox?: string }).sandbox, "workspace-write");
+    assert.equal((threadStart?.params as { sandbox?: string }).sandbox, "danger-full-access");
     runtime.dispose();
   } finally {
     await fx.cleanup();
