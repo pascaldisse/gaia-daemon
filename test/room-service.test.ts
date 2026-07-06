@@ -700,6 +700,57 @@ test("/steer injects into the RUNNING turn without queueing behind it", async ()
   assert.equal(steerEvent?.author, "user");
 });
 
+test("steer-by-default: a plain message to the busy agent injects; @other and queue:true still queue", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const steerCalls: string[] = [];
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: true },
+    async *send() {
+      await gate;
+      yield { type: "text-delta", delta: "done" } as AgentEvent;
+    },
+    async steer(_roomId: string, message: string) {
+      steerCalls.push(message);
+      return true;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service, root } = await makeService({ agents: ["gaia", "terry"], runtimeFactory: factory });
+
+  await service.sendMessage("start a long task"); // gaia now running (gated open)
+
+  // A bare message aimed at the busy agent steers its running turn — no queue.
+  const steered = await service.sendMessage("also check the logs");
+  assert.equal(steered.status, "complete", "steer settles while the turn still runs");
+  assert.deepEqual(steerCalls, ["also check the logs"]);
+
+  // An explicit @other isn't for the running agent → durable queue.
+  const toOther = await service.sendMessage("@terry take a look");
+  assert.equal(toOther.status, "queued");
+
+  // queue:true (the Cmd/Ctrl+Enter opt-out) queues even for the running agent.
+  const forcedQueue = await service.sendMessage("do this afterwards", { queue: true });
+  assert.equal(forcedQueue.status, "queued");
+
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
+  assert.equal(state.queue?.length, 2, "only @other and the queue:true message persisted to the queue");
+
+  release();
+  await service.waitForIdle();
+
+  // The steered guidance was recorded in the transcript as a user event.
+  const { events: transcript } = await service.room.eventsFrom(0);
+  assert.ok(
+    transcript.some((event) => event.text === "also check the logs" && event.author === "user"),
+    "steered message recorded for history",
+  );
+});
+
 test("/steer declines gracefully when idle or unsupported", async () => {
   const { service } = await makeService();
   const idle = await service.sendMessage("/steer do it differently");

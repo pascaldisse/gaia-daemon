@@ -90,7 +90,7 @@ export interface HarnessCapabilities {
    * mcp_servers overrides)? The UI hides the section where unsupported. */
   readonly supportsMcp: boolean;
   /** Can inject guidance into a RUNNING turn (pi session.steer, codex
-   * turn/steer)? Backs /steer; claude -p has no headless steering. */
+   * turn/steer, claude stream-json stdin)? Backs /steer and steer-by-default. */
   readonly supportsSteer: boolean;
   /** Has a native session-compaction the runtime can invoke (pi
    * session.compact, claude /compact, codex thread compaction)? Backs

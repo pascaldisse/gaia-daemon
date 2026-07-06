@@ -222,8 +222,10 @@ export async function uploadAttachment(file, name) {
 /**
  * @param {string} text
  * @param {import("./types.js").UploadedAttachment[]} [attachments]
+ * @param {{ queue?: boolean }} [options] queue:true forces the durable queue
+ *   (Cmd/Ctrl+Enter) instead of steering the running turn.
  */
-export async function sendMessage(text, attachments = []) {
+export async function sendMessage(text, attachments = [], options = {}) {
   const snapshot = state.snapshot;
   if (!snapshot || (!text.trim() && attachments.length === 0)) return;
   try {
@@ -232,6 +234,7 @@ export async function sendMessage(text, attachments = []) {
       body: JSON.stringify({
         text,
         ...(attachments.length ? { attachments: attachments.map(({ id, name, mime }) => ({ id, name, mime })) } : {}),
+        ...(options.queue ? { queue: true } : {}),
       }),
     });
     // Reflect the accepted task immediately so busy state doesn't wait for SSE.

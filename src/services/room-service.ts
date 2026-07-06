@@ -117,6 +117,10 @@ export interface RoomMemoryHooks {
 
 export interface SendMessageOptions {
   targets?: string[];
+  /** Force the durable queue instead of steering the running turn (the
+   * Cmd/Ctrl+Enter shortcut). Steer-by-default otherwise injects a message
+   * aimed at the busy agent into its live turn. */
+  queue?: boolean;
   channel?: "text" | "voice";
   /** Synthetic prompts (call greetings, silence nudges) skip the user event. */
   recordUserMessage?: boolean;
@@ -406,6 +410,31 @@ export class RoomService {
       task.endedAt = new Date().toISOString();
       this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
       return task;
+    }
+
+    // Steer-by-default: while an agent turn is streaming, a plain message aimed
+    // at that same agent injects into the RUNNING turn (mid-turn guidance)
+    // instead of queuing behind it. Queuing is the explicit opt-in
+    // (options.queue, from the Cmd/Ctrl+Enter shortcut) or the fallback when
+    // steering can't apply — the message is addressed to a different agent,
+    // several agents are running, the running harness can't inject, or the
+    // message carries attachments (steer is text-only). Uniform: gated on the
+    // runtime's supportsSteer, never a harness id.
+    if (
+      command.type === "message" &&
+      !options.nativeCommand &&
+      !options.queue &&
+      !options.attachments?.length &&
+      this.activeAgentTurn &&
+      this.activeAgentTurn.targets.length === 1
+    ) {
+      const runner = this.activeAgentTurn.targets[0];
+      const runtime = this.runtimes[runner];
+      const aimedAtRunner = targets.length > 0 && targets.every((id) => id === runner);
+      if (aimedAtRunner && runtime?.capabilities.supportsSteer) {
+        const steered = await this.steerRunningTurn(runner, text, task);
+        if (steered) return task; // else the turn just ended — fall through to enqueue
+      }
     }
 
     // Busy? Persist to the durable queue and return — it runs on settle and
@@ -1025,6 +1054,27 @@ export class RoomService {
     const result = await this.options.memory.consolidate(target, { force: true });
     if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
+  }
+
+  /** Steer-by-default core: inject a plain message into @target's running turn.
+   * Steers FIRST so a race (the turn ending between the busy-check and here)
+   * returns false with no dangling event — the caller then enqueues it as a
+   * normal turn. On success the guidance is recorded as a user event (shows in
+   * the transcript immediately; the running turn's commit sweeps its cursor past
+   * it so it is never replayed as fresh context), and the steer task completes —
+   * the running turn's continued output IS the reply, so there's no turn of its
+   * own. */
+  private async steerRunningTurn(target: string, text: string, task: Task): Promise<boolean> {
+    const ok = (await this.runtimes[target]?.steer?.(this.roomId, text)) ?? false;
+    if (!ok) return false;
+    const event = await this.room.addUserMessage(text, [target]);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    task.status = "complete";
+    task.endedAt = new Date().toISOString();
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+    this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
+    void this.emitSnapshot();
+    return true;
   }
 
   /** /steer: inject guidance into the RUNNING turn (capability-gated data —

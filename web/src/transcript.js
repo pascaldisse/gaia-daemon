@@ -38,6 +38,7 @@ import { state } from "./state.js";
  * @property {MessageAttachment[]} [attachments]
  * @property {boolean} [redacted]
  * @property {boolean} streaming
+ * @property {boolean} [queued] A not-yet-run queued message (ghost bubble).
  */
 
 /** @param {RoomEvent} event @returns {MessageView} */
@@ -156,6 +157,25 @@ function messageViews() {
       streaming: true,
     });
   }
+  // Queued messages: durable tasks waiting behind the running turn. Show them as
+  // ghost user bubbles the moment they're accepted (they aren't committed WAL
+  // events yet — the server appends the real user event when the turn runs, and
+  // drops the queued task from the snapshot, so the ghost swaps to the committed
+  // bubble with no overlap).
+  for (const task of state.snapshot?.tasks ?? []) {
+    if (task.status !== "queued" || !task.text.trim()) continue;
+    views.push({
+      id: `queued:${task.id}`,
+      version: "queued",
+      timestamp: task.startedAt,
+      author: "user",
+      targets: task.targets ?? [],
+      channel: undefined,
+      text: task.text,
+      streaming: false,
+      queued: true,
+    });
+  }
   return views;
 }
 
@@ -244,14 +264,16 @@ function Message(view) {
   const showThinking = details.thinkingStarted || details.thinking;
   // Claude.ai-style fork actions: ✎ edits a user message, ⟳ regenerates a
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
-  const canFork = !view.streaming && view.author !== "system";
+  // A queued ghost isn't a committed event yet, so it can't be forked.
+  const canFork = !view.streaming && !view.queued && view.author !== "system";
   return h(
     "article",
-    { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""}` },
+    { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""} ${view.queued ? "queued" : ""}` },
     h(
       "div",
       { class: "message-meta" },
       h("span", { text: label }),
+      view.queued ? h("small", { class: "channel-tag", title: "queued — runs after the current turn", text: "queued" }) : null,
       view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: "🎙" }) : null,
       details.model ? h("small", { class: "model-tag", text: details.model }) : null,
       details.modelFallback

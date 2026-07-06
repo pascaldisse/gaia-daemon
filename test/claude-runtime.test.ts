@@ -33,6 +33,9 @@ class FakeClaude {
   readonly factory: ClaudeProcessFactory;
   readonly calls: ClaudeProcessOptions[] = [];
   killCount = 0;
+  endInputCount = 0;
+  /** Messages injected via the handle's steer() during a running turn. */
+  readonly steers: string[] = [];
   lastOptions: ClaudeProcessOptions | null = null;
   private readonly scripts: Script[] = [];
 
@@ -54,6 +57,13 @@ class FakeClaude {
       return {
         kill: () => {
           this.killCount++;
+        },
+        steer: (text: string) => {
+          this.steers.push(text);
+          return true;
+        },
+        endInput: () => {
+          this.endInputCount++;
         },
       };
     };
@@ -961,7 +971,7 @@ test("ClaudeRuntime sends pasted images as stream-json input with base64 blocks"
   }
 });
 
-test("ClaudeRuntime keeps the plain stdin prompt for non-image attachments", async () => {
+test("ClaudeRuntime references a non-image attachment by breadcrumb in the stream-json prompt", async () => {
   const fx = await fixture();
   try {
     const csvPath = join(fx.project, "data.csv");
@@ -980,9 +990,46 @@ test("ClaudeRuntime keeps the plain stdin prompt for non-image attachments", asy
     );
 
     const options = fake.lastOptions!;
-    assert.ok(!options.args.includes("--input-format"));
-    // Plain prompt (not JSON) with the uniform path breadcrumb.
-    assert.match(options.prompt, /\[attached file: data\.csv \(text\/csv; charset=utf-8, 4 B\) at /);
+    // Every non-native turn now rides stream-json input with stdin kept open —
+    // that's the channel steering injects into.
+    assert.ok(options.args.includes("--input-format"));
+    assert.equal(options.keepStdinOpen, true);
+    // A non-image file is a TEXT breadcrumb, not an image block: the user
+    // message content is a plain string carrying the uniform path breadcrumb.
+    const payload = JSON.parse(options.prompt) as { message: { content: unknown } };
+    assert.equal(typeof payload.message.content, "string");
+    assert.match(payload.message.content as string, /\[attached file: data\.csv \(text\/csv; charset=utf-8, 4 B\) at /);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime.steer injects into the running turn's open stdin", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // scriptOpen leaves the turn live (no result/exit) so this.active stays set.
+    fake.scriptOpen([initMsg(), textDelta("working")]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    assert.equal(runtime.capabilities.supportsSteer, true);
+
+    // Nothing running yet: there's nothing to steer.
+    assert.equal(await runtime.steer("default", "too early"), false);
+
+    const iter = runtime.send({ roomId: "default", message: "go", transcript: [] })[Symbol.asyncIterator]();
+    await iter.next(); // drive send() until the process is spawned and streaming
+
+    assert.equal(await runtime.steer("default", "actually stop"), true);
+    assert.deepEqual(fake.steers, ["actually stop"]);
+    // A steer aimed at a different room never injects into this turn.
+    assert.equal(await runtime.steer("other-room", "nope"), false);
+    assert.deepEqual(fake.steers, ["actually stop"]);
+
+    await iter.return?.(); // close the generator → finally closes stdin (endInput)
+    assert.equal(fake.endInputCount, 1);
+    // The turn ended: steering is a no-op again.
+    assert.equal(await runtime.steer("default", "late"), false);
     runtime.dispose();
   } finally {
     await fx.cleanup();

@@ -44,12 +44,25 @@ export interface ClaudeProcessCallbacks {
 export interface ClaudeProcessHandle {
   /** Best-effort terminate (used by abort()). */
   kill(): void;
+  /** Inject an extra user message into the RUNNING turn via the open stdin
+   * (backs steering). The CLI applies it at the next tool boundary — same as
+   * typing while Claude Code works interactively. Returns false when stdin is
+   * no longer writable (turn already finished). Present only on stream-json
+   * turns spawned with keepStdinOpen. */
+  steer?(text: string): boolean;
+  /** Signal end-of-input (stdin EOF) so a keepStdinOpen turn's CLI finishes and
+   * exits. Called once the turn's `result` has streamed. */
+  endInput?(): void;
 }
 
 export interface ClaudeProcessOptions extends ClaudeProcessCallbacks {
   args: string[];
   /** Turn prompt, delivered on stdin (avoids arg-length limits on big transcripts). */
   prompt: string;
+  /** Keep stdin OPEN after writing the prompt so the turn can be steered
+   * (stream-json input). When false the prompt is a one-shot and stdin is
+   * closed immediately (native slash commands, compaction). */
+  keepStdinOpen?: boolean;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
@@ -97,13 +110,27 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
     options.onExit({ code, signal, stderr: stderr() });
   });
 
-  // Deliver the prompt on stdin, then close it so the CLI starts the turn.
+  // Deliver the prompt on stdin. A one-shot turn closes stdin now (EOF starts
+  // the CLI and lets it exit when done). A steerable turn keeps stdin open so
+  // steer() can inject more user messages mid-turn; endInput() closes it once
+  // the turn's result has streamed. The CLI begins the turn on the first
+  // message either way — it does not wait for EOF.
   proc.stdin?.write(options.prompt);
-  proc.stdin?.end();
+  if (!options.keepStdinOpen) proc.stdin?.end();
 
   return {
     kill() {
       killProcessTree(proc);
+    },
+    steer(text: string): boolean {
+      const stdin = proc.stdin;
+      if (!stdin || !stdin.writable || stdin.writableEnded) return false;
+      stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+      return true;
+    },
+    endInput(): void {
+      const stdin = proc.stdin;
+      if (stdin && !stdin.writableEnded) stdin.end();
     },
   };
 }
@@ -316,8 +343,11 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   granularTools: true,
   supportsPermissionMode: true,
   supportsMcp: true,
-  // claude -p offers no way to inject input into a running turn.
-  supportsSteer: false,
+  // claude -p CAN be steered: driven with --input-format stream-json and stdin
+  // kept open, an extra user message written mid-turn is applied at the next
+  // tool boundary (same as typing while the interactive TUI works). See
+  // ClaudeRuntime.steer + the keepStdinOpen path in send().
+  supportsSteer: true,
   // /compact is supportsNonInteractive in the CLI: a headless resumed turn
   // with the prompt "/compact" compacts the session file durably.
   supportsCompact: true,
@@ -347,6 +377,8 @@ export class ClaudeRuntime implements AgentRuntime {
    * daemon/runner restarts (the CLI keeps the conversation on disk). */
   private readonly sessions: SessionMap<ClaudeRoomMeta>;
   private active: ClaudeProcessHandle | null = null;
+  /** Room whose turn `active` is streaming — steer() only injects into it. */
+  private activeRoomId: string | undefined;
   private readonly processFactory: ClaudeProcessFactory;
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
@@ -401,29 +433,27 @@ export class ClaudeRuntime implements AgentRuntime {
         });
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking, native);
 
-    // Pasted images go in natively via stream-json INPUT: one user message
-    // whose content pairs the turn prompt with base64 image blocks (the same
-    // wire the Agent SDK uses). Text-only turns keep the plain stdin prompt —
-    // the long-proven path stays untouched. A native command is pure command
-    // text, so it never carries an image payload.
+    // Every non-native turn is delivered via stream-json INPUT with stdin kept
+    // OPEN: that's the channel steering writes into (an extra user message the
+    // CLI applies at the next tool boundary). One user message carries the turn
+    // prompt; pasted images add base64 blocks to its content (the same wire the
+    // Agent SDK uses). A native command is pure command text that only resolves
+    // as the WHOLE plain stdin, so it stays a one-shot (no wrap, stdin closed,
+    // not steerable).
     const images = native ? [] : await loadNativeImages(input.attachments);
-    if (images.length > 0) args.push("--input-format", "stream-json");
-    const stdinPayload =
+    const keepStdinOpen = !native;
+    if (keepStdinOpen) args.push("--input-format", "stream-json");
+    const content =
       images.length > 0
-        ? `${JSON.stringify({
-            type: "user",
-            message: {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                ...images.map(({ attachment, base64 }) => ({
-                  type: "image",
-                  source: { type: "base64", media_type: attachment.mime, data: base64 },
-                })),
-              ],
-            },
-          })}\n`
+        ? [
+            { type: "text", text: prompt },
+            ...images.map(({ attachment, base64 }) => ({
+              type: "image",
+              source: { type: "base64", media_type: attachment.mime, data: base64 },
+            })),
+          ]
         : prompt;
+    const stdinPayload = native ? prompt : `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 
     const channel = createEventChannel();
 
@@ -599,6 +629,7 @@ export class ClaudeRuntime implements AgentRuntime {
     const handle = this.processFactory({
       args,
       prompt: stdinPayload,
+      keepStdinOpen,
       cwd: this.cwd,
       env: this.buildEnv(input.roomId),
       onMessage,
@@ -619,6 +650,7 @@ export class ClaudeRuntime implements AgentRuntime {
       },
     });
     this.active = handle;
+    this.activeRoomId = input.roomId;
 
     try {
       for await (const event of channel.stream()) yield event;
@@ -634,7 +666,12 @@ export class ClaudeRuntime implements AgentRuntime {
       if (!sessionEstablished && (firstTurn || /no conversation found/i.test(message))) this.sessions.reset(input.roomId);
       throw err;
     } finally {
+      // A keepStdinOpen turn's CLI sits idle waiting for more stdin after it
+      // streams `result`; close stdin so it reaches EOF and exits. (No-op when
+      // the turn was aborted — the process is already being killed.)
+      handle.endInput?.();
       this.active = null;
+      this.activeRoomId = undefined;
     }
 
     // Clean finish also marks started — idempotent with the init-time persist,
@@ -739,6 +776,15 @@ export class ClaudeRuntime implements AgentRuntime {
 
   async abort(): Promise<void> {
     this.active?.kill();
+  }
+
+  /** Inject guidance into the room's RUNNING turn (backs /steer and steer-by-
+   * default). Writes an extra user message to the live turn's open stdin; the
+   * CLI applies it at the next tool boundary. Resolves false when nothing is
+   * streaming for this room or stdin already closed (turn just finished). */
+  async steer(roomId: string, message: string): Promise<boolean> {
+    if (roomId !== this.activeRoomId) return false;
+    return this.active?.steer?.(message) ?? false;
   }
 
   dispose(): void {

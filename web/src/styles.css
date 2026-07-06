@@ -378,6 +378,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .message { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; margin: 0 0 16px; }
 .message::before { content: ">"; color: var(--accent); }
+/* Queued ghost: a not-yet-run message waiting behind the current turn. */
+.message.queued { opacity: 0.55; }
+.message.queued::before { content: "⋯"; }
+.message.queued .channel-tag { color: var(--muted); font-style: italic; }
 
 .message-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }

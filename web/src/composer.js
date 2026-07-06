@@ -121,8 +121,10 @@ function renderComposer() {
   resizeComposer(textarea);
 
   sendButton.disabled = !snapshot;
-  sendButton.textContent = busy ? "+" : ">";
-  sendButton.title = busy ? "queue message — runs after the current turn (Esc to stop instead)" : "send";
+  sendButton.textContent = busy ? "»" : ">";
+  sendButton.title = busy
+    ? "steer the running turn — injects your message mid-turn (⌘/Ctrl+Enter to queue instead · Esc to stop)"
+    : "send";
 
   // Running banner. While a compaction runs, the label carries the numbers and
   // the bar between it and ■ stop shows the estimated fraction.
@@ -165,7 +167,7 @@ function renderComposer() {
 
 registerRegion("composer", renderComposer);
 
-/** @param {{ focus?: boolean }} [options] */
+/** @param {{ focus?: boolean, queue?: boolean }} [options] */
 function submitComposer(options = {}) {
   const text = state.composerText;
   const editing = state.editingEventId;
@@ -181,9 +183,9 @@ function submitComposer(options = {}) {
     releasePreviews(pending);
     void editMessage(editing, text);
   } else if (pending.length > 0) {
-    void sendWithAttachments(text, pending);
+    void sendWithAttachments(text, pending, { queue: options.queue });
   } else {
-    void sendMessage(text);
+    void sendMessage(text, [], { queue: options.queue });
   }
 }
 
@@ -192,13 +194,14 @@ function submitComposer(options = {}) {
  * happen at send time so an abandoned paste never reaches the server.
  * @param {string} text
  * @param {import("./types.js").PendingAttachment[]} pending
+ * @param {{ queue?: boolean }} [options]
  */
-async function sendWithAttachments(text, pending) {
+async function sendWithAttachments(text, pending, options = {}) {
   try {
     /** @type {import("./types.js").UploadedAttachment[]} */
     const uploaded = [];
     for (const item of pending) uploaded.push(await uploadAttachment(item.file, item.name));
-    await sendMessage(text, uploaded);
+    await sendMessage(text, uploaded, { queue: options.queue });
   } catch (error) {
     setError(error);
   } finally {
@@ -328,9 +331,10 @@ function onComposerKeydown(event) {
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    // While busy this queues (the server stacks it behind the running turn);
-    // stopping is a separate action (Esc / Ctrl+C / the banner ■).
-    submitComposer();
+    // Enter is the default send. While busy the server STEERS the running turn
+    // (injects the message mid-turn); Cmd/Ctrl+Enter forces the durable queue
+    // instead. Stopping is a separate action (Esc / Ctrl+C / the banner ■).
+    submitComposer({ queue: event.metaKey || event.ctrlKey });
   }
 }
 
@@ -754,6 +758,25 @@ export function installComposerRouting() {
       if (event.key === "Escape" && isBusy() && !state.dario.open) {
         event.preventDefault();
         void stopAll();
+        return;
+      }
+
+      // Cmd/Ctrl+Enter queues (opts out of steer-by-default) from anywhere. When
+      // the composer textarea is focused its own onComposerKeydown handles this;
+      // guarding on !isEditableElement here avoids a double-submit.
+      if (
+        event.key === "Enter" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        state.snapshot &&
+        !state.settingsOpen &&
+        !state.dario.open &&
+        !isEditableElement(event.target) &&
+        state.composerText.trim()
+      ) {
+        event.preventDefault();
+        submitComposer({ focus: true, queue: true });
         return;
       }
 
