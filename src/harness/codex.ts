@@ -194,21 +194,29 @@ const defaultFactory: CodexClientFactory = async (cwd, env) => {
 };
 
 // ---------------------------------------------------------------------------
-// Config-driven sandbox translation
+// Sandbox: DEFER to the uniform host sandbox (RULE #0)
 // ---------------------------------------------------------------------------
 //
-// Codex is a COARSE translator of the per-agent `tools` array: unlike Claude
-// (per-tool grants) it only has a workspace sandbox level. An agent that can
-// modify files (write/edit) or run commands (bash) needs "workspace-write";
-// a read-only agent gets "read-only". This honors the config at the granularity
-// Codex actually supports (capabilities.granularTools = false surfaces the gap
-// in the UI instead of pretending the toggles map).
+// Confinement is decided ONCE, above the harness: resolveSandboxPolicy (trust
+// tier + per-agent sandbox config) picks whether the gaia seatbelt wraps the
+// whole runner process (sandbox/spec.ts + host.ts). Codex therefore does NOT
+// run a second, internal sandbox of its own — exactly like claude, which has no
+// internal sandbox at all. Its thread always runs `danger-full-access` and
+// relies on that single host boundary.
+//
+// Why this is the only correct value:
+//  • Codex's own "read-only"/"workspace-write" apply codex's OWN macOS seatbelt
+//    to every shell command. When the host sandbox is ALSO on (an untrusted or
+//    summon-default turn) that nests two seatbelts and `sandbox_apply` fails
+//    with "Operation not permitted" — the agent can then run nothing at all.
+//  • They can never express "unrestricted", so a trusted agent (claude and
+//    codex are unrestricted by default; only pi runs confined) could never get
+//    a working shell. Deferring to the one host boundary removes both problems.
+export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 
-export type CodexSandbox = "read-only" | "workspace-write";
-
-export function codexSandboxFor(tools: string[]): CodexSandbox {
-  return tools.includes("write") || tools.includes("edit") || tools.includes("bash") ? "workspace-write" : "read-only";
-}
+/** Codex runs its thread unconfined internally and defers confinement to the
+ *  uniform host sandbox (the gaia seatbelt RunnerHost wraps the runner in). */
+export const CODEX_SANDBOX_MODE: CodexSandbox = "danger-full-access";
 
 // ---------------------------------------------------------------------------
 // Persistent thread state (tracked by the uniform SessionMap; serializable —
@@ -280,12 +288,15 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
 }
 
 // Dynamic tools close the old asymmetry: memory/recall/summon are real
-// in-process tools under Codex, exactly like Pi. Codex still runs a coarse
-// sandbox rather than honoring a granular per-tool array.
+// in-process tools under Codex, exactly like Pi. The per-agent tools array IS
+// honored (memory/recall/summon/web are toggled from it); codex's own
+// file+shell tools are always available under the single host-sandbox boundary
+// (see CODEX_SANDBOX_MODE), so the tools field is a real control surface and
+// stays visible in settings (granularTools: true).
 const CODEX_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "summon"],
   nativeTools: ["web"],
-  granularTools: false,
+  granularTools: true,
   supportsPermissionMode: false,
   supportsMcp: true,
   supportsSteer: true,
@@ -421,12 +432,21 @@ export class CodexRuntime implements AgentRuntime {
         }
 
         case "thread/tokenUsage/updated": {
-          // usage.total is cumulative for the thread; modelContextWindow the
-          // window size. (Accept `tokenUsage` too — the wrapper field name is
-          // the one part of the v2 shape not string-confirmed in the binary.)
+          // Context occupancy is the LAST turn's total, not the thread total:
+          // usage.total is CUMULATIVE across every turn, so it climbs past the
+          // window and the ctx chip reads >100% (a live 414% is what surfaced
+          // this). usage.last is the most recent turn — its input already
+          // contains the whole prior context, so its total tracks how full the
+          // window actually is, and drops after a /compact or /clear. Fall back
+          // to total only if last is missing. modelContextWindow is the window
+          // size. Shape confirmed against the codex 0.142.2 binary schema
+          // (ThreadTokenUsage = { total, last, modelContextWindow }, wrapper
+          // field `tokenUsage`) and a live probe: first turn last==total, then
+          // total climbs unboundedly while last tracks real occupancy. `usage`
+          // is a defensive alias; the real wrapper is `tokenUsage`.
           const p = params as { usage?: CodexTokenUsage; tokenUsage?: CodexTokenUsage };
           const usage = p.usage ?? p.tokenUsage;
-          const used = usage?.total?.totalTokens;
+          const used = usage?.last?.totalTokens ?? usage?.total?.totalTokens;
           if (typeof used === "number") {
             channel.push({
               type: "context-usage",
@@ -723,9 +743,9 @@ export class CodexRuntime implements AgentRuntime {
       modelProvider: this.agent.model?.provider ?? null,
       baseInstructions,
       ephemeral: false,
-      // Derived from agent.tools instead of a fixed read-only stance, so an
-      // agent with write/edit/bash can actually modify the workspace.
-      sandbox: codexSandboxFor(this.agent.tools),
+      // Codex defers confinement to the uniform host sandbox (see
+      // CODEX_SANDBOX_MODE) — never a second, nested seatbelt of its own.
+      sandbox: CODEX_SANDBOX_MODE,
       ...(tools.size > 0 ? { dynamicTools: [...tools.values()].map(dynamicToolSpec) } : {}),
       ...this.configOverride(),
     })) as { thread: { id: string }; model: string; modelProvider: string };
@@ -758,7 +778,7 @@ export class CodexRuntime implements AgentRuntime {
         model: this.agent.model?.name ?? null,
         modelProvider: this.agent.model?.provider ?? null,
         baseInstructions,
-        sandbox: codexSandboxFor(this.agent.tools),
+        sandbox: CODEX_SANDBOX_MODE,
         ...this.configOverride(),
       })) as { thread: { id: string }; model: string; modelProvider: string };
       const next: ThreadState = {
