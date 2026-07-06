@@ -407,6 +407,65 @@ test("deepSearch: explicit reranker 'off' is a chosen mode — no degradation no
   assert.ok(!degraded.some((note) => note.includes("rerank")), `off is not degraded (got ${JSON.stringify(degraded)})`);
 });
 
+test("deepSearch self-heals an idle-stopped reranker: failed call → in-call re-ensure + retry, NO degradation", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  let rerankCalls = 0;
+  const { service } = await makeMemoryService({
+    config: { reranker: "auto" },
+    rooms: [
+      { roomId: "noise", events: [{ author: "user", text: `pineapple pizza pineapple pizza pineapple opinions all day long.${pad}` }] },
+      { roomId: "truth", events: [{ author: "user", text: `the daemon restart procedure: stop it, then pineapple start detached.${pad}` }] },
+    ],
+    embedderDeps: {
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("/rerank")) {
+          rerankCalls += 1;
+          // Call 1 = resolve probe (server was up), call 2 = the real rerank
+          // against a now idle-stopped server, calls 3+4 = re-probe + retry.
+          if (rerankCalls === 2) throw new Error("ECONNREFUSED (idle-stopped)");
+          const documents = JSON.parse(init!.body as string).documents as string[];
+          const results = documents.map((doc, index) => ({ index, relevance_score: doc.includes("restart procedure") ? 5.0 : -5.0 }));
+          return new Response(JSON.stringify({ results }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalReranker: async () => ({ baseUrl: "http://127.0.0.1:4245/v1", model: "bge-reranker-v2-m3" }),
+    },
+  });
+  const { hits, degraded } = await service.deepSearch("gaia", "pineapple restart");
+  assert.equal(rerankCalls, 4, "probe, failed call, re-probe, retried call");
+  assert.equal(hits[0].roomId, "truth", `the retried rerank still reorders the head (got ${hits[0].roomId})`);
+  assert.ok(!degraded.some((note) => note.includes("rerank")), `self-heal is silent (got ${JSON.stringify(degraded)})`);
+  service.dispose();
+});
+
+test("search self-heals an idle-stopped embedder: failed query embed → in-call re-ensure + retry keeps the dense arm", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  let embedCalls = 0;
+  const { service } = await makeMemoryService({
+    config: { embeddings: "auto" },
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+    embedderDeps: {
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("embeddings")) {
+          embedCalls += 1;
+          // Call 1 = resolve probe, call 2 = the query embed against a now
+          // idle-stopped server, calls 3+4 = re-probe + retried query embed.
+          if (embedCalls === 2) throw new Error("ECONNREFUSED (idle-stopped)");
+          const input = JSON.parse(init!.body as string).input as string[];
+          return new Response(JSON.stringify({ data: input.map(() => ({ embedding: [0.1, 0.2, 0.3] })) }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalSidecar: async () => ({ baseUrl: "http://127.0.0.1:4244/v1", model: "embeddinggemma-300m" }),
+    },
+  });
+  const { degraded } = await service.search("gaia", "marker phrase");
+  assert.equal(embedCalls, 4, "probe, failed query embed, re-probe, retried query embed");
+  assert.ok(!degraded.some((note) => note.includes("lexical-only")), `self-heal keeps the dense arm silently (got ${JSON.stringify(degraded)})`);
+  service.dispose();
+});
+
 test("summarizeSearch without an LLM: raw listing + a loud unavailable note", async () => {
   const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
   const { service } = await makeMemoryService({

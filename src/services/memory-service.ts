@@ -247,18 +247,31 @@ export class MemoryService {
     let ordered = hits;
     if (resolved.reranker && hits.length > 1) {
       const head = hits.slice(0, DEEP_RERANK_TOP);
-      try {
-        const scores = await resolved.reranker.rerank(query, head.map((hit) => hit.text));
+      const rerankHead = async (reranker: NonNullable<ResolvedReranker["reranker"]>) => {
+        const scores = await reranker.rerank(query, head.map((hit) => hit.text));
         const ranked = head
           .map((hit, index) => ({ hit, score: scores[index] ?? 0 }))
           .sort((a, b) => b.score - a.score)
           .map((entry) => entry.hit);
-        ordered = [...ranked, ...hits.slice(DEEP_RERANK_TOP)];
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        degraded.push("rerank failed — fusion order");
-        setHealth(this.db(), "reranker", "degraded", `rerank failed: ${reason}`, this.now());
+        return [...ranked, ...hits.slice(DEEP_RERANK_TOP)];
+      };
+      try {
+        ordered = await rerankHead(resolved.reranker);
+      } catch {
+        // Evict + retry ONCE in-call: re-resolving re-ensures the sidecar, so
+        // an idle-stopped server respawns and THIS search still gets reranked.
+        // Only a second failure degrades (loudly) to fusion order.
         this.rerankers.delete(JSON.stringify(this.configFor(agentId).reranker));
+        try {
+          const retried = await this.rerankerFor(agentId);
+          if (!retried.reranker) throw new Error(retried.detail);
+          ordered = await rerankHead(retried.reranker);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          degraded.push("rerank failed — fusion order");
+          setHealth(this.db(), "reranker", "degraded", `rerank failed: ${reason}`, this.now());
+          this.rerankers.delete(JSON.stringify(this.configFor(agentId).reranker));
+        }
       }
     } else if (resolved.status === "off" && this.configFor(agentId).reranker !== "off") {
       degraded.push("reranker off — fusion order");
@@ -336,13 +349,23 @@ export class MemoryService {
       // debounced sync so a fresh index converges without waiting for capture.
       this.scheduleEmbedSync(agentId);
       return { vec };
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      setHealth(this.db(), "embedder", "degraded", `query embed failed: ${reason}`, this.now());
-      // Evict so the next search re-resolves — an idle-stopped sidecar
-      // respawns instead of leaving recall lexical-only forever.
+    } catch {
+      // Evict + retry ONCE in-call: re-resolving re-ensures the sidecar, so an
+      // idle-stopped server respawns and THIS search keeps its dense arm. Only
+      // a second failure leaves the turn (loudly) lexical-only.
       this.embedders.delete(JSON.stringify(config));
-      return { note: "lexical-only — query embed failed" };
+      try {
+        const retried = await this.embedderFor(agentId);
+        if (!retried.embedder) throw new Error(retried.detail);
+        const [vec] = await retried.embedder.embed([query], { timeoutMs: QUERY_EMBED_TIMEOUT_MS, kind: "query" });
+        this.scheduleEmbedSync(agentId);
+        return { vec };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        setHealth(this.db(), "embedder", "degraded", `query embed failed: ${reason}`, this.now());
+        this.embedders.delete(JSON.stringify(config));
+        return { note: "lexical-only — query embed failed" };
+      }
     }
   }
 
