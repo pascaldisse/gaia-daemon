@@ -2,6 +2,7 @@
 // button) and recent tasks. The workspace settings panel below it is owned by
 // the settings region, so streaming re-renders here never wipe an edit there.
 import { setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { registerRegion } from "./render.js";
@@ -65,13 +66,14 @@ function renderPanel() {
                 agent.id === activeAgent ? "active" : "",
                 agent.isDefault ? "default" : "",
                 agent.status === "running" ? "running" : "",
-                agent.status === "compacting" ? "compacting…" : "",
+                agent.status === "compacting" ? `compacting… ${agent.compact ? compactDetail(agent.compact) : ""}`.trim() : "",
                 agent.voice ? `voice:${agent.voice}` : "",
                 agent.modelLabel,
               ]
                 .filter(Boolean)
                 .join(" / "),
             }),
+            agent.status === "compacting" && agent.compact ? CompactBar(agent.compact) : null,
           ),
           roles.length > 0
             ? h(
@@ -113,6 +115,8 @@ function renderPanel() {
         : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
     ),
   );
+  // Keep the elapsed advancing between server snapshots while any pass runs.
+  armCompactTick(agents.some((agent) => agent.status === "compacting"));
 }
 
 registerRegion("panel", renderPanel);

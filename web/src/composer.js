@@ -8,6 +8,7 @@
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, sendMessage, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
+import { CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { isBusy, state } from "./state.js";
@@ -28,6 +29,8 @@ let autocompleteEl = null;
 let bannerEl = null;
 /** @type {HTMLElement|null} */
 let bannerLabelEl = null;
+/** @type {HTMLElement|null} */
+let bannerBarEl = null;
 /** @type {HTMLElement|null} */
 let editBannerEl = null;
 /** @type {HTMLElement|null} */
@@ -70,11 +73,13 @@ export function initComposer() {
   sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: ">" }));
   autocompleteEl = h("div", { class: "autocomplete", hidden: true });
   bannerLabelEl = h("span", { class: "running-label" });
+  bannerBarEl = h("span", { class: "compact-bar-wrap", hidden: true });
   bannerEl = h(
     "div",
     { class: "running-banner", hidden: true },
     h("span", { class: "running-dot" }),
     bannerLabelEl,
+    bannerBarEl,
     h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
   );
   editBannerEl = h(
@@ -119,9 +124,15 @@ function renderComposer() {
   sendButton.textContent = busy ? "+" : ">";
   sendButton.title = busy ? "queue message — runs after the current turn (Esc to stop instead)" : "send";
 
-  // Running banner.
+  // Running banner. While a compaction runs, the label carries the numbers and
+  // the bar between it and ■ stop shows the estimated fraction.
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
+  const compactingAgent = busy ? (snapshot?.agents ?? []).find((agent) => agent.status === "compacting" && agent.compact) : undefined;
+  if (bannerBarEl) {
+    bannerBarEl.hidden = !compactingAgent;
+    bannerBarEl.replaceChildren(...(compactingAgent?.compact ? [CompactBar(compactingAgent.compact)] : []));
+  }
 
   editBannerEl.hidden = !state.editingEventId;
 
@@ -406,12 +417,14 @@ function AutocompleteRows(completion) {
 /** @param {Snapshot|null} snapshot */
 function runningLabel(snapshot) {
   const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
-  const compacting = (snapshot?.agents ?? []).filter((agent) => agent.status === "compacting").map((agent) => `@${agent.id}`);
+  const compacting = (snapshot?.agents ?? []).filter((agent) => agent.status === "compacting");
   const summons = (snapshot?.rooms ?? []).filter((room) => room.running).length;
   const queued = (snapshot?.tasks ?? []).filter((task) => task.status === "queued").length;
   const parts = [];
   if (agents.length) parts.push(agents.join(", "));
-  if (compacting.length) parts.push(`compacting ${compacting.join(", ")}…`);
+  if (compacting.length) {
+    parts.push(compacting.map((agent) => `compacting @${agent.id}${agent.compact ? ` ${compactDetail(agent.compact)}` : "…"}`).join(", "));
+  }
   if (summons) parts.push(`${summons} summon${summons === 1 ? "" : "s"}`);
   let label = parts.length ? `running: ${parts.join(" + ")}` : "running…";
   if (queued) label += ` · ${queued} queued`;

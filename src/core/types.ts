@@ -500,7 +500,29 @@ export interface AgentStatus {
   activeRole?: string;
   roles: string[];
   status: "idle" | "running" | "error" | "compacting";
+  /** Live compaction progress while status === "compacting"; absent otherwise.
+   * The client renders a ticking elapsed from startedAt even when the harness
+   * reports no token counts. */
+  compact?: CompactProgress;
   isDefault: boolean;
+}
+
+/** Token counts a harness reports mid-compaction — the harness-neutral payload
+ * carried from the runtime up to the snapshot. A harness that can report
+ * nothing simply never sends one; the elapsed timer still works. */
+export interface CompactProgressUpdate {
+  /** Tokens of context being compacted — the size of the job. */
+  contextTokens?: number;
+  /** Tokens of summary produced so far. */
+  outputTokens?: number;
+}
+
+/** Compaction progress as the snapshot carries it: the harness-reported counts
+ * plus the daemon-stamped start time (one clock, so the client's elapsed is
+ * consistent across agents). */
+export interface CompactProgress extends CompactProgressUpdate {
+  /** Epoch ms the pass began (daemon clock). */
+  startedAt: number;
 }
 
 export interface RoomSummary {

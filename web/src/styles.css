@@ -556,6 +556,31 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .running-banner .running-label { flex: 1; min-width: 0; color: var(--good); }
 .running-banner .stop-btn { padding: 2px 10px; color: var(--danger); border: 1px solid var(--danger); background: transparent; }
+.running-banner .compact-bar-wrap { flex: 1; min-width: 80px; max-width: 260px; display: flex; }
+
+/* Compaction progress bar: determinate width from the estimated fraction, or
+   an indeterminate slide when the job size is unknown. Also rendered inside
+   the panel's agent row (second grid column, under the label). */
+.compact-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--good) 18%, transparent);
+}
+.compact-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--good);
+  box-shadow: 0 0 6px var(--good);
+}
+.compact-bar.indeterminate .compact-bar-fill { width: 30%; animation: compact-slide 1.2s ease-in-out infinite; }
+@keyframes compact-slide {
+  0% { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+.agent-main .compact-bar { grid-column: 2; margin-top: 4px; }
 
 .thinking-wrap, .thinking-inner { position: relative; }
 

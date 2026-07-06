@@ -2,7 +2,7 @@
 // subprocess. One newline-delimited JSON object per line, both directions.
 // The runner is single-flight: at most one active turn per runner.
 
-import type { AgentEvent } from "../core/types.js";
+import type { AgentEvent, CompactProgressUpdate } from "../core/types.js";
 import type { AgentInput } from "./spec.js";
 
 /** Daemon -> runner. */
@@ -22,6 +22,7 @@ export type RunnerMessage =
   | { type: "turn-end" }
   | { type: "turn-error"; message: string }
   | { type: "steer-result"; ok: boolean }
+  | ({ type: "compact-progress" } & CompactProgressUpdate)
   | { type: "compact-result"; ok: boolean; message: string };
 
 /** Serialize one protocol frame for the newline-delimited wire.
@@ -73,6 +74,12 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
       return { type: "turn-error", message: typeof msg.message === "string" ? msg.message : "turn failed" };
     case "steer-result":
       return { type: "steer-result", ok: msg.ok === true };
+    case "compact-progress":
+      return {
+        type: "compact-progress",
+        ...(typeof msg.contextTokens === "number" ? { contextTokens: msg.contextTokens } : {}),
+        ...(typeof msg.outputTokens === "number" ? { outputTokens: msg.outputTokens } : {}),
+      };
     case "compact-result":
       return { type: "compact-result", ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : "" };
     default:

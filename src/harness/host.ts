@@ -10,7 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "../core/env.js";
-import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
@@ -80,6 +80,17 @@ export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.Proces
 
 // --- the host ---------------------------------------------------------------------
 
+/** IDLE backstop for a native compaction pass (see compact() — re-armed on each
+ * progress frame). This is NOT a normal turn — the harness re-summarizes the
+ * WHOLE session in one LLM call, so a large context (a long-lived or imported
+ * room) legitimately runs for many minutes with no output until the summary
+ * streams at the end. The old 180s absolute bound had almost no margin — a
+ * measured 295k-token pass already took 161s — so the next larger/slower session
+ * (a near-full 1M-context room extrapolates to ~9 min) tripped it while still
+ * healthy. As an idle window this only fires when the runner goes fully silent
+ * (wedged), and 15 min covers even a silent full-context prefill. */
+const COMPACT_TIMEOUT_MS = 900_000;
+
 export interface RunnerHostOptions {
   workspace: Workspace;
   agent: AgentDef;
@@ -117,6 +128,9 @@ export class RunnerHost implements AgentRuntime {
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
   private compactWaiter: ((result: { ok: boolean; message: string }) => void) | undefined;
+  /** Forwards the runner's compact-progress frames to the /compact caller (and
+   * re-arms the idle backstop) while a pass runs. */
+  private compactProgress: ((update: CompactProgressUpdate) => void) | undefined;
 
   constructor(options: RunnerHostOptions) {
     this.options = options;
@@ -166,9 +180,9 @@ export class RunnerHost implements AgentRuntime {
     });
   }
 
-  /** Forward /compact to the runner and relay the harness's own result line.
-   * Generous timeout: compaction is an LLM summarization pass. */
-  async compact(roomId: string): Promise<string> {
+  /** Forward /compact to the runner, relay the harness's own result line, and
+   * stream its progress frames to `onProgress`. */
+  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<string> {
     if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
     // A durable session on disk can be compacted even from a cold daemon (no
     // turn since restart): spawn the runner so its harness resumes the persisted
@@ -178,14 +192,36 @@ export class RunnerHost implements AgentRuntime {
     if (!this.child && !this.hasDurableSession(roomId)) return "nothing to compact — no active session yet.";
     await this.ensureChild(roomId);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.compactWaiter = undefined;
-        reject(new Error("compaction timed out after 180s"));
-      }, 180_000);
-      timer.unref?.();
-      this.compactWaiter = (result) => {
+      // IDLE backstop, not absolute: every progress frame re-arms it, so a pass
+      // actively streaming for many minutes never trips it, while a runner that
+      // goes silent (wedged) still fails COMPACT_TIMEOUT_MS after its last sign
+      // of life. Harnesses that report no progress fall back to a plain
+      // from-start bound — same as before, just larger.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
         clearTimeout(timer);
         this.compactWaiter = undefined;
+        this.compactProgress = undefined;
+      };
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          finish();
+          // Abort the runner's pass before giving up — otherwise the harness
+          // process keeps going and compacts the session AFTER we reported
+          // failure (exactly the "compacted anyway" ghost the 180s era left).
+          this.write({ type: "abort" });
+          reject(new Error(`compaction stalled — no progress for ${Math.round(COMPACT_TIMEOUT_MS / 1000)}s`));
+        }, COMPACT_TIMEOUT_MS);
+        timer.unref?.();
+      };
+      arm();
+      this.compactProgress = (update) => {
+        arm();
+        onProgress?.(update);
+      };
+      this.compactWaiter = (result) => {
+        finish();
         if (result.ok) resolve(result.message);
         else reject(new Error(result.message || "compaction failed"));
       };
@@ -358,6 +394,11 @@ export class RunnerHost implements AgentRuntime {
       case "steer-result":
         this.steerWaiter?.(message.ok);
         return;
+      case "compact-progress": {
+        const { type: _t, ...update } = message;
+        this.compactProgress?.(update);
+        return;
+      }
       case "compact-result":
         this.compactWaiter?.({ ok: message.ok, message: message.message });
         return;

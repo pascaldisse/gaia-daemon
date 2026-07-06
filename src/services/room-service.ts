@@ -27,6 +27,7 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
+  CompactProgress,
   ContextGatePending,
   EventDetails,
   MessageAttachment,
@@ -209,6 +210,17 @@ export class RoomService {
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
   private readonly compactingAgents = new Set<string>();
+  /** Live compaction progress per agent (job size + summary-so-far + start
+   * time), surfaced on the snapshot so the UI can render real progress, not
+   * just a spinner. Present only while the agent is in `compactingAgents`. */
+  private readonly compactProgress = new Map<string, CompactProgress>();
+  /** Throttle clock for progress-driven snapshot emits (token deltas arrive in
+   * bursts; we re-render at most ~2/s). */
+  private lastCompactEmit = 0;
+  /** Agents whose in-flight compaction the user cancelled: /cancel aborts the
+   * runtime (which kills the harness pass), and this marker turns the resulting
+   * rejection into "cancelled", not a scary harness exit error. */
+  private readonly compactCancels = new Set<string>();
   private recentTasks: Task[] = [];
   /** Tasks mirroring the DURABLE queue (state.queue) for snapshot chips. */
   private queuedTasks: Task[] = [];
@@ -620,7 +632,12 @@ export class RoomService {
     if (!task) return undefined;
     // Mark first so in-flight event handling sees the cancellation.
     task.status = "cancelled";
-    await Promise.allSettled(task.targets.map((target) => this.runtimes[target]?.abort()).filter(Boolean));
+    // A /compact command task carries no targets — the mid-compaction agents
+    // live in compactingAgents. Abort them too, or "stop" leaves the harness
+    // pass running and the session compacts anyway after we said cancelled.
+    for (const target of this.compactingAgents) this.compactCancels.add(target);
+    const targets = new Set([...task.targets, ...this.compactingAgents]);
+    await Promise.allSettled([...targets].map((target) => this.runtimes[target]?.abort()).filter(Boolean));
     this.settleTask(task, "cancelled");
     return task;
   }
@@ -1002,7 +1019,7 @@ export class RoomService {
   }
 
   async runConsolidateCommand(agentId?: string): Promise<string> {
-    const target = agentId ?? this.workspace.config.defaultAgent;
+    const target = agentId ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;
     if (!this.options.memory) return "Memory consolidation is not available in this workspace.";
     const result = await this.options.memory.consolidate(target, { force: true });
@@ -1034,7 +1051,7 @@ export class RoomService {
    * never re-implements summarization. Uniform: capability-gated, never
    * id-branched. */
   async runCompactCommand(agent?: string): Promise<string> {
-    const target = agent ?? this.workspace.config.defaultAgent;
+    const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
     if (!runtime.capabilities.supportsCompact || !runtime.compact) {
@@ -1043,21 +1060,54 @@ export class RoomService {
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
     if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
-    // Mark the agent "compacting" and push a snapshot so the UI shows progress
-    // for the whole (possibly long) harness pass, then clear it either way.
+    // Mark the agent "compacting" and seed progress with the job size we already
+    // know (its live context usage) + a start time, so the UI shows a real
+    // number and a ticking elapsed for the whole (possibly long) harness pass.
     this.compactingAgents.add(target);
+    const startedAt = Date.now();
+    const usedTokens = this.contextUsage[target]?.usedTokens;
+    this.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
+    this.lastCompactEmit = startedAt;
     await this.emitSnapshot();
     try {
-      const message = await runtime.compact(this.roomId);
+      const message = await runtime.compact(this.roomId, (update) => {
+        const prev = this.compactProgress.get(target);
+        if (!prev) return;
+        this.compactProgress.set(target, { ...prev, ...update });
+        const now = Date.now();
+        if (now - this.lastCompactEmit < 500) return; // coalesce bursts of token deltas
+        this.lastCompactEmit = now;
+        void this.emitSnapshot();
+      });
       // The harness just evicted this agent's raw history into a summary —
       // everything up to now is recall-reachable again (active-context floor).
       const { nextCursor } = await this.room.eventsFrom(0);
       await this.setContextFloor(target, nextCursor);
+      // The pre-compact context number is now a lie — don't leave the ctx chip
+      // sitting on the old % until the next turn. Best real post-compact figure
+      // is the summary the harness streamed (outputTokens); without one, drop
+      // the entry so the chip goes blank until fresh usage arrives.
+      const written = this.compactProgress.get(target)?.outputTokens;
+      const maxTokens = this.contextUsage[target]?.maxTokens;
+      const updated = written ? { usedTokens: written, ...(maxTokens ? { maxTokens } : {}) } : undefined;
+      if (updated) this.contextUsage[target] = updated;
+      else delete this.contextUsage[target];
+      await this.room
+        .updateState((current) => {
+          if (updated) current.contextUsage = { ...(current.contextUsage ?? {}), [target]: updated };
+          else if (current.contextUsage) delete current.contextUsage[target];
+        })
+        .catch(() => {});
       return `@${target}: ${message}`;
     } catch (error) {
+      // /cancel aborted the pass on purpose: report that, not the raw harness
+      // exit ("claude exited (signal SIGTERM)…" reads like a crash).
+      if (this.compactCancels.has(target)) return `Compaction cancelled for @${target}.`;
       return `Compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
+      this.compactCancels.delete(target);
       this.compactingAgents.delete(target);
+      this.compactProgress.delete(target);
       await this.emitSnapshot();
     }
   }
@@ -1079,7 +1129,7 @@ export class RoomService {
   async runRecallCommand(agent?: string, query?: string): Promise<string> {
     const trimmed = query?.trim();
     if (!trimmed) return "Usage: /recall [@agent] <query> — search memory and room history.";
-    const target = agent ?? this.workspace.config.defaultAgent;
+    const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     if (!this.options.memory) return "Memory recall is not available in this workspace.";
     const context = await this.recallContext(target);
@@ -1405,9 +1455,11 @@ export class RoomService {
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
       if (!TRANSCRIPT_STRUCTURAL_COMMANDS.has(command.type)) await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-      this.settleTask(task, "complete");
+      // /cancel settles a long command (e.g. mid-compaction) out from under us;
+      // the reply above still lands, but the task must not settle twice.
+      if (!this.taskCancelled(task)) this.settleTask(task, "complete");
     } catch (error) {
-      this.settleTask(task, "error", error);
+      if (!this.taskCancelled(task)) this.settleTask(task, "error", error);
     }
   }
 
@@ -1788,6 +1840,7 @@ export class RoomService {
             : this.activeTask?.targets.includes(agent.id)
               ? "running"
               : "idle") as AgentStatus["status"],
+          ...(this.compactProgress.has(agent.id) ? { compact: this.compactProgress.get(agent.id) } : {}),
           isDefault: agent.id === this.workspace.config.defaultAgent,
         })),
       ),

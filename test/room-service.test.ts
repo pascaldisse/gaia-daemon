@@ -8,7 +8,7 @@ import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, SanitizeProposal, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
 import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
@@ -477,6 +477,148 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
     transcript.some((event) => event.author === "system" && /session compacted \(999 tokens before\)/.test(event.text)),
     "compaction reply is written to the transcript",
   );
+});
+
+test("/compact streams live progress (token counts + start time) into the snapshot", async () => {
+  let serviceRef: RoomService | undefined;
+  let midPass: Snapshot | undefined;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (
+      runtime as unknown as { compact: (roomId: string, onProgress?: (u: { outputTokens?: number }) => void) => Promise<string> }
+    ).compact = async (_roomId, onProgress) => {
+      // The harness reports the summary growing; it must reach the snapshot.
+      onProgress?.({ outputTokens: 512 });
+      midPass = await serviceRef!.getSnapshot();
+      return "session compacted.";
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ runtimeFactory: factory });
+  serviceRef = service;
+
+  const task = await service.sendMessage("/compact");
+  assert.equal(task.status, "complete");
+
+  const during = midPass?.agents.find((agent) => agent.id === "gaia");
+  assert.equal(during?.status, "compacting");
+  assert.equal(during?.compact?.outputTokens, 512, "live output-token progress reached the snapshot");
+  assert.equal(typeof during?.compact?.startedAt, "number", "a start time is stamped so the client can tick an elapsed");
+
+  // Progress is cleared once the pass settles (no stale numbers on the idle agent).
+  const after = await service.getSnapshot();
+  assert.equal(after.agents.find((agent) => agent.id === "gaia")?.compact, undefined);
+});
+
+test("bare /compact targets the room's ACTIVE agent, not the workspace default", async () => {
+  // The room default is gaia, but the user has been talking to terry. A bare
+  // /compact must compact terry (who they're addressing), not gaia — else it
+  // reports "nothing to compact" for an agent with no session in this room.
+  const compacted: string[] = [];
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: (roomId: string) => Promise<string> }).compact = async () => {
+      compacted.push(agent.id);
+      return "session compacted.";
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ agents: ["gaia", "terry"], runtimeFactory: factory });
+
+  // Address terry so the room remembers them as its active agent...
+  await service.sendMessage("@terry hello");
+  await service.waitForIdle();
+  // ...then a bare /compact must land on terry, not the workspace default gaia.
+  const task = await service.sendMessage("/compact");
+  assert.equal(task.status, "complete");
+  assert.deepEqual(compacted, ["terry"], "bare /compact compacted the active agent, not the default");
+});
+
+test("/cancel aborts a running compaction — the pass is killed and the reply says cancelled, not crashed", async () => {
+  // The /compact command task carries no targets, so cancel must reach the
+  // compacting agent through compactingAgents — otherwise "stop" reports
+  // cancelled while the harness keeps going and compacts the session anyway.
+  let abortCalled = false;
+  let rejectCompact: ((err: Error) => void) | undefined;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    // A pass that only ends when aborted — mirrors the real chain, where
+    // abort() kills the harness process and the in-flight compact rejects.
+    (runtime as unknown as { compact: (roomId: string) => Promise<string> }).compact = () =>
+      new Promise<string>((_resolve, reject) => {
+        rejectCompact = reject;
+      });
+    runtime.abort = async () => {
+      abortCalled = true;
+      rejectCompact?.(new Error("claude exited (signal SIGTERM) before compacting."));
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  const compactTask = service.sendMessage("/compact"); // resolves only when the pass settles
+  // Wait until the pass is actually live before cancelling it.
+  while (!rejectCompact) await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const cancel = await service.sendMessage("/cancel");
+  assert.equal(cancel.status, "complete");
+  const task = await compactTask;
+  assert.equal(task.status, "cancelled");
+  assert.equal(abortCalled, true, "cancel aborted the compacting runtime despite the command task having no targets");
+
+  // The persisted reply reads as a deliberate cancel, not a harness crash.
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.ok(
+    transcript.some((event) => event.author === "system" && /Compaction cancelled for @gaia\./.test(event.text)),
+    "cancel reply persisted",
+  );
+  assert.ok(
+    !transcript.some((event) => /Compaction failed/.test(event.text)),
+    "the abort is not misreported as a failure",
+  );
+  const after = await service.getSnapshot();
+  assert.equal(after.agents.find((agent) => agent.id === "gaia")?.status, "idle", "compacting status cleared");
+});
+
+test("a successful compact refreshes the stale ctx chip: streamed summary size, else dropped", async () => {
+  // Before the fix the chip sat on the pre-compact % until the next turn.
+  let compactCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [
+      { type: "context-usage", usedTokens: 100_000, maxTokens: 200_000 } as AgentEvent,
+      { type: "text-delta", delta: "hi" } as AgentEvent,
+    ]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (
+      runtime as unknown as { compact: (roomId: string, onProgress?: (u: { outputTokens?: number }) => void) => Promise<string> }
+    ).compact = async (_roomId, onProgress) => {
+      compactCalls += 1;
+      if (compactCalls === 1) onProgress?.({ outputTokens: 512 }); // second pass streams nothing
+      return "session compacted.";
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("hello");
+  await service.waitForIdle();
+  assert.equal((await service.getSnapshot()).agents.find((agent) => agent.id === "gaia")?.context?.usedTokens, 100_000);
+
+  // Pass 1 streamed a 512-token summary: that becomes the chip (max kept).
+  await service.sendMessage("/compact");
+  const streamed = (await service.getSnapshot()).agents.find((agent) => agent.id === "gaia")?.context;
+  assert.deepEqual(streamed, { usedTokens: 512, maxTokens: 200_000 }, "chip shows the streamed post-compact size");
+  const persisted = (await (await RoomHandle.open(root, "default")).state()).contextUsage?.gaia;
+  assert.deepEqual(persisted, { usedTokens: 512, maxTokens: 200_000 }, "post-compact usage persisted durably");
+
+  // Pass 2 reported nothing: better no chip than a stale one.
+  await service.sendMessage("/compact");
+  const dropped = (await service.getSnapshot()).agents.find((agent) => agent.id === "gaia")?.context;
+  assert.equal(dropped, undefined, "stale usage dropped when the harness streamed no post-compact figure");
 });
 
 test("persisted system command replies are kept out of the agent's replayed context", async () => {

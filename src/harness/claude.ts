@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -650,10 +650,12 @@ export class ClaudeRuntime implements AgentRuntime {
    * slash command is supportsNonInteractive, so one `-p --resume` invocation
    * with the prompt "/compact" summarizes and persists the compacted session.
    * Completion is the compact_boundary system message. */
-  async compact(roomId: string): Promise<string> {
+  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<string> {
     const room = this.sessions.get(roomId);
     if (!room?.started) return "nothing to compact — no active session for this room.";
-    const args = ["-p", "--output-format", "stream-json", "--verbose", SAFE_MODE, "--resume", room.sessionId];
+    // --include-partial-messages so the summary streams as it's written: the
+    // partial usage blocks below are the only mid-pass progress the CLI exposes.
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
@@ -661,7 +663,20 @@ export class ClaudeRuntime implements AgentRuntime {
       let preTokens: number | undefined;
       let compacted = false;
       let failed: string | undefined;
-      this.processFactory({
+      // Coalesce progress: only surface a frame when a count actually advances,
+      // so thousands of stream deltas don't each round-trip to the daemon.
+      let sentContext: number | undefined;
+      let sentOutput: number | undefined;
+      const reportUsage = (usage: ClaudeUsage | undefined) => {
+        if (!usage || !onProgress) return;
+        const context = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+        const output = usage.output_tokens;
+        const update: CompactProgressUpdate = {};
+        if (context > 0 && context !== sentContext) update.contextTokens = sentContext = context;
+        if (typeof output === "number" && output !== sentOutput) update.outputTokens = sentOutput = output;
+        if (update.contextTokens !== undefined || update.outputTokens !== undefined) onProgress(update);
+      };
+      const handle = this.processFactory({
         args,
         prompt: "/compact",
         cwd: this.cwd,
@@ -675,6 +690,8 @@ export class ClaudeRuntime implements AgentRuntime {
             compact_error?: string;
             is_error?: boolean;
             result?: string;
+            message?: { usage?: ClaudeUsage };
+            event?: { type?: string; message?: { usage?: ClaudeUsage }; usage?: ClaudeUsage };
           };
           if (msg.type === "system" && msg.subtype === "compact_boundary") {
             compacted = true;
@@ -683,9 +700,16 @@ export class ClaudeRuntime implements AgentRuntime {
             failed = msg.compact_error || "compaction failed";
           } else if (msg.type === "result" && msg.is_error === true) {
             failed ??= msg.result || "compaction failed";
+          } else if (msg.type === "assistant") {
+            reportUsage(msg.message?.usage);
+          } else if (msg.type === "stream_event") {
+            // message_start carries the input (context) usage; message_delta the
+            // running output count as the summary is written.
+            reportUsage(msg.event?.message?.usage ?? msg.event?.usage);
           }
         },
         onExit: ({ code, signal, stderr }) => {
+          if (this.active === handle) this.active = null;
           if (failed) reject(new Error(failed));
           else if (compacted) resolve(`session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.`);
           else if (code === 0) resolve("session compacted.");
@@ -697,8 +721,15 @@ export class ClaudeRuntime implements AgentRuntime {
               ),
             );
         },
-        onError: (err) => reject(claudeStartupError(err)),
+        onError: (err) => {
+          if (this.active === handle) this.active = null;
+          reject(claudeStartupError(err));
+        },
       });
+      // Track the pass like a turn so abort()/dispose() can actually KILL it —
+      // untracked, a cancel or timeout "failed" while the CLI kept compacting
+      // and rewrote the session behind the user's back.
+      this.active = handle;
     });
   }
 

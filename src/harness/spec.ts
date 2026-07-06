@@ -4,7 +4,7 @@
 // DATA on the spec (capabilities, ui, credentialProxy), read uniformly — never
 // as `=== "claude"` branches. This rule is absolute (AGENTS.md §RULE #0).
 
-import type { AgentDef, AgentEvent, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -50,9 +50,11 @@ export interface AgentRuntime {
   steer?(roomId: string, message: string): Promise<boolean>;
   /** Compact the room's session context using the HARNESS's own compaction
    * (backs /compact — gaia never re-implements summarization). Resolves with
-   * a human-readable result line. Only present when
+   * a human-readable result line. `onProgress`, when supplied, receives whatever
+   * token counts the harness can report as the pass runs (best-effort — a
+   * harness that reports nothing just never calls it). Only present when
    * capabilities.supportsCompact. */
-  compact?(roomId: string): Promise<string>;
+  compact?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<string>;
   dispose(): void;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
