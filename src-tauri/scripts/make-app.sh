@@ -9,12 +9,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"   # -> src-tauri/
 PROFILE="${1:-release}"
 BIN="$HERE/target/$PROFILE/gaia-shell"
-APP="${GAIA_APP_OUT:-$HERE/target/GAIA.app}"
+APP="${GAIA_APP_OUT:-${2:-$HERE/target/GAIA.app}}"
 ENTITLEMENTS="$HERE/Entitlements.plist"
 
 if [ ! -x "$BIN" ]; then
   echo "missing binary: $BIN"
-  echo "build it first:  cargo build --$PROFILE"
+  echo "build it first:  cargo build --release  # or cargo build for debug"
   exit 1
 fi
 
