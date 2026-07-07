@@ -340,8 +340,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* Rooms are a nested tree: a summon's child room collapses under its parent
    behind a twisty, indented by depth. */
-.room-tree, .room-node, .room-children { display: grid; gap: 7px; }
-.room-row { display: flex; align-items: stretch; gap: 4px; }
+/* minmax(0,1fr): pin every grid track to the sidebar width so a long room id
+   (e.g. a nested whale-* child) can't blow the column past the pane and shove
+   the trailing twisty off-screen. min-width:0 lets the row shrink to match. */
+.room-tree, .room-node, .room-children { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+.room-row { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
 
 .room-twisty {
   flex: 0 0 auto;
