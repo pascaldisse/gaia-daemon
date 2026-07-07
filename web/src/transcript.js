@@ -235,15 +235,34 @@ function messageViews() {
     });
   }
   // Order by creation time (see creationOrder). Array.sort is stable, so views
-  // minted in the same ms keep their push order. This is a no-op for a plain
-  // transcript (committed events are already in creation order and a lone
-  // streaming reply starts after them); it only matters when something was
-  // committed DURING a running turn — a steer — which must sort below the reply
-  // it steered, not above it.
-  return views
-    .map((view, index) => ({ view, index, order: creationOrder(view.id, view.timestamp) }))
-    .sort((a, b) => a.order - b.order || a.index - b.index)
-    .map((entry) => entry.view);
+  // minted in the same ms keep their push order. A no-op for a plain transcript;
+  // it only matters when something committed DURING a running turn — and the two
+  // mid-turn cases pull opposite ways:
+  //  - a user STEER (late id) must sort BELOW the reply it steered — its own
+  //    creation order already does this (reply is anchored at its turn-start id).
+  //  - a summon-result NOTE is a worker's OUTPUT the caller's reply reacted to,
+  //    so it must read ABOVE that reply, not below. Its late finish-id would
+  //    otherwise sink it under the reply. Re-key each note to the start-order of
+  //    the turn it landed in — the reply whose [start, commit] window holds the
+  //    note's mint (turns are serialized, so at most one matches; a still-
+  //    streaming reply has no commit yet, so its window is open-ended). The note
+  //    then ties with that reply's key and, being earlier in append order, sorts
+  //    just above it.
+  const ranked = views.map((view, index) => ({
+    view,
+    index,
+    order: creationOrder(view.id, view.timestamp),
+    commit: Date.parse(view.timestamp),
+  }));
+  const turns = ranked.filter((r) => r.view.author !== "user" && r.view.author !== "system" && !summonView(r.view));
+  for (const note of ranked) {
+    if (!summonView(note.view)) continue;
+    const turn = turns.find(
+      (t) => t.order < note.order && (t.view.streaming || !Number.isFinite(t.commit) || note.order <= t.commit),
+    );
+    if (turn) note.order = turn.order;
+  }
+  return ranked.sort((a, b) => a.order - b.order || a.index - b.index).map((entry) => entry.view);
 }
 
 function renderTranscript() {
