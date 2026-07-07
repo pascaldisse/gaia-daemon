@@ -33,6 +33,7 @@ import { state } from "./state.js";
  * @property {string} timestamp
  * @property {string} author
  * @property {string[]} targets
+ * @property {AgentRoomEvent["kind"]} [kind]
  * @property {string} [channel]
  * @property {string} text
  * @property {EventDetails} [details]
@@ -45,15 +46,17 @@ import { state } from "./state.js";
 /** @param {RoomEvent} event @returns {MessageView} */
 function viewOfEvent(event) {
   const isUser = event.author === "user";
+  const agentEvent = isUser ? undefined : /** @type {AgentRoomEvent} */ (event);
   return {
     id: event.id,
-    version: event.redacted ? "c-redacted" : "c",
+    version: `${event.redacted ? "c-redacted" : "c"}:${agentEvent?.kind ?? ""}`,
     timestamp: event.timestamp,
     author: event.author,
+    kind: agentEvent?.kind,
     targets: isUser ? (/** @type {UserRoomEvent} */ (event).targets ?? []) : [],
     channel: event.channel,
     text: event.text,
-    details: isUser ? undefined : /** @type {AgentRoomEvent} */ (event).details,
+    details: agentEvent?.details,
     attachments: isUser ? /** @type {UserRoomEvent} */ (event).attachments : undefined,
     redacted: event.redacted,
     streaming: false,
@@ -350,6 +353,7 @@ registerRegion("transcript", renderTranscript);
 
 /** @param {MessageView} view @returns {HTMLElement} */
 function Message(view) {
+  if (view.kind === "compact-complete") return CompactBoundary(view);
   const isUser = view.author === "user";
   const isAgent = !isUser && view.author !== "system";
   const label = isUser ? `user -> ${view.targets.map((target) => `@${target}`).join(", ")}` : `@${view.author}`;
@@ -432,6 +436,44 @@ function Message(view) {
     summon || orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
+}
+
+/** @param {MessageView} view @returns {HTMLElement} */
+function CompactBoundary(view) {
+  const tokens = compactTokensBefore(view.text);
+  const detail = tokens ? `${formatTokenCount(tokens)} tokens before` : "context compacted";
+  return h(
+    "div",
+    {
+      class: "compact-boundary",
+      role: "separator",
+      title: view.text,
+      "aria-label": `Context compacted${tokens ? `, ${tokens.toLocaleString()} tokens before` : ""}`,
+    },
+    h(
+      "span",
+      { class: "compact-boundary-pill" },
+      h("span", { class: "compact-boundary-icon", text: "✂" }),
+      h("span", { text: "Context compacted" }),
+      h("small", { text: detail }),
+    ),
+    h("time", { text: formatTime(view.timestamp) }),
+  );
+}
+
+/** @param {string} text @returns {number|undefined} */
+function compactTokensBefore(text) {
+  const match = text.match(/\((\d[\d,._ ]*)\s+tokens?\s+before\)/iu);
+  if (!match) return undefined;
+  const tokens = Number.parseInt(match[1].replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(tokens) ? tokens : undefined;
+}
+
+/** @param {number} tokens @returns {string} */
+function formatTokenCount(tokens) {
+  if (tokens < 1000) return tokens.toLocaleString();
+  if (tokens < 1_000_000) return `${Math.round(tokens / 1000).toLocaleString()}k`;
+  return `${(tokens / 1_000_000).toFixed(tokens < 10_000_000 ? 1 : 0)}M`;
 }
 
 /**

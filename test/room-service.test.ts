@@ -473,10 +473,9 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
   // ...and the reply is persisted so it survives a reload (not just a live flash).
   const room = await RoomHandle.open(root, "default");
   const { events: transcript } = await room.eventsFrom(0);
-  assert.ok(
-    transcript.some((event) => event.author === "system" && /session compacted \(999 tokens before\)/.test(event.text)),
-    "compaction reply is written to the transcript",
-  );
+  const compactEvent = transcript.find((event) => event.author === "system" && /session compacted \(999 tokens before\)/.test(event.text));
+  assert.ok(compactEvent, "compaction reply is written to the transcript");
+  assert.equal(compactEvent.kind, "compact-complete", "compaction completion is persisted with a structured transcript marker");
 });
 
 test("/compact streams live progress (token counts + start time) into the snapshot", async () => {
