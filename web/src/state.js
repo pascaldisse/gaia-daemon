@@ -63,6 +63,7 @@
  *   addAgentError: string,
  *   usage: Record<string, import("./types.js").UsageLimits>,
  *   usagePopoverOpen: boolean,
+ *   bgTasksOpen: boolean,
  *   readMarks: Record<string, number>,
  * }}
  */
@@ -153,6 +154,7 @@ export const state = {
   // the open room; rendered as the status-bar usage chip + popover.
   usage: {},
   usagePopoverOpen: false,
+  bgTasksOpen: false,
   readMarks: loadReadMarks(),
 };
 
