@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Base capability for the main window. The gaia UI talks to its own localhost server, not to Tauri IPC, so only core defaults are granted.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Base capability for the main window and every spawned GAIA window (win-*). The gaia UI talks to its own localhost server; the only Tauri IPC it uses is the window-management bridge (open_window/redock, app-defined commands) plus core events for cross-window redock, so core defaults suffice.",
+  "windows": ["main", "win-*"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
 }

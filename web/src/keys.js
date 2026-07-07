@@ -1,34 +1,33 @@
-// tmux-flavoured keyboard control. These all use a modifier, so they never
-// collide with the composer's bare-key routing (which ignores modified keys).
-//   Ctrl/Cmd+T      new room (tab)
-//   Alt+1..9        jump to room tab N
-//   Ctrl+Tab / Alt+←/→   next / previous tab
-//   Ctrl+B          toggle the sessions sidebar
-//   Ctrl+G          toggle the room panel
-//   Alt+T           theme palette   ·   Alt+Shift+T  cycle theme
-//   Esc             close the theme palette
-import { addRoom, selectRoom } from "./actions.js";
+// Keyboard control — native, OS-standard chords. `mod` is Cmd on macOS and Ctrl
+// everywhere else (kept engine/OS-agnostic).
+//
+// Inside the GAIA shell the *native menu* (src-tauri) owns the window/tab chrome
+// chords, so they behave exactly like every other Mac app and appear in the menu
+// bar; this handler then only covers the in-web bits below. In a plain browser
+// there is no menu, so the same chords are handled here as a fallback.
+//   mod+T  new tab        mod+N  new window     mod+W  close tab / window
+//   mod+1..9  jump to tab N            mod+Shift+] / mod+Shift+[  next / prev tab
+//   mod+B  sessions sidebar            mod+Alt+B  room panel
+//   mod+K  search all chats            mod+F  search this chat
+//   Alt+T  theme palette   Alt+Shift+T  cycle theme   Esc  close overlays
+import { jumpTab, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
+import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
 import { state } from "./state.js";
 import { closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
-import { visibleTabs } from "./tabs.js";
 import { cycleTheme } from "./themes.js";
 
-/** @param {number} index */
-function jumpTo(index) {
-  const tabs = visibleTabs(state.snapshot);
-  const room = tabs[index];
-  if (room && state.snapshot && room.id !== state.snapshot.room?.id) void selectRoom(state.snapshot.workspace.id, room.id);
-}
+const IS_MAC = /mac|iphone|ipad/i.test(
+  (typeof navigator !== "undefined" &&
+    (/** @type {any} */ (navigator).userAgentData?.platform || navigator.platform || navigator.userAgent)) ||
+    "",
+);
 
-/** @param {number} direction */
-function step(direction) {
-  const tabs = visibleTabs(state.snapshot);
-  if (tabs.length < 2) return;
-  const current = tabs.findIndex((room) => room.id === state.snapshot?.room?.id);
-  const next = tabs[(current + direction + tabs.length) % tabs.length];
-  if (next && state.snapshot && next.id !== state.snapshot.room?.id) void selectRoom(state.snapshot.workspace.id, next.id);
+/** The platform's primary modifier: Cmd on macOS, Ctrl elsewhere.
+ * @param {KeyboardEvent} event */
+function mod(event) {
+  return IS_MAC ? event.metaKey : event.ctrlKey;
 }
 
 export function installKeybindings() {
@@ -73,45 +72,34 @@ export function installKeybindings() {
         return;
       }
 
-      const meta = event.metaKey || event.ctrlKey;
+      const isMod = mod(event);
       const has = Boolean(state.snapshot);
 
-      // Chat search palette (Cmd/Ctrl+K). Reachable open or closed so the same
-      // chord focuses it; everything else below is suppressed while it's up.
-      if (meta && !event.altKey && event.key.toLowerCase() === "k") {
+      // Chat search palette (mod+K). Reachable open or closed so the same chord
+      // focuses it; everything else below is suppressed while it's up.
+      if (isMod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
         openSearch("chatwide");
         return;
       }
-      // Search the OPEN chat (Cmd/Ctrl+F) — same overlay, pre-scoped to this room.
-      if (meta && !event.altKey && event.key.toLowerCase() === "f" && has) {
+      // Search the OPEN chat (mod+F) — same overlay, pre-scoped to this room.
+      if (isMod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f" && has) {
         event.preventDefault();
         openSearch("room");
         return;
       }
       if (state.search.open) return;
 
-      // New room tab.
-      if (meta && !event.altKey && event.key.toLowerCase() === "t" && has) {
+      // Jump to tab N (mod+1..9) — in-web in every host (the menu doesn't carry
+      // nine items for this).
+      if (isMod && !event.altKey && !event.shiftKey && /^[1-9]$/.test(event.key) && has) {
         event.preventDefault();
-        void addRoom();
+        jumpTab(Number(event.key) - 1);
         return;
       }
-      // Toggle panes.
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        state.sidebarCollapsed = !state.sidebarCollapsed;
-        markDirty("layout", "tabs");
-        return;
-      }
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "g") {
-        event.preventDefault();
-        state.rightCollapsed = !state.rightCollapsed;
-        markDirty("layout", "tabs");
-        return;
-      }
-      // Themes.
-      if (event.altKey && event.key.toLowerCase() === "t") {
+
+      // Theme palette (app-specific; no native-menu standard, so always in-web).
+      if (event.altKey && !isMod && event.key.toLowerCase() === "t") {
         event.preventDefault();
         if (event.shiftKey) {
           cycleTheme(1);
@@ -120,21 +108,46 @@ export function installKeybindings() {
         else openThemePalette();
         return;
       }
-      // Cycle tabs.
-      if ((event.ctrlKey && event.key === "Tab") || (event.altKey && event.key === "ArrowRight")) {
+
+      // Window/tab chrome chords. Inside the shell the native menu owns these (so
+      // they match the rest of macOS); handle them here only in a plain browser.
+      if (isNative()) return;
+
+      if (isMod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t" && has) {
         event.preventDefault();
-        step(event.shiftKey ? -1 : 1);
+        newTab();
         return;
       }
-      if (event.altKey && event.key === "ArrowLeft") {
+      if (isMod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
-        step(-1);
+        toggleSidebar();
         return;
       }
-      // Jump to tab N.
-      if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-9]$/.test(event.key) && has) {
+      if (isMod && event.altKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
-        jumpTo(Number(event.key) - 1);
+        togglePanel();
+        return;
+      }
+      // Next / previous tab: mod+Shift+] / mod+Shift+[ (code-based so it's layout
+      // independent), plus mod+Alt+Arrows as an alternate.
+      if (isMod && event.shiftKey && event.code === "BracketRight") {
+        event.preventDefault();
+        nextTab();
+        return;
+      }
+      if (isMod && event.shiftKey && event.code === "BracketLeft") {
+        event.preventDefault();
+        prevTab();
+        return;
+      }
+      if (isMod && event.altKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        nextTab();
+        return;
+      }
+      if (isMod && event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        prevTab();
       }
     },
     true,
