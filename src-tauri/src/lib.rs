@@ -32,6 +32,104 @@ use std::time::{Duration, Instant};
 use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "macos")]
+mod macos_media_capture {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use block2::Block;
+    use objc2::runtime::{AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel};
+    use objc2_web_kit::{
+        WKFrameInfo, WKMediaCaptureType, WKPermissionDecision, WKSecurityOrigin, WKWebView,
+    };
+
+    static MEDIA_CAPTURE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    /// Tauri/wry owns the WKUIDelegate instance. Rather than replacing it (which
+    /// would regress file-upload/new-window behavior), patch that delegate's
+    /// media-capture callback in-place and keep all other delegate methods intact.
+    pub fn install_for_wkwebview(wk_webview: *mut c_void) {
+        if wk_webview.is_null() {
+            eprintln!("[gaia-shell] WKWebView media-capture hook skipped: null WKWebView");
+            return;
+        }
+
+        unsafe {
+            let webview = wk_webview.cast::<AnyObject>();
+            let ui_delegate: *mut AnyObject = msg_send![&*webview, UIDelegate];
+            if ui_delegate.is_null() {
+                eprintln!("[gaia-shell] WKWebView media-capture hook skipped: no UIDelegate");
+                return;
+            }
+
+            let class = (&*ui_delegate).class();
+            let selector = sel!(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:);
+            let Some(method) = class.instance_method(selector) else {
+                eprintln!("[gaia-shell] WKWebView UIDelegate has no media-capture selector");
+                return;
+            };
+
+            if !MEDIA_CAPTURE_HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
+                let imp: Imp = std::mem::transmute(
+                    gaia_media_capture_permission
+                        as unsafe extern "C-unwind" fn(
+                            &AnyObject,
+                            Sel,
+                            &WKWebView,
+                            &WKSecurityOrigin,
+                            &WKFrameInfo,
+                            WKMediaCaptureType,
+                            &Block<dyn Fn(WKPermissionDecision)>,
+                        ),
+                );
+                method.set_implementation(imp);
+                eprintln!(
+                    "[gaia-shell] installed WKWebView media-capture permission handler for loopback origins"
+                );
+            }
+        }
+    }
+
+    unsafe extern "C-unwind" fn gaia_media_capture_permission(
+        _this: &AnyObject,
+        _cmd: Sel,
+        _web_view: &WKWebView,
+        origin: &WKSecurityOrigin,
+        _frame: &WKFrameInfo,
+        _capture_type: WKMediaCaptureType,
+        decision_handler: &Block<dyn Fn(WKPermissionDecision)>,
+    ) {
+        let scheme = origin.protocol().to_string();
+        let host = origin.host().to_string();
+        let host = host.trim_matches(['[', ']']);
+        let is_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        let is_web_origin = matches!(scheme.as_str(), "http" | "https");
+        let decision = if is_loopback && is_web_origin {
+            eprintln!("[gaia-shell] granted WKWebView media-capture request for {scheme}://{host}");
+            WKPermissionDecision::Grant
+        } else {
+            eprintln!(
+                "[gaia-shell] denied WKWebView media-capture request for non-loopback origin {scheme}://{host}"
+            );
+            WKPermissionDecision::Deny
+        };
+        decision_handler.call((decision,));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_media_capture_permission_handler(window: &tauri::WebviewWindow) {
+    if let Err(e) = window.with_webview(|webview| {
+        macos_media_capture::install_for_wkwebview(webview.inner());
+    }) {
+        eprintln!("[gaia-shell] failed to access WKWebView for media-capture hook: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_media_capture_permission_handler(_window: &tauri::WebviewWindow) {}
+
 const DEFAULT_PORT: u16 = 8787;
 
 /// Monotonic label source for spawned windows (`win-1`, `win-2`, …). The initial
@@ -164,7 +262,8 @@ fn open_window(
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
-    builder.build().map_err(|e| e.to_string())?;
+    let window = builder.build().map_err(|e| e.to_string())?;
+    install_media_capture_permission_handler(&window);
     Ok(label)
 }
 
@@ -174,7 +273,8 @@ fn open_window(
 #[tauri::command]
 fn redock(app: tauri::AppHandle, window: tauri::WebviewWindow, room: String) -> Result<(), String> {
     if let Some(main) = app.get_webview_window("main") {
-        main.emit("gaia://redock", room).map_err(|e| e.to_string())?;
+        main.emit("gaia://redock", room)
+            .map_err(|e| e.to_string())?;
         let _ = main.set_focus();
     }
     // Don't close the last window out from under the user if main is gone.
@@ -337,14 +437,16 @@ pub fn run() {
                 .parse()
                 .unwrap_or_else(|e| panic!("invalid GAIA shell URL `{url}`: {e}"));
 
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(external))
-                .title("GAIA")
-                .inner_size(1180.0, 820.0)
-                .min_inner_size(720.0, 480.0)
-                // See open_window: needed for the tab strip's HTML5 drag-and-drop.
-                .disable_drag_drop_handler()
-                .resizable(true)
-                .build()?;
+            let main_window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::External(external))
+                    .title("GAIA")
+                    .inner_size(1180.0, 820.0)
+                    .min_inner_size(720.0, 480.0)
+                    // See open_window: needed for the tab strip's HTML5 drag-and-drop.
+                    .disable_drag_drop_handler()
+                    .resizable(true)
+                    .build()?;
+            install_media_capture_permission_handler(&main_window);
 
             Ok(())
         })

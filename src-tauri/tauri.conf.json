@@ -17,6 +17,10 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": []
+    "icon": [],
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "bundle/macos/Info.plist"
+    }
   }
 }
