@@ -35,6 +35,7 @@ import type {
   ModelFallback,
   PendingTurn,
   RoomEvent,
+  RoomEventKind,
   SlashCommandDefinition,
   Snapshot,
   Task,
@@ -180,8 +181,10 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
 const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
- * plus one line in SLASH_COMMANDS. Each returns the system reply text. */
-type CommandHandler = (service: RoomService, command: SlashCommand) => Promise<string>;
+ * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
+ * optional event discriminator when the transcript should render it specially. */
+type CommandReply = string | { text: string; kind?: RoomEventKind };
+type CommandHandler = (service: RoomService, command: SlashCommand) => Promise<CommandReply>;
 
 const COMMANDS: Record<string, CommandHandler> = {
   help: async () => HELP_TEXT,
@@ -1239,7 +1242,7 @@ export class RoomService {
    * (pi session.compact, claude /compact, codex thread/compact/start) — gaia
    * never re-implements summarization. Uniform: capability-gated, never
    * id-branched. */
-  async runCompactCommand(agent?: string): Promise<string> {
+  async runCompactCommand(agent?: string): Promise<CommandReply> {
     const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
@@ -1287,7 +1290,8 @@ export class RoomService {
           else if (current.contextUsage) delete current.contextUsage[target];
         })
         .catch(() => {});
-      return `@${target}: ${message}`;
+      const text = `@${target}: ${message}`;
+      return /\bcompacted\b/iu.test(message) ? { text, kind: "compact-complete" } : text;
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
@@ -1684,13 +1688,20 @@ export class RoomService {
   private async runCommand(task: Task, command: SlashCommand): Promise<void> {
     try {
       const handler = COMMANDS[command.type];
-      const text = handler ? await handler(this, command) : `Unknown command. Try /help.`;
+      const reply = handler ? await handler(this, command) : `Unknown command. Try /help.`;
+      const text = typeof reply === "string" ? reply : reply.text;
       // Persist the reply so a command result (e.g. /compact) survives a reload
       // instead of only flashing on the live stream. appendEvent both writes it
       // to the transcript and emits the room-event to connected clients. Skip the
       // transcript-structural commands: they reset/truncate history themselves, so
       // a leftover confirmation would re-seed the room they just emptied.
-      const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text };
+      const event: RoomEvent = {
+        id: `system_${task.id}`,
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text,
+        ...(typeof reply === "string" || !reply.kind ? {} : { kind: reply.kind }),
+      };
       if (!TRANSCRIPT_STRUCTURAL_COMMANDS.has(command.type)) await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
       // /cancel settles a long command (e.g. mid-compaction) out from under us;

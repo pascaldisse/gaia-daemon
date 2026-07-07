@@ -110,11 +110,15 @@ export interface UserRoomEvent {
   redacted?: boolean;
 }
 
+export type RoomEventKind = "compact-complete";
+
 export interface AgentRoomEvent {
   id: string;
   timestamp: string;
   author: string; // agent id
   text: string;
+  /** Optional persisted rendering discriminator for system/special transcript rows. */
+  kind?: RoomEventKind;
   channel?: string;
   details?: EventDetails;
   /** Text was rewritten by a sanitize apply; the original line lives in
