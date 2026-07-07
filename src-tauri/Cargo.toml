@@ -19,8 +19,33 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+cef = { version = "=149.3.0", optional = true, default-features = false, features = ["build-util"] }
+semver = { version = "1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.3", optional = true }
+objc2-app-kit = { version = "0.3.2", default-features = false, optional = true, features = [
+    "NSApplication",
+    "NSEvent",
+] }
+objc2-foundation = { version = "0.3.2", optional = true }
 
 [features]
-# by default Tauri runs in production mode; devtools help while iterating
-default = ["custom-protocol"]
-custom-protocol = ["tauri/custom-protocol"]
+default = ["webkit"]
+# Small/iOS-compatible Tauri path: native system webview (WKWebView on macOS).
+webkit = ["tauri/custom-protocol"]
+# Bundled Chromium path. CEF is optional so the default WebKit build never pulls it.
+cef = ["dep:cef", "dep:semver", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+
+[package.metadata.cef.bundle]
+helper_name = "gaia-cef-helper"
+
+[[bin]]
+name = "gaia-cef-helper"
+path = "src/bin/gaia-cef-helper.rs"
+required-features = ["cef"]
+
+[[bin]]
+name = "gaia-cef-bundle"
+path = "src/bin/gaia-cef-bundle.rs"
+required-features = ["cef"]
