@@ -132,9 +132,9 @@ function RoomNode(room, childrenOf, depth) {
     h(
       "div",
       { class: `room-row ${room.isCurrent ? "active" : ""}`, style: depth ? `padding-left:${depth * 14}px` : null },
-      kids.length > 0
-        ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
-        : h("span", { class: "room-twisty leaf" }),
+      // The room button leads so every label starts at the same left edge; the
+      // twisty trails on the right and never indents the names (a leaf keeps the
+      // right gutter aligned for childless rooms).
       h(
         "button",
         {
@@ -156,6 +156,9 @@ function RoomNode(room, childrenOf, depth) {
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
+      kids.length > 0
+        ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
+        : h("span", { class: "room-twisty leaf" }),
     ),
     kids.length > 0 && expanded ? h("div", { class: "room-children" }, kids.map((kid) => RoomNode(kid, childrenOf, depth + 1))) : null,
   );
