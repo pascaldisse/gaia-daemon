@@ -66,6 +66,26 @@ export interface VoiceSettings {
   elevenLabsModel: string;
   /** Default ElevenLabs voice id when an agent sets no tts.voice. */
   elevenLabsVoice: string;
+  /** Speech-to-text engine for composer dictation (voice INPUT), by id. Swap it
+   * like ttsEngine — the shared transcribe path never branches on the engine.
+   * "elevenlabs" (Scribe API) is the default; "openai" hits any
+   * OpenAI-compatible /audio/transcriptions endpoint (hosted or a local
+   * whisper-server). Live-CALL STT is a separate path (the unmute stack). */
+  sttEngine: string;
+  /** Optional spoken-language hint for dictation (ISO 639 code); "" auto-detects. */
+  sttLanguage: string;
+  /** ElevenLabs speech-to-text model for the "elevenlabs" STT engine
+   * (scribe_v1). Reuses elevenLabsApiKey / ELEVENLABS_API_KEY. */
+  elevenLabsSttModel: string;
+  /** Base URL for the "openai" STT engine — default OpenAI, or point it at a
+   * local whisper-server ("http://127.0.0.1:8080/v1") to keep dictation
+   * fully local. */
+  sttOpenAiBaseUrl: string;
+  /** API key for the "openai" STT engine. Empty falls back to OPENAI_API_KEY;
+   * a localhost base URL may need no key at all. */
+  sttOpenAiApiKey: string;
+  /** Model for the "openai" STT engine (whisper-1, or a local model name). */
+  sttOpenAiModel: string;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -85,7 +105,25 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   elevenLabsModel: "eleven_v3",
   // Premade "Rachel" — a neutral default; agents set their own tts.voice.
   elevenLabsVoice: "21m00Tcm4TlvDq8ikWAM",
+  // API-based STT is the default: local models are unreliable under memory
+  // pressure (why the user asked for this), and elevenlabs reuses the key the
+  // TTS engine already has.
+  sttEngine: "elevenlabs",
+  sttLanguage: "",
+  elevenLabsSttModel: "scribe_v1",
+  sttOpenAiBaseUrl: "https://api.openai.com/v1",
+  sttOpenAiApiKey: "",
+  sttOpenAiModel: "whisper-1",
 };
+
+/** The ElevenLabs API key (xi-api-key), shared by the TTS and STT engines:
+ * voice.json `elevenLabsApiKey` first, else the ELEVENLABS_API_KEY env var.
+ * Throws when neither is set (both engines need it). */
+export function elevenLabsKey(settings: VoiceSettings): string {
+  const key = settings.elevenLabsApiKey?.trim() || process.env.ELEVENLABS_API_KEY?.trim();
+  if (!key) throw new Error("ElevenLabs API key not set (voice.json elevenLabsApiKey or ELEVENLABS_API_KEY env)");
+  return key;
+}
 
 export async function ensureVoiceSettingsFile(): Promise<void> {
   const path = globalPaths.voiceSettings();
@@ -110,6 +148,13 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
   if (typeof raw.elevenLabsModel === "string" && raw.elevenLabsModel.trim()) settings.elevenLabsModel = raw.elevenLabsModel.trim();
   if (typeof raw.elevenLabsVoice === "string" && raw.elevenLabsVoice.trim()) settings.elevenLabsVoice = raw.elevenLabsVoice.trim();
+  if (typeof raw.sttEngine === "string" && raw.sttEngine.trim()) settings.sttEngine = raw.sttEngine.trim();
+  // Language is intentionally allowed to be "" (auto-detect), so accept any string.
+  if (typeof raw.sttLanguage === "string") settings.sttLanguage = raw.sttLanguage.trim();
+  if (typeof raw.elevenLabsSttModel === "string" && raw.elevenLabsSttModel.trim()) settings.elevenLabsSttModel = raw.elevenLabsSttModel.trim();
+  if (typeof raw.sttOpenAiBaseUrl === "string" && raw.sttOpenAiBaseUrl.trim()) settings.sttOpenAiBaseUrl = raw.sttOpenAiBaseUrl.trim();
+  if (typeof raw.sttOpenAiApiKey === "string" && raw.sttOpenAiApiKey.trim()) settings.sttOpenAiApiKey = raw.sttOpenAiApiKey.trim();
+  if (typeof raw.sttOpenAiModel === "string" && raw.sttOpenAiModel.trim()) settings.sttOpenAiModel = raw.sttOpenAiModel.trim();
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();

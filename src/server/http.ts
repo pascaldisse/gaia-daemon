@@ -48,6 +48,10 @@ const MIME: Record<string, string> = {
   ".wasm": "application/wasm",
 };
 
+// A dictation clip is short spoken audio, not a media upload — a few MiB of
+// opus is minutes of speech. Cap well below the attachment limit.
+const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
+
 function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
@@ -643,6 +647,26 @@ export class GaiaWebServer {
         json(response, message.startsWith("Unknown agent") ? 404 : message.includes("already") ? 409 : 502, { error: message });
       }
       return;
+    }
+
+    // Composer dictation (voice INPUT): the recorded clip is POSTed as the bare
+    // body (content-type = the recorder's MIME), transcribed by the resolved STT
+    // engine (voice.json sttEngine; ?engine= / ?language= override), and the
+    // text returned. Workspace-independent — it reads only global voice settings.
+    if (method === "POST" && match(/^\/api\/voice\/transcribe$/)) {
+      const contentType = request.headers["content-type"];
+      const mime = typeof contentType === "string" && contentType.trim() ? contentType.split(";")[0].trim() : "application/octet-stream";
+      const engineId = url.searchParams.get("engine")?.trim() || undefined;
+      const language = url.searchParams.get("language")?.trim() || undefined;
+      try {
+        const data = await readRawBody(request, TRANSCRIBE_MAX_BYTES);
+        if (data.length === 0) return json(response, 400, { error: "No audio to transcribe" });
+        const result = await this.daemon.transcribe({ data, contentType: mime }, { engineId, language });
+        return json(response, 200, { text: result.text, engine: result.engine });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return json(response, message.startsWith("Unknown STT engine") || message.startsWith("No audio") ? 400 : 502, { error: message });
+      }
     }
 
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/agents\/([^/]+)\/thinking$/))) {

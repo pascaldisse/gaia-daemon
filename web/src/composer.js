@@ -14,6 +14,7 @@ import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
+import { cancelDictation, toggleDictation } from "./dictation.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").AgentStatus} AgentStatus */
@@ -668,21 +669,46 @@ function MemoryChip(snapshot) {
 
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
-  if (!state.voice) return [];
+  // On a call: mute + hang-up (live STT already fills the composer as you talk).
+  if (state.voice) {
+    return [
+      h("button", {
+        type: "button",
+        class: state.micMuted ? "voice-button muted" : "voice-button",
+        title: state.micMuted ? "unmute microphone" : "mute microphone",
+        onclick: () => setMicMuted(!state.micMuted),
+        text: state.micMuted ? "\u{1F507}" : "\u{1F3A4}",
+      }),
+      h("button", {
+        type: "button",
+        class: "voice-button end-call",
+        title: `hang up @${state.voice.agentId}`,
+        onclick: () => void endCall(),
+        text: "⏹",
+      }),
+    ];
+  }
+  // Off a call: the dictation (voice-input) button. One click records, the next
+  // stops and transcribes into the composer; right-click cancels a recording.
+  if (!state.snapshot) return [];
+  const recording = state.dictating;
+  const busy = state.dictationBusy;
   return [
     h("button", {
       type: "button",
-      class: state.micMuted ? "voice-button muted" : "voice-button",
-      title: state.micMuted ? "unmute microphone" : "mute microphone",
-      onclick: () => setMicMuted(!state.micMuted),
-      text: state.micMuted ? "\u{1F507}" : "\u{1F3A4}",
-    }),
-    h("button", {
-      type: "button",
-      class: "voice-button end-call",
-      title: `hang up @${state.voice.agentId}`,
-      onclick: () => void endCall(),
-      text: "⏹",
+      class: `voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
+      title: busy
+        ? "transcribing…"
+        : recording
+          ? "stop & transcribe (right-click or Esc to cancel)"
+          : "voice input — click to dictate a message",
+      disabled: busy,
+      onclick: () => void toggleDictation(),
+      oncontextmenu: (event) => {
+        event.preventDefault();
+        if (recording) cancelDictation();
+      },
+      text: busy ? "…" : recording ? "⏺" : "\u{1F3A4}",
     }),
   ];
 }
@@ -751,6 +777,13 @@ export function installComposerRouting() {
   window.addEventListener(
     "keydown",
     (event) => {
+      // Esc while dictating cancels the recording (before panic-stop, which
+      // targets running turns — a recording isn't one).
+      if (event.key === "Escape" && state.dictating) {
+        event.preventDefault();
+        cancelDictation();
+        return;
+      }
       // Panic stop: Ctrl+C or Esc aborts the running turn AND all summoned
       // workers, from anywhere in the app, for every agent/harness.
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {

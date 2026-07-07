@@ -16,7 +16,7 @@ import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promi
 import { join } from "node:path";
 import { globalPaths } from "../core/paths.js";
 import type { AgentTtsConfig } from "../core/types.js";
-import type { VoiceSettings, VoiceStackSettings } from "./voice.js";
+import { elevenLabsKey, type VoiceSettings, type VoiceStackSettings } from "./voice.js";
 
 // ---------------------------------------------------------------------------
 // Speakable text. Voice calls avoid pronouncing tool calls structurally (only
@@ -854,12 +854,6 @@ registerTtsEngine({
 const ELEVENLABS_BASE = "https://api.elevenlabs.io";
 const ELEVENLABS_SAMPLE_RATE = 24_000;
 const ELEVENLABS_SYNTH_TIMEOUT_MS = 180_000;
-
-function elevenLabsKey(settings: VoiceSettings): string {
-  const key = settings.elevenLabsApiKey?.trim() || process.env.ELEVENLABS_API_KEY?.trim();
-  if (!key) throw new Error("ElevenLabs API key not set (voice.json elevenLabsApiKey or ELEVENLABS_API_KEY env)");
-  return key;
-}
 
 /** POST body + URL shared by the batch and streaming endpoints. `stream` picks
  * the `/stream` variant (frames as generated) over the one-shot endpoint. */

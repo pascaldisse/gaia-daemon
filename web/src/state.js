@@ -50,6 +50,8 @@
  *   voicePendingAgentId: string|null,
  *   voiceStatusText: string,
  *   micMuted: boolean,
+ *   dictating: boolean,
+ *   dictationBusy: boolean,
  *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
@@ -117,6 +119,11 @@ export const state = {
   voicePendingAgentId: null,
   voiceStatusText: "",
   micMuted: false,
+  // Composer dictation (voice input, this tab only): recording the mic clip,
+  // then transcribing it. Distinct from a live call's micMuted (see voice.js /
+  // dictation.js).
+  dictating: false,
+  dictationBusy: false,
   // Transcript read-aloud playback (one message at a time, this tab only).
   readAloud: null,
   // The Thanks-Dario review popup: proposal + which suggestion ids are

@@ -22,6 +22,7 @@ import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { findTtsEngine, ttsEngineIds } from "./read-aloud.js";
+import { sttEngineIds } from "./transcribe.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -400,6 +401,16 @@ function voiceJsonHints(): FileHints {
       description: "ElevenLabs model — eleven_v3 renders [moans]/[breathy]/[laughs] audio tags; flash/turbo trade tags for lower latency",
     }),
     elevenLabsVoice: { input: "text", optional: true, label: "ElevenLabs default voice", description: "default ElevenLabs voice id when an agent sets no tts.voice" },
+    sttEngine: select(values(sttEngineIds()), {
+      optional: true,
+      label: "Voice input (dictation) engine",
+      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API, reuses the ElevenLabs key) or openai (any OpenAI-compatible /audio/transcriptions endpoint, hosted or a local whisper-server). Swappable like the TTS engine.",
+    }),
+    sttLanguage: { input: "text", optional: true, label: "Dictation language", description: "optional spoken-language hint (ISO code like 'en'); empty auto-detects" },
+    elevenLabsSttModel: { input: "text", optional: true, label: "ElevenLabs STT model", description: "ElevenLabs speech-to-text model for the elevenlabs dictation engine (default scribe_v1)" },
+    sttOpenAiBaseUrl: { input: "text", optional: true, label: "OpenAI STT base URL", description: "base URL for the openai dictation engine — default OpenAI, or a local whisper-server (http://127.0.0.1:8080/v1) to keep dictation fully local" },
+    sttOpenAiApiKey: { input: "text", optional: true, label: "OpenAI STT API key", description: "API key for the openai dictation engine; empty falls back to OPENAI_API_KEY (a localhost base URL may need none)" },
+    sttOpenAiModel: { input: "text", optional: true, label: "OpenAI STT model", description: "model for the openai dictation engine (default whisper-1, or a local model name)" },
   };
 }
 

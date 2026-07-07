@@ -768,6 +768,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .voice-wrap { display: flex; gap: 8px; }
 .voice-button { min-width: 38px; height: 30px; display: grid; place-items: center; padding: 0 8px; }
 .voice-button.muted, .voice-button.end-call { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 60%, transparent); }
+/* Dictation: recording pulses red, transcribing dims. */
+.voice-button.dictation.recording { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 60%, transparent); animation: dictation-pulse 1.2s ease-in-out infinite; }
+.voice-button.dictation.busy { opacity: 0.6; }
+@keyframes dictation-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); } 50% { box-shadow: 0 0 0 4px transparent; } }
 
 .autocomplete {
   position: absolute;

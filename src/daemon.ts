@@ -39,6 +39,7 @@ import {
   type VoiceSettings,
 } from "./services/voice.js";
 import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
+import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
@@ -845,6 +846,22 @@ export class Daemon {
       settings,
       regenerate,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
+      log: (message) => this.log(message),
+    });
+  }
+
+  /** Transcribe one recorded clip → text (composer dictation / voice input).
+   * Resolves the STT engine from voice.json (elevenlabs by default; swappable
+   * like read-aloud's TTS engine, never branched on here) and returns the text.
+   * Workspace-independent: it reads only global voice settings. */
+  async transcribe(audio: SttAudioInput, opts: { engineId?: string; language?: string; signal?: AbortSignal } = {}): Promise<{ text: string; engine: string }> {
+    const settings = await readVoiceSettings();
+    return transcribe({
+      audio,
+      settings,
+      engineId: opts.engineId,
+      language: opts.language,
+      signal: opts.signal,
       log: (message) => this.log(message),
     });
   }
