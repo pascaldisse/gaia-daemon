@@ -6,6 +6,13 @@ src/.bin/
 src-tauri/target/
 src-tauri/gen/
 
+# dev tooling artifacts (tools/)
+tools/cdp/node_modules/
+tools/cdp/out/
+tools/calayer-poc/renderer
+tools/calayer-poc/host
+tools/calayer-poc/*.dSYM/
+
 .env
 .env.*
 .DS_Store

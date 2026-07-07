@@ -47,6 +47,35 @@ the app still ships correctly everywhere on WebKit.
 
 ---
 
+## 0b. STATUS — 2026-07-07 (updated after execution)
+
+Branch `feat/tauri-shell` (worktree), commits stacked on `main`. Everything
+except mobile has been executed; mobile is deferred by Pascal to last.
+
+- **Phase 1 — WebKit desktop shell: ✅ DONE.** Hand-authored `src-tauri/`; native
+  window renders the live UI via WKWebView; runtime env-resolved URL; guarded
+  daemon lifecycle (attach-only by default, opt-in `GAIA_SHELL_AUTOSTART=1` spawn).
+- **GAIA.app bundle: ✅ DONE.** Branded icon set + `icon.icns`,
+  `bundle/macos/Info.plist`, `scripts/make-app.sh` → double-clickable, ad-hoc
+  signed GAIA.app from the release binary (built app in gitignored `target/`).
+- **Phase 4.1 — CDP debugging: ✅ PROVEN.** `tools/cdp/` Playwright harness ran
+  end-to-end against live `:8787` (bundled Chromium → title "GAIA" → screenshot).
+- **Phase 4.2 — dual-engine bench: ✅ authored.** `tools/dualbench/run.sh`
+  (WebKit shell vs Chromium `--app`), daemon-safe.
+- **Phase 3 — macOS Chromium in-window: ✅ MECHANISM VALIDATED (not yet built).**
+  `tools/calayer-poc/` proves cross-process `CAContext`→`CALayerHost` sharing with
+  `contextId` alone (3 private symbols). Chromium already implements the host side
+  (`display_ca_layer_tree.mm`), so the remaining work is a small GPU-process patch
+  to relay the contextId + wiring it into the Tauri host. The heavy part (a
+  maintained Chromium build) is the only thing left, now de-risked. See
+  `tools/calayer-poc/FINDINGS.md`.
+- **Phase 2 — mobile: DEFERRED (do last).**
+
+Next real work: (a) the actual Chromium patch+build for Phase 3 (heavy, multi-hour
+build), then (b) mobile (Phase 2) once §10.1 is decided.
+
+---
+
 ## 1. Goals & hard constraints
 
 **Goal:** a native desktop+mobile app that renders the gaia UI, cross-platform,
