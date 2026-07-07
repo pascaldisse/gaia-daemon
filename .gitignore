@@ -1,6 +1,11 @@
 node_modules/
 dist/
 src/.bin/
+
+# Tauri (native shell) build artifacts — feat/tauri-shell branch
+src-tauri/target/
+src-tauri/gen/
+
 .env
 .env.*
 .DS_Store

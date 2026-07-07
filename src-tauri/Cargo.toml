@@ -1,0 +1,26 @@
+[package]
+name = "gaia-shell"
+version = "0.1.0"
+description = "GAIA native shell (Tauri) — thin client for the local gaia daemon UI"
+authors = ["GAIA"]
+edition = "2021"
+rust-version = "1.77"
+
+# The lib is shared by the desktop entry point (main.rs) and the mobile
+# entry points that tauri-ios / tauri-android generate. Keep run() here.
+[lib]
+name = "gaia_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# by default Tauri runs in production mode; devtools help while iterating
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
