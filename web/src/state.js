@@ -226,11 +226,26 @@ export function activeTask(snapshot = state.snapshot) {
  * @returns {RoomSummary[]}
  */
 export function runningSummonRooms(snapshot = state.snapshot) {
-  // A summon is a BACKGROUND sub-room. The room you're viewing is not a summon —
-  // its own streaming turn is represented by the running agent(s), so excluding
-  // it stops the composer from labelling your current turn "1 summon" and stops
-  // the panic stop from cancelling it twice (once as task, once as "summon").
-  return (snapshot?.rooms ?? []).filter((room) => room.running && !room.isCurrent);
+  // A summon is a BACKGROUND sub-room (it has a parentRoomId) descended from
+  // the room being viewed. Any other running room — an unrelated chat with a
+  // turn streaming, or another room's summons — is NOT this room's summon:
+  // counting those put a "1 summon" badge in every chat and made the panic
+  // stop reach into rooms it had no business cancelling. The room you're
+  // viewing is excluded too — its own streaming turn is represented by the
+  // running agent(s), so this also stops the composer from labelling your
+  // current turn "1 summon" and the panic stop from cancelling it twice.
+  const rooms = snapshot?.rooms ?? [];
+  const currentId = rooms.find((room) => room.isCurrent)?.id;
+  if (!currentId) return [];
+  const parents = new Map(rooms.map((room) => [room.id, room.parentRoomId]));
+  const descendsFromCurrent = (/** @type {string|undefined} */ id) => {
+    // Walk the parent chain (summons can nest); hop cap guards a cycle.
+    for (let hops = 0; id !== undefined && hops < 16; id = parents.get(id), hops++) {
+      if (id === currentId) return true;
+    }
+    return false;
+  };
+  return rooms.filter((room) => room.running && !room.isCurrent && descendsFromCurrent(room.parentRoomId));
 }
 
 /**
