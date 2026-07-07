@@ -63,6 +63,22 @@ export interface EventDetails {
    * and `tools` above are still populated in full so non-ordered consumers
    * (prompt replay, read-aloud, summaries) are unaffected. */
   blocks?: MessageBlock[];
+  /** This agent event is a summon worker's result landed back in the parent
+   * room (see SummonDelivery). The UI renders it as a COLLAPSED, summon-labeled
+   * block reusing the thinking/tool expander — not a plain agent message and
+   * never a "user →" bubble. Absent on ordinary turns. */
+  summonResult?: SummonResultMeta;
+}
+
+/** Provenance carried on a summon worker's result note so the UI can render a
+ * collapsed "↩︎ summon <room> finished / ⚠️ FAILED" header without baking it
+ * into the message text. */
+export interface SummonResultMeta {
+  /** The child (worker) room whose turn produced this result — open it to
+   * inspect the full run. */
+  childRoomId: string;
+  /** The worker turn errored (vs. finished cleanly). */
+  failed: boolean;
 }
 
 /** The in-flight agent reply's accumulated view, mirrored on the snapshot so a
@@ -513,6 +529,11 @@ export interface Task {
   startedAt: string;
   endedAt?: string;
   error?: string;
+  /** Agent-authored, not human-typed: a room agent-dialogue hand-off or a
+   * summon callback (see enqueueAgentDialogue). Its `text` is a pointer/replay,
+   * not something a person wrote — the client must NOT render it as a queued
+   * "user →" ghost bubble. */
+  callback?: boolean;
 }
 
 export interface AgentStatus {

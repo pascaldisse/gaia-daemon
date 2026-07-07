@@ -11,6 +11,7 @@ import {
   mayNestSummon,
   summonAck,
   type SummonRoomAccess,
+  type SummonResultDelivery,
   type SummonTaskEvent,
 } from "../src/services/summons.js";
 import { RoomService } from "../src/services/room-service.js";
@@ -18,7 +19,7 @@ import { normalizeRoomState, RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { readJson, writeJsonAtomic } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, Workspace } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, AgentRoomEvent, RoomEvent, Workspace } from "../src/core/types.js";
 import type { AgentRuntime } from "../src/harness/spec.js";
 
 process.env.GAIA_HOME ??= await mkdtemp(join(tmpdir(), "gaia-home-"));
@@ -77,7 +78,7 @@ async function makeWorkspace(): Promise<{ workspace: Workspace; path: string }> 
  * delivery + bookkeeping calls are recorded. */
 function fakeRoom(reply: string): SummonRoomAccess & {
   sent: string[];
-  delivered: { from: string; text: string; trigger?: string[] }[];
+  delivered: { from: string; reply: string; delivery: SummonResultDelivery }[];
   markedDelivered: number;
   settle: (status?: string, error?: string) => void;
 } {
@@ -85,7 +86,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
   const task = { id: "t1", status: "running" as string, error: undefined as string | undefined };
   const room = {
     sent: [] as string[],
-    delivered: [] as { from: string; text: string; trigger?: string[] }[],
+    delivered: [] as { from: string; reply: string; delivery: SummonResultDelivery }[],
     markedDelivered: 0,
     settle(status = "complete", error?: string) {
       task.status = status;
@@ -104,8 +105,8 @@ function fakeRoom(reply: string): SummonRoomAccess & {
       return reply;
     },
     async waitForSettled() {},
-    async deliverAgentResult(from: string, text: string, trigger?: string[]) {
-      room.delivered.push({ from, text, ...(trigger ? { trigger } : {}) });
+    async deliverAgentResult(from: string, reply: string, delivery: SummonResultDelivery) {
+      room.delivered.push({ from, reply, delivery });
     },
     async markSummonDelivered() {
       room.markedDelivered += 1;
@@ -161,9 +162,10 @@ test("background summon never blocks: launch resolves first, then the result is 
   await done;
   assert.equal(parent.delivered.length, 1);
   assert.equal(parent.delivered[0].from, "terry");
-  assert.match(parent.delivered[0].text, /scouting report: all clear/);
-  assert.match(parent.delivered[0].text, new RegExp(roomId));
-  assert.deepEqual(parent.delivered[0].trigger, ["gaia"]); // the subagent callback re-invokes the caller
+  assert.match(parent.delivered[0].reply, /scouting report: all clear/);
+  assert.equal(parent.delivered[0].delivery.childRoomId, roomId);
+  assert.equal(parent.delivered[0].delivery.failed, false);
+  assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia"); // the subagent callback re-invokes the caller
   assert.equal(child.markedDelivered, 1);
   assert.equal(coordinator.runningChildren().length, 0);
 });
@@ -179,9 +181,9 @@ test("a failed worker turn is delivered loudly, never swallowed", async () => {
   child.settle("error", "sandbox exploded");
   await done.catch(() => {}); // done rejects; the failure still got delivered
   assert.equal(parent.delivered.length, 1);
-  assert.match(parent.delivered[0].text, /FAILED/);
-  assert.match(parent.delivered[0].text, /sandbox exploded/);
-  assert.equal(parent.delivered[0].trigger, undefined); // note mode: no turn trigger
+  assert.equal(parent.delivered[0].delivery.failed, true); // rendered as a "⚠️ FAILED" collapsed header
+  assert.match(parent.delivered[0].reply, /sandbox exploded/);
+  assert.equal(parent.delivered[0].delivery.triggerTarget, undefined); // note mode: no turn trigger
   assert.equal(child.markedDelivered, 1); // delivered (the failure IS the result)
 });
 
@@ -234,8 +236,8 @@ test("recoverUndelivered re-arms a stranded summon and delivers its surviving re
   for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
 
   assert.equal(parent.delivered.length, 1);
-  assert.match(parent.delivered[0].text, /recovered result/);
-  assert.deepEqual(parent.delivered[0].trigger, ["gaia"]);
+  assert.match(parent.delivered[0].reply, /recovered result/);
+  assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
   assert.equal(child.markedDelivered, 1);
 });
 
@@ -268,22 +270,25 @@ test("summonAck names the sub-room and forbids waiting", () => {
 
 // --- end-to-end: real RoomServices, real queue, real callback turn ------------
 
-/** Scripted runtime capturing every AgentInput message it is sent. */
-function scriptedRuntime(agentDef: AgentDef, reply: () => string): AgentRuntime & { messages: string[] } {
+/** Scripted runtime capturing every AgentInput message AND the transcript it is
+ * sent (the summon result rides the transcript as a note, not the message). */
+function scriptedRuntime(agentDef: AgentDef, reply: () => string): AgentRuntime & { messages: string[]; transcripts: RoomEvent[][] } {
   const runtime = {
     agent: agentDef,
     modelLabel: "test/model",
     capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
     messages: [] as string[],
-    async *send(input: { message: string }) {
+    transcripts: [] as RoomEvent[][],
+    async *send(input: { message: string; transcript?: RoomEvent[] }) {
       runtime.messages.push(input.message);
+      runtime.transcripts.push(input.transcript ?? []);
       yield { type: "text-delta", delta: reply() } as AgentEvent;
     },
     async abort() {},
     dispose() {},
     resetRoom() {},
   };
-  return runtime as unknown as AgentRuntime & { messages: string[] };
+  return runtime as unknown as AgentRuntime & { messages: string[]; transcripts: RoomEvent[][] };
 }
 
 test("end-to-end: a background summon posts its result into the parent room and re-invokes the caller", async () => {
@@ -326,16 +331,22 @@ test("end-to-end: a background summon posts its result into the parent room and 
   await parent.waitForSettled();
   const parentRoom = await RoomHandle.open(path, "default");
   const { events } = await parentRoom.eventsFrom(0);
-  const note = events.find((event) => event.author === "terry");
+  const note = events.find((event) => event.author === "terry") as AgentRoomEvent | undefined;
   assert.ok(note, "worker result posted into the parent room");
   assert.match(note!.text, /the tide tables say: go at dawn/);
-  assert.match(note!.text, new RegExp(childRoomId));
+  // Provenance rides details.summonResult (a collapsed UI header), not the text.
+  assert.equal(note!.details?.summonResult?.childRoomId, childRoomId);
+  assert.equal(note!.details?.summonResult?.failed, false);
 
-  // ...and the CALLER ran a real turn processing it (the subagent callback).
+  // ...and the CALLER ran a real turn processing it (the subagent callback): a
+  // short pointer as the message, the worker's full result as a transcript note.
   const caller = runtimes.get("default:gaia");
   assert.ok(caller, "caller runtime exists");
   assert.equal(caller!.messages.length, 1);
-  assert.match(caller!.messages[0], /the tide tables say: go at dawn/);
+  assert.match(caller!.messages[0], new RegExp(childRoomId)); // pointer references the summon
+  const callerNote = caller!.transcripts[0].find((event) => event.author === "terry") as AgentRoomEvent | undefined;
+  assert.ok(callerNote, "the worker's result note reached the caller's context");
+  assert.match(callerNote!.text, /the tide tables say: go at dawn/);
 
   // The child's durable record is closed out.
   const childState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));

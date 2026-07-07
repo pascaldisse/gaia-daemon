@@ -317,6 +317,19 @@ body.resizing { cursor: col-resize; user-select: none; }
    sidebar: workspaces + rooms tree
    ============================================================ */
 .nav-title, h3 { margin: 14px 0 7px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+/* A section header with an inline affordance (e.g. rooms + new-room button). */
+.nav-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-title-add {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 4px;
+  line-height: 1;
+  font-size: 1.15em;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+.nav-title-add:hover { color: var(--accent); }
 .workspace-list, .agent-list, .task-list, .file-tabs { display: grid; gap: 7px; }
 .nav-item, .nav-action, .file-tabs button, .segmented-tabs button { width: 100%; text-align: left; }
 .nav-item span, .file-tabs span, .segmented-tabs span { display: block; }
@@ -410,6 +423,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
 
+/* Action row at the foot of a message (edit / retry / read-aloud), Claude-style.
+   Sits under the body in the content column; buttons stay ghosted until hover. */
+.message-actions { grid-column: 2; display: flex; align-items: center; gap: 2px; margin-top: 6px; }
 .msg-action {
   border: none;
   background: transparent;
@@ -421,9 +437,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .message:hover .msg-action { opacity: 1; }
 .msg-action:hover { color: var(--fg); }
-/* Without a model-tag pulling right, push the actions + time to the edge. */
-.message-meta .msg-action:first-of-type { margin-left: auto; }
-.message-meta .model-tag ~ .msg-action { margin-left: 8px; }
 /* Read-aloud stays visible while it is the active message (loading, speaking,
    paused, or ended-and-replayable), not just on hover. */
 .msg-action.ra-loading,
@@ -509,6 +522,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 .activity-result { width: 18px; flex: 0 0 18px; text-align: right; color: var(--accent); }
+
+/* A summon worker's result: a collapsed expander with a subtle accent rail so
+   it reads as a subagent callback, not a plain reply. Revealed body renders at
+   full contrast (it's real content, not chrome). */
+.activity-details.summon-result { border-left: 2px solid var(--accent); }
+.activity-details.summon-result.error { border-left-color: var(--danger); }
+.activity-details.summon-result > *:not(summary) { color: var(--fg); margin-top: 8px; }
 
 .tool-payload { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin-top: 6px; }
 .tool-payload span { color: var(--muted); }

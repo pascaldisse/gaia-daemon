@@ -71,17 +71,28 @@ function renderMarkdownBlock(root, lines) {
   root.append(h("p", {}, InlineMarkdown(lines.join("\n"))));
 }
 
+// Inline spans, ordered so a longer delimiter wins over its own prefix (`**`
+// before `*`). Emphasis requires a non-space just inside each delimiter — the
+// CommonMark-ish flanking rule that keeps prose like "a * b" or "5 * 3" literal.
+// Only asterisk forms are parsed: underscores are left alone so snake_case and
+// __dunder__ identifiers (everywhere in a dev chat) never render as emphasis.
+// Code content is literal; emphasis content is re-parsed so nesting works. The
+// italic opener has a `(?<!\*)` guard so the trailing star of an unclosed `**`
+// (e.g. a bare `**/*.ts` glob) can't seed a stray single-star emphasis.
+const INLINE_PATTERN = /`([^`\n]+)`|\*\*(\S(?:[^\n]*?\S)?)\*\*|(?<!\*)\*([^\s*](?:[^\n]*?[^\s*])?)\*/g;
+
 /** @param {string} text @returns {Node[]} */
 function InlineMarkdown(text) {
   /** @type {Node[]} */
   const nodes = [];
-  const pattern = /`([^`\n]+)`/g;
   const source = String(text ?? "");
   let cursor = 0;
-  for (const match of source.matchAll(pattern)) {
+  for (const match of source.matchAll(INLINE_PATTERN)) {
     const index = match.index ?? 0;
     if (index > cursor) nodes.push(LinkedText(source.slice(cursor, index)));
-    nodes.push(h("code", {}, LinkedText(match[1])));
+    if (match[1] !== undefined) nodes.push(h("code", {}, LinkedText(match[1])));
+    else if (match[2] !== undefined) nodes.push(h("strong", {}, InlineMarkdown(match[2])));
+    else if (match[3] !== undefined) nodes.push(h("em", {}, InlineMarkdown(match[3])));
     cursor = index + match[0].length;
   }
   if (cursor < source.length) nodes.push(LinkedText(source.slice(cursor)));

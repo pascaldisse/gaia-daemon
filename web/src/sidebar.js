@@ -42,9 +42,17 @@ function renderSidebar() {
       ),
     ),
     h("button", { class: "nav-action", onclick: () => void addWorkspace(), text: "+ add workspace" }),
-    h("div", { class: "nav-title", text: "rooms" }),
+    h(
+      "div",
+      { class: "nav-title nav-title-row" },
+      h("span", { text: "rooms" }),
+      // Inline + next to the header, so a new room is one click from the top —
+      // not a button buried under the whole (possibly 100-chat) room list.
+      state.snapshot
+        ? h("button", { class: "nav-title-add", title: "new room (Ctrl+T)", onclick: () => void addRoom(), text: "+" })
+        : null,
+    ),
     RoomTree(),
-    state.snapshot ? h("button", { class: "nav-action", onclick: () => void addRoom(), text: "+ add room" }) : null,
     h("div", { class: "spacer" }),
     h("button", {
       class: "nav-action",
