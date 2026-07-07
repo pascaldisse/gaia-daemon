@@ -768,6 +768,12 @@ export class RoomService {
     if (options.recordUserMessage !== false) {
       const userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
+      // Authoritative refresh right after the commit: this snapshot has the
+      // queued ghost dropped AND the committed user event present, so it
+      // reconciles the ghost→committed swap on the client even when this turn
+      // was drained behind a settling one whose (earlier) snapshot still showed
+      // the ghost. Without it the swap depends on snapshot/room-event ordering.
+      void this.emitSnapshot();
     }
     // A human message ends any agent-dialogue chain and resets its hop budget.
     if (!options.fromAgentDialogue) this.agentDialogueHops = 0;
@@ -879,8 +885,12 @@ export class RoomService {
             }
             if (event.type === "context-usage") {
               // The window (maxTokens) only rides the turn-end event; keep the
-              // last-known one so mid-turn updates still render a live % chip.
-              const maxTokens = event.maxTokens ?? this.contextUsage[target]?.maxTokens;
+              // last-known one, else fall back to the harness's a-priori window,
+              // so mid-turn updates (and the first turn after a restart, when no
+              // window has been learned yet) still render a live % chip instead
+              // of a raw token count. The window is spec data, not a branch.
+              const aprioriWindow = contextWindowFor(harnessIdFor(agent, this.workspace), agent.model?.name);
+              const maxTokens = event.maxTokens ?? this.contextUsage[target]?.maxTokens ?? aprioriWindow;
               const usage = { usedTokens: event.usedTokens, ...(maxTokens ? { maxTokens } : {}) };
               this.contextUsage[target] = usage;
               // Persist durably (best-effort) so the chip survives a restart.
@@ -2161,9 +2171,20 @@ export class RoomService {
     } else {
       this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
     }
-    void this.emitSnapshot();
     void this.emitRoomsChanged();
-    void this.drain();
+    // Emit the settle snapshot BEFORE draining the next queued turn. SSE is a
+    // single ordered stream and the client REPLACES its snapshot wholesale, so a
+    // settle snapshot that got built before the drain commits the queued
+    // message's user event must still be sent FIRST — otherwise a stale copy
+    // lands after that room-event and blanks the just-committed bubble for the
+    // whole next turn (the "queued message vanished after /compact" bug). The
+    // drained turn then emits its own authoritative snapshot post-commit
+    // (runAgentTask), which drops the ghost and keeps the committed bubble.
+    void this.emitSnapshot()
+      .catch(() => {})
+      .finally(() => {
+        void this.drain();
+      });
   }
 
   private taskCancelled(task: Task): boolean {
@@ -2203,7 +2224,10 @@ export class RoomService {
       case "model-fallback":
         return { ...scope, type: "model-fallback", fromModel: event.fromModel, toModel: event.toModel, reason: event.reason };
       case "context-usage":
-        return { ...scope, type: "context-usage", usedTokens: event.usedTokens, maxTokens: event.maxTokens };
+        // The onEvent handler has already stored the resolved window (turn-end
+        // value, last-known, or a-priori fallback); ride it out so the live chip
+        // renders a % even before the harness reports the window at turn-end.
+        return { ...scope, type: "context-usage", usedTokens: event.usedTokens, maxTokens: event.maxTokens ?? this.contextUsage[agentId]?.maxTokens };
       case "text-delta":
         return { ...scope, type: "text-delta", delta: event.delta };
       case "thinking-start":
