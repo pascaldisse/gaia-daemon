@@ -4,11 +4,13 @@
 // shared code sees only the HarnessSpec registered at the bottom.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, UsageLimits, UsageWindow, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -155,6 +157,18 @@ interface ClaudeRoomMeta {
 // session while leaving subscription auth, the model, built-in tools, and
 // permissions intact (confirmed in `claude --help`).
 const SAFE_MODE = "--safe-mode";
+
+// A steer (an extra user message injected on the open stdin) that lands after
+// the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
+// emits `result`, then runs the injected message as its OWN continuation turn
+// (a fresh `system init` + its own `result`, observed ~10-30 ms after the first
+// result). If we closed the channel on that first `result` we'd drop the
+// continuation and the steer would be silently lost. So when a steer is pending
+// we DON'T close on the first `result`; we wait this grace for the continuation
+// to begin (any further message cancels the wait and we stream it through to its
+// own `result`). If nothing comes, the steer folded into the result we already
+// have and we close. The delay only affects a steered turn's final commit.
+const STEER_CONTINUATION_GRACE_MS = 1500;
 
 // ---------------------------------------------------------------------------
 // Config-driven tool translation
@@ -379,6 +393,10 @@ export class ClaudeRuntime implements AgentRuntime {
   private active: ClaudeProcessHandle | null = null;
   /** Room whose turn `active` is streaming — steer() only injects into it. */
   private activeRoomId: string | undefined;
+  /** Set by the streaming send() so a successful steer can keep the turn's
+   * channel open for the injected message's continuation (see
+   * STEER_CONTINUATION_GRACE_MS). Cleared when the turn ends. */
+  private onActiveSteer: (() => void) | undefined;
   private readonly processFactory: ClaudeProcessFactory;
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
@@ -457,6 +475,24 @@ export class ClaudeRuntime implements AgentRuntime {
 
     const channel = createEventChannel();
 
+    // Steer-continuation bookkeeping: a steer injected this turn defers the
+    // close on the next `result` so the injected message's continuation turn is
+    // streamed & folded into this reply instead of being dropped.
+    let steerPending = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearGrace = (): void => {
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = undefined;
+      }
+    };
+    // A fresh steer (while a prior one is awaiting its continuation) means more
+    // is still coming — keep waiting.
+    this.onActiveSteer = () => {
+      steerPending = true;
+      clearGrace();
+    };
+
     // Per-turn parse state.
     const blockTypes = new Map<number, string>(); // content-block index -> type
     let subscription = false; // from init's apiKeySource; reused on fallback
@@ -511,6 +547,10 @@ export class ClaudeRuntime implements AgentRuntime {
 
     const onMessage = (raw: unknown): void => {
       const msg = raw as { type?: string };
+      // Any non-`result` message arriving while we're in the grace window means
+      // the steer's continuation turn has begun (its `system init` etc.) — stop
+      // the grace-close and let it stream through to its own `result`.
+      if (graceTimer && msg.type !== "result") clearGrace();
       switch (msg.type) {
         case "system": {
           const sys = raw as {
@@ -622,12 +662,25 @@ export class ClaudeRuntime implements AgentRuntime {
               .filter((n): n is number => typeof n === "number");
             pushContextUsage(lastUsage, windows.length ? Math.max(...windows) : undefined);
           }
-          if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
-            channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
-          }
           // Close any thinking indicator that never saw a content_block_stop.
           endThinking();
-          channel.close();
+          clearGrace();
+          if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
+            channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
+            channel.close();
+          } else if (steerPending) {
+            // A steer was injected during this turn. Don't end here: the CLI runs
+            // the injected message as a continuation turn whose events fold into
+            // this same reply. Wait briefly for it to begin; if nothing comes,
+            // the steer folded into the result we already streamed — close.
+            steerPending = false;
+            graceTimer = setTimeout(() => {
+              graceTimer = undefined;
+              channel.close();
+            }, STEER_CONTINUATION_GRACE_MS);
+          } else {
+            channel.close();
+          }
           break;
         }
       }
@@ -677,6 +730,8 @@ export class ClaudeRuntime implements AgentRuntime {
       if (!sessionEstablished && (firstTurn || /no conversation found/i.test(message))) this.sessions.reset(input.roomId);
       throw err;
     } finally {
+      clearGrace();
+      this.onActiveSteer = undefined;
       // A keepStdinOpen turn's CLI sits idle waiting for more stdin after it
       // streams `result`; close stdin so it reaches EOF and exits. (No-op when
       // the turn was aborted — the process is already being killed.)
@@ -795,7 +850,11 @@ export class ClaudeRuntime implements AgentRuntime {
    * streaming for this room or stdin already closed (turn just finished). */
   async steer(roomId: string, message: string): Promise<boolean> {
     if (roomId !== this.activeRoomId) return false;
-    return this.active?.steer?.(message) ?? false;
+    const ok = this.active?.steer?.(message) ?? false;
+    // Tell the streaming turn a steer landed so it keeps its channel open for
+    // the injected message's continuation instead of ending on the next result.
+    if (ok) this.onActiveSteer?.();
+    return ok;
   }
 
   dispose(): void {
@@ -1063,6 +1122,140 @@ function discoverClaudeCommands(): NativeCommandDef[] {
   return claudeCommandsCache;
 }
 
+// ---------------------------------------------------------------------------
+// Account usage probe — the same session/weekly caps Claude Code's `/usage`
+// renders. The subscription figures are NOT in the -p stream (that carries only
+// per-turn tokens), so we read the OAuth token Claude Code stored (macOS
+// keychain, else ~/.claude/.credentials.json) and GET the account usage
+// endpoint directly. All of this is claude-specific knowledge that lives HERE;
+// the daemon only sees a normalized UsageLimits (RULE #0). Fail-soft: any
+// missing-creds / non-OAuth / offline / non-200 case returns null so the chip
+// simply hides rather than erroring.
+
+const execFileAsync = promisify(execFile);
+const USAGE_ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_TIMEOUT_MS = 6000;
+
+interface ClaudeOauth {
+  accessToken?: string;
+  subscriptionType?: string;
+}
+
+/** Read the Claude Code OAuth blob from wherever the CLI persisted it: the macOS
+ * login keychain first (its default on darwin), then the plaintext credentials
+ * file (Linux / older installs). Returns undefined when neither yields a token. */
+async function readClaudeOauth(): Promise<ClaudeOauth | undefined> {
+  const parse = (raw: string): ClaudeOauth | undefined => {
+    try {
+      const outer = JSON.parse(raw) as { claudeAiOauth?: ClaudeOauth } & ClaudeOauth;
+      const oauth = outer.claudeAiOauth ?? outer;
+      return typeof oauth?.accessToken === "string" ? oauth : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  if (process.platform === "darwin") {
+    try {
+      const { stdout } = await execFileAsync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        timeout: USAGE_TIMEOUT_MS,
+      });
+      const oauth = parse(stdout.trim());
+      if (oauth) return oauth;
+    } catch {
+      // No keychain entry (or locked) — fall through to the file.
+    }
+  }
+  try {
+    return parse(readFileSync(realClaudeCredentials(), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** One entry of the endpoint's normalized `limits[]`. */
+interface RawLimit {
+  kind?: string;
+  group?: string;
+  percent?: number;
+  severity?: string;
+  resets_at?: string;
+  is_active?: boolean;
+  scope?: { model?: { display_name?: string | null } | null } | null;
+}
+
+function usageLabel(limit: RawLimit): string {
+  switch (limit.kind) {
+    case "session":
+      return "Current session";
+    case "weekly_all":
+      return "Weekly · all models";
+    case "weekly_scoped": {
+      const model = limit.scope?.model?.display_name;
+      return model ? `Weekly · ${model}` : "Weekly · scoped";
+    }
+    default:
+      return limit.group === "weekly" ? "Weekly" : (limit.kind ?? "Usage");
+  }
+}
+
+/** Map the provider severity onto ours, deriving from percent when absent. */
+function usageSeverity(limit: RawLimit): UsageWindow["severity"] {
+  if (limit.severity === "critical" || limit.severity === "warning" || limit.severity === "normal") return limit.severity;
+  const pct = limit.percent ?? 0;
+  return pct >= 95 ? "critical" : pct >= 80 ? "warning" : "normal";
+}
+
+async function probeClaudeUsage(): Promise<UsageLimits | null> {
+  const oauth = await readClaudeOauth();
+  if (!oauth?.accessToken) return null; // API-key auth or signed out — no subscription caps to show.
+  let payload: { limits?: RawLimit[] };
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(USAGE_ENDPOINT, {
+        headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return null;
+    payload = (await res.json()) as { limits?: RawLimit[] };
+  } catch {
+    return null; // offline / aborted / unparseable — hide rather than error.
+  }
+  const limits = Array.isArray(payload.limits) ? payload.limits : [];
+  // Report the session cap, the all-models weekly cap, and EVERY per-model
+  // weekly cap (each tagged with its model). The status bar defaults to the
+  // account-wide windows and reveals a per-model cap only when that model is
+  // active in the open room — that room-awareness is client-side, so the probe
+  // stays account-global and just hands over everything it knows.
+  const rank: Record<string, number> = { session: 0, weekly_all: 1, weekly_scoped: 2 };
+  const windows: UsageWindow[] = limits
+    .filter((limit) => limit.kind === "session" || limit.kind === "weekly_all" || limit.kind === "weekly_scoped")
+    .sort((a, b) => (rank[a.kind ?? ""] ?? 9) - (rank[b.kind ?? ""] ?? 9))
+    .map((limit) => {
+      const model = limit.kind === "weekly_scoped" ? limit.scope?.model?.display_name : undefined;
+      return {
+        kind: limit.kind ?? "usage",
+        label: usageLabel(limit),
+        percent: Math.max(0, Math.min(100, Math.round(limit.percent ?? 0))),
+        severity: usageSeverity(limit),
+        ...(typeof limit.resets_at === "string" ? { resetsAt: limit.resets_at } : {}),
+        ...(model ? { model } : {}),
+      };
+    });
+  if (windows.length === 0) return null;
+  return {
+    harness: "claude",
+    ...(oauth.subscriptionType ? { plan: oauth.subscriptionType } : {}),
+    windows,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 registerHarness({
   id: "claude",
   capabilities: CLAUDE_CAPABILITIES,
@@ -1091,4 +1284,5 @@ registerHarness({
     env: { ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_AUTH_TOKEN: token },
     denyRead: [realClaudeCredentials()],
   }),
+  probeUsage: () => probeClaudeUsage(),
 });

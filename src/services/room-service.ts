@@ -55,7 +55,7 @@ import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from
 import { applyEventToDetails, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
-import { allowSummonForTurn, isTrusted, type SummonHost } from "./summons.js";
+import { allowSummonForTurn, isTrusted, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
 import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
@@ -366,6 +366,8 @@ export class RoomService {
           targets: message.targets,
           status: "queued" as const,
           startedAt: message.queuedAt,
+          // Agent-authored hand-offs/summon callbacks aren't "user →" ghosts.
+          ...(message.fromAgentDialogue ? { callback: true } : {}),
         }));
       if (!this.activeTask) void this.drain();
     }
@@ -589,10 +591,13 @@ export class RoomService {
    * re-recording (recordUserMessage:false, set by drain from the
    * fromAgentDialogue flag). Never command-parsed. Backs both agent-dialogue
    * hand-offs (queued mid-turn; settle drains) and summon callbacks (queued
-   * from outside; kick drain when idle). */
+   * from outside; kick drain when idle). Marked `callback` so the client
+   * renders no "user →" ghost — the driving text is an agent message/pointer,
+   * not something a person typed. */
   private async enqueueAgentDialogue(targets: string[], text: string): Promise<void> {
     const task = this.createTask(text, targets);
     task.status = "queued";
+    task.callback = true;
     await this.room.enqueue({ taskId: task.id, text, targets, fromAgentDialogue: true, queuedAt: task.startedAt });
     this.queuedTasks.push(task);
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
@@ -601,15 +606,43 @@ export class RoomService {
   }
 
   /** Deliver a background worker's result into this room (the summon callback):
-   * append the worker-authored message, then — when triggerTargets is given —
-   * queue a turn so the calling agent is re-invoked with the result. Rides the
-   * durable queue: a busy room runs it when the current turn settles; a crash
-   * in between re-drains it on boot. */
-  async deliverAgentResult(fromAgentId: string, text: string, triggerTargets?: string[]): Promise<void> {
+   * append it as a COLLAPSED, summon-labeled note authored by the worker, then
+   * — deliver:"turn" — nudge the caller agent to continue (Claude-Code subagent
+   * style). The nudge STEERS the caller's running turn if it has one, else it
+   * runs a fresh turn; either way the caller reads the full result from the note
+   * (loaded as context past its cursor) and no misleading "user →" bubble is
+   * created. Durable: the note is on disk before we nudge, and the nudge itself
+   * rides the durable queue when it can't run now. */
+  async deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void> {
     await this.init();
-    await this.postAgentNote(fromAgentId, text);
-    const targets = (triggerTargets ?? []).filter((id) => this.workspace.agents[id]);
-    if (targets.length > 0) await this.enqueueAgentDialogue(targets, text);
+    await this.postAgentNote(fromAgentId, reply, {
+      summonResult: { childRoomId: delivery.childRoomId, failed: delivery.failed },
+    });
+    const target = delivery.triggerTarget;
+    if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
+  }
+
+  /** Re-invoke a caller agent after its summon returned — steer its live turn if
+   * it has one (the harness picks up the nudge at the next tool boundary), else
+   * a fresh turn. Never records a "user →" bubble. Two paths, two shapes:
+   * - STEER: the running turn began before the result note existed and can't
+   *   re-read the transcript, so the steer carries the FULL result inline.
+   * - FRESH TURN: the note is already on disk and loads as context (past the
+   *   caller's cursor), so the prompt is a short pointer, not a re-paste
+   *   (recordUserMessage:false / callback:true → no user ghost). */
+  private async triggerSummonCallback(target: string, reply: string, delivery: SummonResultDelivery): Promise<void> {
+    const runtime = this.runtimes[target];
+    if (this.activeAgentTurn?.targets.includes(target) && runtime?.capabilities.supportsSteer) {
+      const header = delivery.failed
+        ? `Your summon '${delivery.childRoomId}' FAILED (decide how to proceed):`
+        : `Your summon '${delivery.childRoomId}' returned:`;
+      const ok = (await runtime.steer?.(this.roomId, `${header}\n\n${reply}`)) ?? false;
+      if (ok) return; // else the turn just ended — fall through to a fresh turn
+    }
+    const pointer = delivery.failed
+      ? `Your summon '${delivery.childRoomId}' FAILED — its error is in the message just above. Decide how to proceed (retry, work around, or report it).`
+      : `Your summon '${delivery.childRoomId}' finished — its result is in the message just above. Continue from it.`;
+    await this.enqueueAgentDialogue([target], pointer);
   }
 
   /** Resolves when the room has FULLY settled: no running task, no durable
@@ -910,6 +943,19 @@ export class RoomService {
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
+  }
+
+  /** The ctx chip's usage figure for the snapshot. Live usage wins, but the
+   * window size (maxTokens) is only learned from a clean turn-end `result`; a
+   * fresh agent, a room whose turns were all steered/cancelled before a result,
+   * or a post-/compact entry may have usedTokens with no window. Fall back to the
+   * harness's a-priori context window so the chip renders a % instead of a raw
+   * token count. Uniform across harnesses — the window is spec data, not a branch. */
+  private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {
+    const live = this.contextUsage[agent.id];
+    if (!live || live.maxTokens) return live;
+    const window = contextWindowFor(harnessIdFor(agent, this.workspace), agent.model?.name);
+    return window ? { usedTokens: live.usedTokens, maxTokens: window } : live;
   }
 
   // --- context gate ----------------------------------------------------------
@@ -1439,11 +1485,18 @@ export class RoomService {
   }
 
   /** Append an agent-authored event WITHOUT running a turn — how the scheduler
-   * delivers an isolated run's result into its target room. */
-  async postAgentNote(agentId: string, text: string): Promise<void> {
+   * delivers an isolated run's result into its target room, and how a summon
+   * result lands as a collapsed note (details.summonResult). */
+  async postAgentNote(agentId: string, text: string, details?: EventDetails): Promise<void> {
     await this.init();
     if (!this.workspace.agents[agentId]) throw new Error(this.unknownAgentMessage(agentId));
-    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: agentId, text };
+    const event: RoomEvent = {
+      id: newRoomEventId(),
+      timestamp: new Date().toISOString(),
+      author: agentId,
+      text,
+      ...(details ? { details } : {}),
+    };
     await this.room.appendEvent(event);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
   }
@@ -1937,7 +1990,7 @@ export class RoomService {
           modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
           configuredModel: configuredModelLabel(agent.model, "default"),
           ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),
-          ...(this.contextUsage[agent.id] ? { context: this.contextUsage[agent.id] } : {}),
+          ...(this.contextFor(agent) ? { context: this.contextFor(agent) } : {}),
           tools: agent.tools,
           voice: agent.voice,
           thinking: agent.thinking,

@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentEvent } from "../src/core/types.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness } from "../src/harness/spec.js";
 import {
@@ -1034,6 +1035,70 @@ test("ClaudeRuntime.steer injects into the running turn's open stdin", async () 
     assert.equal(fake.endInputCount, 1);
     // The turn ended: steering is a no-op again.
     assert.equal(await runtime.steer("default", "late"), false);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime folds a steer's continuation turn into the reply instead of dropping it on the first result", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // A live turn: init + first text, no result yet (we feed the rest by hand
+    // so a steer can land BEFORE the first result, as it does at a turn's tail).
+    fake.scriptOpen([initMsg(), textDelta("part1 ")]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+
+    const collected: AgentEvent[] = [];
+    let done = false;
+    const drained = (async () => {
+      for await (const ev of runtime.send({ roomId: "default", message: "go", transcript: [] })) collected.push(ev);
+      done = true;
+    })();
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 15));
+    await tick(); // factory's setTimeout(0) feeds init + part1; this.active is set
+
+    // Steer while the turn is live — this is what defers the close on result.
+    assert.equal(await runtime.steer("default", "also do X"), true);
+
+    // First result arrives. WITHOUT the fix this closes the turn and the steer's
+    // continuation is lost. WITH it, the turn stays open awaiting the continuation.
+    fake.lastOptions!.onMessage(resultSuccess("part1 "));
+    await tick();
+    assert.equal(done, false, "turn must NOT end on the first result while a steer is pending");
+
+    // The CLI runs the injected message as its own continuation turn; its events
+    // fold into this same reply. The continuation's init cancels the grace wait.
+    fake.lastOptions!.onMessage(initMsg());
+    fake.lastOptions!.onMessage(textDelta("part2"));
+    fake.lastOptions!.onMessage(resultSuccess("part2"));
+    await drained; // second result (no steer pending) closes the turn
+
+    const text = collected
+      .filter((ev): ev is Extract<AgentEvent, { type: "text-delta" }> => ev.type === "text-delta")
+      .map((ev) => ev.delta)
+      .join("");
+    assert.equal(text, "part1 part2", "the continuation's text folds into the reply, not dropped");
+    assert.equal(done, true);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime closes normally on the first result when no steer is pending (no added latency)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("hi"), resultSuccess()]);
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const collected: AgentEvent[] = [];
+    const start = Date.now();
+    for await (const ev of runtime.send({ roomId: "default", message: "go", transcript: [] })) collected.push(ev);
+    // No grace delay: a plain turn ends promptly on its single result.
+    assert.ok(Date.now() - start < 500, "an unsteered turn must not wait the steer-continuation grace");
+    assert.ok(collected.some((ev) => ev.type === "text-delta"));
     runtime.dispose();
   } finally {
     await fx.cleanup();

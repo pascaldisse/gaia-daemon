@@ -47,7 +47,12 @@ const QUERY_EMBED_TIMEOUT_MS = 800;
 const QUERY_EMBED_MAX_CHARS = 1_200;
 const EMBED_SYNC_DEBOUNCE_MS = 5_000;
 const INDEX_SYNC_BUDGET_MS = 1_000;
-const SLOW_RECALL_MS = 1_000;
+// A single search over budget is normal (a cold sidecar's first call, GPU
+// contention, an unusually large query) — not a fault. Only latch the loud
+// "recall degraded" chip once recall is slow this many times in a row, so the
+// warning means a persistent problem, not one spike; any fast pass clears it.
+const SLOW_RECALL_MS = 1_500;
+const SLOW_RECALL_STREAK = 3;
 
 // Auto-recall precision gates: relative to the top hit plus an absolute
 // floor, so weak matches stay silent instead of padding the prompt. Scores
@@ -115,6 +120,9 @@ export class MemoryService {
   private readonly consolidateTimers = new Map<string, NodeJS.Timeout>();
   private readonly consolidating = new Set<string>();
   private handle: DatabaseSync | undefined;
+  // Consecutive over-budget searches; debounces the "recall degraded" chip so a
+  // lone slow pass doesn't latch it (reset to 0 by the first fast pass).
+  private slowRecalls = 0;
 
   constructor(private readonly options: MemoryServiceOptions) {}
 
@@ -181,7 +189,6 @@ export class MemoryService {
     const config = this.configFor(agentId);
     const db = this.db();
     const degraded: string[] = [];
-    const started = Date.now();
 
     const report = await syncWorkspaceIndex(db, this.sources(), {
       budgetMs: INDEX_SYNC_BUDGET_MS,
@@ -190,6 +197,11 @@ export class MemoryService {
     });
     if (report.degraded) degraded.push(report.degraded);
 
+    // Time recall itself (embed + search), NOT the index sync above — sync has
+    // its own `index` health + budget, and folding a 17k-row re-chunk into the
+    // recall timer made the first search after any new message always breach
+    // budget and light "recall degraded", which is what made the chip constant.
+    const started = Date.now();
     const { vec, note } = await this.embedQuery(agentId, query);
     if (note) degraded.push(note);
 
@@ -205,8 +217,16 @@ export class MemoryService {
 
     const elapsed = Date.now() - started;
     if (elapsed > SLOW_RECALL_MS) {
+      this.slowRecalls += 1;
       degraded.push(`slow (${elapsed}ms)`);
-      setHealth(db, "recall", "degraded", `last search took ${elapsed}ms (budget ${SLOW_RECALL_MS}ms)`, this.now());
+    } else {
+      this.slowRecalls = 0;
+    }
+    // Only a *sustained* streak is a real fault; a lone spike stays "ok" so the
+    // loud chip means a persistent problem. Health is written every pass (never
+    // left stale), so a degraded row self-clears the moment recall recovers.
+    if (this.slowRecalls >= SLOW_RECALL_STREAK) {
+      setHealth(db, "recall", "degraded", `${this.slowRecalls} slow searches in a row (last ${elapsed}ms, budget ${SLOW_RECALL_MS}ms)`, this.now());
     } else {
       setHealth(db, "recall", "ok", `last search ${elapsed}ms · ${hits.length} hits`, this.now());
     }

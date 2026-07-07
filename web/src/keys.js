@@ -11,7 +11,7 @@ import { addRoom, selectRoom } from "./actions.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
 import { state } from "./state.js";
-import { closeThemePalette, openThemePalette } from "./statusbar.js";
+import { closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
 import { visibleTabs } from "./tabs.js";
 import { cycleTheme } from "./themes.js";
 
@@ -48,6 +48,13 @@ export function installKeybindings() {
         event.preventDefault();
         event.stopImmediatePropagation();
         closeThemePalette(false);
+        return;
+      }
+      // The usage popover, likewise, before panic-stop can claim Escape.
+      if (event.key === "Escape" && state.usagePopoverOpen) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeUsagePopover();
         return;
       }
       // Then the Dario review popup.

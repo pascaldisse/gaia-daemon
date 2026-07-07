@@ -321,6 +321,10 @@ export class GaiaWebServer {
       };
       beginSse(response);
       response.write(encodeSse("ready", {}));
+      // Seed the account-usage chip: the SSE fan-out only carries events emitted
+      // while this client is subscribed, so replay the cached usage now instead
+      // of leaving the chip blank until the next daemon poll.
+      for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
       this.clients.add(client);
       response.on("close", () => this.clients.delete(client));
       return;

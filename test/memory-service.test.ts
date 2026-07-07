@@ -185,6 +185,38 @@ test("search surfaces degradation honestly: 'auto' without a sidecar reports lex
   service.dispose();
 });
 
+test("recall degraded is debounced: one slow search doesn't latch the chip; a streak does; a fast search clears it", async () => {
+  // A slow EMBED pushes each search past the 1.5s recall budget deterministically
+  // (setTimeout guarantees ≥1600ms > SLOW_RECALL_MS). The point: a lone spike
+  // must not raise the loud chip — only sustained slowness — and recovery clears.
+  let slow = true;
+  const { service } = await makeMemoryService({
+    config: { embeddings: "auto" },
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: "the daemon port is 8787" }] }],
+    embedderDeps: {
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("embeddings")) {
+          if (slow) await new Promise((resolve) => setTimeout(resolve, 1_600));
+          const input = JSON.parse(init!.body as string).input as string[];
+          return new Response(JSON.stringify({ data: input.map(() => ({ embedding: [0.1, 0.2, 0.3] })) }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalSidecar: async () => ({ baseUrl: "http://127.0.0.1:4244/v1", model: "embeddinggemma-300m" }),
+    },
+  });
+  const hasRecallChip = async () => (await service.healthChips()).some((chip) => chip.startsWith("recall"));
+  await service.search("gaia", "daemon port"); // 1 slow — under the streak
+  assert.ok(!(await hasRecallChip()), "a single slow search must NOT latch the recall chip");
+  await service.search("gaia", "daemon port"); // 2
+  await service.search("gaia", "daemon port"); // 3 — reaches the streak
+  assert.ok(await hasRecallChip(), "a streak of slow searches surfaces the recall chip");
+  slow = false;
+  await service.search("gaia", "daemon port"); // fast — recovery
+  assert.ok(!(await hasRecallChip()), "a fast search clears the recall chip");
+  service.dispose();
+});
+
 test("autoRecallBlock: a broken source returns '' instead of throwing", async () => {
   const { service, agent } = await makeMemoryService();
   // facts.jsonl as a DIRECTORY forces a read error inside the sync path.

@@ -118,14 +118,25 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
   if (!isRecord(value)) return undefined;
   const tools = Array.isArray(value.tools) ? value.tools.map(toolDetail).filter((t): t is NonNullable<typeof t> => Boolean(t)) : undefined;
   const blocks = messageBlocks(value.blocks);
+  const summonResult = summonResultFrom(value.summonResult);
   const details: EventDetails = {
     ...(typeof value.model === "string" && value.model.length > 0 ? { model: value.model } : {}),
     ...(value.thinkingStarted === true ? { thinkingStarted: true } : {}),
     ...(typeof value.thinking === "string" && value.thinking.length > 0 ? { thinking: value.thinking } : {}),
     ...(tools && tools.length > 0 ? { tools } : {}),
     ...(blocks ? { blocks } : {}),
+    ...(summonResult ? { summonResult } : {}),
   };
-  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length ? details : undefined;
+  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length || details.summonResult
+    ? details
+    : undefined;
+}
+
+/** A summon worker's result provenance, reconstructed from disk (see
+ * SummonResultMeta). Requires a childRoomId; failed defaults to false. */
+function summonResultFrom(value: unknown): EventDetails["summonResult"] {
+  if (!isRecord(value) || typeof value.childRoomId !== "string" || !value.childRoomId) return undefined;
+  return { childRoomId: value.childRoomId, failed: value.failed === true };
 }
 
 function attachmentsFrom(value: unknown): MessageAttachment[] | undefined {

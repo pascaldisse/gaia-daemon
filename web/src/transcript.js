@@ -171,6 +171,26 @@ export async function jumpToEvent(eventId) {
   }, 2600);
 }
 
+/**
+ * Creation-time ordering key for a view. Room-event / task ids are
+ * `<prefix>_<base36(Date.now())>_<rand>` (see core/ids.ts), so the middle
+ * segment is the ms the id was minted. This is stable across a turn's
+ * stream→commit because a committed agent event REUSES the id reserved at turn
+ * START — its stored `timestamp` is commit time (later), but its id is the
+ * reservation time. Ordering by id-time therefore keeps a streaming reply
+ * anchored where it began, so a steer injected mid-turn sorts AFTER it (below)
+ * instead of jumping above the reply it was steering. Falls back to the
+ * timestamp for any id that isn't in the minted shape (e.g. imported history).
+ * @param {string} id @param {string} timestamp @returns {number}
+ */
+function creationOrder(id, timestamp) {
+  const seg = id.split("_")[1];
+  const ms = seg ? Number.parseInt(seg, 36) : Number.NaN;
+  if (Number.isFinite(ms)) return ms;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /** @returns {MessageView[]} */
 function messageViews() {
   const events = committedEvents();
@@ -197,6 +217,11 @@ function messageViews() {
   // bubble with no overlap).
   for (const task of state.snapshot?.tasks ?? []) {
     if (task.status !== "queued" || !task.text.trim()) continue;
+    // Agent-authored hand-offs / summon callbacks aren't human-typed: their
+    // driving text is an agent message or an internal pointer, not a queued
+    // user message, so they get no "user →" ghost (the summon result note and
+    // the eventual reply are the artifacts).
+    if (task.callback) continue;
     views.push({
       id: `queued:${task.id}`,
       version: "queued",
@@ -209,7 +234,35 @@ function messageViews() {
       queued: true,
     });
   }
-  return views;
+  // Order by creation time (see creationOrder). Array.sort is stable, so views
+  // minted in the same ms keep their push order. A no-op for a plain transcript;
+  // it only matters when something committed DURING a running turn — and the two
+  // mid-turn cases pull opposite ways:
+  //  - a user STEER (late id) must sort BELOW the reply it steered — its own
+  //    creation order already does this (reply is anchored at its turn-start id).
+  //  - a summon-result NOTE is a worker's OUTPUT the caller's reply reacted to,
+  //    so it must read ABOVE that reply, not below. Its late finish-id would
+  //    otherwise sink it under the reply. Re-key each note to the start-order of
+  //    the turn it landed in — the reply whose [start, commit] window holds the
+  //    note's mint (turns are serialized, so at most one matches; a still-
+  //    streaming reply has no commit yet, so its window is open-ended). The note
+  //    then ties with that reply's key and, being earlier in append order, sorts
+  //    just above it.
+  const ranked = views.map((view, index) => ({
+    view,
+    index,
+    order: creationOrder(view.id, view.timestamp),
+    commit: Date.parse(view.timestamp),
+  }));
+  const turns = ranked.filter((r) => r.view.author !== "user" && r.view.author !== "system" && !summonView(r.view));
+  for (const note of ranked) {
+    if (!summonView(note.view)) continue;
+    const turn = turns.find(
+      (t) => t.order < note.order && (t.view.streaming || !Number.isFinite(t.commit) || note.order <= t.commit),
+    );
+    if (turn) note.order = turn.order;
+  }
+  return ranked.sort((a, b) => a.order - b.order || a.index - b.index).map((entry) => entry.view);
 }
 
 function renderTranscript() {
@@ -298,6 +351,10 @@ function Message(view) {
   const label = isUser ? `user -> ${view.targets.map((target) => `@${target}`).join(", ")}` : `@${view.author}`;
   const text = isUser ? stripLeadingRouteMentions(view.text, view.targets) : view.text;
   const details = view.details ?? {};
+  // A summon worker's result lands as a collapsed, summon-labeled block (reusing
+  // the thinking/tool expander) rather than a wall of agent prose — click to
+  // reveal the full run. Redacted results fall back to the plain text path.
+  const summon = isAgent && !view.redacted ? summonView(view) : null;
   const showThinking = details.thinkingStarted || details.thinking;
   // Preferred layout: replay the turn's segments in the exact order they
   // streamed (text ↔ thinking ↔ tool), so a reply reads like it did live
@@ -309,6 +366,30 @@ function Message(view) {
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
   const canFork = !view.streaming && !view.queued && view.author !== "system";
+  // The action row lives at the FOOT of the message (Claude-style), not the meta
+  // header — on a long reply the buttons should sit where the reader ends up, not
+  // scrolled far above. Built here, appended after the body below.
+  const actions = [
+    canFork && isUser
+      ? h("button", {
+          type: "button",
+          class: "msg-action",
+          title: "edit & re-send from here — later replies are rewound",
+          text: "✎",
+          onclick: () => beginEditMessage(view.id, view.text),
+        })
+      : null,
+    canFork && !isUser
+      ? h("button", {
+          type: "button",
+          class: "msg-action",
+          title: "retry — regenerate from the message that produced this reply",
+          text: "⟳",
+          onclick: () => void retryMessage(view.id),
+        })
+      : null,
+    isAgent && !view.streaming ? ReadAloudButton(view.id) : null,
+  ].filter(Boolean);
   return h(
     "article",
     { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""} ${view.queued ? "queued" : ""}` },
@@ -333,34 +414,60 @@ function Message(view) {
             text: "✂",
           })
         : null,
-      canFork && isUser
-        ? h("button", {
-            type: "button",
-            class: "msg-action",
-            title: "edit & re-send from here — later replies are rewound",
-            text: "✎",
-            onclick: () => beginEditMessage(view.id, view.text),
-          })
-        : null,
-      canFork && !isUser
-        ? h("button", {
-            type: "button",
-            class: "msg-action",
-            title: "retry — regenerate from the message that produced this reply",
-            text: "⟳",
-            onclick: () => void retryMessage(view.id),
-          })
-        : null,
-      isAgent && !view.streaming ? ReadAloudButton(view.id) : null,
       h("time", { text: formatTime(view.timestamp) }),
     ),
-    orderedBlocks ? OrderedBlocks(view, orderedBlocks, details.tools ?? []) : null,
-    orderedBlocks || !showThinking
+    // A summon result is a single collapsed block; everything else renders the
+    // normal ordered/bucketed body.
+    summon ? SummonResultActivity(view, summon) : null,
+    summon || !orderedBlocks ? null : OrderedBlocks(view, orderedBlocks, details.tools ?? []),
+    summon || orderedBlocks || !showThinking
       ? null
       : ThinkingActivity(`thinking:${view.id}`, details.thinking ?? "", Boolean(view.streaming)),
-    orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
+    summon || orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
-    orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
+    summon || orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
+    actions.length ? h("div", { class: "message-actions" }, actions) : null,
+  );
+}
+
+/**
+ * Recognize a summon worker's result — the new metadata form
+ * (details.summonResult, body is the whole text) or the LEGACY form where the
+ * "↩︎ Summon '…' finished." header was baked into the message text before the
+ * metadata existed. Either way returns the child room, outcome, and the body to
+ * reveal. Non-summon agent messages return null.
+ * @param {MessageView} view
+ * @returns {{ childRoomId: string, failed: boolean, body: string } | null}
+ */
+function summonView(view) {
+  const meta = view.details?.summonResult;
+  if (meta) return { childRoomId: meta.childRoomId, failed: meta.failed, body: view.text };
+  const header = view.text.match(/^(?:↩︎|⚠️)\s*Summon '([^']+)' (finished|FAILED)/u);
+  if (!header) return null;
+  // Strip the header line (and the blank line after it) for the collapsed body.
+  const body = view.text.replace(/^[^\n]*\n\n?/u, "").trim();
+  return { childRoomId: header[1], failed: header[2] === "FAILED", body };
+}
+
+/**
+ * A summon worker's result as a collapsed expander (reusing ActivityDetails, so
+ * it behaves exactly like a thinking/tool block — collapsed by default, opens on
+ * click, open state persists across re-renders). The header names the child room
+ * and its outcome; the body is the worker's full reply.
+ * @param {MessageView} view
+ * @param {{ childRoomId: string, failed: boolean, body: string }} summon
+ */
+function SummonResultActivity(view, summon) {
+  return ActivityDetails(
+    {
+      id: `summon:${view.id}`,
+      className: "summon-result",
+      status: summon.failed ? "error" : "complete",
+      icon: summon.failed ? "⚠️" : "↩︎",
+      title: `summon ${summon.childRoomId}`,
+      extra: summon.failed ? "failed" : "finished",
+    },
+    summon.body.trim() ? MarkdownMessage(summon.body) : h("pre", {}, "(no output)"),
   );
 }
 

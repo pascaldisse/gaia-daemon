@@ -9,8 +9,10 @@
 //     immediately and the worker runs in the background;
 //   - the worker is watchable live in its sub-room (parentRoomId → sidebar);
 //   - when the worker finishes, its result is DELIVERED back into the parent
-//     room — as a message from the worker, plus (deliver: "turn") a queued
-//     turn for the calling agent, so the caller is re-invoked to continue;
+//     room — as a COLLAPSED note authored by the worker, plus (deliver: "turn")
+//     a nudge that re-invokes the calling agent (steer its running turn, else a
+//     fresh turn) so it continues — Claude-Code subagent style, never a queued
+//     "user →" bubble;
 //   - delivery is durable: the pending delivery is stamped on the child room's
 //     state at launch, and a daemon restart re-arms it (recoverUndelivered) —
 //     a summon result is NEVER silently lost;
@@ -21,6 +23,19 @@
 
 import { readdir } from "node:fs/promises";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
+
+/** How a finished worker's result lands in the parent room (see
+ * SummonRoomAccess.deliverAgentResult). */
+export interface SummonResultDelivery {
+  /** The worker's child room — provenance for the collapsed result header. */
+  childRoomId: string;
+  /** The worker turn errored rather than finishing cleanly. */
+  failed: boolean;
+  /** deliver:"turn" — the caller agent to re-invoke with the result. Unset for
+   * deliver:"note" (a human reads the result; no agent is nudged). */
+  triggerTarget?: string;
+}
+
 import { normalizeRoomState } from "../domain/rooms.js";
 import { workspacePaths } from "../core/paths.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
@@ -69,9 +84,11 @@ export interface SummonRoomAccess {
   /** Fully settled: no running task, no durable pending turn, empty queue
    * (covers turns that init() resumes asynchronously after a restart). */
   waitForSettled(): Promise<void>;
-  /** Append a worker-authored result message and (optionally) queue a turn for
-   * `triggerTargets` — the summon callback into a PARENT room. */
-  deliverAgentResult(fromAgentId: string, text: string, triggerTargets?: string[]): Promise<void>;
+  /** Land a worker's result in a PARENT room: a COLLAPSED, summon-labeled note
+   * authored by the worker, then — when `triggerTarget` is set (deliver:"turn")
+   * — nudge that caller agent to react (steer its running turn, else a fresh
+   * turn). Never a queued "user →" bubble. */
+  deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void>;
   /** Stamp this CHILD room's summon record delivered (idempotent). */
   markSummonDelivered(): Promise<void>;
 }
@@ -244,20 +261,19 @@ export class SummonCoordinator implements SummonHost {
     return reply || "(no output)";
   }
 
-  /** Land a worker's result in the parent room: a message authored by the
-   * worker, plus a queued turn for the calling agent when deliver is "turn".
-   * Marks the child's durable record delivered ONLY after the parent write
-   * committed — a crash in between re-delivers rather than losing it. */
+  /** Land a worker's result in the parent room: a COLLAPSED note authored by
+   * the worker (the "↩︎ summon finished / ⚠️ FAILED" header is rendered from
+   * SummonResultMeta, not baked into the text), then — deliver:"turn" — nudge
+   * the caller agent to continue. Marks the child's durable record delivered
+   * ONLY after the parent write committed — a crash in between re-delivers
+   * rather than losing it. */
   private async deliver(child: SummonRoomAccess, info: SummonChild, options: Pick<SummonOptions, "deliver" | "callerAgentId">, reply: string, failed: boolean): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
-    const siblings = this.runningChildren(info.parentRoomId).filter((entry) => entry.roomId !== info.roomId);
-    const header = failed
-      ? `⚠️ Summon '${info.roomId}' FAILED — open the sub-room to inspect; re-summon to retry.`
-      : `↩︎ Summon '${info.roomId}' finished.`;
-    const footer = siblings.length > 0 ? `\n\n(${siblings.length} summon${siblings.length === 1 ? "" : "s"} still running: ${siblings.map((entry) => entry.roomId).join(", ")})` : "";
-    const text = `${header}\n\n${reply}${footer}`;
-    const trigger = options.deliver === "turn" && options.callerAgentId ? [options.callerAgentId] : undefined;
-    await parent.deliverAgentResult(info.agentId, text, trigger);
+    await parent.deliverAgentResult(info.agentId, reply, {
+      childRoomId: info.roomId,
+      failed,
+      ...(options.deliver === "turn" && options.callerAgentId ? { triggerTarget: options.callerAgentId } : {}),
+    });
     await child.markSummonDelivered();
   }
 

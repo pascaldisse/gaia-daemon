@@ -4,7 +4,7 @@
 // DATA on the spec (capabilities, ui, credentialProxy), read uniformly — never
 // as `=== "claude"` branches. This rule is absolute (AGENTS.md §RULE #0).
 
-import type { AgentDef, AgentEvent, CompactProgressUpdate, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, MessageAttachment, RoomEvent, UsageLimits, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -214,6 +214,23 @@ export interface HarnessSpec {
    * cursor is gone and must be replayed (through the context gate when large).
    * Absent ⇒ sessions are not detectable a-priori; treated as present. */
   hasDurableSession?(rootDir: string, roomId: string, agentId: string): boolean;
+  /** Fetch this harness's account-level usage limits (subscription session /
+   * weekly caps), or null when it can't say (no OAuth creds, API-key auth,
+   * offline). Data on the spec — the harness owns HOW it reaches its provider's
+   * usage endpoint; the daemon polls it uniformly and never learns which harness
+   * it is (same pattern as credentialProxy). Absent ⇒ reports no account usage.
+   * Account-level, so it takes no room/agent — one call describes the whole
+   * subscription. */
+  probeUsage?(): Promise<UsageLimits | null>;
+}
+
+/** Every registered harness's usage probe (skipping those without one), read
+ * uniformly by the daemon's poll loop. No harness-id branch — each harness
+ * declares its own probe as data on its spec. */
+export function usageProbes(): { harness: string; probe: () => Promise<UsageLimits | null> }[] {
+  return harnessSpecs()
+    .filter((spec): spec is HarnessSpec & { probeUsage: NonNullable<HarnessSpec["probeUsage"]> } => typeof spec.probeUsage === "function")
+    .map((spec) => ({ harness: spec.id, probe: () => spec.probeUsage() }));
 }
 
 const registry = new Map<string, HarnessSpec>();

@@ -106,6 +106,8 @@ function renderStatusbar() {
     });
     segs.push({ text: "■", cls: "seg-nowplaying stop on", title: "stop playback", onclick: stopReadAloud });
   }
+  const usage = usageChipSeg();
+  if (usage) segs.push(usage);
   const theme = themeById(currentThemeId());
   segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
   segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
@@ -129,6 +131,167 @@ function renderStatusbar() {
 export function clockText() {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Account usage chip — the subscription session/weekly caps a harness reports
+// (Claude Code's `/usage`, but harness-agnostic: whatever declares a probe).
+// Compact in the bar; a click opens the full breakdown with bars.
+
+/** @returns {import("./types.js").UsageWindow[]} every window across harnesses, session-first */
+function allUsageWindows() {
+  return Object.values(state.usage)
+    .flatMap((limits) => limits.windows)
+    .filter((win) => win && typeof win.percent === "number");
+}
+
+/** Model identifiers for the open room's active agent, lowercased — both the
+ * configured model ("anthropic/fable") and the live label ("…claude-fable-5…"),
+ * so a provider display name like "Fable" can be matched against either.
+ * @returns {string[]} */
+function activeRoomModelTokens() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return [];
+  const activeId = snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent;
+  const agent = (snapshot.agents ?? []).find((candidate) => candidate.id === activeId);
+  if (!agent) return [];
+  return [agent.configuredModel, agent.modelLabel].filter(Boolean).map((token) => token.toLowerCase());
+}
+
+/** A window is shown when it's account-wide (session, all-models weekly) OR it's
+ * scoped to the model the open room is actively using. A dormant per-model cap
+ * (e.g. Fable's weekly at 100% while you're on Opus) stays hidden.
+ * @param {import("./types.js").UsageWindow} win @param {string[]} activeTokens */
+function isUsageWindowVisible(win, activeTokens) {
+  if (!win.model) return true;
+  const needle = win.model.toLowerCase();
+  return activeTokens.some((token) => token.includes(needle));
+}
+
+/** @returns {import("./types.js").UsageWindow[]} windows relevant to the open room */
+function visibleUsageWindows() {
+  const activeTokens = activeRoomModelTokens();
+  return allUsageWindows().filter((win) => isUsageWindowVisible(win, activeTokens));
+}
+
+/** @param {import("./types.js").UsageWindow[]} windows @returns {"normal"|"warning"|"critical"} */
+function worstSeverity(windows) {
+  if (windows.some((win) => win.severity === "critical")) return "critical";
+  if (windows.some((win) => win.severity === "warning")) return "warning";
+  return "normal";
+}
+
+/** Relative "resets in …" for a window's reset instant (empty when unknown).
+ * @param {string|undefined} iso */
+function formatReset(iso) {
+  if (!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "resetting…";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `resets in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  if (hours < 24) return remMin ? `resets in ${hours}h ${remMin}m` : `resets in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHr = hours % 24;
+  return remHr ? `resets in ${days}d ${remHr}h` : `resets in ${days}d`;
+}
+
+/** The compact status-bar segment, or null when no harness reports usage. Shows
+ * session + all-models weekly by default; a per-model weekly cap is appended
+ * only when that model is active in the open room (labelled with the model).
+ * @returns {Seg|null} */
+function usageChipSeg() {
+  const windows = visibleUsageWindows();
+  if (windows.length === 0) return null;
+  const session = windows.find((win) => win.kind === "session");
+  const weeklyAll = windows.find((win) => win.kind === "weekly_all");
+  const scoped = windows.filter((win) => win.kind === "weekly_scoped");
+  const parts = [];
+  if (session) parts.push(`${session.percent}%`);
+  if (weeklyAll) parts.push(`${weeklyAll.percent}%w`);
+  for (const win of scoped) parts.push(`${win.percent}% ${win.model}`);
+  if (parts.length === 0) return null;
+  const severity = worstSeverity(windows);
+  const title = windows.map((win) => `${win.label}: ${win.percent}%${win.resetsAt ? ` · ${formatReset(win.resetsAt)}` : ""}`).join("\n");
+  return {
+    text: `◔ ${parts.join(" · ")}`,
+    cls: `seg-usage${severity === "critical" ? " crit" : severity === "warning" ? " warn" : ""}`,
+    title: `usage — click for the breakdown\n${title}`,
+    onclick: openUsagePopover,
+  };
+}
+
+export function openUsagePopover() {
+  state.usagePopoverOpen = true;
+  markDirty("usage");
+}
+
+export function closeUsagePopover() {
+  state.usagePopoverOpen = false;
+  markDirty("usage");
+}
+
+function renderUsagePopover() {
+  const slot = $("#overlay-usage");
+  if (!slot) return;
+  if (!state.usagePopoverOpen || visibleUsageWindows().length === 0) slot.replaceChildren();
+  else slot.replaceChildren(UsagePopover());
+}
+
+registerRegion("usage", renderUsagePopover);
+
+function UsagePopover() {
+  const activeTokens = activeRoomModelTokens();
+  const groups = Object.values(state.usage)
+    .map((limits) => ({ ...limits, windows: limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens)) }))
+    .filter((limits) => limits.windows.length > 0);
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeUsagePopover();
+      },
+    },
+    h(
+      "div",
+      { class: "palette usage-popover" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "usage" }),
+        h("small", { text: "subscription limits · esc to close" }),
+      ),
+      ...groups.map((limits) =>
+        h(
+          "div",
+          { class: "usage-group" },
+          h(
+            "div",
+            { class: "usage-group-head" },
+            h("span", { class: "usage-harness", text: limits.harness }),
+            limits.plan ? h("span", { class: "usage-plan", text: limits.plan }) : null,
+          ),
+          ...limits.windows.map((win) =>
+            h(
+              "div",
+              { class: "usage-row" },
+              h(
+                "div",
+                { class: "usage-row-top" },
+                h("span", { class: "usage-label", text: win.label }),
+                h("span", { class: `usage-pct sev-${win.severity}`, text: `${win.percent}%` }),
+              ),
+              h("div", { class: "usage-bar" }, h("div", { class: `usage-bar-fill sev-${win.severity}`, style: `width:${win.percent}%` })),
+              win.resetsAt ? h("small", { class: "usage-reset", text: formatReset(win.resetsAt) }) : null,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 /** Short room label for the now-playing chip (room ids can be long imports).

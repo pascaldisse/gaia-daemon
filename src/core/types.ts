@@ -63,6 +63,22 @@ export interface EventDetails {
    * and `tools` above are still populated in full so non-ordered consumers
    * (prompt replay, read-aloud, summaries) are unaffected. */
   blocks?: MessageBlock[];
+  /** This agent event is a summon worker's result landed back in the parent
+   * room (see SummonDelivery). The UI renders it as a COLLAPSED, summon-labeled
+   * block reusing the thinking/tool expander — not a plain agent message and
+   * never a "user →" bubble. Absent on ordinary turns. */
+  summonResult?: SummonResultMeta;
+}
+
+/** Provenance carried on a summon worker's result note so the UI can render a
+ * collapsed "↩︎ summon <room> finished / ⚠️ FAILED" header without baking it
+ * into the message text. */
+export interface SummonResultMeta {
+  /** The child (worker) room whose turn produced this result — open it to
+   * inspect the full run. */
+  childRoomId: string;
+  /** The worker turn errored (vs. finished cleanly). */
+  failed: boolean;
 }
 
 /** The in-flight agent reply's accumulated view, mirrored on the snapshot so a
@@ -483,6 +499,44 @@ export interface Workspace {
 }
 
 // ---------------------------------------------------------------------------
+// Account usage limits (a harness's subscription/rate caps — NOT per-room
+// context). Harness-agnostic: every harness that can report account usage maps
+// its provider's shape onto this one shape; the daemon polls each spec's
+// probeUsage() and the status bar renders the result uniformly, never learning
+// which harness produced it. The same standing applies to every room/agent on
+// that harness, so this is broadcast daemon-global, not per-room.
+
+export interface UsageWindow {
+  /** Stable window id, e.g. "session" | "weekly_all" | "weekly_scoped". Only
+   * used to key/order; display uses `label`. */
+  kind: string;
+  /** Human label, e.g. "Current session", "Weekly · all models", "Weekly · Fable". */
+  label: string;
+  /** Percent of the cap consumed, 0–100 (clamped). */
+  percent: number;
+  /** How close to the cap — drives the status-bar colour. */
+  severity: "normal" | "warning" | "critical";
+  /** ISO 8601 instant the window resets, when the harness reports one. */
+  resetsAt?: string;
+  /** For a model-scoped window (e.g. a per-model weekly cap), the model it
+   * applies to, as the provider names it (e.g. "Fable"). Absent on account-wide
+   * windows (session, all-models weekly). The status bar shows a scoped window
+   * only when its model is the active one in the open room. */
+  model?: string;
+}
+
+export interface UsageLimits {
+  /** Which harness reported this (display + client keying; never a branch). */
+  harness: string;
+  /** Optional plan/account label, e.g. the subscription tier. */
+  plan?: string;
+  /** Windows to show, most-relevant first. */
+  windows: UsageWindow[];
+  /** ISO 8601 instant this snapshot was fetched. */
+  fetchedAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)
 
 export type AgentEvent =
@@ -513,6 +567,11 @@ export interface Task {
   startedAt: string;
   endedAt?: string;
   error?: string;
+  /** Agent-authored, not human-typed: a room agent-dialogue hand-off or a
+   * summon callback (see enqueueAgentDialogue). Its `text` is a pointer/replay,
+   * not something a person wrote — the client must NOT render it as a queued
+   * "user →" ghost bubble. */
+  callback?: boolean;
 }
 
 export interface AgentStatus {
@@ -700,7 +759,12 @@ export type UiEvent =
   // workspace so a sidebar updates a room's running dot / unread badge even when
   // that room isn't the one being viewed (the per-room SSE only carries the open
   // room's own events).
-  | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] };
+  | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] }
+  // Daemon-global (NO workspaceId → fans out to EVERY connected client): one
+  // harness's account usage limits refreshed. Usage is account-level, not
+  // per-workspace/room. `usage: null` clears that harness's chip (probe failed,
+  // signed out, or API-key auth with no subscription caps).
+  | { type: "usage-limits"; harness: string; usage: UsageLimits | null };
 
 // ---------------------------------------------------------------------------
 // Monad vocabulary (embedded in state.json → core, not a layer above)

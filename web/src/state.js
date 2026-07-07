@@ -59,6 +59,8 @@
  *   addAgentId: string,
  *   addAgentName: string,
  *   addAgentError: string,
+ *   usage: Record<string, import("./types.js").UsageLimits>,
+ *   usagePopoverOpen: boolean,
  *   readMarks: Record<string, number>,
  * }}
  */
@@ -139,6 +141,11 @@ export const state = {
   // "<workspaceId>::<roomId>". Persisted so unread survives a reload. A room
   // reads as unread when its lastActivity exceeds the mark captured while it
   // was last open (see syncReadMarks / roomUnread).
+  // Account usage limits per harness (subscription session/weekly caps),
+  // pushed by the daemon's `usage-limits` SSE event. Account-level, not tied to
+  // the open room; rendered as the status-bar usage chip + popover.
+  usage: {},
+  usagePopoverOpen: false,
   readMarks: loadReadMarks(),
 };
 
