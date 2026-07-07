@@ -178,9 +178,11 @@ export async function jumpToEvent(eventId) {
  * stream→commit because a committed agent event REUSES the id reserved at turn
  * START — its stored `timestamp` is commit time (later), but its id is the
  * reservation time. Ordering by id-time therefore keeps a streaming reply
- * anchored where it began, so a steer injected mid-turn sorts AFTER it (below)
- * instead of jumping above the reply it was steering. Falls back to the
- * timestamp for any id that isn't in the minted shape (e.g. imported history).
+ * anchored where it began (its text patches in place instead of the row jumping
+ * when it commits). A message that COMMITTED mid-turn — a user steer or a summon
+ * note — is re-keyed in messageViews so it reads ABOVE that reply rather than
+ * below. Falls back to the timestamp for any id not in the minted shape (e.g.
+ * imported history).
  * @param {string} id @param {string} timestamp @returns {number}
  */
 function creationOrder(id, timestamp) {
@@ -235,19 +237,20 @@ function messageViews() {
     });
   }
   // Order by creation time (see creationOrder). Array.sort is stable, so views
-  // minted in the same ms keep their push order. A no-op for a plain transcript;
-  // it only matters when something committed DURING a running turn — and the two
-  // mid-turn cases pull opposite ways:
-  //  - a user STEER (late id) must sort BELOW the reply it steered — its own
-  //    creation order already does this (reply is anchored at its turn-start id).
-  //  - a summon-result NOTE is a worker's OUTPUT the caller's reply reacted to,
-  //    so it must read ABOVE that reply, not below. Its late finish-id would
-  //    otherwise sink it under the reply. Re-key each note to the start-order of
-  //    the turn it landed in — the reply whose [start, commit] window holds the
-  //    note's mint (turns are serialized, so at most one matches; a still-
-  //    streaming reply has no commit yet, so its window is open-ended). The note
-  //    then ties with that reply's key and, being earlier in append order, sorts
-  //    just above it.
+  // minted in the same ms keep their append (WAL/commit) order. A no-op for a
+  // plain transcript; it only matters for a message that COMMITTED mid-turn,
+  // whose late mint would otherwise sink it below the reply whose [start, commit]
+  // window it landed in. Two shapes need this, and both must read ABOVE that reply:
+  //  - a summon-result NOTE is a worker's OUTPUT the caller's reply reacted to;
+  //  - a user STEER is a question the reply then answered (its own late id would
+  //    otherwise drop it under the reply, since the reply is anchored at its
+  //    earlier turn-start id — the bug this fixes).
+  // Re-key each to the start-order of the turn it landed in (turns are serialized,
+  // so at most one window matches; a still-streaming reply has no commit yet, so
+  // its window is open-ended). It then ties with that reply's key and, having
+  // committed first, its lower append index sorts it just above. A plain user
+  // message sent BETWEEN turns matches no window and is left exactly where it is;
+  // a queued ghost (still waiting to run) is excluded so it stays at the bottom.
   const ranked = views.map((view, index) => ({
     view,
     index,
@@ -255,12 +258,13 @@ function messageViews() {
     commit: Date.parse(view.timestamp),
   }));
   const turns = ranked.filter((r) => r.view.author !== "user" && r.view.author !== "system" && !summonView(r.view));
-  for (const note of ranked) {
-    if (!summonView(note.view)) continue;
+  for (const item of ranked) {
+    const midTurn = Boolean(summonView(item.view)) || (item.view.author === "user" && !item.view.queued);
+    if (!midTurn) continue;
     const turn = turns.find(
-      (t) => t.order < note.order && (t.view.streaming || !Number.isFinite(t.commit) || note.order <= t.commit),
+      (t) => t.order < item.order && (t.view.streaming || !Number.isFinite(t.commit) || item.order <= t.commit),
     );
-    if (turn) note.order = turn.order;
+    if (turn) item.order = turn.order;
   }
   return ranked.sort((a, b) => a.order - b.order || a.index - b.index).map((entry) => entry.view);
 }
