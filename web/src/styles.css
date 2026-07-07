@@ -274,6 +274,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .tab-dot, .room-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
 .tab-dot, .room-dot.running { box-shadow: 0 0 7px var(--good); animation: dot-pulse 1.2s ease-in-out infinite; }
+/* Finished with unread agent replies: a steady accent dot (no pulse) + a
+   brighter room name. Clears the moment the room is opened (roomUnread). */
+.room-dot.unread { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: none; }
+.room-name.unread { color: var(--fg); font-weight: 600; }
 
 .tab-name { overflow: hidden; text-overflow: ellipsis; }
 
@@ -863,6 +867,17 @@ body.resizing { cursor: col-resize; user-select: none; }
 .seg-run { --seg-bg: var(--bg3); color: var(--muted); }
 .seg-run.on { color: var(--good); }
 .seg-voice { --seg-bg: var(--bg2); color: var(--accent2); }
+
+/* Read-aloud now-playing chip — a message may keep speaking after you switch
+   rooms, so this lit, gently-pulsing chip says where it's playing (click to
+   jump). The paired ■ chip stops it. */
+.seg-nowplaying { --seg-bg: var(--bg3); color: var(--good); cursor: pointer; font-weight: 600; animation: nowplaying-pulse 1.6s ease-in-out infinite; }
+.seg-nowplaying:hover { color: var(--fg); }
+.seg-nowplaying.loading { color: var(--muted); }
+.seg-nowplaying.stop { color: var(--danger); font-weight: 700; animation: none; }
+.seg-nowplaying.stop:hover { color: var(--fg); }
+
+@keyframes nowplaying-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 /* Right cluster opens with a left-pointing wedge so it reads as powerline too. */
 .seg-theme { --seg-bg: var(--bg2); color: var(--accent2); cursor: pointer; }

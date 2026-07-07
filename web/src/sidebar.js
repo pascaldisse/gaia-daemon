@@ -7,7 +7,7 @@ import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
-import { state } from "./state.js";
+import { roomUnread, state } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -137,8 +137,14 @@ function RoomNode(room, childrenOf, depth) {
         h(
           "span",
           { class: "room-label" },
-          room.running ? h("span", { class: "room-dot running", title: "summon running" }) : null,
-          h("span", { text: room.title ?? room.id }),
+          // One status slot: a green blinking dot while an agent is working in
+          // the room, else an accent dot when it has unread replies, else empty.
+          room.running
+            ? h("span", { class: "room-dot running", title: "agent running" })
+            : roomUnread(room)
+              ? h("span", { class: "room-dot unread", title: "unread messages" })
+              : null,
+          h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: room.title ?? room.id }),
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),

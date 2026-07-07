@@ -2,7 +2,7 @@
 // text and the runtime details (model, thinking, tools) that commit ONTO the
 // transcript event. The caller owns durability (WAL) and UI transport.
 
-import type { AgentEvent, EventDetails, ToolDetail } from "../core/types.js";
+import type { AgentEvent, EventDetails, MessageBlock, ToolDetail } from "../core/types.js";
 import type { AgentInput, AgentRuntime } from "../harness/spec.js";
 
 export interface AgentTurnOptions {
@@ -46,20 +46,28 @@ export function applyEventToDetails(details: EventDetails, event: AgentEvent): v
     case "model-fallback":
       details.modelFallback = { from: event.fromModel, to: event.toModel, reason: event.reason };
       return;
+    case "text-delta":
+      recordBlockEvent(details, event);
+      return;
     case "thinking-start":
       details.thinkingStarted = true;
       return;
     case "thinking-delta":
       details.thinkingStarted = true;
       details.thinking = `${details.thinking ?? ""}${event.delta}`;
+      recordBlockEvent(details, event);
       return;
     case "thinking-end":
       details.thinkingStarted = true;
       if (event.content && !details.thinking) details.thinking = event.content;
+      recordBlockEvent(details, event);
       return;
-    case "tool-start":
-      details.tools = [...(details.tools ?? []), newToolDetail(event.toolCallId, event.toolName, "running", { args: event.args })];
+    case "tool-start": {
+      const tool = newToolDetail(event.toolCallId, event.toolName, "running", { args: event.args });
+      details.tools = [...(details.tools ?? []), tool];
+      recordBlockEvent(details, event, tool.id);
       return;
+    }
     case "tool-update": {
       const tool = findRunningTool(details, event.toolCallId, event.toolName);
       if (tool) tool.partialResult = event.partialResult;
@@ -71,13 +79,59 @@ export function applyEventToDetails(details: EventDetails, event: AgentEvent): v
         tool.status = event.isError ? "error" : "complete";
         tool.result = event.result;
       } else {
-        details.tools = [
-          ...(details.tools ?? []),
-          newToolDetail(event.toolCallId, event.toolName, event.isError ? "error" : "complete", { result: event.result }),
-        ];
+        // A tool-end with no matching start (rare): create the row now AND its
+        // ordered block, since tool-start never got the chance to.
+        const created = newToolDetail(event.toolCallId, event.toolName, event.isError ? "error" : "complete", { result: event.result });
+        details.tools = [...(details.tools ?? []), created];
+        recordBlockEvent(details, event, created.id);
       }
       return;
     }
+    default:
+      return;
+  }
+}
+
+/**
+ * Fold one stream event into `details.blocks`, the ordered timeline the UI
+ * renders inline. Driven purely by the uniform `AgentEvent` stream — never by a
+ * harness id — so every harness (present and future) gets interleaved rendering
+ * for free. Same-kind text/thinking deltas coalesce into the current block; a
+ * new block opens whenever the kind changes (so thinking that resumes after a
+ * tool call becomes a fresh thinking block, and prose split by a tool call
+ * becomes separate text blocks). Tool blocks are emitted only when the caller
+ * created a `ToolDetail` row and passes its `toolId`, keeping block order equal
+ * to row-creation order. Mirror any change here in `web/src/events.js` and
+ * `RoomService.applyLiveTurn` — the three folders must stay identical so the
+ * live stream, the mid-turn snapshot mirror, and the committed event agree.
+ */
+export function recordBlockEvent(details: EventDetails, event: AgentEvent, toolId?: string): void {
+  const blocks: MessageBlock[] = (details.blocks ??= []);
+  const last = blocks[blocks.length - 1];
+  switch (event.type) {
+    case "text-delta":
+      if (last && last.kind === "text") last.text += event.delta;
+      else blocks.push({ kind: "text", text: event.delta });
+      return;
+    case "thinking-delta":
+      if (last && last.kind === "thinking") last.text += event.delta;
+      else blocks.push({ kind: "thinking", text: event.delta });
+      return;
+    case "thinking-end":
+      // Thinking delivered whole (summary in `content`, no deltas): open a block
+      // for it. If deltas already built one, leave their text as the record.
+      if (event.content) {
+        if (last && last.kind === "thinking") {
+          if (!last.text) last.text = event.content;
+        } else {
+          blocks.push({ kind: "thinking", text: event.content });
+        }
+      }
+      return;
+    case "tool-start":
+    case "tool-end":
+      if (toolId) blocks.push({ kind: "tool", id: toolId });
+      return;
     default:
       return;
   }

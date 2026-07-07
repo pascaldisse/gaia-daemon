@@ -7,6 +7,7 @@
 /** @typedef {import("../../src/core/types.js").UserRoomEvent} UserRoomEvent */
 /** @typedef {import("../../src/core/types.js").AgentRoomEvent} AgentRoomEvent */
 /** @typedef {import("../../src/core/types.js").EventDetails} EventDetails */
+/** @typedef {import("../../src/core/types.js").MessageBlock} MessageBlock */
 /** @typedef {import("../../src/core/types.js").ToolDetail} ToolDetail */
 /** @typedef {import("../../src/core/types.js").Task} Task */
 /** @typedef {import("../../src/core/types.js").Snapshot} Snapshot */

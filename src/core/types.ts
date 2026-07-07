@@ -35,6 +35,19 @@ export interface MessageAttachment {
   path: string;
 }
 
+/** One segment of an agent turn in the order it actually streamed. The harness
+ * event stream interleaves prose, thinking, and tool calls (text → tool →
+ * text → thinking → …); `MessageBlock[]` preserves that order so the UI renders
+ * inline like a native agent transcript instead of the flattened
+ * thinking→tools→text buckets. `text`/`thinking` carry their span inline;
+ * `tool` references a `ToolDetail` in `EventDetails.tools[]` by id (the tool's
+ * live status/args/result stay the single source of truth). Thinking can occur
+ * more than once per turn, so multiple `thinking` blocks are expected. */
+export type MessageBlock =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; id: string };
+
 /** Runtime metadata for one agent message. v2 stores this ON the transcript
  * event at commit, so history never forgets what produced it. (v1 kept a
  * 50-entry LRU in state.json; those legacy entries are still read.) */
@@ -44,6 +57,28 @@ export interface EventDetails {
   thinkingStarted?: boolean;
   thinking?: string;
   tools?: ToolDetail[];
+  /** The turn's segments in stream order (see `MessageBlock`). Additive and
+   * v1-compatible: events committed before this field existed have no `blocks`,
+   * and the UI falls back to the bucketed thinking→tools→text layout. `thinking`
+   * and `tools` above are still populated in full so non-ordered consumers
+   * (prompt replay, read-aloud, summaries) are unaffected. */
+  blocks?: MessageBlock[];
+}
+
+/** The in-flight agent reply's accumulated view, mirrored on the snapshot so a
+ * client that (re)subscribes mid-turn — e.g. after switching rooms — renders the
+ * running turn immediately (text + thinking + tools so far) instead of a blank
+ * until it commits. Ephemeral in-memory only: present while a turn streams,
+ * cleared on commit/failure/cancel. Durability of the reply text is separate
+ * (PendingTurn.partialReply on disk). Keyed by the reserved commit `eventId`, so
+ * the moment the room-event with that id lands, the client drops this. */
+export interface LiveTurn {
+  eventId: string;
+  taskId: string;
+  agentId: string;
+  startedAt: string;
+  text: string;
+  details: EventDetails;
 }
 
 export interface UserRoomEvent {
@@ -530,11 +565,17 @@ export interface RoomSummary {
   path: string;
   isCurrent: boolean;
   parentRoomId?: string;
-  /** True while this room is a summon whose first turn is still streaming. */
+  /** True while an agent turn is streaming in this room — any room, not just
+   * summons. Derived from the durable pendingTurn marker, so a background room's
+   * dot lights the moment its turn starts and clears when it commits. */
   running?: boolean;
   title?: string;
   /** Original created_at of an imported chat (see RoomState.imported). */
   imported?: string;
+  /** Last transcript write (epoch ms) — the chat-list sort key, and the client's
+   * unread signal: a room whose lastActivity exceeds the last value seen while it
+   * was open has an unread agent reply. */
+  lastActivity?: number;
 }
 
 /** One chat-search result: a transcript chunk that matched, resolved enough to
@@ -601,6 +642,9 @@ export interface Snapshot {
     activeAgent?: string;
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
+    /** The running turn's accumulated view, so a client (re)subscribing mid-turn
+     * (e.g. switching back to a busy room) renders it at once. Absent when idle. */
+    liveTurn?: LiveTurn;
   };
   rooms: RoomSummary[];
   commands: SlashCommandDefinition[];
@@ -650,7 +694,13 @@ export type UiEvent =
   | ({ type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown } & StreamScope)
   | ({ type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
-  | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } };
+  | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
+  // Workspace-scoped (NO roomId): the room list changed — a room started or
+  // finished a turn, or its activity advanced. Fans out to EVERY client in the
+  // workspace so a sidebar updates a room's running dot / unread badge even when
+  // that room isn't the one being viewed (the per-room SSE only carries the open
+  // room's own events).
+  | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] };
 
 // ---------------------------------------------------------------------------
 // Monad vocabulary (embedded in state.json → core, not a layer above)

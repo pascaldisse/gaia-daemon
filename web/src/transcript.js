@@ -22,6 +22,7 @@ import { state } from "./state.js";
 /** @typedef {import("./types.js").MessageAttachment} MessageAttachment */
 /** @typedef {import("./types.js").AgentRoomEvent} AgentRoomEvent */
 /** @typedef {import("./types.js").EventDetails} EventDetails */
+/** @typedef {import("./types.js").MessageBlock} MessageBlock */
 /** @typedef {import("./types.js").ToolDetail} ToolDetail */
 
 /**
@@ -298,6 +299,12 @@ function Message(view) {
   const text = isUser ? stripLeadingRouteMentions(view.text, view.targets) : view.text;
   const details = view.details ?? {};
   const showThinking = details.thinkingStarted || details.thinking;
+  // Preferred layout: replay the turn's segments in the exact order they
+  // streamed (text ↔ thinking ↔ tool), so a reply reads like it did live
+  // instead of the flattened thinking→tools→text buckets. Falls back to the
+  // buckets for events committed before `blocks` existed, and for redacted
+  // events (whose sanitized text lives only in `view.text`, not the blocks).
+  const orderedBlocks = isAgent && !view.redacted && details.blocks?.length ? details.blocks : null;
   // Claude.ai-style fork actions: ✎ edits a user message, ⟳ regenerates a
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
@@ -347,21 +354,51 @@ function Message(view) {
       isAgent && !view.streaming ? ReadAloudButton(view.id) : null,
       h("time", { text: formatTime(view.timestamp) }),
     ),
-    showThinking
-      ? ActivityDetails(
-          {
-            id: `thinking:${view.id}`,
-            className: "thinking",
-            status: view.streaming ? "running" : "complete",
-            icon: "💭",
-            title: "thinking",
-          },
-          h("pre", {}, details.thinking ? LinkedText(details.thinking) : ""),
-        )
-      : null,
-    details.tools?.length ? ToolActivityList(details.tools) : null,
+    orderedBlocks ? OrderedBlocks(view, orderedBlocks, details.tools ?? []) : null,
+    orderedBlocks || !showThinking
+      ? null
+      : ThinkingActivity(`thinking:${view.id}`, details.thinking ?? "", Boolean(view.streaming)),
+    orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
-    text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
+    orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
+  );
+}
+
+/**
+ * Render the ordered block timeline: prose, thinking, and tool calls exactly
+ * where they occurred in the turn. Thinking and tools reuse the same collapsible
+ * activity element as the bucketed layout — a turn can think more than once, so
+ * each thinking span is its own expander. Tool blocks reference `tools[]` by id.
+ * @param {MessageView} view
+ * @param {MessageBlock[]} blocks
+ * @param {ToolDetail[]} tools
+ */
+function OrderedBlocks(view, blocks, tools) {
+  const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
+  const lastIndex = blocks.length - 1;
+  return blocks.map((block, index) => {
+    if (block.kind === "text") return block.text.trim() ? MarkdownMessage(block.text) : null;
+    if (block.kind === "thinking") {
+      // A thinking span still filling in is the running one; an empty span that
+      // isn't currently streaming carries nothing to show.
+      const running = Boolean(view.streaming) && index === lastIndex;
+      if (!block.text.trim() && !running) return null;
+      return ThinkingActivity(`thinking:${view.id}:${index}`, block.text, running);
+    }
+    const tool = toolsById.get(block.id);
+    return tool ? ToolActivity(tool) : null;
+  });
+}
+
+/**
+ * The collapsible "thinking" expander, reused by both layouts (and, in the
+ * ordered layout, once per thinking span in the turn).
+ * @param {string} id @param {string} text @param {boolean} running
+ */
+function ThinkingActivity(id, text, running) {
+  return ActivityDetails(
+    { id, className: "thinking", status: running ? "running" : "complete", icon: "💭", title: "thinking" },
+    h("pre", {}, text ? LinkedText(text) : ""),
   );
 }
 
@@ -424,18 +461,21 @@ function ReadAloudButton(eventId) {
 
 /** @param {ToolDetail[]} tools */
 function ToolActivityList(tools) {
-  return h(
-    "div",
-    { class: "tool-activity" },
-    tools.map((tool) =>
-      ActivityDetails(
-        { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) },
-        ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
-        ToolPayload("args", tool.args),
-        ToolPayload("partial", tool.partialResult),
-        ToolPayload("result", tool.result),
-      ),
-    ),
+  return h("div", { class: "tool-activity" }, tools.map(ToolActivity));
+}
+
+/**
+ * One tool-call expander. Reused by the bucketed list and by the ordered
+ * layout, where a single tool sits inline between prose blocks.
+ * @param {ToolDetail} tool
+ */
+function ToolActivity(tool) {
+  return ActivityDetails(
+    { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) },
+    ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
+    ToolPayload("args", tool.args),
+    ToolPayload("partial", tool.partialResult),
+    ToolPayload("result", tool.result),
   );
 }
 

@@ -6,13 +6,14 @@ import { api } from "./api.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
 import { loadSelectedGlobalFile, loadSelectedWorkspaceFile } from "./settings.js";
-import { state } from "./state.js";
+import { state, syncReadMarks } from "./state.js";
 import { syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
 /** @typedef {import("./types.js").ToolDetail} ToolDetail */
+/** @typedef {import("./types.js").EventDetails} EventDetails */
 /**
  * @template {UiEvent["type"]} T
  * @typedef {import("./types.js").Ev<T>} Ev
@@ -44,9 +45,25 @@ export function connectEvents() {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
     state.snapshot = payload.snapshot;
     pruneStreams();
+    seedLiveTurn();
+    syncReadMarks();
     syncDarioFromSnapshot();
     syncOlderFromSnapshot();
     markDirty();
+  });
+
+  // Workspace-scoped: another room in this workspace started/finished a turn or
+  // advanced its activity. Refresh the room list so the sidebar's running dot
+  // and unread badge update live even for rooms we're not viewing.
+  source.addEventListener("rooms", (event) => {
+    const payload = /** @type {Ev<"rooms">} */ (JSON.parse(event.data));
+    if (!state.snapshot || state.snapshot.workspace.id !== payload.workspaceId) return;
+    // `isCurrent` in the payload is relative to the EMITTING room's service, not
+    // this client's open room — recompute it against the room we're viewing.
+    const currentId = state.snapshot.room.id;
+    state.snapshot.rooms = payload.rooms.map((room) => ({ ...room, isCurrent: room.id === currentId }));
+    syncReadMarks();
+    markDirty("sidebar", "tabs");
   });
 
   source.addEventListener("room-event", (event) => {
@@ -112,6 +129,7 @@ export function connectEvents() {
     const stream = streamFor(payload);
     if (!stream) return;
     stream.text += payload.delta;
+    appendSpanBlock(stream.details, "text", payload.delta);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -131,6 +149,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.details.thinkingStarted = true;
     stream.details.thinking = `${stream.details.thinking ?? ""}${payload.delta}`;
+    appendSpanBlock(stream.details, "thinking", payload.delta);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -141,6 +160,7 @@ export function connectEvents() {
     if (!stream) return;
     stream.details.thinkingStarted = true;
     if (payload.content && !stream.details.thinking) stream.details.thinking = payload.content;
+    if (payload.content) fillThinkingBlock(stream.details, payload.content);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -149,7 +169,9 @@ export function connectEvents() {
     const payload = /** @type {Ev<"tool-start">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
-    stream.details.tools = [...(stream.details.tools ?? []), toolDetail(payload, "running")];
+    const tool = toolDetail(payload, "running");
+    stream.details.tools = [...(stream.details.tools ?? []), tool];
+    pushToolBlock(stream.details, tool.id);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -173,7 +195,9 @@ export function connectEvents() {
       tool.status = payload.isError ? "error" : "complete";
       tool.result = payload.result;
     } else {
-      stream.details.tools = [...(stream.details.tools ?? []), toolDetail(payload, payload.isError ? "error" : "complete")];
+      const created = toolDetail(payload, payload.isError ? "error" : "complete");
+      stream.details.tools = [...(stream.details.tools ?? []), created];
+      pushToolBlock(stream.details, created.id);
     }
     stream.version += 1;
     markDirty("transcript");
@@ -222,6 +246,8 @@ async function resyncSnapshot(workspaceId) {
     state.snapshot = body.snapshot;
     state.voice = body.voice ?? null;
     pruneStreams();
+    seedLiveTurn();
+    syncReadMarks();
     syncOlderFromSnapshot();
     markDirty();
   } catch {
@@ -295,6 +321,51 @@ function findTool(stream, toolCallId, toolName) {
   return [...tools].reverse().find((tool) => tool.toolName === toolName && tool.status === "running");
 }
 
+// --- Ordered block timeline (mirrors `recordBlockEvent` in src/services/turns.ts
+// and RoomService.applyLiveTurn). These build details.blocks so the live stream
+// renders text/thinking/tool segments inline in the exact order they arrived,
+// and hands off seamlessly to the identically-built committed event. Keep the
+// three folders in lockstep. ------------------------------------------------
+
+/**
+ * Append a text/thinking span, coalescing into the current block when the kind
+ * matches and opening a new one when it changes (so thinking that resumes after
+ * a tool call becomes its own block).
+ * @param {EventDetails} details
+ * @param {"text"|"thinking"} kind
+ * @param {string} delta
+ */
+function appendSpanBlock(details, kind, delta) {
+  const blocks = (details.blocks ??= []);
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === kind) last.text += delta;
+  else blocks.push({ kind, text: delta });
+}
+
+/**
+ * Thinking delivered whole (summary content, no deltas): fill the current empty
+ * thinking block or open one. If deltas already built it, keep their text.
+ * @param {EventDetails} details
+ * @param {string} content
+ */
+function fillThinkingBlock(details, content) {
+  const blocks = (details.blocks ??= []);
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === "thinking") {
+    if (!last.text) last.text = content;
+  } else {
+    blocks.push({ kind: "thinking", text: content });
+  }
+}
+
+/**
+ * @param {EventDetails} details
+ * @param {string} id A tools[] row id — the block references it.
+ */
+function pushToolBlock(details, id) {
+  (details.blocks ??= []).push({ kind: "tool", id });
+}
+
 /** @param {import("./types.js").Task|undefined} task */
 function upsertTask(task) {
   if (!state.snapshot || !task || task.roomId !== state.snapshot.room.id) return;
@@ -302,6 +373,35 @@ function upsertTask(task) {
   const index = tasks.findIndex((candidate) => candidate.id === task.id);
   if (index === -1) tasks.push(task);
   else tasks[index] = task;
+}
+
+/**
+ * Re-seed the in-flight stream buffer from a snapshot's `liveTurn`. The server
+ * mirrors the running turn's accumulated view (text + thinking + tools) onto
+ * every snapshot, so after a room switch — which clears `state.streams` and
+ * opens a fresh SSE subscription that only carries NEW deltas — the running
+ * turn renders immediately instead of a blank until it commits. Absolute and
+ * monotonic: only overwrites when the snapshot carries at least as much text as
+ * a live entry already holds, so a stale snapshot can't rewind live deltas.
+ */
+export function seedLiveTurn() {
+  const snapshot = state.snapshot;
+  const live = snapshot?.room?.liveTurn;
+  if (!live) return;
+  // Already committed → it's in the transcript; nothing to mirror.
+  if (snapshot.room.events.some((event) => event.id === live.eventId)) return;
+  const existing = state.streams.get(live.eventId);
+  if (existing && existing.text.length > live.text.length) return;
+  state.streams.set(live.eventId, {
+    id: live.eventId,
+    taskId: live.taskId,
+    author: live.agentId,
+    startedAt: live.startedAt,
+    text: live.text,
+    details: live.details ?? {},
+    version: (existing?.version ?? 0) + 1,
+  });
+  markDirty("transcript");
 }
 
 /**

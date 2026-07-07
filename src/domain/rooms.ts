@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ContextGatePending, EventDetails, MessageAttachment, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import type { ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -98,16 +98,34 @@ function toolDetail(value: unknown): ToolDetail | undefined {
   };
 }
 
+function messageBlocks(value: unknown): MessageBlock[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const blocks: MessageBlock[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+    if (raw.kind === "tool") {
+      if (typeof raw.id === "string" && raw.id.length > 0) blocks.push({ kind: "tool", id: raw.id });
+    } else if (raw.kind === "text" || raw.kind === "thinking") {
+      // Drop empty text/thinking spans — they carry nothing to render and only
+      // arise transiently while streaming.
+      if (typeof raw.text === "string" && raw.text.length > 0) blocks.push({ kind: raw.kind, text: raw.text });
+    }
+  }
+  return blocks.length > 0 ? blocks : undefined;
+}
+
 export function eventDetailsFrom(value: unknown): EventDetails | undefined {
   if (!isRecord(value)) return undefined;
   const tools = Array.isArray(value.tools) ? value.tools.map(toolDetail).filter((t): t is NonNullable<typeof t> => Boolean(t)) : undefined;
+  const blocks = messageBlocks(value.blocks);
   const details: EventDetails = {
     ...(typeof value.model === "string" && value.model.length > 0 ? { model: value.model } : {}),
     ...(value.thinkingStarted === true ? { thinkingStarted: true } : {}),
     ...(typeof value.thinking === "string" && value.thinking.length > 0 ? { thinking: value.thinking } : {}),
     ...(tools && tools.length > 0 ? { tools } : {}),
+    ...(blocks ? { blocks } : {}),
   };
-  return details.model || details.thinkingStarted || details.thinking || details.tools?.length ? details : undefined;
+  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length ? details : undefined;
 }
 
 function attachmentsFrom(value: unknown): MessageAttachment[] | undefined {

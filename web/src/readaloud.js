@@ -21,6 +21,7 @@ import { state } from "./state.js";
  * @typedef {Object} ChunkSession
  * @property {"chunk"} kind
  * @property {string} eventId
+ * @property {{workspaceId: string, roomId: string}} origin room the message lives in
  * @property {number} total
  * @property {(string|undefined)[]} urls
  * @property {Map<number, Promise<string>>} pending
@@ -35,6 +36,7 @@ import { state } from "./state.js";
  * @typedef {Object} StreamSession
  * @property {"stream"} kind
  * @property {string} eventId
+ * @property {{workspaceId: string, roomId: string}} origin room the message lives in
  * @property {boolean} stopped
  * @property {AbortController} controller
  * @property {AudioContext|null} ctx
@@ -86,7 +88,7 @@ export function stopReadAloud() {
   }
   if (state.readAloud) {
     state.readAloud = null;
-    markDirty("transcript");
+    markDirty("transcript", "status");
   }
 }
 
@@ -98,10 +100,14 @@ async function startReadAloud(eventId) {
 
   const base = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}`;
   const chunkEndpoint = `${base}/read-aloud`;
+  // Bind this playback to the room it started in — the endpoints are captured
+  // here, so switching rooms mid-playback never re-points fetches, and the
+  // now-playing chip can jump back to this exact room+message.
+  const origin = { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id };
 
   // Instant replay of a message we already streamed chunk audio for (batch path).
   if (audioCache.has(eventId)) {
-    await runChunkSession(eventId, chunkEndpoint);
+    await runChunkSession(eventId, chunkEndpoint, origin);
     return;
   }
 
@@ -110,10 +116,10 @@ async function startReadAloud(eventId) {
   // back to the per-chunk path below.
   const controller = new AbortController();
   /** @type {StreamSession} */
-  const stream = { kind: "stream", eventId, stopped: false, controller, ctx: null, sources: [] };
+  const stream = { kind: "stream", eventId, origin, stopped: false, controller, ctx: null, sources: [] };
   session = stream;
-  state.readAloud = { eventId, phase: "loading" };
-  markDirty("transcript");
+  state.readAloud = { eventId, phase: "loading", ...origin };
+  markDirty("transcript", "status");
 
   try {
     const response = await fetch(`${base}/read-aloud/stream`, {
@@ -134,7 +140,7 @@ async function startReadAloud(eventId) {
     // Batch engine: hand off to the unchanged per-chunk path.
     const info = await response.json().catch(() => ({}));
     const total = Number.isInteger(info?.chunks) && info.chunks > 0 ? info.chunks : undefined;
-    await runChunkSession(eventId, chunkEndpoint, total);
+    await runChunkSession(eventId, chunkEndpoint, origin, total);
   } catch (error) {
     if (stream.stopped) return;
     stopReadAloud();
@@ -217,8 +223,8 @@ async function playPcmStream(current, response) {
     if (!started) {
       started = true;
       if (state.readAloud?.eventId === current.eventId && state.readAloud.phase !== "playing") {
-        state.readAloud = { eventId: current.eventId, phase: "playing" };
-        markDirty("transcript");
+        state.readAloud = { eventId: current.eventId, phase: "playing", ...current.origin };
+        markDirty("transcript", "status");
       }
     }
   }
@@ -237,14 +243,16 @@ async function playPcmStream(current, response) {
  * prefetching the next while the current speaks.
  * @param {string} eventId
  * @param {string} endpoint
+ * @param {{workspaceId: string, roomId: string}} origin room the message lives in
  * @param {number} [knownTotal] chunk count from the mode probe, if known
  */
-async function runChunkSession(eventId, endpoint, knownTotal) {
+async function runChunkSession(eventId, endpoint, origin, knownTotal) {
   const cached = audioCache.get(eventId);
   /** @type {ChunkSession} */
   const current = {
     kind: "chunk",
     eventId,
+    origin,
     total: cached?.total ?? knownTotal ?? Number.POSITIVE_INFINITY,
     urls: cached ? [...cached.urls] : [],
     pending: new Map(),
@@ -253,8 +261,8 @@ async function runChunkSession(eventId, endpoint, knownTotal) {
     stopped: false,
   };
   session = current;
-  state.readAloud = { eventId, phase: current.urls[0] ? "playing" : "loading" };
-  markDirty("transcript");
+  state.readAloud = { eventId, phase: current.urls[0] ? "playing" : "loading", ...origin };
+  markDirty("transcript", "status");
 
   try {
     for (let index = 0; index < current.total && !current.stopped; index++) {
@@ -263,8 +271,8 @@ async function runChunkSession(eventId, endpoint, knownTotal) {
       // The next chunk downloads/synthesizes while this one speaks.
       if (index + 1 < current.total) void fetchChunk(current, endpoint, index + 1).catch(() => {});
       if (state.readAloud?.eventId === eventId && state.readAloud.phase !== "playing") {
-        state.readAloud = { eventId, phase: "playing" };
-        markDirty("transcript");
+        state.readAloud = { eventId, phase: "playing", ...origin };
+        markDirty("transcript", "status");
       }
       await playUrl(current, url);
     }

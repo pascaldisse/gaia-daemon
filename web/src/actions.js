@@ -2,11 +2,10 @@
 // the API, update state, and mark the affected regions. Views never mutate
 // state directly.
 import { api } from "./api.js";
-import { connectEvents } from "./events.js";
-import { stopReadAloud } from "./readaloud.js";
+import { connectEvents, seedLiveTurn } from "./events.js";
 import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
-import { activeTask, runningSummonRooms, state } from "./state.js";
+import { activeTask, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
@@ -17,6 +16,8 @@ async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
   state.snapshot = body.snapshot ?? null;
   state.streams.clear();
+  seedLiveTurn();
+  syncReadMarks();
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.globalFiles = body.globalFiles ?? state.globalFiles;
@@ -46,6 +47,8 @@ export async function loadApp(currentWorkspaceId) {
 function applySnapshotPayload(body) {
   state.snapshot = body.snapshot;
   state.streams.clear();
+  seedLiveTurn();
+  syncReadMarks();
   // Workspace/room switch: paged-in older history belongs to the old room.
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
   state.workspaceFiles = body.workspaceFiles ?? [];
@@ -94,7 +97,9 @@ export async function addWorkspace() {
 /** @param {string} workspaceId @param {string} roomId */
 export async function selectRoom(workspaceId, roomId) {
   try {
-    stopReadAloud();
+    // Read-aloud deliberately keeps playing across a room switch — it only
+    // stops when you play another message (or hit stop from the status-bar
+    // now-playing chip). So no stopReadAloud() here.
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/select`, {
       method: "POST",
       body: "{}",

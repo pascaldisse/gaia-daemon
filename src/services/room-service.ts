@@ -30,6 +30,7 @@ import type {
   CompactProgress,
   ContextGatePending,
   EventDetails,
+  LiveTurn,
   MessageAttachment,
   ModelFallback,
   PendingTurn,
@@ -51,7 +52,7 @@ import { capabilitiesFor, contextWindowFor, harnessIdFor, nativeCommandsFor } fr
 import { renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
-import { runAgentTurn } from "./turns.js";
+import { applyEventToDetails, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, isTrusted, type SummonHost } from "./summons.js";
@@ -243,6 +244,13 @@ export class RoomService {
   private modelFallbacks: Record<string, ModelFallback> = {};
   /** Latest harness-reported context accounting per agent (transient). */
   private contextUsage: Record<string, { usedTokens: number; maxTokens?: number }> = {};
+  /** The running turn's accumulated view (text + thinking + tools so far),
+   * mirrored on the snapshot so a client that (re)subscribes mid-turn — the
+   * common case of switching rooms while an agent works — renders it instantly
+   * instead of a blank until commit. Fed from the ONE onEvent sink below, so it
+   * applies to every harness with zero harness branches (RULE #0). Cleared on
+   * commit/failure/cancel; the durable resume record is PendingTurn.partialReply. */
+  private liveTurn: LiveTurn | undefined;
   /** A held first turn awaiting the human's context-size choice (durable copy in
    * state.contextGate); surfaced on the snapshot to drive the modal. */
   private contextGate: ContextGatePending | undefined;
@@ -484,6 +492,7 @@ export class RoomService {
     this.activeTask = task;
     this.activeAgentTurn = task;
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+    void this.emitRoomsChanged();
 
     void this.runAgentTask(task, text, options).catch((error) => {
       if (this.taskCancelled(task)) return;
@@ -797,6 +806,8 @@ export class RoomService {
         ...(channel ? { channel } : {}),
         startedAt: new Date().toISOString(),
       });
+      // Seed the live-turn mirror so a mid-turn (re)subscribe renders it at once.
+      this.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
       let lastFlush = 0;
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
@@ -843,6 +854,7 @@ export class RoomService {
                 })
                 .catch(() => {});
             }
+            this.applyLiveTurn(eventId, event);
             this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
             if (event.type === "tool-end") {
               this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
@@ -860,6 +872,7 @@ export class RoomService {
         // clear the marker (never replay a terminally-failed turn — poison pill).
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
+        this.liveTurn = undefined;
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel, nextCursor);
         else await this.room.clearPendingTurn();
         await this.captureEpisode(target, text, partial, "error", {}, channel);
@@ -873,6 +886,8 @@ export class RoomService {
       // Cancelled or completed: both commit what was produced. A user cancel is
       // a deliberate stop, so the marker clears either way (commit does it).
       const reply = turn.reply.trim();
+      // The committed room-event now carries the reply; the live mirror is spent.
+      this.liveTurn = undefined;
       if (reply) await this.commitReply(target, eventId, reply, turn.details, channel, nextCursor);
       else await this.room.clearPendingTurn();
 
@@ -1907,6 +1922,7 @@ export class RoomService {
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
+        ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
       },
       rooms: await this.listRooms(),
       commands: this.paletteCommands(),
@@ -1975,9 +1991,14 @@ export class RoomService {
               path: join(roomsDir, entry.name),
               isCurrent: entry.name === this.roomId,
               ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-              ...(running.has(entry.name) ? { running: true } : {}),
+              // Running = a turn is mid-flight: the durable WAL marker (covers
+              // every room, not only summons), a live summon, or — for THIS
+              // service's own room — its in-memory turn (the marker is written a
+              // tick later, so this closes the start-of-turn gap).
+              ...(state.pendingTurn || running.has(entry.name) || (entry.name === this.roomId && this.activeAgentTurn) ? { running: true } : {}),
               ...(state.title ? { title: state.title } : {}),
               ...(state.imported ? { imported: state.imported } : {}),
+              ...(activity ? { lastActivity: activity } : {}),
             },
           };
         }),
@@ -2085,6 +2106,7 @@ export class RoomService {
       this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
     }
     void this.emitSnapshot();
+    void this.emitRoomsChanged();
     void this.drain();
   }
 
@@ -2102,6 +2124,19 @@ export class RoomService {
       cwd: this.workspace.rootDir,
       log: (message) => console.warn(`[gaia] ${message}`),
     });
+  }
+
+  /** Fold one streamed AgentEvent into the live-turn mirror. Delegates to the
+   * SAME `applyEventToDetails` folder that builds the committed event's details
+   * (turns.ts) — one shared implementation, so the mid-turn snapshot mirror, the
+   * live client stream, and the final committed event agree by construction
+   * (text + thinking + tools + ordered blocks). Guarded on eventId so a stray
+   * event from a prior target can't bleed in. */
+  private applyLiveTurn(eventId: string, event: AgentEvent): void {
+    const live = this.liveTurn;
+    if (!live || live.eventId !== eventId) return;
+    if (event.type === "text-delta") live.text += event.delta;
+    applyEventToDetails(live.details, event);
   }
 
   private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent {
@@ -2136,6 +2171,18 @@ export class RoomService {
 
   private emit(event: UiEvent): void {
     this.bus.emit(event);
+  }
+
+  /** Broadcast the workspace's room list to EVERY client in the workspace (no
+   * roomId scope), so a sidebar updates a room's running dot / unread badge even
+   * when that room isn't the one being viewed — the per-room SSE only carries
+   * the open room's own events. Best-effort chrome; never breaks a turn. */
+  private async emitRoomsChanged(): Promise<void> {
+    try {
+      this.emit({ type: "rooms", workspaceId: this.workspaceId, rooms: await this.listRooms() });
+    } catch {
+      // A rooms refresh is decorative; a failed disk read must not surface.
+    }
   }
 
   private unknownAgentMessage(agentId: string): string {

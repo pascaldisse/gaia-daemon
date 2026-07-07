@@ -2,12 +2,15 @@
 // banner, and the signature powerline status bar. Every segment is one fact
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
+import { selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
+import { stopReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openSearch } from "./search.js";
 import { state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
+import { jumpToEvent } from "./transcript.js";
 
 /** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
 
@@ -86,6 +89,19 @@ function renderStatusbar() {
     segs.push({ text: "no workspace", cls: "seg-head" });
   }
   segs.push({ spacer: true });
+  // Read-aloud "now playing": a message may keep speaking after you switch
+  // rooms, so a lit chip shows which room it's in — click to jump to that
+  // message, ■ to stop. Absent when nothing is playing.
+  const playing = state.readAloud;
+  if (playing) {
+    segs.push({
+      text: `▶ ${shortRoom(playing.roomId)}`,
+      cls: `seg-nowplaying on${playing.phase === "loading" ? " loading" : ""}`,
+      title: `playing a message in ${playing.roomId} — click to jump to it`,
+      onclick: () => void jumpToPlaying(playing),
+    });
+    segs.push({ text: "■", cls: "seg-nowplaying stop on", title: "stop playback", onclick: stopReadAloud });
+  }
   const theme = themeById(currentThemeId());
   segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
   segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
@@ -109,6 +125,24 @@ function renderStatusbar() {
 export function clockText() {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Short room label for the now-playing chip (room ids can be long imports).
+ * @param {string} id */
+function shortRoom(id) {
+  return id.length > 14 ? `${id.slice(0, 13)}…` : id;
+}
+
+/** Jump to the room+message the read-aloud chip points at: switch rooms if
+ * needed, then scroll the message into view and flash it (same landing as a
+ * chat-search hit).
+ * @param {NonNullable<typeof state.readAloud>} playing */
+async function jumpToPlaying(playing) {
+  const snapshot = state.snapshot;
+  if (!snapshot || snapshot.workspace.id !== playing.workspaceId || snapshot.room.id !== playing.roomId) {
+    await selectRoom(playing.workspaceId, playing.roomId);
+  }
+  await jumpToEvent(playing.eventId);
 }
 
 // ---------------------------------------------------------------------------

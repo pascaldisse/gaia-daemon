@@ -50,7 +50,7 @@
  *   voicePendingAgentId: string|null,
  *   voiceStatusText: string,
  *   micMuted: boolean,
- *   readAloud: {eventId: string, phase: "loading"|"playing"}|null,
+ *   readAloud: {eventId: string, phase: "loading"|"playing", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
  *   search: {open: boolean, scope: "chatwide"|"room", query: string, workspace: string, hits: ChatSearchHit[], degraded: string[], loading: boolean, seq: number, active: number, highlightEventId: string},
@@ -59,6 +59,7 @@
  *   addAgentId: string,
  *   addAgentName: string,
  *   addAgentError: string,
+ *   readMarks: Record<string, number>,
  * }}
  */
 export const state = {
@@ -134,7 +135,68 @@ export const state = {
   addAgentId: "",
   addAgentName: "",
   addAgentError: "",
+  // Per-room "last activity seen" marks for the sidebar unread badge, keyed
+  // "<workspaceId>::<roomId>". Persisted so unread survives a reload. A room
+  // reads as unread when its lastActivity exceeds the mark captured while it
+  // was last open (see syncReadMarks / roomUnread).
+  readMarks: loadReadMarks(),
 };
+
+/** @param {string} workspaceId @param {string} roomId */
+function readMarkKey(workspaceId, roomId) {
+  return `${workspaceId}::${roomId}`;
+}
+
+/** @returns {Record<string, number>} */
+function loadReadMarks() {
+  try {
+    return JSON.parse(localStorage.getItem("gaia.readMarks") ?? "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function persistReadMarks() {
+  try {
+    localStorage.setItem("gaia.readMarks", JSON.stringify(state.readMarks));
+  } catch {
+    // Private mode / quota — unread just won't survive a reload.
+  }
+}
+
+/**
+ * Baseline any room seen for the first time (so nothing is retroactively marked
+ * unread on load) and advance the current room's mark to its latest activity —
+ * viewing a room IS reading it. Call after any snapshot / rooms update.
+ */
+export function syncReadMarks() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const ws = snapshot.workspace.id;
+  let changed = false;
+  for (const room of snapshot.rooms ?? []) {
+    const key = readMarkKey(ws, room.id);
+    const activity = room.lastActivity ?? 0;
+    if (state.readMarks[key] === undefined) {
+      state.readMarks[key] = activity;
+      changed = true;
+    } else if (room.isCurrent && state.readMarks[key] < activity) {
+      state.readMarks[key] = activity;
+      changed = true;
+    }
+  }
+  if (changed) persistReadMarks();
+}
+
+/** A room has unread agent activity: newer than what we saw while it was open.
+ * The room being viewed is never unread.
+ * @param {RoomSummary} room @returns {boolean} */
+export function roomUnread(room) {
+  const snapshot = state.snapshot;
+  if (room.isCurrent || !snapshot) return false;
+  const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
+  return (room.lastActivity ?? 0) > mark;
+}
 
 /** @param {Snapshot|null} [snapshot] @returns {Task|null} */
 export function activeTask(snapshot = state.snapshot) {
