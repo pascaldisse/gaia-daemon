@@ -845,7 +845,10 @@ export class RoomService {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
             }
             if (event.type === "context-usage") {
-              const usage = { usedTokens: event.usedTokens, ...(event.maxTokens ? { maxTokens: event.maxTokens } : {}) };
+              // The window (maxTokens) only rides the turn-end event; keep the
+              // last-known one so mid-turn updates still render a live % chip.
+              const maxTokens = event.maxTokens ?? this.contextUsage[target]?.maxTokens;
+              const usage = { usedTokens: event.usedTokens, ...(maxTokens ? { maxTokens } : {}) };
               this.contextUsage[target] = usage;
               // Persist durably (best-effort) so the chip survives a restart.
               void this.room

@@ -499,6 +499,16 @@ export class ClaudeRuntime implements AgentRuntime {
       channel.push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
     };
 
+    // Context footprint = input + both cache fields (output excluded — the CLI's
+    // own statusline formula). Emitted per assistant round-trip so the ctx chip
+    // grows DURING the turn, not only at result. The window size (maxTokens) only
+    // arrives on result.modelUsage; the shared layer keeps the last-known window
+    // so the % stays live on the mid-turn events that can't carry it.
+    const pushContextUsage = (usage: ClaudeUsage, maxTokens?: number): void => {
+      const used = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+      channel.push({ type: "context-usage", usedTokens: used, ...(maxTokens ? { maxTokens } : {}) });
+    };
+
     const onMessage = (raw: unknown): void => {
       const msg = raw as { type?: string };
       switch (msg.type) {
@@ -563,7 +573,10 @@ export class ClaudeRuntime implements AgentRuntime {
 
         case "assistant": {
           const usage = (raw as { message?: { usage?: ClaudeUsage } }).message?.usage;
-          if (usage) lastUsage = usage;
+          if (usage) {
+            lastUsage = usage;
+            pushContextUsage(usage); // live ctx as each round-trip lands
+          }
           // Tool calls: emit tool-start from completed tool_use blocks (full
           // input). Text/thinking already streamed via stream_event, so skip.
           const content = (raw as { message?: { content?: unknown } }).message?.content;
@@ -604,12 +617,10 @@ export class ClaudeRuntime implements AgentRuntime {
             modelUsage?: Record<string, { contextWindow?: number }>;
           };
           if (lastUsage) {
-            const used =
-              (lastUsage.input_tokens ?? 0) + (lastUsage.cache_creation_input_tokens ?? 0) + (lastUsage.cache_read_input_tokens ?? 0);
             const windows = Object.values(res.modelUsage ?? {})
               .map((m) => m.contextWindow)
               .filter((n): n is number => typeof n === "number");
-            channel.push({ type: "context-usage", usedTokens: used, ...(windows.length ? { maxTokens: Math.max(...windows) } : {}) });
+            pushContextUsage(lastUsage, windows.length ? Math.max(...windows) : undefined);
           }
           if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
             channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));

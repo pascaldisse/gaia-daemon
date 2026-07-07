@@ -424,9 +424,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* Without a model-tag pulling right, push the actions + time to the edge. */
 .message-meta .msg-action:first-of-type { margin-left: auto; }
 .message-meta .model-tag ~ .msg-action { margin-left: 8px; }
-/* Read-aloud stays visible while loading or speaking, not just on hover. */
+/* Read-aloud stays visible while it is the active message (loading, speaking,
+   paused, or ended-and-replayable), not just on hover. */
 .msg-action.ra-loading,
-.msg-action.ra-playing { opacity: 1; color: var(--accent); }
+.msg-action.ra-playing,
+.msg-action.ra-paused,
+.msg-action.ra-ended { opacity: 1; color: var(--accent); }
 .msg-action.ra-loading { animation: ra-pulse 1s ease-in-out infinite; }
 @keyframes ra-pulse {
   50% { opacity: 0.35; }
@@ -608,6 +611,86 @@ body.resizing { cursor: col-resize; user-select: none; }
   100% { margin-left: 100%; }
 }
 .agent-main .compact-bar { grid-column: 2; margin-top: 4px; }
+
+/* Read-aloud mini player: play/pause + a clickable, draggable timeline with a
+   thumb + current/total time. Sits above the running banner; matches its
+   accent-tinted strip look. */
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-bottom: none;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  font-size: 0.85em;
+}
+.audio-player .ap-toggle {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.audio-player .ap-toggle:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.audio-player .ap-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; }
+.audio-player .ap-time.ap-dur { text-align: right; }
+.audio-player .ap-track {
+  flex: 1;
+  position: relative;
+  height: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  touch-action: none;
+}
+/* The unfilled rail is a thin centred line the played fill and thumb ride on. */
+.audio-player .ap-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.audio-player .ap-played {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.audio-player .ap-thumb {
+  position: absolute;
+  left: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+/* "still generating" badge: the stream length is provisional until synthesis
+   finishes (claude-voice generates at ~speaking speed), so a partial total is
+   marked live instead of looking truncated. */
+.audio-player .ap-live { flex: none; color: var(--warn, var(--accent)); font-size: 0.8em; letter-spacing: 0.03em; animation: ra-pulse 1.1s ease-in-out infinite; }
+/* While generating, the unfilled rail shimmers so it reads as "still filling". */
+.audio-player.generating .ap-track::before { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, var(--accent) 40%, transparent), color-mix(in srgb, var(--accent) 22%, transparent)); background-size: 200% 100%; animation: compact-slide 1.4s linear infinite; }
+.audio-player .ap-regen { flex: none; padding: 2px 7px; color: var(--muted); border: 1px solid var(--muted); background: transparent; border-radius: 3px; cursor: pointer; font-size: 1.05em; line-height: 1; }
+.audio-player .ap-regen:hover { color: var(--accent); border-color: var(--accent); }
+.audio-player .ap-stop { flex: none; padding: 2px 8px; color: var(--muted); border: 1px solid var(--muted); background: transparent; border-radius: 3px; cursor: pointer; }
+.audio-player .ap-stop:hover { color: var(--danger); border-color: var(--danger); }
+/* While the first synthesis is still buffering (no known duration yet), pulse
+   the played fill so the strip reads as "working". */
+.audio-player.loading .ap-played { width: 100% !important; animation: compact-slide 1.2s ease-in-out infinite; }
+.audio-player.loading .ap-thumb { display: none; }
 
 .thinking-wrap, .thinking-inner { position: relative; }
 
@@ -874,6 +957,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .seg-nowplaying { --seg-bg: var(--bg3); color: var(--good); cursor: pointer; font-weight: 600; animation: nowplaying-pulse 1.6s ease-in-out infinite; }
 .seg-nowplaying:hover { color: var(--fg); }
 .seg-nowplaying.loading { color: var(--muted); }
+.seg-nowplaying.idle { color: var(--accent); animation: none; }
 .seg-nowplaying.stop { color: var(--danger); font-weight: 700; animation: none; }
 .seg-nowplaying.stop:hover { color: var(--fg); }
 

@@ -731,7 +731,7 @@ export class Daemon {
   /** Read one committed agent message aloud: resolve the author's TTS engine +
    * voice, format the text for speech, and return one chunk of the audio
    * (cached on disk; the result carries the chunk count for the client). */
-  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0): Promise<ReadAloudResult> {
+  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0, regenerate = false): Promise<ReadAloudResult> {
     const service = await this.serviceFor(workspaceId, roomId);
     const event = await service.eventById(eventId);
     if (!event) throw new Error(`Unknown event: ${eventId}`);
@@ -741,6 +741,7 @@ export class Daemon {
       agent: service.workspace.agents[event.author],
       settings,
       chunk,
+      regenerate,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
       log: (message) => this.log(message),
     });
@@ -750,7 +751,7 @@ export class Daemon {
    * continuous PCM pass played frame-by-frame (mode "stream"); for batch-only
    * engines (local TTS), mode "chunks" so the client keeps the per-chunk path.
    * The author's engine decides — this method never branches on the engine. */
-  async readAloudStream(workspaceId: string, roomId: string, eventId: string): Promise<ReadAloudDelivery> {
+  async readAloudStream(workspaceId: string, roomId: string, eventId: string, regenerate = false): Promise<ReadAloudDelivery> {
     const service = await this.serviceFor(workspaceId, roomId);
     const event = await service.eventById(eventId);
     if (!event) throw new Error(`Unknown event: ${eventId}`);
@@ -759,6 +760,7 @@ export class Daemon {
       event,
       agent: service.workspace.agents[event.author],
       settings,
+      regenerate,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
       log: (message) => this.log(message),
     });

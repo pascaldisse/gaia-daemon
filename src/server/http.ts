@@ -550,8 +550,9 @@ export class GaiaWebServer {
       if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
       const chunkRaw = body && typeof body === "object" ? (body as Record<string, unknown>).chunk : undefined;
       const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
+      const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
       try {
-        const audio = await this.daemon.readAloud(params[0], params[1], eventId.trim(), chunk);
+        const audio = await this.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate);
         response.writeHead(200, {
           "content-type": audio.contentType,
           "content-length": audio.audio.length,
@@ -579,9 +580,10 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const eventId = stringField(body, "eventId");
       if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
+      const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
       let delivery: ReadAloudDelivery;
       try {
-        delivery = await this.daemon.readAloudStream(params[0], params[1], eventId.trim());
+        delivery = await this.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return json(

@@ -105,7 +105,10 @@ export function connectEvents() {
     const payload = /** @type {Ev<"context-usage">} */ (JSON.parse(event.data));
     const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
     if (!agent) return;
-    agent.context = { usedTokens: payload.usedTokens, ...(payload.maxTokens ? { maxTokens: payload.maxTokens } : {}) };
+    // Mid-turn events carry only usedTokens; the window rides the turn-end event.
+    // Keep the last-known maxTokens so the ctx % chip stays live during the turn.
+    const maxTokens = payload.maxTokens ?? agent.context?.maxTokens;
+    agent.context = { usedTokens: payload.usedTokens, ...(maxTokens ? { maxTokens } : {}) };
     markDirty("composer");
   });
 

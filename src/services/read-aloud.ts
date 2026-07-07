@@ -450,6 +450,10 @@ export interface ReadAloudRequest {
   chunk?: number;
   /** Cache directory override (tests); default ~/.gaia/cache/tts. */
   cacheDir?: string;
+  /** Skip the cache READ and re-synthesize, overwriting the entry — the "regen"
+   * button, for when a cached clip is bad (e.g. an old truncated stream). The
+   * write path is unchanged, so the fresh audio replaces the stale one. */
+  regenerate?: boolean;
 }
 
 export interface ReadAloudResult extends TtsAudio {
@@ -473,8 +477,10 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
   const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const key = ttsCacheKey(engine.id, voice, chunks[index]);
-  const cached = await readCachedAudio(cacheDir, key);
-  if (cached) return { ...cached, chunks: chunks.length, chunk: index };
+  if (!request.regenerate) {
+    const cached = await readCachedAudio(cacheDir, key);
+    if (cached) return { ...cached, chunks: chunks.length, chunk: index };
+  }
 
   const result = await engine.synthesize({
     text: chunks[index],
@@ -544,8 +550,10 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
 
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const key = ttsCacheKey(`${engine.id}:stream`, voice, text);
-  const cached = await readCachedPcm(cacheDir, key);
-  if (cached) return { mode: "stream", format: cached.format, frames: framesFromBuffer(cached.pcm) };
+  if (!request.regenerate) {
+    const cached = await readCachedPcm(cacheDir, key);
+    if (cached) return { mode: "stream", format: cached.format, frames: framesFromBuffer(cached.pcm) };
+  }
 
   const stream = await engine.synthesizeStream({
     text,

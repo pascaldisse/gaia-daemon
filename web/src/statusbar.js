@@ -94,10 +94,14 @@ function renderStatusbar() {
   // message, ■ to stop. Absent when nothing is playing.
   const playing = state.readAloud;
   if (playing) {
+    // Only "playing"/"loading" pulse; a paused or ended message keeps a steady
+    // chip so you can still jump to it (its player stays up by the composer).
+    const icon = playing.phase === "loading" ? "◌" : playing.phase === "playing" ? "▶" : playing.phase === "paused" ? "⏸" : "⏹";
+    const idle = playing.phase === "paused" || playing.phase === "ended";
     segs.push({
-      text: `▶ ${shortRoom(playing.roomId)}`,
-      cls: `seg-nowplaying on${playing.phase === "loading" ? " loading" : ""}`,
-      title: `playing a message in ${playing.roomId} — click to jump to it`,
+      text: `${icon} ${shortRoom(playing.roomId)}`,
+      cls: `seg-nowplaying on${playing.phase === "loading" ? " loading" : ""}${idle ? " idle" : ""}`,
+      title: `read-aloud in ${playing.roomId} — click to jump to it`,
       onclick: () => void jumpToPlaying(playing),
     });
     segs.push({ text: "■", cls: "seg-nowplaying stop on", title: "stop playback", onclick: stopReadAloud });

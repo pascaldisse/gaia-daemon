@@ -11,7 +11,8 @@ import { api } from "./api.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { markDirty, registerRegion, setError } from "./render.js";
-import { isBusy, state } from "./state.js";
+import { buildAudioPlayer } from "./readaloud.js";
+import { isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
@@ -96,6 +97,10 @@ export function initComposer() {
 
   form.replaceChildren(
     autocompleteEl,
+    // The read-aloud mini player (play/pause + seekable timeline). Built once and
+    // driven by readaloud.js; sits above the running banner, hidden until a
+    // message is played.
+    buildAudioPlayer(),
     bannerEl,
     editBannerEl,
     attachmentsEl,
@@ -422,7 +427,7 @@ function AutocompleteRows(completion) {
 function runningLabel(snapshot) {
   const agents = (snapshot?.agents ?? []).filter((agent) => agent.status === "running").map((agent) => `@${agent.id}`);
   const compacting = (snapshot?.agents ?? []).filter((agent) => agent.status === "compacting");
-  const summons = (snapshot?.rooms ?? []).filter((room) => room.running).length;
+  const summons = runningSummonRooms(snapshot).length;
   const queued = (snapshot?.tasks ?? []).filter((task) => task.status === "queued").length;
   const parts = [];
   if (agents.length) parts.push(agents.join(", "));

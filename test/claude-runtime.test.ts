@@ -353,7 +353,7 @@ test("ClaudeRuntime maps model_refusal_fallback (safety reroute) and builds a re
   }
 });
 
-test("ClaudeRuntime reports context usage from the last assistant usage + result.modelUsage window", async () => {
+test("ClaudeRuntime reports context usage live per assistant round-trip + result.modelUsage window", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
@@ -374,7 +374,11 @@ test("ClaudeRuntime reports context usage from the last assistant usage + result
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     // input + both cache fields, output excluded — the CLI's own formula.
-    assert.deepEqual(events.find((e) => e.type === "context-usage"), { type: "context-usage", usedTokens: 6_200, maxTokens: 200_000 });
+    const contextEvents = events.filter((e) => e.type === "context-usage");
+    // Live: the assistant round-trip emits ctx immediately (window not yet known)…
+    assert.deepEqual(contextEvents[0], { type: "context-usage", usedTokens: 6_200 });
+    // …and the turn-end event carries the window so the chip can show a %.
+    assert.deepEqual(contextEvents.at(-1), { type: "context-usage", usedTokens: 6_200, maxTokens: 200_000 });
     runtime.dispose();
   } finally {
     await fx.cleanup();

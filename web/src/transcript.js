@@ -450,11 +450,25 @@ function attachmentUrl(file) {
  */
 function ReadAloudButton(eventId) {
   const active = state.readAloud?.eventId === eventId ? state.readAloud : null;
+  const phase = active?.phase;
+  // ◌ loading (click cancels) · ⏸ playing (click pauses) · ▶ idle/paused/ended
+  // (click starts / resumes / replays). The seekable player above the composer
+  // carries the timeline; this button is the quick play/pause.
+  const icon = !phase ? "▶" : phase === "loading" ? "◌" : phase === "playing" ? "⏸" : "▶";
+  const title = !phase
+    ? "read this message aloud"
+    : phase === "loading"
+      ? "generating audio... — click to cancel"
+      : phase === "playing"
+        ? "pause"
+        : phase === "ended"
+          ? "replay"
+          : "resume";
   return h("button", {
     type: "button",
-    class: `msg-action read-aloud ${active ? `ra-${active.phase}` : ""}`,
-    title: active ? (active.phase === "loading" ? "generating audio... — click to cancel" : "stop reading") : "read this message aloud",
-    text: active ? (active.phase === "loading" ? "◌" : "⏹") : "▶",
+    class: `msg-action read-aloud ${active ? `ra-${phase}` : ""}`,
+    title,
+    text: icon,
     onclick: () => toggleReadAloud(eventId),
   });
 }

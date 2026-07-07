@@ -50,7 +50,7 @@
  *   voicePendingAgentId: string|null,
  *   voiceStatusText: string,
  *   micMuted: boolean,
- *   readAloud: {eventId: string, phase: "loading"|"playing", workspaceId: string, roomId: string}|null,
+ *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
  *   search: {open: boolean, scope: "chatwide"|"room", query: string, workspace: string, hits: ChatSearchHit[], degraded: string[], loading: boolean, seq: number, active: number, highlightEventId: string},
@@ -210,7 +210,11 @@ export function activeTask(snapshot = state.snapshot) {
  * @returns {RoomSummary[]}
  */
 export function runningSummonRooms(snapshot = state.snapshot) {
-  return (snapshot?.rooms ?? []).filter((room) => room.running);
+  // A summon is a BACKGROUND sub-room. The room you're viewing is not a summon —
+  // its own streaming turn is represented by the running agent(s), so excluding
+  // it stops the composer from labelling your current turn "1 summon" and stops
+  // the panic stop from cancelling it twice (once as task, once as "summon").
+  return (snapshot?.rooms ?? []).filter((room) => room.running && !room.isCurrent);
 }
 
 /**
