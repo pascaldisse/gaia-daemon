@@ -58,11 +58,14 @@ work** on macOS. Proof in `gaia-cef/tools/installed-embed/FINDINGS-INSTALLED.md`
 ## ✅ DONE / current state (`main`)
 - `main` consolidated: native Tauri shell (`src-tauri/`, WKWebView), loopback-IPC fix,
   background-process tray (`⚙ N bg` chip, live), voice-dictation WIP (`002b6d7`).
-- `gaia-cef` worktree (branch **`feat/engine-modes`**): holds the Milestone A research
-  (`tools/installed-embed/`, `tools/calayer-poc/`, `tools/cdp/`) — kept as reference.
-  This is where the two-mode scaffolding + cef-rs integration is being built.
-- `gaia-mic` worktree (branch `fix/native-mic`): WKWebView microphone-capture fix
-  (Info.plist mic string + audio-input entitlement + WKUIDelegate grant) — in progress.
+- **Two engine modes MERGED to `main`** (`feat/engine-modes`, merge `6a88a71`):
+  `webkit`(default)/`cef` cargo features, `GAIA_ENGINE=cef|webkit` switch, cef-rs
+  Chromium+CDP shell, `src-tauri/MODES.md`. Verified: WebKit ~14 MB (no cef linked),
+  CEF ~307 MB (Chromium 149 + CDP). Milestone A research kept under `tools/`.
+  CEF caveat: standalone cef-rs window + CDP, NOT yet full Tauri runtime (upstream #208).
+- **WKWebView mic fix MERGED to `main`** (`fix/native-mic`, merge `7146462`): mic usage
+  string + audio-input entitlement + WKUIDelegate loopback grant; folded into the
+  webkit path during the engine-modes merge (unified `objc2 0.6.4`).
 - `gaia-dev-app` (`feat/native-app`): the running WKWebView build.
 
 ## 🚧 Hard operating rules (unchanged — enforced)
