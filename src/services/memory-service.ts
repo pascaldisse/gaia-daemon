@@ -38,6 +38,13 @@ import { resolveEmbedder, resolveReranker } from "./embeddings.js";
 
 // Latency guards on the hot path (auto-recall runs before every turn).
 const QUERY_EMBED_TIMEOUT_MS = 800;
+// A search query must fit the embedder's ONE physical batch — a non-causal
+// model processes each input whole, so an over-long query is a hard 500
+// ("input too large"), not a slow embed, and retry-once can't rescue a
+// deterministically-too-long input. ~1200 chars stays under a stock
+// llama-server's 512-token batch even for exotic (byte-fallback) text, and a
+// recall probe longer than this is a context blob that hurts retrieval anyway.
+const QUERY_EMBED_MAX_CHARS = 1_200;
 const EMBED_SYNC_DEBOUNCE_MS = 5_000;
 const INDEX_SYNC_BUDGET_MS = 1_000;
 const SLOW_RECALL_MS = 1_000;
@@ -360,11 +367,15 @@ export class MemoryService {
       if (config === "off") return {};
       return { note: `lexical-only — ${resolved.detail}` };
     }
+    // Bound the query to one physical batch: an over-long probe is a hard 500,
+    // not degradation, and clipping the tail keeps the salient lead of the query.
+    const bounded = query.length > QUERY_EMBED_MAX_CHARS ? query.slice(0, QUERY_EMBED_MAX_CHARS) : query;
     try {
-      const [vec] = await resolved.embedder.embed([query], { timeoutMs: QUERY_EMBED_TIMEOUT_MS, kind: "query" });
+      const [vec] = await resolved.embedder.embed([bounded], { timeoutMs: QUERY_EMBED_TIMEOUT_MS, kind: "query" });
       // A working embedder should also be draining the backfill — nudge the
       // debounced sync so a fresh index converges without waiting for capture.
       this.scheduleEmbedSync(agentId);
+      this.clearEmbedderDegraded();
       return { vec };
     } catch {
       // Evict + retry ONCE in-call: re-resolving re-ensures the sidecar, so an
@@ -374,8 +385,9 @@ export class MemoryService {
       try {
         const retried = await this.embedderFor(agentId);
         if (!retried.embedder) throw new Error(retried.detail);
-        const [vec] = await retried.embedder.embed([query], { timeoutMs: QUERY_EMBED_TIMEOUT_MS, kind: "query" });
+        const [vec] = await retried.embedder.embed([bounded], { timeoutMs: QUERY_EMBED_TIMEOUT_MS, kind: "query" });
         this.scheduleEmbedSync(agentId);
+        this.clearEmbedderDegraded();
         return { vec };
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -383,6 +395,21 @@ export class MemoryService {
         this.embedders.delete(JSON.stringify(config));
         return { note: "lexical-only — query embed failed" };
       }
+    }
+  }
+
+  /** A successful embed proves the sidecar recovered — clear a stale "degraded"
+   * row so the composer chip stops lying. Health is persisted; after a failure
+   * evicts the cache, nothing re-records "ok" until the embedder is next
+   * re-resolved (a cache miss), so a warm-cache recovery would otherwise show
+   * degraded indefinitely. Only rewrites on a real transition. */
+  private clearEmbedderDegraded(): void {
+    try {
+      const db = this.db();
+      const row = readHealth(db).find((r) => r.component === "embedder");
+      if (row?.state === "degraded") setHealth(db, "embedder", "ok", "recovered — query embed succeeded", this.now());
+    } catch {
+      // Health is derived state; never let it break a search.
     }
   }
 

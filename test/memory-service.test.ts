@@ -466,6 +466,38 @@ test("search self-heals an idle-stopped embedder: failed query embed → in-call
   service.dispose();
 });
 
+test("an over-long query is capped to one physical batch: no 'input too large' 500, dense arm survives", async () => {
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  // Stand-in for the non-causal embedder's physical batch: any single input
+  // past this 500s ("input too large"), exactly like the live llama-server did
+  // against a stale 512-batch sidecar. The query cap must keep us under it.
+  const BATCH_CHAR_LIMIT = 1_400;
+  let maxInputLen = 0;
+  const { service } = await makeMemoryService({
+    config: { embeddings: "auto" },
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+    embedderDeps: {
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("embeddings")) {
+          const input = JSON.parse(init!.body as string).input as string[];
+          for (const text of input) maxInputLen = Math.max(maxInputLen, text.length);
+          if (input.some((text) => text.length > BATCH_CHAR_LIMIT)) {
+            return new Response(JSON.stringify({ error: { message: "input too large to process" } }), { status: 500 });
+          }
+          return new Response(JSON.stringify({ data: input.map(() => ({ embedding: [0.1, 0.2, 0.3] })) }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      ensureLocalSidecar: async () => ({ baseUrl: "http://127.0.0.1:4244/v1", model: "embeddinggemma-300m" }),
+    },
+  });
+  const hugeQuery = "marker phrase ".repeat(400); // ~5600 chars, far past any batch
+  const { degraded } = await service.search("gaia", hugeQuery);
+  assert.ok(maxInputLen <= BATCH_CHAR_LIMIT, `every embed input stayed within one batch (saw ${maxInputLen})`);
+  assert.ok(!degraded.some((note) => note.includes("lexical-only")), `the capped query keeps its dense arm (got ${JSON.stringify(degraded)})`);
+  service.dispose();
+});
+
 test("summarizeSearch without an LLM: raw listing + a loud unavailable note", async () => {
   const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
   const { service } = await makeMemoryService({
