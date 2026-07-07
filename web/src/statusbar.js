@@ -8,7 +8,7 @@ import { LinkedText, PathText } from "./links.js";
 import { stopReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openSearch } from "./search.js";
-import { state } from "./state.js";
+import { runningSummonRooms, state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
 import { jumpToEvent } from "./transcript.js";
 
@@ -108,6 +108,8 @@ function renderStatusbar() {
   }
   const usage = usageChipSeg();
   if (usage) segs.push(usage);
+  const bg = bgChipSeg();
+  if (bg) segs.push(bg);
   const theme = themeById(currentThemeId());
   segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
   segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
@@ -231,6 +233,127 @@ export function openUsagePopover() {
 export function closeUsagePopover() {
   state.usagePopoverOpen = false;
   markDirty("usage");
+}
+
+// ---------------------------------------------------------------------------
+// Background-process tray — the status-bar chip shows a count of running
+// background tasks + summon rooms; a click opens a palette listing each one
+// with its command, target, elapsed time, and live-output jump for summons.
+
+/** @returns {Seg|null} */
+function bgChipSeg() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return null;
+  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running").length;
+  const summons = runningSummonRooms(snapshot).length;
+  const n = runningTasks + summons;
+  if (n === 0) return null;
+  return {
+    text: `\u2699 ${n} bg`,
+    cls: `seg-run on`,
+    title: "background processes",
+    onclick: openBgTasks,
+  };
+}
+
+export function openBgTasks() {
+  state.bgTasksOpen = true;
+  markDirty("bgtasks");
+}
+
+export function closeBgTasks() {
+  state.bgTasksOpen = false;
+  markDirty("bgtasks");
+}
+
+function renderBgTasks() {
+  const slot = $("#overlay-bgtasks");
+  if (!slot) return;
+  if (!state.bgTasksOpen) slot.replaceChildren();
+  else {
+    const popover = BgTasksPopover();
+    slot.replaceChildren(...(popover ? [popover] : []));
+  }
+}
+
+registerRegion("bgtasks", renderBgTasks);
+
+/** Format elapsed ms as a short human string. @param {number} ms @returns {string} */
+function elapsed(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m`;
+}
+
+function BgTasksPopover() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return null;
+  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running");
+  const summons = runningSummonRooms(snapshot);
+  const now = Date.now();
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeBgTasks();
+      },
+    },
+    h(
+      "div",
+      { class: "palette usage-popover" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "background processes" }),
+        h("small", { text: `${runningTasks.length + summons.length} running \u00b7 esc to close` }),
+      ),
+      // Running task rows
+      ...runningTasks.map((task) =>
+        h(
+          "div",
+          { class: "usage-row" },
+          h(
+            "div",
+            { class: "usage-row-top" },
+            h("span", { class: "usage-label", text: task.text || task.id }),
+            h("span", { class: "usage-pct sev-normal", text: task.startedAt ? elapsed(now - new Date(task.startedAt).getTime()) : "" }),
+          ),
+          task.targets?.length
+            ? h("small", { class: "usage-reset", text: `target: ${task.targets.join(", ")}` })
+            : null,
+        ),
+      ),
+      // Running summon room rows — clickable, jump to live output
+      ...summons.map((room) =>
+        h(
+          "button",
+          {
+            class: "usage-row",
+            style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);margin-top:6px;cursor:pointer;",
+            onclick: () => {
+              selectRoom(snapshot.workspace.id, room.id);
+              closeBgTasks();
+            },
+          },
+          h(
+            "div",
+            { class: "usage-row-top" },
+            h("span", { class: "usage-label", text: `\u25b7 ${room.id}` }),
+            h("span", { class: "usage-pct sev-normal", text: room.lastActivity ? elapsed(now - new Date(room.lastActivity).getTime()) : "" }),
+          ),
+          room.running ? h("small", { class: "usage-reset", text: "streaming \u00b7 click to watch" }) : null,
+        ),
+      ),
+      runningTasks.length === 0 && summons.length === 0
+        ? h("div", { class: "search-empty", text: "No background processes." })
+        : null,
+    ),
+  );
 }
 
 function renderUsagePopover() {

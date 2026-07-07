@@ -15,7 +15,7 @@ import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
 import { state } from "./state.js";
-import { closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
+import { closeBgTasks, closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
 import { cycleTheme } from "./themes.js";
 
 const IS_MAC = /mac|iphone|ipad/i.test(
@@ -47,6 +47,13 @@ export function installKeybindings() {
         event.preventDefault();
         event.stopImmediatePropagation();
         closeThemePalette(false);
+        return;
+      }
+      // The background-tasks popover, likewise, before panic-stop can claim Escape.
+      if (event.key === "Escape" && state.bgTasksOpen) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeBgTasks();
         return;
       }
       // The usage popover, likewise, before panic-stop can claim Escape.
