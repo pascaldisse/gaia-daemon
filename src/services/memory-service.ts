@@ -15,7 +15,7 @@ import { resolveMemoryConfig } from "../core/config.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Episode, EpisodeOutcome } from "../domain/episodes.js";
 import { appendEpisode } from "../domain/episodes.js";
-import type { ActiveContextRef, MemoryHealthRow, MemorySearchHit, RoomRef } from "../domain/workspace-index.js";
+import type { ActiveContextRef, MemoryHealthRow, MemorySearchHit, RoomRef, TranscriptSearchHit } from "../domain/workspace-index.js";
 import {
   countEmbeddings,
   expandChunkWindows,
@@ -23,6 +23,7 @@ import {
   openWorkspaceIndex,
   pendingEmbeddings,
   readHealth,
+  searchTranscripts,
   searchWorkspaceIndex,
   setHealth,
   storeEmbeddings,
@@ -203,6 +204,22 @@ export class MemoryService {
       setHealth(db, "recall", "ok", `last search ${elapsed}ms · ${hits.length} hits`, this.now());
     }
     return { hits, degraded };
+  }
+
+  /** Chat search for the web client: transcript-only FTS across the workspace
+   * (or one room), navigable to the matched message. A literal "find this in my
+   * chats" — no agent scoping, no decay, no facts/episodes, unlike recall.
+   * Syncs the index first so freshly-said messages are searchable. */
+  async searchChats(query: string, options: { roomId?: string; limit?: number } = {}): Promise<{ hits: TranscriptSearchHit[]; degraded: string[] }> {
+    const db = this.db();
+    const degraded: string[] = [];
+    const report = await syncWorkspaceIndex(db, this.sources(), {
+      budgetMs: INDEX_SYNC_BUDGET_MS,
+      log: (message) => this.log(message),
+      now: this.now(),
+    });
+    if (report.degraded) degraded.push(report.degraded);
+    return { hits: searchTranscripts(db, query, options), degraded };
   }
 
   /** The per-turn injection block: fenced, threshold-gated, budget-capped.

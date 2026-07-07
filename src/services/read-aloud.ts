@@ -291,6 +291,25 @@ export interface TtsStream {
   frames: AsyncIterable<Buffer>;
 }
 
+/** Duplex synthesis: text is fed in OVER TIME (sentence by sentence, as the
+ * agent generates its reply) into one continuous stream, and PCM frames come
+ * back as they are produced — exactly how the claude.ai app drives a live turn.
+ * The win over `synthesizeStream` for calls: speech for the first sentence
+ * starts while the rest of the reply is still being written, and each fed piece
+ * is a whole sentence, so chunk boundaries never fall mid-word. */
+export interface TtsDuplexSession {
+  format: TtsStreamFormat;
+  /** Feed the next speech-ready piece (a whole sentence/clause). */
+  push(text: string): void;
+  /** No more text will be fed; the stream ends once the fed text drains. */
+  end(): void;
+  frames: AsyncIterable<Buffer>;
+}
+
+/** Context for duplex synthesis: like synthesis, minus the up-front `text`
+ * (which arrives incrementally via `push`). */
+export type TtsDuplexContext = Omit<TtsSynthesisContext, "text">;
+
 export interface TtsSynthesisContext {
   /** Speech-ready text (already through speakableText). */
   text: string;
@@ -300,6 +319,9 @@ export interface TtsSynthesisContext {
   /** Bring up the bundled unmute TTS service if needed → its HTTP base URL. */
   ensureTts(onStatus: (message: string) => void): Promise<{ ttsUrl: string }>;
   log(message: string): void;
+  /** Abort in-flight synthesis. Read-aloud never sets it; the voice-call bridge
+   * passes the call's signal so a barge-in stops generation immediately. */
+  signal?: AbortSignal;
 }
 
 export interface TtsEngineSpec {
@@ -313,6 +335,19 @@ export interface TtsEngineSpec {
    * presence, never for the engine id, and engines without it keep the batched
    * per-chunk `synthesize` path (local TTS). */
   synthesizeStream?(context: TtsSynthesisContext): Promise<TtsStream>;
+  /** Optional: feed text incrementally into one continuous stream (see
+   * TtsDuplexSession). The call bridge uses this when present so speech starts
+   * on the first sentence instead of waiting for the whole reply; engines
+   * without it fall back to buffering the turn and calling synthesizeStream.
+   * Pure capability — read by presence, never by engine id. */
+  synthesizeDuplex?(context: TtsDuplexContext): Promise<TtsDuplexSession>;
+  /** This engine can speak a live voice CALL through gaia's protocol bridge
+   * (services/voice-tts-bridge.ts turns synthesizeStream into unmute's TTS
+   * websocket). Engines without it are read-aloud only; the default (kyutai)
+   * call path is the native unmute TTS service, not this bridge. Pure DATA —
+   * the call path reads this flag, never an engine id (same law as harnesses).
+   * Requires synthesizeStream. */
+  callBridge?: boolean;
 }
 
 const engines = new Map<string, TtsEngineSpec>();
@@ -679,6 +714,9 @@ async function claudeSynthesizeStream(context: TtsSynthesisContext): Promise<Tts
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text: context.text, ...(context.voice ? { voice: context.voice } : {}) }),
+    // A voice-call barge-in aborts here → the daemon closes the claude.ai socket
+    // and stops generating into a call the user already talked over.
+    ...(context.signal ? { signal: context.signal } : {}),
   });
   if (response.status === 404) {
     throw new Error("claude-voice daemon has no /stream endpoint - update the checkout and restart the daemon");
@@ -712,4 +750,150 @@ async function* readableToFrames(body: ReadableStream<Uint8Array>): AsyncGenerat
   }
 }
 
-registerTtsEngine({ id: "claude", voices: CLAUDE_VOICES, synthesize: claudeSynthesize, synthesizeStream: claudeSynthesizeStream });
+/** Feed text sentence-by-sentence into ONE claude.ai TTS socket (the daemon's
+ * /stream-in endpoint) and stream PCM back as it is generated. The request body
+ * is NDJSON — one {"text":...} line per fed piece, a final {"end":true} — sent
+ * with a streaming body (duplex) so pieces reach the daemon the instant push()
+ * is called. This is the low-latency call path: sentence 1 is spoken while the
+ * agent is still writing the rest. */
+async function claudeSynthesizeDuplex(context: TtsDuplexContext): Promise<TtsDuplexSession> {
+  const baseUrl = await ensureClaudeVoiceDaemon({ ...context, text: "" });
+  const encoder = new TextEncoder();
+  // Push-driven queue → an ASYNC-GENERATOR request body. (Node's fetch streams a
+  // generator body reliably; a start()-enqueued ReadableStream is NOT sent until
+  // it closes, which would deadlock a duplex exchange.) `null` = end sentinel.
+  const queue: Array<Uint8Array | null> = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
+  const nextChunk = (): Promise<void> => new Promise((resolve) => { wake = resolve; });
+  async function* requestBody(): AsyncGenerator<Uint8Array> {
+    // Prime: an immediate first chunk flushes the request headers so the daemon
+    // answers (and this fetch resolves) before the first real sentence lands.
+    // The daemon skips blank NDJSON lines.
+    yield encoder.encode("\n");
+    for (;;) {
+      while (queue.length) {
+        const chunk = queue.shift();
+        if (chunk === null) return;
+        yield chunk as Uint8Array;
+      }
+      await nextChunk();
+    }
+  }
+  const query = context.voice ? `?voice=${encodeURIComponent(context.voice)}` : "";
+  const response = await fetch(`${baseUrl}/stream-in${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-ndjson" },
+    body: requestBody(),
+    // Send text as it is produced while reading PCM concurrently.
+    duplex: "half",
+    // A barge-in aborts here → the daemon closes the claude.ai socket.
+    ...(context.signal ? { signal: context.signal } : {}),
+  } as RequestInit & { duplex: "half" });
+  if (response.status === 404) {
+    throw new Error("claude-voice daemon has no /stream-in endpoint - update the checkout and restart the daemon");
+  }
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`claude-voice stream-in failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const format: TtsStreamFormat = {
+    sampleRate: Number(response.headers.get("x-tts-rate")) || 16_000,
+    channels: Number(response.headers.get("x-tts-channels")) || 1,
+    bitsPerSample: Number(response.headers.get("x-tts-bits")) || 16,
+  };
+  return {
+    format,
+    push(text: string): void {
+      const speech = text.trim();
+      if (closed || !speech) return;
+      queue.push(encoder.encode(`${JSON.stringify({ text: speech })}\n`));
+      wake?.();
+      wake = undefined;
+    },
+    end(): void {
+      if (closed) return;
+      closed = true;
+      queue.push(encoder.encode(`${JSON.stringify({ end: true })}\n`));
+      queue.push(null);
+      wake?.();
+      wake = undefined;
+    },
+    frames: readableToFrames(response.body),
+  };
+}
+
+registerTtsEngine({
+  id: "claude",
+  voices: CLAUDE_VOICES,
+  synthesize: claudeSynthesize,
+  synthesizeStream: claudeSynthesizeStream,
+  // Feed sentences into one live socket → lowest-latency, smoothest call audio.
+  synthesizeDuplex: claudeSynthesizeDuplex,
+  // Streams whole-message PCM → can drive a live call through the bridge.
+  callBridge: true,
+});
+
+// ---------------------------------------------------------------------------
+// elevenlabs — the ElevenLabs cloud TTS API (a hosted engine, like claude-voice
+// but a plain REST API, no local daemon). We request raw s16le PCM at 24 kHz so
+// the batch path wraps it as WAV and the stream path yields frames straight
+// through — identical to the claude engine's shape, so read-aloud AND live
+// calls (callBridge) work uniformly. Expressiveness comes from the model
+// (eleven_v3 renders inline [moans]/[breathy]/[laughs] audio tags) plus the
+// persona's own text; the engine passes text through untouched.
+
+const ELEVENLABS_BASE = "https://api.elevenlabs.io";
+const ELEVENLABS_SAMPLE_RATE = 24_000;
+const ELEVENLABS_SYNTH_TIMEOUT_MS = 180_000;
+
+function elevenLabsKey(settings: VoiceSettings): string {
+  const key = settings.elevenLabsApiKey?.trim() || process.env.ELEVENLABS_API_KEY?.trim();
+  if (!key) throw new Error("ElevenLabs API key not set (voice.json elevenLabsApiKey or ELEVENLABS_API_KEY env)");
+  return key;
+}
+
+/** POST body + URL shared by the batch and streaming endpoints. `stream` picks
+ * the `/stream` variant (frames as generated) over the one-shot endpoint. */
+async function elevenLabsFetch(context: TtsSynthesisContext, stream: boolean): Promise<Response> {
+  const key = elevenLabsKey(context.settings);
+  const voiceId = context.voice || context.settings.elevenLabsVoice;
+  const model = context.settings.elevenLabsModel;
+  const path = `/v1/text-to-speech/${encodeURIComponent(voiceId)}${stream ? "/stream" : ""}?output_format=pcm_${ELEVENLABS_SAMPLE_RATE}`;
+  const response = await fetch(`${ELEVENLABS_BASE}${path}`, {
+    method: "POST",
+    headers: { "xi-api-key": key, "content-type": "application/json" },
+    body: JSON.stringify({ text: context.text, model_id: model }),
+    // Read-aloud never aborts; a voice-call barge-in passes the call's signal.
+    ...(context.signal ? { signal: context.signal } : stream ? {} : { signal: AbortSignal.timeout(ELEVENLABS_SYNTH_TIMEOUT_MS) }),
+  });
+  if (!response.ok || (stream && !response.body)) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`ElevenLabs ${stream ? "stream" : "synthesis"} failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  return response;
+}
+
+async function elevenLabsSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
+  const response = await elevenLabsFetch(context, false);
+  const pcm = Buffer.from(await response.arrayBuffer());
+  return { audio: pcmToWav(pcm, ELEVENLABS_SAMPLE_RATE), contentType: "audio/wav" };
+}
+
+async function elevenLabsSynthesizeStream(context: TtsSynthesisContext): Promise<TtsStream> {
+  const response = await elevenLabsFetch(context, true);
+  return {
+    format: { sampleRate: ELEVENLABS_SAMPLE_RATE, channels: 1, bitsPerSample: 16 },
+    frames: readableToFrames(response.body as ReadableStream<Uint8Array>),
+  };
+}
+
+registerTtsEngine({
+  id: "elevenlabs",
+  // Voices are account-specific voice ids (this key can't list them); free-form.
+  voices: [],
+  synthesize: elevenLabsSynthesize,
+  synthesizeStream: elevenLabsSynthesizeStream,
+  // Streams whole-message PCM → can drive a live call through the bridge.
+  callBridge: true,
+});

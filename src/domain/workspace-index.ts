@@ -1086,6 +1086,66 @@ export async function scrollTranscriptWindow(
   return out.join("\n");
 }
 
+// --- chat search (web client) ----------------------------------------------------
+
+/** Sentinels the FTS snippet wraps matched terms in — the web client escapes
+ * the text then swaps these for <mark>. Private-use codepoints so they never
+ * collide with transcript content. */
+export const SEARCH_MARK_OPEN = String.fromCharCode(0xe000);
+export const SEARCH_MARK_CLOSE = String.fromCharCode(0xe001);
+
+export interface TranscriptSearchHit {
+  chunkId: number;
+  roomId: string;
+  /** The matched chunk's message ids — the client jumps to eventIds[0]. */
+  eventIds: string[];
+  /** FTS excerpt, matched terms wrapped in SEARCH_MARK_OPEN/CLOSE. */
+  snippet: string;
+  text: string;
+  ts: string;
+  speakers: string[];
+  score: number;
+}
+
+export interface TranscriptSearchOptions {
+  limit?: number;
+  /** Restrict to one room (in-chat search); omit for workspace-wide. */
+  roomId?: string;
+}
+
+/** Transcript-only full-text search — the web client's chat search. Unlike
+ * searchWorkspaceIndex this returns plain bm25 order (no decay, no fusion, no
+ * agent scoping, no facts/episodes) and, crucially, each matched chunk's
+ * event_ids so the client can jump to the message. Workspace-wide by default;
+ * `roomId` scopes to a single chat. Reuses the same DoS-bounded ftsQuery. */
+export function searchTranscripts(db: DatabaseSync, query: string, options: TranscriptSearchOptions = {}): TranscriptSearchHit[] {
+  const limit = options.limit && options.limit > 0 ? Math.min(options.limit, 200) : 40;
+  const match = ftsQuery(query);
+  if (!match) return [];
+  const roomFilter = options.roomId ? "AND c.room_id = ?" : "";
+  const params: Array<string | number> = [match];
+  if (options.roomId) params.push(options.roomId);
+  params.push(limit);
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.room_id, c.event_ids, c.ts_from, c.speakers, c.text, -bm25(chunks_fts) AS raw,
+              snippet(chunks_fts, 0, '${SEARCH_MARK_OPEN}', '${SEARCH_MARK_CLOSE}', '…', ${SNIPPET_TOKENS}) AS snip
+       FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.chunk_id
+       WHERE chunks_fts MATCH ? ${roomFilter} ORDER BY rank LIMIT ?`,
+    )
+    .all(...params) as Array<{ id: number; room_id: string; event_ids: string; ts_from: string; speakers: string; text: string; raw: number; snip: string }>;
+  return rows.map((row) => ({
+    chunkId: row.id,
+    roomId: row.room_id,
+    eventIds: safeStringArray(row.event_ids),
+    snippet: row.snip,
+    text: row.text,
+    ts: row.ts_from,
+    speakers: safeStringArray(row.speakers),
+    score: row.raw,
+  }));
+}
+
 // --- rendering -------------------------------------------------------------------
 
 /** One line per hit, shared by the recall tool, `gaia recall`, and /recall.

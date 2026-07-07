@@ -277,6 +277,16 @@ Global defaults live in `~/.gaia/voice.json`: `ttsEngine` (fallback engine),
 `claudeVoiceUrl` (default `http://127.0.0.1:8778`) and `claudeVoiceDir` (a
 claude-voice checkout to auto-start when its daemon is down; empty = never).
 
+The same `tts.engine` also drives **voice calls**: if it declares `callBridge`
+(claude does), GAIA stands up a tiny protocol bridge
+(`src/services/voice-tts-bridge.ts`) that makes the engine look like a native
+unmute TTS server — so a call speaks with your claude-voice voice instead of the
+bundled TTS. The bridge speaks unmute's `/api/tts_streaming` msgpack socket on
+one side and streams `engine.synthesizeStream` (resampled to 24 kHz) on the
+other; a barge-in aborts generation. Engines without `callBridge` (kyutai) use
+the native unmute TTS, unchanged. No new config — an agent's `tts.engine`
+governs both surfaces.
+
 ## Roles
 
 A role is a markdown prompt overlay for an agent.

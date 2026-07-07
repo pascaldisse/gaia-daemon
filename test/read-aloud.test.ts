@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
 import {
+  findTtsEngine,
   packMessage,
   pcmToWav,
   readAloud,
@@ -127,9 +128,102 @@ test("pcmToWav: writes a correct RIFF header around the samples", () => {
 // ---------------------------------------------------------------------------
 // engine resolution — engines are data, resolution never branches on ids
 
-test("engines: kyutai and claude are registered", () => {
+test("engines: kyutai, claude and elevenlabs are registered", () => {
   assert.ok(ttsEngineIds().includes("kyutai"));
   assert.ok(ttsEngineIds().includes("claude"));
+  assert.ok(ttsEngineIds().includes("elevenlabs"));
+});
+
+// ---------------------------------------------------------------------------
+// elevenlabs — the ElevenLabs cloud engine (fetch stubbed; no network)
+
+function elevenLabsContext(overrides: Partial<TtsSynthesisContext> = {}): TtsSynthesisContext {
+  return {
+    text: "Come here. [moans]",
+    voice: "VOICEXYZ",
+    settings: voiceSettings({ elevenLabsApiKey: "sk_test", elevenLabsModel: "eleven_v3" }),
+    ensureTts: async () => ({ ttsUrl: "" }),
+    log: () => {},
+    ...overrides,
+  };
+}
+
+test("elevenlabs: streams whole-message PCM and can drive live calls (callBridge)", () => {
+  const spec = findTtsEngine("elevenlabs");
+  assert.ok(spec, "elevenlabs engine registered");
+  assert.ok(spec?.synthesizeStream, "declares a streaming path");
+  assert.equal(spec?.callBridge, true);
+});
+
+test("elevenlabs synthesize: POSTs text+model to the voice endpoint, wraps PCM as WAV", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec) throw new Error("elevenlabs not registered");
+  const calls: { url: string; init: RequestInit }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]), { status: 200, headers: { "content-type": "audio/pcm" } });
+  }) as typeof fetch;
+  try {
+    const audio = await spec.synthesize(elevenLabsContext());
+    assert.equal(audio.contentType, "audio/wav");
+    assert.equal(audio.audio.toString("ascii", 0, 4), "RIFF");
+    // 44-byte WAV header wrapped around the 8 PCM bytes.
+    assert.equal(audio.audio.length, 44 + 8);
+
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes("/v1/text-to-speech/VOICEXYZ"));
+    assert.ok(!calls[0].url.includes("/stream"));
+    assert.ok(calls[0].url.includes("output_format=pcm_24000"));
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers["xi-api-key"], "sk_test");
+    const body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.text, "Come here. [moans]"); // audio tags pass through untouched
+    assert.equal(body.model_id, "eleven_v3");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("elevenlabs synthesizeStream: hits the /stream endpoint and yields raw PCM frames", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec?.synthesizeStream) throw new Error("elevenlabs streaming not registered");
+  const urls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    urls.push(String(url));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([9, 0]));
+        controller.enqueue(new Uint8Array([8, 0]));
+        controller.close();
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "audio/pcm" } });
+  }) as typeof fetch;
+  try {
+    const stream = await spec.synthesizeStream(elevenLabsContext());
+    assert.deepEqual(stream.format, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    assert.equal((await collect(stream.frames)).length, 4);
+    assert.ok(urls[0].includes("/v1/text-to-speech/VOICEXYZ/stream"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("elevenlabs: a missing API key is a clear, actionable error", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec) throw new Error("elevenlabs not registered");
+  const prev = process.env.ELEVENLABS_API_KEY;
+  delete process.env.ELEVENLABS_API_KEY;
+  try {
+    await assert.rejects(
+      () => spec.synthesize(elevenLabsContext({ settings: voiceSettings() })),
+      /ElevenLabs API key not set/,
+    );
+  } finally {
+    if (prev !== undefined) process.env.ELEVENLABS_API_KEY = prev;
+  }
 });
 
 test("resolveTtsChoice: workspace default engine, agent tts override, voice fallback chain", () => {

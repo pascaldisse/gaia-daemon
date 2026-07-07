@@ -511,6 +511,47 @@ test("/compact streams live progress (token counts + start time) into the snapsh
   assert.equal(after.agents.find((agent) => agent.id === "gaia")?.compact, undefined);
 });
 
+test("context-gate 'Compact & join' shows a compacting status + start time while it summarizes (not a silent black box)", async () => {
+  let serviceRef: RoomService | undefined;
+  let statusDuringSummary: string | undefined;
+  let compactDuringSummary: { startedAt?: number } | undefined;
+  // The gate's summary is one LLM pass; while it runs, the JOINING agent must
+  // surface the same "compacting" status the /compact command drives.
+  const { service } = await makeService({
+    agents: ["gaia", "terry"],
+    config: { contextGate: { warnAboveTokens: 60 } },
+    llm: async () => {
+      const snap = await serviceRef!.getSnapshot();
+      const joiner = snap.agents.find((agent) => agent.id === "terry");
+      statusDuringSummary = joiner?.status;
+      compactDuringSummary = joiner?.compact;
+      return "ROOM BRIEF: they discussed the plan.";
+    },
+  });
+  serviceRef = service;
+
+  // Grow the room past the threshold, then address the NEW agent → gate holds.
+  await service.sendMessage("@gaia hi");
+  await service.waitForIdle();
+  await service.sendMessage(`@gaia now the real discussion ${PAD} ${PAD}`);
+  await service.waitForIdle();
+  await service.sendMessage("@terry hop in");
+  await service.waitForIdle();
+  assert.ok((await service.getSnapshot()).room.contextGate, "a new agent's big first load opens the context gate");
+
+  // Resolve with compact → summarizeRoom runs and must show the status.
+  await service.resolveContextGate("compact");
+  await service.waitForIdle();
+  assert.equal(statusDuringSummary, "compacting", "the joining agent shows 'compacting' while the briefing is summarized");
+  assert.equal(typeof compactDuringSummary?.startedAt, "number", "a start time is stamped so the client can tick an elapsed");
+
+  // ...and it clears back to a normal status afterward (no stale compacting).
+  const after = await service.getSnapshot();
+  const joinerAfter = after.agents.find((agent) => agent.id === "terry");
+  assert.notEqual(joinerAfter?.status, "compacting");
+  assert.equal(joinerAfter?.compact, undefined);
+});
+
 test("bare /compact targets the room's ACTIVE agent, not the workspace default", async () => {
   // The room default is gaia, but the user has been talking to terry. A bare
   // /compact must compact terry (who they're addressing), not gaia — else it

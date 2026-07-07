@@ -9,6 +9,7 @@
 //   Esc             close the theme palette
 import { addRoom, selectRoom } from "./actions.js";
 import { markDirty } from "./render.js";
+import { closeSearch, openSearch } from "./search.js";
 import { state } from "./state.js";
 import { closeThemePalette, openThemePalette } from "./statusbar.js";
 import { visibleTabs } from "./tabs.js";
@@ -34,6 +35,14 @@ export function installKeybindings() {
   window.addEventListener(
     "keydown",
     (event) => {
+      // Chat search: Escape closes it before panic-stop (composer.js) can claim
+      // Escape — a search over the room shouldn't abort the running turn.
+      if (event.key === "Escape" && state.search.open) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeSearch();
+        return;
+      }
       // Cancel the theme palette first, before anything else claims Escape.
       if (event.key === "Escape" && state.themePaletteOpen) {
         event.preventDefault();
@@ -59,6 +68,21 @@ export function installKeybindings() {
 
       const meta = event.metaKey || event.ctrlKey;
       const has = Boolean(state.snapshot);
+
+      // Chat search palette (Cmd/Ctrl+K). Reachable open or closed so the same
+      // chord focuses it; everything else below is suppressed while it's up.
+      if (meta && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openSearch("chatwide");
+        return;
+      }
+      // Search the OPEN chat (Cmd/Ctrl+F) — same overlay, pre-scoped to this room.
+      if (meta && !event.altKey && event.key.toLowerCase() === "f" && has) {
+        event.preventDefault();
+        openSearch("room");
+        return;
+      }
+      if (state.search.open) return;
 
       // New room tab.
       if (meta && !event.altKey && event.key.toLowerCase() === "t" && has) {

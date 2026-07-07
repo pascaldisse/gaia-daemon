@@ -537,6 +537,32 @@ export interface RoomSummary {
   imported?: string;
 }
 
+/** One chat-search result: a transcript chunk that matched, resolved enough to
+ * render a preview and jump straight to the message. Matched terms in `snippet`
+ * are wrapped in the SEARCH_MARK sentinels (the client escapes then swaps them
+ * for <mark>). Workspace-wide search returns hits from many rooms/workspaces. */
+export interface ChatSearchHit {
+  workspaceId: string;
+  workspaceName: string;
+  roomId: string;
+  roomTitle?: string;
+  /** Primary navigation anchor — the first message id in the matched chunk. */
+  eventId: string;
+  /** Every message id the matched chunk spans (chunks can cross turns). */
+  eventIds: string[];
+  /** FTS excerpt with matched terms wrapped in the SEARCH_MARK sentinels. */
+  snippet: string;
+  ts: string;
+  speakers: string[];
+  score: number;
+}
+
+export interface ChatSearchResult {
+  hits: ChatSearchHit[];
+  /** Loud degradation notes (index catch-up budget hit, workspace unloadable). */
+  degraded: string[];
+}
+
 export interface SlashCommandDefinition {
   name: string;
   type: string;

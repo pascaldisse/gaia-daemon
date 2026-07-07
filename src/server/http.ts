@@ -326,6 +326,23 @@ export class GaiaWebServer {
       return;
     }
 
+    // Chat-wide transcript search (web client). ?q= the query; optional
+    // ?workspace= narrows to one workspace, ?room= to one chat (in-chat search),
+    // ?limit= caps results. Cross-workspace by default.
+    if (method === "GET" && path === "/api/search") {
+      const q = url.searchParams.get("q") ?? url.searchParams.get("query") ?? "";
+      const workspaceId = url.searchParams.get("workspace")?.trim();
+      const roomId = url.searchParams.get("room")?.trim();
+      const limit = Number(url.searchParams.get("limit")) || undefined;
+      return this.respond(response, () =>
+        this.daemon.searchChats(q, {
+          ...(workspaceId ? { workspaceId } : {}),
+          ...(roomId ? { roomId } : {}),
+          ...(limit ? { limit } : {}),
+        }),
+      );
+    }
+
     // Parameterized workspace routes.
     const match = (pattern: RegExp): string[] | null => {
       const result = path.match(pattern);

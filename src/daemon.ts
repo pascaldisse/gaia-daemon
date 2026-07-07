@@ -12,7 +12,7 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { gaiaHome, globalPaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, Snapshot, UiEvent, VoiceCallInfo, Workspace } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, VoiceCallInfo, Workspace } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
@@ -38,7 +38,8 @@ import {
   sweepOrphanOverrides,
   type VoiceSettings,
 } from "./services/voice.js";
-import { readAloud, readAloudStream, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
+import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
+import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 
@@ -137,6 +138,9 @@ export class Daemon {
   /** One voice call at a time; unmute's chat-completions requests bind to it. */
   activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   voiceStarting = false;
+  // Live only while a call routes its TTS through a read-aloud engine
+  // (claude-voice); torn down on hang-up.
+  private ttsBridge: TtsCallBridge | undefined;
 
   constructor(private readonly options: DaemonOptions) {}
 
@@ -196,6 +200,7 @@ export class Daemon {
 
   dispose(): void {
     this.scheduler?.dispose();
+    this.ttsBridge?.stop();
     this.voiceStack.stop();
     this.embedSidecar.dispose();
     for (const service of this.services.values()) service.dispose();
@@ -493,6 +498,53 @@ export class Daemon {
     return service.mutateAgentMemory(claims.agentId, file, action, options);
   }
 
+  /** Chat-wide transcript search for the web client. Transcript-only and
+   * navigable to the matched message. No `workspaceId` scans every initialized
+   * workspace; `roomId` narrows to a single chat (in-chat search). Bm25 order
+   * within a workspace; the cross-workspace merge sorts by score (independent
+   * indexes, so approximate) and caps the merged list. */
+  async searchChats(query: string, options: { workspaceId?: string; roomId?: string; limit?: number } = {}): Promise<ChatSearchResult> {
+    const trimmed = query.trim();
+    if (!trimmed) return { hits: [], degraded: [] };
+    const limit = options.limit && options.limit > 0 ? Math.min(options.limit, 100) : 40;
+    const records = options.workspaceId
+      ? [await this.registry.find(options.workspaceId)].filter((record): record is WorkspaceRecord => Boolean(record))
+      : (await this.registry.list()).filter((record) => record.isInitialized);
+    const hits: ChatSearchHit[] = [];
+    const degraded: string[] = [];
+    for (const record of records) {
+      try {
+        const service = await this.serviceFor(record.id);
+        const memory = this.memoryServiceFor(record.id, service.workspace, record.path);
+        const found = await memory.searchChats(trimmed, { ...(options.roomId ? { roomId: options.roomId } : {}), limit });
+        for (const note of found.degraded) degraded.push(`${record.name}: ${note}`);
+        if (!found.hits.length) continue;
+        // Resolve titles once per workspace (only for workspaces with hits).
+        const titles = new Map<string, string>();
+        for (const room of await service.listRooms()) if (room.title) titles.set(room.id, room.title);
+        for (const hit of found.hits) {
+          const title = titles.get(hit.roomId);
+          hits.push({
+            workspaceId: record.id,
+            workspaceName: record.name,
+            roomId: hit.roomId,
+            ...(title ? { roomTitle: title } : {}),
+            eventId: hit.eventIds[0] ?? "",
+            eventIds: hit.eventIds,
+            snippet: hit.snippet,
+            ts: hit.ts,
+            speakers: hit.speakers,
+            score: hit.score,
+          });
+        }
+      } catch (error) {
+        degraded.push(`${record.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    hits.sort((a, b) => b.score - a.score);
+    return { hits: hits.slice(0, limit), degraded };
+  }
+
   /** Hybrid DEEP recall for a harness turn (capability-gated by the caller;
    * §8: explicit invocation tolerates seconds, so it earns the reranker +
    * chunk-window expansion). Runs entirely daemon-side: index, embedder,
@@ -584,6 +636,25 @@ export class Daemon {
     if (this.voiceStarting) throw new Error("A voice call is already starting");
 
     const settings = await readVoiceSettings();
+
+    // The call TTS resolves EXACTLY like read-aloud (agent.tts.engine over the
+    // voice.json default): an engine that declares `callBridge` (claude-voice)
+    // gets a gaia protocol bridge unmute talks to instead of the bundled moshi
+    // TTS. Default (kyutai) → the native service, unchanged.
+    const ttsChoice = resolveTtsChoice(agent, settings);
+    let ttsEndpoint: string | undefined;
+    if (ttsChoice.engine.callBridge) {
+      const bridge = new TtsCallBridge({
+        ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
+        log: (message) => this.log(message),
+      });
+      const { wsUrl } = await bridge.start(ttsChoice.engine, ttsChoice.voice, settings);
+      this.ttsBridge?.stop();
+      this.ttsBridge = bridge;
+      ttsEndpoint = wsUrl;
+      this.log(`voice: routing @${agent.id}'s call TTS through the ${ttsChoice.engine.id} bridge (voice: ${ttsChoice.voice ?? "default"})`);
+    }
+
     this.voiceStarting = true;
     let unmuteUrl: string;
     try {
@@ -594,12 +665,18 @@ export class Daemon {
           autoStart: settings.autoStart,
           startTimeoutMs: settings.startTimeoutSec * 1000,
           silenceTimeoutSec: settings.speakOnSilence ? settings.silenceDelaySec : null,
+          ttsEndpoint,
         },
         gaiaUrl,
         (message) => {
           this.broadcast({ type: "voice-status", workspaceId, roomId: service.roomId, voice: null, pending: { agentId: agent.id, message } });
         },
       ));
+    } catch (error) {
+      // A failed stack start must not leak the bridge listener.
+      this.ttsBridge?.stop();
+      this.ttsBridge = undefined;
+      throw error;
     } finally {
       this.voiceStarting = false;
     }
@@ -608,7 +685,9 @@ export class Daemon {
       agentId: agent.id,
       roomId: service.roomId,
       unmuteUrl,
-      ...(agent.voice ? { voice: agent.voice } : {}),
+      // The bridge owns the voice (baked into its engine); leave the unmute
+      // session voice unset so it never validates a claude voice name.
+      ...(agent.voice && !ttsEndpoint ? { voice: agent.voice } : {}),
       // Voice latency: thinking defaults off during the call; the agent's own
       // level returns on hang-up (durably — survives a crash mid-call).
       ...(settings.disableThinking ? { thinking: "off" } : {}),
@@ -629,7 +708,10 @@ export class Daemon {
       await clearCallOverride().catch(() => {});
       this.broadcast({ type: "voice-status", workspaceId, roomId: ended.info.roomId, voice: null });
     }
-    // Stops exactly the services GAIA spawned; external ones are left alone.
+    // Tear down the TTS bridge (if this call used claude-voice), then stop
+    // exactly the services GAIA spawned; external ones are left alone.
+    this.ttsBridge?.stop();
+    this.ttsBridge = undefined;
     this.voiceStack.stop();
   }
 

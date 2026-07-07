@@ -138,6 +138,38 @@ async function loadOlderEvents() {
   }
 }
 
+/**
+ * Scroll a committed message into view and flash it — the landing action for a
+ * chat-search result. Pages older history in (bounded) until the target event
+ * is in the DOM, since a hit can predate the snapshot's tail window. Assumes
+ * the correct room is already open.
+ * @param {string} eventId
+ */
+export async function jumpToEvent(eventId) {
+  if (!eventId) return;
+  const find = () => /** @type {HTMLElement|null} */ ($(`#transcript [data-event-id="${CSS.escape(eventId)}"]`));
+  const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await frame();
+  for (let i = 0; i < 60 && !find(); i += 1) {
+    if (olderRemaining() <= 0) break;
+    await loadOlderEvents();
+    await frame();
+  }
+  const el = find();
+  if (!el) {
+    setError("couldn't locate that message — it may have been rewound");
+    return;
+  }
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  state.search.highlightEventId = eventId;
+  markDirty("transcript");
+  window.setTimeout(() => {
+    if (state.search.highlightEventId !== eventId) return;
+    state.search.highlightEventId = "";
+    markDirty("transcript");
+  }, 2600);
+}
+
 /** @returns {MessageView[]} */
 function messageViews() {
   const events = committedEvents();
@@ -198,12 +230,16 @@ function renderTranscript() {
   }
 
   const nextNodes = views.map((view) => {
-    // Read-aloud playback state folds into the version stamp so exactly the
-    // affected message re-renders when loading/playing starts or stops.
-    const version = view.version + (state.readAloud?.eventId === view.id ? `:ra-${state.readAloud.phase}` : "");
+    // Read-aloud playback and the search-jump flash both fold into the version
+    // stamp, so exactly the affected message re-renders when either toggles.
+    const version =
+      view.version +
+      (state.readAloud?.eventId === view.id ? `:ra-${state.readAloud.phase}` : "") +
+      (state.search.highlightEventId === view.id ? ":search-hit" : "");
     const current = existing.get(view.id);
     if (current && current.dataset.v === version) return current;
     const node = Message(view);
+    if (state.search.highlightEventId === view.id) node.classList.add("search-hit");
     node.dataset.eventId = view.id;
     node.dataset.v = version;
     return node;

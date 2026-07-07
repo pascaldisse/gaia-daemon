@@ -5,6 +5,7 @@
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { markDirty, registerRegion } from "./render.js";
+import { openSearch } from "./search.js";
 import { state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
 
@@ -29,14 +30,29 @@ function renderTopbar() {
       h("strong", {}, snapshot ? PathText(snapshot.workspace.rootDir) : LinkedText("No workspace selected")),
       h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
     ),
-    h("div", {
-      class: state.voice || state.voiceStatusText ? "status on-call" : "status",
-      text: state.voiceStatusText
-        ? state.voiceStatusText
-        : snapshot
-          ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
-          : "idle",
-    }),
+    h(
+      "div",
+      { class: "topbar-right" },
+      // Search THIS chat — the same overlay as ⌘K, pre-scoped to the open room.
+      snapshot
+        ? h("button", {
+            class: "topbar-search",
+            type: "button",
+            title: "search this chat (⌘F)",
+            "aria-label": "search this chat",
+            onclick: () => openSearch("room"),
+            text: "⌕",
+          })
+        : null,
+      h("div", {
+        class: state.voice || state.voiceStatusText ? "status on-call" : "status",
+        text: state.voiceStatusText
+          ? state.voiceStatusText
+          : snapshot
+            ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
+            : "idle",
+      }),
+    ),
   );
 }
 

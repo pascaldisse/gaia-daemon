@@ -6,6 +6,7 @@ import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
+import { openSearch } from "./search.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
@@ -17,6 +18,12 @@ function renderSidebar() {
   const current = state.snapshot?.workspace.id;
   /** @type {(HTMLElement|null)[]} */
   const children = [
+    h("button", {
+      class: "nav-search",
+      title: "search across all chats (⌘K)",
+      onclick: () => openSearch("chatwide"),
+      text: "🔍 search chats",
+    }),
     h("div", { class: "nav-title", text: "workspaces" }),
     h(
       "div",

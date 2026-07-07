@@ -13,6 +13,7 @@
 /** @typedef {import("./types.js").PendingAttachment} PendingAttachment */
 /** @typedef {import("./types.js").SanitizeProposal} SanitizeProposal */
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
+/** @typedef {import("./types.js").ChatSearchHit} ChatSearchHit */
 
 /**
  * @type {{
@@ -52,6 +53,7 @@
  *   readAloud: {eventId: string, phase: "loading"|"playing"}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
+ *   search: {open: boolean, scope: "chatwide"|"room", query: string, workspace: string, hits: ChatSearchHit[], degraded: string[], loading: boolean, seq: number, active: number, highlightEventId: string},
  *   thinkingMenuOpen: boolean,
  *   addAgentOpen: boolean,
  *   addAgentId: string,
@@ -122,6 +124,11 @@ export const state = {
   // pending gate lives on snapshot.room.contextGate); this only holds the
   // in-flight resolve state and the "last N" input value.
   contextGate: { resolving: false, error: "", lastN: 20 },
+  // Chat search overlay (Cmd/Ctrl+K). scope "chatwide" = every room (filtered
+  // by `workspace`: "all" or a workspace id); "room" = the open chat only. seq
+  // guards against out-of-order responses; highlightEventId flashes the message
+  // a result jumped to (folded into the transcript version stamp).
+  search: { open: false, scope: "chatwide", query: "", workspace: "all", hits: [], degraded: [], loading: false, seq: 0, active: 0, highlightEventId: "" },
   thinkingMenuOpen: false,
   addAgentOpen: false,
   addAgentId: "",
@@ -145,10 +152,18 @@ export function runningSummonRooms(snapshot = state.snapshot) {
 }
 
 /**
- * "Busy" = a room turn is running OR any summoned worker is still running.
- * Esc / Ctrl+C / the stop button all act on this so nothing is unstoppable.
+ * "Busy" = a room turn is running OR any summoned worker is still running OR an
+ * agent is compacting. The compacting case matters for the context-gate
+ * "Compact & join" summary: it has no task of its own, so without this the
+ * running/compacting banner (and its progress bar) stayed hidden and the pass
+ * looked like a silent black box — the /compact command shows because it runs
+ * as a command task. Esc / Ctrl+C / the stop button all act on this.
  * @param {Snapshot|null} [snapshot]
  */
 export function isBusy(snapshot = state.snapshot) {
-  return Boolean(activeTask(snapshot)) || runningSummonRooms(snapshot).length > 0;
+  return (
+    Boolean(activeTask(snapshot)) ||
+    runningSummonRooms(snapshot).length > 0 ||
+    (snapshot?.agents ?? []).some((agent) => agent.status === "compacting")
+  );
 }

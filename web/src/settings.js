@@ -542,12 +542,23 @@ function HintedSelect(entryPath, key, hint, currentValue, parsedRoot) {
   const groupValue = hint.groupBy ? getJsonPathValue(parsedRoot, hint.groupBy.split(".")) : undefined;
   buildSelectOptions(select, hint, currentValue === undefined || currentValue === null ? "" : String(currentValue), groupValue);
   hintOf.set(select, hint);
-  return h("label", { class: "setting-row", ...rowTitle(hint) }, h("span", { text: key }), select);
+  return h("label", { class: "setting-row", ...rowTitle(hint) }, fieldLabel(key, hint), select);
 }
 
-/** Field description → title tooltip attrs for the setting row. @param {FieldHint} hint */
+/** Field description → tooltip + a `data-desc` attr the CSS renders as a visible
+ * full-width help line under the row. @param {FieldHint} hint */
 function rowTitle(hint) {
-  return hint.description ? { title: hint.description } : {};
+  return hint.description ? { title: hint.description, "data-desc": hint.description } : {};
+}
+
+/**
+ * The name cell of a setting row: the friendly `hint.label` when set, else the
+ * raw JSON key — so a setting like "Voice mode" is findable by name rather than
+ * hidden behind "ttsEngine". The description renders below via rowTitle's CSS.
+ * @param {string} key @param {FieldHint} hint
+ */
+function fieldLabel(key, hint) {
+  return h("span", { class: "field-name", text: hint.label ?? key });
 }
 
 /**
@@ -572,7 +583,7 @@ function HintedMultiselect(entryPath, key, hint, currentValues) {
       ),
     ),
   );
-  return h("div", { class: "setting-row stacked", ...rowTitle(hint) }, h("span", { text: key }), container);
+  return h("div", { class: "setting-row stacked", ...rowTitle(hint) }, fieldLabel(key, hint), container);
 }
 
 /** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
@@ -580,7 +591,7 @@ function HintedNumber(entryPath, key, hint, currentValue) {
   return h(
     "label",
     { class: "setting-row", ...rowTitle(hint) },
-    h("span", { text: key }),
+    fieldLabel(key, hint),
     h("input", {
       type: "number",
       "data-json-path": JSON.stringify(entryPath),
@@ -603,7 +614,7 @@ function HintedBoolean(entryPath, key, hint, currentValue) {
   select.append(h("option", { value: "true", text: "true" }));
   select.append(h("option", { value: "false", text: "false" }));
   select.value = currentValue === true ? "true" : currentValue === false ? "false" : "";
-  return h("label", { class: "setting-row", ...rowTitle(hint) }, h("span", { text: key }), select);
+  return h("label", { class: "setting-row", ...rowTitle(hint) }, fieldLabel(key, hint), select);
 }
 
 /** Plain string field. Hinted so absent-but-known settings still render a row. */
@@ -612,7 +623,7 @@ function HintedText(entryPath, key, hint, currentValue) {
   return h(
     "label",
     { class: "setting-row", ...rowTitle(hint) },
-    h("span", { text: key }),
+    fieldLabel(key, hint),
     h("input", {
       "data-json-path": JSON.stringify(entryPath),
       "data-json-text": "1",
@@ -633,7 +644,7 @@ function HintedJson(entryPath, key, hint, currentValue) {
   return h(
     "div",
     { class: "setting-row stacked", ...rowTitle(hint) },
-    h("span", { text: key }),
+    fieldLabel(key, hint),
     h("textarea", {
       class: "json-field",
       "data-json-path": JSON.stringify(entryPath),

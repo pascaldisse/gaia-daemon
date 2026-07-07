@@ -56,6 +56,16 @@ export interface VoiceSettings {
   /** claude-voice checkout to auto-start when its daemon is down ("" = never
    * auto-start; the engine then requires the daemon to already be running). */
   claudeVoiceDir: string;
+  /** ElevenLabs API key (xi-api-key) for the "elevenlabs" engine. Empty falls
+   * back to the ELEVENLABS_API_KEY env var; the engine errors if neither is set.
+   * Held locally in voice.json (this daemon binds to loopback). */
+  elevenLabsApiKey: string;
+  /** ElevenLabs model for the "elevenlabs" engine. eleven_v3 renders inline
+   * audio tags ([moans], [breathy], [laughs], …); flash/turbo trade tags for
+   * lower call latency. */
+  elevenLabsModel: string;
+  /** Default ElevenLabs voice id when an agent sets no tts.voice. */
+  elevenLabsVoice: string;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -71,6 +81,10 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   ttsEngine: "kyutai",
   claudeVoiceUrl: "http://127.0.0.1:8778",
   claudeVoiceDir: "",
+  elevenLabsApiKey: "",
+  elevenLabsModel: "eleven_v3",
+  // Premade "Rachel" — a neutral default; agents set their own tts.voice.
+  elevenLabsVoice: "21m00Tcm4TlvDq8ikWAM",
 };
 
 export async function ensureVoiceSettingsFile(): Promise<void> {
@@ -93,6 +107,9 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.ttsEngine === "string" && raw.ttsEngine.trim()) settings.ttsEngine = raw.ttsEngine.trim();
   if (typeof raw.claudeVoiceUrl === "string" && raw.claudeVoiceUrl.trim()) settings.claudeVoiceUrl = raw.claudeVoiceUrl.trim();
   if (typeof raw.claudeVoiceDir === "string" && raw.claudeVoiceDir.trim()) settings.claudeVoiceDir = raw.claudeVoiceDir.trim();
+  if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
+  if (typeof raw.elevenLabsModel === "string" && raw.elevenLabsModel.trim()) settings.elevenLabsModel = raw.elevenLabsModel.trim();
+  if (typeof raw.elevenLabsVoice === "string" && raw.elevenLabsVoice.trim()) settings.elevenLabsVoice = raw.elevenLabsVoice.trim();
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();
@@ -116,6 +133,11 @@ export interface VoiceStackSettings {
   // Seconds before unmute nudges the agent to fill a silence; null disables
   // the nudges entirely (the backend gets an effectively-infinite timeout).
   silenceTimeoutSec?: number | null;
+  // An already-running TTS server (ws://…) to point unmute at instead of
+  // spawning the bundled moshi service — the gaia TTS bridge uses this to route
+  // a call through a read-aloud engine (e.g. claude-voice). When set, the stack
+  // never resolves or spawns its own tts service.
+  ttsEndpoint?: string;
 }
 
 export interface VoiceHealth {
@@ -300,17 +322,21 @@ export class VoiceStackManager {
     }
 
     mkdirSync(this.logDir, { recursive: true });
-    // The three services probe independently; resolving them in parallel
-    // keeps the worst case at one probe round instead of three.
+    // The services probe independently; resolving them in parallel keeps the
+    // worst case at one probe round. An external TTS server (the gaia bridge,
+    // e.g. claude-voice) replaces the bundled moshi service entirely: we neither
+    // resolve nor spawn a tts child, and point the backend straight at it.
+    const externalTts = settings.ttsEndpoint?.trim();
     const [stt, tts, backend] = await Promise.all([
       this.resolveService("stt", STT_PORT, onStatus),
-      this.resolveService("tts", TTS_PORT, onStatus),
+      externalTts ? Promise.resolve(null) : this.resolveService("tts", TTS_PORT, onStatus),
       this.resolveService("backend", configuredBackendPort(settings.unmuteUrl), onStatus),
     ]);
+    const ttsUrl = externalTts ?? `ws://localhost:${tts!.port}`;
 
     const specs: ServiceSpec[] = [
       { name: "stt", script: "macos/start_stt_metal.sh", port: stt.port, env: { STT_PORT: String(stt.port) } },
-      { name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } },
+      ...(tts ? [{ name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } }] : []),
       {
         name: "backend",
         script: "macos/start_backend.sh",
@@ -319,13 +345,13 @@ export class VoiceStackManager {
           KYUTAI_LLM_URL: gaiaUrl,
           KYUTAI_LLM_MODEL: "gaia",
           KYUTAI_STT_URL: `ws://localhost:${stt.port}`,
-          KYUTAI_TTS_URL: `ws://localhost:${tts.port}`,
+          KYUTAI_TTS_URL: ttsUrl,
           KYUTAI_BACKEND_PORT: String(backend.port),
           KYUTAI_USER_SILENCE_TIMEOUT: String(settings.silenceTimeoutSec ?? 1_000_000_000),
         },
       },
     ];
-    const needsSpawn: Record<string, boolean> = { stt: stt.spawn, tts: tts.spawn, backend: backend.spawn };
+    const needsSpawn: Record<string, boolean> = { stt: stt.spawn, backend: backend.spawn, ...(tts ? { tts: tts.spawn } : {}) };
     const spawnService = this.hooks.spawnService ?? defaultSpawnService;
     for (const spec of specs) {
       if (!needsSpawn[spec.name]) continue;

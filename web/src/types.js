@@ -19,6 +19,8 @@
 /** @typedef {import("../../src/core/types.js").SanitizeSuggestion} SanitizeSuggestion */
 /** @typedef {import("../../src/core/types.js").SanitizeOption} SanitizeOption */
 /** @typedef {import("../../src/core/types.js").ContextGatePending} ContextGatePending */
+/** @typedef {import("../../src/core/types.js").ChatSearchHit} ChatSearchHit */
+/** @typedef {import("../../src/core/types.js").ChatSearchResult} ChatSearchResult */
 
 /**
  * One SSE payload, narrowed by its `type` tag.
@@ -66,6 +68,7 @@
  * @property {FieldHintOption[]} [options]
  * @property {string} [groupBy]
  * @property {boolean} [hidden]
+ * @property {string} [label]
  * @property {string} [description]
  */
 

@@ -14,6 +14,7 @@ import "./dario.js";
 import "./contextgate.js";
 import "./panel.js";
 import "./settings.js";
+import "./search.js";
 import "./sidebar.js";
 import "./tabsbar.js";
 import "./transcript.js";

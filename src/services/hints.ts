@@ -49,7 +49,10 @@ export interface FieldHint {
   groupBy?: string;
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
   hidden?: boolean;
-  /** Shown as the field's tooltip — what the setting does / example value. */
+  /** Friendly field name shown in the settings UI in place of the raw JSON key
+   * (e.g. "Voice mode" for `ttsEngine`). Falls back to the key when absent. */
+  label?: string;
+  /** Shown as visible help text under the field — what the setting does / example value. */
   description?: string;
 }
 
@@ -339,15 +342,17 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       description: "may summon further workers when itself running as a summon (default false)",
     },
     mcpServers: mcpServersHint({ hidden: hiddenByHarness.has("mcpServers") }),
-    voice: { input: "text", optional: true, description: "voice-call TTS voice (an unmute voice id, e.g. unmute-prod-website/p329_022.wav)" },
+    voice: { input: "text", optional: true, label: "Native call voice (unmute)", description: "native unmute call voice (a voices.yaml id); ignored when tts.engine drives the call (e.g. claude)" },
     "tts.engine": select(values(ttsEngineIds()), {
       optional: true,
-      description: "read-aloud engine for this agent's messages (default: voice.json ttsEngine)",
+      label: "Voice mode for this agent",
+      description: "Which voice this agent speaks with — read-aloud AND live calls (claude routes calls through the bridge). Overrides the workspace default; leave unset to inherit voice.json.",
     }),
     "tts.voice": {
       input: "text",
       optional: true,
-      description: `read-aloud voice for the engine (claude: ${findTtsEngine("claude")?.voices.join(" | ") ?? ""})`,
+      label: "Voice",
+      description: `voice for the engine, read-aloud + calls (claude: ${findTtsEngine("claude")?.voices.join(" | ") ?? ""})`,
     },
     ...sandboxHints(),
     ...memoryHints(true, sources.models),
@@ -374,19 +379,27 @@ function schedulesJsonHints(sources: HintSources): FileHints {
 
 function voiceJsonHints(): FileHints {
   return {
-    autoStart: { input: "boolean" },
-    speakOnSilence: { input: "boolean" },
-    disableThinking: { input: "boolean" },
-    startTimeoutSec: { input: "number" },
-    silenceDelaySec: { input: "number" },
-    unmuteUrl: { input: "text", optional: true, description: "unmute backend the browser connects to (default ws://127.0.0.1:8000)" },
-    unmuteDir: { input: "text", optional: true, description: "local unmute checkout to auto-start; empty = the bundled one" },
     ttsEngine: select(values(ttsEngineIds()), {
       optional: true,
-      description: "default read-aloud engine for the transcript play button (agents override via agent.json tts.engine)",
+      label: "Voice mode (default TTS engine)",
+      description: "Which voice speaks — kyutai (local), claude (claude.ai voices), or elevenlabs. This is the workspace default; an agent overrides it in its own settings (tts.engine).",
     }),
-    claudeVoiceUrl: { input: "text", optional: true, description: "claude-voice daemon for the claude engine (default http://127.0.0.1:8778)" },
-    claudeVoiceDir: { input: "text", optional: true, description: "claude-voice checkout to auto-start when its daemon is down; empty = never auto-start" },
+    disableThinking: { input: "boolean", label: "Auto-disable thinking on calls", description: "Turn the agent's thinking off for the duration of a voice call (lower latency); it reverts on hang-up." },
+    speakOnSilence: { input: "boolean", label: "Speak up during silences", description: "When you go quiet on a call, let the agent check back in on its own instead of waiting." },
+    silenceDelaySec: { input: "number", label: "Silence before speaking up (seconds)", description: "How long you can be quiet before the agent speaks up (only when 'Speak up during silences' is on)." },
+    autoStart: { input: "boolean", label: "Auto-start the voice stack", description: "Bring up the local speech services automatically when a call starts." },
+    startTimeoutSec: { input: "number", label: "Voice-stack start timeout (seconds)", description: "How long to wait for the speech services to come up before giving up (first start loads models — keep this generous)." },
+    unmuteUrl: { input: "text", optional: true, label: "unmute backend URL", description: "unmute backend the browser connects to (default ws://127.0.0.1:8000)" },
+    unmuteDir: { input: "text", optional: true, label: "unmute checkout", description: "local unmute checkout to auto-start; empty = the bundled one" },
+    claudeVoiceUrl: { input: "text", optional: true, label: "claude-voice daemon URL", description: "claude-voice daemon for the claude engine (default http://127.0.0.1:8778)" },
+    claudeVoiceDir: { input: "text", optional: true, label: "claude-voice checkout (auto-start)", description: "claude-voice checkout to auto-start when its daemon is down; empty = never auto-start" },
+    elevenLabsApiKey: { input: "text", optional: true, label: "ElevenLabs API key", description: "ElevenLabs API key (xi-api-key) for the elevenlabs engine; stored locally, or set ELEVENLABS_API_KEY" },
+    elevenLabsModel: select(values(["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]), {
+      optional: true,
+      label: "ElevenLabs model",
+      description: "ElevenLabs model — eleven_v3 renders [moans]/[breathy]/[laughs] audio tags; flash/turbo trade tags for lower latency",
+    }),
+    elevenLabsVoice: { input: "text", optional: true, label: "ElevenLabs default voice", description: "default ElevenLabs voice id when an agent sets no tts.voice" },
   };
 }
 

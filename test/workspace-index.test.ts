@@ -28,7 +28,10 @@ import {
   quantizeInt8,
   readHealth,
   scrollTranscriptWindow,
+  searchTranscripts,
   searchWorkspaceIndex,
+  SEARCH_MARK_CLOSE,
+  SEARCH_MARK_OPEN,
   sharedMemorySource,
   setHealth,
   storeEmbeddings,
@@ -135,6 +138,53 @@ test("buildChunks: a single oversized event splits into CLOSED single-event piec
     assert.deepEqual(piece.eventIds, ["huge"]);
     assert.equal(piece.firstIdx, 5);
     assert.ok(piece.text.length <= 1000);
+  }
+});
+
+// --- chat search (web client) ----------------------------------------------------
+
+test("searchTranscripts: transcript-only, cross-room, with event_ids and marked snippet", async () => {
+  const { root, memoryDir, sources } = await makeWorkspace([
+    { roomId: "kitchen", events: [{ author: "user", text: "the sourdough needs a longer autolyse", id: "k0" }, { author: "gaia", text: "raise the hydration too", id: "k1" }] },
+    { roomId: "garage", events: [{ author: "user", text: "the autolyse of the epoxy took all night", id: "g0" }] },
+  ]);
+  // A matching fact must NOT leak into chat search (transcript-only).
+  await addFact(memoryDir, "the autolyse step matters for sourdough");
+
+  const db = openWorkspaceIndex(root);
+  try {
+    await syncWorkspaceIndex(db, sources);
+    const hits = searchTranscripts(db, "autolyse");
+    // Both rooms matched; no facts/episodes in the result set.
+    const rooms = new Set(hits.map((hit) => hit.roomId));
+    assert.ok(rooms.has("kitchen") && rooms.has("garage"), `both rooms matched (got ${[...rooms].join(", ")})`);
+    // Every hit resolves to concrete message ids for navigation.
+    for (const hit of hits) assert.ok(hit.eventIds.length >= 1, "hit carries event ids");
+    const kitchen = hits.find((hit) => hit.roomId === "kitchen");
+    assert.ok(kitchen?.eventIds.includes("k0"), "kitchen hit points at the matching message");
+    // The FTS snippet wraps the matched term in the sentinels the client swaps for <mark>.
+    assert.ok(hits.some((hit) => hit.snippet.includes(SEARCH_MARK_OPEN) && hit.snippet.includes(SEARCH_MARK_CLOSE)), "snippet marks the match");
+  } finally {
+    db.close();
+  }
+});
+
+test("searchTranscripts: roomId scopes to a single chat (in-chat search)", async () => {
+  const { root, sources } = await makeWorkspace([
+    { roomId: "kitchen", events: [{ author: "user", text: "the sourdough needs a longer autolyse", id: "k0" }] },
+    { roomId: "garage", events: [{ author: "user", text: "the autolyse of the epoxy took all night", id: "g0" }] },
+  ]);
+  const db = openWorkspaceIndex(root);
+  try {
+    await syncWorkspaceIndex(db, sources);
+    const scoped = searchTranscripts(db, "autolyse", { roomId: "garage" });
+    assert.ok(scoped.length >= 1, "found the match in the scoped room");
+    assert.ok(
+      scoped.every((hit) => hit.roomId === "garage"),
+      "no hits leak from other rooms",
+    );
+  } finally {
+    db.close();
   }
 });
 

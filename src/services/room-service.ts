@@ -159,6 +159,13 @@ const CONTEXT_SUMMARY_SYSTEM = [
   "Use short sections or bullets. Do not add commentary about the summary itself.",
 ].join(" ");
 
+/** Cap on the transcript chars fed to the context-gate summarizer, biased to the
+ * recent tail. Keeps a huge room from overflowing the summarizer model's context
+ * (~25k tokens of input, safe even for a small-window consolidation model).
+ * Rooms that exceed this should be joined with "Load full" if they fit the
+ * agent's own (much larger) window. */
+const MAX_SUMMARY_INPUT_CHARS = 100_000;
+
 /** Max hits a /recall command reply lists. */
 const RECALL_COMMAND_LIMIT = 8;
 
@@ -988,18 +995,50 @@ export class RoomService {
   }
 
   /** One LLM pass distilling the room (up to the gate point) into a briefing for
-   * a joining agent. Degrades to a raw transcript slice if no llm is wired. */
+   * a joining agent. Degrades to a raw transcript slice if no llm is wired.
+   * Surfaces the pass as a "compacting" status with a ticking elapsed — the same
+   * UI the /compact command drives — so the context-gate "Compact & join" path
+   * isn't a silent black box. (This is a seed-time briefing, not a harness
+   * session compaction, so it shares the status but not the compact() call.) */
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
     const { events } = await this.room.eventsFrom(0);
     const rendered = renderRoomTranscript(events.slice(0, uptoEvents));
+    // Cap the summarizer input, biased to the TAIL, so a huge room can't
+    // overflow the model's context window (→ throw → garbage fallback). A
+    // joining agent most needs recent context, and every fallback below now
+    // returns the recent tail — never the ancient head, which was useless for
+    // continuity (the "cut off mid-sentence, only the early thread" briefing).
+    const input =
+      rendered.length > MAX_SUMMARY_INPUT_CHARS
+        ? `[…earlier history omitted for length…]\n\n${rendered.slice(-MAX_SUMMARY_INPUT_CHARS)}`
+        : rendered;
     const llm = this.options.llm;
-    if (!llm) return rendered.slice(0, 4000);
-    const model = this.workspace.agents[target]?.model;
+    if (!llm) return input.slice(-4000);
+    // Use the default consolidation model, NOT the joining agent's model: an
+    // agent on an oauth subscription (e.g. anthropic/opus via Claude) is not in
+    // the pi-ai model registry and has no API key there, so forcing its model
+    // makes the summary throw and silently fall back to a raw transcript slice.
+    // The consolidation default is the same reliably-authed model memory
+    // consolidation already uses.
+    // Mark the joining agent "compacting" and seed the job size so the panel/
+    // composer/statusbar show a real number and a ticking elapsed for the whole
+    // (possibly long) summary pass. A single LLM call can't stream token deltas,
+    // so the elapsed timer carries the progress.
+    this.compactingAgents.add(target);
+    this.compactProgress.set(target, { startedAt: Date.now(), contextTokens: estimateTokens(input) });
+    await this.emitSnapshot();
     try {
-      const summary = await llm({ system: CONTEXT_SUMMARY_SYSTEM, user: rendered, ...(model ? { model } : {}) });
-      return summary.trim() || rendered.slice(0, 4000);
+      const summary = await llm({ system: CONTEXT_SUMMARY_SYSTEM, user: input });
+      const text = summary.trim() || input.slice(-4000);
+      const prev = this.compactProgress.get(target);
+      if (prev) this.compactProgress.set(target, { ...prev, outputTokens: estimateTokens(text) });
+      return text;
     } catch {
-      return rendered.slice(0, 4000); // summarizer failure never blocks the resume
+      return input.slice(-4000); // summarizer failure never blocks the resume
+    } finally {
+      this.compactingAgents.delete(target);
+      this.compactProgress.delete(target);
+      await this.emitSnapshot();
     }
   }
 

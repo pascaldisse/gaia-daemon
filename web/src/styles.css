@@ -361,8 +361,27 @@ body.resizing { cursor: col-resize; user-select: none; }
 .topbar strong, .topbar small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar strong { color: var(--fg); font-weight: 600; }
 
+.topbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .status { color: var(--accent); white-space: nowrap; }
 .status.on-call { text-shadow: 0 0 8px var(--accent); }
+
+.topbar-search {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.topbar-search:hover { color: var(--accent); border-color: var(--accent); background: var(--bg3, var(--bg2)); }
 
 .error {
   color: var(--danger);
@@ -737,9 +756,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .settings-view { display: grid; gap: 9px; }
 .setting-heading { color: var(--accent); border-bottom: 1px solid var(--border); padding: 8px 0 4px; text-transform: uppercase; }
 
-.setting-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: center; }
+.setting-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 6px 8px; align-items: center; }
 .setting-row.stacked { grid-template-columns: 1fr; align-items: start; }
 .setting-row.stacked > span { color: var(--accent); }
+.setting-row .field-name { font-weight: 500; }
+/* Visible, full-width help text under each described setting (see rowTitle). */
+.setting-row[data-desc]::after { content: attr(data-desc); grid-column: 1 / -1; margin: -1px 0 2px; font-size: 0.82em; line-height: 1.35; color: var(--muted, #8a8f98); }
 
 .json-nested { display: grid; gap: 9px; padding: 8px 0 0 14px; border-left: 1px solid var(--border); }
 .text-setting { min-height: 96px; resize: vertical; }
@@ -908,6 +930,116 @@ body.resizing { cursor: col-resize; user-select: none; }
 .sw-good { background: var(--good); }
 .sw-danger { background: var(--danger); }
 .sw-name { color: var(--fg); font-weight: 600; }
+
+/* ============================================================
+   chat search overlay (Cmd/Ctrl+K)
+   ============================================================ */
+.search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  grid-template-rows: 12vh auto 1fr;
+  justify-items: center;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.search-panel {
+  grid-row: 2;
+  width: min(760px, calc(100vw - 40px));
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+  animation: palette-pop 0.14s ease-out;
+  overflow: hidden;
+}
+
+.search-head { display: flex; align-items: stretch; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.search-input {
+  flex: 1;
+  background: var(--ink);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font);
+  font-size: 15px;
+  padding: 9px 12px;
+  outline: none;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-close { background: none; border: 1px solid var(--border); color: var(--muted); padding: 0 12px; cursor: pointer; }
+.search-close:hover { color: var(--fg); border-color: var(--accent); }
+
+.search-filters { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.search-scope { display: flex; gap: 4px; }
+.search-scope button {
+  background: var(--bg3);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 4px 11px;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 12px;
+}
+.search-scope button.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+.search-scope button:disabled { opacity: 0.4; cursor: default; }
+.search-ws {
+  background: var(--ink);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.search-status { padding: 6px 14px; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--border); }
+.search-results { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.search-empty { padding: 22px; text-align: center; color: var(--muted); }
+
+.search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: var(--font);
+  color: var(--fg);
+}
+.search-result:hover { background: var(--bg3); }
+.search-result.active { background: var(--bg3); border-color: var(--border); border-left-color: var(--accent); }
+.sr-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+.sr-room { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-ws { color: var(--accent2); font-size: 11px; }
+.sr-time { margin-left: auto; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.sr-snippet { color: var(--fg); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 4.5em; overflow: hidden; }
+.sr-snippet mark { background: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--fg); padding: 0 1px; }
+.sr-speakers { color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+/* Sidebar search entry. */
+.nav-search {
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  text-align: left;
+  padding: 7px 11px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font-family: var(--font);
+}
+.nav-search:hover { border-color: var(--accent); color: var(--accent); }
+
+/* The message a search result jumped to: a brief flash, then settle. */
+.message.search-hit { scroll-margin: 80px; animation: search-flash 2.4s ease-out; }
+@keyframes search-flash {
+  0%, 40% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}
 
 /* ============================================================
    responsive fallbacks

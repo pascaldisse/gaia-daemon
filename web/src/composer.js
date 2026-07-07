@@ -712,7 +712,7 @@ export function isEditableElement(element) {
 
 /** @param {KeyboardEvent} event */
 function shouldRouteKeyToComposer(event) {
-  if (!state.snapshot || state.settingsOpen || state.dario.open) return false;
+  if (!state.snapshot || state.settingsOpen || state.dario.open || state.search.open) return false;
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
   if (isEditableElement(event.target)) return false;
   if (event.key.length === 1) return true;
@@ -727,7 +727,7 @@ export function installComposerRouting() {
   window.addEventListener(
     "paste",
     (event) => {
-      if (!state.snapshot || state.settingsOpen || state.dario.open) return;
+      if (!state.snapshot || state.settingsOpen || state.dario.open || state.search.open) return;
       if (event.defaultPrevented || isEditableElement(event.target)) return;
       if (capturePastedFiles(event)) focusComposer();
     },
@@ -807,7 +807,7 @@ export function installComposerRouting() {
 
 /** @param {PointerEvent} event */
 export function focusComposerFromBackground(event) {
-  if (state.settingsOpen || state.dario.open) return;
+  if (state.settingsOpen || state.dario.open || state.search.open) return;
   if (isEditableElement(event.target)) return;
   if (event.target instanceof HTMLElement && event.target.closest("button")) return;
   focusComposer();
