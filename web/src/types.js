@@ -22,6 +22,8 @@
 /** @typedef {import("../../src/core/types.js").ContextGatePending} ContextGatePending */
 /** @typedef {import("../../src/core/types.js").ChatSearchHit} ChatSearchHit */
 /** @typedef {import("../../src/core/types.js").ChatSearchResult} ChatSearchResult */
+/** @typedef {import("../../src/core/types.js").UsageLimits} UsageLimits */
+/** @typedef {import("../../src/core/types.js").UsageWindow} UsageWindow */
 
 /**
  * One SSE payload, narrowed by its `type` tag.

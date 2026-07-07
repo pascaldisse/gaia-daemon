@@ -4,11 +4,13 @@
 // shared code sees only the HarnessSpec registered at the bottom.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, UsageLimits, UsageWindow, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -1120,6 +1122,140 @@ function discoverClaudeCommands(): NativeCommandDef[] {
   return claudeCommandsCache;
 }
 
+// ---------------------------------------------------------------------------
+// Account usage probe — the same session/weekly caps Claude Code's `/usage`
+// renders. The subscription figures are NOT in the -p stream (that carries only
+// per-turn tokens), so we read the OAuth token Claude Code stored (macOS
+// keychain, else ~/.claude/.credentials.json) and GET the account usage
+// endpoint directly. All of this is claude-specific knowledge that lives HERE;
+// the daemon only sees a normalized UsageLimits (RULE #0). Fail-soft: any
+// missing-creds / non-OAuth / offline / non-200 case returns null so the chip
+// simply hides rather than erroring.
+
+const execFileAsync = promisify(execFile);
+const USAGE_ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_TIMEOUT_MS = 6000;
+
+interface ClaudeOauth {
+  accessToken?: string;
+  subscriptionType?: string;
+}
+
+/** Read the Claude Code OAuth blob from wherever the CLI persisted it: the macOS
+ * login keychain first (its default on darwin), then the plaintext credentials
+ * file (Linux / older installs). Returns undefined when neither yields a token. */
+async function readClaudeOauth(): Promise<ClaudeOauth | undefined> {
+  const parse = (raw: string): ClaudeOauth | undefined => {
+    try {
+      const outer = JSON.parse(raw) as { claudeAiOauth?: ClaudeOauth } & ClaudeOauth;
+      const oauth = outer.claudeAiOauth ?? outer;
+      return typeof oauth?.accessToken === "string" ? oauth : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  if (process.platform === "darwin") {
+    try {
+      const { stdout } = await execFileAsync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        timeout: USAGE_TIMEOUT_MS,
+      });
+      const oauth = parse(stdout.trim());
+      if (oauth) return oauth;
+    } catch {
+      // No keychain entry (or locked) — fall through to the file.
+    }
+  }
+  try {
+    return parse(readFileSync(realClaudeCredentials(), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** One entry of the endpoint's normalized `limits[]`. */
+interface RawLimit {
+  kind?: string;
+  group?: string;
+  percent?: number;
+  severity?: string;
+  resets_at?: string;
+  is_active?: boolean;
+  scope?: { model?: { display_name?: string | null } | null } | null;
+}
+
+function usageLabel(limit: RawLimit): string {
+  switch (limit.kind) {
+    case "session":
+      return "Current session";
+    case "weekly_all":
+      return "Weekly · all models";
+    case "weekly_scoped": {
+      const model = limit.scope?.model?.display_name;
+      return model ? `Weekly · ${model}` : "Weekly · scoped";
+    }
+    default:
+      return limit.group === "weekly" ? "Weekly" : (limit.kind ?? "Usage");
+  }
+}
+
+/** Map the provider severity onto ours, deriving from percent when absent. */
+function usageSeverity(limit: RawLimit): UsageWindow["severity"] {
+  if (limit.severity === "critical" || limit.severity === "warning" || limit.severity === "normal") return limit.severity;
+  const pct = limit.percent ?? 0;
+  return pct >= 95 ? "critical" : pct >= 80 ? "warning" : "normal";
+}
+
+async function probeClaudeUsage(): Promise<UsageLimits | null> {
+  const oauth = await readClaudeOauth();
+  if (!oauth?.accessToken) return null; // API-key auth or signed out — no subscription caps to show.
+  let payload: { limits?: RawLimit[] };
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(USAGE_ENDPOINT, {
+        headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return null;
+    payload = (await res.json()) as { limits?: RawLimit[] };
+  } catch {
+    return null; // offline / aborted / unparseable — hide rather than error.
+  }
+  const limits = Array.isArray(payload.limits) ? payload.limits : [];
+  // Report the session cap, the all-models weekly cap, and EVERY per-model
+  // weekly cap (each tagged with its model). The status bar defaults to the
+  // account-wide windows and reveals a per-model cap only when that model is
+  // active in the open room — that room-awareness is client-side, so the probe
+  // stays account-global and just hands over everything it knows.
+  const rank: Record<string, number> = { session: 0, weekly_all: 1, weekly_scoped: 2 };
+  const windows: UsageWindow[] = limits
+    .filter((limit) => limit.kind === "session" || limit.kind === "weekly_all" || limit.kind === "weekly_scoped")
+    .sort((a, b) => (rank[a.kind ?? ""] ?? 9) - (rank[b.kind ?? ""] ?? 9))
+    .map((limit) => {
+      const model = limit.kind === "weekly_scoped" ? limit.scope?.model?.display_name : undefined;
+      return {
+        kind: limit.kind ?? "usage",
+        label: usageLabel(limit),
+        percent: Math.max(0, Math.min(100, Math.round(limit.percent ?? 0))),
+        severity: usageSeverity(limit),
+        ...(typeof limit.resets_at === "string" ? { resetsAt: limit.resets_at } : {}),
+        ...(model ? { model } : {}),
+      };
+    });
+  if (windows.length === 0) return null;
+  return {
+    harness: "claude",
+    ...(oauth.subscriptionType ? { plan: oauth.subscriptionType } : {}),
+    windows,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 registerHarness({
   id: "claude",
   capabilities: CLAUDE_CAPABILITIES,
@@ -1148,4 +1284,5 @@ registerHarness({
     env: { ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_AUTH_TOKEN: token },
     denyRead: [realClaudeCredentials()],
   }),
+  probeUsage: () => probeClaudeUsage(),
 });

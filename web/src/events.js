@@ -112,6 +112,15 @@ export function connectEvents() {
     markDirty("composer");
   });
 
+  // Daemon-global: one harness's account usage limits refreshed (or cleared).
+  // Not tied to the open room, so it's applied regardless of workspace.
+  source.addEventListener("usage-limits", (event) => {
+    const payload = /** @type {Ev<"usage-limits">} */ (JSON.parse(event.data));
+    if (payload.usage) state.usage[payload.harness] = payload.usage;
+    else delete state.usage[payload.harness];
+    markDirty("status");
+  });
+
   source.addEventListener("model-fallback", (event) => {
     const payload = /** @type {Ev<"model-fallback">} */ (JSON.parse(event.data));
     const fallback = { from: payload.fromModel, to: payload.toModel, reason: payload.reason };

@@ -12,8 +12,8 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { gaiaHome, globalPaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, VoiceCallInfo, Workspace } from "./core/types.js";
-import { capabilitiesFor, type GaiaTool } from "./harness/spec.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace } from "./core/types.js";
+import { capabilitiesFor, type GaiaTool, usageProbes } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
@@ -105,6 +105,21 @@ export interface DaemonOptions {
   log?: (message: string) => void;
 }
 
+// Usage limits change slowly (only your own turns spend, and windows reset on
+// their own clock the client counts down locally) — so the interval is just a
+// safety net for reset rollovers; the real freshness comes from the post-turn
+// debounced refresh.
+const USAGE_POLL_MS = 5 * 60_000;
+const USAGE_REFRESH_DEBOUNCE_MS = 4000;
+
+/** True when two usage snapshots differ in anything the UI shows (ignoring the
+ * ever-changing fetchedAt stamp) — gates a redundant broadcast. */
+function usageChanged(a: UsageLimits | null | undefined, b: UsageLimits | null): boolean {
+  if (!a || !b) return (a ?? null) !== (b ?? null);
+  const strip = (u: UsageLimits) => JSON.stringify({ plan: u.plan, windows: u.windows });
+  return strip(a) !== strip(b);
+}
+
 export interface SelectionPayload {
   snapshot: Snapshot;
   workspaceFiles: EditableFileDescriptor[];
@@ -132,6 +147,13 @@ export class Daemon {
   private readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly bus = new Bus<UiEvent>();
   private readonly pendingReloads = new Set<string>();
+  /** Latest account usage per harness (subscription session/weekly caps), cached
+   * so a newly-connected client can be seeded immediately (see currentUsage).
+   * Refreshed on a slow timer + after each turn; harness-agnostic. */
+  private readonly usage = new Map<string, UsageLimits>();
+  private usagePollTimer: ReturnType<typeof setInterval> | undefined;
+  private usageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private usageRefreshing = false;
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
   private bridge: HarnessBridge | undefined;
   private scheduler: SchedulerService | undefined;
@@ -188,6 +210,12 @@ export class Daemon {
     }).catch(() => {});
     const cwd = resolve(this.options.cwd);
     if (existsSync(workspacePath(cwd))) await this.registry.add(cwd);
+    // Account usage chip: one probe now, then a slow safety-net poll (post-turn
+    // refreshes keep it live between ticks). Harness-agnostic — refreshUsage
+    // asks every harness that declares a probe.
+    void this.refreshUsage();
+    this.usagePollTimer = setInterval(() => void this.refreshUsage(), USAGE_POLL_MS);
+    this.usagePollTimer.unref?.();
   }
 
   subscribe(listener: (event: UiEvent) => void): () => void {
@@ -198,7 +226,57 @@ export class Daemon {
     this.bus.emit(event);
   }
 
+  // --- account usage limits (harness-agnostic) ----------------------------------
+
+  /** Current cached usage as replayable events — used to seed a client the
+   * moment it connects (SSE fan-out only carries events broadcast while it's
+   * subscribed, so without this a fresh tab shows no chip until the next poll). */
+  currentUsage(): Extract<UiEvent, { type: "usage-limits" }>[] {
+    return [...this.usage.entries()].map(([harness, usage]) => ({ type: "usage-limits", harness, usage }));
+  }
+
+  /** Poll every harness that declares a usage probe (RULE #0: no harness-id
+   * branch — each declares its own probe as data on its spec) and broadcast any
+   * change. Fail-soft: a probe that throws or returns null clears that chip. */
+  async refreshUsage(): Promise<void> {
+    if (this.usageRefreshing) return;
+    this.usageRefreshing = true;
+    try {
+      await Promise.all(
+        usageProbes().map(async ({ harness, probe }) => {
+          let usage: UsageLimits | null = null;
+          try {
+            usage = await probe();
+          } catch {
+            usage = null;
+          }
+          const prev = this.usage.get(harness);
+          if (usage) this.usage.set(harness, usage);
+          else this.usage.delete(harness);
+          // Skip a redundant broadcast when nothing meaningful changed (the
+          // fetchedAt stamp always differs, so compare the payload sans it).
+          if (usageChanged(prev, usage)) this.broadcast({ type: "usage-limits", harness, usage });
+        }),
+      );
+    } finally {
+      this.usageRefreshing = false;
+    }
+  }
+
+  /** Debounced usage refresh — a turn's token spend lands a few seconds after it
+   * ends, and rapid multi-agent turns coalesce into one probe. */
+  private scheduleUsageRefresh(): void {
+    if (this.usageRefreshTimer) return;
+    this.usageRefreshTimer = setTimeout(() => {
+      this.usageRefreshTimer = undefined;
+      void this.refreshUsage();
+    }, USAGE_REFRESH_DEBOUNCE_MS);
+    this.usageRefreshTimer.unref?.();
+  }
+
   dispose(): void {
+    if (this.usagePollTimer) clearInterval(this.usagePollTimer);
+    if (this.usageRefreshTimer) clearTimeout(this.usageRefreshTimer);
     this.scheduler?.dispose();
     this.ttsBridge?.stop();
     this.voiceStack.stop();
@@ -251,7 +329,12 @@ export class Daemon {
         runNow: (jobId) => this.scheduler?.runNow(workspaceId, record.path, jobId) ?? Promise.resolve("The scheduler is not running."),
       },
     });
-    service.subscribe((event) => this.broadcast(event));
+    service.subscribe((event) => {
+      this.broadcast(event);
+      // A finished turn just spent tokens — refresh the account usage chip so it
+      // tracks live instead of waiting for the slow poll.
+      if (event.type === "task-end" || event.type === "task-error") this.scheduleUsageRefresh();
+    });
     await service.init();
     this.services.set(key, service);
     this.evictIdleServices();

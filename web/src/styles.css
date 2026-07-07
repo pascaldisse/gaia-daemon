@@ -1019,6 +1019,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .seg-keys { --seg-bg: var(--accent); color: var(--bg); font-weight: 600; }
 .seg-keys::after { display: none; }
 
+/* Account usage chip (subscription session/weekly caps). Colour tracks the
+   worst window's severity so a full week reads red at a glance. */
+.seg-usage { --seg-bg: var(--bg2); color: var(--accent); cursor: pointer; font-weight: 600; font-variant-numeric: tabular-nums; }
+.seg-usage:hover { color: var(--fg); }
+.seg-usage.warn { color: var(--warn); }
+.seg-usage.crit { color: var(--danger); }
+
 /* ============================================================
    omarchy-style theme palette
    ============================================================ */
@@ -1065,6 +1072,28 @@ body.resizing { cursor: col-resize; user-select: none; }
 .sw-good { background: var(--good); }
 .sw-danger { background: var(--danger); }
 .sw-name { color: var(--fg); font-weight: 600; }
+
+/* ============================================================
+   account usage popover (status-bar usage chip → click)
+   ============================================================ */
+.usage-popover { width: min(440px, calc(100vw - 40px)); }
+.usage-group + .usage-group { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.usage-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.usage-harness { color: var(--accent2); font-weight: 700; text-transform: uppercase; letter-spacing: 2px; font-size: 0.82em; }
+.usage-plan { color: var(--muted); font-size: 0.82em; }
+.usage-row + .usage-row { margin-top: 13px; }
+.usage-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.usage-label { color: var(--fg); }
+.usage-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.usage-bar { height: 7px; background: var(--ink); overflow: hidden; }
+.usage-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; min-width: 2px; }
+.usage-reset { display: block; margin-top: 4px; color: var(--muted); }
+.sev-normal { color: var(--accent); }
+.usage-bar-fill.sev-normal { background: var(--accent); }
+.sev-warning { color: var(--warn); }
+.usage-bar-fill.sev-warning { background: var(--warn); }
+.sev-critical { color: var(--danger); }
+.usage-bar-fill.sev-critical { background: var(--danger); }
 
 /* ============================================================
    chat search overlay (Cmd/Ctrl+K)
