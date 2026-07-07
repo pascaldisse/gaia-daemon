@@ -156,6 +156,18 @@ interface ClaudeRoomMeta {
 // permissions intact (confirmed in `claude --help`).
 const SAFE_MODE = "--safe-mode";
 
+// A steer (an extra user message injected on the open stdin) that lands after
+// the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
+// emits `result`, then runs the injected message as its OWN continuation turn
+// (a fresh `system init` + its own `result`, observed ~10-30 ms after the first
+// result). If we closed the channel on that first `result` we'd drop the
+// continuation and the steer would be silently lost. So when a steer is pending
+// we DON'T close on the first `result`; we wait this grace for the continuation
+// to begin (any further message cancels the wait and we stream it through to its
+// own `result`). If nothing comes, the steer folded into the result we already
+// have and we close. The delay only affects a steered turn's final commit.
+const STEER_CONTINUATION_GRACE_MS = 1500;
+
 // ---------------------------------------------------------------------------
 // Config-driven tool translation
 // ---------------------------------------------------------------------------
@@ -379,6 +391,10 @@ export class ClaudeRuntime implements AgentRuntime {
   private active: ClaudeProcessHandle | null = null;
   /** Room whose turn `active` is streaming — steer() only injects into it. */
   private activeRoomId: string | undefined;
+  /** Set by the streaming send() so a successful steer can keep the turn's
+   * channel open for the injected message's continuation (see
+   * STEER_CONTINUATION_GRACE_MS). Cleared when the turn ends. */
+  private onActiveSteer: (() => void) | undefined;
   private readonly processFactory: ClaudeProcessFactory;
   private readonly configuredModelLabel: string;
   private liveModelLabel: string | undefined;
@@ -457,6 +473,24 @@ export class ClaudeRuntime implements AgentRuntime {
 
     const channel = createEventChannel();
 
+    // Steer-continuation bookkeeping: a steer injected this turn defers the
+    // close on the next `result` so the injected message's continuation turn is
+    // streamed & folded into this reply instead of being dropped.
+    let steerPending = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearGrace = (): void => {
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = undefined;
+      }
+    };
+    // A fresh steer (while a prior one is awaiting its continuation) means more
+    // is still coming — keep waiting.
+    this.onActiveSteer = () => {
+      steerPending = true;
+      clearGrace();
+    };
+
     // Per-turn parse state.
     const blockTypes = new Map<number, string>(); // content-block index -> type
     let subscription = false; // from init's apiKeySource; reused on fallback
@@ -511,6 +545,10 @@ export class ClaudeRuntime implements AgentRuntime {
 
     const onMessage = (raw: unknown): void => {
       const msg = raw as { type?: string };
+      // Any non-`result` message arriving while we're in the grace window means
+      // the steer's continuation turn has begun (its `system init` etc.) — stop
+      // the grace-close and let it stream through to its own `result`.
+      if (graceTimer && msg.type !== "result") clearGrace();
       switch (msg.type) {
         case "system": {
           const sys = raw as {
@@ -622,12 +660,25 @@ export class ClaudeRuntime implements AgentRuntime {
               .filter((n): n is number => typeof n === "number");
             pushContextUsage(lastUsage, windows.length ? Math.max(...windows) : undefined);
           }
-          if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
-            channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
-          }
           // Close any thinking indicator that never saw a content_block_stop.
           endThinking();
-          channel.close();
+          clearGrace();
+          if (res.is_error === true || (res.subtype && res.subtype !== "success")) {
+            channel.fail(new Error(res.result || `Claude turn failed (${res.subtype ?? "error"}).`));
+            channel.close();
+          } else if (steerPending) {
+            // A steer was injected during this turn. Don't end here: the CLI runs
+            // the injected message as a continuation turn whose events fold into
+            // this same reply. Wait briefly for it to begin; if nothing comes,
+            // the steer folded into the result we already streamed — close.
+            steerPending = false;
+            graceTimer = setTimeout(() => {
+              graceTimer = undefined;
+              channel.close();
+            }, STEER_CONTINUATION_GRACE_MS);
+          } else {
+            channel.close();
+          }
           break;
         }
       }
@@ -677,6 +728,8 @@ export class ClaudeRuntime implements AgentRuntime {
       if (!sessionEstablished && (firstTurn || /no conversation found/i.test(message))) this.sessions.reset(input.roomId);
       throw err;
     } finally {
+      clearGrace();
+      this.onActiveSteer = undefined;
       // A keepStdinOpen turn's CLI sits idle waiting for more stdin after it
       // streams `result`; close stdin so it reaches EOF and exits. (No-op when
       // the turn was aborted — the process is already being killed.)
@@ -795,7 +848,11 @@ export class ClaudeRuntime implements AgentRuntime {
    * streaming for this room or stdin already closed (turn just finished). */
   async steer(roomId: string, message: string): Promise<boolean> {
     if (roomId !== this.activeRoomId) return false;
-    return this.active?.steer?.(message) ?? false;
+    const ok = this.active?.steer?.(message) ?? false;
+    // Tell the streaming turn a steer landed so it keeps its channel open for
+    // the injected message's continuation instead of ending on the next result.
+    if (ok) this.onActiveSteer?.();
+    return ok;
   }
 
   dispose(): void {

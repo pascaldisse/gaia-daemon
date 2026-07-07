@@ -171,6 +171,26 @@ export async function jumpToEvent(eventId) {
   }, 2600);
 }
 
+/**
+ * Creation-time ordering key for a view. Room-event / task ids are
+ * `<prefix>_<base36(Date.now())>_<rand>` (see core/ids.ts), so the middle
+ * segment is the ms the id was minted. This is stable across a turn's
+ * stream→commit because a committed agent event REUSES the id reserved at turn
+ * START — its stored `timestamp` is commit time (later), but its id is the
+ * reservation time. Ordering by id-time therefore keeps a streaming reply
+ * anchored where it began, so a steer injected mid-turn sorts AFTER it (below)
+ * instead of jumping above the reply it was steering. Falls back to the
+ * timestamp for any id that isn't in the minted shape (e.g. imported history).
+ * @param {string} id @param {string} timestamp @returns {number}
+ */
+function creationOrder(id, timestamp) {
+  const seg = id.split("_")[1];
+  const ms = seg ? Number.parseInt(seg, 36) : Number.NaN;
+  if (Number.isFinite(ms)) return ms;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /** @returns {MessageView[]} */
 function messageViews() {
   const events = committedEvents();
@@ -209,7 +229,16 @@ function messageViews() {
       queued: true,
     });
   }
-  return views;
+  // Order by creation time (see creationOrder). Array.sort is stable, so views
+  // minted in the same ms keep their push order. This is a no-op for a plain
+  // transcript (committed events are already in creation order and a lone
+  // streaming reply starts after them); it only matters when something was
+  // committed DURING a running turn — a steer — which must sort below the reply
+  // it steered, not above it.
+  return views
+    .map((view, index) => ({ view, index, order: creationOrder(view.id, view.timestamp) }))
+    .sort((a, b) => a.order - b.order || a.index - b.index)
+    .map((entry) => entry.view);
 }
 
 function renderTranscript() {
