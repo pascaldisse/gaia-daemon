@@ -11,6 +11,13 @@ import { moveTab, visibleTabs } from "./tabs.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
+// True once a tab-drag ended on a sibling tab (a reorder drop). A drag that ends
+// anywhere else — including truly outside the window — leaves this false and is
+// treated as a tear-off. This is the reliable signal in a webview, where a drop
+// outside the window fires no drop event and dragend screen coords are unusable
+// (WebKit reports 0).
+let droppedOnTab = false;
+
 function renderTabs() {
   const bar = $("#tabbar");
   if (!bar) return;
@@ -73,23 +80,28 @@ function Tab(room, number, isActive, wsId) {
       title: room.id,
       ondragstart: (event) => {
         state.tabDragId = room.id;
-        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        droppedOnTab = false;
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          // WebKit needs drag data present or it may cancel the drag outright.
+          try {
+            event.dataTransfer.setData("text/plain", room.id);
+          } catch {
+            // some engines disallow setData here — harmless to skip.
+          }
+        }
       },
-      ondragend: (event) => {
+      ondragend: () => {
         const dragged = state.tabDragId;
         state.tabDragId = null;
-        // Tear-off: a tab released outside this window's bounds becomes its own
-        // native window (that chat, side panels collapsed). Reorder drops land on
-        // a sibling tab and fire ondrop first, inside the window, so they never
-        // reach here as a tear-off.
-        if (isNative() && dragged === room.id && wsId) {
-          const e = /** @type {DragEvent} */ (event);
-          const outside =
-            e.screenX < window.screenX ||
-            e.screenX > window.screenX + window.outerWidth ||
-            e.screenY < window.screenY ||
-            e.screenY > window.screenY + window.outerHeight;
-          if (outside && tearOff(room.id, e.screenX, e.screenY)) {
+        // Tear-off: a drag that did NOT end on a sibling tab (see droppedOnTab)
+        // becomes its own native window — that chat, side panels collapsed. The
+        // window opens offset from this one; precise drop coords aren't available
+        // in a webview (WebKit reports 0 at dragend), and aren't needed.
+        if (isNative() && dragged === room.id && wsId && !droppedOnTab) {
+          const sx = window.screenX + 96;
+          const sy = window.screenY + 72;
+          if (tearOff(room.id, sx, sy)) {
             void closeRoomTab(room.id);
             return;
           }
@@ -99,6 +111,7 @@ function Tab(room, number, isActive, wsId) {
       ondragover: (event) => event.preventDefault(),
       ondrop: (event) => {
         event.preventDefault();
+        droppedOnTab = true;
         if (state.tabDragId && wsId) moveTab(state.tabDragId, room.id, wsId);
         state.tabDragId = null;
         markDirty("tabs");

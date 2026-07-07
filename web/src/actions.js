@@ -3,6 +3,7 @@
 // state directly.
 import { api } from "./api.js";
 import { connectEvents, seedLiveTurn } from "./events.js";
+import { promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
 import { activeTask, runningSummonRooms, state, syncReadMarks } from "./state.js";
@@ -85,7 +86,7 @@ export async function addWorkspace() {
   } catch {
     pickerUnavailable = true;
   }
-  if (!path && pickerUnavailable) path = window.prompt("Workspace path");
+  if (!path && pickerUnavailable) path = await promptText("Workspace path", { placeholder: "/path/to/workspace" });
   if (!path) return;
   try {
     await applyAppPayload(await api("/api/workspaces", { method: "POST", body: JSON.stringify({ path }) }));
@@ -179,7 +180,7 @@ export async function setRoomAgentDialogue(on) {
 export async function addRoom() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const roomId = window.prompt("Room name (letters, numbers, dots, hyphens, underscores)");
+  const roomId = await promptText("New room name", { placeholder: "letters, numbers, dots, hyphens, underscores" });
   if (!roomId?.trim()) return;
   try {
     await selectRoom(snapshot.workspace.id, roomId.trim());

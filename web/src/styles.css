@@ -940,6 +940,23 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 12px;
 }
 
+/* single-line text prompt (in-app window.prompt replacement) */
+.prompt-modal { width: min(460px, calc(100vw - 32px)); }
+.prompt-input {
+  width: 100%;
+  margin: 12px 0;
+  padding: 7px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+}
+.prompt-input:focus { outline: none; border-color: var(--accent); }
+.prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 5px 14px; cursor: pointer; }
+.prompt-btn:hover { border-color: var(--accent); }
+.prompt-btn.primary { border-color: var(--accent); color: var(--accent); }
+
 /* ============================================================
    powerline status bar (spaceship-style segments)
    ============================================================ */

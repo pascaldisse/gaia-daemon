@@ -157,6 +157,9 @@ fn open_window(
         .title("GAIA")
         .inner_size(w, h)
         .min_inner_size(560.0, 420.0)
+        // Required so the web UI's HTML5 drag-and-drop (tab reorder + tear-off)
+        // fires: with Tauri's OS drag-drop handler on, the webview swallows it.
+        .disable_drag_drop_handler()
         .resizable(true);
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
@@ -235,6 +238,9 @@ fn build_and_set_menu(handle: &tauri::AppHandle) -> tauri::Result<()> {
         .select_all()
         .build()?;
 
+    let reload = MenuItemBuilder::with_id("reload", "Reload")
+        .accelerator("CmdOrCtrl+R")
+        .build(handle)?;
     let toggle_sidebar = MenuItemBuilder::with_id("toggle_sidebar", "Toggle Sessions Sidebar")
         .accelerator("CmdOrCtrl+B")
         .build(handle)?;
@@ -242,6 +248,8 @@ fn build_and_set_menu(handle: &tauri::AppHandle) -> tauri::Result<()> {
         .accelerator("CmdOrCtrl+Alt+B")
         .build(handle)?;
     let view_menu = SubmenuBuilder::new(handle, "View")
+        .item(&reload)
+        .separator()
         .item(&toggle_sidebar)
         .item(&toggle_panel)
         .build()?;
@@ -287,6 +295,12 @@ fn handle_menu(app: &tauri::AppHandle, id: &str) {
                 let _ = win.close();
             }
         }
+        "reload" => {
+            // Reload natively so it works even if the web UI's JS is wedged.
+            if let Some(win) = focused_webview(app) {
+                let _ = win.eval("window.location.reload()");
+            }
+        }
         other => {
             if let Some(win) = focused_webview(app) {
                 let _ = win.emit("gaia://menu", other.to_string());
@@ -327,6 +341,8 @@ pub fn run() {
                 .title("GAIA")
                 .inner_size(1180.0, 820.0)
                 .min_inner_size(720.0, 480.0)
+                // See open_window: needed for the tab strip's HTML5 drag-and-drop.
+                .disable_drag_drop_handler()
                 .resizable(true)
                 .build()?;
 
