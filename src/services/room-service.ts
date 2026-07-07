@@ -218,6 +218,10 @@ export class RoomService {
    * mean "an agent is mid-turn" (e.g. /compact) must consult this instead, or
    * they trip on the command's own task. */
   private activeAgentTurn: Task | undefined;
+  /** The running agent-turn's full unwind (streaming + partial commit + settle
+   * paths). cancelActiveTask awaits it so a stop settles AFTER the streamed
+   * partial is committed — never blanking progress from the UI. */
+  private activeTurnUnwind: Promise<void> | undefined;
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
@@ -496,10 +500,17 @@ export class RoomService {
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
     void this.emitRoomsChanged();
 
-    void this.runAgentTask(task, text, options).catch((error) => {
-      if (this.taskCancelled(task)) return;
-      this.settleTask(task, "error", error);
-    });
+    // Held so cancelActiveTask can await the turn's unwind — the unwind is what
+    // commits a streamed partial, and the cancel's settle snapshot must come
+    // AFTER that commit or the partial vanishes from the UI until much later.
+    this.activeTurnUnwind = this.runAgentTask(task, text, options)
+      .catch((error) => {
+        if (this.taskCancelled(task)) return;
+        this.settleTask(task, "error", error);
+      })
+      .finally(() => {
+        this.activeTurnUnwind = undefined;
+      });
   }
 
   /** Dispatches the next durably-queued message once the room goes idle. */
@@ -702,10 +713,9 @@ export class RoomService {
 
   async cancelActiveTask(): Promise<Task | undefined> {
     await this.init();
-    // Panic stop clears the whole pipeline: queued messages first so the drain
-    // after settling doesn't immediately start one.
-    await this.clearQueued();
-
+    // Stop targets the RUNNING turn only. Queued messages are the user's own
+    // work and SURVIVE a stop (NO PROGRESS EVER LOST) — they run next, against
+    // the now-idle runner, via settle's normal drain.
     const task = this.activeTask;
     if (!task) return undefined;
     // Mark first so in-flight event handling sees the cancellation.
@@ -715,8 +725,19 @@ export class RoomService {
     // pass running and the session compacts anyway after we said cancelled.
     for (const target of this.compactingAgents) this.compactCancels.add(target);
     const targets = new Set([...task.targets, ...this.compactingAgents]);
+    // abort() is authoritative (host kills a runner that won't settle), so when
+    // it resolves the runner is idle or dead — the next turn can never bounce
+    // off a ghost "runner busy" lock.
     await Promise.allSettled([...targets].map((target) => this.runtimes[target]?.abort()).filter(Boolean));
-    this.settleTask(task, "cancelled");
+    // Let the aborted turn unwind: it commits any streamed partial and emits
+    // its room-event. Settling AFTER that keeps the partial visible in the
+    // settle snapshot instead of blanking it. Bounded — the abort above already
+    // guaranteed the stream is finished; this is just the commit I/O.
+    const unwind = this.activeTurnUnwind;
+    if (unwind) {
+      await Promise.race([unwind, new Promise((resolve) => setTimeout(resolve, 10_000).unref?.())]);
+    }
+    if (this.activeTask?.id === task.id) this.settleTask(task, "cancelled");
     return task;
   }
 
@@ -796,10 +817,15 @@ export class RoomService {
       // the agent mid-conversation with silent amnesia, so replay from 0 instead.
       // Either full load is gated if large. Skipped on the resumed run
       // (cursorOverride set / bypass) and in voice calls (no modal).
+      //
+      // A missing session only counts as LOST while the cursor claims context
+      // beyond the agent's floor: after a DELIBERATE reset (rewind/sanitize set
+      // cursor == floor == the seed base) the capped cursor IS the intended
+      // seed — replaying it is by design, not amnesia, so no gate fires.
       const isNewAgent = state.agentCursors[target] === undefined;
       const sessionLost =
         !isNewAgent &&
-        (state.agentCursors[target] ?? 0) > 0 &&
+        (state.agentCursors[target] ?? 0) > (state.contextFloors?.[target] ?? 0) &&
         options.cursorOverride === undefined &&
         (runtime.hasDurableSession?.(this.roomId) ?? true) === false;
       const cursor = options.cursorOverride ?? (sessionLost ? 0 : (state.agentCursors[target] ?? 0));
@@ -1283,7 +1309,7 @@ export class RoomService {
     if (!cancelled && queued === 0) return "Nothing is running.";
     const parts: string[] = [];
     if (cancelled) parts.push("Cancelled the running turn (partial progress is kept)");
-    if (queued > 0) parts.push(`dropped ${queued} queued message${queued === 1 ? "" : "s"}`);
+    if (queued > 0) parts.push(`${queued} queued message${queued === 1 ? "" : "s"} kept — running next`);
     return `${parts.join("; ")}.`;
   }
 
@@ -1313,7 +1339,8 @@ export class RoomService {
     if (!Number.isInteger(count) || count < 1) return "Usage: /rewind [n] — undo the last n user turns and their replies.";
     const dropped = await this.room.rewindTranscript(count);
     if (!dropped) return `Nothing to rewind: this room has fewer than ${count} user message${count === 1 ? "" : "s"}.`;
-    await this.resetAfterTruncation();
+    // Forgetting the rewound exchanges is the point — sessions that saw them reset.
+    await this.resetAfterTruncation("reset-sessions");
     return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
   }
 
@@ -1397,7 +1424,13 @@ export class RoomService {
         appliedAt: proposal.appliedAt,
       };
     }
-    await this.resetAfterTruncation();
+    // Sanitize rewrites history to PURGE content — sessions holding the
+    // original text must forget it, or the redaction is cosmetic. Events
+    // survive in place (no truncation), so the cut is the first REWRITTEN
+    // index: any session that read past it saw the original text.
+    const { events: sanitized } = await this.room.eventsFrom(0);
+    const firstEdited = sanitized.findIndex((event) => next.has(event.id));
+    await this.resetAfterTruncation("reset-sessions", firstEdited >= 0 ? firstEdited : 0);
     this.emit({
       type: "room-event",
       workspaceId: this.workspaceId,
@@ -1448,10 +1481,15 @@ export class RoomService {
 
   /** The fork-from-message primitive behind edit and retry: truncate the
    * transcript at the originating USER message (dropped events are preserved
-   * in rewound.jsonl), reset every harness session, and cap cursors so the
-   * next turn replays the kept transcript window. Claude.ai-style "edit
-   * deletes the rest" — except nothing is actually lost. Uniform for every
-   * harness: the room WAL is the fork; native session forks are never used. */
+   * in rewound.jsonl) and cap cursors that pointed past the cut. Claude.ai-style
+   * "edit deletes the rest" — except nothing is actually lost. Uniform for every
+   * harness: the room WAL is the fork; native session forks are never used.
+   *
+   * Live harness sessions SURVIVE a retry/edit: wiping a long-lived session to
+   * regenerate one reply is never the right trade (the regenerated reply should
+   * still know the whole conversation). The retried exchange lingering inside
+   * the harness session is the small cost; total amnesia + a session-lost gate
+   * was the old, much larger one. */
   private async forkAtUserMessage(eventId: string): Promise<{ text: string; targets: string[]; attachments?: MessageAttachment[] }> {
     if (this.activeTask) throw new Error("A turn is running — cancel it first, then edit or retry.");
     const { events } = await this.room.eventsFrom(0);
@@ -1461,7 +1499,7 @@ export class RoomService {
     if (index < 0) throw new Error("No user message precedes that event to fork from.");
     const origin = events[index];
     await this.room.rewindToEvent(origin.id);
-    await this.resetAfterTruncation();
+    await this.resetAfterTruncation("keep-sessions");
     return {
       text: origin.text,
       targets: "targets" in origin ? origin.targets : [],
@@ -1469,16 +1507,46 @@ export class RoomService {
     };
   }
 
-  /** After any transcript truncation: fresh harness sessions for every agent
-   * and cursors capped to the kept window, so the next turn replays recent
-   * history without ever flooding the prompt in a long room. */
-  private async resetAfterTruncation(): Promise<void> {
+  /** After a transcript truncation. Agents whose cursor never reached the cut
+   * are untouched either way — their session saw none of the dropped events, so
+   * resetting them is pure loss (this used to wipe EVERY agent's session and
+   * then trip the session-lost gate on a simple retry).
+   *
+   * For agents whose cursor points past the cut:
+   *  - "keep-sessions" (retry/edit): the live session survives; the cursor is
+   *    capped to the kept length so the next turn sends only genuinely-new
+   *    events on the resumed session.
+   *  - "reset-sessions" (rewind/sanitize — forgetting is the point): the
+   *    harness session is reset; cursor AND context floor land on the seed base
+   *    so the next turn replays the kept window without tripping the
+   *    session-lost gate (the reset is deliberate, not amnesia).
+   *
+   * `cut` is the first transcript index whose content changed. Truncations use
+   * the kept length (the default); sanitize passes the index of the first
+   * REWRITTEN event — its events survive in place, but any session that read
+   * past that point holds the original text and must be treated as affected. */
+  private async resetAfterTruncation(mode: "keep-sessions" | "reset-sessions", cut?: number): Promise<void> {
     const kept = (await this.room.eventsFrom(0)).events.length;
+    const affectedAbove = Math.min(cut ?? kept, kept);
     const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
-    for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.roomId);
-    await this.room.updateState((state) => {
-      state.agentCursors = Object.fromEntries(Object.keys(this.workspace.agents).map((id) => [id, base]));
-      delete state.runtimeDetails;
+    const state = await this.room.state();
+    if (mode === "reset-sessions") {
+      for (const [id, cursor] of Object.entries(state.agentCursors)) {
+        if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
+      }
+    }
+    await this.room.updateState((current) => {
+      for (const [id, cursor] of Object.entries(current.agentCursors)) {
+        if (cursor <= affectedAbove) continue;
+        current.agentCursors[id] = mode === "reset-sessions" ? base : kept;
+        if (mode === "reset-sessions") {
+          current.contextFloors = { ...(current.contextFloors ?? {}), [id]: base };
+        } else if ((current.contextFloors?.[id] ?? 0) > kept) {
+          // A floor can't sit above the transcript end after the cut.
+          current.contextFloors = { ...(current.contextFloors ?? {}), [id]: kept };
+        }
+      }
+      delete current.runtimeDetails;
     });
     this.recentTasks = [];
     await this.emitSnapshot();

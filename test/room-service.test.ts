@@ -344,7 +344,7 @@ test("crash between transcript append and ack finishes the commit without re-run
   assert.equal(state.agentCursors.gaia, 2);
 });
 
-test("cancel aborts the runtime, preserves partial output, and clears the durable queue", async () => {
+test("cancel aborts the runtime, preserves partial output, and keeps the durable queue", async () => {
   let sawDelta: () => void = () => {};
   const firstDelta = new Promise<void>((resolve) => {
     sawDelta = resolve;
@@ -400,14 +400,19 @@ test("cancel aborts the runtime, preserves partial output, and clears the durabl
   const cancelled = await service.cancelActiveTask();
   assert.equal(cancelled?.status, "cancelled");
   assert.equal(runtime.aborted, true);
-  assert.equal(queued.status, "cancelled");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Stop targets the RUNNING turn only: queued messages are the user's own
+  // work and survive it (they run next, via settle's drain).
+  assert.notEqual(queued.status, "cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await service.waitForIdle();
 
   const room = await RoomHandle.open(root, "default");
   const { events: transcript } = await room.eventsFrom(0);
   // Cancel is a deliberate stop — but progress is never discarded.
   assert.ok(transcript.some((event) => event.author === "gaia" && event.text === "partial before cancel"));
-  assert.equal((await room.state()).queue, undefined);
+  // The queued message ran after the stop instead of being dropped.
+  assert.ok(transcript.some((event) => event.author === "user" && event.text === "queued behind"));
+  assert.equal((await room.state()).queue, undefined, "queue drained by running, not by deletion");
 });
 
 test("/clear wipes transcript + cursors and /fork branches with reset cursors", async () => {
@@ -822,7 +827,7 @@ test("/steer declines gracefully when idle or unsupported", async () => {
   await second.service.waitForIdle();
 });
 
-test("/cancel stops the running turn and drops queued messages without queueing itself", async () => {
+test("/cancel stops the running turn and keeps queued messages without queueing itself", async () => {
   let started!: () => void;
   const firstSend = new Promise<void>((resolve) => (started = resolve));
   let release!: () => void;
@@ -840,6 +845,9 @@ test("/cancel stops the running turn and drops queued messages without queueing 
       },
       async abort() {
         runtime.aborted = true;
+        // The host's abort is authoritative: the stream always ends after it
+        // (cooperatively or by killing the runner). Mirror that here.
+        release();
       },
       dispose() {},
       resetRoom() {},
@@ -861,14 +869,20 @@ test("/cancel stops the running turn and drops queued messages without queueing 
   assert.equal(cancelTask.status, "complete", "cancel settles while the turn is active");
   const reply = events.filter((event) => event.type === "room-event" && event.event.author === "system").pop();
   assert.match((reply as { event: { text: string } }).event.text, /Cancelled the running turn/);
-  assert.match((reply as { event: { text: string } }).event.text, /dropped 1 queued message/);
+  assert.match((reply as { event: { text: string } }).event.text, /1 queued message kept/);
 
   assert.equal((runtimes.get("gaia") as unknown as { aborted: boolean }).aborted, true, "runtime abort requested");
-  assert.equal(queued.status, "cancelled");
+  // Stop targets the running turn only — the queued message survives and runs.
+  assert.notEqual(queued.status, "cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await service.waitForIdle();
+  const { events: transcript } = await service.room.eventsFrom(0);
+  assert.ok(
+    transcript.some((event) => event.author === "user" && event.text === "this waits in the queue"),
+    "queued message ran after the stop instead of being dropped",
+  );
   const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.ok(!state.queue || state.queue.length === 0, "durable queue emptied");
-  release();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(!state.queue || state.queue.length === 0, "durable queue drained by running");
 });
 
 test("/recall searches the target agent's memory and reports misses", async () => {
@@ -940,9 +954,16 @@ test("/rewind truncates after the n-th-last user message and resets cursors + se
   assert.equal(after.events[0].text, "first question");
   assert.match(after.events[1].text, /reply from gaia/);
 
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { agentCursors: Record<string, number> };
-  assert.deepEqual(state.agentCursors, { gaia: 0, terry: 0 }, "cursors capped to the kept window so the next turn replays it");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as {
+    agentCursors: Record<string, number>;
+    contextFloors?: Record<string, number>;
+  };
+  // Only agents whose cursor passed the cut are touched: gaia saw the dropped
+  // exchange (reset + reseeded); terry never spoke (still a NEW agent later).
+  assert.deepEqual(state.agentCursors, { gaia: 0 }, "cursor capped to the kept window so the next turn replays it");
+  assert.equal(state.contextFloors?.gaia, 0, "floor matches the seed so the replay never trips the session-lost gate");
   assert.ok(resets.includes("gaia:default"), "harness sessions reset");
+  assert.ok(!resets.some((entry) => entry.startsWith("terry:")), "uninvolved agents keep their sessions");
 
   // Rewinding past the beginning answers politely instead of corrupting.
   await service.sendMessage("/rewind 5");
@@ -1191,8 +1212,11 @@ test("sanitize preview runs the reviewer through the summon host; apply rewrites
   // Original preserved beside the transcript.
   const preserved = (await readFileText(join(root, ".gaia", "rooms", "default", "redactions.jsonl"), "utf8")).trim();
   assert.match(preserved, /please discuss IDA Pro internals/);
-  // Every runtime got a fresh session and cursors were capped to the window.
-  for (const runtime of runtimes.values()) assert.ok(runtime.resets >= 1);
+  // The agent whose session read the original text got a fresh session and a
+  // capped cursor; agents that never spoke have no session holding the
+  // original, so they are untouched (resetting them was always a no-op).
+  assert.ok((runtimes.get("gaia")?.resets ?? 0) >= 1, "the exposed session resets");
+  assert.equal(runtimes.get("terry")?.resets ?? 0, 0, "uninvolved agents keep their sessions");
   const state = await room.state();
   assert.equal(state.agentCursors.gaia, 0);
   // The saved proposal is stamped applied (popup shows the ✂ state).

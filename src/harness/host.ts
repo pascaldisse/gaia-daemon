@@ -91,6 +91,15 @@ export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.Proces
  * (wedged), and 15 min covers even a silent full-context prefill. */
 const COMPACT_TIMEOUT_MS = 900_000;
 
+/** How long abort() waits for the runner to confirm the turn ended before
+ * escalating to SIGKILL. A cooperative abort (harness kills its child, stream
+ * errors, runner reports turn-error) lands well under a second; a runner that
+ * stays silent past this window is wedged — its turnActive flag would bounce
+ * every future message with "runner busy" (the ghost turn-lock). */
+const ABORT_GRACE_MS = 5_000;
+/** After SIGKILL: how long to wait for the exit handler to settle the turn. */
+const ABORT_KILL_WAIT_MS = 2_000;
+
 export interface RunnerHostOptions {
   workspace: Workspace;
   agent: AgentDef;
@@ -124,6 +133,13 @@ export class RunnerHost implements AgentRuntime {
   private readonly breakerKey: string;
   private childReady = false;
   private launchSettled = false;
+  /** True from writing a `turn` frame until the runner confirms it ended
+   * (turn-end / turn-error) or the child dies. This is the RUNNER's notion of
+   * busy — the daemon-side channel can close earlier (consumer break), and that
+   * disagreement is exactly what abort() must resolve. */
+  private turnInFlight = false;
+  /** Resolvers waiting for the runner to go idle (see abort()). */
+  private turnIdleWaiters: Array<() => void> = [];
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
@@ -149,6 +165,7 @@ export class RunnerHost implements AgentRuntime {
     await this.ensureChild(input.roomId);
     const channel = createEventChannel();
     this.activeChannel = channel;
+    this.turnInFlight = true;
     this.write({ type: "turn", input });
     try {
       for await (const event of channel.stream()) yield event;
@@ -157,8 +174,46 @@ export class RunnerHost implements AgentRuntime {
     }
   }
 
+  /** The runner confirmed the turn is over (turn-end/turn-error/child death):
+   * release everyone waiting in abort(). */
+  private settleTurn(): void {
+    this.turnInFlight = false;
+    for (const waiter of this.turnIdleWaiters.splice(0)) waiter();
+  }
+
+  /** Resolves true when the runner goes idle within `ms`, false on timeout. */
+  private waitTurnIdle(ms: number): Promise<boolean> {
+    if (!this.turnInFlight) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const waiter = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        this.turnIdleWaiters = this.turnIdleWaiters.filter((candidate) => candidate !== waiter);
+        resolve(false);
+      }, ms);
+      timer.unref?.();
+      this.turnIdleWaiters.push(waiter);
+    });
+  }
+
+  /** AUTHORITATIVE stop: when this resolves, the runner is idle or dead —
+   * never "busy". Cooperative first (the abort frame lets the harness kill its
+   * own child and keep its session record); a runner that stays silent past
+   * the grace window is wedged, and a wedged runner is worse than a dead one —
+   * its stuck turnActive flag bounces every future message with "runner busy".
+   * Sessions are durable on disk, so kill + respawn loses nothing. */
   async abort(): Promise<void> {
     this.write({ type: "abort" });
+    if (!this.turnInFlight) return;
+    if (await this.waitTurnIdle(ABORT_GRACE_MS)) return;
+    process.stderr.write(`[runner ${this.agent.id}] abort not confirmed after ${ABORT_GRACE_MS}ms — killing wedged runner\n`);
+    this.child?.kill("SIGKILL");
+    await this.waitTurnIdle(ABORT_KILL_WAIT_MS);
+    // Even if the exit event is somehow delayed, the lock must not outlive an
+    // authoritative abort — the child is gone (or unspawned) either way.
+    this.settleTurn();
   }
 
   /** Forward /steer to the runner; resolves with the harness's answer (false
@@ -356,6 +411,8 @@ export class RunnerHost implements AgentRuntime {
         this.compactWaiter({ ok: false, message: `agent runner exited during compaction (${signal ? `signal ${signal}` : `code ${code}`}).` });
       }
       if (this.steerWaiter && !this.disposed) this.steerWaiter(false);
+      // A dead child can hold no turn — release abort()/idle waiters.
+      this.settleTurn();
     });
   }
 
@@ -386,10 +443,12 @@ export class RunnerHost implements AgentRuntime {
         return;
       case "turn-end":
         this.activeChannel?.close();
+        this.settleTurn();
         return;
       case "turn-error":
         this.activeChannel?.fail(new Error(message.message));
         this.activeChannel?.close();
+        this.settleTurn();
         return;
       case "steer-result":
         this.steerWaiter?.(message.ok);
