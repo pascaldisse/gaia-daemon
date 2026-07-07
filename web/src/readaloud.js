@@ -54,6 +54,8 @@ class AudioTransport {
     /** @type {Set<AudioBufferSourceNode>} scheduled, not-yet-ended sources */
     this.sources = new Set();
     this.firstAudioSeen = false;
+    /** Guards migrateContext() against overlapping device-change events. */
+    this._migrating = false;
     /** @type {(() => void)|null} fired once when the first source is scheduled */
     this.onFirstAudio = null;
     /** @type {(() => void)|null} fired when the last sample finishes playing */
@@ -196,6 +198,35 @@ class AudioTransport {
     this.sources.clear();
   }
 
+  /** Re-bind playback to the CURRENT default output device.
+   *
+   * An AudioContext latches onto whatever output was default when it was
+   * created. Chromium silently follows a later default-device change; WebKit
+   * (the macOS/iOS native shell) does NOT — if the bound device disappears
+   * mid-playback (e.g. Bluetooth headphones disconnect), the context keeps
+   * ticking ctx.currentTime into a dead route: the timeline advances, the
+   * playhead moves, and there is no sound. We recreate the context so it
+   * re-binds to the live default, resuming from the current playhead. The
+   * buffered PCM (this.segments) survives — only the ctx + scheduled sources
+   * are rebuilt. No-op unless we are actually playing. */
+  async migrateContext() {
+    if (!this.playing || this._migrating) return;
+    this._migrating = true;
+    try {
+      const resumeAt = Math.round(this.currentTime * this.sampleRate);
+      this._stopSources();
+      try {
+        await this.ctx.close();
+      } catch {
+        // Already closed.
+      }
+      this.ctx = new AudioContext();
+      this.play(resumeAt);
+    } finally {
+      this._migrating = false;
+    }
+  }
+
   destroy() {
     this._stopSources();
     void this.ctx.close().catch(() => {});
@@ -217,6 +248,15 @@ let fetchController = null;
 let activeEventId = "";
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
+
+// When the set of audio devices changes (headphones plugged/unplugged, a
+// Bluetooth output vanishes), re-bind the playing transport to the new default
+// output. Harness-agnostic: matters on WebKit (the native shell) where a
+// context does not follow the default device on its own, harmless on Chromium
+// where it already does. Registered once; fires only while something plays.
+navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+  void transport?.migrateContext();
+});
 
 /** Whole-message PCM kept after a clean finish, so replays are instant and
  * fully seekable without touching the server. Small LRU by message. */
