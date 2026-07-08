@@ -1085,18 +1085,19 @@ function realClaudeCredentials(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Native command discovery (autocomplete hints only)
+// Native command discovery (the enable-able passthrough set)
 // ---------------------------------------------------------------------------
 //
-// Passthrough forwards ANY unrecognized slash command to the CLI, so this list
-// is a convenience for the composer's `/`-autocomplete — never a gate. It's
-// DISCOVERED, not a fixed table: on-disk skills/commands are enumerated, and a
-// small seed names the useful skills that ship INSIDE the claude binary (no
-// SKILL.md on disk to find). Memoized — this is claude-local knowledge the
-// shared layer only reads as NativeCommandDef data.
+// This list is both the composer's `/`-autocomplete AND the set a command can
+// be CHECKED into skills[] from: a fileless entry here (no on-disk SKILL.md) is
+// what routes as native passthrough. A command absent here can't be enabled, so
+// keep the seed current. DISCOVERED, not fixed: on-disk skills/commands are
+// enumerated, and a small seed names the useful skills that ship INSIDE the
+// claude binary. Memoized — claude-local knowledge the shared layer only reads
+// as NativeCommandDef data.
 
-// Skills shipped in the claude binary (not discoverable on disk). Seed, not a
-// hard list — anything typed still passes through even if absent here.
+// Skills shipped in the claude binary (not discoverable on disk). Keep current:
+// a builtin missing here can't be enabled as a native command.
 const CLAUDE_BUILTIN_COMMANDS: NativeCommandDef[] = [
   { name: "deep-research", description: "fan-out web research → a cited, fact-checked report" },
   { name: "code-review", description: "review the current diff for bugs and cleanups" },

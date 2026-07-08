@@ -452,7 +452,10 @@ export class RoomService {
       const target = await this.nativeCommandTarget();
       const agent = this.workspace.agents[target];
       const commandName = text.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
-      if (agent && this.agentNativeSkillNames(agent).has(commandName)) {
+      // Honor role-granted native skills too (agentSkillNames merges them for the
+      // prompt); this rare typed-command path can afford the async role resolve.
+      const roleSkills = agent ? await this.activeRoleSkills(target, agent) : [];
+      if (agent && this.agentNativeSkillNames(agent, undefined, roleSkills).has(commandName)) {
         command = { type: "message", text };
         options = { ...options, targets: [target], nativeCommand: true };
       } else if (text.trim().split(/\s+/).length > 1) {
@@ -2062,8 +2065,16 @@ export class RoomService {
   /** The native (fileless-builtin) command names this agent has CHECKED as
    * skills — the derived replacement for the old `nativeCommands` toggle. Empty
    * unless the harness supports native commands. Lowercased. */
-  private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>): Set<string> {
-    const skills = agent.skills ?? [];
+  /** The active role's skill grants for an agent (empty when no role active) —
+   * merged into the native-command check so a role can enable a builtin too. */
+  private async activeRoleSkills(agentId: string, agent: AgentDef): Promise<string[]> {
+    const roleName = (await this.room.state()).activeRoles[agentId];
+    if (!roleName) return [];
+    return (await resolveAgentRole(agent, roleName))?.skills ?? [];
+  }
+
+  private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>, extraSkills: string[] = []): Set<string> {
+    const skills = [...(agent.skills ?? []), ...extraSkills];
     if (skills.length === 0) return new Set();
     const harnessId = harnessIdFor(agent, this.workspace);
     // findHarness (not capabilitiesFor) so an unregistered harness yields "no
@@ -2084,6 +2095,8 @@ export class RoomService {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
     const native: SlashCommandDefinition[] = [];
     const onDisk = new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
+    // Agent-level only (no async role resolve) since this runs per snapshot — a
+    // role-granted native command still ROUTES when typed, just isn't hinted here.
     for (const agent of Object.values(this.workspace.agents)) {
       const checked = this.agentNativeSkillNames(agent, onDisk);
       if (checked.size === 0) continue;

@@ -108,9 +108,10 @@ export interface HarnessCapabilities {
   /** Passes an UNRECOGNIZED gaia slash command through to its underlying CLI as
    * a native command turn (claude runs it as a skill/slash-command with the
    * command surface enabled). Backs "/deep-research"-style passthrough, gated
-   * per agent by AgentDef.nativeCommands. Harnesses with no such surface
-   * (codex, pi) declare false and never receive one. Absent on a runtime double
-   * ⇒ treated as false. */
+   * per agent by CHECKING the command's name in the agent's `skills` (a fileless
+   * builtin this harness advertises via nativeCommands()). Harnesses with no such
+   * surface (codex, pi) declare false and never receive one. Absent on a runtime
+   * double ⇒ treated as false. */
   readonly supportsNativeCommands: boolean;
   /** The harness's OWN subagent/fan-out tool names (claude: Task/Agent/
    * Workflow). gaia has exactly ONE fan-out primitive — the summon tool: every
@@ -224,10 +225,10 @@ export interface HarnessSpec {
    * Undefined when the harness can't say, so the UI shows tokens without a %. */
   contextWindow?(model: string | undefined): number | undefined;
   /** Native passthrough commands this harness advertises for `/`-autocomplete
-   * (claude: its discoverable skills/commands). Data on the spec, read uniformly
-   * by the snapshot builder and unioned into the command palette only for agents
-   * that opted into nativeCommands. Non-exhaustive by design (see
-   * NativeCommandDef). Absent ⇒ the harness advertises none. */
+   * (claude: its builtins + discoverable skills). Data on the spec, read
+   * uniformly: surfaced as pickable Skills options, and a checked FILELESS one
+   * (no on-disk SKILL.md) is what routes as native passthrough. A name absent
+   * here can't be enabled, so keep the list current. Absent ⇒ none advertised. */
   nativeCommands?(): NativeCommandDef[];
   /** Does a durable session handle for (room, agent) survive on disk? Answered
    * from the harness's own persistence (claude/codex harness-sessions.json, pi
