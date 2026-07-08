@@ -15,6 +15,7 @@ import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
+import type { ResolvedRole } from "../domain/roles.js";
 import {
   type AgentInput,
   type AgentRuntime,
@@ -355,7 +356,7 @@ export class CodexRuntime implements AgentRuntime {
     let thread = this.threads.get(input.roomId);
     let announce = false;
     if (thread && !this.attachedThreads.has(thread.threadId)) {
-      thread = await this.resumeThread(client, thread, input);
+      thread = await this.resumeThread(client, thread, input.roomId, input.activeRole);
       announce = Boolean(thread);
     }
     if (!thread) {
@@ -625,19 +626,32 @@ export class CodexRuntime implements AgentRuntime {
    * degrades gracefully by storing none (see CompactResult in core/types.ts).
    * This is the documented can't-expose case, not a wire-it-later gap. */
   async compact(roomId: string): Promise<CompactResult> {
-    const thread = this.threads.get(roomId);
-    const client = this.client;
-    if (!thread || !client || !this.attachedThreads.has(thread.threadId)) {
+    // The persisted thread lives on disk (SessionMap hydrates from the store), so
+    // a cold app-server — daemon restart, idle-disposed or freshly-spawned runner
+    // — has NOT attached it yet. thread/compact/start requires an attached thread,
+    // so resume it first exactly as the turn path does; only genuinely-absent
+    // history returns the no-op. (This is the claude parity gap: claude's /compact
+    // resumes its session file directly; codex must re-attach the thread. Without
+    // this, /compact right after any restart reported "nothing to compact" while
+    // the session was at 89% — the thread simply wasn't live in this process.)
+    if (!this.threads.get(roomId)) return NO_SESSION_TO_COMPACT;
+    const client = await this.ensureClient();
+    let thread = this.threads.get(roomId);
+    if (thread && !this.attachedThreads.has(thread.threadId)) {
+      thread = await this.resumeThread(client, thread, roomId);
+    }
+    if (!thread || !this.attachedThreads.has(thread.threadId)) {
       return NO_SESSION_TO_COMPACT;
     }
+    const attached = thread;
     const done = new Promise<void>((resolve) => {
       client.setNotificationHandler((msg) => {
-        if (msg.method === "thread/compacted" && (msg.params as { threadId?: string } | undefined)?.threadId === thread.threadId) {
+        if (msg.method === "thread/compacted" && (msg.params as { threadId?: string } | undefined)?.threadId === attached.threadId) {
           resolve();
         }
       });
     });
-    await client.request("thread/compact/start", { threadId: thread.threadId });
+    await client.request("thread/compact/start", { threadId: attached.threadId });
     await done; // the RunnerHost round-trip timeout bounds this wait
     return { compacted: true, message: "thread compacted by codex." };
   }
@@ -742,15 +756,20 @@ export class CodexRuntime implements AgentRuntime {
    * the caller then starts a fresh thread. thread/resume cannot re-declare
    * dynamicTools (0.142.2), but the thread keeps the specs it started with;
    * the executor map is rebuilt here so item/tool/call still lands. */
-  private async resumeThread(client: CodexClient, state: ThreadState, input: AgentInput): Promise<ThreadState | undefined> {
+  private async resumeThread(
+    client: CodexClient,
+    state: ThreadState,
+    roomId: string,
+    activeRole?: ResolvedRole,
+  ): Promise<ThreadState | undefined> {
     try {
       const baseInstructions = await buildInlineSystemPrompt({
         workspace: this.workspace,
         agent: this.agent,
-        role: input.activeRole,
+        role: activeRole,
         toolPointer: "",
       });
-      await this.buildRoomTools(input.roomId);
+      await this.buildRoomTools(roomId);
       const response = (await client.request("thread/resume", {
         threadId: state.threadId,
         cwd: this.cwd,
@@ -766,10 +785,10 @@ export class CodexRuntime implements AgentRuntime {
         modelProvider: response.modelProvider,
       };
       this.attachedThreads.add(next.threadId);
-      this.threads.set(input.roomId, next);
+      this.threads.set(roomId, next);
       return next;
     } catch {
-      this.threads.reset(input.roomId);
+      this.threads.reset(roomId);
       return undefined;
     }
   }

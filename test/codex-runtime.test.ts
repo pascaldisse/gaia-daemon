@@ -107,8 +107,9 @@ class FakeCodexClient implements CodexClient {
       return {};
     }
 
-    // If this is turn/start, schedule the next notification sequence
-    if (method === "turn/start") {
+    // turn/start and thread/compact/start each complete via a deferred
+    // notification (turn/completed, thread/compacted) — release the next sequence.
+    if (method === "turn/start" || method === "thread/compact/start") {
       this.emitNextSequence();
     }
 
@@ -401,6 +402,55 @@ test("CodexRuntime resumes a persisted thread after restart; failed resume start
     assert.equal(fake4.requests.some((request) => request.method === "thread/resume"), false);
     assert.equal(fake4.requests.some((request) => request.method === "thread/start"), true);
     fourth.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime.compact resumes a cold (unattached) persisted thread before compacting", async () => {
+  const fx = await fixture();
+  try {
+    // First life: start a thread + run a turn, then dispose (daemon/runner restart).
+    const fake1 = new FakeCodexClient();
+    fake1.addResponse("initialize", {});
+    fake1.addResponse("thread/start", { thread: { id: "th-persist" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake1.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake1.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const first = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake1 });
+    await collect(first.send({ roomId: "default", message: "one", transcript: [] }));
+    first.dispose();
+
+    // Second life: a cold process. /compact arrives with NO turn since restart,
+    // so the thread is persisted-but-unattached. It must resume then compact —
+    // not bail with "nothing to compact".
+    const fake2 = new FakeCodexClient();
+    fake2.addResponse("initialize", {});
+    fake2.addResponse("thread/resume", { thread: { id: "th-persist" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake2.addResponse("thread/compact/start", {});
+    fake2.addNotificationSequence({ method: "thread/compacted", params: { threadId: "th-persist" } });
+    const second = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake2 });
+    const result = await second.compact("default");
+
+    assert.equal(result.compacted, true);
+    assert.equal(fake2.requests.some((request) => request.method === "thread/resume"), true);
+    const compactReq = fake2.requests.find((request) => request.method === "thread/compact/start");
+    assert.equal((compactReq?.params as { threadId: string }).threadId, "th-persist");
+    second.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime.compact returns the no-op when the room has no persisted thread", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake });
+    const result = await runtime.compact("never-used-room");
+    assert.equal(result.compacted, false);
+    // No app-server should have been spawned for an empty room.
+    assert.equal(fake.requests.length, 0);
+    runtime.dispose();
   } finally {
     await fx.cleanup();
   }
