@@ -163,6 +163,23 @@ async function loadOlderEvents() {
 }
 
 /**
+ * Auto-page older history as the user scrolls toward the top — no click needed.
+ * loadOlderEvents() already guards re-entry (state.older.loading) and re-anchors
+ * the viewport on the message being read, so this only has to fire the load when
+ * the scroll position nears the top and committed history remains. Each loaded
+ * chunk grows the content above and the re-anchor pushes scrollTop back down past
+ * the threshold, so this self-throttles to one load per approach instead of
+ * draining the whole history in a burst.
+ */
+function maybeLoadOlderOnScroll() {
+  const container = $("#transcript");
+  if (!container || state.older.loading) return;
+  if (container.scrollTop > 600) return;
+  if (olderRemaining() <= 0) return;
+  void loadOlderEvents();
+}
+
+/**
  * Scroll a committed message into view and flash it — the landing action for a
  * chat-search result. Pages older history in (bounded) until the target event
  * is in the DOM, since a hit can predate the snapshot's tail window. Assumes
@@ -329,6 +346,12 @@ function messageViews() {
 function renderTranscript() {
   const container = $("#transcript");
   if (!container) return;
+  // Bind the infinite-scroll pager once; the container is never replaced, so a
+  // single passive listener outlives every keyed re-render.
+  if (!container.dataset.olderScrollBound) {
+    container.dataset.olderScrollBound = "1";
+    container.addEventListener("scroll", maybeLoadOlderOnScroll, { passive: true });
+  }
   const stick = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
 
   const views = messageViews();
@@ -360,8 +383,10 @@ function renderTranscript() {
     return node;
   });
 
-  // "load older" pager above the history, keyed like a message so the sync
-  // below keeps it. Only shown while committed events precede what we hold.
+  // Older-history indicator above the transcript, keyed like a message so the
+  // sync below keeps it. History now pages in automatically as you scroll toward
+  // the top (maybeLoadOlderOnScroll); this row is just a status line — still
+  // clickable as a fallback for a transcript too short to scroll.
   const remaining = olderRemaining();
   if (remaining > 0) {
     const version = `older:${state.older.loading ? "loading" : remaining}`;
@@ -375,7 +400,7 @@ function renderTranscript() {
             h("button", {
               type: "button",
               class: "load-older",
-              text: state.older.loading ? "loading older messages..." : `↑ load older messages (${remaining.toLocaleString()} more)`,
+              text: state.older.loading ? "loading older messages…" : `↑ ${remaining.toLocaleString()} earlier messages`,
               ...(state.older.loading ? { disabled: true } : {}),
               onclick: () => void loadOlderEvents(),
             }),
