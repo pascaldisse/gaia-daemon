@@ -97,16 +97,25 @@ export function sdkThinkingLevels(): string[] {
  * SKILL.md description ride along as the option tooltip. Recomputed per request
  * (cheap directory scan) so a freshly installed skill shows up without restart.
  */
+/** Ecosystem bucket a skill's source belongs to (the picker groups by this).
+ * gaia's own bridges (~/.gaia/skills, source "global") read as "gaia"; every
+ * other source is its own ecosystem already (claude/codex/pi/hermes/project). */
+function skillGroup(source: string): string {
+  return source === "global" ? "gaia" : source;
+}
+
 export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOption[] {
   const options: FieldHintOption[] = discoverSkills(workspace).map((skill) => ({
     value: skill.name,
     label: skill.name,
+    group: skillGroup(skill.source),
     description: [skill.source, skill.description].filter(Boolean).join(" · "),
   }));
   // Native (fileless-builtin) commands each harness runs itself — pickable so a
   // command like deep-research is enabled by CHECKING it, no separate toggle.
   // The picker is workspace-global; only the matching harness runs them. Deduped
   // by name against on-disk skills (which inline instead) and across harnesses.
+  // They fold into their harness's ecosystem group, tagged `native`.
   const seen = new Set(options.map((option) => option.value.toLowerCase()));
   for (const spec of harnessSpecs()) {
     for (const command of nativeCommandsFor(spec.id)) {
@@ -116,11 +125,41 @@ export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOp
       options.push({
         value: command.name,
         label: command.name,
+        group: spec.id,
+        badge: "native",
         description: [spec.id, "native", command.description].filter(Boolean).join(" · "),
       });
     }
   }
-  return options.sort((a, b) => a.value.localeCompare(b.value));
+  // Contiguous by group; within a group native (badged) first, then alphabetical.
+  return options.sort(
+    (a, b) =>
+      (a.group ?? "").localeCompare(b.group ?? "") ||
+      Number(Boolean(b.badge)) - Number(Boolean(a.badge)) ||
+      a.value.localeCompare(b.value),
+  );
+}
+
+/**
+ * Order the skill sections for one agent: the agent's own harness ecosystem
+ * leads (a claude agent sees `claude` on top), then the rest by descending skill
+ * count, then alphabetically. Options arrive already contiguous-by-group from
+ * skillHintOptions, so the client just starts a new section on each group change.
+ */
+function orderSkillSections(options: FieldHintOption[], harnessId: string | undefined): FieldHintOption[] {
+  const groups = new Map<string, FieldHintOption[]>();
+  for (const option of options ?? []) {
+    const key = option.group ?? "";
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(option);
+    else groups.set(key, [option]);
+  }
+  const order = [...groups.keys()].sort((a, b) => {
+    if (a === harnessId) return -1;
+    if (b === harnessId) return 1;
+    return (groups.get(b)?.length ?? 0) - (groups.get(a)?.length ?? 0) || a.localeCompare(b);
+  });
+  return order.flatMap((key) => groups.get(key) ?? []);
 }
 
 export interface ModelCatalog {
@@ -359,7 +398,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
     tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
     skills: {
       input: "multiselect",
-      options: sources.skills,
+      options: orderSkillSections(sources.skills, rawHarness),
       label: "Skills",
       description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
     },

@@ -558,8 +558,11 @@ export interface FieldHintOption {
   value: string;
   label?: string;
   description?: string;
-  /** Group key used by dependent selects (see FieldHint.groupBy). */
+  /** Group key: dependent selects filter by it (FieldHint.groupBy); a
+   * multiselect renders one collapsible section per group. */
   group?: string;
+  /** Small inline tag shown after the label (e.g. "native" for a harness builtin). */
+  badge?: string;
 }
 
 export interface FieldHint {

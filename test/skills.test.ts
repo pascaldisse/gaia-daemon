@@ -7,6 +7,8 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentSkillNames, discoverSkills, resolveSkillRefs } from "../src/domain/skills.js";
+import { skillHintOptions } from "../src/services/hints.js";
+import "../src/harness/index.js"; // registers claude so native builtins (deep-research…) union in
 import type { AgentDef } from "../src/core/types.js";
 import type { ResolvedRole } from "../src/domain/roles.js";
 
@@ -81,6 +83,30 @@ test("resolveSkillRefs: a knownExternal name (fileless native builtin) is skippe
   );
   assert.ok(!result.diagnostics.some((d) => /deep-research/.test(d)), "known-external name must not warn");
   assert.ok(result.diagnostics.some((d) => /Unknown skill: typo-skill/.test(d)), "a real typo still warns");
+});
+
+test("skillHintOptions groups skills by ecosystem and folds native builtins in, badged", async () => {
+  const { workspace, gaiaHome, userHome } = await fixtureHomes();
+  process.env.GAIA_HOME = gaiaHome;
+  process.env.HOME = userHome;
+
+  const options = skillHintOptions(workspace);
+  const byName = new Map(options.map((option) => [option.value, option]));
+
+  // On-disk skills carry their ecosystem as the group; ~/.gaia (source "global") reads as "gaia".
+  assert.equal(byName.get("unity-mcp-orchestrator")?.group, "claude");
+  assert.equal(byName.get("unity-mcp-orchestrator")?.badge, undefined);
+  assert.equal(byName.get("matriarch")?.group, "gaia");
+  assert.equal(byName.get("hatch-pet")?.group, "codex");
+  assert.equal(byName.get("brave-search")?.group, "pi");
+
+  // deep-research is a fileless claude builtin: folded into the claude group, tagged native.
+  assert.equal(byName.get("deep-research")?.group, "claude");
+  assert.equal(byName.get("deep-research")?.badge, "native");
+
+  // Within the claude group, native (badged) options sort ahead of on-disk ones.
+  const claude = options.filter((option) => option.group === "claude").map((option) => option.value);
+  assert.ok(claude.indexOf("deep-research") < claude.indexOf("unity-mcp-orchestrator"), "native before on-disk");
 });
 
 test("a gaia-global skill overrides a same-named harness skill (imagegen bridge wins over ~/.codex)", async () => {

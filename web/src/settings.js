@@ -565,28 +565,110 @@ function fieldLabel(key, hint) {
   return h("span", { class: "field-name", text: hint.label ?? key });
 }
 
+/** One checkbox chip for a multiselect option. @param {FieldHintOption} option @param {string[]} values */
+function multiOption(option, values) {
+  return h(
+    "label",
+    { class: "multi-option", title: option.description ?? "", "data-skill-name": String(option.label ?? option.value).toLowerCase() },
+    h("input", { type: "checkbox", "data-value": option.value, ...(values.includes(option.value) ? { checked: true } : {}) }),
+    h("span", { text: option.label ?? option.value }),
+    option.badge ? h("span", { class: "multi-badge", text: option.badge }) : null,
+  );
+}
+
+/** True when a section holds at least one checked skill. @param {Element} details */
+function sectionHasChecked(details) {
+  return [...details.querySelectorAll("input[type=checkbox]")].some((box) => /** @type {HTMLInputElement} */ (box).checked);
+}
+
+/** Rewrite each group's "checked/total" header count. @param {HTMLElement} container */
+function updateGroupCounts(container) {
+  for (const details of container.querySelectorAll("details.skill-group")) {
+    const boxes = [...details.querySelectorAll("input[type=checkbox]")];
+    const checked = boxes.filter((box) => /** @type {HTMLInputElement} */ (box).checked).length;
+    const count = details.querySelector(".skill-group-count");
+    if (count) count.textContent = `${checked}/${boxes.length}`;
+  }
+}
+
 /**
- * @param {JsonPath} entryPath
- * @param {string} key
- * @param {FieldHint} hint
- * @param {unknown} currentValues
+ * Hide options whose name doesn't match, hide sections left empty, and expand
+ * matches. Options are only hidden (display:none) — the checkboxes stay in the
+ * DOM so a checked-but-filtered skill is still collected on save.
+ * @param {HTMLElement} container @param {string} query
  */
+function filterGroupedOptions(container, query) {
+  const q = query.trim().toLowerCase();
+  for (const details of container.querySelectorAll("details.skill-group")) {
+    let anyVisible = false;
+    for (const option of details.querySelectorAll(".multi-option")) {
+      const match = !q || (option.getAttribute("data-skill-name") ?? "").includes(q);
+      /** @type {HTMLElement} */ (option).style.display = match ? "" : "none";
+      if (match) anyVisible = true;
+    }
+    /** @type {HTMLElement} */ (details).style.display = anyVisible ? "" : "none";
+    // While filtering, expand matches; cleared, fall back to "open iff it holds a
+    // checked skill" (live state — so a box just ticked under the filter stays open).
+    /** @type {HTMLDetailsElement} */ (details).open = q ? anyVisible : sectionHasChecked(details);
+  }
+}
+
+/**
+ * Render options grouped into collapsible <details> sections. Options arrive
+ * contiguous by `group` (server-ordered), so a new section starts on each group
+ * change. A section opens by default only when it already holds a checked skill.
+ * @param {HTMLElement} container @param {FieldHintOption[]} options @param {string[]} values
+ */
+function renderGroupedOptions(container, options, values) {
+  let currentGroup = /** @type {string|null} */ (null);
+  let body = /** @type {HTMLElement|null} */ (null);
+  for (const option of options) {
+    const group = option.group ?? "";
+    if (body === null || group !== currentGroup) {
+      currentGroup = group;
+      body = h("div", { class: "multi-options" });
+      const count = h("span", { class: "skill-group-count" });
+      container.append(
+        h("details", { class: "skill-group" }, h("summary", {}, h("span", { class: "skill-group-name", text: group || "other" }), count), body),
+      );
+    }
+    body.append(multiOption(option, values));
+  }
+  updateGroupCounts(container);
+  // Open only the sections that already hold a checked skill.
+  for (const details of container.querySelectorAll("details.skill-group")) {
+    /** @type {HTMLDetailsElement} */ (details).open = sectionHasChecked(details);
+  }
+}
+
+/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValues */
 function HintedMultiselect(entryPath, key, hint, currentValues) {
   const values = Array.isArray(currentValues) ? currentValues.map(String) : [];
-  const known = (hint.options ?? []).map((option) => option.value);
-  const extras = values.filter((value) => !known.includes(value));
-  const container = h(
-    "div",
-    { class: "multi-options", "data-json-path": JSON.stringify(entryPath), "data-json-multi": "1", "data-path-key": pathKey(entryPath) },
-    [...(hint.options ?? []), ...extras.map((value) => ({ value }))].map((option) =>
-      h(
-        "label",
-        { class: "multi-option", title: /** @type {FieldHintOption} */ (option).description ?? "" },
-        h("input", { type: "checkbox", "data-value": option.value, ...(values.includes(option.value) ? { checked: true } : {}) }),
-        h("span", { text: /** @type {FieldHintOption} */ (option).label ?? option.value }),
-      ),
-    ),
-  );
+  const options = /** @type {FieldHintOption[]} */ (hint.options ?? []);
+  const known = options.map((option) => option.value);
+  const extras = values.filter((value) => !known.includes(value)).map((value) => /** @type {FieldHintOption} */ ({ value, group: "other" }));
+  const grouped = options.some((option) => option.group);
+  const container = h("div", {
+    class: grouped ? "multi-grouped" : "multi-options",
+    "data-json-path": JSON.stringify(entryPath),
+    "data-json-multi": "1",
+    "data-path-key": pathKey(entryPath),
+  });
+
+  if (grouped) {
+    container.append(
+      h("input", {
+        type: "text",
+        class: "skill-filter",
+        placeholder: "filter skills…",
+        oninput: (/** @type {Event} */ event) => filterGroupedOptions(container, /** @type {HTMLInputElement} */ (event.target).value),
+      }),
+    );
+    renderGroupedOptions(container, [...options, ...extras], values);
+    container.addEventListener("change", () => updateGroupCounts(container));
+  } else {
+    for (const option of [...options, ...extras]) container.append(multiOption(option, values));
+  }
   return h("div", { class: "setting-row stacked", ...rowTitle(hint) }, fieldLabel(key, hint), container);
 }
 

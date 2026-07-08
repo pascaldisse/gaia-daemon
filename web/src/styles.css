@@ -1005,6 +1005,21 @@ body.resizing { cursor: col-resize; user-select: none; }
 .multi-option:hover { border-color: var(--accent); }
 .multi-option input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
 
+/* Grouped multiselect (skills picker): a filter box over collapsible sections. */
+.multi-grouped { display: flex; flex-direction: column; gap: 6px; }
+.multi-grouped .skill-filter { width: 100%; }
+.skill-group { border: 1px solid var(--border); }
+.skill-group > summary { cursor: pointer; padding: 5px 8px; display: flex; align-items: center; gap: 8px; list-style: none; user-select: none; }
+.skill-group > summary::-webkit-details-marker { display: none; }
+.skill-group > summary::marker { content: ""; }
+.skill-group > summary::before { content: "▸"; color: var(--muted); font-size: 0.8em; }
+.skill-group[open] > summary::before { content: "▾"; }
+.skill-group > summary:hover { color: var(--accent); }
+.skill-group-name { font-weight: 500; }
+.skill-group-count { color: var(--muted); font-size: 0.85em; }
+.skill-group > .multi-options { padding: 8px; }
+.multi-badge { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); border: 1px solid var(--border); padding: 0 4px; }
+
 .segmented-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
 .segmented-tabs.nested { margin-bottom: 12px; }
 .segmented-tabs button { flex: 1 1 0; }
