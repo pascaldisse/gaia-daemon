@@ -10,6 +10,7 @@ import { editMessage, sendMessage, stopAll, uploadAttachment } from "./actions.j
 import { api } from "./api.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
+import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { isBusy, runningSummonRooms, state } from "./state.js";
@@ -625,13 +626,13 @@ function ModelChip(snapshot, text) {
         `provider switched models on the last turn: ${fallback.from} → ${fallback.to} — ${fallback.reason} ` +
         `(configured: ${agent.configuredModel}; each turn re-requests it, so this usually reverts on the next clean turn — ` +
         `this chip and each message's model tag always show what actually ran)`,
-      text: `⚠ ${agent.modelLabel}`,
+      text: `⚠ ${shortModel(agent.modelLabel)}`,
     });
   }
   return h("span", {
     class: "model-chip",
-    title: `model for @${agent.id} (configured: ${agent.configuredModel})`,
-    text: agent.modelLabel,
+    title: `model for @${agent.id} (configured: ${agent.configuredModel}; ran: ${agent.modelLabel})`,
+    text: shortModel(agent.modelLabel),
   });
 }
 

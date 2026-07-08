@@ -958,7 +958,11 @@ export class GaiaWebServer {
 
     const path = existsSync(resolved) && (await stat(resolved)).isFile() ? resolved : join(root, "index.html");
     const headers: Record<string, string> = { "content-type": MIME[extname(path)] ?? "application/octet-stream" };
-    if (this.options.dev) headers["cache-control"] = "no-store";
+    // Web assets are raw, unhashed, and edited live (no build step / no content
+    // hashing), so they must never be heuristically cached: a stale ES module
+    // silently ships old UI code on reload — notably in the native app's
+    // WKWebView, which caches aggressively. Always require a fresh fetch.
+    headers["cache-control"] = "no-store";
 
     if (this.options.dev && path === join(root, "index.html")) {
       const html = await readFile(path, "utf8");

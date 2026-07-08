@@ -5,21 +5,11 @@ import { setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.j
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
+import { shortModel } from "./models.js";
 import { registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
-
-/**
- * Drop the provider prefix from a model label — "deepseek/deepseek-v4-pro" →
- * "deepseek-v4-pro", "anthropic/claude-opus-4-8 (oauth)" → "claude-opus-4-8
- * (oauth)". The model id alone is enough to identify it in the panel.
- * @param {string} label
- */
-function shortModel(label) {
-  const slash = label.lastIndexOf("/");
-  return slash >= 0 ? label.slice(slash + 1) : label;
-}
 
 /**
  * The one-line agent subtitle (status / model), shown under the @id and mirrored
