@@ -181,6 +181,35 @@ function persistReadMarks() {
 }
 
 /**
+ * The workspace + room the user last had open, persisted client-side so a
+ * refresh — or a full daemon restart — restores exactly where they were. The
+ * daemon's own current-room map is in-memory and resets on restart, and `/api/app`
+ * otherwise falls back to the most-recently-touched workspace, so this is the
+ * only thing that survives both.
+ * @typedef {{ workspaceId: string, roomId: string }} OpenLocation
+ */
+
+/** @param {Snapshot|null} snapshot */
+export function rememberLocation(snapshot) {
+  if (!snapshot) return;
+  try {
+    localStorage.setItem("gaia.lastOpen", JSON.stringify({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id }));
+  } catch {
+    // storage disabled — location just won't survive a reload.
+  }
+}
+
+/** @returns {OpenLocation|null} */
+export function recallLocation() {
+  try {
+    const value = JSON.parse(localStorage.getItem("gaia.lastOpen") ?? "null");
+    return value && typeof value.workspaceId === "string" && typeof value.roomId === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Baseline any room seen for the first time (so nothing is retroactively marked
  * unread on load) and advance the current room's mark to its latest activity —
  * viewing a room IS reading it. Call after any snapshot / rooms update.

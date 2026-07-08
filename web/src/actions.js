@@ -6,7 +6,7 @@ import { connectEvents, seedLiveTurn } from "./events.js";
 import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
-import { activeTask, runningSummonRooms, state, syncReadMarks } from "./state.js";
+import { activeTask, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
 
@@ -29,18 +29,25 @@ async function applyAppPayload(body) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
   }
+  rememberLocation(state.snapshot);
   connectEvents();
   await loadInitialFiles();
   state.error = "";
   markDirty();
 }
 
-/** @param {string} [currentWorkspaceId] */
+/**
+ * @param {string} [currentWorkspaceId] Preferred workspace to open (e.g. the one
+ *   the user last had open). Ignored if it no longer exists, so a removed
+ *   workspace never surfaces as an error on boot.
+ */
 export async function loadApp(currentWorkspaceId) {
   try {
+    /** @type {AppPayload} */
     const body = await api("/api/app");
     await applyAppPayload(body);
-    if (currentWorkspaceId && body.currentWorkspaceId !== currentWorkspaceId) await loadWorkspace(currentWorkspaceId);
+    const known = (body.workspaces ?? []).some((workspace) => workspace.id === currentWorkspaceId);
+    if (currentWorkspaceId && known && body.currentWorkspaceId !== currentWorkspaceId) await loadWorkspace(currentWorkspaceId);
   } catch (error) {
     setError(error);
   }
@@ -57,6 +64,7 @@ function applySnapshotPayload(body) {
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.voice = body.voice ?? null;
+  rememberLocation(state.snapshot);
 }
 
 /** @param {string} workspaceId */

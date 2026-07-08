@@ -8,7 +8,7 @@ import { installKeybindings } from "./keys.js";
 import { installOpenModifierTracking } from "./links.js";
 import { launchIntent, onNativeEvent } from "./native.js";
 import { markDirty, mountApp } from "./render.js";
-import { state } from "./state.js";
+import { recallLocation, state } from "./state.js";
 import { clockText } from "./statusbar.js";
 import { initTheme } from "./themes.js";
 import { installVoiceLifecycle } from "./voice.js";
@@ -47,7 +47,22 @@ setInterval(() => {
   if (clock) clock.textContent = clockText();
 }, 15000);
 
-void loadApp().then(applyLaunchIntent);
+void boot();
+
+/**
+ * Restore the workspace + room the user last had open (persisted client-side)
+ * so a refresh or daemon restart lands exactly where they were, rather than the
+ * server's fallback workspace/room. A torn-off window is pinned to its own room
+ * by the launch hash, so it skips the restore and lets applyLaunchIntent drive.
+ */
+async function boot() {
+  const last = launchIntent().mode === "torn" ? null : recallLocation();
+  await loadApp(last?.workspaceId);
+  if (last && state.snapshot && state.snapshot.room.id !== last.roomId && state.snapshot.rooms.some((room) => room.id === last.roomId)) {
+    await selectRoom(state.snapshot.workspace.id, last.roomId);
+  }
+  await applyLaunchIntent();
+}
 
 /**
  * A window spawned by the shell carries its role in the launch hash. A torn-off
