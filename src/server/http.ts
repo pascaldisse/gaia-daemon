@@ -58,6 +58,11 @@ function stringField(body: unknown, field: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function boolField(body: unknown, field: string): boolean {
+  if (!body || typeof body !== "object") return false;
+  return (body as Record<string, unknown>)[field] === true;
+}
+
 /** Attachment references on a message body: `[{ id, name?, mime? }]`. Only the
  * server-issued id matters for path resolution; name/mime are display echoes. */
 function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined {
@@ -377,11 +382,15 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
       if (!roomId?.trim()) return json(response, 400, { error: "Missing room id" });
-      return this.respond(response, () => this.daemon.selectRoom(params![0], roomId.trim()));
+      const incognito = boolField(body, "incognito");
+      return this.respond(response, () => this.daemon.selectRoom(params![0], roomId.trim(), { incognito }));
     }
 
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/))) {
-      return this.respond(response, () => this.daemon.selectRoom(params![0], params![1]));
+      // The body is optional; when a room is being CREATED via select, it may
+      // carry `incognito: true` (a no-op on an already-existing room).
+      const incognito = boolField(await parseBody(request), "incognito");
+      return this.respond(response, () => this.daemon.selectRoom(params![0], params![1], { incognito }));
     }
 
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/default-agent$/))) {

@@ -1015,6 +1015,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .prompt-btn.danger { border-color: var(--danger); color: var(--danger); }
 .prompt-btn.danger:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); }
 .prompt-detail { margin: 0 0 4px; color: var(--muted); font-size: 0.9em; line-height: 1.4; }
+.prompt-check { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--muted); font-size: 0.9em; cursor: pointer; }
+.prompt-check-box { accent-color: var(--accent); cursor: pointer; }
+.tab-incognito, .room-incognito { flex: 0 0 auto; font-size: 0.82em; opacity: 0.85; }
 
 /* ============================================================
    powerline status bar (spaceship-style segments)

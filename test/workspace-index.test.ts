@@ -54,6 +54,8 @@ interface RoomSpec {
   events: Array<{ author: string; text: string; ts?: string; id?: string }>;
   /** File mtime, seconds ago relative to real now (recentRoomRefs sorts by it). */
   ageSec?: number;
+  /** Seed this room's state.json as incognito (excluded from workspaceRoomRefs). */
+  incognito?: boolean;
 }
 
 /** A throwaway workspace root with rooms + one agent's memory dir. */
@@ -77,6 +79,9 @@ async function writeRoom(root: string, room: RoomSpec): Promise<string> {
     JSON.stringify({ id: event.id ?? `${room.roomId}_e${i}`, timestamp: event.ts ?? RECENT_TS, author: event.author, text: event.text }),
   );
   await writeFile(path, `${lines.join("\n")}\n`, "utf8");
+  if (room.incognito) {
+    await writeFile(join(dir, "state.json"), JSON.stringify({ activeRoles: {}, agentCursors: {}, incognito: true }), "utf8");
+  }
   if (room.ageSec) {
     const at = new Date(Date.now() - room.ageSec * 1000);
     await utimes(path, at, at);
@@ -164,6 +169,30 @@ test("searchTranscripts: transcript-only, cross-room, with event_ids and marked 
     assert.ok(kitchen?.eventIds.includes("k0"), "kitchen hit points at the matching message");
     // The FTS snippet wraps the matched term in the sentinels the client swaps for <mark>.
     assert.ok(hits.some((hit) => hit.snippet.includes(SEARCH_MARK_OPEN) && hit.snippet.includes(SEARCH_MARK_CLOSE)), "snippet marks the match");
+  } finally {
+    db.close();
+  }
+});
+
+test("incognito rooms are omitted from workspaceRoomRefs, so their transcripts never enter recall", async () => {
+  const { root, sources } = await makeWorkspace([
+    { roomId: "kitchen", events: [{ author: "user", text: "the sourdough needs a longer autolyse", id: "k0" }] },
+    { roomId: "vault", incognito: true, events: [{ author: "user", text: "the autolyse secret is a longer overnight rest", id: "v0" }] },
+  ]);
+  // The incognito room is absent from the shared room list...
+  assert.deepEqual(
+    sources.rooms.map((ref) => ref.roomId).sort(),
+    ["kitchen"],
+    "workspaceRoomRefs excludes the incognito room",
+  );
+
+  const db = openWorkspaceIndex(root);
+  try {
+    await syncWorkspaceIndex(db, sources);
+    const hits = searchTranscripts(db, "autolyse");
+    const rooms = new Set(hits.map((hit) => hit.roomId));
+    assert.ok(rooms.has("kitchen"), "the normal room is recallable");
+    assert.ok(!rooms.has("vault"), "the incognito room never reaches recall");
   } finally {
     db.close();
   }

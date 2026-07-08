@@ -98,15 +98,20 @@ export async function addWorkspace() {
   }
 }
 
-/** @param {string} workspaceId @param {string} roomId */
-export async function selectRoom(workspaceId, roomId) {
+/**
+ * @param {string} workspaceId
+ * @param {string} roomId
+ * @param {{ incognito?: boolean }} [opts] `incognito` only takes effect when this
+ *   call creates the room (a no-op when selecting one that already exists).
+ */
+export async function selectRoom(workspaceId, roomId, opts = {}) {
   try {
     // Read-aloud deliberately keeps playing across a room switch — it only
     // stops when you play another message (or hit stop from the status-bar
     // now-playing chip). So no stopReadAloud() here.
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/select`, {
       method: "POST",
-      body: "{}",
+      body: JSON.stringify(opts.incognito ? { incognito: true } : {}),
     });
     applySnapshotPayload(body);
     state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
@@ -183,10 +188,13 @@ export async function setRoomAgentDialogue(on) {
 export async function addRoom() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const roomId = await promptText("New room name", { placeholder: "letters, numbers, dots, hyphens, underscores" });
-  if (!roomId?.trim()) return;
+  const result = await promptText("New room name", {
+    placeholder: "letters, numbers, dots, hyphens, underscores",
+    checkbox: { label: "🕶 Incognito — no memory (no capture, recall, or memory tools)" },
+  });
+  if (!result || !result.value.trim()) return;
   try {
-    await selectRoom(snapshot.workspace.id, roomId.trim());
+    await selectRoom(snapshot.workspace.id, result.value.trim(), { incognito: result.checked });
   } catch (error) {
     setError(error);
   }

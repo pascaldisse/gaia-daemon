@@ -14,7 +14,7 @@ import "../src/harness/index.js"; // register the real harnesses + their credent
 import { RunnerHost } from "../src/harness/host.js";
 import type { SandboxPolicy } from "../src/harness/sandbox/spec.js";
 
-function makeHost(harness: string, root: string): RunnerHost {
+function makeHost(harness: string, root: string, incognito = false): RunnerHost {
   const workspace = {
     rootDir: root,
     roomsDir: join(root, ".gaia", "rooms"),
@@ -26,6 +26,7 @@ function makeHost(harness: string, root: string): RunnerHost {
     workspace,
     agent,
     harness,
+    ...(incognito ? { incognito: true } : {}),
     harnessHost: () => ({ baseUrl: "http://127.0.0.1:9999", llmProxyUrl: "http://127.0.0.1:9999/api/harness/llm", mintToken: () => "tok-123" }),
     allowSummon: () => true,
     sandbox: () => ({ enabled: true, backend: "macos-seatbelt" }),
@@ -118,5 +119,16 @@ test("the runner env carries the uniform RUNNER_ENV keys for any harness", () =>
     assert.equal(env.GAIA_ROOM_DIR, join(root, ".gaia", "rooms", "room1"));
     assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999"); // bridge target rides even without the proxy
     assert.equal(env.GAIA_DAEMON_TOKEN, "tok-123");
+    // A normal room does NOT set the incognito flag.
+    assert.equal(env.GAIA_RUNNER_INCOGNITO, undefined);
+  });
+});
+
+test("an incognito room sets GAIA_RUNNER_INCOGNITO=1 so the runner strips memory/recall (any harness)", () => {
+  withTemp((root) => {
+    for (const harness of ["pi", "claude", "codex"]) {
+      const env = envFor(makeHost(harness, root, true), "room1", PROXY_OFF);
+      assert.equal(env.GAIA_RUNNER_INCOGNITO, "1", `${harness}: incognito flag reaches the runner env`);
+    }
   });
 });

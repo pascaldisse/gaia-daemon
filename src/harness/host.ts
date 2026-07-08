@@ -104,6 +104,9 @@ export interface RunnerHostOptions {
   workspace: Workspace;
   agent: AgentDef;
   harness: string;
+  /** This runner's room is incognito — the runner strips the memory/recall tools
+   * from the agent it loads (see RUNNER_ENV.incognito). */
+  incognito?: boolean;
   /** Bridge factory; the turn token is minted at spawn with the resolved allowSummon. */
   harnessHost?: (options: { allowSummon: boolean }) => HarnessHost;
   /** Resolved lazily at spawn: may this turn's token create summons? */
@@ -150,7 +153,7 @@ export class RunnerHost implements AgentRuntime {
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
-  private compactWaiter: ((result: { ok: boolean; compacted: boolean; message: string }) => void) | undefined;
+  private compactWaiter: ((result: { ok: boolean; compacted: boolean; message: string; summary?: string }) => void) | undefined;
   /** Forwards the runner's compact-progress frames to the /compact caller (and
    * re-arms the idle backstop) while a pass runs. */
   private compactProgress: ((update: CompactProgressUpdate) => void) | undefined;
@@ -293,7 +296,7 @@ export class RunnerHost implements AgentRuntime {
         // `ok` = ran without error → resolve (rejection is reserved for real
         // failures). `compacted` carries whether history was actually evicted —
         // the daemon draws the boundary from it, never from the message wording.
-        if (result.ok) resolve({ compacted: result.compacted, message: result.message });
+        if (result.ok) resolve({ compacted: result.compacted, message: result.message, ...(result.summary ? { summary: result.summary } : {}) });
         else reject(new Error(result.message || "compaction failed"));
       };
       this.write({ type: "compact", roomId });
@@ -480,7 +483,7 @@ export class RunnerHost implements AgentRuntime {
         return;
       }
       case "compact-result":
-        this.compactWaiter?.({ ok: message.ok, compacted: message.compacted, message: message.message });
+        this.compactWaiter?.({ ok: message.ok, compacted: message.compacted, message: message.message, ...(message.summary ? { summary: message.summary } : {}) });
         return;
     }
   }
@@ -517,6 +520,7 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.roomId]: roomId,
       [RUNNER_ENV.memoryDir]: this.agent.memoryDir,
       [RUNNER_ENV.roomDir]: join(this.options.workspace.roomsDir, roomId),
+      ...(this.options.incognito ? { [RUNNER_ENV.incognito]: "1" } : {}),
     };
     if (ctx.host && ctx.token !== undefined) {
       childEnv[RUNNER_ENV.daemonUrl] = ctx.host.baseUrl;
@@ -563,6 +567,8 @@ interface ProxyLaunch {
 export interface CreateAgentRuntimeOptions {
   workspace: Workspace;
   agent: AgentDef;
+  /** The room is incognito — memory/recall tools are stripped in the runner. */
+  incognito?: boolean;
   /** Workspace-scoped store. The host itself never touches it (the runner
    * subprocess builds its bridge-backed store); accepted so every runtime
    * factory takes the same construction context. */
@@ -595,6 +601,7 @@ export function createAgentRuntime(options: CreateAgentRuntimeOptions): AgentRun
     workspace: options.workspace,
     agent: options.agent,
     harness: harnessIdFor(options.agent, options.workspace),
+    ...(options.incognito ? { incognito: true } : {}),
     harnessHost: options.harnessHost,
     allowSummon: options.allowSummon ?? (() => true),
     sandbox: options.sandbox ?? (() => ({ enabled: false, backend: "none" })),

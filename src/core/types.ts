@@ -235,6 +235,14 @@ export interface RoomState {
    * known agent triggers that agent to respond in this room (bounded by a
    * hop cap). Off by default — opt-in per room to avoid runaway loops. */
   agentDialogue?: boolean;
+  /** Incognito room: this room is invisible to long-term memory. No episodes
+   * are captured from its turns, no auto-recall is injected into its agents,
+   * its transcript is never indexed for recall, and the memory/recall tools are
+   * stripped from its agents' vocabulary. Set ONCE at creation and immutable
+   * (a room is incognito or it isn't) — normalizeRoomState preserves it, and
+   * ensureWorkspaceRoom only seeds it on a brand-new room. Off/absent = a normal
+   * room that participates in memory. */
+  incognito?: boolean;
 }
 
 /** A NEW agent was addressed in a room whose transcript would exceed the
@@ -640,6 +648,13 @@ export interface CompactProgress extends CompactProgressUpdate {
 export interface CompactResult {
   compacted: boolean;
   message: string;
+  /** The harness's own summary of the evicted history, when it can surface one.
+   * gaia persists this per-agent (keyed to the context floor) so a later session
+   * loss reloads [summary + tail after floor] instead of raw-from-0 or a thin
+   * tail — durable compaction that survives every reset. Optional: a harness that
+   * cannot expose its summary omits it, and the shared layer simply stores none
+   * (uniform, read as data — never an `=== "claude"` branch). */
+  summary?: string;
 }
 
 export interface RoomSummary {
@@ -654,6 +669,9 @@ export interface RoomSummary {
   title?: string;
   /** Original created_at of an imported chat (see RoomState.imported). */
   imported?: string;
+  /** Incognito room (see RoomState.incognito) — the tab/list marks it so an
+   * off-the-record room is obvious wherever it's listed, not just when open. */
+  incognito?: boolean;
   /** Last transcript write (epoch ms) — the chat-list sort key, and the client's
    * unread signal: a room whose lastActivity exceeds the last value seen while it
    * was open has an unread agent reply. */
@@ -724,6 +742,9 @@ export interface Snapshot {
     activeAgent?: string;
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
+    /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
+     * memory/recall tools stripped. Immutable; drives the client's indicator. */
+    incognito?: boolean;
     /** The running turn's accumulated view, so a client (re)subscribing mid-turn
      * (e.g. switching back to a busy room) renders it at once. Absent when idle. */
     liveTurn?: LiveTurn;

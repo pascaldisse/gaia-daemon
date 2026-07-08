@@ -152,6 +152,7 @@ function RoomNode(room, childrenOf, depth) {
             : roomUnread(room)
               ? h("span", { class: "room-dot unread", title: "unread messages" })
               : null,
+          room.incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null,
           h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: room.title ?? room.id }),
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),

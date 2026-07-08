@@ -64,13 +64,20 @@ async function makeService(options: {
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
+  /** Seed the room's state.json as incognito before RoomService.open reads it. */
+  incognito?: boolean;
+  /** Tool ids granted to every test agent (default none). */
+  tools?: string[];
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
   await writeFile(join(root, ".gaia", "config.json"), "{}", "utf8");
+  if (options.incognito) {
+    await writeFile(workspacePaths.roomState(root, "default"), JSON.stringify({ activeRoles: {}, agentCursors: {}, incognito: true }), "utf8");
+  }
 
   const agentIds = options.agents ?? ["gaia", "terry"];
-  const agents = Object.fromEntries(agentIds.map((id) => [id, makeAgent(id, root)]));
+  const agents = Object.fromEntries(agentIds.map((id) => [id, { ...makeAgent(id, root), ...(options.tools ? { tools: options.tools } : {}) }]));
   const workspace: Workspace = {
     rootDir: root,
     dir: join(root, ".gaia"),
@@ -709,6 +716,60 @@ test("a successful compact refreshes the stale ctx chip: streamed summary size, 
   assert.equal(dropped, undefined, "stale usage dropped when the harness streamed no post-compact figure");
 });
 
+test("durable compaction: a compacted agent that LOSES its session reloads [summary + tail], not the full raw transcript", async () => {
+  let sessionAlive = true;
+  let lastInput: AgentInput | undefined;
+  const factory = (agent: AgentDef): AgentRuntime => {
+    const rt = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "ok" } as AgentEvent]);
+    const original = rt.send.bind(rt);
+    rt.send = async function* (input: AgentInput) {
+      lastInput = input;
+      yield* original(input);
+    } as typeof rt.send;
+    (rt as unknown as { hasDurableSession: () => boolean }).hasDurableSession = () => sessionAlive;
+    (rt.capabilities as { supportsCompact?: boolean }).supportsCompact = true;
+    (rt as unknown as { compact: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compact = async () => ({
+      compacted: true,
+      message: "session compacted (999 tokens before).",
+      summary: "COMPACTED-SUMMARY-XYZ: the earlier chapter, distilled.",
+    });
+    return rt as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ agents: ["gaia"], runtimeFactory: factory });
+
+  // Build history, then compact: the floor lands at the current end and the
+  // harness's own summary is persisted keyed to that floor.
+  await service.sendMessage("first thing");
+  await service.waitForIdle();
+  await service.sendMessage("second thing");
+  await service.waitForIdle();
+  await service.sendMessage("/compact");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const floor = (await room.state()).contextFloors?.gaia;
+  assert.ok(floor && floor > 0, "compaction set a context floor");
+  const stored = await room.readCompaction("gaia");
+  assert.equal(stored?.summary, "COMPACTED-SUMMARY-XYZ: the earlier chapter, distilled.", "the harness summary is persisted durably");
+  assert.equal(stored?.floorIdx, floor, "the summary is keyed to the floor");
+
+  // A live turn AFTER compaction advances the cursor past the floor (still resumed).
+  await service.sendMessage("after compaction");
+  await service.waitForIdle();
+
+  // Now the harness session is LOST. The next turn must replay [summary + tail
+  // after the floor], NOT silently revert to the full transcript from event 0.
+  sessionAlive = false;
+  await service.sendMessage("post-loss message");
+  await service.waitForIdle();
+
+  assert.ok(lastInput, "the post-loss turn ran");
+  assert.match(lastInput!.recall ?? "", /COMPACTED-SUMMARY-XYZ/, "the durable summary is fed as context on the lost-session replay");
+  const texts = lastInput!.transcript.map((event) => event.text);
+  assert.ok(!texts.includes("first thing"), "pre-compaction history is NOT re-fed as raw transcript (the compaction survived)");
+  assert.ok(texts.includes("post-loss message"), "the recent tail after the floor IS fed");
+});
+
 test("persisted system command replies are kept out of the agent's replayed context", async () => {
   let seenTranscript: AgentInput["transcript"] | undefined;
   const factory = (agent: AgentDef) => {
@@ -961,6 +1022,65 @@ test("/recall searches the target agent's memory and reports misses", async () =
   assert.match((missReply as { event: { text: string } }).event.text, /No matches/);
   // Default agent used when no @mention.
   assert.equal(searches[1].agentId, "gaia");
+});
+
+function recordingMemory(): { memory: RoomMemoryHooks; autoRecallCalls: () => number; captures: () => string[] } {
+  let autoRecallCalls = 0;
+  const captures: string[] = [];
+  const memory: RoomMemoryHooks = {
+    async autoRecallBlock() {
+      autoRecallCalls += 1;
+      return "SECRET recalled context from another room";
+    },
+    async capture(agentId) {
+      captures.push(agentId);
+    },
+    async consolidate() {
+      return { ran: false, episodesSeen: 0, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0 };
+    },
+    async search() {
+      return { hits: [], degraded: [] };
+    },
+  };
+  return { memory, autoRecallCalls: () => autoRecallCalls, captures: () => captures };
+}
+
+test("incognito room: captures no episodes and injects no auto-recall (daemon-side gates)", async () => {
+  const { memory, autoRecallCalls, captures } = recordingMemory();
+  const { service } = await makeService({
+    incognito: true,
+    tools: ["read", "memory", "recall", "summon"],
+    memory,
+  });
+
+  // The immutable flag is read from disk at open, cached, and surfaced.
+  assert.equal(service.incognito, true);
+  assert.equal((await service.getSnapshot()).room.incognito, true);
+
+  await service.sendMessage("remember my password is hunter2");
+  await service.waitForIdle();
+
+  assert.equal(autoRecallCalls(), 0, "auto-recall must not run in an incognito room");
+  assert.deepEqual(captures(), [], "no episodes captured in an incognito room");
+  // (The memory/recall TOOL strip happens in the runner subprocess — see the
+  // stripIncognitoTools unit test in test/tools.test.ts and the runner-host env
+  // test — because the runner re-loads the agent from disk.)
+});
+
+test("normal room DOES inject auto-recall and capture episodes (control for incognito gates)", async () => {
+  const { memory, autoRecallCalls, captures } = recordingMemory();
+  const { service } = await makeService({
+    tools: ["read", "memory", "recall", "summon"],
+    memory,
+  });
+
+  assert.equal(service.incognito, false);
+
+  await service.sendMessage("what did we decide last week?");
+  await service.waitForIdle();
+
+  assert.equal(autoRecallCalls(), 1, "auto-recall runs for a normal room");
+  assert.deepEqual(captures(), ["gaia"], "the completed turn is captured as an episode");
 });
 
 test("/rewind truncates after the n-th-last user message and resets cursors + sessions", async () => {

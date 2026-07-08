@@ -26,7 +26,7 @@ export type RunnerMessage =
   // `ok` = the pass ran without error; `compacted` = history was actually
   // evicted into a summary (false for a no-op). The daemon draws the visible
   // boundary from `compacted`, never from the message text.
-  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string };
+  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string; summary?: string };
 
 /** Serialize one protocol frame for the newline-delimited wire.
  *
@@ -58,6 +58,11 @@ export const RUNNER_ENV = {
   daemonToken: "GAIA_DAEMON_TOKEN",
   memoryDir: "GAIA_MEMORY_DIR",
   roomDir: "GAIA_ROOM_DIR",
+  /** Set to "1" ONLY when the room is incognito: the runner strips the memory +
+   * recall tools from the loaded agent before building the harness runtime, so
+   * the strip applies uniformly to every harness (the agent is re-loaded from
+   * disk in the subprocess, so a daemon-side strip alone would never reach it). */
+  incognito: "GAIA_RUNNER_INCOGNITO",
   /** Set ONLY when the credential proxy is enabled for this turn. */
   llmProxyUrl: "GAIA_LLM_PROXY_URL",
 } as const;
@@ -84,7 +89,13 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
         ...(typeof msg.outputTokens === "number" ? { outputTokens: msg.outputTokens } : {}),
       };
     case "compact-result":
-      return { type: "compact-result", ok: msg.ok === true, compacted: msg.compacted === true, message: typeof msg.message === "string" ? msg.message : "" };
+      return {
+        type: "compact-result",
+        ok: msg.ok === true,
+        compacted: msg.compacted === true,
+        message: typeof msg.message === "string" ? msg.message : "",
+        ...(typeof msg.summary === "string" ? { summary: msg.summary } : {}),
+      };
     default:
       return undefined;
   }

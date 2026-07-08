@@ -18,7 +18,7 @@
 // No LLM in the query path; scores are deterministic.
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -188,18 +188,35 @@ export function sharedMemorySource(workspaceRoot: string): AgentMemoryRef {
   return { agentId: WORKSPACE_FACTS_AGENT, memoryDir: sharedFactsDir(workspacePaths.memoryDir(workspaceRoot)) };
 }
 
-/** Every room transcript in the workspace, most-recently-active first.
- * Uncapped on purpose: rooms are chats, and recall must reach ANY of them —
+/** True when a room's state.json marks it incognito — such rooms are invisible
+ * to recall, so their transcripts are never indexed. Best-effort: a room whose
+ * state can't be read (missing, mid-write, corrupt) is treated as NON-incognito,
+ * i.e. indexed — failing open keeps normal rooms recallable, and an incognito
+ * room's state is written once at creation before any turn exists to index. */
+function roomIsIncognito(roomDir: string): boolean {
+  try {
+    const raw = readFileSync(join(roomDir, "state.json"), "utf8");
+    return (JSON.parse(raw) as { incognito?: unknown }).incognito === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Every room transcript in the workspace, most-recently-active first —
+ * EXCEPT incognito rooms, which are omitted so they can never enter the recall
+ * index. Uncapped on purpose: rooms are chats, and recall must reach ANY of them —
  * including a 100-chat history import. Shared by the daemon and the bare-CLI
- * fallbacks so there is exactly one definition of "the workspace's rooms". */
+ * fallbacks so there is exactly one definition of "the workspace's recallable rooms". */
 export function workspaceRoomRefs(workspaceRoot: string): RoomRef[] {
   const roomsDir = workspacePaths.roomsDir(workspaceRoot);
   if (!existsSync(roomsDir)) return [];
   const refs: Array<RoomRef & { mtime: number }> = [];
   for (const entry of readdirSync(roomsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const transcriptPath = join(roomsDir, entry.name, "transcript.jsonl");
+    const roomDir = join(roomsDir, entry.name);
+    const transcriptPath = join(roomDir, "transcript.jsonl");
     if (!existsSync(transcriptPath)) continue;
+    if (roomIsIncognito(roomDir)) continue;
     try {
       refs.push({ roomId: entry.name, transcriptPath, mtime: statSync(transcriptPath).mtimeMs });
     } catch {

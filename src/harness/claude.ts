@@ -814,9 +814,17 @@ export class ClaudeRuntime implements AgentRuntime {
         onExit: ({ code, signal, stderr }) => {
           if (this.active === handle) this.active = null;
           if (failed) reject(new Error(failed));
-          else if (compacted) resolve({ compacted: true, message: `session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.` });
-          else if (code === 0) resolve({ compacted: true, message: "session compacted." });
-          else
+          else if (compacted || code === 0) {
+            // Surface Claude's own summary of the evicted history so the daemon
+            // can persist it (durable compaction). Best-effort — no summary just
+            // means a later reload falls back to raw context.
+            const summary = this.readLatestCompactSummary(room.sessionId);
+            resolve({
+              compacted: true,
+              message: compacted ? `session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.` : "session compacted.",
+              ...(summary ? { summary } : {}),
+            });
+          } else
             reject(
               claudeStartupError(
                 new Error(`claude exited (${signal ? `signal ${signal}` : `exit ${code}`}) before compacting.`),
@@ -834,6 +842,45 @@ export class ClaudeRuntime implements AgentRuntime {
       // and rewrote the session behind the user's back.
       this.active = handle;
     });
+  }
+
+  /** After a native /compact, Claude appends an `isCompactSummary` row to the
+   * session file — its own summary of the evicted history. Return the latest
+   * one so gaia can persist it (durable compaction: a later session loss reloads
+   * [summary + tail] rather than raw-from-0 or a thin tail). The session id is a
+   * UUID, so the file is found under any project dir regardless of cwd munging;
+   * every failure degrades to no summary (never throws into the compact result). */
+  private readLatestCompactSummary(sessionId: string): string | undefined {
+    try {
+      const base = join(homedir(), ".claude", "projects");
+      if (!existsSync(base)) return undefined;
+      for (const dir of readdirSync(base)) {
+        const file = join(base, dir, `${sessionId}.jsonl`);
+        if (!existsSync(file)) continue;
+        let summary: string | undefined;
+        for (const line of readFileSync(file, "utf8").split("\n")) {
+          if (!line.trim()) continue;
+          let row: { isCompactSummary?: boolean; message?: { content?: unknown } };
+          try {
+            row = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (row.isCompactSummary !== true) continue;
+          const content = row.message?.content;
+          if (typeof content === "string") summary = content;
+          else if (Array.isArray(content))
+            summary = content
+              .filter((b): b is { type: string; text: string } => !!b && typeof b === "object" && (b as { type?: string }).type === "text")
+              .map((b) => b.text)
+              .join("");
+        }
+        return summary;
+      }
+    } catch {
+      /* best-effort: no summary if the session file can't be read */
+    }
+    return undefined;
   }
 
   // -----------------------------------------------------------------------

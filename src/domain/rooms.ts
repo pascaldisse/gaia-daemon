@@ -277,6 +277,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(value.thanksDario === true ? { thanksDario: true } : {}),
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
+    ...(value.incognito === true ? { incognito: true } : {}),
   };
 }
 
@@ -450,6 +451,42 @@ export class RoomHandle {
     const next = events.map((event) => (edited.has(event.id) ? { ...event, text: edits.get(event.id)!, redacted: true } : event));
     await writeText(this.transcriptPath, next.map((event) => JSON.stringify(event)).join("\n") + "\n");
     return [...edited];
+  }
+
+  // --- durable compaction summaries -------------------------------------------
+  // Keyed by agentId → { floorIdx, summary }: the harness's own summary of the
+  // history below the agent's context floor. On a session-loss replay the daemon
+  // feeds [summary + tail after floorIdx] instead of raw-from-0 or a thin tail,
+  // so an explicit /compact survives every reset. Valid only while floorIdx still
+  // equals the live floor (a moved floor auto-invalidates it). compaction.json
+  // lives beside the transcript — derived state, never part of the WAL.
+
+  private compactionPath(): string {
+    return join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "compaction.json");
+  }
+
+  private async readCompactionMap(): Promise<Record<string, { floorIdx: number; summary: string }>> {
+    return ((await readJson(this.compactionPath())) as Record<string, { floorIdx: number; summary: string }> | undefined) ?? {};
+  }
+
+  /** The stored summary for an agent, or undefined if none. Callers must still
+   * check floorIdx against the live floor before trusting it. */
+  async readCompaction(agentId: string): Promise<{ floorIdx: number; summary: string } | undefined> {
+    const entry = (await this.readCompactionMap())[agentId];
+    return entry && typeof entry.summary === "string" && typeof entry.floorIdx === "number" ? entry : undefined;
+  }
+
+  async writeCompaction(agentId: string, floorIdx: number, summary: string): Promise<void> {
+    const all = await this.readCompactionMap();
+    all[agentId] = { floorIdx, summary };
+    await writeJsonAtomic(this.compactionPath(), all);
+  }
+
+  async clearCompaction(agentId: string): Promise<void> {
+    const all = await this.readCompactionMap();
+    if (!(agentId in all)) return;
+    delete all[agentId];
+    await writeJsonAtomic(this.compactionPath(), all);
   }
 
   async eventsFrom(cursor: number): Promise<RoomPage> {

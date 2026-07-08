@@ -66,6 +66,22 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
   },
 ];
 
+/** The GaiaTool ids denied to an agent in an incognito room: `memory` (its
+ * persistent core memory) and `recall` (long-term memory + room-history search).
+ * `summon` is intentionally kept — it spawns a worker, it doesn't read or write
+ * this room's memory. */
+export const INCOGNITO_STRIPPED_TOOLS: readonly GaiaTool[] = ["memory", "recall"];
+
+/** Remove the incognito-stripped memory tools from an agent's vocabulary,
+ * returning the SAME agent when it has none of them. Applied ONCE in the runner
+ * (harness/runner.ts) so every harness's create() reads the already-filtered
+ * `agent.tools` — RULE #0: one uniform mechanism, no per-harness branch. */
+export function stripIncognitoTools(agent: AgentDef): AgentDef {
+  const strip = new Set<string>(INCOGNITO_STRIPPED_TOOLS);
+  if (!agent.tools.some((tool) => strip.has(tool))) return agent;
+  return { ...agent, tools: agent.tools.filter((tool) => !strip.has(tool)) };
+}
+
 const byVerb = new Map(GAIA_TOOLS.flatMap((tool) => tool.cliVerbs.map((verb) => [verb, tool] as const)));
 
 export function gaiaToolIds(): GaiaTool[] {

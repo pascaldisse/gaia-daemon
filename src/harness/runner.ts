@@ -18,6 +18,7 @@ import { BridgeMemoryStore, bridgeRecallSearch, bridgeSummonCreate, fixedTokenHo
 import "./index.js";
 import { encodeFrame, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
 import { type AgentRuntime, harnessIdFor, harnessSpecFor } from "./spec.js";
+import { stripIncognitoTools } from "./tools.js";
 
 function send(message: RunnerMessage): void {
   process.stdout.write(`${encodeFrame(message)}\n`);
@@ -37,11 +38,17 @@ export async function runAgentRunner(): Promise<void> {
   }
 
   const workspace = await loadWorkspace(workspacePath);
-  const agent = workspace.agents[agentId];
-  if (!agent) {
+  const loadedAgent = workspace.agents[agentId];
+  if (!loadedAgent) {
     send({ type: "turn-error", message: `runner unknown agent: ${agentId}` });
     process.exit(1);
   }
+  // Incognito room: strip the memory + recall tools from the agent BEFORE the
+  // harness runtime is built. The subprocess re-loads the agent from disk (full
+  // tools), so this is the ONE place the strip actually reaches the harness —
+  // and because every harness's create() reads agent.tools, it applies to all of
+  // them uniformly (RULE #0), claude/codex/pi and any future harness alike.
+  const agent = env(RUNNER_ENV.incognito) === "1" ? stripIncognitoTools(loadedAgent) : loadedAgent;
 
   // Bridge target (daemon url + token) is present whenever the daemon has a
   // harness bridge. memory reads are disk; writes + summon go to the daemon.
@@ -118,7 +125,15 @@ export async function runAgentRunner(): Promise<void> {
           runtime.compact?.(command.roomId, (update) => send({ type: "compact-progress", ...update })) ??
           Promise.reject(new Error("compaction not supported"))
         )
-          .then((result) => send({ type: "compact-result", ok: true, compacted: result.compacted, message: result.message }))
+          .then((result) =>
+            send({
+              type: "compact-result",
+              ok: true,
+              compacted: result.compacted,
+              message: result.message,
+              ...(result.summary ? { summary: result.summary } : {}),
+            }),
+          )
           .catch((error: unknown) =>
             send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );

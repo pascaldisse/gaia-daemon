@@ -221,6 +221,12 @@ test("normalizeRoomState: thanksDario flag survives the whitelist", () => {
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).thanksDario, undefined);
 });
 
+test("normalizeRoomState: incognito flag survives the whitelist (only literal true)", () => {
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, incognito: true }).incognito, true);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, incognito: "yes" }).incognito, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).incognito, undefined);
+});
+
 test("normalizeRoomState: title and imported survive the whitelist", () => {
   const state = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "My chat", imported: "2026-04-21T00:00:00Z" });
   assert.equal(state.title, "My chat");

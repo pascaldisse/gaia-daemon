@@ -39,10 +39,15 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
   await writeText(path, content);
 }
 
-export async function ensureWorkspaceRoom(cwd: string, roomId: string): Promise<void> {
+export async function ensureWorkspaceRoom(cwd: string, roomId: string, opts?: { incognito?: boolean }): Promise<void> {
   assertRoomId(roomId);
   await writeIfMissing(workspacePaths.transcript(cwd, roomId), "");
-  await writeIfMissing(workspacePaths.roomState(cwd, roomId), jsonText(normalizeRoomState(undefined)));
+  // `incognito` is seeded here and ONLY here — writeIfMissing means it lands in
+  // the initial state of a brand-new room and is never rewritten, so the flag is
+  // immutable (a room is incognito or it isn't). Selecting an existing room with
+  // incognito set is a no-op, which is why the daemon can pass the flag freely.
+  const initial = normalizeRoomState(opts?.incognito ? { incognito: true } : undefined);
+  await writeIfMissing(workspacePaths.roomState(cwd, roomId), jsonText(initial));
 }
 
 /** Reversible room delete: move the whole room dir (transcript + state + files +

@@ -457,7 +457,7 @@ export class Daemon {
     return record;
   }
 
-  async selectRoom(workspaceId: string, roomId: string): Promise<SelectionPayload> {
+  async selectRoom(workspaceId: string, roomId: string, opts?: { incognito?: boolean }): Promise<SelectionPayload> {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
 
@@ -467,7 +467,9 @@ export class Daemon {
       throw new Error("Stop the active voice call before switching rooms.");
     }
 
-    await ensureWorkspaceRoom(record.path, roomId);
+    // `incognito` only takes effect when this call CREATES the room (immutable
+    // seed in ensureWorkspaceRoom); selecting an existing room ignores it.
+    await ensureWorkspaceRoom(record.path, roomId, opts);
     await setWorkspaceRoom(record.path, roomId);
     this.currentRoom.set(workspaceId, roomId);
 

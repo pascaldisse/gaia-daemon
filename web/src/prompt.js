@@ -10,16 +10,29 @@
 import { h } from "./dom.js";
 
 /**
- * Ask the user for a line of text. Resolves the trimmed value, or null if the
- * user cancels (Esc, Cancel, backdrop click) or submits it empty.
- * @param {string} message the label shown above the input
+ * Ask the user for a line of text, optionally with a single checkbox alongside
+ * it (e.g. an "incognito" toggle on the new-room prompt). Without `checkbox` it
+ * resolves the trimmed string, or null on cancel/empty — exactly as before. WITH
+ * `checkbox` it resolves `{ value, checked }` (or null on cancel/empty) so one
+ * modal collects both the name and the flag.
+ * @overload
+ * @param {string} message
  * @param {{ placeholder?: string, value?: string, okLabel?: string }} [opts]
  * @returns {Promise<string|null>}
+ *//**
+ * @overload
+ * @param {string} message
+ * @param {{ placeholder?: string, value?: string, okLabel?: string, checkbox: { label: string, checked?: boolean } }} opts
+ * @returns {Promise<{ value: string, checked: boolean }|null>}
+ *//**
+ * @param {string} message
+ * @param {{ placeholder?: string, value?: string, okLabel?: string, checkbox?: { label: string, checked?: boolean } }} [opts]
+ * @returns {Promise<string|{ value: string, checked: boolean }|null>}
  */
 export function promptText(message, opts = {}) {
   return new Promise((resolve) => {
     let settled = false;
-    /** @param {string|null} value */
+    /** @param {string|{ value: string, checked: boolean }|null} value */
     const finish = (value) => {
       if (settled) return;
       settled = true;
@@ -40,9 +53,13 @@ export function promptText(message, opts = {}) {
         }
       },
     });
+    const checkbox = opts.checkbox
+      ? /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", class: "prompt-check-box", ...(opts.checkbox.checked ? { checked: true } : {}) }))
+      : null;
     const submit = () => {
       const value = /** @type {HTMLInputElement} */ (input).value.trim();
-      finish(value ? value : null);
+      if (!value) return finish(null);
+      finish(checkbox ? { value, checked: checkbox.checked } : value);
     };
 
     // Capture Escape at the window level so it wins even if focus wandered.
@@ -69,6 +86,9 @@ export function promptText(message, opts = {}) {
         { class: "modal prompt-modal" },
         h("div", { class: "panel-head" }, h("h2", { text: message })),
         input,
+        opts.checkbox && checkbox
+          ? h("label", { class: "prompt-check" }, checkbox, h("span", { text: opts.checkbox.label }))
+          : null,
         h(
           "div",
           { class: "prompt-actions" },

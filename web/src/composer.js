@@ -117,7 +117,13 @@ function renderComposer() {
 
   // Textarea chrome; the value is only written when state changed elsewhere
   // (voice transcription, background routing, submit) so typing keeps its caret.
-  textarea.placeholder = !snapshot ? "select a workspace" : state.voice ? `on call with @${state.voice.agentId} - speak, or type` : "message @agent or /command";
+  textarea.placeholder = !snapshot
+    ? "select a workspace"
+    : state.voice
+      ? `on call with @${state.voice.agentId} - speak, or type`
+      : snapshot.room.incognito
+        ? "🕶 incognito — message @agent or /command (nothing saved to memory)"
+        : "message @agent or /command";
   textarea.disabled = !snapshot;
   if (textarea.value !== state.composerText) {
     const hadFocus = document.activeElement === textarea;

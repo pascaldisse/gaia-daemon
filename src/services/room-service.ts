@@ -69,6 +69,11 @@ export interface RoomServiceOptions {
   workspaceId: string;
   workspace: Workspace;
   roomId?: string;
+  /** This room is incognito (RoomState.incognito) — invisible to long-term
+   * memory. Read once at open (the flag is immutable) and threaded here so the
+   * constructor can strip the memory/recall tools before any runtime is built,
+   * and the turn path can skip capture + auto-recall. */
+  incognito?: boolean;
   /** Workspace-scoped store shared by every room service (single writer). */
   memoryStore: MemoryStore;
   runtimeFactory?: (agent: AgentDef) => AgentRuntime;
@@ -282,8 +287,18 @@ export class RoomService {
   private agentDialogueHops = 0;
   private initPromise: Promise<void> | undefined;
 
+  /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
+  readonly incognito: boolean;
+
   constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
+    this.incognito = options.incognito === true;
+    // In an incognito room the memory/recall tools are stripped from every agent.
+    // The strip happens in the runner subprocess (it re-loads the agent from disk,
+    // so a daemon-side strip here would never reach it); we just pass the flag
+    // down. It applies uniformly to every harness — RULE #0 — because the runner
+    // is the one path all harnesses go through. `this.incognito` also gates the
+    // daemon-side episode-capture and auto-recall paths below.
     this.runtimes = Object.fromEntries(
       Object.values(options.workspace.agents).map((agent) => [
         agent.id,
@@ -292,6 +307,7 @@ export class RoomService {
           : createAgentRuntime({
               workspace: options.workspace,
               agent,
+              ...(this.incognito ? { incognito: true } : {}),
               memoryStore: options.memoryStore,
               harnessHost: options.harnessHost,
               // Resolved at spawn (after init), when parentRoomId is known.
@@ -308,7 +324,10 @@ export class RoomService {
   static async open(options: RoomServiceOptions): Promise<RoomService> {
     const roomId = options.roomId ?? options.workspace.config.room;
     const room = await RoomHandle.open(options.workspace.rootDir, roomId);
-    return new RoomService({ ...options, room });
+    // The incognito flag is immutable, so read it once here and let the
+    // constructor strip tools + the turn path skip capture/auto-recall.
+    const incognito = options.incognito ?? (await room.state()).incognito === true;
+    return new RoomService({ ...options, room, incognito });
   }
 
   private isSummonRoom = false;
@@ -852,7 +871,17 @@ export class RoomService {
         (state.agentCursors[target] ?? 0) > (state.contextFloors?.[target] ?? 0) &&
         options.cursorOverride === undefined &&
         (runtime.hasDurableSession?.(this.roomId) ?? true) === false;
-      const cursor = options.cursorOverride ?? (sessionLost ? 0 : (state.agentCursors[target] ?? 0));
+      // Durable compaction: if this agent explicitly /compacted (floor > 0) and its
+      // harness session is now LOST, replay [stored summary + tail after floor]
+      // instead of the full raw transcript — so the compaction survives the session
+      // loss instead of silently reverting to everything-from-0. The stored summary
+      // is trusted only while its floorIdx still equals the live floor (a rewind
+      // that moved the floor auto-invalidates it, and clears it besides).
+      const floor = state.contextFloors?.[target] ?? 0;
+      const storedCompaction = sessionLost && floor > 0 ? await this.room.readCompaction(target) : undefined;
+      const replaySummary = storedCompaction && storedCompaction.floorIdx === floor ? storedCompaction.summary : undefined;
+      const cursor =
+        options.cursorOverride ?? (replaySummary !== undefined ? floor : sessionLost ? 0 : (state.agentCursors[target] ?? 0));
       const { events: rawEvents, nextCursor } = await this.room.eventsFrom(cursor);
       // System events (slash-command replies) are persisted for the human UI
       // but are room chrome, not conversation — keep them out of what the agent
@@ -902,12 +931,26 @@ export class RoomService {
       // resume overrides it with the room summary for this one turn. The
       // active-context ref lets recall drop self-matches from THIS room while
       // keeping compacted-away history reachable.
-      const recall = options.recallOverride?.trim()
+      // recallOverride (a context-gate/session-lost resume summary of THIS room's
+      // own transcript) still applies in an incognito room; only the long-term
+      // memory auto-recall is suppressed — nothing about this room reaches the
+      // agent's context from the memory subsystem.
+      // On a durable-compaction replay, the stored summary IS the pre-floor
+      // context — feed it as a labelled block (the raw messages below the floor
+      // stay recall-reachable), alongside any auto-recall for this turn.
+      const compactionBlock =
+        replaySummary !== undefined
+          ? `The earlier part of this conversation was compacted. Summary of everything before the recent messages (the raw messages remain reachable via recall):\n\n${replaySummary}`
+          : undefined;
+      const autoRecall = options.recallOverride?.trim()
         ? options.recallOverride
-        : (await this.options.memory?.autoRecallBlock(target, text, {
-            roomId: this.roomId,
-            floorIdx: state.contextFloors?.[target] ?? 0,
-          })) || undefined;
+        : this.incognito
+          ? undefined
+          : (await this.options.memory?.autoRecallBlock(target, text, {
+              roomId: this.roomId,
+              floorIdx: floor,
+            })) || undefined;
+      const recall = compactionBlock ? [compactionBlock, autoRecall].filter(Boolean).join("\n\n") : autoRecall;
 
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
@@ -1220,6 +1263,9 @@ export class RoomService {
     channel: "voice" | undefined,
   ): Promise<void> {
     if (!this.options.memory) return;
+    // Incognito rooms leave no episodic trace: nothing from a turn here is ever
+    // captured into memory (guards all captureEpisode call sites at once).
+    if (this.incognito) return;
     const tools = [...new Set((details.tools ?? []).map((tool) => tool.toolName))];
     try {
       await this.options.memory.capture(agentId, {
@@ -1308,7 +1354,7 @@ export class RoomService {
     this.lastCompactEmit = startedAt;
     await this.emitSnapshot();
     try {
-      const { compacted, message } = await runtime.compact(this.roomId, (update) => {
+      const { compacted, message, summary } = await runtime.compact(this.roomId, (update) => {
         const prev = this.compactProgress.get(target);
         if (!prev) return;
         this.compactProgress.set(target, { ...prev, ...update });
@@ -1321,6 +1367,13 @@ export class RoomService {
       // everything up to now is recall-reachable again (active-context floor).
       const { nextCursor } = await this.room.eventsFrom(0);
       await this.setContextFloor(target, nextCursor);
+      // Durable compaction: persist the harness's own summary keyed to this floor,
+      // so a later session loss reloads [summary + tail after floor] instead of the
+      // full raw transcript (undoing the compaction) or a thin summary-less tail.
+      // No summary (harness can't surface one) → clear any stale entry; the reload
+      // then falls back to raw context rather than trusting a wrong summary.
+      if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
+      else if (compacted) await this.room.clearCompaction(target);
       // The pre-compact context number is now a lie — don't leave the ctx chip
       // sitting on the old % until the next turn. Best real post-compact figure
       // is the summary the harness streamed (outputTokens); without one, drop
@@ -1672,12 +1725,17 @@ export class RoomService {
     for (const [id, cursor] of Object.entries(state.agentCursors)) {
       if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
     }
+    // rewind moves the floor to a fresh window base — any durable compaction
+    // summary captured at the old floor is now stale and must be dropped (its
+    // floorIdx would no longer match anyway; clearing keeps the store honest).
+    const forgot: string[] = [];
     await this.room.updateState((current) => {
       for (const [id, cursor] of Object.entries(current.agentCursors)) {
         if (cursor <= affectedAbove) continue;
         if (mode === "reset-sessions") {
           current.agentCursors[id] = base;
           current.contextFloors = { ...(current.contextFloors ?? {}), [id]: base };
+          forgot.push(id);
         } else {
           // Keep the FULL context. Reseed to the agent's real floor so the entire
           // kept conversation replays on the fresh session — capped to `kept` so a
@@ -1688,6 +1746,7 @@ export class RoomService {
       }
       delete current.runtimeDetails;
     });
+    for (const id of forgot) await this.room.clearCompaction(id);
     this.recentTasks = [];
     await this.emitSnapshot();
   }
@@ -2201,6 +2260,7 @@ export class RoomService {
         ...(state.thanksDario ? { thanksDario: true } : {}),
         ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
+        ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
@@ -2279,6 +2339,7 @@ export class RoomService {
               ...(state.pendingTurn || running.has(entry.name) || (entry.name === this.roomId && this.activeAgentTurn) ? { running: true } : {}),
               ...(state.title ? { title: state.title } : {}),
               ...(state.imported ? { imported: state.imported } : {}),
+              ...(state.incognito ? { incognito: true } : {}),
               ...(activity ? { lastActivity: activity } : {}),
             },
           };
