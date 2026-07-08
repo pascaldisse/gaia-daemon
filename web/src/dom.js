@@ -48,9 +48,11 @@ export function h(tag, attrs = {}, ...children) {
   if (tag === "textarea" || tag === "input") {
     // Typed text here is @mentions, /commands, ids and code — never prose. The
     // OS text layer (macOS autocorrect bubble in the WKWebView shell, spellcheck
-    // squiggles) mangles it, so every text field opts out unless the caller
-    // explicitly passes one of these attrs back on.
-    for (const [key, value] of [["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"]]) {
+    // squiggles, and the Sequoia inline "writing suggestions" ghost text —
+    // writingsuggestions is a distinct Safari 18 feature autocorrect=off does NOT
+    // cover) mangles it, so every text field opts out unless the caller explicitly
+    // passes one of these attrs back on.
+    for (const [key, value] of [["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"], ["writingsuggestions", "false"]]) {
       if (!(key in (attrs ?? {}))) node.setAttribute(key, value);
     }
   }

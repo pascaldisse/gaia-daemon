@@ -173,7 +173,11 @@ async function selectGlobalAgentView(view) {
 // File loading + saving.
 
 export async function loadInitialFiles() {
-  state.selectedWorkspaceFileId = state.selectedWorkspaceFileId ?? state.workspaceFiles[0]?.id ?? null;
+  // Keep the current selection only if it still exists in this workspace's file
+  // list — switching/adding a workspace brings a fresh set, and a stale id from
+  // the previous workspace would 500 as "Editable file not found".
+  const stillPresent = state.workspaceFiles.some((file) => file.id === state.selectedWorkspaceFileId);
+  state.selectedWorkspaceFileId = (stillPresent ? state.selectedWorkspaceFileId : state.workspaceFiles[0]?.id) ?? null;
   syncGlobalSettingsSelection();
   await Promise.all([loadSelectedWorkspaceFile(), loadSelectedGlobalFile()]);
 }
