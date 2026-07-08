@@ -18,7 +18,7 @@ import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from
 import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ThinkingLevel, Workspace } from "../core/types.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { writeTextAtomic } from "../core/store.js";
-import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
+import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { discoverSkills } from "../domain/skills.js";
@@ -98,13 +98,29 @@ export function sdkThinkingLevels(): string[] {
  * (cheap directory scan) so a freshly installed skill shows up without restart.
  */
 export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOption[] {
-  return discoverSkills(workspace)
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((skill) => ({
-      value: skill.name,
-      label: skill.name,
-      description: [skill.source, skill.description].filter(Boolean).join(" · "),
-    }));
+  const options: FieldHintOption[] = discoverSkills(workspace).map((skill) => ({
+    value: skill.name,
+    label: skill.name,
+    description: [skill.source, skill.description].filter(Boolean).join(" · "),
+  }));
+  // Native (fileless-builtin) commands each harness runs itself — pickable so a
+  // command like deep-research is enabled by CHECKING it, no separate toggle.
+  // The picker is workspace-global; only the matching harness runs them. Deduped
+  // by name against on-disk skills (which inline instead) and across harnesses.
+  const seen = new Set(options.map((option) => option.value.toLowerCase()));
+  for (const spec of harnessSpecs()) {
+    for (const command of nativeCommandsFor(spec.id)) {
+      const key = command.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      options.push({
+        value: command.name,
+        label: command.name,
+        description: [spec.id, "native", command.description].filter(Boolean).join(" · "),
+      });
+    }
+  }
+  return options.sort((a, b) => a.value.localeCompare(b.value));
 }
 
 export interface ModelCatalog {

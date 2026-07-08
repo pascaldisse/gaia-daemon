@@ -142,7 +142,15 @@ export function discoverSkills(workspace: SkillWorkspaceRef, home?: string, user
   return [...byName.values()];
 }
 
-export function resolveSkillRefs(workspace: SkillWorkspaceRef, skillNames: string[], home?: string): SkillResolutionResult {
+export function resolveSkillRefs(
+  workspace: SkillWorkspaceRef,
+  skillNames: string[],
+  home?: string,
+  /** Names that resolve outside the on-disk registry (e.g. a harness's fileless
+   * native builtins) — an unresolved one in this set is skipped silently rather
+   * than reported "Unknown skill", since it has no SKILL.md to inline. */
+  knownExternal?: Set<string>,
+): SkillResolutionResult {
   const registry = new Map(discoverSkills(workspace, home).map((skill) => [skill.name, skill]));
   const diagnostics: string[] = [];
   const skills: ResolvedSkill[] = [];
@@ -154,7 +162,7 @@ export function resolveSkillRefs(workspace: SkillWorkspaceRef, skillNames: strin
     }
     const found = registry.get(name);
     if (found) skills.push(found);
-    else diagnostics.push(`Unknown skill: ${name}`);
+    else if (!knownExternal?.has(name.toLowerCase())) diagnostics.push(`Unknown skill: ${name}`);
   }
 
   return {
@@ -182,9 +190,10 @@ export async function loadSkillText(
   workspace: SkillWorkspaceRef,
   skillNames: string[],
   home?: string,
+  knownExternal?: Set<string>,
 ): Promise<{ text: string; diagnostics: string[] }> {
   if (skillNames.length === 0) return { text: "", diagnostics: [] };
-  const resolution = resolveSkillRefs(workspace, skillNames, home);
+  const resolution = resolveSkillRefs(workspace, skillNames, home, knownExternal);
   const blocks: string[] = [];
   for (const skill of resolution.skills) {
     try {

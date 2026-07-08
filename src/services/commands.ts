@@ -22,7 +22,6 @@ export type SlashCommand =
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
-  | { type: "native"; agent?: string; sub?: "on" | "off" | "list" }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -49,11 +48,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     type: "thanks-dario",
     description: "have Dario review recent messages for safeguard triggers and propose redactions: /thanks-dario [run|on|off]",
     aliases: ["dario"],
-  },
-  {
-    name: "native",
-    type: "native",
-    description: "toggle harness-native slash commands (e.g. /deep-research) for an agent: /native [agent] on|off|list",
   },
 ];
 
@@ -116,16 +110,6 @@ export function parseCommand(input: string): SlashCommand {
     case "thanks-dario": {
       const sub = args[0]?.toLowerCase();
       return { type: "thanks-dario", sub: sub === "on" || sub === "off" ? sub : "run" };
-    }
-    case "native": {
-      // /native [agent] on|off|list — a leading on/off/list targets the active
-      // agent; "@ari on" names one; a lone name lists that agent's commands.
-      const subs = new Set(["on", "off", "list"]);
-      const a0 = stripped[0]?.toLowerCase();
-      const a1 = stripped[1]?.toLowerCase();
-      if (a0 && subs.has(a0)) return { type: "native", sub: a0 as "on" | "off" | "list" };
-      if (a0 && a1 && subs.has(a1)) return { type: "native", agent: stripped[0], sub: a1 as "on" | "off" | "list" };
-      return { type: "native", agent: stripped[0] || undefined };
     }
     case "setup": {
       const sub = args[0]?.toLowerCase();

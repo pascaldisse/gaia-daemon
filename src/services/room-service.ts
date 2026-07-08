@@ -47,6 +47,7 @@ import { DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
+import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
@@ -226,7 +227,6 @@ const COMMANDS: Record<string, CommandHandler> = {
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
-  native: (service, command) => (command.type === "native" ? service.runNativeCommand(command.agent, command.sub) : Promise.resolve("")),
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -384,8 +384,13 @@ export class RoomService {
     this.contextGate = state.contextGate;
 
     // Surface a previously saved sanitize proposal (popup reopens after restart).
+    // Only ACTIONABLE proposals are restored as pending: a review that returned
+    // no output, didn't parse, or found nothing has 0 suggestions and can never
+    // be applied, so it must not linger as a pending item that re-pops the popup
+    // on every reload. The file stays on disk — reopening the popup manually
+    // still shows Dario's raw notes.
     const savedProposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
-    if (savedProposal?.at && Array.isArray(savedProposal.suggestions)) {
+    if (savedProposal?.at && Array.isArray(savedProposal.suggestions) && savedProposal.suggestions.length > 0) {
       this.sanitizeStatus = {
         at: savedProposal.at,
         suggestions: savedProposal.suggestions.length,
@@ -438,14 +443,16 @@ export class RoomService {
 
     let command = parseCommand(text);
     // Harness-native passthrough: an unrecognized `/command` becomes a command
-    // TURN to the active agent when that agent opted into nativeCommands and its
-    // harness can run them (claude skills like /deep-research). Anything else
-    // stays the "unknown command" reply. Rewritten to a message turn here so it
-    // rides the normal WAL/queue/streaming path — just flagged nativeCommand.
+    // TURN to the active agent when that agent has CHECKED that command as a
+    // skill (claude builtins like deep-research) and its harness can run them.
+    // No separate toggle — the skill list is the whitelist. Anything else stays
+    // the "unknown command" reply. Rewritten to a message turn here so it rides
+    // the normal WAL/queue/streaming path — just flagged nativeCommand.
     if (command.type === "unknown") {
       const target = await this.nativeCommandTarget();
       const agent = this.workspace.agents[target];
-      if (agent?.nativeCommands && capabilitiesFor(harnessIdFor(agent, this.workspace)).supportsNativeCommands) {
+      const commandName = text.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
+      if (agent && this.agentNativeSkillNames(agent).has(commandName)) {
         command = { type: "message", text };
         options = { ...options, targets: [target], nativeCommand: true };
       } else if (text.trim().split(/\s+/).length > 1) {
@@ -1634,7 +1641,12 @@ export class RoomService {
       at: new Date().toISOString(),
     });
     await writeJsonAtomic(this.sanitizeProposalPath, proposal);
-    this.sanitizeStatus = { at: proposal.at, suggestions: proposal.suggestions.length };
+    // Only report a proposal as pending in the snapshot when there is something
+    // to apply. A parse-error / "found nothing" review (0 suggestions) can never
+    // be applied, so reporting it would sit pending forever and re-pop the popup
+    // on every reload; clearing it also supersedes any earlier pending proposal.
+    // The file is still written above, so a manual re-open shows his raw notes.
+    this.sanitizeStatus = proposal.suggestions.length > 0 ? { at: proposal.at, suggestions: proposal.suggestions.length } : undefined;
     await this.emitSnapshot();
     return proposal;
   }
@@ -2047,58 +2059,42 @@ export class RoomService {
     return this.workspace.config.defaultAgent;
   }
 
-  /** Does this agent accept harness-native slash-command passthrough right now? */
-  private agentAllowsNativeCommands(agent: AgentDef): boolean {
-    return agent.nativeCommands === true && capabilitiesFor(harnessIdFor(agent, this.workspace)).supportsNativeCommands;
+  /** The native (fileless-builtin) command names this agent has CHECKED as
+   * skills — the derived replacement for the old `nativeCommands` toggle. Empty
+   * unless the harness supports native commands. Lowercased. */
+  private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>): Set<string> {
+    const skills = agent.skills ?? [];
+    if (skills.length === 0) return new Set();
+    const harnessId = harnessIdFor(agent, this.workspace);
+    // findHarness (not capabilitiesFor) so an unregistered harness yields "no
+    // native support" instead of throwing — the palette runs even mid-boot.
+    if (!findHarness(harnessId)?.capabilities.supportsNativeCommands) return new Set();
+    // A native command routes only if it's FILELESS (a builtin) — a name that
+    // also exists on disk inlines as text instead. Caller may pass the on-disk
+    // set so the palette scans once for all agents, not once per agent.
+    const onDisk = onDiskLower ?? new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
+    const native = new Set(nativeCommandsFor(harnessId).map((command) => command.name.toLowerCase()).filter((name) => !onDisk.has(name)));
+    return new Set(skills.map((skill) => skill.toLowerCase()).filter((name) => native.has(name)));
   }
 
-  /** The `/`-command palette: gaia commands + the harness-native commands
-   * advertised by every agent that opted in (deduped, gaia names win). Native
-   * ones are hints only — passthrough still forwards anything typed. */
+  /** The `/`-command palette: gaia commands + the harness-native commands each
+   * agent CHECKED as a skill (deduped, gaia names win). Native ones are hints —
+   * only a checked one passes through. */
   private paletteCommands(): SlashCommandDefinition[] {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
     const native: SlashCommandDefinition[] = [];
+    const onDisk = new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
     for (const agent of Object.values(this.workspace.agents)) {
-      if (!this.agentAllowsNativeCommands(agent)) continue;
+      const checked = this.agentNativeSkillNames(agent, onDisk);
+      if (checked.size === 0) continue;
       for (const command of nativeCommandsFor(harnessIdFor(agent, this.workspace))) {
-        if (seen.has(command.name)) continue;
+        const name = command.name.toLowerCase();
+        if (!checked.has(name) || seen.has(command.name)) continue;
         seen.add(command.name);
         native.push({ name: command.name, type: "native", description: command.description, native: true });
       }
     }
     return native.length ? [...SLASH_COMMANDS, ...native] : SLASH_COMMANDS;
-  }
-
-  /** /native: toggle harness-native slash-command passthrough for an agent, or
-   * list what its harness advertises. Persists to agent.json like /thinking. */
-  async runNativeCommand(agentId: string | undefined, sub: "on" | "off" | "list" | undefined): Promise<string> {
-    const target = agentId ?? (await this.nativeCommandTarget());
-    const agent = this.workspace.agents[target];
-    if (!agent) return this.unknownAgentMessage(target);
-    const harnessId = harnessIdFor(agent, this.workspace);
-    if (!capabilitiesFor(harnessId).supportsNativeCommands) {
-      return `@${agent.id}'s harness (${harnessId}) has no native slash commands to pass through.`;
-    }
-    if (sub === "list" || !sub) {
-      const advertised = nativeCommandsFor(harnessId);
-      const state = agent.nativeCommands ? "on" : "off";
-      const list = advertised.length
-        ? advertised.map((command) => `  /${command.name} — ${command.description}`).join("\n")
-        : "  (none advertised — any /command still passes through)";
-      return `Native commands for @${agent.id}: ${state}.\nGrant the agent web/read/bash tools so a skill can act.\n${list}\n\nToggle: /native ${agent.id} on|off`;
-    }
-    const enabled = sub === "on";
-    const configPath = agent.projectConfigPath ?? agent.configPath;
-    const config = ((await readJson(configPath)) ?? {}) as Record<string, unknown>;
-    if (enabled) config.nativeCommands = true;
-    else delete config.nativeCommands;
-    await writeJsonAtomic(configPath, config);
-    agent.nativeCommands = enabled ? true : undefined;
-    await this.emitSnapshot();
-    await this.reloadAfterAgentConfigWrite(agent);
-    return enabled
-      ? `Enabled native commands for @${agent.id}. Type e.g. /deep-research <query>. (Grant web/read/bash tools for a skill to act.)`
-      : `Disabled native commands for @${agent.id}.`;
   }
 
   async renderAgentsList(): Promise<string> {

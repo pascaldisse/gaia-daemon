@@ -12,6 +12,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import type { AgentInput } from "./spec.js";
+import { harnessIdFor, nativeCommandsFor } from "./spec.js";
 import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
 
 export interface SystemPromptInput {
@@ -146,7 +147,13 @@ export async function buildInlineSystemPrompt(params: {
     role: params.role,
     contextFiles: params.workspace.contextFiles,
   });
-  const skills = await loadSkillText(params.workspace, agentSkillNames(params.agent, params.role));
+  // A harness's native commands (claude builtins like deep-research) have no
+  // SKILL.md to inline — they reach the agent by passthrough. Pass their names as
+  // "known external" so an unresolved one is skipped silently, not inlined and
+  // not warned as "unknown skill". Reuses loadSkillText's single scan (the memo'd
+  // nativeCommandsFor adds no disk I/O) — no second discoverSkills on the turn path.
+  const nativeNames = new Set(nativeCommandsFor(harnessIdFor(params.agent, params.workspace)).map((command) => command.name.toLowerCase()));
+  const skills = await loadSkillText(params.workspace, agentSkillNames(params.agent, params.role), undefined, nativeNames);
   for (const diagnostic of skills.diagnostics) console.warn(diagnostic);
   return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
 }

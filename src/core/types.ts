@@ -491,13 +491,6 @@ export interface AgentDef {
    * otherwise-redacted reasoning streams. Off by default — mutates provider
    * requests, so it's a knowing choice like the credential proxy. */
   revealThinking?: boolean;
-  /** Opt in to harness-native slash commands (claude skills like
-   * `/deep-research`): an unrecognized `/command` is passed through to this
-   * agent's harness CLI verbatim instead of erroring. Off by default — it drops
-   * the harness's config isolation for that turn (claude runs with its skill
-   * surface enabled), so it's a knowing choice like revealThinking. Toggle with
-   * `/native`. Only harnesses that declare `supportsNativeCommands` honor it. */
-  nativeCommands?: boolean;
   sandbox?: SandboxConfig;
   /** Trust tier (default true). false → forced real sandbox, may never summon. */
   trust?: boolean;

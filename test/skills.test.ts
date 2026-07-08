@@ -66,6 +66,23 @@ test("resolveSkillRefs resolves a pi skill by name and flags unknown ones", asyn
   assert.ok(result.diagnostics.some((d) => /Unknown skill: does-not-exist/.test(d)));
 });
 
+test("resolveSkillRefs: a knownExternal name (fileless native builtin) is skipped silently, not 'Unknown skill'", async () => {
+  const { workspace, gaiaHome, userHome } = await fixtureHomes();
+  process.env.GAIA_HOME = gaiaHome;
+  process.env.HOME = userHome;
+
+  // "deep-research" has no SKILL.md here — it's a claude builtin the harness runs
+  // itself. Passed as knownExternal, it must NOT inline (no path) and must NOT
+  // warn; a genuinely unknown name still warns.
+  const result = resolveSkillRefs(workspace, ["brave-search", "deep-research", "typo-skill"], undefined, new Set(["deep-research"]));
+  assert.deepEqual(
+    result.skills.map((s) => s.name),
+    ["brave-search"],
+  );
+  assert.ok(!result.diagnostics.some((d) => /deep-research/.test(d)), "known-external name must not warn");
+  assert.ok(result.diagnostics.some((d) => /Unknown skill: typo-skill/.test(d)), "a real typo still warns");
+});
+
 test("a gaia-global skill overrides a same-named harness skill (imagegen bridge wins over ~/.codex)", async () => {
   const { workspace, gaiaHome, userHome } = await fixtureHomes();
   // Same skill name in the codex ecosystem AND gaia-global. skillRoots ranks

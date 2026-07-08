@@ -28,6 +28,8 @@ interface RawAgentConfig {
   runtime?: unknown;
   permissionMode?: unknown;
   revealThinking?: unknown;
+  /** Deprecated: native commands are now enabled by adding the command name to
+   * `skills` (e.g. "deep-research"). Read only to emit a migration warning. */
   nativeCommands?: unknown;
   sandbox?: unknown;
   trust?: unknown;
@@ -313,6 +315,11 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
     const raw = mergeAgentConfig(await readAgentConfig(configPath), await readAgentConfig(projectConfigPath));
     const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : entry.name;
     const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : id;
+    if (raw.nativeCommands === true) {
+      console.warn(
+        `[agents] @${id}: "nativeCommands" is deprecated and ignored. Enable a native command by adding its name to "skills" (e.g. "deep-research").`,
+      );
+    }
 
     await ensureDir(rolesDir);
 
@@ -338,7 +345,6 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
       revealThinking: raw.revealThinking === true ? true : undefined,
-      nativeCommands: raw.nativeCommands === true ? true : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
