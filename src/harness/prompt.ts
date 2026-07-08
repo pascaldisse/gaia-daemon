@@ -204,7 +204,6 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     renderRoomTranscript(input.events),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
-    "Respond to the newest user message in your own voice. Be concise and useful.",
   ]
     .filter(Boolean)
     .join("\n\n");
