@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MEMORY_DEFAULTS } from "../src/core/config.js";
@@ -108,6 +109,45 @@ test("capture writes one episode line with id/ts/outcome/tools", async () => {
   assert.equal(episode.reply, "all green");
   assert.equal(episode.outcome, "complete");
   assert.deepEqual(episode.tools, ["read", "bash"]);
+  service.dispose();
+});
+
+test("capture skips refusals entirely — a decline never becomes a recallable episode", async () => {
+  const { service, agent } = await makeMemoryService();
+  await service.capture("gaia", {
+    roomId: "ida",
+    task: "which function checks the 0x1a8 flag to hide the menus",
+    reply: "Straight with you — this one I'm going to stop at. I'm going to hold the same line I held before.",
+    outcome: "complete",
+  });
+  // A refusal must leave NO episode on disk (the transcript still holds the turn).
+  assert.equal(existsSync(join(agent.memoryDir, "episodes.jsonl")), false);
+
+  // A normal reply in the same room is still captured — the guard is content-scoped, not room-scoped.
+  await service.capture("gaia", { roomId: "ida", task: "trace the flag", reply: "Found it: it's sub_1400 reading the edition byte.", outcome: "complete" });
+  const raw = await readFile(join(agent.memoryDir, "episodes.jsonl"), "utf8");
+  assert.equal(raw.trim().split("\n").length, 1);
+  service.dispose();
+});
+
+test("purgeRoom: erases a deleted room from episodic memory (disk + recall), keeps other rooms, backs up removed", async () => {
+  const { service, agent } = await makeMemoryService();
+  await service.capture("gaia", { roomId: "doomed", task: "trace the widget", reply: "found the doomed widget bug", outcome: "complete" });
+  await service.capture("gaia", { roomId: "keep", task: "trace the gadget", reply: "found the kept gadget bug", outcome: "complete" });
+  assert.equal((await readFile(join(agent.memoryDir, "episodes.jsonl"), "utf8")).trim().split("\n").length, 2);
+
+  const backupDir = await mkdtemp(join(tmpdir(), "gaia-trash-"));
+  const purged = await service.purgeRoom("doomed", backupDir);
+  assert.equal(purged, 1);
+
+  // Gone from disk; the other room survives; removed line is recoverable.
+  const after = (await readFile(join(agent.memoryDir, "episodes.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { roomId: string });
+  assert.deepEqual(after.map((episode) => episode.roomId), ["keep"]);
+  assert.equal(existsSync(join(backupDir, "episodes-gaia.jsonl")), true, "removed episodes backed up for reversibility");
+
+  // Recall never surfaces the purged room's content again.
+  const hits = await service.search("gaia", "doomed widget");
+  assert.ok(!hits.hits.some((hit) => hit.text.includes("doomed widget")), "purged episode is out of recall");
   service.dispose();
 });
 

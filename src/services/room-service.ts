@@ -50,10 +50,10 @@ import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { capabilitiesFor, contextWindowFor, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
-import { renderRoomTranscript } from "../harness/prompt.js";
+import { readOptional, renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
-import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal } from "./sanitize.js";
-import { applyEventToDetails, runAgentTurn } from "./turns.js";
+import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
+import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, isTrusted, type SummonHost, type SummonResultDelivery } from "./summons.js";
@@ -150,6 +150,11 @@ export interface SendMessageOptions {
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
 
+/** Cap on the flagged agent's persona context handed to the Thanks-Dario
+ * reviewer — enough for a SOUL + role, bounded so a huge persona can't bloat
+ * the review turn (a big reasoning stream has wedged the reviewer before). */
+const PERSONA_CONTEXT_CAP = 16_000;
+
 /** Default "load last N messages" when the human doesn't specify N. */
 const CONTEXT_GATE_LAST_N = 20;
 
@@ -170,6 +175,15 @@ const MAX_SUMMARY_INPUT_CHARS = 100_000;
 
 /** Max hits a /recall command reply lists. */
 const RECALL_COMMAND_LIMIT = 8;
+
+/** Char budget for the Thanks-Dario review span. The reviewer must see the
+ * SAME context the flagged agent replays — not a 20-message tail — or it can't
+ * find where the conversation first drifted onto the sensitive topic (often a
+ * user question several turns before the model ever refused). We review from the
+ * agent's context floor to the end, capped to this budget biased to the tail
+ * (freshest re-scored content + the reroute point); any older span that doesn't
+ * fit is reported, never silently dropped. ~40k tokens — safe for the reviewer. */
+const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
 
 /** Max consecutive agent→agent hand-offs before room agent-dialogue pauses and
  * waits for a human. The toggle is the on/off; this is the runaway backstop. */
@@ -405,6 +419,13 @@ export class RoomService {
       if (agent?.nativeCommands && capabilitiesFor(harnessIdFor(agent, this.workspace)).supportsNativeCommands) {
         command = { type: "message", text };
         options = { ...options, targets: [target], nativeCommand: true };
+      } else if (text.trim().split(/\s+/).length > 1) {
+        // Not a known command, and no agent can run it as a native command — but
+        // it carries content ("/note buy milk", "/deep-research quantum"), so it
+        // is the user's MESSAGE, not a typo. Deliver it rather than discard it
+        // with an "Unknown command" reply. A user message may never disappear.
+        // (A lone contentless "/typo" still falls through to the corrective hint.)
+        command = { type: "message", text };
       }
     }
     // Validate routing up-front so unknown-agent errors surface immediately,
@@ -839,15 +860,12 @@ export class RoomService {
       // cursor still counts them (nextCursor is from the raw page) so paging
       // stays aligned with the on-disk transcript.
       const events = rawEvents.filter((event) => event.author !== "system");
-      if ((isNewAgent || sessionLost) && options.cursorOverride === undefined && !options.bypassContextGate && channel !== "voice") {
-        const estTokens = estimateTokens(renderRoomTranscript(events));
-        const threshold = this.workspace.config.contextGate?.warnAboveTokens ?? DEFAULT_CONTEXT_WARN_TOKENS;
-        if (threshold > 0 && estTokens > threshold) {
-          await this.openContextGate(agent, text, estTokens, nextCursor, attachments, sessionLost ? "session-lost" : "new-agent");
-          remaining.shift();
-          continue; // hold this target; a resolveContextGate call replays it
-        }
-      }
+      // NO AUTOMATIC TRUNCATION. A new agent or a session-lost replay ALWAYS
+      // loads the full context (from cursor 0 / the agent's floor). The context
+      // is never silently shrunk, windowed, or summarized behind the user's
+      // back — the only thing that ever reduces context is an explicit /compact
+      // the user types. (The old size-based context gate that forced a
+      // last-N/compact choice on big first loads is gone by design.)
       const activeRoleName = state.activeRoles[target];
       const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
       if (activeRoleName && !activeRole) {
@@ -877,6 +895,7 @@ export class RoomService {
       // Seed the live-turn mirror so a mid-turn (re)subscribe renders it at once.
       this.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
       let lastFlush = 0;
+      let lastFlushedReply = "";
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
       // miss and room-service treats "" as absent. A context-gate "compact"
@@ -935,16 +954,26 @@ export class RoomService {
               this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
             }
           },
-          onProgress: async (reply) => {
+          onProgress: async (reply, event) => {
+            if (reply === lastFlushedReply) return;
+            // Text deltas are throttled; any OTHER event (a tool starting, a
+            // thinking block) flushes immediately — it marks a block boundary,
+            // and the prose tail must not sit unpersisted through a long tool
+            // run (the flush froze at "If you want something r" while tools
+            // streamed for a minute — that stale flush was all a stop kept).
             const now = Date.now();
-            if (now - lastFlush < PARTIAL_FLUSH_MS) return;
+            if (event.type === "text-delta" && now - lastFlush < PARTIAL_FLUSH_MS) return;
             lastFlush = now;
+            lastFlushedReply = reply;
             await this.room.flushPartialReply(reply);
           },
         });
       } catch (error) {
-        // Terminal failure: preserve any partial that streamed (the progress),
-        // clear the marker (never replay a terminally-failed turn — poison pill).
+        // Last-resort net: runAgentTurn no longer throws for a dying stream
+        // (it returns the accumulator with `error` set) — reaching here means
+        // the failure fired before any event streamed. Preserve whatever the
+        // flush recorded and clear the marker (never replay a terminally-failed
+        // turn — poison pill).
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
@@ -958,16 +987,33 @@ export class RoomService {
       // fallback warning; one that fell back (re)arms it.
       if (!turn.details.modelFallback) delete this.modelFallbacks[target];
 
-      // Cancelled or completed: both commit what was produced. A user cancel is
-      // a deliberate stop, so the marker clears either way (commit does it).
+      // Cancelled, failed, or completed: ALL commit what was produced. A user
+      // stop lands as a stream death (abort → turn-error → the runtime stream
+      // throws), so `turn.error` with the cancel flag set IS the normal stop
+      // shape — never a reason to drop the accumulator. A stop is a deliberate
+      // end, not an eraser: the reply text, the tool calls, and the thinking
+      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      const cancelled = turn.cancelled || this.taskCancelled(task);
+      const failed = turn.error !== undefined && !cancelled;
+      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
       const reply = turn.reply.trim();
+      // An interrupted turn that produced tools/thinking but no prose yet still
+      // commits — stopping an agent mid-tool-phase must not vanish the work the
+      // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
+      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply) await this.commitReply(target, eventId, reply, turn.details, channel, nextCursor);
+      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextCursor);
       else await this.room.clearPendingTurn();
 
-      const cancelled = turn.cancelled || this.taskCancelled(task);
-      if (reply) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (failed) {
+        // Genuine mid-stream failure (not a user stop): the progress is now
+        // durable; surface the error so the task settles as error.
+        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        throw turn.error;
+      }
+
+      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
         reply: reply.slice(0, HOOK_TEXT_CAP),
@@ -1262,7 +1308,7 @@ export class RoomService {
     this.lastCompactEmit = startedAt;
     await this.emitSnapshot();
     try {
-      const message = await runtime.compact(this.roomId, (update) => {
+      const { compacted, message } = await runtime.compact(this.roomId, (update) => {
         const prev = this.compactProgress.get(target);
         if (!prev) return;
         this.compactProgress.set(target, { ...prev, ...update });
@@ -1291,7 +1337,11 @@ export class RoomService {
         })
         .catch(() => {});
       const text = `@${target}: ${message}`;
-      return /\bcompacted\b/iu.test(message) ? { text, kind: "compact-complete" } : text;
+      // The visible compact boundary rides on the harness's structured `compacted`
+      // signal — NOT a keyword match on the message (that silently dropped the
+      // marker whenever a harness phrased its result differently). A clean no-op
+      // ("nothing to compact") stays an ordinary system line, no boundary.
+      return compacted ? { text, kind: "compact-complete" } : text;
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
@@ -1381,9 +1431,60 @@ export class RoomService {
     if (!this.workspace.agents[SANITIZE_REVIEWER_ID]) {
       throw new Error(`No "${SANITIZE_REVIEWER_ID}" persona is loaded — restart the daemon to seed it, then retry.`);
     }
-    const events = await this.room.recentEvents(this.workspace.config.transcriptWindow);
-    if (events.length === 0) throw new Error("Nothing to review — this room's transcript is empty.");
-    const reply = await host.summonAndWait(this.roomId, SANITIZE_REVIEWER_ID, buildSanitizePrompt(events));
+    // Review the SAME context the flagged agent replays — the whole span from
+    // its context floor to the end — NOT a short tail. The classifier re-scores
+    // that entire span every turn, and the drift onto the sensitive topic often
+    // starts many turns back (a user question before the model ever refused), so
+    // a 20-message window is blind to the real trigger. System events (Dario's
+    // own status notes) are dropped: they never reach any turn's model context.
+    const state = await this.room.state();
+    const { events: rawAll } = await this.room.eventsFrom(0);
+    const nonSystem = rawAll.filter((event) => event.author !== "system");
+    if (nonSystem.length === 0) throw new Error("Nothing to review — this room's transcript is empty.");
+    // Locate the turn where the classifier rerouted the model, and the flagged
+    // agent whose floor bounds the replayed context. Both are event data — no
+    // harness branch.
+    const fallbackEvent = [...nonSystem].reverse().find((event) => "details" in event && event.details?.modelFallback);
+    const flaggedAgentId = fallbackEvent && !("targets" in fallbackEvent) ? fallbackEvent.author : undefined;
+    const floor = flaggedAgentId ? (state.contextFloors?.[flaggedAgentId] ?? 0) : 0;
+    // From the floor forward = exactly what the agent re-reads each turn.
+    const inContext = rawAll.slice(floor).filter((event) => event.author !== "system");
+    // Cap to the review budget, biased to the tail (the reroute and freshest
+    // re-scored content). Anything older that doesn't fit is reported loudly.
+    let start = inContext.length;
+    let budget = SANITIZE_REVIEW_CHAR_BUDGET;
+    for (let i = inContext.length - 1; i >= 0; i--) {
+      budget -= inContext[i].text.length + 48; // rough per-event header overhead
+      if (budget < 0) break;
+      start = i;
+    }
+    const events = inContext.slice(start);
+    const droppedOlder = start; // in-context events too old to fit the budget
+    if (droppedOlder > 0) {
+      this.emit({
+        type: "room-event",
+        workspaceId: this.workspaceId,
+        roomId: this.roomId,
+        event: {
+          id: `system_sanitize_scope_${Date.now().toString(36)}`,
+          timestamp: new Date().toISOString(),
+          author: "system",
+          text: `⚠ Dario reviewed the most recent ${events.length} of ${inContext.length} in-context messages (${droppedOlder} older ones exceeded the review budget). If the reroute persists, run the review again after applying — the tail shifts back and the older span comes into scope.`,
+        },
+      });
+    }
+    const context = flaggedAgentId ? await this.buildPersonaContext(flaggedAgentId) : undefined;
+    const reply = await host.summonAndWait(
+      this.roomId,
+      SANITIZE_REVIEWER_ID,
+      buildSanitizePrompt(events, {
+        ...(fallbackEvent ? { fallbackEventId: fallbackEvent.id } : {}),
+        ...(fallbackEvent && "details" in fallbackEvent && fallbackEvent.details?.modelFallback
+          ? { fallbackTo: fallbackEvent.details.modelFallback.to, fallbackReason: fallbackEvent.details.modelFallback.reason }
+          : {}),
+        ...(context ? { context } : {}),
+      }),
+    );
     const proposal = parseSanitizeProposal(reply, events, {
       roomId: this.roomId,
       reviewer: SANITIZE_REVIEWER_ID,
@@ -1393,6 +1494,21 @@ export class RoomService {
     this.sanitizeStatus = { at: proposal.at, suggestions: proposal.suggestions.length };
     await this.emitSnapshot();
     return proposal;
+  }
+
+  /** Assemble the flagged agent's real persona context (SOUL + active role) so
+   * the reviewer sees what the classifier actually scored — the transcript
+   * alone omits it. Read-only and length-capped; a trigger found here is
+   * advisory (reported in `summary`), never an applyable transcript edit. */
+  private async buildPersonaContext(agentId: string): Promise<SanitizeContext | undefined> {
+    const agent = this.workspace.agents[agentId];
+    if (!agent) return undefined;
+    const roleName = (await this.room.state()).activeRoles[agentId];
+    const role = roleName ? await resolveAgentRole(agent, roleName) : undefined;
+    const soul = await readOptional(agent.soulPath);
+    const parts = [soul.trim(), role ? `# Active Role: ${role.name}\n\n${role.prompt.trim()}` : ""].filter(Boolean);
+    const text = parts.join("\n\n---\n\n").slice(0, PERSONA_CONTEXT_CAP);
+    return text ? { agentId, text } : undefined;
   }
 
   /** Apply approved edits: rewrite the selected events in place (originals
@@ -1428,13 +1544,15 @@ export class RoomService {
         appliedAt: proposal.appliedAt,
       };
     }
-    // Sanitize rewrites history to PURGE content — sessions holding the
-    // original text must forget it, or the redaction is cosmetic. Events
-    // survive in place (no truncation), so the cut is the first REWRITTEN
-    // index: any session that read past it saw the original text.
+    // Sanitize rewrites the triggering sentences in place — sessions holding the
+    // original text must re-read the rewrite, or the redaction is cosmetic. But
+    // the context itself must NOT change: "rewrite-in-place" resets the affected
+    // session yet replays the WHOLE conversation (never a shrunken window). The
+    // cut is the first REWRITTEN index: any session that read past it saw the
+    // original text and must re-seed.
     const { events: sanitized } = await this.room.eventsFrom(0);
     const firstEdited = sanitized.findIndex((event) => next.has(event.id));
-    await this.resetAfterTruncation("reset-sessions", firstEdited >= 0 ? firstEdited : 0);
+    await this.resetAfterTruncation("rewrite-in-place", firstEdited >= 0 ? firstEdited : 0);
     this.emit({
       type: "room-event",
       workspaceId: this.workspaceId,
@@ -1443,7 +1561,7 @@ export class RoomService {
         id: `system_sanitize_${Date.now().toString(36)}`,
         timestamp: new Date().toISOString(),
         author: "system",
-        text: `✂ Rewrote ${edited.length} message${edited.length === 1 ? "" : "s"}${skipped > 0 ? ` (${skipped} skipped)` : ""}. Originals are preserved in redactions.jsonl; fresh sessions replay the sanitized history on the next turn.`,
+        text: `✂ Rewrote ${edited.length} message${edited.length === 1 ? "" : "s"}${skipped > 0 ? ` (${skipped} skipped)` : ""} in place — context unchanged. Originals are preserved in redactions.jsonl; the next turn replays the full sanitized history.`,
       },
     });
     return { applied: edited.length, skipped };
@@ -1520,21 +1638,28 @@ export class RoomService {
    *  - "keep-sessions" (retry/edit): the live session survives; the cursor is
    *    capped to the kept length so the next turn sends only genuinely-new
    *    events on the resumed session.
-   *  - "reset-sessions" (rewind/sanitize — forgetting is the point): the
-   *    harness session is reset; cursor AND context floor land on the seed base
-   *    so the next turn replays the kept window without tripping the
-   *    session-lost gate (the reset is deliberate, not amnesia).
+   *  - "reset-sessions" (rewind — forgetting IS the point): the harness session
+   *    is reset; cursor AND context floor land on a recent seed base so the next
+   *    turn replays only the kept window (deliberate amnesia, no session-lost gate).
+   *  - "rewrite-in-place" (sanitize/thanks-Dario — the context must NOT change):
+   *    the harness session is reset the SAME way (it holds the pre-rewrite text
+   *    and must re-read the rewrite), but the context is preserved in full — the
+   *    cursor reseeds to the agent's EXISTING floor (a /compact boundary, or 0)
+   *    so the whole conversation replays with the rewritten sentences in place.
+   *    The floor is left exactly as it was. Sanitize rewrites the triggering
+   *    sentences; it never shrinks, compacts, or windows the context.
    *
    * `cut` is the first transcript index whose content changed. Truncations use
    * the kept length (the default); sanitize passes the index of the first
    * REWRITTEN event — its events survive in place, but any session that read
    * past that point holds the original text and must be treated as affected. */
-  private async resetAfterTruncation(mode: "keep-sessions" | "reset-sessions", cut?: number): Promise<void> {
+  private async resetAfterTruncation(mode: "keep-sessions" | "reset-sessions" | "rewrite-in-place", cut?: number): Promise<void> {
     const kept = (await this.room.eventsFrom(0)).events.length;
     const affectedAbove = Math.min(cut ?? kept, kept);
     const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
     const state = await this.room.state();
-    if (mode === "reset-sessions") {
+    const resetsSessions = mode === "reset-sessions" || mode === "rewrite-in-place";
+    if (resetsSessions) {
       for (const [id, cursor] of Object.entries(state.agentCursors)) {
         if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
       }
@@ -1542,12 +1667,19 @@ export class RoomService {
     await this.room.updateState((current) => {
       for (const [id, cursor] of Object.entries(current.agentCursors)) {
         if (cursor <= affectedAbove) continue;
-        current.agentCursors[id] = mode === "reset-sessions" ? base : kept;
         if (mode === "reset-sessions") {
+          current.agentCursors[id] = base;
           current.contextFloors = { ...(current.contextFloors ?? {}), [id]: base };
-        } else if ((current.contextFloors?.[id] ?? 0) > kept) {
-          // A floor can't sit above the transcript end after the cut.
-          current.contextFloors = { ...(current.contextFloors ?? {}), [id]: kept };
+        } else if (mode === "rewrite-in-place") {
+          // Keep the FULL context. Reseed to the agent's real floor so the entire
+          // conversation replays with the rewrites in place — never a window.
+          current.agentCursors[id] = current.contextFloors?.[id] ?? 0;
+        } else {
+          current.agentCursors[id] = kept;
+          if ((current.contextFloors?.[id] ?? 0) > kept) {
+            // A floor can't sit above the transcript end after the cut.
+            current.contextFloors = { ...(current.contextFloors ?? {}), [id]: kept };
+          }
         }
       }
       delete current.runtimeDetails;

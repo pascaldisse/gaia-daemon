@@ -79,9 +79,17 @@ export function runDario() {
 /** @param {SanitizeProposal|null} proposal */
 function setProposal(proposal) {
   state.dario.proposal = proposal;
-  const first = proposal?.options?.[0];
-  state.dario.selected = new Set(first ? first.suggestionIds : (proposal?.suggestions ?? []).map((suggestion) => suggestion.id));
-  if (proposal?.at) state.dario.knownAt = proposal.at;
+  // Default to EVERY suggestion selected — the classifier scores the whole
+  // topic, so aggressive coverage is the safe default; the user dials down with
+  // the option presets / checkboxes, not up. (Under-editing is the failure mode.)
+  state.dario.selected = new Set((proposal?.suggestions ?? []).map((suggestion) => suggestion.id));
+  if (proposal?.at) {
+    state.dario.knownAt = proposal.at;
+    // Whatever proposal the popup is now showing counts as seen for this room,
+    // so closing a manually-run review doesn't re-pop it on the next snapshot.
+    const roomId = state.snapshot?.room.id;
+    if (roomId) seenSanitizeAt.set(roomId, proposal.at);
+  }
 }
 
 async function applyDario() {
@@ -124,25 +132,38 @@ export function maybeAutoDario(event) {
   runDario();
 }
 
-let lastSyncedRoomId = "";
+/** The proposal `at` this tab has already surfaced (or seen applied) PER ROOM.
+ * A fresh review then opens the popup exactly once — even when you switch INTO
+ * the room after Dario finished (e.g. you ran /thanks-dario, then clicked into
+ * the summon sub-room to watch him work, then clicked back) — while a seen or
+ * applied proposal never nags on later snapshots. The old single global marker
+ * silently swallowed exactly that switch-in case, so a ready proposal showed
+ * nothing at all. */
+const seenSanitizeAt = new Map();
 
 /**
- * Snapshot-driven trigger: when a NEW un-applied proposal appears (e.g. the
- * user ran /thanks-dario in the composer, or another tab ran a review), open
- * the popup once. Room switches adopt that room's marker silently.
+ * Snapshot-driven trigger: surface an un-applied proposal for the room in view
+ * the first time this tab sees it (the user ran /thanks-dario, auto-review
+ * fired in a summon room, or another tab reviewed). Keyed per room.
  */
 export function syncDarioFromSnapshot() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
+  const roomId = snapshot.room.id;
   const at = snapshot.room.sanitize?.at ?? "";
-  if (snapshot.room.id !== lastSyncedRoomId || state.dario.knownAt === null) {
-    lastSyncedRoomId = snapshot.room.id;
+  const applied = Boolean(snapshot.room.sanitize?.appliedAt);
+  // Nothing pending, or already applied: record it so it never pops later.
+  if (!at || applied) {
+    seenSanitizeAt.set(roomId, at);
     state.dario.knownAt = at;
     return;
   }
-  if (!at || at === state.dario.knownAt) return;
+  // Already surfaced this exact proposal, or a popup is mid-flight: leave it.
+  if (seenSanitizeAt.get(roomId) === at || state.dario.open || state.dario.loading) return;
+  // Fresh, un-applied, un-seen proposal for the room in view → surface it once.
+  // Mark seen BEFORE opening so a failed fetch can't re-open in a loop.
+  seenSanitizeAt.set(roomId, at);
   state.dario.knownAt = at;
-  if (snapshot.room.sanitize?.appliedAt || state.dario.open || state.dario.loading) return;
   state.dario.proposal = null; // stale body — refetch the new one
   openDario();
 }
@@ -293,12 +314,15 @@ function SuggestionRow(suggestion, applied) {
     h(
       "div",
       { class: "dario-suggestion-body" },
-      h("small", { class: "dario-who", text: suggestion.author === "user" ? "you" : `@${suggestion.author}` }),
+      h("small", {
+        class: "dario-who",
+        text: `${suggestion.author === "user" ? "you" : `@${suggestion.author}`}${suggestion.whole ? " · full rewrite" : ""}`,
+      }),
       h(
         "div",
-        { class: "dario-diff" },
+        { class: `dario-diff${suggestion.whole ? " dario-diff-whole" : ""}` },
         h("span", { class: "dario-old", text: suggestion.quote }),
-        h("span", { class: "dario-arrow", text: " → " }),
+        h("span", { class: "dario-arrow", text: suggestion.whole ? " ↓ " : " → " }),
         h("span", { class: "dario-new", text: suggestion.replacement }),
       ),
       suggestion.reason ? h("small", { class: "dario-reason", text: suggestion.reason }) : null,

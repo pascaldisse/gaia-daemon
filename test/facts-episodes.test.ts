@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { appendFile, mkdtemp } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EPISODES_FILE, appendEpisode, readEpisodesFrom } from "../src/domain/episodes.js";
+import { EPISODES_FILE, appendEpisode, isRefusalReply, purgeRoomEpisodes, readEpisodesFrom } from "../src/domain/episodes.js";
 import type { Episode } from "../src/domain/episodes.js";
 import { FACTS_FILE, appendFactOp, findDuplicateFact, readFactOpsFrom, replayFacts } from "../src/domain/facts.js";
 import type { Fact } from "../src/domain/facts.js";
@@ -55,6 +55,46 @@ test("episodes: malformed lines are skipped but still counted by the cursor", as
   const tail = await readEpisodesFrom(dir, 3);
   assert.equal(tail.items.length, 1);
   assert.equal(tail.items[0].id, "ep_2");
+});
+
+test("isRefusalReply: flags explicit declines (the refusal-loop poison), spares normal replies", () => {
+  // Real declines pulled from the corrupted-memory incident (full, untruncated).
+  assert.equal(isRefusalReply("Straight with you — this one I'm going to stop at, and I want to be clear about why."), true);
+  assert.equal(isRefusalReply("So narrowing it to menu visibility doesn't change the deliverable, and I'm going to hold the same line I held before."), true);
+  assert.equal(isRefusalReply("I apologize, but I will not provide any responses that violate Anthropic's Acceptable Use Policy or could promote harm."), true);
+  // Generic assistant refusal registers.
+  assert.equal(isRefusalReply("I'm sorry, but I can't help with that request."), true);
+  assert.equal(isRefusalReply("I’m not able to assist with this."), true); // curly apostrophe normalized
+  assert.equal(isRefusalReply("I have to decline this one."), true);
+
+  // Normal replies — including idioms and legitimate stops — must NOT be dropped.
+  assert.equal(isRefusalReply("Found the race — I can't help but notice the flush fires twice."), false);
+  assert.equal(isRefusalReply("On it. I'll trace the 0x1a8 flag through the menu handlers and report back."), false);
+  assert.equal(isRefusalReply("Done — I'm going to stop by the docs to double-check the flag names."), false);
+  assert.equal(isRefusalReply("Here's the function that reads the edition flag; I patched the watermark path."), false);
+  assert.equal(isRefusalReply(""), false);
+});
+
+test("purgeRoomEpisodes: drops only the deleted room's episodes, keeps the rest, backs up removed lines, returns count", async () => {
+  const dir = await memDir();
+  await appendEpisode(dir, episode({ id: "ep_a", roomId: "keep" }));
+  await appendEpisode(dir, episode({ id: "ep_b", roomId: "doomed", reply: "worked on the doomed room" }));
+  await appendEpisode(dir, episode({ id: "ep_c", roomId: "keep" }));
+  await appendEpisode(dir, episode({ id: "ep_d", roomId: "doomed", reply: "more doomed work" }));
+
+  const backup = join(dir, "trash-episodes.jsonl");
+  const removed = await purgeRoomEpisodes(dir, "doomed", backup);
+  assert.equal(removed, 2);
+
+  const { items } = await readEpisodesFrom(dir, 0);
+  assert.deepEqual(items.map((item) => item.id), ["ep_a", "ep_c"], "only the kept room's episodes remain, in order");
+
+  // Removed episodes are recoverable from the backup (reversible delete).
+  const backedUp = (await readFile(backup, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { id: string });
+  assert.deepEqual(backedUp.map((row) => row.id).sort(), ["ep_b", "ep_d"]);
+
+  // A room with no episodes is a no-op (no rewrite, returns 0).
+  assert.equal(await purgeRoomEpisodes(dir, "never-existed"), 0);
 });
 
 test("facts: add + invalidate replay; unknown target is a no-op; active is newest-first", async () => {

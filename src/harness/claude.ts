@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, UsageLimits, UsageWindow, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, UsageLimits, UsageWindow, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -753,16 +753,16 @@ export class ClaudeRuntime implements AgentRuntime {
    * slash command is supportsNonInteractive, so one `-p --resume` invocation
    * with the prompt "/compact" summarizes and persists the compacted session.
    * Completion is the compact_boundary system message. */
-  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<string> {
+  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     const room = this.sessions.get(roomId);
-    if (!room?.started) return "nothing to compact — no active session for this room.";
+    if (!room?.started) return { compacted: false, message: "nothing to compact — no active session for this room." };
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<CompactResult>((resolve, reject) => {
       let preTokens: number | undefined;
       let compacted = false;
       let failed: string | undefined;
@@ -814,8 +814,8 @@ export class ClaudeRuntime implements AgentRuntime {
         onExit: ({ code, signal, stderr }) => {
           if (this.active === handle) this.active = null;
           if (failed) reject(new Error(failed));
-          else if (compacted) resolve(`session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.`);
-          else if (code === 0) resolve("session compacted.");
+          else if (compacted) resolve({ compacted: true, message: `session compacted${typeof preTokens === "number" ? ` (${preTokens} tokens before)` : ""}.` });
+          else if (code === 0) resolve({ compacted: true, message: "session compacted." });
           else
             reject(
               claudeStartupError(

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runAgentTurn, applyEventToDetails, recordBlockEvent } from "../src/services/turns.js";
+import { runAgentTurn, applyEventToDetails, finalizeInterruptedTools, recordBlockEvent } from "../src/services/turns.js";
 import { eventDetailsFrom } from "../src/domain/rooms.js";
 import type { AgentEvent, EventDetails, MessageBlock } from "../src/core/types.js";
 import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
@@ -118,4 +118,39 @@ test("v1 events with no blocks parse fine (bucketed fallback)", () => {
   assert.ok(details);
   assert.equal(details.blocks, undefined);
   assert.equal(details.thinking, "old");
+});
+
+test("a dying stream returns the accumulated turn with `error` — it never throws the progress away", async () => {
+  // The REAL stop shape: abort() makes the runner report turn-error (or dies
+  // under SIGKILL), which FAILS the event channel — the stream throws, it does
+  // not end cleanly. Everything streamed before that must come back.
+  const boom = new Error("agent runner exited (signal SIGKILL).");
+  const runtime = {
+    async *send(_input: AgentInput): AsyncIterable<AgentEvent> {
+      yield { type: "text-delta", delta: "If you want something real, " };
+      yield { type: "tool-start", toolName: "Bash", toolCallId: "t1", args: { command: "imagegen" } };
+      throw boom;
+    },
+  } as unknown as AgentRuntime;
+
+  const turn = await runAgentTurn({ runtime, input: INPUT });
+  assert.equal(turn.error, boom);
+  assert.equal(turn.reply, "If you want something real, ");
+  assert.equal(turn.details.tools?.length, 1);
+  assert.deepEqual(shape(turn.details.blocks), ["text", "tool"]);
+});
+
+test("finalizeInterruptedTools settles running tools so a committed stop never renders an eternal spinner", () => {
+  const details: EventDetails = {
+    tools: [
+      { id: "t1", toolName: "Bash", status: "running" },
+      { id: "t2", toolName: "Read", status: "complete", result: "ok" },
+    ],
+  };
+  finalizeInterruptedTools(details);
+  assert.equal(details.tools?.[0].status, "error");
+  assert.match(String(details.tools?.[0].result), /interrupted/);
+  // Finished tools keep their real outcome.
+  assert.equal(details.tools?.[1].status, "complete");
+  assert.equal(details.tools?.[1].result, "ok");
 });

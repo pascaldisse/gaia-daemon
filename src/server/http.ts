@@ -530,6 +530,12 @@ export class GaiaWebServer {
       return;
     }
 
+    // Reversible room delete: moves the room dir to trash and purges it from
+    // memory. Returns the neighbour room's snapshot (a room is always in view).
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)$/))) {
+      return this.respond(response, () => this.daemon.deleteRoom(params![0], params![1]));
+    }
+
     // Read-aloud: one committed agent message → speech audio (the transcript
     // play button), one chunk per request. The daemon resolves the author's
     // Context gate: resolve a held new-agent first turn with the chosen amount

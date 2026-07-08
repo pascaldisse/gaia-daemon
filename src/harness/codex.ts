@@ -10,7 +10,7 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import type { AgentDef, AgentEvent, McpServerConfig, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactResult, McpServerConfig, Workspace } from "../core/types.js";
 import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
@@ -632,11 +632,11 @@ export class CodexRuntime implements AgentRuntime {
    * `{}` immediately; completion is the thread/compacted notification. Runs
    * only between turns (room-service gates on an idle room), so temporarily
    * owning the notification handler is safe — the next send() replaces it. */
-  async compact(roomId: string): Promise<string> {
+  async compact(roomId: string): Promise<CompactResult> {
     const thread = this.threads.get(roomId);
     const client = this.client;
     if (!thread || !client || !this.attachedThreads.has(thread.threadId)) {
-      return "nothing to compact — no active session for this room.";
+      return { compacted: false, message: "nothing to compact — no active session for this room." };
     }
     const done = new Promise<void>((resolve) => {
       client.setNotificationHandler((msg) => {
@@ -647,7 +647,7 @@ export class CodexRuntime implements AgentRuntime {
     });
     await client.request("thread/compact/start", { threadId: thread.threadId });
     await done; // the RunnerHost round-trip timeout bounds this wait
-    return "thread compacted by codex.";
+    return { compacted: true, message: "thread compacted by codex." };
   }
 
   // -----------------------------------------------------------------------

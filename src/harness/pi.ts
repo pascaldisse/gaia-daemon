@@ -17,7 +17,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactResult, Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
@@ -360,12 +360,12 @@ export class PiRuntime implements AgentRuntime {
 
   /** Native pi compaction (backs /compact). The SDK call aborts any running
    * prompt first and emits compaction_start/end on the session stream. */
-  async compact(roomId: string): Promise<string> {
+  async compact(roomId: string): Promise<CompactResult> {
     const session = this.sessions.get(roomId)?.session;
-    if (!session?.compact) return "nothing to compact — no active session for this room.";
+    if (!session?.compact) return { compacted: false, message: "nothing to compact — no active session for this room." };
     const result = await session.compact();
     const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
-    return `session compacted (${result.tokensBefore} tokens before${after}).`;
+    return { compacted: true, message: `session compacted (${result.tokensBefore} tokens before${after}).` };
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {

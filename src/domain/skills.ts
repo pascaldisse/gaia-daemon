@@ -77,7 +77,13 @@ function readSkillMeta(path: string): { name?: string; description?: string } {
   try {
     const raw = readFileSync(path, "utf8");
     const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
-    const field = (key: string): string | undefined => fm.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim();
+    const field = (key: string): string | undefined => {
+      const value = fm.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim();
+      // YAML scalars may be single/double quoted. Strip a matching wrap so a
+      // quoted `name: "imagegen"` yields the bare name — otherwise it fails
+      // isSkillName and the skill silently vanishes from detection.
+      return value?.replace(/^(['"])([\s\S]*)\1$/, "$2");
+    };
     return { name: field("name"), description: field("description") };
   } catch {
     return {};

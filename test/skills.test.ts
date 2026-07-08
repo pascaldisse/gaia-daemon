@@ -66,6 +66,18 @@ test("resolveSkillRefs resolves a pi skill by name and flags unknown ones", asyn
   assert.ok(result.diagnostics.some((d) => /Unknown skill: does-not-exist/.test(d)));
 });
 
+test("a gaia-global skill overrides a same-named harness skill (imagegen bridge wins over ~/.codex)", async () => {
+  const { workspace, gaiaHome, userHome } = await fixtureHomes();
+  // Same skill name in the codex ecosystem AND gaia-global. skillRoots ranks
+  // global ahead of codex, so the gaia bridge is what "imagegen" resolves to —
+  // pure DATA precedence, no code deciding which skill loads.
+  await writeSkill(join(userHome, ".codex", "skills"), "imagegen", "imagegen", "codex native");
+  await writeSkill(join(gaiaHome, "skills"), "imagegen", "imagegen", "gaia bridge");
+  const byName = new Map(discoverSkills(workspace, gaiaHome, userHome).map((s) => [s.name, s]));
+  assert.equal(byName.get("imagegen")?.source, "global");
+  assert.match(byName.get("imagegen")?.description ?? "", /gaia bridge/);
+});
+
 test("agentSkillNames merges role + agent skills, deduped", () => {
   const role = { skills: ["brave-search", "shared"] } as unknown as ResolvedRole;
   const agent = { skills: ["shared", "browser-tools"] } as unknown as AgentDef;

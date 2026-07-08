@@ -362,6 +362,25 @@ body.resizing { cursor: col-resize; user-select: none; }
 .room-twisty:hover { color: var(--accent); text-shadow: 0 0 8px var(--accent); }
 .room-twisty.leaf { cursor: default; visibility: hidden; }
 .room-item { flex: 1 1 auto; min-width: 0; }
+
+/* Hover-revealed per-room delete (mirrors the tab-close affordance). */
+.room-del {
+  flex: 0 0 auto;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 0.85em;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.room-row:hover .room-del { opacity: 0.55; }
+.room-del:hover { opacity: 1; border-color: var(--danger); filter: drop-shadow(0 0 4px var(--danger)); }
 .room-label { display: flex; align-items: center; gap: 6px; }
 
 /* ============================================================
@@ -993,6 +1012,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .prompt-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 5px 14px; cursor: pointer; }
 .prompt-btn:hover { border-color: var(--accent); }
 .prompt-btn.primary { border-color: var(--accent); color: var(--accent); }
+.prompt-btn.danger { border-color: var(--danger); color: var(--danger); }
+.prompt-btn.danger:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); }
+.prompt-detail { margin: 0 0 4px; color: var(--muted); font-size: 0.9em; line-height: 1.4; }
 
 /* ============================================================
    powerline status bar (spaceship-style segments)
@@ -1321,13 +1343,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 .dario-option.active { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .dario-suggestion { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; margin-top: 8px; background: var(--ink); border: 1px solid var(--border); cursor: pointer; }
 .dario-suggestion:hover { border-color: var(--accent); }
-.dario-suggestion input { accent-color: var(--accent); margin-top: 3px; flex: none; }
-.dario-suggestion-body { min-width: 0; }
+.dario-suggestion input { width: auto; accent-color: var(--accent); margin-top: 3px; flex: none; }
+.dario-suggestion-body { flex: 1; min-width: 0; }
 .dario-who { color: var(--accent2); display: block; margin-bottom: 3px; }
 .dario-diff { line-height: 1.6; overflow-wrap: anywhere; }
 .dario-old { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); text-decoration: line-through; padding: 1px 4px; }
 .dario-arrow { color: var(--muted); }
 .dario-new { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); padding: 1px 4px; }
+/* Whole-message rewrites are long: stack old-above-new as blocks instead of an
+   inline run, so both full texts stay readable. */
+.dario-diff-whole { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.dario-diff-whole .dario-old, .dario-diff-whole .dario-new { display: block; padding: 4px 6px; border-radius: 4px; white-space: pre-wrap; }
+.dario-diff-whole .dario-arrow { align-self: center; }
 .dario-reason { color: var(--muted); display: block; margin-top: 4px; }
 .dario-note { color: var(--muted); font-size: 12px; margin-top: 12px; }
 .dario-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

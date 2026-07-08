@@ -48,6 +48,27 @@ export async function appendJsonl(path: string, value: unknown): Promise<void> {
   await appendFile(path, `${JSON.stringify(value)}\n`, "utf8");
 }
 
+/** Atomic full-file text write (tmp + fsync + rename) — for the rare case a
+ * normally append-only log must be rewritten (e.g. purging a deleted room's
+ * episodes) without risking a torn file. */
+export async function writeTextAtomic(path: string, content: string): Promise<void> {
+  await ensureDir(dirname(path));
+  const tmp = join(dirname(path), `.${process.pid}.${(tmpSeq++).toString(36)}.${Date.now().toString(36)}.tmp`);
+  await writeFile(tmp, content, "utf8");
+  const fd = openSync(tmp, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  await rename(tmp, path);
+}
+
+export async function appendText(path: string, content: string): Promise<void> {
+  await ensureDir(dirname(path));
+  await appendFile(path, content, "utf8");
+}
+
 export interface JsonlPage<T> {
   items: T[];
   /** Line count after the read — the next cursor. */

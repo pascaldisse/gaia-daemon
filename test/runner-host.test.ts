@@ -68,7 +68,7 @@ rl.on("line", (line) => {
     send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
     send({ type: "turn-end" });
   } else if (cmd.type === "compact") {
-    send({ type: "compact-result", ok: true, message: "compacted " + cmd.roomId });
+    send({ type: "compact-result", ok: true, compacted: true, message: "compacted " + cmd.roomId });
   } else if (cmd.type === "dispose") {
     process.exit(0);
   }
@@ -154,9 +154,10 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
   try {
     const host = await makeHost(temp.path);
     // No child AND no durable session on disk → nothing to compact, no spawn.
-    assert.equal(await host.compact("default"), "nothing to compact — no active session yet.");
+    assert.deepEqual(await host.compact("default"), { compacted: false, message: "nothing to compact — no active session yet." });
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
-    assert.equal(await host.compact("default"), "compacted default");
+    // The runner's structured `compacted` flag rides through the wire.
+    assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
     host.dispose();
   } finally {
     await temp.cleanup();
@@ -178,7 +179,7 @@ test("RunnerHost /compact cold-spawns the runner when a durable session exists (
     });
     // No turn has run this process-lifetime, but the harness has a durable
     // session — /compact must spawn the runner and resume it, not bail.
-    assert.equal(await host.compact("default"), "compacted default");
+    assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
     host.dispose();
   } finally {
     await temp.cleanup();

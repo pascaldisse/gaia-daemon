@@ -2,7 +2,7 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.js";
+import { addRoom, addWorkspace, deleteRoom, loadWorkspace, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
@@ -156,6 +156,17 @@ function RoomNode(room, childrenOf, depth) {
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
+      // Hover-revealed delete: moves the room to trash and purges it from memory
+      // (confirmed first). Server refuses the last room, so it's always safe here.
+      h("button", {
+        class: "room-del",
+        title: "delete room (moves to trash)",
+        onclick: (/** @type {MouseEvent} */ event) => {
+          event.stopPropagation();
+          void deleteRoom(room.id);
+        },
+        text: "🗑",
+      }),
       kids.length > 0
         ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
         : h("span", { class: "room-twisty leaf" }),

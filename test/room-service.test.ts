@@ -375,10 +375,16 @@ test("cancel aborts the runtime, preserves partial output, and keeps the durable
     modelLabel: "test/model",
     capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
     aborted: false,
+    // The REAL runner shape: abort() makes the runner report turn-error (or
+    // dies under SIGKILL), which FAILS the event channel — the stream THROWS
+    // out of the for-await, it does not end cleanly. The fake must die the
+    // same way, or the test passes while production loses the turn.
     async *send() {
       yield { type: "text-delta", delta: "partial before cancel" } as AgentEvent;
+      yield { type: "tool-start", toolName: "Bash", toolCallId: "t1", args: { command: "sleep 99" } } as AgentEvent;
       sawDelta();
       await hold;
+      throw new Error("agent runner exited (signal SIGKILL).");
     },
     async abort() {
       runtime.aborted = true;
@@ -408,11 +414,87 @@ test("cancel aborts the runtime, preserves partial output, and keeps the durable
 
   const room = await RoomHandle.open(root, "default");
   const { events: transcript } = await room.eventsFrom(0);
-  // Cancel is a deliberate stop — but progress is never discarded.
-  assert.ok(transcript.some((event) => event.author === "gaia" && event.text === "partial before cancel"));
+  // Cancel is a deliberate stop — but progress is never discarded: the text
+  // AND the in-flight tool call both commit, with the tool settled (no
+  // eternal spinner on a committed event).
+  const committed = transcript.find((event) => event.author === "gaia" && event.text === "partial before cancel");
+  assert.ok(committed, "stopped turn's streamed text committed");
+  assert.equal(committed?.details?.tools?.length, 1, "stopped turn's tool call committed");
+  assert.equal(committed?.details?.tools?.[0].status, "error", "interrupted tool settled, not left running");
   // The queued message ran after the stop instead of being dropped.
   assert.ok(transcript.some((event) => event.author === "user" && event.text === "queued behind"));
   assert.equal((await room.state()).queue, undefined, "queue drained by running, not by deletion");
+});
+
+test("stop during the tool/thinking phase (no prose yet) still commits the progress", async () => {
+  // The exact shape that vanished: the agent had streamed thinking + tool
+  // calls but no reply text, the user hit stop, and the WHOLE turn evaporated
+  // (nothing flushed — the partial flush only carried text). The accumulator
+  // must commit as a details-only event instead.
+  let sawTool: () => void = () => {};
+  const firstTool = new Promise<void>((resolve) => {
+    sawTool = resolve;
+  });
+  let releaseHold: () => void = () => {};
+  const hold = new Promise<void>((resolve) => {
+    releaseHold = resolve;
+  });
+
+  const root = await mkdtemp(join(tmpdir(), "gaia-cancel-tools-"));
+  await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
+  await writeFile(join(root, ".gaia", "config.json"), "{}", "utf8");
+  const agents = { gaia: makeAgent("gaia", root) };
+  const workspace: Workspace = {
+    rootDir: root,
+    dir: join(root, ".gaia"),
+    configPath: join(root, ".gaia", "config.json"),
+    agentsOverrideDir: join(root, ".gaia", "agents"),
+    roomsDir: join(root, ".gaia", "rooms"),
+    globalAgentsDir: join(root, "agents"),
+    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
+    contextFiles: [],
+    agents,
+  };
+  const runtime = {
+    agent: agents.gaia,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    async *send() {
+      yield { type: "thinking-delta", delta: "planning the image run" } as AgentEvent;
+      yield { type: "tool-start", toolName: "Bash", toolCallId: "t1", args: { command: "imagegen" } } as AgentEvent;
+      sawTool();
+      await hold;
+      throw new Error("agent runner exited (signal SIGKILL).");
+    },
+    async abort() {
+      releaseHold();
+    },
+    dispose() {},
+    resetRoom() {},
+  } as unknown as AgentRuntime;
+
+  const service = await RoomService.open({
+    workspaceId: "ws1",
+    workspace,
+    memoryStore: new MemoryStore(),
+    runtimeFactory: () => runtime,
+  });
+  await service.sendMessage("make me a portrait");
+  await firstTool;
+  const cancelled = await service.cancelActiveTask();
+  assert.equal(cancelled?.status, "cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const committed = transcript.find((event) => event.author === "gaia");
+  assert.ok(committed, "tool-phase progress committed as an event");
+  assert.equal(committed?.details?.tools?.length, 1);
+  assert.equal(committed?.details?.tools?.[0].status, "error");
+  assert.equal(committed?.details?.thinking, "planning the image run");
+  // No pendingTurn left behind — the stop settled the turn durably.
+  assert.equal((await room.state()).pendingTurn, undefined);
 });
 
 test("/clear wipes transcript + cursors and /fork branches with reset cursors", async () => {
@@ -455,11 +537,11 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
     // Declare native compaction and capture the live agent status mid-pass — the
     // command must not trip on its own task, and the UI must see "compacting".
     runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
-    (runtime as unknown as { compact: (roomId: string) => Promise<string> }).compact = async () => {
+    (runtime as unknown as { compact: (roomId: string) => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
       compactCalls += 1;
       const snapshot = await serviceRef!.getSnapshot();
       statusDuringCompact = snapshot.agents.find((agent) => agent.id === "gaia")?.status;
-      return "session compacted (999 tokens before).";
+      return { compacted: true, message: "session compacted (999 tokens before)." };
     };
     return runtime as unknown as AgentRuntime;
   };
@@ -490,12 +572,14 @@ test("/compact streams live progress (token counts + start time) into the snapsh
     const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
     runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
     (
-      runtime as unknown as { compact: (roomId: string, onProgress?: (u: { outputTokens?: number }) => void) => Promise<string> }
+      runtime as unknown as {
+        compact: (roomId: string, onProgress?: (u: { outputTokens?: number }) => void) => Promise<{ compacted: boolean; message: string }>;
+      }
     ).compact = async (_roomId, onProgress) => {
       // The harness reports the summary growing; it must reach the snapshot.
       onProgress?.({ outputTokens: 512 });
       midPass = await serviceRef!.getSnapshot();
-      return "session compacted.";
+      return { compacted: true, message: "session compacted." };
     };
     return runtime as unknown as AgentRuntime;
   };
@@ -515,47 +599,6 @@ test("/compact streams live progress (token counts + start time) into the snapsh
   assert.equal(after.agents.find((agent) => agent.id === "gaia")?.compact, undefined);
 });
 
-test("context-gate 'Compact & join' shows a compacting status + start time while it summarizes (not a silent black box)", async () => {
-  let serviceRef: RoomService | undefined;
-  let statusDuringSummary: string | undefined;
-  let compactDuringSummary: { startedAt?: number } | undefined;
-  // The gate's summary is one LLM pass; while it runs, the JOINING agent must
-  // surface the same "compacting" status the /compact command drives.
-  const { service } = await makeService({
-    agents: ["gaia", "terry"],
-    config: { contextGate: { warnAboveTokens: 60 } },
-    llm: async () => {
-      const snap = await serviceRef!.getSnapshot();
-      const joiner = snap.agents.find((agent) => agent.id === "terry");
-      statusDuringSummary = joiner?.status;
-      compactDuringSummary = joiner?.compact;
-      return "ROOM BRIEF: they discussed the plan.";
-    },
-  });
-  serviceRef = service;
-
-  // Grow the room past the threshold, then address the NEW agent → gate holds.
-  await service.sendMessage("@gaia hi");
-  await service.waitForIdle();
-  await service.sendMessage(`@gaia now the real discussion ${PAD} ${PAD}`);
-  await service.waitForIdle();
-  await service.sendMessage("@terry hop in");
-  await service.waitForIdle();
-  assert.ok((await service.getSnapshot()).room.contextGate, "a new agent's big first load opens the context gate");
-
-  // Resolve with compact → summarizeRoom runs and must show the status.
-  await service.resolveContextGate("compact");
-  await service.waitForIdle();
-  assert.equal(statusDuringSummary, "compacting", "the joining agent shows 'compacting' while the briefing is summarized");
-  assert.equal(typeof compactDuringSummary?.startedAt, "number", "a start time is stamped so the client can tick an elapsed");
-
-  // ...and it clears back to a normal status afterward (no stale compacting).
-  const after = await service.getSnapshot();
-  const joinerAfter = after.agents.find((agent) => agent.id === "terry");
-  assert.notEqual(joinerAfter?.status, "compacting");
-  assert.equal(joinerAfter?.compact, undefined);
-});
-
 test("bare /compact targets the room's ACTIVE agent, not the workspace default", async () => {
   // The room default is gaia, but the user has been talking to terry. A bare
   // /compact must compact terry (who they're addressing), not gaia — else it
@@ -564,9 +607,9 @@ test("bare /compact targets the room's ACTIVE agent, not the workspace default",
   const factory = (agent: AgentDef) => {
     const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
     runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
-    (runtime as unknown as { compact: (roomId: string) => Promise<string> }).compact = async () => {
+    (runtime as unknown as { compact: (roomId: string) => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
       compacted.push(agent.id);
-      return "session compacted.";
+      return { compacted: true, message: "session compacted." };
     };
     return runtime as unknown as AgentRuntime;
   };
@@ -1316,10 +1359,12 @@ function capturingRuntime(agent: AgentDef, sink: AgentInput[], sessionAlive?: ()
 // single short opener ("hi") stays well under it.
 const PAD = "padded with lots of extra words to grow the transcript well past the configured threshold";
 
-test("context gate: a new agent joining a big room is held until the human chooses (last-N replays a tail)", async () => {
+test("no automatic truncation: a new agent joining a big room loads the FULL transcript, never gated", async () => {
   const captured = new Map<string, AgentInput[]>();
   const { service, runtimes } = await makeService({
     agents: ["gaia", "nyari"],
+    // A threshold may be configured, but it is never acted on: nothing automatic
+    // shrinks context. Only an explicit /compact the user types ever does.
     config: { contextGate: { warnAboveTokens: 60 } },
     runtimeFactory: (agent) => {
       const sink: AgentInput[] = [];
@@ -1328,71 +1373,23 @@ test("context gate: a new agent joining a big room is held until the human choos
     },
   });
 
-  // gaia opens with a short line (under threshold → runs, no longer "new"),
-  // then piles on — as an existing agent it's never gated, so the room grows.
+  // gaia opens, then piles on — the room grows well past the old threshold.
   await service.sendMessage("@gaia hi");
   await service.waitForIdle();
   for (let i = 0; i < 4; i++) {
     await service.sendMessage(`@gaia message ${i} ${PAD}`);
     await service.waitForIdle();
   }
-  assert.equal(runtimes.get("gaia")!.sends, 5, "gaia ran every time — the first agent is never gated on a small opener");
+  assert.equal(runtimes.get("gaia")!.sends, 5);
 
-  // Address the NEW agent → held, not run; the gate is on the snapshot.
+  // Address the NEW agent → it runs IMMEDIATELY with the whole history. No gate
+  // is ever opened; the full transcript replays into its first turn.
   await service.sendMessage("@nyari please catch up");
   await service.waitForIdle();
-  assert.equal(runtimes.get("nyari")!.sends, 0, "new agent held, not run");
-  const gate = (await service.getSnapshot()).room.contextGate;
-  assert.equal(gate?.agentId, "nyari");
-  assert.equal(gate?.reason, "new-agent");
-  assert.ok((gate?.estTokens ?? 0) > 60, "estimate exceeded the threshold");
-  assert.equal(gate?.totalEvents, 11); // 2 (hi round) + 8 (4 rounds) + 1 nyari message
-
-  // Resolve: load only the last 2 messages.
-  await service.resolveContextGate("last", 2);
-  await service.waitForIdle();
-  assert.equal(runtimes.get("nyari")!.sends, 1, "nyari ran after the choice");
-  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
-  assert.equal(captured.get("nyari")!.at(-1)!.transcript.length, 2, "loaded only the last 2 events");
-  // gaia's own turns are untouched — the gate never re-ran it.
+  assert.equal(runtimes.get("nyari")!.sends, 1, "new agent ran at once — nothing held it");
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "no context gate is ever opened");
+  assert.equal(captured.get("nyari")!.at(-1)!.transcript.length, 11, "the FULL transcript (10 prior + this message) replayed — nothing truncated");
   assert.equal(runtimes.get("gaia")!.sends, 5);
-});
-
-test("context gate: compact summarizes the room once and seeds ONLY the new agent (empty transcript + summary recall)", async () => {
-  const captured = new Map<string, AgentInput[]>();
-  const llmSeen: string[] = [];
-  const { service, runtimes } = await makeService({
-    agents: ["gaia", "nyari"],
-    config: { contextGate: { warnAboveTokens: 60 } },
-    llm: async ({ user }) => {
-      llmSeen.push(user);
-      return "ROOM BRIEF: they discussed the plan.";
-    },
-    runtimeFactory: (agent) => {
-      const sink: AgentInput[] = [];
-      captured.set(agent.id, sink);
-      return capturingRuntime(agent, sink);
-    },
-  });
-
-  await service.sendMessage("@gaia hi");
-  await service.waitForIdle();
-  await service.sendMessage(`@gaia now the real discussion ${PAD} ${PAD}`);
-  await service.waitForIdle();
-  await service.sendMessage("@nyari hop in");
-  await service.waitForIdle();
-  assert.equal(runtimes.get("nyari")!.sends, 0, "new agent held");
-
-  await service.resolveContextGate("compact");
-  await service.waitForIdle();
-
-  assert.equal(llmSeen.length, 1, "summarized the room exactly once");
-  const turn = captured.get("nyari")!.at(-1)!;
-  assert.equal(turn.transcript.length, 0, "no raw transcript — the summary IS the context");
-  assert.match(turn.recall ?? "", /ROOM BRIEF/, "summary injected via the one-shot recall overlay");
-  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
-  // Only nyari was seeded; gaia was never re-run by the compaction.
-  assert.equal(runtimes.get("gaia")!.sends, 2);
 });
 
 // --- session loss --------------------------------------------------------------
@@ -1428,7 +1425,7 @@ test("a lost harness session replays the full transcript instead of silently sta
   assert.equal(captured.at(-1)!.transcript.length, 1, "cursor semantics restored after the heal");
 });
 
-test("a lost session in a BIG room is held by the context gate (reason: session-lost) and full-reload replays everything", async () => {
+test("no automatic truncation: a lost session in a BIG room replays everything, never gated", async () => {
   const captured: AgentInput[] = [];
   let alive = true;
   const { service, runtimes } = await makeService({
@@ -1437,31 +1434,23 @@ test("a lost session in a BIG room is held by the context gate (reason: session-
     runtimeFactory: (agent) => capturingRuntime(agent, captured, () => alive),
   });
 
-  // Grow the room past the threshold — an existing agent with a LIVE session
-  // is never gated, however big the room gets.
+  // Grow the room well past the old threshold with a live session.
   await service.sendMessage("@gaia hi");
   await service.waitForIdle();
   for (let i = 0; i < 4; i++) {
     await service.sendMessage(`@gaia message ${i} ${PAD}`);
     await service.waitForIdle();
   }
-  assert.equal(runtimes.get("gaia")!.sends, 5, "live session ⇒ never gated");
+  assert.equal(runtimes.get("gaia")!.sends, 5);
 
-  // Session gone + big replay ⇒ held for the human's choice, like a first load.
+  // Session gone + big replay ⇒ heals exactly like a small room: it replays the
+  // WHOLE transcript at once. No gate, no truncation, no held turn.
   alive = false;
   await service.sendMessage("@gaia what happened so far?");
   await service.waitForIdle();
-  assert.equal(runtimes.get("gaia")!.sends, 5, "held, not run");
-  const gate = (await service.getSnapshot()).room.contextGate;
-  assert.equal(gate?.agentId, "gaia");
-  assert.equal(gate?.reason, "session-lost");
-  assert.equal(gate?.totalEvents, 11); // 10 from the 5 rounds + the held user message
-
-  await service.resolveContextGate("full");
-  await service.waitForIdle();
-  assert.equal(runtimes.get("gaia")!.sends, 6, "ran after the choice");
-  assert.equal(captured.at(-1)!.transcript.length, 11, "full reload from event 0");
-  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "gate cleared");
+  assert.equal(runtimes.get("gaia")!.sends, 6, "ran at once — nothing held it");
+  assert.equal((await service.getSnapshot()).room.contextGate, undefined, "no gate for a big lost-session replay");
+  assert.equal(captured.at(-1)!.transcript.length, 11, "full reload from event 0 — 10 prior + the new message");
 });
 
 function sleep(ms: number): Promise<void> {

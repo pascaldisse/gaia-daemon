@@ -44,6 +44,21 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 
+test("parseCommand: a leading '/' that isn't command-shaped is a message, never a swallowed 'unknown'", () => {
+  // The regression that ate a real message: a pasted absolute path starts with
+  // "/" but is content, not a command. It MUST come back as a message.
+  const path = "/Users/pascaldisse/Downloads/nyari-maid/nyari-maid-var01.png";
+  assert.deepEqual(parseCommand(path), { type: "message", text: path });
+  assert.deepEqual(parseCommand(`${path} here is your portrait`), { type: "message", text: `${path} here is your portrait` });
+  // Code / regex / paths with spaces — all content, all delivered.
+  assert.deepEqual(parseCommand("/^[A-Za-z]+$/ matches names"), { type: "message", text: "/^[A-Za-z]+$/ matches names" });
+  assert.deepEqual(parseCommand("/etc/hosts needs editing"), { type: "message", text: "/etc/hosts needs editing" });
+  assert.deepEqual(parseCommand("/usr/local/bin"), { type: "message", text: "/usr/local/bin" });
+  // A bare command-shaped typo stays "unknown" so the user gets a corrective
+  // hint (nothing is lost — one word, clearly a command attempt).
+  assert.deepEqual(parseCommand("/halp"), { type: "unknown", command: "halp" });
+});
+
 test("planMentionRoute: leading mentions route (deduped, in order), else the default", () => {
   const agents = ["gaia", "terry", "sidia"];
   assert.deepEqual(planMentionRoute("hello", agents, "gaia"), { ok: true, targets: ["gaia"] });

@@ -10,16 +10,23 @@ export interface AgentTurnOptions {
   input: AgentInput;
   isCancelled?: () => boolean;
   onEvent?: (event: AgentEvent) => void;
-  /** Fires after each text-delta with the full running reply so the caller can
-   * durably persist partial progress (throttling is the caller's). Awaited so
-   * persistence stays ordered with the stream. */
-  onProgress?: (reply: string) => void | Promise<void>;
+  /** Fires after EVERY event with the full running reply so the caller can
+   * durably persist partial progress (throttling/dedupe is the caller's; the
+   * event is passed so block boundaries — tool-start after prose — can flush
+   * urgently instead of leaving the tail unpersisted through a long tool run).
+   * Awaited so persistence stays ordered with the stream. */
+  onProgress?: (reply: string, event: AgentEvent) => void | Promise<void>;
 }
 
 export interface AgentTurnResult {
   reply: string;
   details: EventDetails;
   cancelled: boolean;
+  /** Set when the event stream DIED instead of ending: abort() killing the
+   * runner (a user stop), a harness crash, a provider failure mid-turn. The
+   * reply/details above still hold everything that streamed — a dying stream
+   * must never take the accumulated progress down with it. */
+  error?: unknown;
 }
 
 export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurnResult> {
@@ -27,15 +34,37 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   const details: EventDetails = {};
   let reply = "";
 
-  for await (const event of options.runtime.send(options.input)) {
-    if (isCancelled()) return { reply, details, cancelled: true };
-    if (event.type === "text-delta") reply += event.delta;
-    applyEventToDetails(details, event);
-    options.onEvent?.(event);
-    if (event.type === "text-delta" && options.onProgress) await options.onProgress(reply);
+  try {
+    for await (const event of options.runtime.send(options.input)) {
+      if (isCancelled()) return { reply, details, cancelled: true };
+      if (event.type === "text-delta") reply += event.delta;
+      applyEventToDetails(details, event);
+      options.onEvent?.(event);
+      if (options.onProgress) await options.onProgress(reply, event);
+    }
+  } catch (error) {
+    // A user stop lands HERE, not in the clean-end path: abort() makes the
+    // runner report turn-error (or dies under SIGKILL), which fails the event
+    // channel and throws out of the for-await. Everything accumulated so far
+    // IS the turn's progress — return it alongside the error and let the
+    // caller pick cancelled-vs-failed semantics. Throwing would discard the
+    // reply, the tool calls, and the thinking in one line (the "stop deleted
+    // everything nyari did" bug). NO PROGRESS EVER LOST.
+    return { reply, details, cancelled: isCancelled(), error };
   }
 
   return { reply, details, cancelled: isCancelled() };
+}
+
+/** An interrupted turn (stop, stream death) can leave tools still "running" —
+ * their processes died with the runner. Settle them before commit so the
+ * transcript never renders a spinner that will never finish. */
+export function finalizeInterruptedTools(details: EventDetails): void {
+  for (const tool of details.tools ?? []) {
+    if (tool.status !== "running") continue;
+    tool.status = "error";
+    if (tool.result === undefined) tool.result = "(interrupted — the turn ended before this tool finished)";
+  }
 }
 
 export function applyEventToDetails(details: EventDetails, event: AgentEvent): void {

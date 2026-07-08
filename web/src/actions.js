@@ -3,11 +3,12 @@
 // state directly.
 import { api } from "./api.js";
 import { connectEvents, seedLiveTurn } from "./events.js";
-import { promptText } from "./prompt.js";
+import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
 import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
 import { activeTask, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
+import { syncDarioFromSnapshot } from "./dario.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
@@ -19,6 +20,7 @@ async function applyAppPayload(body) {
   state.streams.clear();
   seedLiveTurn();
   syncReadMarks();
+  syncDarioFromSnapshot(); // surface a pending Dario proposal on initial load
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.globalFiles = body.globalFiles ?? state.globalFiles;
@@ -50,6 +52,7 @@ function applySnapshotPayload(body) {
   state.streams.clear();
   seedLiveTurn();
   syncReadMarks();
+  syncDarioFromSnapshot(); // surface a pending Dario proposal when switching into a room
   // Workspace/room switch: paged-in older history belongs to the old room.
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
   state.workspaceFiles = body.workspaceFiles ?? [];
@@ -202,6 +205,38 @@ export async function closeRoomTab(roomId) {
   const neighbour = closeTab(roomId, snapshot.workspace.id, isActive);
   if (isActive && neighbour && neighbour !== roomId) await selectRoom(snapshot.workspace.id, neighbour);
   else markDirty("tabs", "sidebar");
+}
+
+/**
+ * Permanently delete a room (reversible on the server — it moves to trash and is
+ * purged from memory). Confirms first, then DELETEs; the server reselects a
+ * neighbour and returns its snapshot, so a room is always in view afterward.
+ * @param {string} roomId
+ */
+export async function deleteRoom(roomId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const ok = await confirmDialog(`Delete room "${roomId}"?`, {
+    detail: "The room moves to trash (recoverable) and is removed from memory/recall. It won't appear in the sidebar anymore.",
+    okLabel: "Delete room",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    closeTab(roomId, snapshot.workspace.id, false); // drop from the working set if open
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(roomId)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    applySnapshotPayload(body);
+    if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    state.error = "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
 }
 
 /**

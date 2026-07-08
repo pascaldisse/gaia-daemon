@@ -3,7 +3,7 @@
 // runner subprocess, headless serve) uses to materialize a Workspace.
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
@@ -43,6 +43,21 @@ export async function ensureWorkspaceRoom(cwd: string, roomId: string): Promise<
   assertRoomId(roomId);
   await writeIfMissing(workspacePaths.transcript(cwd, roomId), "");
   await writeIfMissing(workspacePaths.roomState(cwd, roomId), jsonText(normalizeRoomState(undefined)));
+}
+
+/** Reversible room delete: move the whole room dir (transcript + state + files +
+ * pi-sessions) into the workspace trash instead of destroying it. The `stamp`
+ * lands in the trashed leaf so re-creating and re-deleting the same room never
+ * collides. Returns the trash path, or "" if the room dir was already gone. */
+export async function trashWorkspaceRoom(cwd: string, roomId: string, stamp: string): Promise<string> {
+  assertRoomId(roomId);
+  const source = workspacePaths.roomDir(cwd, roomId);
+  if (!existsSync(source)) return "";
+  const trashRoot = workspacePaths.roomTrashDir(cwd);
+  await mkdir(trashRoot, { recursive: true });
+  const dest = join(trashRoot, `${roomId}__${stamp}`);
+  await rename(source, dest);
+  return dest;
 }
 
 /** Scaffold schedules.json so proactive runs are one settings edit away —

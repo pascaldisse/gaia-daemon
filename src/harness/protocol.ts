@@ -23,7 +23,10 @@ export type RunnerMessage =
   | { type: "turn-error"; message: string }
   | { type: "steer-result"; ok: boolean }
   | ({ type: "compact-progress" } & CompactProgressUpdate)
-  | { type: "compact-result"; ok: boolean; message: string };
+  // `ok` = the pass ran without error; `compacted` = history was actually
+  // evicted into a summary (false for a no-op). The daemon draws the visible
+  // boundary from `compacted`, never from the message text.
+  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string };
 
 /** Serialize one protocol frame for the newline-delimited wire.
  *
@@ -81,7 +84,7 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
         ...(typeof msg.outputTokens === "number" ? { outputTokens: msg.outputTokens } : {}),
       };
     case "compact-result":
-      return { type: "compact-result", ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : "" };
+      return { type: "compact-result", ok: msg.ok === true, compacted: msg.compacted === true, message: typeof msg.message === "string" ? msg.message : "" };
     default:
       return undefined;
   }

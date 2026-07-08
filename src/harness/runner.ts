@@ -118,9 +118,9 @@ export async function runAgentRunner(): Promise<void> {
           runtime.compact?.(command.roomId, (update) => send({ type: "compact-progress", ...update })) ??
           Promise.reject(new Error("compaction not supported"))
         )
-          .then((message) => send({ type: "compact-result", ok: true, message }))
+          .then((result) => send({ type: "compact-result", ok: true, compacted: result.compacted, message: result.message }))
           .catch((error: unknown) =>
-            send({ type: "compact-result", ok: false, message: error instanceof Error ? error.message : String(error) }),
+            send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );
         return;
       case "reset":

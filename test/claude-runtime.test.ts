@@ -399,14 +399,15 @@ test("ClaudeRuntime.compact runs a headless /compact turn and reports the bounda
     const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
-    const message = await runtime.compact("default");
-    assert.equal(message, "session compacted (12345 tokens before).");
+    const result = await runtime.compact("default");
+    // The structured `compacted` flag (not the message wording) drives the marker.
+    assert.deepEqual(result, { compacted: true, message: "session compacted (12345 tokens before)." });
     const compactCall = fake.calls[1];
     assert.equal(compactCall.prompt, "/compact");
     assert.ok(compactCall.args.includes("--resume"));
     assert.ok(!compactCall.args.includes("--session-id"));
-    // A room with no started session never spawns a process.
-    assert.equal(await runtime.compact("other-room"), "nothing to compact — no active session for this room.");
+    // A room with no started session never spawns a process — a clean no-op.
+    assert.deepEqual(await runtime.compact("other-room"), { compacted: false, message: "nothing to compact — no active session for this room." });
     assert.equal(fake.calls.length, 2);
     runtime.dispose();
   } finally {

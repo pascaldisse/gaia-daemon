@@ -398,6 +398,20 @@ function deleteRoomChunks(db: DatabaseSync, roomId: string, fromIdx: number): vo
   db.prepare("DELETE FROM chunks WHERE room_id = ? AND first_idx >= ?").run(roomId, fromIdx);
 }
 
+/** Erase a deleted room from the derived index: its transcript chunks (+ FTS),
+ * the per-room sync cursor, and any episodes captured in it (+ FTS). The sync
+ * pass only visits rooms that still exist on disk and has no orphan-prune, so
+ * without this a deleted room's rows would linger and keep matching recall
+ * forever. Idempotent; derived data, so always safe to run. */
+export function purgeRoomIndex(db: DatabaseSync, roomId: string): void {
+  deleteRoomChunks(db, roomId, 0);
+  db.prepare("DELETE FROM rooms WHERE room_id = ?").run(roomId);
+  const episodes = db.prepare("SELECT id FROM episodes WHERE room_id = ?").all(roomId) as Array<{ id: string }>;
+  const dropFts = db.prepare("DELETE FROM episodes_fts WHERE id = ?");
+  for (const row of episodes) dropFts.run(row.id);
+  db.prepare("DELETE FROM episodes WHERE room_id = ?").run(roomId);
+}
+
 function renderEvent(event: ChunkEvent): string {
   return `@${event.author}: ${event.text.trim()}`;
 }

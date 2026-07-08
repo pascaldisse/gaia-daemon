@@ -21,6 +21,7 @@ import { ensureDir } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
+import { discoverSkills } from "../domain/skills.js";
 import { findTtsEngine, ttsEngineIds } from "./read-aloud.js";
 import { sttEngineIds } from "./transcribe.js";
 
@@ -95,6 +96,8 @@ export interface HintSources {
   toolNames: string[];
   thinkingLevels: string[];
   models: ModelChoice[];
+  /** Auto-detected skills across every install location, as picker options. */
+  skills: FieldHintOption[];
 }
 
 // The list is validated against the core ThinkingLevel union so a compiler
@@ -117,6 +120,23 @@ export function sdkToolNames(cwd: string): string[] {
 
 export function sdkThinkingLevels(): string[] {
   return [...THINKING_LEVELS];
+}
+
+/**
+ * Every auto-detected skill across all install locations (project, ~/.gaia, and
+ * every installed harness ecosystem — pi, Claude, Codex, Hermes) as multiselect
+ * options for the agent settings picker. Detection is uniform; the source and
+ * SKILL.md description ride along as the option tooltip. Recomputed per request
+ * (cheap directory scan) so a freshly installed skill shows up without restart.
+ */
+export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOption[] {
+  return discoverSkills(workspace)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((skill) => ({
+      value: skill.name,
+      label: skill.name,
+      description: [skill.source, skill.description].filter(Boolean).join(" · "),
+    }));
 }
 
 export interface ModelCatalog {
@@ -328,6 +348,12 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
   return {
     thinking: select(values(sources.thinkingLevels), { optional: true }),
     tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
+    skills: {
+      input: "multiselect",
+      options: sources.skills,
+      label: "Skills",
+      description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
+    },
     permissionMode: select(values([...CLAUDE_PERMISSION_MODES]), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),

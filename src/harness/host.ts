@@ -10,7 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "../core/env.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
@@ -143,7 +143,7 @@ export class RunnerHost implements AgentRuntime {
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
-  private compactWaiter: ((result: { ok: boolean; message: string }) => void) | undefined;
+  private compactWaiter: ((result: { ok: boolean; compacted: boolean; message: string }) => void) | undefined;
   /** Forwards the runner's compact-progress frames to the /compact caller (and
    * re-arms the idle backstop) while a pass runs. */
   private compactProgress: ((update: CompactProgressUpdate) => void) | undefined;
@@ -237,16 +237,16 @@ export class RunnerHost implements AgentRuntime {
 
   /** Forward /compact to the runner, relay the harness's own result line, and
    * stream its progress frames to `onProgress`. */
-  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<string> {
+  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
     // A durable session on disk can be compacted even from a cold daemon (no
     // turn since restart): spawn the runner so its harness resumes the persisted
     // handle. Only when there's neither a live child NOR a durable session is
     // there genuinely nothing to compact. hasDurableSession reads the spec's
     // on-disk descriptor — uniform across harnesses, no id branch.
-    if (!this.child && !this.hasDurableSession(roomId)) return "nothing to compact — no active session yet.";
+    if (!this.child && !this.hasDurableSession(roomId)) return { compacted: false, message: "nothing to compact — no active session yet." };
     await this.ensureChild(roomId);
-    return new Promise((resolve, reject) => {
+    return new Promise<CompactResult>((resolve, reject) => {
       // IDLE backstop, not absolute: every progress frame re-arms it, so a pass
       // actively streaming for many minutes never trips it, while a runner that
       // goes silent (wedged) still fails COMPACT_TIMEOUT_MS after its last sign
@@ -277,7 +277,10 @@ export class RunnerHost implements AgentRuntime {
       };
       this.compactWaiter = (result) => {
         finish();
-        if (result.ok) resolve(result.message);
+        // `ok` = ran without error → resolve (rejection is reserved for real
+        // failures). `compacted` carries whether history was actually evicted —
+        // the daemon draws the boundary from it, never from the message wording.
+        if (result.ok) resolve({ compacted: result.compacted, message: result.message });
         else reject(new Error(result.message || "compaction failed"));
       };
       this.write({ type: "compact", roomId });
@@ -408,7 +411,7 @@ export class RunnerHost implements AgentRuntime {
       // A death mid-request must settle any pending single-shot waiter too, or a
       // /compact (or /steer) that spawned the runner would hang until its timeout.
       if (this.compactWaiter && !this.disposed) {
-        this.compactWaiter({ ok: false, message: `agent runner exited during compaction (${signal ? `signal ${signal}` : `code ${code}`}).` });
+        this.compactWaiter({ ok: false, compacted: false, message: `agent runner exited during compaction (${signal ? `signal ${signal}` : `code ${code}`}).` });
       }
       if (this.steerWaiter && !this.disposed) this.steerWaiter(false);
       // A dead child can hold no turn — release abort()/idle waiters.
@@ -459,7 +462,7 @@ export class RunnerHost implements AgentRuntime {
         return;
       }
       case "compact-result":
-        this.compactWaiter?.({ ok: message.ok, message: message.message });
+        this.compactWaiter?.({ ok: message.ok, compacted: message.compacted, message: message.message });
         return;
     }
   }

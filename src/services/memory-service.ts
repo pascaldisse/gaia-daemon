@@ -9,12 +9,13 @@
 // (health table + flags on every result), and the embedder is local-first —
 // `auto` never selects cloud, and no provider is trusted without a probe.
 
+import { join } from "node:path";
 import type { AgentDef, MemoryConfig } from "../core/types.js";
 import { newId } from "../core/ids.js";
 import { resolveMemoryConfig } from "../core/config.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Episode, EpisodeOutcome } from "../domain/episodes.js";
-import { appendEpisode } from "../domain/episodes.js";
+import { appendEpisode, isRefusalReply, purgeRoomEpisodes } from "../domain/episodes.js";
 import type { ActiveContextRef, MemoryHealthRow, MemorySearchHit, RoomRef, TranscriptSearchHit } from "../domain/workspace-index.js";
 import {
   countEmbeddings,
@@ -22,6 +23,7 @@ import {
   formatMemoryHits,
   openWorkspaceIndex,
   pendingEmbeddings,
+  purgeRoomIndex,
   readHealth,
   searchTranscripts,
   searchWorkspaceIndex,
@@ -166,6 +168,14 @@ export class MemoryService {
    * nudges the embedding sync and the consolidation idle timer. */
   async capture(agentId: string, capture: EpisodeCapture): Promise<void> {
     const agent = this.agentOrThrow(agentId);
+    // A refusal must never become a recallable episode: re-surfaced later it
+    // reads as precedent and ratchets the agent into refusing again (the
+    // refusal loop). Skip capture entirely — the transcript still holds the
+    // turn, but memory never learns from a decline. Uniform across harnesses.
+    if (isRefusalReply(capture.reply)) {
+      this.log(`memory: not capturing episode for @${agentId} in ${capture.roomId} — reply is a refusal (kept out of recall)`);
+      return;
+    }
     const episode: Episode = {
       id: newId("ep"),
       ts: this.now().toISOString(),
@@ -180,6 +190,21 @@ export class MemoryService {
     await appendEpisode(agent.memoryDir, episode);
     this.scheduleEmbedSync(agentId);
     this.scheduleConsolidation(agentId);
+  }
+
+  /** Erase a deleted room from memory: index rows for the room (transcript
+   * chunks + its episodes) AND every agent's episodes captured in it. Uniform
+   * across harnesses — memory never learns which harness owned the room. When
+   * `backupDir` is given (the trashed room's dir), removed episodes are copied
+   * there first so the delete stays reversible. Returns episodes purged. */
+  async purgeRoom(roomId: string, backupDir?: string): Promise<number> {
+    purgeRoomIndex(this.db(), roomId);
+    let purged = 0;
+    for (const source of this.sources().agents) {
+      const backupPath = backupDir ? join(backupDir, `episodes-${source.agentId}.jsonl`) : undefined;
+      purged += await purgeRoomEpisodes(source.memoryDir, roomId, backupPath);
+    }
+    return purged;
   }
 
   // --- search ----------------------------------------------------------------

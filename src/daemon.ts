@@ -10,14 +10,14 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
-import { gaiaHome, globalPaths } from "./core/paths.js";
+import { gaiaHome, globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
 import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, usageProbes } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
-import { ensureWorkspaceRoom, initWorkspace, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { RoomService } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
@@ -27,7 +27,7 @@ import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type Memor
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
 import { resolveUpstreamCredential, type UpstreamCredential } from "./services/proxy.js";
-import { EditableFileRegistry, buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, type EditableFileContent, type EditableFileDescriptor, type FileHints, type HintSources, type ModelChoice } from "./services/hints.js";
+import { EditableFileRegistry, buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, skillHintOptions, type EditableFileContent, type EditableFileDescriptor, type FileHints, type HintSources, type ModelChoice } from "./services/hints.js";
 import {
   VoiceStackManager,
   classifyVoiceTurn,
@@ -477,6 +477,59 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
+  private roomIdsOnDisk(workspaceRoot: string): string[] {
+    const dir = workspacePaths.roomsDir(workspaceRoot);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  }
+
+  /** Delete a room: dispose its live service, move its directory to the
+   * workspace trash (reversible — never rm -rf), purge it from memory (index
+   * rows + every agent's episodes), and reselect a neighbour so a room is always
+   * in view. Refuses to delete a voice-call room or the last room. */
+  async deleteRoom(workspaceId: string, roomId: string): Promise<SelectionPayload> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    if (!isValidRoomId(roomId)) throw new Error("Invalid room id.");
+    if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId === roomId) {
+      throw new Error("Stop the active voice call before deleting this room.");
+    }
+
+    const roomIds = this.roomIdsOnDisk(record.path);
+    if (!roomIds.includes(roomId)) throw new Error(`Room not found: ${roomId}`);
+    if (roomIds.length <= 1) throw new Error("Can't delete the only room in the workspace.");
+
+    // Stop any in-flight turn before pulling the room out from under the WAL
+    // writer, then drop the live service so nothing writes the doomed dir.
+    const key = serviceKey(workspaceId, roomId);
+    const service = this.services.get(key);
+    if (service) {
+      if (service.isBusy) await service.cancelActiveTask();
+      service.dispose();
+      this.services.delete(key);
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = await trashWorkspaceRoom(record.path, roomId, stamp);
+    const workspace = await loadWorkspace(record.path);
+    const episodesPurged = await this.memoryServiceFor(workspaceId, workspace, record.path).purgeRoom(roomId, trash || undefined);
+    this.log(`deleted room ${roomId} (ws ${workspaceId}) → trash ${trash || "(already gone)"}; purged ${episodesPurged} episode(s) from memory`);
+
+    // Reselect a neighbour if the deleted room was current (or nothing is).
+    const current = this.currentRoom.get(workspaceId);
+    const next = current && current !== roomId ? current : (roomIds.find((id) => id !== roomId) ?? DEFAULT_ROOM);
+    await setWorkspaceRoom(record.path, next);
+    this.currentRoom.set(workspaceId, next);
+
+    const nextService = await this.serviceFor(workspaceId, next);
+    const snapshot = await nextService.getSnapshot();
+    this.broadcast({ type: "rooms", workspaceId, rooms: await nextService.listRooms() });
+    this.broadcast({ type: "snapshot", workspaceId, roomId: nextService.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
   async setAgentRole(workspaceId: string, roomId: string, agentId: string, role: string): Promise<SelectionPayload & { message: string }> {
     const service = await this.serviceFor(workspaceId, roomId);
     const message = await service.setRole(agentId, role);
@@ -873,11 +926,13 @@ export class Daemon {
 
     let agentIds: string[] = [];
     let roomIds: string[] = [];
+    let skillWorkspace: { dir: string } = { dir: this.options.cwd };
     if (workspaceId) {
       try {
         const service = await this.serviceFor(workspaceId);
         agentIds = Object.keys(service.workspace.agents);
         roomIds = (await service.listRooms()).map((room) => room.id);
+        skillWorkspace = service.workspace;
       } catch {
         // Hints degrade gracefully when the workspace cannot be loaded.
       }
@@ -890,6 +945,7 @@ export class Daemon {
       toolNames: this.hintSourcesCache.toolNames,
       thinkingLevels: sdkThinkingLevels(),
       models: this.hintSourcesCache.models,
+      skills: skillHintOptions(skillWorkspace),
     };
     return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
   }

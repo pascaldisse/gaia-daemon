@@ -51,6 +51,9 @@ export const workspacePaths = {
   scheduleState: (rootDir: string) => join(rootDir, ".gaia", "schedule-state.json"),
   roomsDir: (rootDir: string) => join(rootDir, ".gaia", "rooms"),
   roomDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId),
+  /** Reversible room deletion moves the whole room dir here rather than rm -rf,
+   * so a delete is recoverable (restore = move it back). */
+  roomTrashDir: (rootDir: string) => join(rootDir, ".gaia", "trash", "rooms"),
   transcript: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "transcript.jsonl"),
   roomState: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "state.json"),
   /** Memory v4 (MEMORY-DESIGN.md): ONE derived index per workspace. */

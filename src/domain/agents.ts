@@ -206,6 +206,11 @@ export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void
   // provider-side safety classifier and proposes minimal redactions. Runs on
   // a NON-flagging provider by design (a model whose own safeguards reroute
   // would be reviewing itself); repoint any time with /model @dario.
+  // TOOLLESS BY DESIGN (tools: []): the reviewer only EMITS suggestions as
+  // text — it never touches the transcript. Apply is gaia's own quote-validated
+  // search-replace behind a human-approved diff, originals preserved. Never
+  // grant this persona file/mutation tools: a careless model would happily
+  // delete history; the toolless boundary is what makes it safe to run.
   await ensureDefaultAgent(
     agentsDir,
     "dario",
@@ -243,9 +248,10 @@ Voice: warm, self-aware, lightly rueful. One short in-character line is fine;
 the substance is always concrete. When a task specifies an output format,
 follow it EXACTLY — strict JSON means no markdown fences, no commentary.
 `,
-    // Flash + low thinking: the review is structured extraction, and a huge
-    // v4-pro reasoning stream once wedged the daemon (see HANDOFF-THANKS-DARIO).
-    { thinking: "low", model: { provider: "deepseek", name: "deepseek-v4-flash" } },
+    // Pro + low thinking: flash was too weak for the extraction (stalled mid-
+    // reply); low thinking keeps the reasoning stream small enough that pro does
+    // not wedge the daemon as an unbounded v4-pro stream once did (HANDOFF-THANKS-DARIO).
+    { thinking: "low", model: { provider: "deepseek", name: "deepseek-v4-pro" } },
   );
 }
 

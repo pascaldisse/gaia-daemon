@@ -67,7 +67,17 @@ export function parseCommand(input: string): SlashCommand {
 
   const [name = "", ...args] = trimmed.slice(1).split(/\s+/);
   const command = COMMAND_BY_NAME.get(name);
-  if (!command) return { type: "unknown", command: name };
+  if (!command) {
+    // A leading "/" only STARTS a command when the first token is actually
+    // command-SHAPED (letters/digits/_/-, like every real command name). Plenty
+    // of real messages start with "/" too — a pasted path ("/Users/.../x.png"),
+    // code, a regex. Routing those through the command parser is exactly how a
+    // user message got swallowed into an "Unknown command" reply and lost. So a
+    // non-command-shaped token is delivered as the message it is; only a
+    // command-shaped token stays "unknown" (harness-native passthrough and the
+    // typo hint still need that). A user message may never disappear.
+    return /^[A-Za-z][A-Za-z0-9_-]*$/.test(name) ? { type: "unknown", command: name } : { type: "message", text: input };
+  }
 
   const stripped = args.map((arg) => arg.replace(/^@/, ""));
   switch (command.type) {

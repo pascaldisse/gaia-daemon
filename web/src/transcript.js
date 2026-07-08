@@ -43,16 +43,32 @@ import { state } from "./state.js";
  * @property {boolean} [queued] A not-yet-run queued message (ghost bubble).
  */
 
+/**
+ * A system event that confirms a real compaction — "session compacted (…)",
+ * "thread compacted by codex.", etc. Excludes the "nothing to compact" no-op.
+ * Content heuristic, NOT a harness branch: it only decides how to DISPLAY a
+ * legacy event whose structured `kind` predates the compact-boundary marker.
+ * @param {string} text
+ */
+function isCompactionConfirmation(text) {
+  return /\bcompacted\b/i.test(text ?? "") && !/nothing to compact/i.test(text ?? "");
+}
+
 /** @param {RoomEvent} event @returns {MessageView} */
 function viewOfEvent(event) {
   const isUser = event.author === "user";
   const agentEvent = isUser ? undefined : /** @type {AgentRoomEvent} */ (event);
+  // The daemon now stamps `kind:"compact-complete"` from the harness's structured
+  // signal. Older compaction confirmations have no kind — fall back to content so
+  // past compaction points still show a boundary (display-only).
+  const kind =
+    agentEvent?.kind ?? (event.author === "system" && isCompactionConfirmation(event.text) ? "compact-complete" : undefined);
   return {
     id: event.id,
-    version: `${event.redacted ? "c-redacted" : "c"}:${agentEvent?.kind ?? ""}`,
+    version: `${event.redacted ? "c-redacted" : "c"}:${kind ?? ""}`,
     timestamp: event.timestamp,
     author: event.author,
-    kind: agentEvent?.kind,
+    kind,
     targets: isUser ? (/** @type {UserRoomEvent} */ (event).targets ?? []) : [],
     channel: event.channel,
     text: event.text,

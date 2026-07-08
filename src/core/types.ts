@@ -275,9 +275,16 @@ export interface SanitizeSuggestion {
   eventId: string;
   /** Author of the event being edited (display context for the review UI). */
   author: string;
+  /** The original text this edit replaces. For a `whole`-message rewrite this
+   *  is the entire event text; for a span edit it is the exact substring. */
   quote: string;
   replacement: string;
   reason: string;
+  /** True when `quote` is the WHOLE message and `replacement` rewrites it end
+   *  to end — the aggressive default, so no residual trigger word survives a
+   *  surgical span-swap. The apply path is identical (quote→replacement); this
+   *  only tells the UI to render it as a full-message rewrite. */
+  whole?: boolean;
 }
 
 /** A named strategy grouping a subset of the suggestions (e.g. "light touch"
@@ -621,6 +628,18 @@ export interface CompactProgressUpdate {
 export interface CompactProgress extends CompactProgressUpdate {
   /** Epoch ms the pass began (daemon clock). */
   startedAt: number;
+}
+
+/** What a harness's compact() reports back. `compacted` is the authoritative
+ * signal that history was actually evicted into a summary — the daemon marks the
+ * visible compact-boundary from THIS boolean, never by scraping `message` prose
+ * (message wording varies per harness; a keyword match is a RULE #0 smell and
+ * silently drops the marker whenever the wording changes). `compacted:false` is
+ * a clean no-op ("nothing to compact — no active session"). A real failure
+ * rejects, it does not return here. */
+export interface CompactResult {
+  compacted: boolean;
+  message: string;
 }
 
 export interface RoomSummary {
