@@ -1546,13 +1546,13 @@ export class RoomService {
     }
     // Sanitize rewrites the triggering sentences in place — sessions holding the
     // original text must re-read the rewrite, or the redaction is cosmetic. But
-    // the context itself must NOT change: "rewrite-in-place" resets the affected
+    // the context itself must NOT change: "reset-keep-context" resets the affected
     // session yet replays the WHOLE conversation (never a shrunken window). The
     // cut is the first REWRITTEN index: any session that read past it saw the
     // original text and must re-seed.
     const { events: sanitized } = await this.room.eventsFrom(0);
     const firstEdited = sanitized.findIndex((event) => next.has(event.id));
-    await this.resetAfterTruncation("rewrite-in-place", firstEdited >= 0 ? firstEdited : 0);
+    await this.resetAfterTruncation("reset-keep-context", firstEdited >= 0 ? firstEdited : 0);
     this.emit({
       type: "room-event",
       workspaceId: this.workspaceId,
@@ -1607,11 +1607,18 @@ export class RoomService {
    * "edit deletes the rest" — except nothing is actually lost. Uniform for every
    * harness: the room WAL is the fork; native session forks are never used.
    *
-   * Live harness sessions SURVIVE a retry/edit: wiping a long-lived session to
-   * regenerate one reply is never the right trade (the regenerated reply should
-   * still know the whole conversation). The retried exchange lingering inside
-   * the harness session is the small cost; total amnesia + a session-lost gate
-   * was the old, much larger one. */
+   * The harness session MUST reset here ("reset-keep-context"). A long-lived
+   * session (e.g. claude --resume) keeps its OWN copy of the conversation, so
+   * truncating only the gaia transcript leaves every rewound turn alive inside
+   * the session — the model still sees the deleted resends and its own prior
+   * replies, and the "edit" reads to it as one more identical message appended
+   * after them. That is the refusal-loop bug: nothing before the fork actually
+   * changes for the model, so it never moves off its last answer. Resetting the
+   * session (then replaying the whole KEPT conversation from the floor) is what
+   * makes edit/retry mean what a user expects: everything after the fork is gone
+   * from the model's view too, not just from the sidebar. Context is preserved
+   * in full (replay from the floor), so the regenerated reply still knows the
+   * whole conversation up to the edited message — the reset only drops the tail. */
   private async forkAtUserMessage(eventId: string): Promise<{ text: string; targets: string[]; attachments?: MessageAttachment[] }> {
     if (this.activeTask) throw new Error("A turn is running — cancel it first, then edit or retry.");
     const { events } = await this.room.eventsFrom(0);
@@ -1621,7 +1628,7 @@ export class RoomService {
     if (index < 0) throw new Error("No user message precedes that event to fork from.");
     const origin = events[index];
     await this.room.rewindToEvent(origin.id);
-    await this.resetAfterTruncation("keep-sessions");
+    await this.resetAfterTruncation("reset-keep-context");
     return {
       text: origin.text,
       targets: "targets" in origin ? origin.targets : [],
@@ -1629,40 +1636,41 @@ export class RoomService {
     };
   }
 
-  /** After a transcript truncation. Agents whose cursor never reached the cut
-   * are untouched either way — their session saw none of the dropped events, so
-   * resetting them is pure loss (this used to wipe EVERY agent's session and
-   * then trip the session-lost gate on a simple retry).
+  /** After a transcript truncation or in-place rewrite. Agents whose cursor
+   * never reached the cut are untouched either way — their session saw none of
+   * the changed events, so resetting them is pure loss (this used to wipe EVERY
+   * agent's session and then trip the session-lost gate on a simple retry).
    *
-   * For agents whose cursor points past the cut:
-   *  - "keep-sessions" (retry/edit): the live session survives; the cursor is
-   *    capped to the kept length so the next turn sends only genuinely-new
-   *    events on the resumed session.
-   *  - "reset-sessions" (rewind — forgetting IS the point): the harness session
-   *    is reset; cursor AND context floor land on a recent seed base so the next
-   *    turn replays only the kept window (deliberate amnesia, no session-lost gate).
-   *  - "rewrite-in-place" (sanitize/thanks-Dario — the context must NOT change):
-   *    the harness session is reset the SAME way (it holds the pre-rewrite text
-   *    and must re-read the rewrite), but the context is preserved in full — the
-   *    cursor reseeds to the agent's EXISTING floor (a /compact boundary, or 0)
-   *    so the whole conversation replays with the rewritten sentences in place.
-   *    The floor is left exactly as it was. Sanitize rewrites the triggering
-   *    sentences; it never shrinks, compacts, or windows the context.
+   * BOTH modes reset the harness session of every agent that read past the cut —
+   * a long-lived session (claude --resume, codex rollout) keeps its own copy of
+   * the conversation, so leaving it alive would let the removed/rewritten turns
+   * survive inside it even after the gaia transcript changed. What differs is
+   * whether earlier context is kept:
+   *  - "reset-sessions" (rewind — forgetting IS the point): cursor AND context
+   *    floor land on a recent windowed base, so the next turn replays only the
+   *    kept window (deliberate amnesia, no session-lost gate).
+   *  - "reset-keep-context" (edit / retry / sanitize — the tail must vanish but
+   *    earlier context stays): the cursor reseeds to the agent's EXISTING floor
+   *    (a /compact boundary, or 0) so the WHOLE kept conversation replays with
+   *    the fork/rewrite applied — never a shrunken window. The floor is left
+   *    exactly as it was. For edit/retry the dropped tail (resends + prior
+   *    replies) is gone from the model's view; for sanitize the rewritten
+   *    sentences replace the originals in place. Either way the reset drops only
+   *    what changed, and the regenerated reply still knows everything up to the
+   *    fork point.
    *
-   * `cut` is the first transcript index whose content changed. Truncations use
-   * the kept length (the default); sanitize passes the index of the first
-   * REWRITTEN event — its events survive in place, but any session that read
-   * past that point holds the original text and must be treated as affected. */
-  private async resetAfterTruncation(mode: "keep-sessions" | "reset-sessions" | "rewrite-in-place", cut?: number): Promise<void> {
+   * `cut` is the first transcript index whose content changed. Truncations
+   * (edit/retry/rewind) omit it → the whole tail past `kept` is affected; sanitize
+   * passes the index of the first REWRITTEN event — its events survive in place,
+   * but any session that read past that point holds the original text and must be
+   * treated as affected. */
+  private async resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number): Promise<void> {
     const kept = (await this.room.eventsFrom(0)).events.length;
     const affectedAbove = Math.min(cut ?? kept, kept);
     const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
     const state = await this.room.state();
-    const resetsSessions = mode === "reset-sessions" || mode === "rewrite-in-place";
-    if (resetsSessions) {
-      for (const [id, cursor] of Object.entries(state.agentCursors)) {
-        if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
-      }
+    for (const [id, cursor] of Object.entries(state.agentCursors)) {
+      if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
     }
     await this.room.updateState((current) => {
       for (const [id, cursor] of Object.entries(current.agentCursors)) {
@@ -1670,16 +1678,12 @@ export class RoomService {
         if (mode === "reset-sessions") {
           current.agentCursors[id] = base;
           current.contextFloors = { ...(current.contextFloors ?? {}), [id]: base };
-        } else if (mode === "rewrite-in-place") {
-          // Keep the FULL context. Reseed to the agent's real floor so the entire
-          // conversation replays with the rewrites in place — never a window.
-          current.agentCursors[id] = current.contextFloors?.[id] ?? 0;
         } else {
-          current.agentCursors[id] = kept;
-          if ((current.contextFloors?.[id] ?? 0) > kept) {
-            // A floor can't sit above the transcript end after the cut.
-            current.contextFloors = { ...(current.contextFloors ?? {}), [id]: kept };
-          }
+          // Keep the FULL context. Reseed to the agent's real floor so the entire
+          // kept conversation replays on the fresh session — capped to `kept` so a
+          // floor set past the fork (a /compact between fork point and tail) can't
+          // land the cursor beyond the transcript end.
+          current.agentCursors[id] = Math.min(current.contextFloors?.[id] ?? 0, kept);
         }
       }
       delete current.runtimeDetails;

@@ -122,6 +122,13 @@ export class RunnerHost implements AgentRuntime {
   private readonly options: RunnerHostOptions;
   private child: ChildProcess | null = null;
   private spawnPromise: Promise<void> | null = null;
+  /** Rooms whose harness session must be forgotten on the next turn. A reset
+   * (edit/retry/rewind/clear) is meaningless to a down runner, but the session
+   * is PERSISTED ON DISK — so a reset dropped while the runner idle-exited would
+   * let the next turn --resume the ghost conversation (the edit/retry-doesn't-
+   * -rewind bug). We queue every reset and re-deliver it right after the next
+   * spawn, before the turn; reset is idempotent, so a redundant delivery no-ops. */
+  private readonly pendingResets = new Set<string>();
   private activeChannel: EventChannel | null = null;
   private _modelLabel: string;
   private disposed = false;
@@ -163,6 +170,12 @@ export class RunnerHost implements AgentRuntime {
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     await this.ensureChild(input.roomId);
+    // Deliver any reset queued while the child was down (or racing a child death)
+    // BEFORE the turn, so a fresh runtime forgets the persisted session and this
+    // turn starts a genuinely new harness conversation instead of --resuming the
+    // rewound-away ghost. Must precede the `turn` frame — order is honored by the
+    // runner's line reader.
+    if (this.pendingResets.delete(input.roomId)) this.write({ type: "reset", roomId: input.roomId });
     const channel = createEventChannel();
     this.activeChannel = channel;
     this.turnInFlight = true;
@@ -288,6 +301,11 @@ export class RunnerHost implements AgentRuntime {
   }
 
   resetRoom(roomId: string): void {
+    // Queue unconditionally so the reset survives a down runner (the disk-
+    // persisted session would otherwise --resume the ghost). Also send now if the
+    // child is up; the next turn's flush deletes the queue entry. A double
+    // delivery is a harmless no-op (reset just clears an already-cleared session).
+    this.pendingResets.add(roomId);
     if (this.child) this.write({ type: "reset", roomId });
   }
 

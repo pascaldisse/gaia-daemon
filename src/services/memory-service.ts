@@ -15,7 +15,7 @@ import { newId } from "../core/ids.js";
 import { resolveMemoryConfig } from "../core/config.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Episode, EpisodeOutcome } from "../domain/episodes.js";
-import { appendEpisode, isRefusalReply, purgeRoomEpisodes } from "../domain/episodes.js";
+import { appendEpisode, purgeRoomEpisodes } from "../domain/episodes.js";
 import type { ActiveContextRef, MemoryHealthRow, MemorySearchHit, RoomRef, TranscriptSearchHit } from "../domain/workspace-index.js";
 import {
   countEmbeddings,
@@ -168,14 +168,6 @@ export class MemoryService {
    * nudges the embedding sync and the consolidation idle timer. */
   async capture(agentId: string, capture: EpisodeCapture): Promise<void> {
     const agent = this.agentOrThrow(agentId);
-    // A refusal must never become a recallable episode: re-surfaced later it
-    // reads as precedent and ratchets the agent into refusing again (the
-    // refusal loop). Skip capture entirely — the transcript still holds the
-    // turn, but memory never learns from a decline. Uniform across harnesses.
-    if (isRefusalReply(capture.reply)) {
-      this.log(`memory: not capturing episode for @${agentId} in ${capture.roomId} — reply is a refusal (kept out of recall)`);
-      return;
-    }
     const episode: Episode = {
       id: newId("ep"),
       ts: this.now().toISOString(),

@@ -112,24 +112,6 @@ test("capture writes one episode line with id/ts/outcome/tools", async () => {
   service.dispose();
 });
 
-test("capture skips refusals entirely — a decline never becomes a recallable episode", async () => {
-  const { service, agent } = await makeMemoryService();
-  await service.capture("gaia", {
-    roomId: "ida",
-    task: "which function checks the 0x1a8 flag to hide the menus",
-    reply: "Straight with you — this one I'm going to stop at. I'm going to hold the same line I held before.",
-    outcome: "complete",
-  });
-  // A refusal must leave NO episode on disk (the transcript still holds the turn).
-  assert.equal(existsSync(join(agent.memoryDir, "episodes.jsonl")), false);
-
-  // A normal reply in the same room is still captured — the guard is content-scoped, not room-scoped.
-  await service.capture("gaia", { roomId: "ida", task: "trace the flag", reply: "Found it: it's sub_1400 reading the edition byte.", outcome: "complete" });
-  const raw = await readFile(join(agent.memoryDir, "episodes.jsonl"), "utf8");
-  assert.equal(raw.trim().split("\n").length, 1);
-  service.dispose();
-});
-
 test("purgeRoom: erases a deleted room from episodic memory (disk + recall), keeps other rooms, backs up removed", async () => {
   const { service, agent } = await makeMemoryService();
   await service.capture("gaia", { roomId: "doomed", task: "trace the widget", reply: "found the doomed widget bug", outcome: "complete" });

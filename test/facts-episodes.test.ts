@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EPISODES_FILE, appendEpisode, isRefusalReply, purgeRoomEpisodes, readEpisodesFrom } from "../src/domain/episodes.js";
+import { EPISODES_FILE, appendEpisode, purgeRoomEpisodes, readEpisodesFrom } from "../src/domain/episodes.js";
 import type { Episode } from "../src/domain/episodes.js";
 import { FACTS_FILE, appendFactOp, findDuplicateFact, readFactOpsFrom, replayFacts } from "../src/domain/facts.js";
 import type { Fact } from "../src/domain/facts.js";
@@ -55,24 +55,6 @@ test("episodes: malformed lines are skipped but still counted by the cursor", as
   const tail = await readEpisodesFrom(dir, 3);
   assert.equal(tail.items.length, 1);
   assert.equal(tail.items[0].id, "ep_2");
-});
-
-test("isRefusalReply: flags explicit declines (the refusal-loop poison), spares normal replies", () => {
-  // Real declines pulled from the corrupted-memory incident (full, untruncated).
-  assert.equal(isRefusalReply("Straight with you — this one I'm going to stop at, and I want to be clear about why."), true);
-  assert.equal(isRefusalReply("So narrowing it to menu visibility doesn't change the deliverable, and I'm going to hold the same line I held before."), true);
-  assert.equal(isRefusalReply("I apologize, but I will not provide any responses that violate Anthropic's Acceptable Use Policy or could promote harm."), true);
-  // Generic assistant refusal registers.
-  assert.equal(isRefusalReply("I'm sorry, but I can't help with that request."), true);
-  assert.equal(isRefusalReply("I’m not able to assist with this."), true); // curly apostrophe normalized
-  assert.equal(isRefusalReply("I have to decline this one."), true);
-
-  // Normal replies — including idioms and legitimate stops — must NOT be dropped.
-  assert.equal(isRefusalReply("Found the race — I can't help but notice the flush fires twice."), false);
-  assert.equal(isRefusalReply("On it. I'll trace the 0x1a8 flag through the menu handlers and report back."), false);
-  assert.equal(isRefusalReply("Done — I'm going to stop by the docs to double-check the flag names."), false);
-  assert.equal(isRefusalReply("Here's the function that reads the edition flag; I patched the watermark path."), false);
-  assert.equal(isRefusalReply(""), false);
 });
 
 test("purgeRoomEpisodes: drops only the deleted room's episodes, keeps the rest, backs up removed lines, returns count", async () => {

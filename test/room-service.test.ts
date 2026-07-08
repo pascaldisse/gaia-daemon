@@ -1061,6 +1061,12 @@ test("retryMessage forks at the originating user message and regenerates the rep
   assert.notEqual(after[2].id, before[2].id, "the re-sent user message is a new event");
   assert.equal(after[3].text, "reply 3");
   assert.equal(runtimes.get("gaia")?.sends, 3);
+  // The fork MUST reset the harness session: a live claude --resume / codex
+  // rollout keeps its own copy of the conversation, so leaving it alive would
+  // let the rewound turn (reply 2) survive inside it — the model would still
+  // "see" the dropped exchange and treat the retry as one more resend. Resetting
+  // is what makes the regenerated reply actually forget what came after the fork.
+  assert.ok((runtimes.get("gaia")?.resets ?? 0) >= 1, "retry resets the session so the rewound tail can't linger inside it");
 
   // No progress ever lost: the dropped exchange is preserved beside the transcript.
   const rewound = (await readFileText(join(root, ".gaia", "rooms", "default", "rewound.jsonl"), "utf8"))
@@ -1071,7 +1077,7 @@ test("retryMessage forks at the originating user message and regenerates the rep
 });
 
 test("editMessage forks at the edited user message and re-sends the new text with kept routing", async () => {
-  const { service } = await makeService({ agents: ["gaia", "terry"] });
+  const { service, runtimes } = await makeService({ agents: ["gaia", "terry"] });
   await service.sendMessage("@terry original question");
   await service.waitForIdle();
 
@@ -1087,6 +1093,10 @@ test("editMessage forks at the edited user message and re-sends the new text wit
   assert.equal(after.length, 2);
   assert.equal(after[0].text, "edited question");
   assert.equal(after[1].author, "terry");
+  // Editing rewinds for the MODEL too, not just the sidebar: the harness session
+  // that answered "original question" is reset, so the edited turn re-runs on a
+  // fresh session instead of appending after the pre-edit text.
+  assert.ok((runtimes.get("terry")?.resets ?? 0) >= 1, "edit resets the answering agent's session");
 
   // Unknown event ids refuse cleanly.
   await assert.rejects(() => service.editMessage("evt_nope", "x"), /not found/i);

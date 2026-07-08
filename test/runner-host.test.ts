@@ -149,6 +149,52 @@ test("a turn whose content contains U+2028 survives the wire round trip (regress
   }
 });
 
+test("RunnerHost re-delivers a reset queued while the child was down, before the next turn (regression: edit/retry left the persisted session --resuming the ghost)", async () => {
+  const temp = await createTempDir();
+  try {
+    // This stub records which rooms it has been told to reset, then reports on the
+    // NEXT turn whether that room's reset arrived first. The real bug: a runner
+    // idle-exits, edit/retry calls resetRoom on a down child, the old `if
+    // (this.child)` guard dropped it, and because the harness session is persisted
+    // on disk the next turn --resumed the whole rewound-away conversation.
+    const RESET_STUB = `
+import { createInterface } from "node:readline";
+const send = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+send({ type: "ready", modelLabel: "stub/model" });
+const wasReset = new Set();
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  const cmd = JSON.parse(line);
+  if (cmd.type === "reset") wasReset.add(cmd.roomId);
+  else if (cmd.type === "turn") {
+    send({ type: "event", event: { type: "text-delta", delta: "reset-before-turn:" + (wasReset.has(cmd.input.roomId) ? "yes" : "no") } });
+    send({ type: "turn-end" });
+  } else if (cmd.type === "dispose") process.exit(0);
+});
+`;
+    const stubPath = join(temp.path, "reset-stub.mjs");
+    await writeFile(stubPath, RESET_STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+    });
+    // Reset with NO child alive (nothing spawned yet) — the exact idle-exited case.
+    host.resetRoom("default");
+    const events: AgentEvent[] = [];
+    for await (const e of host.send({ roomId: "default", message: "hi", transcript: [] })) events.push(e);
+    const echo = events.find((e) => e.type === "text-delta");
+    assert.ok(echo && echo.type === "text-delta", "the turn must stream");
+    assert.equal(echo.delta, "reset-before-turn:yes", "the queued reset must reach the fresh runner before the turn frame");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("RunnerHost forwards /compact over the wire and relays the harness's result", async () => {
   const temp = await createTempDir();
   try {
