@@ -149,16 +149,20 @@ async function loadOlderEvents() {
   } catch (error) {
     setError(error instanceof Error ? error.message : String(error));
   } finally {
-    state.older.loading = false;
+    // Insert the chunk, then re-anchor in the SAME frame it lands: markDirty
+    // queues the transcript flush first, so this rAF runs after it and reading
+    // scrollHeight already reflects the added height — grow scrollTop by exactly
+    // that so the message being read stays put (no flash; overflow-anchor:none
+    // in CSS keeps the browser from also compensating). Release the loading
+    // guard only AFTER, with scrollTop now well past the auto-load threshold, so
+    // this programmatic scroll can't cascade the loader into draining everything.
     markDirty("transcript");
-    // Keep the viewport anchored on the message the user was reading: the
-    // render runs in its own rAF, so adjust one frame after it.
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const el = $("#transcript");
-        if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
-      }),
-    );
+    requestAnimationFrame(() => {
+      const el = $("#transcript");
+      if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
+      state.older.loading = false;
+      markDirty("transcript");
+    });
   }
 }
 

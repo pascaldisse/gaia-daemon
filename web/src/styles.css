@@ -199,13 +199,18 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
 .main {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  /* Cap the single column at the pane's own width: without this, an implicit
+     grid column sizes to its widest child (the topbar's fixed chips), dragging
+     main-stack + the transcript wider than the pane on a narrow window so text
+     clips instead of reflowing. minmax(0,1fr) pins it to the available width. */
+  grid-template-columns: minmax(0, 1fr);
   background: var(--bg);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.main-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.main-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 
 .col-resizer { cursor: col-resize; background: var(--border); opacity: 0.35; transition: opacity 0.12s ease, background 0.12s ease; }
 .col-resizer:hover, body.resizing .col-resizer { opacity: 1; background: var(--accent); }
