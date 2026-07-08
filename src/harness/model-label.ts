@@ -25,3 +25,27 @@ export function configuredModelLabel(
 export function liveModelLabel(provider: string, modelId: string, subscription: boolean): string {
   return `${provider}/${modelId}${subscription ? " (oauth)" : ""}`;
 }
+
+/**
+ * The label a runtime reports: the configured label until a live turn reveals
+ * the model actually used, then that. Every runtime composes ONE of these and
+ * feeds it the same `model-info` events it streams — one tracker + one
+ * formatter, so a runtime's own label can never drift from the label the
+ * daemon-side RunnerHost derives from those events (host.ts does exactly the
+ * same liveModelLabel call). Configured/fallback strings stay per-harness DATA
+ * passed into the constructor — never a harness-id branch.
+ */
+export class ModelLabel {
+  private live: string | undefined;
+
+  constructor(private readonly configured: string) {}
+
+  /** Record the model a live turn actually used (a `model-info` event). */
+  observe(info: { provider: string; modelId: string; subscription: boolean }): void {
+    this.live = liveModelLabel(info.provider, info.modelId, info.subscription);
+  }
+
+  get current(): string {
+    return this.live ?? this.configured;
+  }
+}

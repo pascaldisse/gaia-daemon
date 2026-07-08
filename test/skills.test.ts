@@ -78,6 +78,25 @@ test("a gaia-global skill overrides a same-named harness skill (imagegen bridge 
   assert.match(byName.get("imagegen")?.description ?? "", /gaia bridge/);
 });
 
+test("project .claude/skills resolves beside the workspace ROOT, not inside .gaia", async () => {
+  const base = await mkdtemp(join(tmpdir(), "gaia-skills-claude-"));
+  const root = join(base, "project");
+  // Canonical workspace shape: rootDir = <root>, dir = <root>/.gaia. Claude
+  // Code keeps project skills at <root>/.claude/skills — the old code joined
+  // off workspace.dir and looked in <root>/.gaia/.claude/skills instead.
+  const workspace = { rootDir: root, dir: join(root, ".gaia") };
+  await writeSkill(join(root, ".claude", "skills"), "proj-skill", "proj-skill", "project claude skill");
+  // A stray skill at the buggy location must NOT be picked up.
+  await writeSkill(join(root, ".gaia", ".claude", "skills"), "ghost", "ghost");
+
+  const gaiaHome = join(base, "gaia");
+  const userHome = join(base, "home");
+  const byName = new Map(discoverSkills(workspace, gaiaHome, userHome).map((s) => [s.name, s]));
+  assert.equal(byName.get("proj-skill")?.source, "project");
+  assert.ok(byName.get("proj-skill")?.path.startsWith(join(root, ".claude", "skills")));
+  assert.equal(byName.get("ghost"), undefined);
+});
+
 test("agentSkillNames merges role + agent skills, deduped", () => {
   const role = { skills: ["brave-search", "shared"] } as unknown as ResolvedRole;
   const agent = { skills: ["shared", "browser-tools"] } as unknown as AgentDef;

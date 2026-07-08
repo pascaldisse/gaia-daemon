@@ -22,6 +22,8 @@ class FakeSession implements PiSessionLike {
   aborts = 0;
   thinkingLevel = "medium";
   thinkingChanges: string[] = [];
+  /** Optional per-test native compaction (PiSessionLike.compact). */
+  compact?: (customInstructions?: string) => Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
 
   constructor(id: string) {
     this.sessionId = id;
@@ -301,6 +303,32 @@ test("PiRuntime sends memory in the turn prompt only when it changed", async () 
     await collect(runtime.send({ roomId: "default", message: "four", transcript: [] }));
     assert.equal(sessions.length, 2);
     assert.match(sessions[1].prompts[0], /# Your persistent memory/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compact surfaces the SDK's summary for durable compaction", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.compact = async () => ({ summary: "the story so far", tokensBefore: 1000, estimatedTokensAfter: 100 });
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    // No session yet: the uniform clean no-op, no summary.
+    assert.deepEqual(await runtime.compact("default"), { compacted: false, message: "nothing to compact — no active session for this room." });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const result = await runtime.compact("default");
+    assert.equal(result.compacted, true);
+    assert.match(result.message, /1000 tokens before → ~100/);
+    // The SDK summary rides back on CompactResult so the daemon persists it
+    // (durable compaction) — pi's session.compact() always returns one.
+    assert.equal(result.summary, "the story so far");
     runtime.dispose();
   } finally {
     await fx.cleanup();

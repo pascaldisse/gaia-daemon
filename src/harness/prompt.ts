@@ -8,8 +8,10 @@
 
 import { readFile } from "node:fs/promises";
 import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
+import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
+import type { AgentInput } from "./spec.js";
 import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
 
 export interface SystemPromptInput {
@@ -160,6 +162,35 @@ export function gaiaCliPointer(tools: string[], supported: readonly string[] = g
     "You have a ready-to-use `gaia` CLI on your PATH (already wired to this daemon — just run it, no setup, no hunting for the binary):",
     ...lines,
   ].join("\n");
+}
+
+/**
+ * The uniform per-turn composition EVERY runtime performs: read the agent's
+ * persistent memory, diff it against what this room's session last saw
+ * (SessionMap.memoryChanged — memory travels in the turn prompt only when it
+ * changed, so a memory write never forces a session reload), then map the
+ * AgentInput onto buildTurnPrompt. Hoisted here so a new AgentInput field is
+ * threaded in exactly ONE place; the stores/session-map stay whatever the
+ * calling harness composed — never a harness-id branch.
+ */
+export async function buildTurnPromptFor(
+  agent: Pick<AgentDef, "id" | "memoryDir">,
+  input: AgentInput,
+  memoryStore: Pick<MemoryStore, "promptBlock">,
+  sessions: { memoryChanged(roomId: string, memory: string): boolean },
+): Promise<string> {
+  const memory = await memoryStore.promptBlock(agent.memoryDir);
+  const memoryChanged = sessions.memoryChanged(input.roomId, memory);
+  return buildTurnPrompt({
+    roomId: input.roomId,
+    agentId: agent.id,
+    message: input.message,
+    events: input.transcript,
+    memory: memoryChanged ? memory : undefined,
+    recall: input.recall,
+    channel: input.channel,
+    attachments: input.attachments,
+  });
 }
 
 export function buildTurnPrompt(input: TurnPromptInput): string {

@@ -117,6 +117,8 @@ test("the runner env carries the uniform RUNNER_ENV keys for any harness", () =>
     assert.equal(env.GAIA_ROOM_ID, "room1");
     assert.equal(env.GAIA_MEMORY_DIR, join(root, "mem"));
     assert.equal(env.GAIA_ROOM_DIR, join(root, ".gaia", "rooms", "room1"));
+    assert.equal(env.GAIA_AGENT_ID, "scout"); // the gaia-CLI bridge's public agent id — set HERE, once, for every harness
+
     assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999"); // bridge target rides even without the proxy
     assert.equal(env.GAIA_DAEMON_TOKEN, "tok-123");
     // A normal room does NOT set the incognito flag.

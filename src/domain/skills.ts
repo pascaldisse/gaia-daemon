@@ -66,7 +66,10 @@ export interface SkillRoot {
 export function skillRoots(workspace: SkillWorkspaceRef, home?: string, userHome = homedir()): SkillRoot[] {
   return [
     { path: projectSkillsPath(workspace), source: "project" },
-    { path: join(workspace.dir, ".claude", "skills"), source: "project" },
+    // Claude Code's project-level skills live beside the project ROOT
+    // (<root>/.claude/skills — workspace.dir is <root>/.gaia, one level in);
+    // the bare-dir seam mirrors the layout inside the injected dir as above.
+    { path: join(workspace.rootDir ?? workspace.dir, ".claude", "skills"), source: "project" },
     { path: globalSkillsPath(home), source: "global" },
     { path: join(userHome, ".pi", "agent", "skills"), source: "pi" }, // pi nests under collection dirs (pi-skills/)
     { path: join(userHome, ".claude", "skills"), source: "claude" },
@@ -96,10 +99,12 @@ function readSkillMeta(path: string): { name?: string; description?: string } {
   }
 }
 
-// Scan a root for `<dir>/SKILL.md`, descending up to `depth` extra levels so a
-// collection dir (pi's pi-skills/) is walked into. Best-effort: an unreadable
-// dir yields nothing rather than throwing.
-function scanSkillRoot(root: string, source: SkillSource, depth = 1): ResolvedSkill[] {
+/** Scan a root for `<dir>/SKILL.md`, descending up to `depth` extra levels so a
+ * collection dir (pi's pi-skills/) is walked into. Best-effort: an unreadable
+ * dir yields nothing rather than throwing. Exported as THE one SKILL.md
+ * discovery + frontmatter parser — harness command hints (claude.ts) reuse it
+ * rather than re-implementing the scan/quote-strip/name rules. */
+export function scanSkillRoot(root: string, source: SkillSource, depth = 1): ResolvedSkill[] {
   const found: ResolvedSkill[] = [];
   const walk = (dir: string, level: number): void => {
     let entries: Dirent[];

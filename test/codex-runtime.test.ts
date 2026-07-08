@@ -261,8 +261,20 @@ test("CodexRuntime declares gaia dynamic tools on thread/start and answers item/
   }
 });
 
-test("CodexRuntime injects memory env + token; no dynamic tools without gaia tools", async () => {
+test("CodexRuntime inherits the runner env untouched; no dynamic tools without gaia tools", async () => {
   const fx = await fixture();
+  // The gaia bridge env is composed ONCE by RunnerHost.buildEnv (see
+  // runner-host-proxy.test.ts) and reaches this runtime as process.env inside
+  // the runner subprocess — the app-server child must inherit it, never a
+  // re-composed per-harness copy.
+  const bridgeEnv = {
+    GAIA_MEMORY_DIR: fx.agent.memoryDir,
+    GAIA_AGENT_ID: "gaia",
+    GAIA_DAEMON_URL: "http://127.0.0.1:9999",
+    GAIA_DAEMON_TOKEN: "tok:gaia:default",
+  };
+  const previous = Object.fromEntries(Object.keys(bridgeEnv).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, bridgeEnv);
   try {
     const fake = new FakeCodexClient();
     fake.addResponse("initialize", {});
@@ -275,21 +287,13 @@ test("CodexRuntime injects memory env + token; no dynamic tools without gaia too
       calls.push({ cwd, env });
       return fake;
     };
-    const host = {
-      baseUrl: "http://127.0.0.1:9999",
-      llmProxyUrl: "http://127.0.0.1:9999/llm",
-      mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
-    };
     const memAgent = { ...fx.agent, tools: ["read", "write", "edit", "memory"] };
     const store = new MemoryStore();
     await store.init(memAgent.memoryDir, memAgent.displayName);
-    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: memAgent, memoryStore: store, clientFactory: factory, harnessHost: host });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: memAgent, memoryStore: store, clientFactory: factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
-    assert.equal(calls[0]?.env.GAIA_MEMORY_DIR, memAgent.memoryDir);
-    assert.equal(calls[0]?.env.GAIA_AGENT_ID, "gaia");
-    assert.equal(calls[0]?.env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
-    assert.equal(calls[0]?.env.GAIA_DAEMON_TOKEN, "tok:gaia:");
+    for (const [key, value] of Object.entries(bridgeEnv)) assert.equal(calls[0]?.env[key], value, `${key} inherited as-is`);
     runtime.dispose();
 
     // An agent without gaia tools declares no dynamicTools at all.
@@ -309,6 +313,7 @@ test("CodexRuntime injects memory env + token; no dynamic tools without gaia too
     assert.equal((threadStart?.params as { dynamicTools?: unknown[] }).dynamicTools, undefined);
     bare.dispose();
   } finally {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : (process.env[key] = value);
     await fx.cleanup();
   }
 });
@@ -430,7 +435,9 @@ test("CodexRuntime yields model-info from thread/start response", async () => {
       subscription: true,
     });
     assert.deepEqual(events[1], { type: "text-delta", delta: "Hello" });
-    assert.equal(runtime.modelLabel, "openai/gpt-5-codex");
+    // Live label = the shared liveModelLabel derivation (subscription:true ⇒
+    // oauth suffix) — the same label RunnerHost derives from this model-info.
+    assert.equal(runtime.modelLabel, "openai/gpt-5-codex (oauth)");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -673,8 +680,8 @@ test("CodexRuntime modelLabel reports configured model before first turn", async
     assert.equal(runtime.modelLabel, "openai/gpt-5-codex");
 
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-    // After send, the live model label from thread/start should match
-    assert.equal(runtime.modelLabel, "openai/gpt-5-codex");
+    // After send, the live model label from thread/start (oauth suffix included).
+    assert.equal(runtime.modelLabel, "openai/gpt-5-codex (oauth)");
 
     runtime.dispose();
   } finally {
@@ -867,7 +874,7 @@ test("CodexRuntime model/rerouted updates live model label", async () => {
 
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
-    assert.equal(runtime.modelLabel, "openai/gpt-5-mini");
+    assert.equal(runtime.modelLabel, "openai/gpt-5-mini (oauth)");
     const modelInfos = events.filter((e) => e.type === "model-info");
     assert.equal(modelInfos.length, 2); // initial + reroute
     assert.deepEqual(modelInfos[1], { type: "model-info", provider: "openai", modelId: "gpt-5-mini", subscription: true });

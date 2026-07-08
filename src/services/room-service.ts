@@ -57,7 +57,7 @@ import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type 
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
-import { allowSummonForTurn, isTrusted, type SummonHost, type SummonResultDelivery } from "./summons.js";
+import { allowSummonForTurn, effectiveTrust, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
 import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
@@ -315,11 +315,12 @@ export class RoomService {
               ...(this.incognito ? { incognito: true } : {}),
               memoryStore: options.memoryStore,
               harnessHost: options.harnessHost,
-              // Resolved at spawn (after init), when parentRoomId is known.
-              allowSummon: () => allowSummonForTurn(agent, this.isSummonRoom),
+              // Resolved at spawn (after init), when parentRoomId and the
+              // inherited untrusted tier are known.
+              allowSummon: () => allowSummonForTurn(agent, this.isSummonRoom, this.summonUntrusted),
               sandbox: () =>
                 resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, this.isSummonRoom, {
-                  trusted: isTrusted(agent),
+                  trusted: effectiveTrust(agent, this.summonUntrusted),
                 }),
             }),
       ]),
@@ -336,6 +337,9 @@ export class RoomService {
   }
 
   private isSummonRoom = false;
+  /** This room inherited the untrusted tier from its summon chain (see
+   * RoomState.summonUntrusted) — feeds effectiveTrust for sandbox resolution. */
+  private summonUntrusted = false;
 
   get workspace(): Workspace {
     return this.options.workspace;
@@ -372,6 +376,7 @@ export class RoomService {
     await Promise.all(Object.values(this.workspace.agents).map((agent) => this.options.memoryStore.init(agent.memoryDir, agent.displayName)));
     const state = await this.room.state();
     this.isSummonRoom = Boolean(state.parentRoomId);
+    this.summonUntrusted = state.summonUntrusted === true;
     // Restore the per-agent context accounting so the composer's `ctx` chip is
     // present from first paint after a restart, not blank until the next turn.
     if (state.contextUsage) this.contextUsage = { ...state.contextUsage };

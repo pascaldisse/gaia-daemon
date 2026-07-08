@@ -18,8 +18,13 @@
 //     a summon result is NEVER silently lost;
 //   - failures are delivered too, loudly — never swallowed.
 //
-// Trust policy lives here as well: one bit (`trust: false`) forces the sandbox
-// and bars summoning; nested summons are default-deny.
+// Trust policy lives here as well: one bit (`trust: false`) forces the sandbox,
+// and the tier FOLLOWS delegation as data — a summon launched by an untrusted
+// caller (or from a room already running under the untrusted tier) runs under
+// the untrusted tier itself: forced real sandbox regardless of the worker
+// agent's own trust bit, so summoning can never escape the caller's sandbox.
+// Nested summons are default-deny. No approval gates anywhere — summons run
+// autonomously; the sandbox IS the boundary.
 
 import { readdir } from "node:fs/promises";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
@@ -45,6 +50,25 @@ export function isTrusted(agent: AgentDef): boolean {
   return agent.trust !== false;
 }
 
+/** Effective trust of a turn: the agent's own bit AND the untrusted tier its
+ * room inherited from the summon chain (summonUntrustedTier). This is the
+ * `trusted` input for sandbox resolution — an untrusted caller's summons run
+ * forced-sandbox regardless of the worker's own trust bit, and no agent or
+ * workspace config can weaken that: the tier is derived data, never config. */
+export function effectiveTrust(agent: AgentDef, untrustedTier: boolean): boolean {
+  return isTrusted(agent) && !untrustedTier;
+}
+
+/** The tier a summon CHILD room runs under: untrusted when the launching
+ * caller agent is untrusted OR the parent room itself already runs under the
+ * untrusted tier — the tier is transitive down the delegation chain, so an
+ * untrusted agent can never launder work back to the trusted tier through an
+ * intermediary. Launches without a caller agent (a human's /summon, daemon
+ * orchestration like monad/sanitize/scheduler) start from the trusted root. */
+export function summonUntrustedTier(caller: AgentDef | undefined, parentUntrustedTier: boolean): boolean {
+  return parentUntrustedTier || (caller !== undefined && !isTrusted(caller));
+}
+
 /** May `agent` create summons while running AS a summon? Default-deny; opt in
  * with allowNestedSummon — refused regardless for untrusted agents. */
 export function mayNestSummon(agent: AgentDef): boolean {
@@ -52,9 +76,14 @@ export function mayNestSummon(agent: AgentDef): boolean {
   return agent.allowNestedSummon === true;
 }
 
-/** Whether this turn's bridge token may create summons. */
-export function allowSummonForTurn(agent: AgentDef, isSummon: boolean): boolean {
-  return isSummon ? mayNestSummon(agent) : true;
+/** Whether this turn's bridge token may create summons. Top-level turns always
+ * may — an untrusted agent is NOT gated out of summoning; its summons simply
+ * inherit its tier (summonUntrustedTier) and run forced-sandbox. Nested turns
+ * follow mayNestSummon, judged on EFFECTIVE trust: a turn under an inherited
+ * untrusted tier nests exactly like an untrusted agent's turn — never. */
+export function allowSummonForTurn(agent: AgentDef, isSummon: boolean, untrustedTier = false): boolean {
+  if (!isSummon) return true;
+  return effectiveTrust(agent, untrustedTier) && mayNestSummon(agent);
 }
 
 export interface SummonChild {
@@ -62,6 +91,12 @@ export interface SummonChild {
   parentRoomId: string;
   agentId: string;
   prompt: string;
+  /** This child runs under the untrusted tier (its caller agent was untrusted,
+   * or it was launched from an untrusted-tier room): its turns must resolve
+   * their sandbox with effectiveTrust(agent, true) — forced real backend
+   * regardless of the worker's own trust bit — and any summon it launches
+   * inherits the tier. */
+  untrusted: boolean;
 }
 
 /** A task chip as the coordinator sees it (RoomService.Task, structurally). */
@@ -125,7 +160,11 @@ export interface SummonOptions {
    *  Omitted → no delivery; the caller consumes the settled promise itself
    *  (summonAndWait: monad steps, the sanitize reviewer, scheduled runs). */
   deliver?: "note" | "turn";
-  /** The parent-room agent whose turn a "turn" delivery triggers. */
+  /** The parent-room agent on whose behalf this summon runs. Two uses, both
+   * uniform across harnesses: a "turn" delivery triggers this agent's turn
+   * with the result, and the child inherits this agent's trust tier — the
+   * coordinator looks the agent up itself (summonUntrustedTier), so an
+   * untrusted caller cannot claim trust for its workers. */
   callerAgentId?: string;
 }
 
@@ -192,6 +231,14 @@ export class SummonCoordinator implements SummonHost {
       throw new Error(`Too many running summons in room ${parentRoomId}; wait for one to finish or cancel it first.`);
     }
 
+    // The child's trust tier, derived HERE — the one choke point every summon
+    // creation passes through — from data the coordinator owns (the caller's
+    // AgentDef from the workspace, the parent's own tier), never from a
+    // caller-supplied flag. An untrusted caller's worker runs untrusted, full
+    // stop; the summon itself is never denied for it (data flow, not gating).
+    const caller = options.callerAgentId ? this.workspace.agents[options.callerAgentId] : undefined;
+    const untrusted = summonUntrustedTier(caller, this.running.get(parentRoomId)?.untrusted === true);
+
     const childRoomId = `${agentId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 64);
     await ensureWorkspaceRoom(this.workspacePath, childRoomId);
 
@@ -202,6 +249,10 @@ export class SummonCoordinator implements SummonHost {
     const statePath = workspacePaths.roomState(this.workspace.rootDir, childRoomId);
     const state = normalizeRoomState(await readJson(statePath));
     state.parentRoomId = parentRoomId;
+    // The tier rides the room's durable state (like incognito: stamped once at
+    // creation, immutable) so a daemon restart resumes the child's turn under
+    // the SAME forced sandbox instead of quietly promoting it to trusted.
+    if (untrusted) state.summonUntrusted = true;
     if (options.deliver) {
       state.summon = {
         agentId,
@@ -214,7 +265,7 @@ export class SummonCoordinator implements SummonHost {
     await writeJsonAtomic(statePath, state);
 
     const child = await this.serviceForRoom(childRoomId);
-    const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task };
+    const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
 
     const done = this.runChild(child, info, task, options).finally(() => this.running.delete(childRoomId));
@@ -292,15 +343,17 @@ export class SummonCoordinator implements SummonHost {
       if (this.running.has(roomId)) continue;
       let record: SummonDelivery | undefined;
       let parentRoomId: string | undefined;
+      let untrusted = false;
       try {
         const state = normalizeRoomState(await readJson(workspacePaths.roomState(this.workspace.rootDir, roomId)));
         record = state.summon;
         parentRoomId = state.parentRoomId;
+        untrusted = state.summonUntrusted === true;
       } catch {
         continue;
       }
       if (!record || record.status !== "running" || !parentRoomId) continue;
-      const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: "" };
+      const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: "", untrusted };
       this.running.set(roomId, info);
       this.log(`summon recovery: re-arming '${roomId}' (@${record.agentId} → '${parentRoomId}')`);
       void this.recoverOne(info, record)

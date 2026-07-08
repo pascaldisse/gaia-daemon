@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { env } from "../core/env.js";
 import { workspacePaths } from "../core/paths.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
@@ -281,7 +281,7 @@ export class RunnerHost implements AgentRuntime {
     // handle. Only when there's neither a live child NOR a durable session is
     // there genuinely nothing to compact. hasDurableSession reads the spec's
     // on-disk descriptor — uniform across harnesses, no id branch.
-    if (!this.child && !this.hasDurableSession(roomId)) return { compacted: false, message: "nothing to compact — no active session yet." };
+    if (!this.child && !this.hasDurableSession(roomId)) return NO_SESSION_TO_COMPACT;
     await this.ensureChild(roomId);
     return new Promise<CompactResult>((resolve, reject) => {
       // IDLE backstop, not absolute: every progress frame re-arms it, so a pass
@@ -554,6 +554,7 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.roomId]: roomId,
       [RUNNER_ENV.memoryDir]: this.agent.memoryDir,
       [RUNNER_ENV.roomDir]: workspacePaths.roomDir(this.options.workspace.rootDir, roomId),
+      [RUNNER_ENV.agentIdPublic]: this.agent.id,
       ...(this.options.incognito ? { [RUNNER_ENV.incognito]: "1" } : {}),
     };
     if (ctx.host && ctx.token !== undefined) {

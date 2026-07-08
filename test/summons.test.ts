@@ -7,13 +7,16 @@ import {
   SummonCoordinator,
   allowSummonForTurn,
   awaitTask,
+  effectiveTrust,
   isTrusted,
   mayNestSummon,
   summonAck,
+  summonUntrustedTier,
   type SummonRoomAccess,
   type SummonResultDelivery,
   type SummonTaskEvent,
 } from "../src/services/summons.js";
+import { resolveSandboxPolicy } from "../src/harness/sandbox/spec.js";
 import { RoomService } from "../src/services/room-service.js";
 import { normalizeRoomState, RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
@@ -54,9 +57,31 @@ test("trust policy: one bit drives sandbox forcing and summon rights", () => {
   assert.equal(allowSummonForTurn(agent(), false), true);
   assert.equal(allowSummonForTurn(agent(), true), false);
   assert.equal(allowSummonForTurn(agent({ allowNestedSummon: true }), true), true);
+
+  // An untrusted agent is NOT denied top-level summoning — its summons run
+  // under the untrusted tier instead (data flow, not gating; see
+  // summonUntrustedTier). A turn under an INHERITED untrusted tier nests
+  // exactly like an untrusted agent's turn: never.
+  assert.equal(allowSummonForTurn(agent({ trust: false }), false), true);
+  assert.equal(allowSummonForTurn(agent({ allowNestedSummon: true }), true, true), false);
+
+  // effectiveTrust: the inherited tier can only remove trust, never grant it.
+  assert.equal(effectiveTrust(agent(), false), true);
+  assert.equal(effectiveTrust(agent(), true), false);
+  assert.equal(effectiveTrust(agent({ trust: false }), false), false);
+  assert.equal(effectiveTrust(agent({ trust: false }), true), false);
+
+  // summonUntrustedTier: untrusted caller OR tainted parent room → untrusted
+  // child; human /summon and daemon orchestration (no caller agent) stay on
+  // the trusted root — unless launched from a tainted room (transitive).
+  assert.equal(summonUntrustedTier(agent(), false), false);
+  assert.equal(summonUntrustedTier(agent({ trust: false }), false), true);
+  assert.equal(summonUntrustedTier(agent(), true), true);
+  assert.equal(summonUntrustedTier(undefined, false), false);
+  assert.equal(summonUntrustedTier(undefined, true), true);
 });
 
-async function makeWorkspace(): Promise<{ workspace: Workspace; path: string }> {
+async function makeWorkspace(extraAgents: Record<string, AgentDef> = {}): Promise<{ workspace: Workspace; path: string }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-summons-"));
   await mkdir(join(root, ".gaia", "rooms"), { recursive: true });
   await writeFile(join(root, ".gaia", "config.json"), "{}", "utf8");
@@ -69,7 +94,7 @@ async function makeWorkspace(): Promise<{ workspace: Workspace; path: string }> 
     globalAgentsDir: join(root, "global-agents"),
     config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20 },
     contextFiles: [],
-    agents: { gaia: agent(), terry: agent({ id: "terry" }) },
+    agents: { gaia: agent(), terry: agent({ id: "terry" }), ...extraAgents },
   } satisfies Workspace;
   return { workspace, path: root };
 }
@@ -197,6 +222,48 @@ test("summon refuses unknown agents and enforces the per-room cap", async () => 
   await coordinator.summon("default", "terry", "long task");
   assert.equal(coordinator.runningChildren("default").length, 1);
   await assert.rejects(() => coordinator.summon("default", "gaia", "another"), /Too many running summons/);
+  room.settle();
+});
+
+test("an untrusted caller's summon runs under the untrusted tier — forced sandbox regardless of the worker's own trust", async () => {
+  // caller 'shady' is trust:false; worker 'naked' is TRUSTED and even
+  // configures its own sandbox off — the exact escape the tier must close.
+  const shady = agent({ id: "shady", trust: false });
+  const naked = agent({ id: "naked", sandbox: { enabled: false, backend: "none" } });
+  const { workspace, path } = await makeWorkspace({ shady, naked });
+  const room = fakeRoom("ok");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8, () => {});
+
+  // The summon is NOT denied (no gating) — the caller's untrust follows it.
+  const { roomId } = await coordinator.launch("default", "naked", "delegated task", { deliver: "turn", callerAgentId: "shady" });
+  const child = coordinator.runningChildren("default").find((c) => c.roomId === roomId);
+  assert.ok(child, "child launched");
+  assert.equal(child!.untrusted, true);
+
+  // The tier is the `trusted` input the child room feeds sandbox resolution:
+  // the worker's own trusted bit + config (enabled:false, backend:"none")
+  // must NOT weaken it — a real sandbox is forced, exactly as for a
+  // trust:false agent. Never config-weakenable.
+  assert.equal(effectiveTrust(naked, child!.untrusted), false);
+  const policy = resolveSandboxPolicy(undefined, naked.sandbox, true, { trusted: effectiveTrust(naked, child!.untrusted) });
+  assert.equal(policy.enabled, true);
+  assert.notEqual(policy.backend, "none");
+
+  // The tier is transitive: a summon launched FROM the tainted child room
+  // inherits it even though its caller agent ('naked') is trusted — no
+  // laundering back to the trusted tier through an intermediary.
+  const { roomId: grandRoomId } = await coordinator.launch(roomId, "terry", "sub-task", { deliver: "turn", callerAgentId: "naked" });
+  const grandchild = coordinator.runningChildren(roomId).find((c) => c.roomId === grandRoomId);
+  assert.ok(grandchild, "grandchild launched");
+  assert.equal(grandchild!.untrusted, true);
+
+  // Contrast: a trusted caller's summon — and a human/no-caller one — stay on
+  // the trusted tier, so the worker's own trust decides its sandbox as before.
+  const { roomId: cleanRoomId } = await coordinator.launch("default", "terry", "task", { deliver: "turn", callerAgentId: "gaia" });
+  assert.equal(coordinator.runningChildren("default").find((c) => c.roomId === cleanRoomId)!.untrusted, false);
+  const humanRoomId = await coordinator.summon("default", "terry", "task"); // /summon: no caller agent
+  assert.equal(coordinator.runningChildren("default").find((c) => c.roomId === humanRoomId)!.untrusted, false);
+
   room.settle();
 });
 

@@ -224,6 +224,13 @@ export interface RoomState {
   /** Present on summon child rooms whose result must reach the parent room;
    * see SummonDelivery. */
   summon?: SummonDelivery;
+  /** This summon child room runs under the untrusted tier: its launching caller
+   * was untrusted (or its parent room already carried the tier), so every turn
+   * here resolves its sandbox with effectiveTrust(agent, true) — forced real
+   * backend — and summons launched from here inherit the tier. Stamped ONCE at
+   * launch by the summon coordinator, derived data never config: absence means
+   * trusted, and no workspace/agent setting can clear it. */
+  summonUntrusted?: true;
   /** Display name when the room id alone isn't it (e.g. an imported chat's
    * original title). */
   title?: string;
@@ -758,6 +765,16 @@ export interface CompactResult {
    * (uniform, read as data — never an `=== "claude"` branch). */
   summary?: string;
 }
+
+/** The uniform clean no-op above, defined ONCE: every harness returns this when
+ * the room has no session to compact (each guards its own live condition — no
+ * pi session, unstarted claude room, unattached codex thread). The structured
+ * `compacted:false` is authoritative, but keep the "nothing to compact" phrase:
+ * the web client's legacy-event fallback (web/src/transcript.js) matches it. */
+export const NO_SESSION_TO_COMPACT: CompactResult = {
+  compacted: false,
+  message: "nothing to compact — no active session for this room.",
+};
 
 export interface RoomSummary {
   id: string;

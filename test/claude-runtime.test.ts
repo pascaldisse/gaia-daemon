@@ -203,7 +203,9 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
     assert.equal(events.length, 2);
     assert.deepEqual(events[0], { type: "model-info", provider: "anthropic", modelId: "claude-opus-4-8", subscription: true });
     assert.deepEqual(events[1], { type: "text-delta", delta: "Hello" });
-    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
+    // Live label = the shared liveModelLabel derivation, oauth suffix included —
+    // the same label the daemon-side RunnerHost derives from this model-info.
+    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8 (oauth)");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -314,8 +316,9 @@ test("ClaudeRuntime maps a model_fallback system message to model-info + model-f
       toModel: "claude-opus-4-8",
       reason: "Switched to Opus 4.8 (Fable is overloaded)",
     });
-    // The runtime's own label follows the switch.
-    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
+    // The runtime's own label follows the switch (oauth suffix from the shared
+    // liveModelLabel derivation — subscription rode in on init).
+    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8 (oauth)");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -748,41 +751,22 @@ test("ClaudeRuntime keeps a separate session per room and restarts after a faile
   }
 });
 
-test("ClaudeRuntime injects memory/room env for the gaia CLI and a daemon token when a host is present", async () => {
+test("ClaudeRuntime inherits the uniform gaia bridge env from the runner process untouched", async () => {
   const fx = await fixture();
-  try {
-    const fake = new FakeClaude();
-    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
-
-    const host = {
-      baseUrl: "http://127.0.0.1:9999",
-      llmProxyUrl: "http://127.0.0.1:9999/llm",
-      mintToken: ({ agentId, roomId }: { agentId: string; roomId: string }) => `tok:${agentId}:${roomId}`,
-    };
-    const runtime = new ClaudeRuntime({
-      workspace: fx.workspace,
-      agent: fx.agent,
-      memoryStore: new MemoryStore(),
-      processFactory: fake.factory,
-      harnessHost: host,
-    });
-    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-
-    const env = fake.calls[0].env;
-    assert.equal(env.GAIA_MEMORY_DIR, fx.agent.memoryDir);
-    assert.equal(env.GAIA_ROOM_DIR, join(fx.workspace.roomsDir, "default"));
-    assert.equal(env.GAIA_ROOM_ID, "default");
-    assert.equal(env.GAIA_AGENT_ID, "gaia");
-    assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999");
-    assert.equal(env.GAIA_DAEMON_TOKEN, "tok:gaia:default");
-    runtime.dispose();
-  } finally {
-    await fx.cleanup();
-  }
-});
-
-test("ClaudeRuntime omits daemon env when no host is present but still sets read env", async () => {
-  const fx = await fixture();
+  // The bridge env (memory dir, room ids, daemon url/token) is composed ONCE by
+  // RunnerHost.buildEnv (see runner-host-proxy.test.ts) and reaches this runtime
+  // as process.env inside the per-(room, agent) runner subprocess — the runtime
+  // must pass it through, not re-compose its own copy.
+  const bridgeEnv = {
+    GAIA_MEMORY_DIR: fx.agent.memoryDir,
+    GAIA_ROOM_DIR: join(fx.workspace.roomsDir, "default"),
+    GAIA_ROOM_ID: "default",
+    GAIA_AGENT_ID: "gaia",
+    GAIA_DAEMON_URL: "http://127.0.0.1:9999",
+    GAIA_DAEMON_TOKEN: "tok:gaia:default",
+  };
+  const previous = Object.fromEntries(Object.keys(bridgeEnv).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, bridgeEnv);
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
@@ -791,11 +775,32 @@ test("ClaudeRuntime omits daemon env when no host is present but still sets read
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const env = fake.calls[0].env;
-    assert.equal(env.GAIA_MEMORY_DIR, fx.agent.memoryDir);
+    for (const [key, value] of Object.entries(bridgeEnv)) assert.equal(env[key], value, `${key} inherited as-is`);
+    runtime.dispose();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : (process.env[key] = value);
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime adds no bridge env of its own (RunnerHost owns it)", async () => {
+  const fx = await fixture();
+  const previous = { GAIA_DAEMON_URL: process.env.GAIA_DAEMON_URL, GAIA_DAEMON_TOKEN: process.env.GAIA_DAEMON_TOKEN };
+  delete process.env.GAIA_DAEMON_URL;
+  delete process.env.GAIA_DAEMON_TOKEN;
+  try {
+    const fake = new FakeClaude();
+    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const env = fake.calls[0].env;
     assert.equal(env.GAIA_DAEMON_URL, undefined);
     assert.equal(env.GAIA_DAEMON_TOKEN, undefined);
     runtime.dispose();
   } finally {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : (process.env[key] = value);
     await fx.cleanup();
   }
 });
@@ -904,7 +909,8 @@ test("ClaudeRuntime modelLabel reports the configured model before the first tur
     const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8");
+    // After a turn, the LIVE label (from init's model-info, oauth suffix included).
+    assert.equal(runtime.modelLabel, "anthropic/claude-opus-4-8 (oauth)");
     runtime.dispose();
   } finally {
     await fx.cleanup();

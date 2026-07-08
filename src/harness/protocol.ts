@@ -58,6 +58,11 @@ export const RUNNER_ENV = {
   daemonToken: "GAIA_DAEMON_TOKEN",
   memoryDir: "GAIA_MEMORY_DIR",
   roomDir: "GAIA_ROOM_DIR",
+  /** The agent's PUBLIC id for the gaia-CLI bridge (read by `gaia mem`/`recall`
+   * inside a turn — see services/cli-tools.ts). Part of the uniform bridge env
+   * every harness subprocess inherits; distinct from the runner-internal
+   * selector `agentId` above. */
+  agentIdPublic: "GAIA_AGENT_ID",
   /** Set to "1" ONLY when the room is incognito: the runner strips the memory +
    * recall tools from the loaded agent before building the harness runtime, so
    * the strip applies uniformly to every harness (the agent is re-loaded from

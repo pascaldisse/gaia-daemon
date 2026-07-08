@@ -10,15 +10,14 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, UsageLimits, UsageWindow, Workspace } from "../core/types.js";
-import { workspacePaths } from "../core/paths.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type UsageLimits, type UsageWindow, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
+import { scanSkillRoot } from "../domain/skills.js";
 import { GAIA_TOOLS } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,
   type HarnessCapabilities,
-  type HarnessHost,
   type NativeCommandDef,
   registerHarness,
   type RuntimeCreateContext,
@@ -26,8 +25,9 @@ import {
 import { createEventChannel } from "./events.js";
 import { resolveMcpServers } from "../core/config.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
+import { ModelLabel } from "./model-label.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
-import { buildInlineSystemPrompt, buildTurnPrompt, gaiaCliPointer } from "./prompt.js";
+import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
 
 // ---------------------------------------------------------------------------
@@ -335,8 +335,9 @@ export function claudeContextWindow(name: string | undefined): number {
 // ---------------------------------------------------------------------------
 
 // memory/recall/summon reach the daemon via the `gaia` CLI (see
-// buildClaudeToolGrant), not an in-process handle — so summonCreate is
-// accepted from the uniform context and ignored.
+// buildClaudeToolGrant), not an in-process handle — so summonCreate and
+// harnessHost are accepted from the uniform context and ignored (the CLI's
+// bridge env is composed once by RunnerHost and inherited via process.env).
 export interface ClaudeRuntimeOptions extends RuntimeCreateContext {
   /** Injectable process factory for testing. */
   processFactory?: ClaudeProcessFactory;
@@ -385,7 +386,6 @@ export class ClaudeRuntime implements AgentRuntime {
   readonly agent: AgentDef;
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
-  private readonly harnessHost?: HarnessHost;
   private readonly cwd: string;
   /** Persisted per room: --resume continues the same CLI session across
    * daemon/runner restarts (the CLI keeps the conversation on disk). */
@@ -398,8 +398,7 @@ export class ClaudeRuntime implements AgentRuntime {
    * STEER_CONTINUATION_GRACE_MS). Cleared when the turn ends. */
   private onActiveSteer: (() => void) | undefined;
   private readonly processFactory: ClaudeProcessFactory;
-  private readonly configuredModelLabel: string;
-  private liveModelLabel: string | undefined;
+  private readonly label: ModelLabel;
   /** Loopback egress shim that un-redacts thinking text (agent.revealThinking).
    * Started once, lazily; memoized so a start failure fails open (turns proceed
    * without thinking text rather than breaking). */
@@ -410,15 +409,14 @@ export class ClaudeRuntime implements AgentRuntime {
     this.workspace = options.workspace;
     this.agent = options.agent;
     this.memoryStore = options.memoryStore;
-    this.harnessHost = options.harnessHost;
     this.cwd = options.workspace.rootDir;
     this.sessions = new SessionMap<ClaudeRoomMeta>(undefined, fileSessionStore(this.cwd, "claude", this.agent.id));
     this.processFactory = options.processFactory ?? spawnClaudeProcess;
-    this.configuredModelLabel = this.resolveModelLabel();
+    this.label = new ModelLabel(this.resolveModelLabel());
   }
 
   get modelLabel(): string {
-    return this.liveModelLabel ?? this.configuredModelLabel;
+    return this.label.current;
   }
 
   // -----------------------------------------------------------------------
@@ -426,29 +424,17 @@ export class ClaudeRuntime implements AgentRuntime {
   // -----------------------------------------------------------------------
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
-    const memory = await this.memoryStore.promptBlock(this.agent.memoryDir);
     const room = this.sessions.ensure(input.roomId, () => ({ sessionId: randomUUID(), started: false }));
     const firstTurn = !room.started;
-    const memoryChanged = this.sessions.memoryChanged(input.roomId, memory);
 
     // A native command (/deep-research …) is handed to the CLI VERBATIM: the
     // slash command only resolves when it is the whole stdin, so we skip the
-    // usual room/memory/transcript wrapping and run the skills-enabled flag
-    // profile (see buildArgs). The resumed session still carries prior context.
+    // usual room/memory/transcript wrapping (memory stays "unseen" for the next
+    // real turn) and run the skills-enabled flag profile (see buildArgs). The
+    // resumed session still carries prior context.
     const native = input.nativeCommand === true;
     const systemPrompt = await this.buildSystemPrompt(input);
-    const prompt = native
-      ? input.message.trim()
-      : buildTurnPrompt({
-          roomId: input.roomId,
-          agentId: this.agent.id,
-          message: input.message,
-          events: input.transcript,
-          memory: memoryChanged ? memory : undefined,
-          recall: input.recall,
-          channel: input.channel,
-          attachments: input.attachments,
-        });
+    const prompt = native ? input.message.trim() : await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions);
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking, native);
 
     // Every non-native turn is delivered via stream-json INPUT with stdin kept
@@ -571,8 +557,9 @@ export class ClaudeRuntime implements AgentRuntime {
             markStarted();
             if (sys.model) {
               subscription = sys.apiKeySource === "none";
-              this.liveModelLabel = `anthropic/${sys.model}`;
-              channel.push({ type: "model-info", provider: "anthropic", modelId: sys.model, subscription });
+              const info = { type: "model-info", provider: "anthropic", modelId: sys.model, subscription } as const;
+              this.label.observe(info);
+              channel.push(info);
             }
           } else if (sys.subtype === "model_fallback" || sys.subtype === "model_refusal_fallback") {
             // The CLI switched models server-side mid-turn: a capacity/availability
@@ -583,8 +570,9 @@ export class ClaudeRuntime implements AgentRuntime {
             const from = sys.original_model ?? sys.originalModel ?? this.agent.model?.name ?? "configured model";
             const to = sys.fallback_model ?? sys.fallbackModel;
             if (to) {
-              this.liveModelLabel = `anthropic/${to}`;
-              channel.push({ type: "model-info", provider: "anthropic", modelId: to, subscription });
+              const info = { type: "model-info", provider: "anthropic", modelId: to, subscription } as const;
+              this.label.observe(info);
+              channel.push(info);
               channel.push({
                 type: "model-fallback",
                 fromModel: from,
@@ -695,7 +683,7 @@ export class ClaudeRuntime implements AgentRuntime {
       prompt: stdinPayload,
       keepStdinOpen,
       cwd: this.cwd,
-      env: this.buildEnv(input.roomId),
+      env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
         if (!channel.closed && code !== 0 && !channel.hasError) {
@@ -755,7 +743,7 @@ export class ClaudeRuntime implements AgentRuntime {
    * Completion is the compact_boundary system message. */
   async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     const room = this.sessions.get(roomId);
-    if (!room?.started) return { compacted: false, message: "nothing to compact — no active session for this room." };
+    if (!room?.started) return NO_SESSION_TO_COMPACT;
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
@@ -783,7 +771,7 @@ export class ClaudeRuntime implements AgentRuntime {
         args,
         prompt: "/compact",
         cwd: this.cwd,
-        env: this.buildEnv(roomId),
+        env: this.buildEnv(),
         onMessage: (raw) => {
           const msg = raw as {
             type?: string;
@@ -1067,27 +1055,19 @@ export class ClaudeRuntime implements AgentRuntime {
     return this.thinkingProxy;
   }
 
-  // Per-turn env for the subprocess: reads work straight off disk (memory dir,
-  // room dir); writes/summon go to the daemon with a token scoped to this
-  // (agent, room). Only added when a daemon bridge is present.
-  private buildEnv(roomId: string): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      GAIA_MEMORY_DIR: this.agent.memoryDir,
-      GAIA_ROOM_DIR: workspacePaths.roomDir(this.workspace.rootDir, roomId),
-      GAIA_ROOM_ID: roomId,
-      GAIA_AGENT_ID: this.agent.id,
-    };
+  // Per-turn env for the subprocess. The uniform gaia-CLI bridge env
+  // (GAIA_MEMORY_DIR/GAIA_ROOM_*/GAIA_AGENT_ID/GAIA_DAEMON_*) is composed ONCE
+  // by RunnerHost.buildEnv and inherited here via process.env — this runtime
+  // lives in the per-(room, agent) runner it spawned. Only genuinely
+  // claude-local wiring is added on top.
+  private buildEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
     // Prepend our `gaia` shim so plain `gaia <cmd>` runs THIS daemon's CLI.
     const shimDir = ensureGaiaShimDir();
     if (shimDir) env.PATH = `${shimDir}${delimiter}${process.env.PATH ?? ""}`;
     // Route Claude Code's Anthropic egress through the thinking shim when up (it
     // forwarded the prior ANTHROPIC_BASE_URL as its own upstream at start time).
     if (this.thinkingProxy) env.ANTHROPIC_BASE_URL = this.thinkingProxy.url;
-    if (this.harnessHost) {
-      env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
-      env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId });
-    }
     return env;
   }
 
@@ -1127,42 +1107,26 @@ const CLAUDE_BUILTIN_COMMANDS: NativeCommandDef[] = [
   { name: "init", description: "initialize a CLAUDE.md with codebase documentation" },
 ];
 
-/** Pull `description:` out of a SKILL.md frontmatter block (first line wins),
- * trimmed to one short line. "" when absent/unreadable. */
-function skillDescription(skillMdPath: string): string {
-  try {
-    const text = readFileSync(skillMdPath, "utf8");
-    const match = /^description:\s*(.+)$/im.exec(text);
-    const raw = match?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
-    return raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
-  } catch {
-    return "";
-  }
-}
-
-/** Skill directories (each holds a SKILL.md) directly under `dir`. */
-function skillCommandsIn(dir: string): NativeCommandDef[] {
-  if (!existsSync(dir)) return [];
-  const out: NativeCommandDef[] = [];
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const skillMd = join(dir, entry.name, "SKILL.md");
-      if (!existsSync(skillMd)) continue;
-      out.push({ name: entry.name, description: skillDescription(skillMd) || "harness skill" });
-    }
-  } catch {
-    /* unreadable dir — skip */
-  }
-  return out;
+/** SKILL.md descriptions can run long; trim to one short autocomplete line. */
+function commandDescription(raw: string | undefined): string {
+  const text = raw?.trim() ?? "";
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
 let claudeCommandsCache: NativeCommandDef[] | undefined;
 function discoverClaudeCommands(): NativeCommandDef[] {
   if (claudeCommandsCache) return claudeCommandsCache;
   const byName = new Map<string, NativeCommandDef>();
-  // Built-in seed first; discovered on-disk skills override with real descriptions.
-  for (const cmd of [...CLAUDE_BUILTIN_COMMANDS, ...skillCommandsIn(join(homedir(), ".claude", "skills"))]) {
+  // Built-in seed first; discovered on-disk skills override with real
+  // descriptions. Discovery + frontmatter parsing is the domain scanner
+  // (skills.ts scanSkillRoot) — the same parser the settings skill picker
+  // uses, so quote-stripping and `name:` handling can never drift; only the
+  // root path is claude-local knowledge.
+  const discovered = scanSkillRoot(join(homedir(), ".claude", "skills"), "claude").map((skill) => ({
+    name: skill.name,
+    description: commandDescription(skill.description) || "harness skill",
+  }));
+  for (const cmd of [...CLAUDE_BUILTIN_COMMANDS, ...discovered]) {
     byName.set(cmd.name, cmd);
   }
   claudeCommandsCache = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));

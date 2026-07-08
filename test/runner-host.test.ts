@@ -302,8 +302,9 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
   const temp = await createTempDir();
   try {
     const host = await makeHost(temp.path);
-    // No child AND no durable session on disk → nothing to compact, no spawn.
-    assert.deepEqual(await host.compact("default"), { compacted: false, message: "nothing to compact — no active session yet." });
+    // No child AND no durable session on disk → the uniform no-op (the shared
+    // NO_SESSION_TO_COMPACT constant every harness returns too), no spawn.
+    assert.deepEqual(await host.compact("default"), { compacted: false, message: "nothing to compact — no active session for this room." });
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
     // The runner's structured `compacted` flag rides through the wire.
     assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });

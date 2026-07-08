@@ -17,7 +17,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
-import type { AgentDef, AgentEvent, CompactResult, Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
@@ -34,8 +34,8 @@ import {
 import { createEventChannel } from "./events.js";
 import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
-import { liveModelLabel } from "./model-label.js";
-import { buildBaseSystemPrompt, buildTurnPrompt } from "./prompt.js";
+import { ModelLabel } from "./model-label.js";
+import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 
 // ---------------------------------------------------------------------------
 // Subprocess-side egress redirect for the credential proxy (v1's
@@ -187,8 +187,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly authStorage = AuthStorage.create();
   private readonly modelRegistry = ModelRegistry.create(this.authStorage);
   private readonly sessions = new SessionMap<PiSessionMeta>((meta) => meta.session.dispose());
-  private readonly configuredModelLabel: string;
-  private liveModelLabel: string | undefined;
+  private readonly label: ModelLabel;
   private readonly cwd: string;
 
   constructor(options: PiRuntimeOptions) {
@@ -200,7 +199,7 @@ export class PiRuntime implements AgentRuntime {
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.applyCredentialProxy();
-    this.configuredModelLabel = this.resolveModelLabel();
+    this.label = new ModelLabel(this.resolveModelLabel());
   }
 
   // When the daemon enabled the credential proxy for this turn (GAIA_LLM_PROXY_URL
@@ -231,7 +230,7 @@ export class PiRuntime implements AgentRuntime {
   // Reports the model the live session actually uses once a turn has run;
   // before that, the configured model or "Pi default".
   get modelLabel(): string {
-    return this.liveModelLabel ?? this.configuredModelLabel;
+    return this.label.current;
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
@@ -243,14 +242,10 @@ export class PiRuntime implements AgentRuntime {
     if (sessionModel) {
       const registryModel = this.modelRegistry.find(sessionModel.provider, sessionModel.id);
       const subscription = registryModel ? this.modelRegistry.isUsingOAuth(registryModel) : false;
-      this.liveModelLabel = liveModelLabel(sessionModel.provider, sessionModel.id, subscription);
-      yield { type: "model-info", provider: sessionModel.provider, modelId: sessionModel.id, subscription };
+      const info = { type: "model-info", provider: sessionModel.provider, modelId: sessionModel.id, subscription } as const;
+      this.label.observe(info);
+      yield info;
     }
-
-    // Memory travels in the turn prompt only when it changed (SessionMap's
-    // uniform diff), so memory-tool writes never force a session reload.
-    const memory = await this.memoryStore.promptBlock(this.agent.memoryDir);
-    const memoryChanged = this.sessions.memoryChanged(input.roomId, memory);
 
     const channel = createEventChannel();
 
@@ -294,16 +289,10 @@ export class PiRuntime implements AgentRuntime {
       }
     });
 
-    const prompt = buildTurnPrompt({
-      roomId: input.roomId,
-      agentId: this.agent.id,
-      message: input.message,
-      events: input.transcript,
-      memory: memoryChanged ? memory : undefined,
-      recall: input.recall,
-      channel: input.channel,
-      attachments: input.attachments,
-    });
+    // The uniform turn-prompt composition (memory travels only when it changed
+    // — SessionMap's diff — so memory-tool writes never force a session
+    // reload), shared with every runtime via buildTurnPromptFor.
+    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions);
     // Pasted images ride the SDK's native channel (PromptOptions.images, the
     // same ImageContent[] the pi CLI builds for clipboard pastes); the prompt
     // text keeps the uniform path breadcrumbs for non-image files.
@@ -359,13 +348,20 @@ export class PiRuntime implements AgentRuntime {
   }
 
   /** Native pi compaction (backs /compact). The SDK call aborts any running
-   * prompt first and emits compaction_start/end on the session stream. */
+   * prompt first and emits compaction_start/end on the session stream. The
+   * SDK's own summary of the evicted history rides back on CompactResult so
+   * the daemon persists it (durable compaction — a later session loss reloads
+   * [summary + tail] instead of raw history). */
   async compact(roomId: string): Promise<CompactResult> {
     const session = this.sessions.get(roomId)?.session;
-    if (!session?.compact) return { compacted: false, message: "nothing to compact — no active session for this room." };
+    if (!session?.compact) return NO_SESSION_TO_COMPACT;
     const result = await session.compact();
     const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
-    return { compacted: true, message: `session compacted (${result.tokensBefore} tokens before${after}).` };
+    return {
+      compacted: true,
+      message: `session compacted (${result.tokensBefore} tokens before${after}).`,
+      ...(result.summary ? { summary: result.summary } : {}),
+    };
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {

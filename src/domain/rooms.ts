@@ -267,6 +267,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
     ...(summon ? { summon } : {}),
+    ...(value.summonUntrusted === true ? { summonUntrusted: true } : {}),
     ...(typeof value.title === "string" && value.title.trim() ? { title: value.title } : {}),
     ...(typeof value.imported === "string" && value.imported.trim() ? { imported: value.imported } : {}),
     ...(monad ? { monad } : {}),

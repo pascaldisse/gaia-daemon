@@ -10,7 +10,7 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import type { AgentDef, AgentEvent, CompactResult, McpServerConfig, Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type McpServerConfig, type Workspace } from "../core/types.js";
 import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
@@ -19,7 +19,6 @@ import {
   type AgentInput,
   type AgentRuntime,
   type HarnessCapabilities,
-  type HarnessHost,
   type RecallSearch,
   registerHarness,
   type RuntimeCreateContext,
@@ -28,8 +27,8 @@ import {
 import { createEventChannel } from "./events.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
-import { configuredModelLabel } from "./model-label.js";
-import { buildInlineSystemPrompt, buildTurnPrompt } from "./prompt.js";
+import { configuredModelLabel, ModelLabel } from "./model-label.js";
+import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 import { buildPiTools } from "./tools.js";
 
 // ---------------------------------------------------------------------------
@@ -312,7 +311,6 @@ export class CodexRuntime implements AgentRuntime {
   readonly agent: AgentDef;
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
-  private readonly harnessHost?: HarnessHost;
   private readonly summonCreate?: SummonCreate;
   private readonly recallSearch?: RecallSearch;
   private client: CodexClient | null = null;
@@ -326,24 +324,22 @@ export class CodexRuntime implements AgentRuntime {
   private readonly attachedThreads = new Set<string>();
   private activeTurn: { threadId: string; turnId: string } | null = null;
   private readonly clientFactory: CodexClientFactory;
-  private readonly configuredModelLabel: string;
-  private liveModelLabel: string | undefined;
+  private readonly label: ModelLabel;
 
   constructor(options: CodexRuntimeOptions) {
     this.workspace = options.workspace;
     this.agent = options.agent;
     this.memoryStore = options.memoryStore;
-    this.harnessHost = options.harnessHost;
     this.summonCreate = options.summonCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex", this.agent.id));
     this.clientFactory = options.clientFactory ?? defaultFactory;
-    this.configuredModelLabel = this.resolveModelLabel();
+    this.label = new ModelLabel(this.resolveModelLabel());
   }
 
   get modelLabel(): string {
-    return this.liveModelLabel ?? this.configuredModelLabel;
+    return this.label.current;
   }
 
   // -----------------------------------------------------------------------
@@ -368,26 +364,15 @@ export class CodexRuntime implements AgentRuntime {
       announce = true;
     }
     if (announce) {
-      const { modelProvider, model } = thread;
-      this.liveModelLabel = `${modelProvider}/${model}`;
-      yield { type: "model-info", provider: modelProvider, modelId: model, subscription: true };
+      const info = { type: "model-info", provider: thread.modelProvider, modelId: thread.model, subscription: true } as const;
+      this.label.observe(info);
+      yield info;
     }
 
-    // Build the turn prompt (reuse prompt-assembly exactly like PiRuntime).
-    // Memory travels only when it changed (SessionMap's uniform diff) — the
-    // persistent thread already saw the previous block.
-    const memory = await this.memoryStore.promptBlock(this.agent.memoryDir);
-    const memoryChanged = this.threads.memoryChanged(input.roomId, memory);
-    const prompt = buildTurnPrompt({
-      roomId: input.roomId,
-      agentId: this.agent.id,
-      message: input.message,
-      events: input.transcript,
-      memory: memoryChanged ? memory : undefined,
-      recall: input.recall,
-      channel: input.channel,
-      attachments: input.attachments,
-    });
+    // The uniform turn-prompt composition (memory travels only when it changed
+    // — the persistent thread already saw the previous block), shared with
+    // every runtime via buildTurnPromptFor.
+    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.threads);
 
     // Start the turn. Pasted images ride as localImage input items (the same
     // shape `codex -i <file>` produces); the app-server reads the paths itself.
@@ -417,8 +402,9 @@ export class CodexRuntime implements AgentRuntime {
           if (p.toModel && currentThread) {
             const from = p.fromModel ?? currentThread.model;
             currentThread.model = p.toModel;
-            this.liveModelLabel = `${currentThread.modelProvider}/${p.toModel}`;
-            channel.push({ type: "model-info", provider: currentThread.modelProvider, modelId: p.toModel, subscription: true });
+            const info = { type: "model-info", provider: currentThread.modelProvider, modelId: p.toModel, subscription: true } as const;
+            this.label.observe(info);
+            channel.push(info);
             if (from && from !== p.toModel) {
               channel.push({
                 type: "model-fallback",
@@ -631,12 +617,18 @@ export class CodexRuntime implements AgentRuntime {
   /** Native codex compaction (backs /compact): thread/compact/start returns
    * `{}` immediately; completion is the thread/compacted notification. Runs
    * only between turns (room-service gates on an idle room), so temporarily
-   * owning the notification handler is safe — the next send() replaces it. */
+   * owning the notification handler is safe — the next send() replaces it.
+   *
+   * CompactResult.summary is legitimately ABSENT here: the app-server's
+   * thread/compacted notification carries only the threadId — codex never
+   * exposes its summary text on the wire (0.142.2) — and the shared layer
+   * degrades gracefully by storing none (see CompactResult in core/types.ts).
+   * This is the documented can't-expose case, not a wire-it-later gap. */
   async compact(roomId: string): Promise<CompactResult> {
     const thread = this.threads.get(roomId);
     const client = this.client;
     if (!thread || !client || !this.attachedThreads.has(thread.threadId)) {
-      return { compacted: false, message: "nothing to compact — no active session for this room." };
+      return NO_SESSION_TO_COMPACT;
     }
     const done = new Promise<void>((resolve) => {
       client.setNotificationHandler((msg) => {
@@ -678,29 +670,16 @@ export class CodexRuntime implements AgentRuntime {
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  // Env for the app-server child. Inside the runner subprocess the harness
-  // host is a fixed-token bridge (the daemon minted the room-scoped token at
-  // spawn), so the claims passed here are advisory; gaia tools themselves run
-  // in THIS process via dynamicTools, not through the child's env.
-  private buildEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      GAIA_MEMORY_DIR: this.agent.memoryDir,
-      GAIA_AGENT_ID: this.agent.id,
-    };
-    if (this.harnessHost && this.agent.tools.includes("memory")) {
-      env.GAIA_DAEMON_URL = this.harnessHost.baseUrl;
-      env.GAIA_DAEMON_TOKEN = this.harnessHost.mintToken({ agentId: this.agent.id, roomId: "" });
-    }
-    return env;
-  }
-
   private async ensureClient(): Promise<CodexClient> {
     if (this.client) return this.client;
     if (!this.initPromise) {
       // A fresh app-server process knows none of our persisted threads.
       this.attachedThreads.clear();
-      this.initPromise = this.clientFactory(this.cwd, this.buildEnv())
+      // The app-server child inherits this runner process's env untouched: the
+      // uniform gaia bridge env (GAIA_MEMORY_DIR/GAIA_ROOM_*/GAIA_AGENT_ID/
+      // GAIA_DAEMON_*) was composed ONCE by RunnerHost.buildEnv, and gaia tools
+      // run in THIS process via dynamicTools — nothing codex-local to add.
+      this.initPromise = this.clientFactory(this.cwd, process.env)
         .then(async (client) => {
           try {
             await client.request("initialize", {

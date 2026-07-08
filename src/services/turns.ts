@@ -3,6 +3,7 @@
 // transcript event. The caller owns durability (WAL) and UI transport.
 
 import type { AgentEvent, EventDetails, MessageBlock, ToolDetail } from "../core/types.js";
+import { liveModelLabel } from "../harness/model-label.js";
 import type { AgentInput, AgentRuntime } from "../harness/spec.js";
 
 export interface AgentTurnOptions {
@@ -70,7 +71,7 @@ export function finalizeInterruptedTools(details: EventDetails): void {
 export function applyEventToDetails(details: EventDetails, event: AgentEvent): void {
   switch (event.type) {
     case "model-info":
-      details.model = `${event.provider}/${event.modelId}${event.subscription ? " (oauth)" : ""}`;
+      details.model = liveModelLabel(event.provider, event.modelId, event.subscription);
       return;
     case "model-fallback":
       details.modelFallback = { from: event.fromModel, to: event.toModel, reason: event.reason };
