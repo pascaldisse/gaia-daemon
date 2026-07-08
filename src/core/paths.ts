@@ -3,6 +3,7 @@
 
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
 
 /** Global GAIA home (agents, skills, setups, logs). GAIA_HOME overrides. */
@@ -13,6 +14,8 @@ export function gaiaHome(): string {
 // --- global layout ---------------------------------------------------------
 
 export const globalPaths = {
+  /** Daemon-global app state (workspace registry, current workspace). */
+  appSettings: () => join(gaiaHome(), "app.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   agentDir: (agentId: string) => join(gaiaHome(), "agents", agentId),
   skillsDir: () => join(gaiaHome(), "skills"),
@@ -62,6 +65,17 @@ export const workspacePaths = {
   memoryEval: (rootDir: string) => join(rootDir, ".gaia", "memory", "eval.json"),
   roomFilesDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "files"),
   piSessionsDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "pi-sessions"),
+  /** Rewound-away transcript lines (edit/retry fork), append-only beside the transcript. */
+  roomRewound: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "rewound.jsonl"),
+  /** Original lines of sanitize-redacted events, appended BEFORE each rewrite. */
+  roomRedactions: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "redactions.jsonl"),
+  /** Durable compaction summary, floor-keyed (fed as [summary + tail] on session loss). */
+  roomCompaction: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "compaction.json"),
+  /** Per-room durable harness session handles ("<harness>:<agent>" keyed). */
+  harnessSessions: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "harness-sessions.json"),
+  /** Per-room writable scratch a credential-proxied harness may relocate its
+   * store into (see HarnessSpec.credentialProxy) — generic, harness-declared. */
+  roomProxyScratch: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "proxy-scratch"),
 };
 
 /** Invert workspacePaths.roomDir: <root>/.gaia/rooms/<id> → <root>. The bare
@@ -73,6 +87,8 @@ export function workspaceRootFromRoomDir(roomDir: string): string {
 
 /** Bundled resources (setups/, web/) shipped inside the install itself. */
 export function bundledDir(...segments: string[]): string {
-  // src2/core/paths.ts → repo root is two levels up from core/.
-  return resolve(new URL("../..", import.meta.url).pathname, ...segments);
+  // src/core/paths.ts → repo root is two levels up from core/. fileURLToPath,
+  // not URL.pathname — the latter percent-encodes and breaks install paths
+  // containing spaces.
+  return resolve(fileURLToPath(new URL("../..", import.meta.url)), ...segments);
 }

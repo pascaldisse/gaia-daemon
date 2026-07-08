@@ -6,10 +6,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
-import { gaiaHome, workspacePaths } from "../core/paths.js";
+import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
-import { parseHarness } from "../harness/spec.js";
 import { normalizeRoomState } from "./rooms.js";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "./agents.js";
 
@@ -18,8 +17,8 @@ export const DEFAULT_ROOM = DEFAULTS.room;
 
 export { gaiaHome };
 
-export function globalAgentsPath(home = gaiaHome()): string {
-  return join(home, "agents");
+export function globalAgentsPath(): string {
+  return globalPaths.agentsDir();
 }
 
 export function workspacePath(cwd: string): string {
@@ -149,7 +148,10 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   const globalAgentsDir = globalAgentsPath();
   await ensureGlobalDefaultAgents(globalAgentsDir);
 
-  const config = parseWorkspaceConfig(await readJson(configPath), (id) => Boolean(parseHarness(id)));
+  // Harness ids are OPAQUE at this layer (domain cannot see harness specs —
+  // layering points down); vocabulary is enforced where the registry lives
+  // (services/harness resolve ids against registered specs).
+  const config = parseWorkspaceConfig(await readJson(configPath), () => true);
   // maxSummonsPerRoom falls back through the default rather than staying unset.
   config.maxSummonsPerRoom ??= DEFAULTS.maxSummonsPerRoom;
   const contextFiles = await discoverContextFiles(cwd);

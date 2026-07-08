@@ -193,9 +193,9 @@ export function sharedMemorySource(workspaceRoot: string): AgentMemoryRef {
  * state can't be read (missing, mid-write, corrupt) is treated as NON-incognito,
  * i.e. indexed — failing open keeps normal rooms recallable, and an incognito
  * room's state is written once at creation before any turn exists to index. */
-function roomIsIncognito(roomDir: string): boolean {
+function roomIsIncognito(workspaceRoot: string, roomId: string): boolean {
   try {
-    const raw = readFileSync(join(roomDir, "state.json"), "utf8");
+    const raw = readFileSync(workspacePaths.roomState(workspaceRoot, roomId), "utf8");
     return (JSON.parse(raw) as { incognito?: unknown }).incognito === true;
   } catch {
     return false;
@@ -213,10 +213,9 @@ export function workspaceRoomRefs(workspaceRoot: string): RoomRef[] {
   const refs: Array<RoomRef & { mtime: number }> = [];
   for (const entry of readdirSync(roomsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const roomDir = join(roomsDir, entry.name);
-    const transcriptPath = join(roomDir, "transcript.jsonl");
+    const transcriptPath = workspacePaths.transcript(workspaceRoot, entry.name);
     if (!existsSync(transcriptPath)) continue;
-    if (roomIsIncognito(roomDir)) continue;
+    if (roomIsIncognito(workspaceRoot, entry.name)) continue;
     try {
       refs.push({ roomId: entry.name, transcriptPath, mtime: statSync(transcriptPath).mtimeMs });
     } catch {
@@ -1094,7 +1093,7 @@ export async function scrollTranscriptWindow(
     db.close();
   }
   if (!row) return undefined;
-  const transcriptPath = join(workspacePaths.roomsDir(workspaceRoot), row.room_id, "transcript.jsonl");
+  const transcriptPath = workspacePaths.transcript(workspaceRoot, row.room_id);
   const raw = await readFile(transcriptPath, "utf8").catch(() => "");
   if (!raw) return undefined;
   const lines = raw.split("\n").filter((line) => line.trim());

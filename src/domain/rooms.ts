@@ -18,7 +18,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
-import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText } from "../core/store.js";
+import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 
@@ -369,9 +369,12 @@ export class RoomHandle {
     await appendJsonl(this.transcriptPath, event);
   }
 
-  async addUserMessage(text: string, targets: string[], channel?: string, attachments?: MessageAttachment[]): Promise<RoomEvent> {
+  /** `id` pre-assigns the event id — the queue→transcript hand-off reserves it
+   * durably on the QueuedMessage first, so a crash-replayed append is
+   * idempotent (see QueuedMessage.eventId). */
+  async addUserMessage(text: string, targets: string[], channel?: string, attachments?: MessageAttachment[], id?: string): Promise<RoomEvent> {
     const event: RoomEvent = {
-      id: newRoomEventId(),
+      id: id ?? newRoomEventId(),
       timestamp: new Date().toISOString(),
       author: "user",
       targets,
@@ -425,9 +428,11 @@ export class RoomHandle {
   private async truncateAt(events: RoomEvent[], cut: number): Promise<RoomEvent[]> {
     const kept = events.slice(0, cut);
     const dropped = events.slice(cut);
-    const rewoundPath = join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "rewound.jsonl");
+    const rewoundPath = workspacePaths.roomRewound(this.workspaceRoot, this.roomId);
     for (const event of dropped) await appendJsonl(rewoundPath, event);
-    await writeText(this.transcriptPath, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""));
+    // Atomic: the kept head has no other copy — a torn rewrite would be
+    // permanent loss of committed history.
+    await writeTextAtomic(this.transcriptPath, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""));
     return dropped;
   }
 
@@ -440,7 +445,7 @@ export class RoomHandle {
   async redactEvents(edits: Map<string, string>): Promise<string[]> {
     const { events } = await this.eventsFrom(0);
     const edited = new Set<string>();
-    const redactionsPath = join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "redactions.jsonl");
+    const redactionsPath = workspacePaths.roomRedactions(this.workspaceRoot, this.roomId);
     for (const event of events) {
       const text = edits.get(event.id);
       if (text === undefined || text === event.text) continue;
@@ -449,7 +454,9 @@ export class RoomHandle {
     }
     if (edited.size === 0) return [];
     const next = events.map((event) => (edited.has(event.id) ? { ...event, text: edits.get(event.id)!, redacted: true } : event));
-    await writeText(this.transcriptPath, next.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    // Atomic: every unedited event exists only on this line — a torn rewrite
+    // would destroy committed history far beyond the redaction.
+    await writeTextAtomic(this.transcriptPath, next.map((event) => JSON.stringify(event)).join("\n") + "\n");
     return [...edited];
   }
 
@@ -462,7 +469,7 @@ export class RoomHandle {
   // lives beside the transcript — derived state, never part of the WAL.
 
   private compactionPath(): string {
-    return join(workspacePaths.roomDir(this.workspaceRoot, this.roomId), "compaction.json");
+    return workspacePaths.roomCompaction(this.workspaceRoot, this.roomId);
   }
 
   private async readCompactionMap(): Promise<Record<string, { floorIdx: number; summary: string }>> {
@@ -524,14 +531,35 @@ export class RoomHandle {
     });
   }
 
-  async dequeue(): Promise<QueuedMessage | undefined> {
-    let head: QueuedMessage | undefined;
+  /** The head of the durable queue WITHOUT removing it. The entry stays queued
+   * until a successor durable record exists (the appended user event / the
+   * pendingTurn marker / a command's persisted reply) and the caller then
+   * consumes it via spliceQueued or markPendingTurn's consume option — the
+   * two-phase hand-off that makes a crash re-drain instead of losing the
+   * message (the old dequeue-first held it in memory only). */
+  async peekQueue(): Promise<QueuedMessage | undefined> {
+    return (await this.state()).queue?.[0];
+  }
+
+  /** Durably reserve the transcript event id a queued message will commit
+   * under, BEFORE the append — so a crash between the two replays the append
+   * idempotently (same id, hasEvent-guarded). No-op if the entry is gone. */
+  async assignQueuedEventId(taskId: string, eventId: string): Promise<void> {
     await this.updateState((state) => {
-      head = state.queue?.[0];
-      if (state.queue && state.queue.length > 1) state.queue = state.queue.slice(1);
+      const entry = state.queue?.find((candidate) => candidate.taskId === taskId);
+      if (entry) entry.eventId = eventId;
+    });
+  }
+
+  /** Remove one entry by task id — idempotent (a multi-target turn consumes it
+   * once per markPendingTurn; only the first splice finds it). */
+  async spliceQueued(taskId: string): Promise<void> {
+    await this.updateState((state) => {
+      if (!state.queue) return;
+      const next = state.queue.filter((candidate) => candidate.taskId !== taskId);
+      if (next.length > 0) state.queue = next;
       else delete state.queue;
     });
-    return head;
   }
 
   async clearQueue(): Promise<QueuedMessage[]> {
@@ -545,9 +573,17 @@ export class RoomHandle {
 
   // --- WAL turn protocol ---------------------------------------------------------
 
-  async markPendingTurn(turn: PendingTurn): Promise<void> {
+  /** `consumeQueuedTaskId` removes that queue entry in the SAME atomic state
+   * write that creates the marker — the queued message's durable custody moves
+   * from queue to WAL with no window where it exists in neither. */
+  async markPendingTurn(turn: PendingTurn, options?: { consumeQueuedTaskId?: string }): Promise<void> {
     await this.updateState((state) => {
       state.pendingTurn = turn;
+      if (options?.consumeQueuedTaskId && state.queue) {
+        const next = state.queue.filter((candidate) => candidate.taskId !== options.consumeQueuedTaskId);
+        if (next.length > 0) state.queue = next;
+        else delete state.queue;
+      }
     });
   }
 
@@ -565,13 +601,30 @@ export class RoomHandle {
 
   /**
    * Commit a finished turn: append the reply event (reserved id + details on
-   * the event), then ONE atomic state write that clears the pending marker and
-   * advances the author's cursor to `cursorAfter`.
+   * the event), then ONE atomic state write that clears the pending marker
+   * (or swaps in `nextPending` — the multi-target hand-off, so the remaining
+   * targets' owed turns never live in memory only) and advances the author's
+   * cursor.
+   *
+   * The cursor is computed HERE, from the reply's own line: everything up to
+   * and including the reply is in the author's harness session — including
+   * events that landed DURING the turn (inline steers, summon notes: all
+   * delivered into the live turn) — while anything appended after the reply
+   * was never seen live and stays unswept. The caller-supplied pre-stream
+   * `count + 1` this replaces undercounted whenever a steer landed mid-turn,
+   * replaying the agent's own reply (and any later steer) as fresh context.
    */
-  async commitTurn(event: RoomEvent, cursorAfter: number): Promise<void> {
+  async commitTurn(event: RoomEvent, nextPending?: PendingTurn): Promise<void> {
     if (!(await this.hasEvent(event.id))) await this.appendEvent(event);
+    // Line offsets, not parsed-array indexes: unparseable lines are skipped
+    // from items but still count toward the cursor space.
+    const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
+      raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
+    );
+    const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
     await this.updateState((state) => {
-      delete state.pendingTurn;
+      if (nextPending) state.pendingTurn = nextPending;
+      else delete state.pendingTurn;
       state.agentCursors[event.author] = cursorAfter;
     });
   }

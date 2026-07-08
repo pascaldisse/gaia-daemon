@@ -7,11 +7,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentDef, AgentEvent, Workspace } from "../src/core/types.js";
 import { CircuitBreaker } from "../src/harness/breaker.js";
 import { RunnerHost } from "../src/harness/host.js";
 import { encodeFrame } from "../src/harness/protocol.js";
+import { registerSandbox, type SandboxSpec } from "../src/harness/sandbox/spec.js";
 import { registerHarness } from "../src/harness/spec.js";
 import { createTempDir } from "./helpers/temp.js";
 
@@ -33,6 +35,18 @@ registerHarness({
   capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
   ui: { label: "Stub (durable)", description: "protocol test double with a persisted session" },
   hasDurableSession: () => true,
+  create: () => {
+    throw new Error("not used: the runner subprocess is stubbed");
+  },
+});
+
+// Same protocol double, but it declares sandboxPaths — the home-dir carves the
+// host must thread into the sandbox launch as spec DATA (no id knowledge).
+registerHarness({
+  id: "stub-sandboxed",
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: false },
+  ui: { label: "Stub (sandboxed)", description: "protocol test double with declared sandbox carves" },
+  sandboxPaths: { writable: ["~/.stub-state"], readonly: ["~/.stub-state/auth.json"] },
   create: () => {
     throw new Error("not used: the runner subprocess is stubbed");
   },
@@ -238,6 +252,46 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const echo = events.find((e) => e.type === "text-delta");
     assert.ok(echo && echo.type === "text-delta", "the turn must stream");
     assert.equal(echo.delta, "reset-before-turn:yes", "the queued reset must reach the fresh runner before the turn frame");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost threads the spec's sandboxPaths (~ expanded) + governance carves into the sandbox launch", async () => {
+  const temp = await createTempDir();
+  try {
+    let seen: SandboxSpec | undefined;
+    registerSandbox({
+      id: "spy-backend",
+      available: () => true,
+      wrap: (spec) => {
+        seen = spec;
+        return { command: spec.argv[0], args: spec.argv.slice(1) }; // passthrough: the stub runner still runs
+      },
+    });
+    const stubPath = join(temp.path, "stub-runner.mjs");
+    await writeFile(stubPath, STUB, "utf8");
+    const agent = { ...AGENT, configPath: join(temp.path, "agents", "gaia", "agent.json") } as unknown as AgentDef;
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent,
+      harness: "stub-sandboxed",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: true, backend: "spy-backend" }),
+      runnerArgv: [process.execPath, stubPath],
+    });
+    for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+    assert.ok(seen, "the sandbox backend must wrap the launch");
+    // The harness's declared carves arrive as data, `~` expanded by the host.
+    assert.ok(seen.writable.includes(join(homedir(), ".stub-state")), "declared state dir is writable");
+    assert.ok(seen.readonly.includes(join(homedir(), ".stub-state", "auth.json")), "declared credential store is carved read-only");
+    // The governance carves ride along uniformly: workspace policy files + this
+    // agent's OWN global agent.json (the trust bit) — a config-supplied writable
+    // grant can never expose them (last match wins in the backend).
+    assert.ok(seen.readonly.includes(join(temp.path, ".gaia", "config.json")), "workspace config stays read-only");
+    assert.ok(seen.readonly.includes(join(temp.path, ".gaia", "agents")), "agents override dir stays read-only");
+    assert.ok(seen.readonly.includes(agent.configPath), "the agent's own agent.json (trust bit) stays read-only");
     host.dispose();
   } finally {
     await temp.cleanup();

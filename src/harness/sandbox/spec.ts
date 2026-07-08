@@ -16,7 +16,10 @@ export interface SandboxSpec {
   cwd: string;
   /** Extra dirs the agent may write, beyond cwd + temp (absolute, or subpaths of cwd). */
   writable: string[];
-  /** Paths kept read-only even though they sit inside cwd (the policy files). */
+  /** Paths kept read-only even though they sit inside writable trees (the
+   *  policy files, a harness's declared credential store). Last match wins in
+   *  the backend, so these override every writable grant — config-supplied
+   *  ones included. */
   readonly: string[];
   /** Extra paths to deny READ access to, on top of the backend's built-in
    *  sensitive set (credentials, user documents). */
@@ -70,7 +73,11 @@ function defaultRealBackend(): string {
  *   different *real* backend may still be chosen; if it is unavailable,
  *   resolveSandboxLaunch fail-closes (the turn refuses to run) rather than
  *   dropping isolation. This is not overridable — that is the whole point of the
- *   trust tier.
+ *   trust tier. Config-supplied `writable` grants do pass through, but they can
+ *   never expose governance: RunnerHost carves the workspace policy files and
+ *   the agent's own agent.json (the trust bit itself) back to read-only via
+ *   `extra.readonly`, which the backend applies AFTER the allows (last match
+ *   wins).
  * - **Trusted agents** default a *summon* to a real backend too (summons are
  *   never naked by default), but a trusted agent may override that, including
  *   back to "none". A trusted top-level turn defaults to no sandbox.

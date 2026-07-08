@@ -2,9 +2,9 @@
 // topic files under the agent's memory dir.
 
 import { existsSync } from "node:fs";
-import { readdir, rename } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { ensureDir, readText, writeText } from "../core/store.js";
+import { ensureDir, readText, writeText, writeTextAtomic } from "../core/store.js";
 
 export type MemoryAction = "add" | "replace" | "remove";
 
@@ -105,13 +105,6 @@ function pathInside(path: string, root: string): boolean {
 
 async function writeIfMissing(path: string, content: string): Promise<void> {
   if (!existsSync(path)) await writeText(path, content);
-}
-
-// Memory files are rewritten in place; temp + rename keeps the write atomic.
-async function writeTextAtomic(path: string, content: string): Promise<void> {
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeText(tmp, content);
-  await rename(tmp, path);
 }
 
 export class MemoryStore {

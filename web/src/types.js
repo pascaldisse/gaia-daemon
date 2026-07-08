@@ -24,6 +24,12 @@
 /** @typedef {import("../../src/core/types.js").ChatSearchResult} ChatSearchResult */
 /** @typedef {import("../../src/core/types.js").UsageLimits} UsageLimits */
 /** @typedef {import("../../src/core/types.js").UsageWindow} UsageWindow */
+/** @typedef {import("../../src/core/types.js").WorkspaceRecord} WorkspaceRecord */
+/** @typedef {import("../../src/core/types.js").EditableFileDescriptor} FileDescriptor */
+/** @typedef {import("../../src/core/types.js").FieldHintOption} FieldHintOption */
+/** @typedef {import("../../src/core/types.js").FieldHint} FieldHint */
+/** @typedef {import("../../src/core/types.js").HarnessHintsMeta} HarnessHintsMeta */
+/** @typedef {import("../../src/core/types.js").FileHints} FileHints */
 
 /**
  * One SSE payload, narrowed by its `type` tag.
@@ -32,63 +38,11 @@
  */
 
 /**
- * A workspace known to the daemon (~/.gaia/app.json recents).
- * @typedef {Object} WorkspaceRecord
- * @property {string} id
- * @property {string} path
- * @property {string} name
- * @property {string} lastOpenedAt
- * @property {boolean} isInitialized
+ * An editable settings file WITH its body — the daemon serves the descriptor
+ * plus `content`, attaching `hints` ad hoc (http.ts), so this thin composite
+ * stays local while its parts are comment-imported above.
+ * @typedef {FileDescriptor & { content: string, hints?: FileHints }} EditableFile
  */
-
-/**
- * An editable settings file, as listed (no content).
- * @typedef {Object} FileDescriptor
- * @property {string} id
- * @property {"global"|"workspace"} scope
- * @property {string} label
- * @property {string} path
- * @property {"markdown"|"json"|"text"} kind
- * @property {string} [agentId]
- * @property {"general"|"voice"|"config"|"persona"|"memory"} [category]
- */
-
-/** @typedef {FileDescriptor & { content: string, hints?: FileHints }} EditableFile */
-
-/**
- * @typedef {Object} FieldHintOption
- * @property {string} value
- * @property {string} [label]
- * @property {string} [description]
- * @property {string} [group]
- */
-
-/**
- * Server-computed editing hint for one JSON path ("model.provider", "tools").
- * @typedef {Object} FieldHint
- * @property {"select"|"multiselect"|"number"|"boolean"|"text"|"json"} input
- * @property {boolean} [optional]
- * @property {FieldHintOption[]} [options]
- * @property {string} [groupBy]
- * @property {boolean} [hidden]
- * @property {string} [label]
- * @property {string} [description]
- */
-
-/**
- * @typedef {Object} HarnessConfigMeta
- * @property {string} [lockedProvider]
- * @property {string[]} [modelProviderIds]
- * @property {string[]} [modelNameOptions]
- * @property {string[]} hiddenFields
- */
-
-/**
- * @typedef {Object} HarnessHintsMeta
- * @property {Record<string, HarnessConfigMeta>} configs
- */
-
-/** @typedef {{ [key: string]: FieldHint | HarnessHintsMeta | undefined, _harness?: HarnessHintsMeta }} FileHints */
 
 /**
  * GET /api/app response.

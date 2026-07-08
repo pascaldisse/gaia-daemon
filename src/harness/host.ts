@@ -8,8 +8,10 @@
 
 import type { ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { env } from "../core/env.js";
+import { workspacePaths } from "../core/paths.js";
 import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
@@ -76,6 +78,13 @@ export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
 export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const name of PROVIDER_KEY_ENV_VARS) delete environment[name];
   return environment;
+}
+
+/** Expand the `~` shorthand HarnessSpec.sandboxPaths declares in (a spec is
+ *  static data — it can't know the home dir) to the real home dir. */
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
 // --- the host ---------------------------------------------------------------------
@@ -388,9 +397,12 @@ export class RunnerHost implements AgentRuntime {
     // it is a pure, ps-visible label scoped to this checkout.
     const base = this.options.runnerArgv ?? [...selfRelaunchArgv(), "__run-agent"];
     const argv = [...base, ...installMarkerArgs()];
-    // The workspace (cwd) is writable, but its policy files are carved back to
-    // read-only so a confined turn can't rewrite the governance that launches
-    // the next one. Room scratch lives under cwd, so it needs no extra grant.
+    // The workspace (cwd) is writable, but the governance that launches the
+    // next turn is carved back to read-only: the workspace policy files AND
+    // this agent's own global agent.json (the authoritative trust bit) — the
+    // backend applies these carves AFTER every writable grant (last match
+    // wins), so no config-supplied grant can expose them. Room scratch lives
+    // under cwd, so it needs no extra grant.
     const policy = this.options.sandbox();
     // Resolve the bridge token + this harness's credential-proxy wiring ONCE, then
     // use it for both the sandbox deny-read and the child env. The wiring is data
@@ -398,10 +410,20 @@ export class RunnerHost implements AgentRuntime {
     // harness id (AGENTS.md §RULE #0). denyRead carries any cred store the harness
     // wants hidden so a summon can't exfiltrate the key the proxy is replacing.
     const launchCtx = this.resolveProxyLaunch(roomId, policy);
+    // This harness's declared home-dir carves (state dir writable, credential
+    // store read-only inside it) — HarnessSpec.sandboxPaths, data on the spec,
+    // threaded here with zero knowledge of which harness declared it.
+    const sandboxPaths = harnessSpecFor(this.options.harness).sandboxPaths;
     let launch;
     try {
       launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
-        readonly: [this.options.workspace.configPath, this.options.workspace.agentsOverrideDir],
+        writable: (sandboxPaths?.writable ?? []).map(expandHome),
+        readonly: [
+          this.options.workspace.configPath,
+          this.options.workspace.agentsOverrideDir,
+          this.agent.configPath,
+          ...(sandboxPaths?.readonly ?? []).map(expandHome),
+        ],
         denyRead: launchCtx.proxy?.denyRead,
       });
     } catch (error) {
@@ -531,7 +553,7 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.harness]: this.options.harness,
       [RUNNER_ENV.roomId]: roomId,
       [RUNNER_ENV.memoryDir]: this.agent.memoryDir,
-      [RUNNER_ENV.roomDir]: join(this.options.workspace.roomsDir, roomId),
+      [RUNNER_ENV.roomDir]: workspacePaths.roomDir(this.options.workspace.rootDir, roomId),
       ...(this.options.incognito ? { [RUNNER_ENV.incognito]: "1" } : {}),
     };
     if (ctx.host && ctx.token !== undefined) {
@@ -562,7 +584,7 @@ export class RunnerHost implements AgentRuntime {
   // into; it sits under the rooms dir, inside the writable cwd. Generic — the
   // harness's descriptor decides what (if anything) to write here.
   private ensureProxyScratch(roomId: string): string {
-    const dir = join(this.options.workspace.roomsDir, roomId, "proxy-scratch");
+    const dir = workspacePaths.roomProxyScratch(this.options.workspace.rootDir, roomId);
     mkdirSync(dir, { recursive: true });
     return dir;
   }

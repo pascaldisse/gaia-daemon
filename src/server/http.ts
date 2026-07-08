@@ -10,6 +10,7 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gaiaHost, gaiaPort } from "../core/config.js";
+import { bundledDir } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
 import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
@@ -121,10 +122,6 @@ function beginSse(response: ServerResponse): void {
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
   });
-}
-
-function webRoot(): string {
-  return resolve(fileURLToPath(new URL("../../web", import.meta.url)));
 }
 
 function pathInside(path: string, root: string): boolean {
@@ -954,7 +951,7 @@ export class GaiaWebServer {
   // --- static ---------------------------------------------------------------------
 
   private async serveStatic(response: ServerResponse, pathname: string): Promise<void> {
-    const root = webRoot();
+    const root = bundledDir("web");
     const requested = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
     const resolved = resolve(root, requested);
     if (!pathInside(resolved, root)) return text(response, 403, "Forbidden");
@@ -1011,7 +1008,7 @@ export class GaiaWebServer {
   }
 
   private async startDevWatchers(): Promise<void> {
-    const root = webRoot();
+    const root = bundledDir("web");
     const entries = await readdir(root, { recursive: true, withFileTypes: true });
     const dirs = [root, ...entries.filter((entry) => entry.isDirectory()).map((entry) => join(entry.parentPath, entry.name))];
     for (const dir of dirs) {

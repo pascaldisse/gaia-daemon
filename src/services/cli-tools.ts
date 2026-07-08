@@ -10,10 +10,9 @@
 //   GAIA_DAEMON_URL, GAIA_DAEMON_TOKEN
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
-import { workspaceRootFromRoomDir } from "../core/paths.js";
+import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
 import { gaiaToolByVerb } from "../harness/tools.js";
 
@@ -77,7 +76,7 @@ async function daemonPost(path: string, body: unknown): Promise<{ ok: boolean; t
 function resolveWorkspaceRoot(): string | undefined {
   const roomDir = env("GAIA_ROOM_DIR");
   if (roomDir) return workspaceRootFromRoomDir(roomDir);
-  return existsSync(join(process.cwd(), ".gaia")) ? process.cwd() : undefined;
+  return existsSync(workspacePaths.dir(process.cwd())) ? process.cwd() : undefined;
 }
 
 async function runMem(args: string[]): Promise<number> {

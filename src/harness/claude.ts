@@ -1314,6 +1314,8 @@ registerHarness({
     description: "Claude Code CLI (claude -p, subscription auth)",
     lockedProvider: "anthropic",
     modelNameOptions: ["fable", "opus", "sonnet", "haiku"],
+    // Claude Code's own --permission-mode vocabulary, passed verbatim.
+    permissionModes: ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
@@ -1331,5 +1333,9 @@ registerHarness({
     env: { ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_AUTH_TOKEN: token },
     denyRead: [realClaudeCredentials()],
   }),
+  // Claude Code persists its sessions + state under ~/.claude (a sandboxed
+  // turn must write there to stay resumable); its stored credential file is
+  // carved back to read-only inside that tree.
+  sandboxPaths: { writable: ["~/.claude"], readonly: ["~/.claude/.credentials.json"] },
   probeUsage: () => probeClaudeUsage(),
 });

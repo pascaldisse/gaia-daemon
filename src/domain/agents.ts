@@ -7,12 +7,10 @@ import { existsSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentDef, AgentModelConfig, ClaudePermissionMode, ThinkingLevel } from "../core/types.js";
-import { CLAUDE_PERMISSION_MODES } from "../core/types.js";
+import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
 import { agentPaths } from "../core/paths.js";
 import { ensureDir, jsonText, readJson, writeText } from "../core/store.js";
-import { parseHarness } from "../harness/spec.js";
 import { MemoryStore } from "./memory.js";
 
 interface RawAgentConfig {
@@ -93,11 +91,11 @@ export function agentConfigTemplate(id: string, displayName: string, icon: strin
   };
 }
 
-/** Returns the value if it is a known Claude permission mode, else undefined. */
-export function normalizePermissionMode(raw: unknown): ClaudePermissionMode | undefined {
-  return typeof raw === "string" && (CLAUDE_PERMISSION_MODES as string[]).includes(raw)
-    ? (raw as ClaudePermissionMode)
-    : undefined;
+/** Any non-empty string passes through verbatim: the permission-mode vocabulary
+ * is each harness's own (declared as ui.permissionModes data on its spec), so
+ * domain stays spec-blind — exactly like the opaque `harness` id. */
+export function normalizePermissionMode(raw: unknown): string | undefined {
+  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
 }
 
 export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, options: AgentScaffoldOptions = {}): Promise<AgentScaffoldResult> {
@@ -272,9 +270,18 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     revealThinking: override.revealThinking !== undefined ? override.revealThinking : base.revealThinking,
     memory: override.memory !== undefined ? override.memory : base.memory,
     mcpServers: override.mcpServers !== undefined ? override.mcpServers : base.mcpServers,
+    // Trust is a GLOBAL-level decision: a workspace overlay (repo-shippable
+    // .gaia/agents/<id>/agent.json) may only TIGHTEN it, never re-trust an
+    // agent the global config marked untrusted — trust:false is never
+    // config-weakenable (AGENTS.md).
+    trust: base.trust === false ? false : override.trust !== undefined ? override.trust : base.trust,
   };
 }
 
+/** Load every global agent dir (project overlay merged over it). Domain never
+ * sees the harness registry (layering points down): the harness id is OPAQUE
+ * here — enforcement lives where specs are visible (harnessIdFor's fallback
+ * for unknown ids, harnessSpecFor failing loud). */
 export async function loadAgentDefinitions(globalAgentsDir: string, projectAgentsDir: string): Promise<Record<string, AgentDef>> {
   if (!existsSync(globalAgentsDir)) return {};
 
@@ -325,7 +332,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       skills: stringList(raw.skills, []),
       model: raw.model,
       thinking: raw.thinking,
-      harness: parseHarness(raw.harness),
+      harness: typeof raw.harness === "string" && raw.harness.trim() ? raw.harness : undefined,
       sandbox: parseSandboxConfig(raw.sandbox),
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,

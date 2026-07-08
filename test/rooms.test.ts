@@ -32,7 +32,7 @@ test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   assert.equal(state.queue?.[0].taskId, "q1");
 });
 
-test("queue: enqueue/dequeue/clear are durable", async () => {
+test("queue: enqueue/peek/splice/clear are durable", async () => {
   const room = await openRoom();
   await room.enqueue({ taskId: "t1", text: "one", targets: ["gaia"], queuedAt: "2026-01-01" });
   await room.enqueue({ taskId: "t2", text: "two", targets: ["terry"], queuedAt: "2026-01-01" });
@@ -42,10 +42,15 @@ test("queue: enqueue/dequeue/clear are durable", async () => {
   const state = await reopened.state();
   assert.equal(state.queue?.length, 2);
 
-  const head = await reopened.dequeue();
+  const head = await reopened.peekQueue();
   assert.equal(head?.taskId, "t1");
+  assert.equal((await reopened.state()).queue?.length, 2, "peek never removes — the entry survives until a successor record consumes it");
+
+  await reopened.spliceQueued("t1");
   const rest = await reopened.state();
   assert.equal(rest.queue?.length, 1);
+  await reopened.spliceQueued("t1"); // idempotent
+  assert.equal((await reopened.state()).queue?.length, 1);
 
   const dropped = await reopened.clearQueue();
   assert.equal(dropped.length, 1);
@@ -68,19 +73,75 @@ test("WAL: commitTurn appends the reserved event with details and advances the c
     text: "the reply",
     details: { model: "pi/deepseek", tools: [{ id: "t", toolName: "bash", status: "complete" }] },
   };
-  await room.commitTurn(event, 2);
+  await room.commitTurn(event);
 
   const state = await room.state();
   assert.equal(state.pendingTurn, undefined);
-  assert.equal(state.agentCursors.gaia, 2);
+  assert.equal(state.agentCursors.gaia, 1, "cursor = just past the reply's own line");
   const { events } = await room.eventsFrom(0);
   assert.equal(events.length, 1);
   assert.equal(events[0].id, eventId);
   assert.equal((events[0] as { details?: { model?: string } }).details?.model, "pi/deepseek");
 
   // Idempotence: committing again never duplicates the transcript line.
-  await room.commitTurn(event, 2);
+  await room.commitTurn(event);
   assert.equal((await room.eventsFrom(0)).events.length, 1);
+});
+
+test("WAL: the commit cursor sweeps mid-turn steers but never events appended after the reply", async () => {
+  const room = await openRoom();
+  await room.addUserMessage("start", ["gaia"]); // line 0
+  const eventId = newRoomEventId();
+  await room.markPendingTurn({ id: "task1", eventId, prompt: "start", targets: ["gaia"], agentId: "gaia", partialReply: "", startedAt: "now" });
+  // Two steers land DURING the turn (delivered live into it) — lines 1, 2.
+  const steer1 = await room.addUserMessage("go left", ["gaia"]);
+  const steer2 = await room.addUserMessage("actually right", ["gaia"]);
+  await room.commitTurn({ id: eventId, timestamp: "t", author: "gaia", text: "done" }); // line 3
+  // A note lands AFTER the reply (never seen by the live turn) — line 4.
+  await room.appendEvent({ id: newRoomEventId(), timestamp: "t", author: "terry", text: "post-commit note" });
+
+  const cursor = (await room.state()).agentCursors.gaia;
+  assert.equal(cursor, 4, "cursor = reply line + 1: steers + own reply swept, later note not");
+  const { events: replay } = await room.eventsFrom(cursor);
+  assert.ok(!replay.some((e) => e.id === steer1.id || e.id === steer2.id || e.id === eventId), "steers and the reply never replay as fresh context");
+  assert.ok(replay.some((e) => e.text === "post-commit note"), "the unseen post-reply event still replays");
+});
+
+test("WAL: commitTurn swaps in the next target's marker in the same atomic write (multi-target hand-off)", async () => {
+  const room = await openRoom();
+  const eventId = newRoomEventId();
+  await room.markPendingTurn({ id: "task1", eventId, prompt: "hi", targets: ["gaia", "terry"], agentId: "gaia", partialReply: "", startedAt: "now" });
+  const next: PendingTurn = { id: "task1", prompt: "hi", targets: ["terry"], agentId: "terry", partialReply: "", startedAt: "now" };
+  await room.commitTurn({ id: eventId, timestamp: "t", author: "gaia", text: "gaia's reply" }, next);
+  const state = await room.state();
+  assert.equal(state.pendingTurn?.agentId, "terry", "remaining target's owed turn is durable the instant gaia's commit lands");
+});
+
+test("queue: two-phase hand-off — peek leaves the entry, assignQueuedEventId reserves the id, markPendingTurn consumes it atomically", async () => {
+  const room = await openRoom();
+  await room.enqueue({ taskId: "q1", text: "queued msg", targets: ["gaia"], queuedAt: "2026-01-01" });
+
+  const head = await room.peekQueue();
+  assert.equal(head?.taskId, "q1");
+  assert.equal((await room.state()).queue?.length, 1, "peek never removes");
+
+  await room.assignQueuedEventId("q1", "evt_reserved");
+  assert.equal((await room.state()).queue?.[0].eventId, "evt_reserved", "reserved id is durable before the append");
+
+  await room.markPendingTurn(
+    { id: "q1", eventId: "evt_reply", prompt: "queued msg", targets: ["gaia"], agentId: "gaia", partialReply: "", startedAt: "now" },
+    { consumeQueuedTaskId: "q1" },
+  );
+  const state = await room.state();
+  assert.equal(state.queue, undefined, "entry consumed in the same write that created the marker");
+  assert.equal(state.pendingTurn?.id, "q1");
+
+  // Idempotent: a second consume (multi-target loop) is a no-op.
+  await room.markPendingTurn(
+    { id: "q1", eventId: "evt_reply2", prompt: "queued msg", targets: ["terry"], agentId: "terry", partialReply: "", startedAt: "now" },
+    { consumeQueuedTaskId: "q1" },
+  );
+  assert.equal((await room.state()).queue, undefined);
 });
 
 test("WAL: resumeMode distinguishes committed-but-unacknowledged from needs-rerun", async () => {

@@ -113,21 +113,31 @@ test("the default backends are registered; apple-container is gone", () => {
   assert.ok(!ids.includes("apple-container")); // dropped
 });
 
-test("buildSeatbeltProfile: confines writes to the workspace, carves out policy files + auth, honours net", () => {
+test("buildSeatbeltProfile: confines writes to the workspace, carves out policy files + declared credential stores, honours net", () => {
+  // The state dir + its credential store arrive via spec.writable/readonly —
+  // declared per harness as HarnessSpec.sandboxPaths data, never named here.
   const profile = buildSeatbeltProfile({
     argv: ARGV,
     cwd: "/work",
-    writable: ["/scratch"],
-    readonly: ["/work/.gaia/config.json"],
+    writable: ["/scratch", "/home/u/.harness-state"],
+    readonly: ["/work/.gaia/config.json", "/home/u/.harness-state/auth.json"],
     net: "none",
   });
   assert.match(profile, /\(allow default\)/);
   assert.match(profile, /\(deny file-write\*\)/); // writes denied by default...
   assert.match(profile, /\(allow file-write\*[^\n]*subpath "\/work"/); // ...except the workspace
   assert.match(profile, /subpath "\/scratch"/); // ...and extra writable
+  assert.match(profile, /allow file-write\*[^\n]*subpath "\/home\/u\/.harness-state"/); // ...and the declared state dir
   assert.match(profile, /deny file-write\*[^\n]*subpath "\/work\/.gaia\/config.json"/); // ...but never the policy file
-  assert.match(profile, /deny file-write\*[^\n]*auth\.json/); // ...nor the pi credential store
+  assert.match(profile, /deny file-write\*[^\n]*auth\.json/); // ...nor the declared credential store
+  assert.doesNotMatch(profile, /\.pi\b/); // the backend hardcodes NO harness's paths (RULE #0)
   assert.match(profile, /\(deny network\*\)/); // net: none
+});
+
+test("buildSeatbeltProfile: an empty readonly list emits no bare write-deny (which would re-deny the workspace)", () => {
+  const profile = buildSeatbeltProfile({ argv: ARGV, cwd: "/work", writable: [], readonly: [], net: "full" });
+  const denies = profile.split("\n").filter((line) => line.startsWith("(deny file-write*"));
+  assert.deepEqual(denies, ["(deny file-write*)"], "exactly the ONE deny-all that precedes the workspace allow");
 });
 
 test("buildSeatbeltProfile: leaves network alone when net is full", () => {

@@ -528,4 +528,8 @@ registerHarness({
     if (!existsSync(authJson)) writeFileSync(authJson, "{}\n");
     return { env: { PI_CODING_AGENT_DIR: scratchDir }, denyRead: [realPiAuthJson()] };
   },
+  // Pi keeps session + model state under ~/.pi (a sandboxed turn deadlocks if
+  // denied writes there); its credential store inside that tree is carved back
+  // to read-only so a confined turn can't tamper with the key it can read.
+  sandboxPaths: { writable: ["~/.pi"], readonly: ["~/.pi/agent/auth.json"] },
 });

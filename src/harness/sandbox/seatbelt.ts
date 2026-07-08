@@ -6,9 +6,9 @@
 // Posture — two axes:
 //  • WRITES (allowlist): nothing is writable except the workspace (cwd, unless
 //    cwdWritable === false), temp, and regenerable caches. The policy files and
-//    the pi credential store are carved back to read-only inside those trees, so
-//    a confined turn can neither rewrite its own governance nor tamper with the
-//    keys it can read.
+//    any spec-declared credential store are carved back to read-only inside
+//    those trees, so a confined turn can neither rewrite its own governance nor
+//    tamper with the keys it can read.
 //  • READS (denylist): reads stay open EXCEPT a sensitive set — SSH/cloud/CI
 //    credentials and the user's documents — which are denied, with the workspace
 //    and GAIA_HOME re-allowed on top. This curbs exfiltration of unrelated
@@ -49,8 +49,8 @@ function subpaths(paths: string[]): string {
 
 // Credential stores + personal data denied reads by default. Missing paths are
 // harmless (a deny on a nonexistent path never matches). Deliberately NOT here:
-// the pi auth.json the turn must read for its own key, and the ~/.pi caches the
-// harness writes.
+// a harness's own credential store — the turn must read its own key; hiding it
+// when the credential proxy replaces it arrives via spec.denyRead.
 function defaultSensitiveReads(home: string): string[] {
   return [
     `${home}/.ssh`,
@@ -79,18 +79,18 @@ export function buildSeatbeltProfile(spec: SandboxSpec): string {
     canon(tmpdir()),
     "/private/tmp",
     "/private/var/folders",
-    // Regenerable runtime state/caches the turn legitimately writes — NOT the
-    // user's irreplaceable files. The pi harness keeps session + model state
-    // under ~/.pi (and a turn deadlocks if denied it); node/npm/esbuild use the
-    // cache dirs. auth.json under ~/.pi is carved back out below.
-    `${home}/.pi`,
+    // Regenerable runtime caches the turn legitimately writes — NOT the user's
+    // irreplaceable files (node/npm/esbuild live here). A harness's own state
+    // dir (session + model state under ~) arrives via spec.writable, declared
+    // as data on its HarnessSpec — this backend names no harness's paths.
     `${home}/Library/Caches`,
     `${home}/.cache`,
     ...spec.writable.map(canon),
   ];
-  // Read-only even inside the writable trees above. Last match wins in SBPL, so
-  // these denies override the allow.
-  const readonly = [...spec.readonly.map(canon), canon(`${home}/.pi/agent/auth.json`)];
+  // Read-only even inside the writable trees above (policy files + declared
+  // credential stores). Last match wins in SBPL, so these denies override the
+  // allow.
+  const readonly = spec.readonly.map(canon);
   // Sensitive reads denied, then the workspace + GAIA_HOME re-allowed on top so
   // a cwd that happens to sit under a denied tree (e.g. ~/Documents) still reads.
   const denyRead = [...defaultSensitiveReads(home), ...(spec.denyRead ?? [])].map(canon);
@@ -105,7 +105,9 @@ export function buildSeatbeltProfile(spec: SandboxSpec): string {
     // then re-deny the policy files + credential store.
     "(deny file-write*)",
     `(allow file-write* ${subpaths(writable)} (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (literal "/dev/dtracehelper") (literal "/dev/random") (literal "/dev/urandom") (regex #"^/dev/fd/"))`,
-    `(deny file-write* ${subpaths(readonly)})`,
+    // Guard the empty case: a bare `(deny file-write*)` filters NOTHING — it
+    // would re-deny every write, including the workspace allowed above.
+    ...(readonly.length > 0 ? [`(deny file-write* ${subpaths(readonly)})`] : []),
     // Reads: deny the sensitive set, then re-allow the workspace + GAIA_HOME.
     `(deny file-read* ${subpaths(denyRead)})`,
     `(allow file-read* ${subpaths(readAllow)})`,

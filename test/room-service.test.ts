@@ -1333,25 +1333,36 @@ test("/model rewrites agent.json AND fires the settings reload that reaches live
   });
   await service.init();
 
-  const reply = await service.runModelCommand(undefined, "opus");
+  // A bare name with no current provider and no spec-declared default is
+  // REJECTED — never silently defaulted to one hardcoded provider's world.
+  // (runModelCommand surfaces the error as its reply text.)
+  const rejected = await service.runModelCommand(undefined, "opus");
+  assert.match(rejected, /Use <provider\/name>/);
+
+  const reply = await service.runModelCommand(undefined, "anthropic/opus");
   assert.match(reply, /Set @gaia model to anthropic\/opus/);
   assert.match(reply, /next turn/);
 
-  // Persisted to agent.json (a bare name keeps/derives the provider)…
+  // Persisted to agent.json…
   const config = (await readJson(join(root, "agents", "gaia", "agent.json"))) as { model?: { provider?: string; name?: string } };
   assert.deepEqual(config.model, { provider: "anthropic", name: "opus" });
   // …mirrored in-process for the snapshot chip…
   assert.deepEqual(workspace.agents.gaia.model, { provider: "anthropic", name: "opus" });
+
   // …and the daemon reload fired: runners snapshot agent.json at spawn, so
   // ONLY a service rebuild makes the next turn actually run the new model.
   assert.deepEqual(reloads, ["global"]);
+
+  // With a provider now on record, a bare name keeps it.
+  const kept = await service.runModelCommand(undefined, "haiku");
+  assert.match(kept, /Set @gaia model to anthropic\/haiku/);
 
   // Clearing the override goes through the same reload.
   const cleared = await service.runModelCommand(undefined, "none");
   assert.match(cleared, /Cleared @gaia model override/);
   const after = (await readJson(join(root, "agents", "gaia", "agent.json"))) as { model?: unknown };
   assert.equal(after.model, undefined);
-  assert.deepEqual(reloads, ["global", "global"]);
+  assert.deepEqual(reloads, ["global", "global", "global"]);
 });
 
 test("/thinking fires the same settings reload (it rewrites agent.json too)", async () => {

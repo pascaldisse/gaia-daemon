@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentDef, Workspace } from "../core/types.js";
-import { gaiaHome } from "../core/paths.js";
+import { globalPaths, workspacePaths } from "../core/paths.js";
 import type { ResolvedRole } from "./roles.js";
 
 // The install location a skill was detected in. Known ecosystems are spelled
@@ -39,12 +39,18 @@ function isSkillName(value: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
-export function globalSkillsPath(home = gaiaHome()): string {
-  return join(home, "skills");
+// The real skill locations are defined once in core/paths.ts. `home` and a
+// missing `rootDir` are injection seams: tests (and the degraded hints
+// fallback, which only carries a bare dir) mirror the same layout beside the
+// injected dir instead of the canonical accessors.
+type SkillWorkspaceRef = Pick<Workspace, "dir"> & Partial<Pick<Workspace, "rootDir">>;
+
+export function globalSkillsPath(home?: string): string {
+  return home === undefined ? globalPaths.skillsDir() : join(home, "skills");
 }
 
-export function projectSkillsPath(workspace: Pick<Workspace, "dir">): string {
-  return join(workspace.dir, "skills");
+export function projectSkillsPath(workspace: SkillWorkspaceRef): string {
+  return workspace.rootDir === undefined ? join(workspace.dir, "skills") : workspacePaths.skillsDir(workspace.rootDir);
 }
 
 export interface SkillRoot {
@@ -57,7 +63,7 @@ export interface SkillRoot {
  * gaia's own. Non-existent dirs are skipped silently, so listing a tool you
  * don't use costs nothing; add a line here to cover another. A detected skill is
  * only AVAILABLE — which agent/persona/role loads it stays explicit config. */
-export function skillRoots(workspace: Pick<Workspace, "dir">, home = gaiaHome(), userHome = homedir()): SkillRoot[] {
+export function skillRoots(workspace: SkillWorkspaceRef, home?: string, userHome = homedir()): SkillRoot[] {
   return [
     { path: projectSkillsPath(workspace), source: "project" },
     { path: join(workspace.dir, ".claude", "skills"), source: "project" },
@@ -121,7 +127,7 @@ function scanSkillRoot(root: string, source: SkillSource, depth = 1): ResolvedSk
 
 /** Every detected skill across all locations, keyed by name (earlier source
  * wins). This is the auto-detection surface — what's AVAILABLE to assign. */
-export function discoverSkills(workspace: Pick<Workspace, "dir">, home = gaiaHome(), userHome = homedir()): ResolvedSkill[] {
+export function discoverSkills(workspace: SkillWorkspaceRef, home?: string, userHome = homedir()): ResolvedSkill[] {
   const byName = new Map<string, ResolvedSkill>();
   for (const root of skillRoots(workspace, home, userHome)) {
     for (const skill of scanSkillRoot(root.path, root.source)) {
@@ -131,7 +137,7 @@ export function discoverSkills(workspace: Pick<Workspace, "dir">, home = gaiaHom
   return [...byName.values()];
 }
 
-export function resolveSkillRefs(workspace: Pick<Workspace, "dir">, skillNames: string[], home = gaiaHome()): SkillResolutionResult {
+export function resolveSkillRefs(workspace: SkillWorkspaceRef, skillNames: string[], home?: string): SkillResolutionResult {
   const registry = new Map(discoverSkills(workspace, home).map((skill) => [skill.name, skill]));
   const diagnostics: string[] = [];
   const skills: ResolvedSkill[] = [];
@@ -168,9 +174,9 @@ export function agentSkillNames(agent: Pick<AgentDef, "skills">, role: ResolvedR
  * to use a skill they can't see.
  */
 export async function loadSkillText(
-  workspace: Pick<Workspace, "dir">,
+  workspace: SkillWorkspaceRef,
   skillNames: string[],
-  home = gaiaHome(),
+  home?: string,
 ): Promise<{ text: string; diagnostics: string[] }> {
   if (skillNames.length === 0) return { text: "", diagnostics: [] };
   const resolution = resolveSkillRefs(workspace, skillNames, home);

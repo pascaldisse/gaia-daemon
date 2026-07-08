@@ -154,6 +154,10 @@ export interface PendingTurn {
   partialReply: string;
   channel?: "voice";
   startedAt: string;
+  /** This in-flight turn is a monad dispatch: boot resume must re-dispatch it
+   * through the monad engine (targets omitted so routing re-derives from
+   * state.monad), never as a plain single-agent turn. */
+  monad?: boolean;
 }
 
 /** A user message waiting behind the active task. Durable: survives crashes
@@ -174,6 +178,17 @@ export interface QueuedMessage {
    * re-parse it as a slash command (which would just error). */
   nativeCommand?: boolean;
   queuedAt: string;
+  /** The user event id pre-assigned to this message. Set durably BEFORE the
+   * transcript append so the queue→transcript hand-off is crash-idempotent:
+   * the turn appends with THIS id and skips the append when it already made it
+   * to disk. Also set (with `recorded`) when a failed steer-by-default already
+   * committed the event before falling back to the queue. */
+  eventId?: string;
+  /** The user event behind this entry is ALREADY committed to the transcript
+   * (failed-steer fallback persisted it before enqueueing) — the drained turn
+   * must not append it again, and the client renders the committed bubble
+   * instead of a queued ghost. */
+  recorded?: boolean;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the
@@ -341,10 +356,6 @@ export interface SanitizeStatus {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-export type ClaudePermissionMode = "default" | "acceptEdits" | "auto" | "dontAsk" | "plan" | "bypassPermissions";
-
-export const CLAUDE_PERMISSION_MODES: ClaudePermissionMode[] = ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"];
-
 export interface AgentModelConfig {
   provider?: string;
   name?: string;
@@ -463,7 +474,11 @@ export interface AgentDef {
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: string;
-  permissionMode?: ClaudePermissionMode;
+  /** Harness permission posture, passed through verbatim. The value vocabulary
+   * is each harness's own, declared as DATA on its spec (ui.permissionModes) —
+   * core stays harness-blind, exactly like `harness` above. Only harnesses
+   * declaring supportsPermissionMode honor it. */
+  permissionMode?: string;
   /** Reveal the model's extended-thinking text (claude harness). Opt-in: it
    * injects thinking.display:"summarized" into the CLI's Anthropic egress so the
    * otherwise-redacted reasoning streams. Off by default — mutates provider
@@ -520,6 +535,78 @@ export interface Workspace {
   config: WorkspaceConfig;
   contextFiles: ContextFile[]; // AGENTS.md chain, parent-most first
   agents: Record<string, AgentDef>;
+}
+
+/** A workspace known to the daemon (~/.gaia/app.json recents) — the registry
+ * entry served to clients in /api/app and the add-workspace response. */
+export interface WorkspaceRecord {
+  id: string;
+  path: string;
+  name: string;
+  lastOpenedAt: string;
+  isInitialized: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Settings editor wire shapes (services/hints.ts ↔ the web settings UI). The
+// hints are derived server-side and rendered generically by the client, so
+// these cross the wire verbatim.
+
+export type FieldInput = "select" | "multiselect" | "number" | "boolean" | "text" | "json";
+
+export interface FieldHintOption {
+  value: string;
+  label?: string;
+  description?: string;
+  /** Group key used by dependent selects (see FieldHint.groupBy). */
+  group?: string;
+}
+
+export interface FieldHint {
+  input: FieldInput;
+  /** Optional fields render an explicit "(not set)" choice; empty omits the key on save. */
+  optional?: boolean;
+  options?: FieldHintOption[];
+  /** JSON path of another field whose current value filters options by their `group`. */
+  groupBy?: string;
+  /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
+  hidden?: boolean;
+  /** Friendly field name shown in the settings UI in place of the raw JSON key
+   * (e.g. "Voice mode" for `ttsEngine`). Falls back to the key when absent. */
+  label?: string;
+  /** Shown as visible help text under the field — what the setting does / example value. */
+  description?: string;
+}
+
+/** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
+export interface HarnessHintsMeta {
+  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; modelNameOptions?: string[]; permissionModes?: string[]; hiddenFields: string[] }>;
+}
+
+export interface FileHints {
+  [key: string]: FieldHint | HarnessHintsMeta | undefined;
+  _harness?: HarnessHintsMeta;
+}
+
+export type EditableScope = "global" | "workspace";
+
+// What a file *is*, computed where the directory layout is known (the editable
+// -file catalog), so the frontend can group files without parsing label paths.
+export type EditableCategory = "general" | "voice" | "config" | "persona" | "memory";
+
+export interface EditableFileDescriptor {
+  id: string;
+  scope: EditableScope;
+  label: string;
+  path: string;
+  kind: "markdown" | "json" | "text";
+  /** Owning agent for files under the global agents directory. */
+  agentId?: string;
+  category?: EditableCategory;
+}
+
+export interface EditableFileContent extends EditableFileDescriptor {
+  content: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +689,10 @@ export interface Task {
    * not something a person wrote — the client must NOT render it as a queued
    * "user →" ghost bubble. */
   callback?: boolean;
+  /** The queued message's user event is ALREADY committed to the transcript
+   * (failed-steer fallback) — the committed bubble renders it, so the client
+   * must not add a queued ghost on top. */
+  recorded?: boolean;
 }
 
 export interface AgentStatus {

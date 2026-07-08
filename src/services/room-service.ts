@@ -34,6 +34,7 @@ import type {
   MessageAttachment,
   ModelFallback,
   PendingTurn,
+  QueuedMessage,
   RoomEvent,
   RoomEventKind,
   SlashCommandDefinition,
@@ -49,7 +50,7 @@ import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
-import { capabilitiesFor, contextWindowFor, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
+import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
 import { readOptional, renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
@@ -150,6 +151,10 @@ export interface SendMessageOptions {
    * the active agent: the runtime runs it as a raw command, and monad routing is
    * bypassed. Set by sendMessage's native-passthrough detection. */
   nativeCommand?: boolean;
+  /** Set by drain(): the durable queue entry this turn consumes. The entry
+   * stays queued until the turn's first durable record replaces it (the
+   * two-phase hand-off — see RoomHandle.peekQueue). */
+  queued?: QueuedMessage;
 }
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
@@ -484,6 +489,7 @@ export class RoomService {
     // several agents are running, the running harness can't inject, or the
     // message carries attachments (steer is text-only). Uniform: gated on the
     // runtime's supportsSteer, never a harness id.
+    let recordedSteerEventId: string | undefined;
     if (
       command.type === "message" &&
       !options.nativeCommand &&
@@ -497,7 +503,13 @@ export class RoomService {
       const aimedAtRunner = targets.length > 0 && targets.every((id) => id === runner);
       if (aimedAtRunner && runtime?.capabilities.supportsSteer) {
         const steered = await this.steerRunningTurn(runner, text, task);
-        if (steered) return task; // else the turn just ended — fall through to enqueue
+        if (steered === true) return task;
+        // The turn just ended under us: the guidance is ALREADY committed to
+        // the transcript (persist-first). Fall through to the queue with the
+        // committed event's id riding the entry, so the drained turn replays
+        // it without re-recording and the client shows the committed bubble
+        // instead of a queued ghost.
+        recordedSteerEventId = steered;
       }
     }
 
@@ -505,6 +517,7 @@ export class RoomService {
     // survives a daemon crash in between.
     if (this.activeTask) {
       task.status = "queued";
+      if (recordedSteerEventId) task.recorded = true;
       await this.room.enqueue({
         taskId: task.id,
         text,
@@ -512,6 +525,7 @@ export class RoomService {
         ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
         ...(options.attachments?.length ? { attachments: options.attachments } : {}),
         ...(options.nativeCommand ? { nativeCommand: true } : {}),
+        ...(recordedSteerEventId ? { eventId: recordedSteerEventId, recorded: true } : {}),
         queuedAt: task.startedAt,
       });
       this.queuedTasks.push(task);
@@ -531,7 +545,10 @@ export class RoomService {
       return task;
     }
 
-    this.startTask(task, text, options);
+    // A failed steer's guidance is already committed — the direct run (the
+    // turn ended AND settled before we reached the queue check) must not
+    // record it a second time; the prompt text still drives the turn.
+    this.startTask(task, text, recordedSteerEventId ? { ...options, recordUserMessage: false } : options);
     return task;
   }
 
@@ -556,10 +573,14 @@ export class RoomService {
       });
   }
 
-  /** Dispatches the next durably-queued message once the room goes idle. */
+  /** Dispatches the next durably-queued message once the room goes idle.
+   * Two-phase hand-off: the entry is PEEKED, not dequeued — it stays in
+   * state.json.queue until a successor durable record replaces it (the turn's
+   * pendingTurn marker, or a command's persisted reply), so a crash anywhere
+   * in between re-drains the message instead of losing it. */
   private async drain(): Promise<void> {
     if (this.activeTask) return;
-    const next = await this.room.dequeue();
+    const next = await this.room.peekQueue();
     if (!next) return;
     const chip = this.queuedTasks.find((task) => task.id === next.taskId);
     this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
@@ -577,13 +598,19 @@ export class RoomService {
         this.activeTask = task;
         this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
         await this.runCommand(task, command);
+        // The reply is durable (runCommand persists it) — only now consume the
+        // entry. A crash before this line re-runs the command on boot
+        // (at-least-once; commands are idempotent-enough, loss is not).
+        await this.room.spliceQueued(next.taskId);
         return;
       }
       this.startTask(task, next.text, {
         targets: next.targets,
+        queued: next,
         ...(next.channel ? { channel: next.channel } : {}),
         ...(next.attachments?.length ? { attachments: next.attachments } : {}),
         ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
+        ...(next.recorded ? { recordUserMessage: false } : {}),
         ...(next.nativeCommand ? { nativeCommand: true } : {}),
       });
     } catch (error) {
@@ -830,8 +857,22 @@ export class RoomService {
     const channel = options.channel === "voice" ? ("voice" as const) : undefined;
     const attachments = options.attachments?.length ? options.attachments : undefined;
     if (options.recordUserMessage !== false) {
-      const userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
+      // A drained queue entry commits under a durably pre-reserved event id so
+      // a crash between reserve and append (or append and queue-consume)
+      // replays idempotently instead of dropping or doubling the message.
+      const queued = options.queued;
+      let userEvent: RoomEvent | undefined;
+      if (queued?.eventId && (await this.room.hasEvent(queued.eventId))) {
+        userEvent = undefined; // already on disk from the pre-crash run
+      } else {
+        let eventId = queued?.eventId;
+        if (queued && !eventId) {
+          eventId = newRoomEventId();
+          await this.room.assignQueuedEventId(queued.taskId, eventId);
+        }
+        userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments, eventId);
+      }
+      if (userEvent) this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
       // Authoritative refresh right after the commit: this snapshot has the
       // queued ghost dropped AND the committed user event present, so it
       // reconciles the ghost→committed swap on the client even when this turn
@@ -882,12 +923,12 @@ export class RoomService {
       const replaySummary = storedCompaction && storedCompaction.floorIdx === floor ? storedCompaction.summary : undefined;
       const cursor =
         options.cursorOverride ?? (replaySummary !== undefined ? floor : sessionLost ? 0 : (state.agentCursors[target] ?? 0));
-      const { events: rawEvents, nextCursor } = await this.room.eventsFrom(cursor);
+      const { events: rawEvents } = await this.room.eventsFrom(cursor);
       // System events (slash-command replies) are persisted for the human UI
       // but are room chrome, not conversation — keep them out of what the agent
-      // sees so /help, /recall, /compact results never pollute its context. The
-      // cursor still counts them (nextCursor is from the raw page) so paging
-      // stays aligned with the on-disk transcript.
+      // sees so /help, /recall, /compact results never pollute its context.
+      // Cursor space still counts their lines, so paging stays aligned with
+      // the on-disk transcript.
       const events = rawEvents.filter((event) => event.author !== "system");
       // NO AUTOMATIC TRUNCATION. A new agent or a session-lost replay ALWAYS
       // loads the full context (from cursor 0 / the agent's floor). The context
@@ -909,18 +950,24 @@ export class RoomService {
 
       // WAL step 1: reserve the reply's event id and persist the in-flight
       // marker BEFORE streaming — an interruption leaves a resumable record.
+      // The same atomic write consumes the drained queue entry (if any): the
+      // message's durable custody moves queue → WAL with no gap. Idempotent
+      // across the multi-target loop (only the first write finds the entry).
       const eventId = newRoomEventId();
-      await this.room.markPendingTurn({
-        id: task.id,
-        eventId,
-        prompt: text,
-        ...(attachments ? { attachments } : {}),
-        targets: [...remaining],
-        agentId: target,
-        partialReply: "",
-        ...(channel ? { channel } : {}),
-        startedAt: new Date().toISOString(),
-      });
+      await this.room.markPendingTurn(
+        {
+          id: task.id,
+          eventId,
+          prompt: text,
+          ...(attachments ? { attachments } : {}),
+          targets: [...remaining],
+          agentId: target,
+          partialReply: "",
+          ...(channel ? { channel } : {}),
+          startedAt: new Date().toISOString(),
+        },
+        options.queued ? { consumeQueuedTaskId: options.queued.taskId } : undefined,
+      );
       // Seed the live-turn mirror so a mid-turn (re)subscribe renders it at once.
       this.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
       let lastFlush = 0;
@@ -1020,7 +1067,7 @@ export class RoomService {
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel, nextCursor);
+        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
         else await this.room.clearPendingTurn();
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
@@ -1044,9 +1091,29 @@ export class RoomService {
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
       const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      // Multi-target hand-off: this target's commit (or clear) must not open a
+      // window where the remaining targets' owed turns exist in memory only —
+      // the SAME atomic state write that retires this target's marker installs
+      // the next target's (no eventId: a boot resume reruns it via sendMessage).
+      // A cancel or failure deliberately ends the whole task: no hand-off.
+      const rest = remaining.slice(1);
+      const nextPending: PendingTurn | undefined =
+        !cancelled && !failed && rest.length > 0
+          ? {
+              id: task.id,
+              prompt: text,
+              ...(attachments ? { attachments } : {}),
+              targets: rest,
+              agentId: rest[0],
+              partialReply: "",
+              ...(channel ? { channel } : {}),
+              startedAt: new Date().toISOString(),
+            }
+          : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextCursor);
+      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
 
       if (failed) {
@@ -1236,7 +1303,7 @@ export class RoomService {
 
   /** WAL step 2: append the reply event (details ON it), then one atomic state
    * write clearing the marker and advancing the cursor. */
-  private async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextCursor: number): Promise<void> {
+  private async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn): Promise<void> {
     // Blocks count only when they encode structure the plain reply text doesn't
     // already carry (a steer marker, a tool, a thinking span) — a prose-only
     // turn stays detail-less exactly as before, so nothing bloats.
@@ -1254,9 +1321,10 @@ export class RoomService {
       ...(channel ? { channel } : {}),
       ...(hasDetails ? { details } : {}),
     };
-    // The room is single-writer while a task runs: new cursor = line count at
-    // read time + this agent's own appended reply.
-    await this.room.commitTurn(event, nextCursor + 1);
+    // commitTurn computes the cursor from the reply's own line (sweeping the
+    // mid-turn steers/notes the live turn already saw) and, for a multi-target
+    // turn, installs the next target's marker in the same atomic write.
+    await this.room.commitTurn(event, nextPending);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
   }
 
@@ -1299,23 +1367,24 @@ export class RoomService {
   }
 
   /** Steer-by-default core: inject a plain message into @target's running turn.
-   * Steers FIRST so a race (the turn ending between the busy-check and here)
-   * returns false with no dangling event — the caller then enqueues it as a
-   * normal turn. On success the guidance is recorded as a user event (shows in
-   * the transcript immediately; the running turn's commit sweeps its cursor past
-   * it so it is never replayed as fresh context), and the steer task completes —
-   * the running turn's continued output IS the reply, so there's no turn of its
-   * own. */
-  private async steerRunningTurn(target: string, text: string, task: Task): Promise<boolean> {
-    const ok = (await this.runtimes[target]?.steer?.(this.roomId, text)) ?? false;
-    if (!ok) return false;
+   * PERSISTS FIRST (NO PROGRESS EVER LOST): the guidance is committed to the
+   * transcript before the harness sees it — a crash right after the harness
+   * accepts it would rerun the turn from partialReply, and the guidance must
+   * be on disk to survive that. Returns true when the running turn accepted
+   * it; otherwise the committed event's id, and the caller falls back to a
+   * normal turn that reuses the committed event instead of re-recording it.
+   * On success a `steered` marker pins WHERE in the running reply it landed
+   * (folds into details.blocks at the current stream position, so the UI
+   * renders the message inline right there, live and after commit), and the
+   * steer task completes — the running turn's continued output IS the reply,
+   * so there's no turn of its own. */
+  private async steerRunningTurn(target: string, text: string, task: Task): Promise<true | string> {
     const event = await this.room.addUserMessage(text, [target]);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    // Pin WHERE in the running reply the steer landed: a `steered` marker into
-    // the live stream folds into details.blocks at the current position, so the
-    // UI renders the message inline right there (live and after commit) instead
-    // of floating it above the whole reply. Best-effort — if the stream just
-    // closed, the standalone bubble simply keeps the legacy placement.
+    const ok = (await this.runtimes[target]?.steer?.(this.roomId, text)) ?? false;
+    if (!ok) return event.id;
+    // Best-effort marker — if the stream just closed, the standalone bubble
+    // simply keeps the legacy placement.
     this.runtimes[target]?.injectEvent?.({ type: "steered", eventId: event.id });
     task.status = "complete";
     task.endedAt = new Date().toISOString();
@@ -1801,6 +1870,14 @@ export class RoomService {
    * then re-dispatch any unfinished targets. Re-entrant: the replay re-marks a
    * fresh pendingTurn, so an interrupted resume is itself resumable. */
   private async resumePendingTurn(pending: PendingTurn): Promise<void> {
+    // A monad dispatch resumes through the monad engine, never as a plain
+    // agent turn: targets are omitted so isMonadMessage re-derives the routing
+    // from state.monad (step results live in child rooms; the engine reruns).
+    if (pending.monad) {
+      await this.room.clearPendingTurn();
+      await this.sendMessage(pending.prompt, { recordUserMessage: false });
+      return;
+    }
     const mode = await this.room.resumeMode(pending);
     if (mode === "finish-commit" && pending.eventId) {
       const state = await this.room.state();
@@ -1810,16 +1887,16 @@ export class RoomService {
         delete current.pendingTurn;
         current.agentCursors[pending.agentId] = nextCursor;
       });
-    } else {
-      await this.room.clearPendingTurn();
-      if (pending.partialReply.trim()) {
-        const state = await this.room.state();
-        const cursor = state.agentCursors[pending.agentId] ?? 0;
-        const { nextCursor } = await this.room.eventsFrom(cursor);
-        // Details weren't durably captured mid-turn; preserve the text.
-        await this.commitReply(pending.agentId, pending.eventId ?? newRoomEventId(), pending.partialReply, {}, pending.channel, nextCursor);
-      }
+    } else if (pending.partialReply.trim()) {
+      // Details weren't durably captured mid-turn; preserve the text. The
+      // commit clears the marker in the SAME atomic write as the cursor
+      // advance — clearing it up front (the old order) opened a window where
+      // a crash destroyed both the flushed partial and the owed-replay record.
+      await this.commitReply(pending.agentId, pending.eventId ?? newRoomEventId(), pending.partialReply, {}, pending.channel);
     }
+    // No partial and nothing committed → the marker deliberately STAYS until
+    // the replay below re-marks it (markPendingTurn overwrites): a crash
+    // anywhere in between re-enters this resume idempotently.
 
     const remaining = mode === "finish-commit" ? pending.targets.filter((t) => t !== pending.agentId) : pending.targets;
     if (remaining.length > 0) {
@@ -1865,6 +1942,28 @@ export class RoomService {
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
       }
 
+      // WAL: a monad run is a turn like any other — reserve the final answer's
+      // event id and persist a monad-flagged marker BEFORE the engine runs, so
+      // a daemon crash mid-monad leaves a resumable record (boot re-dispatches
+      // through the engine; step results already live in child rooms) instead
+      // of a recorded user message that is silently never answered. The same
+      // atomic write consumes the drained queue entry, as in runAgentTask.
+      const [author] = await this.monadAuthor();
+      const eventId = newRoomEventId();
+      await this.room.markPendingTurn(
+        {
+          id: task.id,
+          eventId,
+          prompt: text,
+          targets: task.targets.length > 0 ? task.targets : [author],
+          agentId: author,
+          partialReply: "",
+          startedAt: new Date().toISOString(),
+          monad: true,
+        },
+        options.queued ? { consumeQueuedTaskId: options.queued.taskId } : undefined,
+      );
+
       const engine = new MonadEngine({
         config: monad,
         parentRoomId: this.roomId,
@@ -1878,17 +1977,26 @@ export class RoomService {
       });
 
       const result = await engine.run(text, { isCancelled: () => this.taskCancelled(task) });
-      if (this.taskCancelled(task)) return;
+      if (this.taskCancelled(task)) {
+        await this.room.clearPendingTurn();
+        return;
+      }
 
       const final = result.final.trim();
       if (final) {
-        const [author] = await this.monadAuthor();
-        const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author, text: final };
-        await this.room.appendEvent(event);
+        // Commit through the WAL like every turn: append under the reserved id
+        // and retire the marker + advance the author's cursor in one write.
+        const event: RoomEvent = { id: eventId, timestamp: new Date().toISOString(), author, text: final };
+        await this.room.commitTurn(event);
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      } else {
+        await this.room.clearPendingTurn();
       }
       this.settleTask(task, "complete");
     } catch (error) {
+      // Cancelled or terminally failed: retire the marker either way — never
+      // replay a poison monad run on boot.
+      await this.room.clearPendingTurn().catch(() => {});
       if (this.taskCancelled(task)) return;
       this.settleTask(task, "error", error);
     }
@@ -2122,11 +2230,16 @@ export class RoomService {
       return `Cleared @${agent.id} model override — using workspace default. Applies from the next turn (the session continues).`;
     }
 
+    // A bare <name> keeps the agent's current provider, else the one its
+    // HARNESS declares as data (lockedProvider / first modelProviderIds entry).
+    // Never a hardcoded provider: guessing one harness's world here would
+    // silently mis-provider every other harness (RULE #0).
     const slash = spec.indexOf("/");
+    const harnessUi = findHarness(harnessIdFor(agent, this.workspace))?.ui;
+    const defaultProvider = agent.model?.provider ?? harnessUi?.lockedProvider ?? harnessUi?.modelProviderIds?.[0];
+    if (slash <= 0 && !defaultProvider) throw new Error(`Invalid model: ${spec}. Use <provider/name> — @${agent.id}'s harness declares no default provider.`);
     const model: AgentModelConfig =
-      slash > 0
-        ? { provider: spec.slice(0, slash), name: spec.slice(slash + 1) }
-        : { provider: agent.model?.provider ?? "anthropic", name: spec };
+      slash > 0 ? { provider: spec.slice(0, slash), name: spec.slice(slash + 1) } : { provider: defaultProvider!, name: spec };
     if (!model.name) throw new Error(`Invalid model: ${spec}. Use <name> or <provider/name>.`);
 
     config.model = model;

@@ -247,6 +247,9 @@ function messageViews() {
     // user message, so they get no "user →" ghost (the summon result note and
     // the eventual reply are the artifacts).
     if (task.callback) continue;
+    // A failed steer's fallback already committed the user event (persist-
+    // first) — the committed bubble renders it; a ghost would double it.
+    if (task.recorded) continue;
     views.push({
       id: `queued:${task.id}`,
       version: "queued",

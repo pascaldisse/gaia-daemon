@@ -11,7 +11,7 @@
 // handles survive). Pi persists its own sessions on disk and passes no store.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { workspacePaths } from "../core/paths.js";
 
 export interface SessionStore<M> {
@@ -93,7 +93,7 @@ export class SessionMap<M> {
 export function fileSessionStore<M>(rootDir: string, harnessId: string, agentId: string): SessionStore<M> {
   const key = `${harnessId}:${agentId}`;
   const legacyKey = harnessId;
-  const fileFor = (roomId: string): string => join(workspacePaths.roomDir(rootDir, roomId), "harness-sessions.json");
+  const fileFor = (roomId: string): string => workspacePaths.harnessSessions(rootDir, roomId);
   const readAll = (roomId: string): Record<string, unknown> => {
     try {
       const parsed: unknown = JSON.parse(readFileSync(fileFor(roomId), "utf8"));

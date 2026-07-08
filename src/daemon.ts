@@ -10,10 +10,10 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
-import { gaiaHome, globalPaths, workspacePaths } from "./core/paths.js";
+import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace } from "./core/types.js";
-import { capabilitiesFor, type GaiaTool, usageProbes } from "./harness/spec.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import { capabilitiesFor, type GaiaTool, harnessIdFor, usageProbes } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
@@ -43,14 +43,7 @@ import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
-
-export interface WorkspaceRecord {
-  id: string;
-  path: string;
-  name: string;
-  lastOpenedAt: string;
-  isInitialized: boolean;
-}
+// Registry entries are the WorkspaceRecord wire shape from core/types.ts.
 
 function pathId(path: string, length: number): string {
   return createHash("sha256").update(resolve(path)).digest("hex").slice(0, length);
@@ -69,7 +62,7 @@ function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString()):
 }
 
 export class WorkspaceRegistry {
-  constructor(private readonly configPath = `${gaiaHome()}/app.json`) {}
+  constructor(private readonly configPath = globalPaths.appSettings()) {}
 
   async list(): Promise<WorkspaceRecord[]> {
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
@@ -614,8 +607,7 @@ export class Daemon {
   /** The gaia tools an agent's EFFECTIVE harness declares — read uniformly from
    * the registry, never branched on the harness id. Gates /api/harness/*. */
   harnessGaiaTools(workspace: Workspace, agentId: string): readonly GaiaTool[] {
-    const harness = workspace.agents[agentId]?.harness ?? workspace.config.harness ?? DEFAULTS.harness;
-    return capabilitiesFor(harness).gaiaTools;
+    return capabilitiesFor(harnessIdFor(workspace.agents[agentId], workspace)).gaiaTools;
   }
 
   async harnessMemoryBatch(

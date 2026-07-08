@@ -1,9 +1,11 @@
 // One descriptor per harness. Adding a harness = one `harness/<x>.ts` module
 // calling `registerHarness(...)` at its bottom + one import line in the barrel
 // (harness/index.ts). Nothing else learns the harness id: differences live as
-// DATA on the spec (capabilities, ui, credentialProxy), read uniformly — never
-// as `=== "claude"` branches. This rule is absolute (AGENTS.md §RULE #0).
+// DATA on the spec (capabilities, ui, credentialProxy, sandboxPaths), read
+// uniformly — never as `=== "claude"` branches. This rule is absolute
+// (AGENTS.md §RULE #0).
 
+import { DEFAULTS } from "../core/config.js";
 import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageLimits, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
@@ -139,6 +141,10 @@ export interface HarnessUi {
   modelProviderIds?: string[];
   /** Offer exactly these model names (harnesses with their own aliases). */
   modelNameOptions?: string[];
+  /** The harness's own permission-posture vocabulary, passed verbatim to its
+   * CLI; shown as the permissionMode select options. Absent ⇒ the harness has
+   * no such knob (the UI hides the select). */
+  permissionModes?: string[];
 }
 
 // --- daemon bridge (what subprocess harnesses use for tool-IO) ------------------
@@ -202,6 +208,16 @@ export interface HarnessSpec {
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
+  /** Home-dir carves this harness's CLI needs inside the sandbox, declared as
+   * DATA on the spec (same pattern as credentialProxy): `writable` is the
+   * regenerable state the CLI must write to stay alive/resumable (session +
+   * model caches — a turn wedges or forgets its session when denied);
+   * `readonly` is carved back out of those writable trees (the credential
+   * store, so a confined turn can't tamper with the keys it can read). A
+   * leading `~` expands to the user's home dir. RunnerHost threads these into
+   * the sandbox launch uniformly — the backend never learns which harness
+   * declared them. Absent ⇒ no extra carves. */
+  sandboxPaths?: { writable?: string[]; readonly?: string[] };
   /** A-priori context window (tokens) for one of this harness's models, used by
    * the context-gate warning BEFORE a turn runs (the harness only reports the
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
@@ -261,7 +277,7 @@ export function harnessSpecFor(id: string): HarnessSpec {
 }
 
 export function capabilitiesFor(id: string): HarnessCapabilities {
-  const spec = registry.get(id) ?? registry.get("pi");
+  const spec = registry.get(id) ?? registry.get(DEFAULTS.harness);
   if (!spec) throw new Error("No harnesses registered");
   return spec.capabilities;
 }
@@ -285,5 +301,5 @@ export function parseHarness(raw: unknown): string | undefined {
 
 /** Effective harness for an agent in a workspace: agent → workspace → "pi". */
 export function harnessIdFor(agent: AgentDef, workspace: Workspace): string {
-  return agent.harness ?? workspace.config.harness ?? "pi";
+  return agent.harness ?? workspace.config.harness ?? DEFAULTS.harness;
 }

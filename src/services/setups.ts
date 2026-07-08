@@ -14,10 +14,10 @@
 
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
-import { readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { bundledDir, gaiaHome, workspacePaths } from "../core/paths.js";
-import { ensureDir, readJson, writeJsonAtomic } from "../core/store.js";
+import { readFile, readdir } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
+import { bundledDir, globalPaths, workspacePaths } from "../core/paths.js";
+import { readJson, writeJsonAtomic, writeTextAtomic } from "../core/store.js";
 import { json, parseBody } from "../core/http.js";
 import type { ChatMessage, MonadConfig, MonadSlot, Workspace } from "../core/types.js";
 import { normalizeRoomState } from "../domain/rooms.js";
@@ -70,15 +70,6 @@ export interface SetupInfo {
   description: string;
 }
 
-// Role files copy atomically (temp + rename) like every other settings write;
-// core/store only speaks atomic JSON, so the text variant lives here.
-async function writeTextAtomic(path: string, content: string): Promise<void> {
-  await ensureDir(dirname(path));
-  const tmp = `${path}.${process.pid}.${Date.now().toString(36)}.tmp`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
-}
-
 async function readManifest(dir: string): Promise<SetupManifest | undefined> {
   const raw = await readJson(join(dir, "setup.json"));
   if (!raw || typeof raw !== "object") return undefined;
@@ -112,7 +103,7 @@ export async function discoverSetups(workspaceRoot: string): Promise<SetupInfo[]
   // Lowest precedence first, then let later sources overwrite by id.
   const layers = [
     await scanDir(bundledDir("setups"), "bundled"),
-    await scanDir(join(gaiaHome(), "setups"), "global"),
+    await scanDir(globalPaths.setupsDir(), "global"),
     await scanDir(workspacePaths.setupsDir(workspaceRoot), "project"),
   ];
   const byId = new Map<string, SetupInfo>();

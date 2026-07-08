@@ -886,4 +886,8 @@ registerHarness({
   credentialProxy: ({ proxyUrl, token }) => ({
     env: { OPENAI_BASE_URL: proxyUrl, OPENAI_API_KEY: token },
   }),
+  // Codex persists auth + session state under ~/.codex (a sandboxed turn must
+  // write there); its credential store inside that tree is carved back to
+  // read-only so a confined turn can't tamper with it.
+  sandboxPaths: { writable: ["~/.codex"], readonly: ["~/.codex/auth.json"] },
 });

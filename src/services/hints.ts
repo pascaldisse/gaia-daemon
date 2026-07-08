@@ -12,18 +12,22 @@
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
-import { CLAUDE_PERMISSION_MODES, type ThinkingLevel, type Workspace } from "../core/types.js";
-import { gaiaHome, workspacePaths } from "../core/paths.js";
-import { ensureDir } from "../core/store.js";
+import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ThinkingLevel, Workspace } from "../core/types.js";
+import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
+import { writeTextAtomic } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { discoverSkills } from "../domain/skills.js";
-import { findTtsEngine, ttsEngineIds } from "./read-aloud.js";
+import { findTtsEngine, ttsEngineIds, type TtsEngineSpec } from "./read-aloud.js";
 import { sttEngineIds } from "./transcribe.js";
+
+// The settings wire shapes live in src/core/types.ts (the shared-type home,
+// comment-imported by the web client); re-exported here for internal callers.
+export type { EditableCategory, EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FieldInput, FileHints, HarnessHintsMeta } from "../core/types.js";
 
 // The SDK's ToolName union is not re-exported from the package root, but
 // ToolsOptions is keyed by exactly the same names.
@@ -31,32 +35,6 @@ type ToolName = keyof ToolsOptions;
 
 // ---------------------------------------------------------------------------
 // Field hints
-
-export type FieldInput = "select" | "multiselect" | "number" | "boolean" | "text" | "json";
-
-export interface FieldHintOption {
-  value: string;
-  label?: string;
-  description?: string;
-  /** Group key used by dependent selects (see FieldHint.groupBy). */
-  group?: string;
-}
-
-export interface FieldHint {
-  input: FieldInput;
-  /** Optional fields render an explicit "(not set)" choice; empty omits the key on save. */
-  optional?: boolean;
-  options?: FieldHintOption[];
-  /** JSON path of another field whose current value filters options by their `group`. */
-  groupBy?: string;
-  /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
-  hidden?: boolean;
-  /** Friendly field name shown in the settings UI in place of the raw JSON key
-   * (e.g. "Voice mode" for `ttsEngine`). Falls back to the key when absent. */
-  label?: string;
-  /** Shown as visible help text under the field — what the setting does / example value. */
-  description?: string;
-}
 
 // Which agent.json fields the settings UI hides for a harness — derived from the
 // declared runtime capabilities, never hardcoded per harness. A coarse-sandbox
@@ -69,16 +47,6 @@ function hiddenFieldsFor(harnessId: string): string[] {
   if (!caps.supportsPermissionMode) hidden.push("permissionMode");
   if (!caps.supportsMcp) hidden.push("mcpServers");
   return hidden;
-}
-
-/** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
-export interface HarnessHintsMeta {
-  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; modelNameOptions?: string[]; hiddenFields: string[] }>;
-}
-
-export interface FileHints {
-  [key: string]: FieldHint | HarnessHintsMeta | undefined;
-  _harness?: HarnessHintsMeta;
 }
 
 export interface ModelChoice {
@@ -216,10 +184,22 @@ function harnessHintsMeta(): HarnessHintsMeta {
       lockedProvider: spec.ui.lockedProvider,
       modelProviderIds: spec.ui.modelProviderIds,
       modelNameOptions: spec.ui.modelNameOptions,
+      permissionModes: spec.ui.permissionModes,
       hiddenFields: hiddenFieldsFor(spec.id),
     };
   }
   return { configs };
+}
+
+// The permission-mode vocabulary is each harness's own, declared as DATA on
+// its spec (ui.permissionModes) — never a harness-named constant in shared
+// code. The agent's current harness drives the select; with no harness
+// declared, the union across registered harnesses stands in (the same law as
+// the native-tool vocabulary). The frontend re-reads _harness meta on switch.
+function permissionModeOptions(harnessId: string | undefined): string[] {
+  const declared = harnessId ? findHarness(harnessId)?.ui.permissionModes : undefined;
+  if (declared) return [...declared];
+  return [...new Set(harnessSpecs().flatMap((spec) => spec.ui.permissionModes ?? []))];
 }
 
 function fileHarnessMeta(): FileHints {
@@ -301,6 +281,19 @@ function hooksHints(): FileHints {
   };
 }
 
+// Every registered TTS engine's declared voice ids, enumerated uniformly from
+// the registry (engines with none — free-form voices — are skipped). A newly
+// registered engine's voices surface here without touching shared code; never
+// a hardcoded engine id.
+function ttsVoiceHintDescription(): string {
+  const catalog = ttsEngineIds()
+    .map((id) => findTtsEngine(id))
+    .filter((engine): engine is TtsEngineSpec => Boolean(engine?.voices.length))
+    .map((engine) => `${engine.id}: ${engine.voices.join(" | ")}`)
+    .join("; ");
+  return `voice for the engine, read-aloud + calls${catalog ? ` (${catalog})` : ""}`;
+}
+
 function mcpServersHint(extra: Partial<FieldHint> = {}): FieldHint {
   return {
     input: "json",
@@ -354,7 +347,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       label: "Skills",
       description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
     },
-    permissionMode: select(values([...CLAUDE_PERMISSION_MODES]), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
+    permissionMode: select(values(permissionModeOptions(rawHarness)), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
     "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),
@@ -379,7 +372,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       input: "text",
       optional: true,
       label: "Voice",
-      description: `voice for the engine, read-aloud + calls (claude: ${findTtsEngine("claude")?.voices.join(" | ") ?? ""})`,
+      description: ttsVoiceHintDescription(),
     },
     ...sandboxHints(),
     ...memoryHints(true, sources.models),
@@ -463,27 +456,6 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
 // the resolved path, 18 hex chars}` so saved links stay stable across
 // versions.
 
-export type EditableScope = "global" | "workspace";
-
-// What a file *is*, computed where the directory layout is known (here), so
-// the frontend can group files without parsing label paths.
-export type EditableCategory = "general" | "voice" | "config" | "persona" | "memory";
-
-export interface EditableFileDescriptor {
-  id: string;
-  scope: EditableScope;
-  label: string;
-  path: string;
-  kind: "markdown" | "json" | "text";
-  /** Owning agent for files under the global agents directory. */
-  agentId?: string;
-  category?: EditableCategory;
-}
-
-export interface EditableFileContent extends EditableFileDescriptor {
-  content: string;
-}
-
 /** True when `path` is `root` or contained inside it. */
 function pathInside(path: string, root: string): boolean {
   const rel = relative(resolve(root), resolve(path));
@@ -493,15 +465,6 @@ function pathInside(path: string, root: string): boolean {
 /** Stable id derived from a resolved path (v1's pathId). */
 function pathId(path: string, length: number): string {
   return createHash("sha256").update(resolve(path)).digest("hex").slice(0, length);
-}
-
-// Settings saves are atomic like everything else; core/store only speaks
-// atomic JSON, so the raw-text variant lives here.
-async function writeTextAtomic(path: string, content: string): Promise<void> {
-  await ensureDir(dirname(path));
-  const tmp = `${path}.${process.pid}.${Date.now().toString(36)}.tmp`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
 }
 
 function fileId(scope: EditableScope, path: string): string {
@@ -557,7 +520,7 @@ export class EditableFileRegistry {
 
   async listGlobal(): Promise<EditableFileDescriptor[]> {
     const home = gaiaHome();
-    const files = [join(home, "app.json"), join(home, "voice.json"), ...(await walkEditable(join(home, "agents")))];
+    const files = [globalPaths.appSettings(), globalPaths.voiceSettings(), ...(await walkEditable(globalPaths.agentsDir()))];
     const descriptors = await Promise.all(files.map((path) => descriptor("global", path, home)));
     return descriptors.filter((item): item is EditableFileDescriptor => Boolean(item)).sort((a, b) => a.label.localeCompare(b.label));
   }
