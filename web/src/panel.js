@@ -10,6 +10,38 @@ import { openAgentSettings } from "./settings.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
 
+/**
+ * Drop the provider prefix from a model label — "deepseek/deepseek-v4-pro" →
+ * "deepseek-v4-pro", "anthropic/claude-opus-4-8 (oauth)" → "claude-opus-4-8
+ * (oauth)". The model id alone is enough to identify it in the panel.
+ * @param {string} label
+ */
+function shortModel(label) {
+  const slash = label.lastIndexOf("/");
+  return slash >= 0 ? label.slice(slash + 1) : label;
+}
+
+/**
+ * The one-line agent subtitle (status / model), shown under the @id and mirrored
+ * into the row's title so it survives ellipsis-truncation on a narrow panel.
+ * @param {import("./types.js").AgentStatus} agent
+ * @param {string | undefined} activeAgent
+ */
+function agentSubtitle(agent, activeAgent) {
+  return [
+    // Only when it says more than the id already does.
+    agent.displayName && agent.displayName.toLowerCase() !== agent.id.toLowerCase() ? agent.displayName : "",
+    agent.id === activeAgent ? "active" : "",
+    agent.isDefault ? "default" : "",
+    agent.status === "running" ? "running" : "",
+    agent.status === "compacting" ? `compacting… ${agent.compact ? compactDetail(agent.compact) : ""}`.trim() : "",
+    agent.voice ? `voice:${agent.voice}` : "",
+    agent.modelLabel ? shortModel(agent.modelLabel) : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function renderPanel() {
   const panel = $("#room-panel");
   if (!panel) return;
@@ -55,38 +87,37 @@ function renderPanel() {
           "div",
           { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${agent.activeRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
           h(
-            "button",
-            { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
-            h("span", { class: `dot ${agent.status}` }),
-            h("strong", { text: `${agent.icon} @${agent.id}` }),
-            h("small", {
-              text: [
-                // Only when it says more than the id already does.
-                agent.displayName && agent.displayName.toLowerCase() !== agent.id.toLowerCase() ? agent.displayName : "",
-                agent.id === activeAgent ? "active" : "",
-                agent.isDefault ? "default" : "",
-                agent.status === "running" ? "running" : "",
-                agent.status === "compacting" ? `compacting… ${agent.compact ? compactDetail(agent.compact) : ""}`.trim() : "",
-                agent.voice ? `voice:${agent.voice}` : "",
-                agent.modelLabel,
-              ]
-                .filter(Boolean)
-                .join(" / "),
-            }),
-            agent.status === "compacting" && agent.compact ? CompactBar(agent.compact) : null,
+            "div",
+            // The role-select is pinned to this cell's bottom-right (the model
+            // line) and lives OUTSIDE the name's flow, so it can never share
+            // horizontal space with, or overlap, the @name above it.
+            { class: `agent-cell ${roles.length > 0 ? "with-role" : ""}` },
+            h(
+              "button",
+              { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
+              h("span", { class: `dot ${agent.status}` }),
+              h("strong", { text: `${agent.icon} @${agent.id}` }),
+              h("small", {
+                // One line, ellipsized when narrow — mirror the full text into
+                // title so it stays recoverable on hover.
+                title: agentSubtitle(agent, activeAgent),
+                text: agentSubtitle(agent, activeAgent),
+              }),
+              agent.status === "compacting" && agent.compact ? CompactBar(agent.compact) : null,
+            ),
+            roles.length > 0
+              ? h(
+                  "select",
+                  {
+                    class: `role-select ${agent.activeRole ? "active" : ""}`,
+                    title: `role for @${agent.id}`,
+                    onchange: (event) => void setAgentRole(agent.id, /** @type {HTMLSelectElement} */ (event.target).value),
+                  },
+                  h("option", { value: "none", text: "role", selected: !agent.activeRole }),
+                  roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === agent.activeRole })),
+                )
+              : null,
           ),
-          roles.length > 0
-            ? h(
-                "select",
-                {
-                  class: `role-select ${agent.activeRole ? "active" : ""}`,
-                  title: `role for @${agent.id}`,
-                  onchange: (event) => void setAgentRole(agent.id, /** @type {HTMLSelectElement} */ (event.target).value),
-                },
-                h("option", { value: "none", text: "— role —", selected: !agent.activeRole }),
-                roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === agent.activeRole })),
-              )
-            : null,
           h("button", {
             class: `main-button ${agent.isDefault ? "active" : ""}`,
             title: agent.isDefault

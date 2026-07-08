@@ -432,7 +432,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ============================================================
    transcript
    ============================================================ */
-.transcript { min-height: 0; overflow: auto; padding: 16px 14px 28px; }
+/* Vertical scroll only — the chat window must NEVER scroll horizontally; wide
+   content (code blocks, tool payloads) scrolls inside its own box instead, and
+   text wraps. overflow-anchor:none disables Chromium's native scroll anchoring
+   so it can't fight the manual re-anchor in loadOlderEvents (WebKit has none). */
+.transcript { min-height: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; padding: 16px 14px 28px; }
 
 .message { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; margin: 0 0 16px; }
 .message::before { content: ">"; color: var(--accent); }
@@ -490,7 +494,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .steer-inline-icon { font-weight: 700; }
 .steer-inline pre { grid-column: auto; margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 
-.message-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--accent); }
+.message-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
 
@@ -898,9 +902,12 @@ body.resizing { cursor: col-resize; user-select: none; }
   50% { box-shadow: 0 0 18px var(--glow); }
 }
 
+/* Holds the name/model button plus the (absolutely-positioned) role-select, so
+   the select is anchored to this cell rather than stealing a flex column. */
+.agent-cell { flex: 1; min-width: 0; position: relative; }
+
 .agent-main {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr);
   gap: 7px;
@@ -911,12 +918,25 @@ body.resizing { cursor: col-resize; user-select: none; }
   box-shadow: none;
 }
 
+/* Keep the model text clear of the pinned role-select so they never overlap;
+   the name line (strong) has no such padding, so it keeps the full width. */
+.agent-cell.with-role .agent-main small { padding-right: 62px; }
+
 .agent-main small { grid-column: 2; }
 
+/* Keep name + model to one line each so a row's height never depends on how
+   much width the role-select (present only for role-bearing agents) steals from
+   this column on a narrow panel — otherwise the text wraps and the box grows
+   taller than role-less rows. Same ellipsis pattern as .panel-head small. */
+.agent-main strong, .agent-main small { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 .role-select {
-  align-self: center;
-  max-width: 116px;
-  margin: 0 4px;
+  /* Pinned to the cell's bottom-right — sits on the model line and out of the
+     name's flow, so it never touches the @name above it. */
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 54px;
   padding: 2px 4px;
   font-size: 0.82em;
   color: var(--muted);
