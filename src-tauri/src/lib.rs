@@ -13,20 +13,24 @@ mod webkit {
     // frontend is bundled; the window loads the same http://127.0.0.1:<port>/ a
     // browser would.
     //
-    // Daemon lifecycle (attach vs. spawn):
-    //   * Default: ATTACH ONLY. The window loads the resolved URL; if a daemon is
-    //     already up (e.g. the dev/room daemon on :8787) it just renders it, exactly
-    //     like a browser tab — the running daemon is never touched.
-    //   * Opt-in: set GAIA_SHELL_AUTOSTART=1 to also SPAWN a daemon when the port is
-    //     dead. This is off by default precisely so the shell can never start a
-    //     competing daemon against one that is already serving a room.
+    // Daemon lifecycle (spawn-or-attach):
+    //   * Default: the app OWNS its daemon. On launch, if the port is already
+    //     serving (e.g. a dev/room daemon on :8787) the window just attaches and
+    //     renders it — the running daemon is never touched. If the port is DEAD,
+    //     the shell SPAWNS the daemon itself (`npm run dev` from the source tree)
+    //     and tears it down on quit. A double-clicked app is thus self-contained:
+    //     start the app, it starts the app.
+    //   * Opt-out: set GAIA_SHELL_AUTOSTART=0 to never spawn (pure attach) — for a
+    //     dev who runs the daemon by hand and wants the shell to keep hands off.
     //
     // Configuration (all optional):
     //   GAIA_SHELL_URL        full URL to load (wins over everything)
     //   GAIA_PORT             port to build the localhost URL from (default 8787)
-    //   GAIA_SHELL_AUTOSTART  "1" to spawn the daemon if the port is dead
+    //   GAIA_SHELL_AUTOSTART  "0" to disable spawning (default: spawn when dead)
     //   GAIA_SHELL_SPAWN_CMD  shell command used to start the daemon
-    //                         (default: "gaia", i.e. the CLI on PATH)
+    //                         (default: "npm run dev")
+    //   GAIA_SHELL_SPAWN_DIR  cwd for the spawn (default: the source tree this
+    //                         binary was built in)
     //
     // LATER: the optional macOS Chromium enhancement (Phase 3). See
     // IMPLEMENTATION-PLAN.md and webview2-re/BUILD-SPEC.md.
@@ -183,24 +187,47 @@ mod webkit {
         TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
     }
 
-    /// Opt-in: spawn the gaia daemon if the port is dead. Returns the child if we
-    /// started one, so the caller can register it for cleanup. Never spawns unless
-    /// GAIA_SHELL_AUTOSTART=1, and never spawns if the port is already alive.
+    /// The repo directory the daemon runs from. Defaults to the source tree this
+    /// binary was built in (baked at compile time via CARGO_MANIFEST_DIR, which is
+    /// `<repo>/src-tauri`; the daemon lives one level up). This lets a double-clicked
+    /// app find `package.json` + `node_modules` without any runtime path guessing.
+    /// Override with GAIA_SHELL_SPAWN_DIR to point at a different checkout.
+    fn spawn_dir() -> String {
+        if let Ok(dir) = std::env::var("GAIA_SHELL_SPAWN_DIR") {
+            if !dir.trim().is_empty() {
+                return dir;
+            }
+        }
+        concat!(env!("CARGO_MANIFEST_DIR"), "/..").to_string()
+    }
+
+    /// Spawn the gaia daemon when the port is dead so the app owns its own backend.
+    /// Returns the child if we started one, so the caller can kill it on exit — and
+    /// ONLY if we started it. Attaches (never spawns) when a daemon is already
+    /// serving the port, so it can never compete with a dev/room daemon that is
+    /// already up. Set GAIA_SHELL_AUTOSTART=0 to disable spawning entirely.
     fn maybe_spawn_daemon(port: u16) -> Option<Child> {
-        if std::env::var("GAIA_SHELL_AUTOSTART").as_deref() != Ok("1") {
-            return None;
+        match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
+            Ok("0") | Ok("false") | Ok("off") => return None,
+            _ => {}
         }
         if port_alive(port) {
             // A daemon is already up — attach, do not compete with it.
             return None;
         }
 
-        let cmd = std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "gaia".to_string());
-        eprintln!("[gaia-shell] :{port} is dead; GAIA_SHELL_AUTOSTART=1 -> spawning `{cmd}`");
+        let cmd = std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "npm run dev".to_string());
+        let dir = spawn_dir();
+        // Run through a LOGIN shell: a Finder-launched .app inherits only the bare
+        // GUI PATH, so `node`/`npm` (nvm/homebrew) are not visible to a plain `sh
+        // -c`. `$SHELL -lc` sources the user's profile and restores them.
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        eprintln!("[gaia-shell] :{port} is dead; spawning daemon: `{cmd}` (cwd {dir})");
 
-        let child = Command::new("sh")
-            .arg("-c")
+        let child = Command::new(&shell)
+            .arg("-lc")
             .arg(&cmd)
+            .current_dir(&dir)
             .env("GAIA_PORT", port.to_string())
             .spawn();
 
@@ -212,8 +239,8 @@ mod webkit {
             }
         };
 
-        // Wait (up to ~20s) for the daemon to start listening.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // Wait (up to ~30s) for the daemon to start listening.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if port_alive(port) {
                 eprintln!("[gaia-shell] daemon is up on :{port}");
@@ -444,7 +471,7 @@ mod webkit {
                     eprintln!("[gaia-shell] menu setup failed: {e}");
                 }
 
-                // Opt-in daemon spawn (off by default -> pure attach).
+                // Own our daemon: spawn it if the port is dead, else attach.
                 if let Some(child) = maybe_spawn_daemon(port) {
                     if let Some(state) = app.try_state::<SpawnedDaemon>() {
                         *state.0.lock().unwrap() = Some(child);
