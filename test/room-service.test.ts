@@ -900,6 +900,62 @@ test("steer-by-default: a plain message to the busy agent injects; @other and qu
   );
 });
 
+test("a mid-turn steer pins its position in the reply's committed ordered blocks", async () => {
+  let releaseTail!: () => void;
+  const tail = new Promise<void>((resolve) => (releaseTail = resolve));
+  let firstDelta!: () => void;
+  const streamedFirst = new Promise<void>((resolve) => (firstDelta = resolve));
+  // Mimics RunnerHost's channel: events injected mid-turn surface in the stream
+  // at the position they were injected (here: after "before ", pinned by the
+  // gate). The position fidelity itself is runner-host.test.ts territory.
+  const injected: AgentEvent[] = [];
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: true },
+    async *send() {
+      yield { type: "text-delta", delta: "before " } as AgentEvent;
+      firstDelta();
+      await tail;
+      yield* injected;
+      yield { type: "text-delta", delta: "after" } as AgentEvent;
+    },
+    async steer() {
+      return true;
+    },
+    injectEvent(event: AgentEvent) {
+      injected.push(event);
+      return true;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("start a long task");
+  await streamedFirst;
+  const steered = await service.sendMessage("go left instead");
+  assert.equal(steered.status, "complete", "steer settles while the turn still runs");
+  releaseTail();
+  await service.waitForIdle();
+
+  const { events: transcript } = await service.room.eventsFrom(0);
+  const steerEvent = transcript.find((event) => event.author === "user" && event.text === "go left instead");
+  assert.ok(steerEvent, "steer recorded as a user event");
+  const reply = transcript.find((event) => event.author === "gaia");
+  assert.ok(reply && "details" in reply, "reply committed with details");
+  assert.deepEqual(
+    (reply as { details?: { blocks?: unknown } }).details?.blocks,
+    [
+      { kind: "text", text: "before " },
+      { kind: "steer", id: steerEvent!.id },
+      { kind: "text", text: "after" },
+    ],
+    "the steer marker references the user event at the exact stream position (round-tripped from disk)",
+  );
+});
+
 test("/steer declines gracefully when idle or unsupported", async () => {
   const { service } = await makeService();
   const idle = await service.sendMessage("/steer do it differently");

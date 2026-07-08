@@ -1237,7 +1237,15 @@ export class RoomService {
   /** WAL step 2: append the reply event (details ON it), then one atomic state
    * write clearing the marker and advancing the cursor. */
   private async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextCursor: number): Promise<void> {
-    const hasDetails = details.model || details.thinkingStarted || details.thinking || details.tools?.length;
+    // Blocks count only when they encode structure the plain reply text doesn't
+    // already carry (a steer marker, a tool, a thinking span) — a prose-only
+    // turn stays detail-less exactly as before, so nothing bloats.
+    const hasDetails =
+      details.model ||
+      details.thinkingStarted ||
+      details.thinking ||
+      details.tools?.length ||
+      details.blocks?.some((block) => block.kind !== "text");
     const event: RoomEvent = {
       id: eventId,
       timestamp: new Date().toISOString(),
@@ -1303,6 +1311,12 @@ export class RoomService {
     if (!ok) return false;
     const event = await this.room.addUserMessage(text, [target]);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    // Pin WHERE in the running reply the steer landed: a `steered` marker into
+    // the live stream folds into details.blocks at the current position, so the
+    // UI renders the message inline right there (live and after commit) instead
+    // of floating it above the whole reply. Best-effort — if the stream just
+    // closed, the standalone bubble simply keeps the legacy placement.
+    this.runtimes[target]?.injectEvent?.({ type: "steered", eventId: event.id });
     task.status = "complete";
     task.endedAt = new Date().toISOString();
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
@@ -1327,6 +1341,8 @@ export class RoomService {
     const event = await this.room.addUserMessage(guidance, [target]);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
     const ok = (await runtime.steer?.(this.roomId, guidance)) ?? false;
+    // Same stream-position marker as steer-by-default (see steerRunningTurn).
+    if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
   }
 
@@ -2518,6 +2534,8 @@ export class RoomService {
         return { ...scope, type: "tool-update", toolName: event.toolName, toolCallId: event.toolCallId, partialResult: event.partialResult };
       case "tool-end":
         return { ...scope, type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError };
+      case "steered":
+        return { ...scope, type: "steered", steerEventId: event.eventId };
     }
   }
 

@@ -103,8 +103,8 @@ function messageBlocks(value: unknown): MessageBlock[] | undefined {
   const blocks: MessageBlock[] = [];
   for (const raw of value) {
     if (!isRecord(raw)) continue;
-    if (raw.kind === "tool") {
-      if (typeof raw.id === "string" && raw.id.length > 0) blocks.push({ kind: "tool", id: raw.id });
+    if (raw.kind === "tool" || raw.kind === "steer") {
+      if (typeof raw.id === "string" && raw.id.length > 0) blocks.push({ kind: raw.kind, id: raw.id });
     } else if (raw.kind === "text" || raw.kind === "thinking") {
       // Drop empty text/thinking spans — they carry nothing to render and only
       // arise transiently while streaming.

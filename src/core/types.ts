@@ -46,7 +46,12 @@ export interface MessageAttachment {
 export type MessageBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
-  | { kind: "tool"; id: string };
+  | { kind: "tool"; id: string }
+  /** A mid-turn user steer landed HERE in the stream. References the steer's
+   * own user RoomEvent by id (the event stays the single source of truth for
+   * the text, exactly like `tool` referencing `tools[]`); the UI renders that
+   * message inline at this position and suppresses its standalone bubble. */
+  | { kind: "steer"; id: string };
 
 /** Runtime metadata for one agent message. v2 stores this ON the transcript
  * event at commit, so history never forgets what produced it. (v1 kept a
@@ -568,7 +573,13 @@ export type AgentEvent =
   | { type: "thinking-end"; content?: string }
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
-  | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean };
+  | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
+  /** Synthesized DAEMON-side (RunnerHost.injectEvent) the moment a mid-turn
+   * steer is accepted, so the marker lands in the stream — and therefore in
+   * `details.blocks` — at the exact position the steer took effect. Uniform for
+   * every harness by construction; no harness ever emits it. `eventId` is the
+   * steer's user RoomEvent. */
+  | { type: "steered"; eventId: string };
 
 // ---------------------------------------------------------------------------
 // Tasks + UI events (SSE payloads; the v1 wire shape exactly, plus `eventId`
@@ -796,6 +807,9 @@ export type UiEvent =
   | ({ type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown } & StreamScope)
   | ({ type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown } & StreamScope)
   | ({ type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean } & StreamScope)
+  // A mid-turn steer landed at this point of the reply's stream. `steerEventId`
+  // is the steer's user RoomEvent (scope.eventId is, as always, the REPLY's).
+  | ({ type: "steered"; steerEventId: string } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
   | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
   // Workspace-scoped (NO roomId): the room list changed — a room started or

@@ -251,6 +251,18 @@ export class RunnerHost implements AgentRuntime {
     });
   }
 
+  /** Push a daemon-synthesized event into the ACTIVE turn's stream at its
+   * current position (see AgentRuntime.injectEvent). The channel is the same
+   * queue runner events land in, so ordering against the live stream is exact
+   * by construction. No-op (false) when no turn is streaming or it already
+   * closed — the caller's marker is simply skipped. */
+  injectEvent(event: AgentEvent): boolean {
+    const channel = this.activeChannel;
+    if (!channel || channel.closed) return false;
+    channel.push(event);
+    return true;
+  }
+
   /** Forward /compact to the runner, relay the harness's own result line, and
    * stream its progress frames to `onProgress`. */
   async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {

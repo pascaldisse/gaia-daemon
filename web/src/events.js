@@ -183,7 +183,7 @@ export function connectEvents() {
     if (!stream) return;
     const tool = toolDetail(payload, "running");
     stream.details.tools = [...(stream.details.tools ?? []), tool];
-    pushToolBlock(stream.details, tool.id);
+    pushRefBlock(stream.details, "tool", tool.id);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -209,8 +209,17 @@ export function connectEvents() {
     } else {
       const created = toolDetail(payload, payload.isError ? "error" : "complete");
       stream.details.tools = [...(stream.details.tools ?? []), created];
-      pushToolBlock(stream.details, created.id);
+      pushRefBlock(stream.details, "tool", created.id);
     }
+    stream.version += 1;
+    markDirty("transcript");
+  });
+
+  source.addEventListener("steered", (event) => {
+    const payload = /** @type {Ev<"steered">} */ (JSON.parse(event.data));
+    const stream = streamFor(payload);
+    if (!stream) return;
+    pushRefBlock(stream.details, "steer", payload.steerEventId);
     stream.version += 1;
     markDirty("transcript");
   });
@@ -371,11 +380,15 @@ function fillThinkingBlock(details, content) {
 }
 
 /**
+ * Append a reference block: `tool` points at a tools[] row, `steer` at the
+ * steering user room-event (rendered inline at this stream position, its
+ * standalone bubble suppressed).
  * @param {EventDetails} details
- * @param {string} id A tools[] row id — the block references it.
+ * @param {"tool"|"steer"} kind
+ * @param {string} id
  */
-function pushToolBlock(details, id) {
-  (details.blocks ??= []).push({ kind: "tool", id });
+function pushRefBlock(details, kind, id) {
+  (details.blocks ??= []).push({ kind, id });
 }
 
 /** @param {import("./types.js").Task|undefined} task */

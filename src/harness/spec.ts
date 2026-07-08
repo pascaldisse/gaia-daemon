@@ -48,6 +48,12 @@ export interface AgentRuntime {
    * false when there is nothing to steer. Only present when
    * capabilities.supportsSteer. */
   steer?(roomId: string, message: string): Promise<boolean>;
+  /** Push a daemon-synthesized event (e.g. the `steered` position marker) into
+   * the ACTIVE turn's event stream at its current position. Implemented ONCE by
+   * the daemon-side RunnerHost — uniform for every harness, which never sees
+   * it; absent on the runner-side harness runtimes. Returns false when no turn
+   * is streaming (the marker is simply skipped). */
+  injectEvent?(event: AgentEvent): boolean;
   /** Compact the room's session context using the HARNESS's own compaction
    * (backs /compact — gaia never re-implements summarization). Resolves with
    * `{ compacted, message }`: `compacted` is the authoritative "history was

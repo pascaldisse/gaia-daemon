@@ -93,6 +93,24 @@ test("a tool-end with no matching tool-start still records one ordered block", (
   assert.equal((details.blocks?.[1] as { id: string }).id, "x1");
 });
 
+test("a steered marker pins its stream position and splits the surrounding prose", () => {
+  const details: EventDetails = {};
+  const events: AgentEvent[] = [
+    { type: "text-delta", delta: "before " },
+    { type: "steered", eventId: "user_k2abc_1" },
+    { type: "text-delta", delta: "after" },
+  ];
+  for (const event of events) applyEventToDetails(details, event);
+  assert.deepEqual(details.blocks, [
+    { kind: "text", text: "before " },
+    { kind: "steer", id: "user_k2abc_1" },
+    { kind: "text", text: "after" },
+  ] satisfies MessageBlock[]);
+  // Round-trips through the on-disk parser like every other block kind.
+  const parsed = eventDetailsFrom(JSON.parse(JSON.stringify(details)));
+  assert.deepEqual(parsed?.blocks, details.blocks);
+});
+
 test("blocks round-trip through the on-disk parser, dropping empty spans", () => {
   const onDisk = {
     model: "anthropic/claude-opus-4-8 (oauth)",

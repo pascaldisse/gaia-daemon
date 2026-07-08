@@ -17,7 +17,7 @@ import { createTempDir } from "./helpers/temp.js";
 
 registerHarness({
   id: "stub",
-  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true },
   ui: { label: "Stub", description: "protocol test double" },
   // No durable session on disk → a cold /compact has nothing to resume.
   hasDurableSession: () => false,
@@ -64,9 +64,23 @@ rl.on("line", (line) => {
       send({ type: "turn-error", message: "stub failure" });
       return;
     }
+    if (cmd.input.message === "hold") {
+      // Stays open so the test can steer/inject mid-turn; a steer of "finish"
+      // ends it (see the steer branch below).
+      send({ type: "event", event: { type: "text-delta", delta: "held:start" } });
+      return;
+    }
     send({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } });
     send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
     send({ type: "turn-end" });
+  } else if (cmd.type === "steer") {
+    if (cmd.message === "finish") {
+      send({ type: "event", event: { type: "text-delta", delta: "post-steer" } });
+      send({ type: "steer-result", ok: true });
+      send({ type: "turn-end" });
+    } else {
+      send({ type: "steer-result", ok: true });
+    }
   } else if (cmd.type === "compact") {
     send({ type: "compact-result", ok: true, compacted: true, message: "compacted " + cmd.roomId });
   } else if (cmd.type === "dispose") {
@@ -111,6 +125,41 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("injectEvent lands in the ACTIVE turn's stream at its current position; skipped when idle", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    assert.equal(host.injectEvent({ type: "steered", eventId: "ev_too_early" }), false, "no active turn → marker skipped");
+
+    const events: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "hold", transcript: [] })) {
+      events.push(event);
+      if (event.type === "text-delta" && event.delta === "held:start") {
+        // The daemon-side steer flow: steer lands (round trip confirms the
+        // runner is holding), THEN the marker is injected — it must surface in
+        // the stream exactly here, before anything the turn streams later.
+        assert.equal(await host.steer("default", "go left"), true);
+        assert.equal(host.injectEvent({ type: "steered", eventId: "ev_steer" }), true);
+        assert.equal(await host.steer("default", "finish"), true);
+      }
+    }
+
+    assert.deepEqual(
+      events.filter((e) => e.type === "steered" || e.type === "text-delta"),
+      [
+        { type: "text-delta", delta: "held:start" },
+        { type: "steered", eventId: "ev_steer" },
+        { type: "text-delta", delta: "post-steer" },
+      ],
+      "the marker sits exactly between the pre-steer and post-steer stream",
+    );
+    assert.equal(host.injectEvent({ type: "steered", eventId: "ev_too_late" }), false, "turn over → marker skipped");
     host.dispose();
   } finally {
     await temp.cleanup();

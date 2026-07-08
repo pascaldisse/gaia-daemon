@@ -474,6 +474,22 @@ body.resizing { cursor: col-resize; user-select: none; }
 .message.queued::before { content: "⋯"; }
 .message.queued .channel-tag { color: var(--muted); font-style: italic; }
 
+/* Mid-turn steer, rendered inside the reply at the stream position where it
+   landed (OrderedBlocks kind:"steer") — a user interjection, so it borrows the
+   user-bubble voice (accent2) inset into the agent body. */
+.steer-inline {
+  grid-column: 2;
+  margin: 6px 0 2px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--accent2);
+  background: color-mix(in srgb, var(--accent2) 7%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+.steer-inline-meta { display: flex; align-items: baseline; gap: 8px; color: var(--accent2); font-size: 0.85em; }
+.steer-inline-meta time { margin-left: auto; font-size: 0.9em; color: var(--muted); }
+.steer-inline-icon { font-weight: 700; }
+.steer-inline pre { grid-column: auto; margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+
 .message-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }

@@ -102,6 +102,9 @@ export function applyEventToDetails(details: EventDetails, event: AgentEvent): v
       if (tool) tool.partialResult = event.partialResult;
       return;
     }
+    case "steered":
+      recordBlockEvent(details, event);
+      return;
     case "tool-end": {
       const tool = findRunningTool(details, event.toolCallId, event.toolName);
       if (tool) {
@@ -160,6 +163,11 @@ export function recordBlockEvent(details: EventDetails, event: AgentEvent, toolI
     case "tool-start":
     case "tool-end":
       if (toolId) blocks.push({ kind: "tool", id: toolId });
+      return;
+    case "steered":
+      // The steer's user event is the source of truth for the text; the block
+      // only pins WHERE in the stream it landed.
+      blocks.push({ kind: "steer", id: event.eventId });
       return;
     default:
       return;

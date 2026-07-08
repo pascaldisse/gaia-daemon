@@ -41,6 +41,10 @@ import { state } from "./state.js";
  * @property {boolean} [redacted]
  * @property {boolean} streaming
  * @property {boolean} [queued] A not-yet-run queued message (ghost bubble).
+ * @property {Map<string, MessageView>} [steers] Mid-turn steers this reply's
+ *   blocks reference, resolved by messageViews (keyed by the steer's event id)
+ *   for OrderedBlocks to render inline — their standalone bubbles are
+ *   suppressed in the same pass.
  */
 
 /**
@@ -255,6 +259,37 @@ function messageViews() {
       queued: true,
     });
   }
+  // A steer referenced by a reply's ordered blocks renders INLINE inside that
+  // reply, at the exact stream position where it landed (see OrderedBlocks) —
+  // suppress its standalone bubble so it appears exactly once. The resolved
+  // steer views ride the reply view (`view.steers`), so suppression here and
+  // the inline render agree by construction, and the steer's version folds into
+  // the reply's so a change to the steer event (e.g. a sanitize redaction)
+  // rebuilds the cached reply node. A steer nothing references (legacy
+  // transcript, or the marker missed a just-closed stream) keeps the standalone
+  // bubble and the above-the-reply re-key below — nothing is ever dropped.
+  // Gated on actually meeting a steer block: a room without any pays only the
+  // per-view block scan.
+  /** @type {Set<string>} */
+  const inlineSteerIds = new Set();
+  /** @type {Map<string, MessageView>|undefined} */
+  let viewsById;
+  for (const view of views) {
+    const blocks = view.details?.blocks;
+    if (!blocks?.some((block) => block.kind === "steer")) continue;
+    // Mirror Message()'s render gate: inline only where OrderedBlocks will run.
+    if (view.author === "user" || view.author === "system" || view.redacted || summonView(view)) continue;
+    viewsById ??= new Map(views.map((candidate) => [candidate.id, candidate]));
+    for (const block of blocks) {
+      if (block.kind !== "steer") continue;
+      const steer = viewsById.get(block.id);
+      if (!steer || steer.author !== "user") continue;
+      inlineSteerIds.add(block.id);
+      (view.steers ??= new Map()).set(block.id, steer);
+      view.version += `:steer-${block.id}:${steer.version}`;
+    }
+  }
+  const visible = inlineSteerIds.size ? views.filter((view) => !inlineSteerIds.has(view.id)) : views;
   // Order by creation time (see creationOrder). Array.sort is stable, so views
   // minted in the same ms keep their append (WAL/commit) order. A no-op for a
   // plain transcript; it only matters for a message that COMMITTED mid-turn,
@@ -270,7 +305,7 @@ function messageViews() {
   // committed first, its lower append index sorts it just above. A plain user
   // message sent BETWEEN turns matches no window and is left exactly where it is;
   // a queued ghost (still waiting to run) is excluded so it stays at the bottom.
-  const ranked = views.map((view, index) => ({
+  const ranked = visible.map((view, index) => ({
     view,
     index,
     order: creationOrder(view.id, view.timestamp),
@@ -431,13 +466,7 @@ function Message(view) {
             text: `⚠ ${details.modelFallback.from} → ${details.modelFallback.to}`,
           })
         : null,
-      view.redacted
-        ? h("small", {
-            class: "redacted-tag",
-            title: "sanitized by thanks-dario — the original text is preserved in the room's redactions.jsonl",
-            text: "✂",
-          })
-        : null,
+      view.redacted ? RedactedTag() : null,
       h("time", { text: formatTime(view.timestamp) }),
     ),
     // A summon result is a single collapsed block; everything else renders the
@@ -554,8 +583,47 @@ function OrderedBlocks(view, blocks, tools) {
       if (!block.text.trim() && !running) return null;
       return ThinkingActivity(`thinking:${view.id}:${index}`, block.text, running);
     }
+    if (block.kind === "steer") {
+      // The user steered HERE. Render their message inline at this position —
+      // messageViews resolved it onto the view and suppressed its standalone
+      // bubble in the same pass. Unresolved (rewound/unloaded event) → nothing
+      // to show, and the bubble, if it exists, wasn't suppressed.
+      const steer = view.steers?.get(block.id);
+      return steer ? SteerInline(steer) : null;
+    }
     const tool = toolsById.get(block.id);
     return tool ? ToolActivity(tool) : null;
+  });
+}
+
+/**
+ * A mid-turn steer rendered inside the reply it steered, at the stream position
+ * where it landed. Carries the steer event's own id so search-jump still finds
+ * it after its standalone bubble was suppressed.
+ * @param {MessageView} steer
+ */
+function SteerInline(steer) {
+  return h(
+    "div",
+    { class: "steer-inline", "data-event-id": steer.id },
+    h(
+      "div",
+      { class: "steer-inline-meta" },
+      h("span", { class: "steer-inline-icon", text: "↪" }),
+      h("span", { text: `user steered ${steer.targets.map((target) => `@${target}`).join(", ")}` }),
+      steer.redacted ? RedactedTag() : null,
+      h("time", { text: formatTime(steer.timestamp) }),
+    ),
+    h("pre", {}, LinkedText(stripLeadingRouteMentions(steer.text, steer.targets))),
+  );
+}
+
+/** The ✂ chip marking text rewritten by a thanks-dario sanitize apply. */
+function RedactedTag() {
+  return h("small", {
+    class: "redacted-tag",
+    title: "sanitized by thanks-dario — the original text is preserved in the room's redactions.jsonl",
+    text: "✂",
   });
 }
 
