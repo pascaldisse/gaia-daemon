@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -28,7 +28,36 @@ function pathCandidates(): string[] {
     "/usr/local/bin",
     // npm-global installs live next to the node running us (nvm layouts).
     dirname(process.execPath),
+    // …but a GUI-launched daemon may be running a DIFFERENT node (e.g.
+    // homebrew's) than the user's nvm default, hiding CLIs installed under
+    // nvm's bin. Resolve nvm's default version explicitly.
+    ...nvmDefaultBin(home),
   ];
+}
+
+// The bin dir of nvm's default node version, if nvm is installed: matches
+// `~/.nvm/alias/default` (e.g. "24", "v24.11.1") against
+// `~/.nvm/versions/node/*`, falling back to the lexically-newest version.
+function nvmDefaultBin(home: string): string[] {
+  const versionsDir = join(home, ".nvm", "versions", "node");
+  let versions: string[];
+  try {
+    versions = readdirSync(versionsDir).filter((v) => v.startsWith("v"));
+  } catch {
+    return [];
+  }
+  if (versions.length === 0) return [];
+  versions.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  let pick = versions[versions.length - 1];
+  try {
+    const alias = readFileSync(join(home, ".nvm", "alias", "default"), "utf8").trim();
+    const wanted = alias.startsWith("v") ? alias : `v${alias}`;
+    const match = versions.filter((v) => v === wanted || v.startsWith(`${wanted}.`)).pop();
+    if (match) pick = match;
+  } catch {
+    // no default alias — newest version stands.
+  }
+  return [join(versionsDir, pick, "bin")];
 }
 
 /** `current` with any missing-but-existing well-known bin dirs appended. */

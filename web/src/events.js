@@ -20,6 +20,9 @@ import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
  * @typedef {import("./types.js").Ev<T>} Ev
  */
 
+/** @type {string | undefined} */
+let knownBootId;
+
 export function connectEvents() {
   const snapshot = state.snapshot;
   if (state.eventSource) {
@@ -37,7 +40,16 @@ export function connectEvents() {
   // gone are lost — so a ready that isn't the first one resyncs with a
   // fresh snapshot.
   let connectedBefore = false;
-  source.addEventListener("ready", () => {
+  source.addEventListener("ready", (event) => {
+    const payload = JSON.parse(event.data);
+    const bootId = payload && typeof payload === "object" && typeof payload.bootId === "string" ? payload.bootId : undefined;
+    if (bootId) {
+      if (knownBootId && knownBootId !== bootId) {
+        window.location.reload();
+        return;
+      }
+      knownBootId = bootId;
+    }
     if (connectedBefore) void resyncSnapshot(snapshot.workspace.id);
     connectedBefore = true;
   });

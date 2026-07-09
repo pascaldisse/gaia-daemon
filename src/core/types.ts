@@ -232,13 +232,14 @@ export interface RoomState {
    * trusted, and no workspace/agent setting can clear it. */
   summonUntrusted?: true;
   /** Absolute path this room's turns use as their working directory (OS cwd +
-   * sandbox cwd) when it is NOT the workspace root — the git worktree a summon
-   * room was isolated into (collab.isolation "worktree"). Stamped ONCE at
-   * summon launch like summonUntrusted; absence = run at the workspace root.
-   * `.gaia/` is always addressed via the root (the runner child reads
-   * GAIA_RUNNER_WORKSPACE, never cwd), so a moved workDir never strands the
-   * room's transcript/state/memory. Validated against the filesystem on read:
-   * a vanished worktree degrades to the root instead of wedging the spawn. */
+   * sandbox cwd) when it is NOT the workspace root (collab.isolation
+   * "worktree"). A top-level room OWNS this git worktree, stamped on first
+   * open; a summon room INHERITS the nearest ancestor's, stamped once at
+   * summon launch. `.gaia/` is always addressed via the root (the runner
+   * child reads GAIA_RUNNER_WORKSPACE, never cwd), so a moved workDir never
+   * strands the room's transcript/state/memory. Validated against the
+   * filesystem on read: a vanished worktree degrades to the root instead of
+   * wedging the spawn. */
   workDir?: string;
   /** Display name when the room id alone isn't it (e.g. an imported chat's
    * original title). */
@@ -462,11 +463,13 @@ export interface SandboxConfig {
 /** How concurrent rooms share the workspace repo (config `collab`).
  * - `shared` (default): every room runs at the workspace root — one working
  *   tree, one index; simultaneous agents can collide.
- * - `worktree`: each summon room gets its own git worktree under
+ * - `worktree`: each TOP-LEVEL room gets its own git worktree under
  *   `.gaia/worktrees/<roomId>` on branch `<branchPrefix><roomId>` (shared
- *   object store, isolated checkout + index). The path is stamped on the
- *   room's durable state at launch (RoomState.workDir); merging back is the
- *   humans'/agents' call — the daemon never auto-integrates.
+ *   object store, isolated checkout + index), created on first open. Summon
+ *   rooms never own one — they inherit the nearest ancestor room's checkout,
+ *   walking up to the top-level room. The path is stamped on the room's
+ *   durable state (RoomState.workDir); merging back is the humans'/agents'
+ *   call — the daemon never auto-integrates.
  * Only fields that DO something live here: no speculative knobs. */
 export interface CollabConfig {
   isolation: "shared" | "worktree";

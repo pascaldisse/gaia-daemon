@@ -58,106 +58,6 @@ mod webkit {
     // place to grant loopback origins (the daemon UI), keeping all other delegate
     // methods intact. Paired with NSMicrophoneUsageDescription + the audio-input
     // entitlement (see Info.plist / Entitlements.plist).
-    #[cfg(target_os = "macos")]
-    mod macos_media_capture {
-        use std::ffi::c_void;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        use block2::Block;
-        use objc2::runtime::{AnyObject, Imp, Sel};
-        use objc2::{msg_send, sel};
-        use objc2_web_kit::{
-            WKFrameInfo, WKMediaCaptureType, WKPermissionDecision, WKSecurityOrigin, WKWebView,
-        };
-
-        static MEDIA_CAPTURE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
-
-        /// Tauri/wry owns the WKUIDelegate instance. Rather than replacing it (which
-        /// would regress file-upload/new-window behavior), patch that delegate's
-        /// media-capture callback in-place and keep all other delegate methods intact.
-        pub fn install_for_wkwebview(wk_webview: *mut c_void) {
-            if wk_webview.is_null() {
-                eprintln!("[gaia-shell] WKWebView media-capture hook skipped: null WKWebView");
-                return;
-            }
-
-            unsafe {
-                let webview = wk_webview.cast::<AnyObject>();
-                let ui_delegate: *mut AnyObject = msg_send![&*webview, UIDelegate];
-                if ui_delegate.is_null() {
-                    eprintln!("[gaia-shell] WKWebView media-capture hook skipped: no UIDelegate");
-                    return;
-                }
-
-                let class = (&*ui_delegate).class();
-                let selector = sel!(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:);
-                let Some(method) = class.instance_method(selector) else {
-                    eprintln!("[gaia-shell] WKWebView UIDelegate has no media-capture selector");
-                    return;
-                };
-
-                if !MEDIA_CAPTURE_HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
-                    let imp: Imp = std::mem::transmute(
-                        gaia_media_capture_permission
-                            as unsafe extern "C-unwind" fn(
-                                &AnyObject,
-                                Sel,
-                                &WKWebView,
-                                &WKSecurityOrigin,
-                                &WKFrameInfo,
-                                WKMediaCaptureType,
-                                &Block<dyn Fn(WKPermissionDecision)>,
-                            ),
-                    );
-                    method.set_implementation(imp);
-                    eprintln!(
-                        "[gaia-shell] installed WKWebView media-capture permission handler for loopback origins"
-                    );
-                }
-            }
-        }
-
-        unsafe extern "C-unwind" fn gaia_media_capture_permission(
-            _this: &AnyObject,
-            _cmd: Sel,
-            _web_view: &WKWebView,
-            origin: &WKSecurityOrigin,
-            _frame: &WKFrameInfo,
-            _capture_type: WKMediaCaptureType,
-            decision_handler: &Block<dyn Fn(WKPermissionDecision)>,
-        ) {
-            let scheme = origin.protocol().to_string();
-            let host = origin.host().to_string();
-            let host = host.trim_matches(['[', ']']);
-            let is_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
-            let is_web_origin = matches!(scheme.as_str(), "http" | "https");
-            let decision = if is_loopback && is_web_origin {
-                eprintln!(
-                    "[gaia-shell] granted WKWebView media-capture request for {scheme}://{host}"
-                );
-                WKPermissionDecision::Grant
-            } else {
-                eprintln!(
-                    "[gaia-shell] denied WKWebView media-capture request for non-loopback origin {scheme}://{host}"
-                );
-                WKPermissionDecision::Deny
-            };
-            decision_handler.call((decision,));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn install_media_capture_permission_handler(window: &tauri::WebviewWindow) {
-        if let Err(e) = window.with_webview(|webview| {
-            macos_media_capture::install_for_wkwebview(webview.inner());
-        }) {
-            eprintln!("[gaia-shell] failed to access WKWebView for media-capture hook: {e}");
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn install_media_capture_permission_handler(_window: &tauri::WebviewWindow) {}
-
     // iOS WKWebView layout viewport: wry 0.55.1 never sets
     // WKWebView.scrollView.contentInsetAdjustmentBehavior, so UIKit leaves it at
     // .automatic. Even with viewport-fit=cover in the page's viewport meta, that
@@ -281,6 +181,39 @@ mod webkit {
         TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
     }
 
+    /// `<gaia home>/daemon.pid` — mirrors src/core/paths.ts `gaiaHome()`
+    /// (GAIA_HOME env override, else `~/.gaia`). The daemon (src/server/http.ts)
+    /// writes its own pid here after every successful bind, INCLUDING the
+    /// process a `/reload` re-exec spawns — so this file, not the pid of
+    /// whatever we originally spawned, is the one honest answer to "what do I
+    /// kill on cmd+Q".
+    #[cfg(all(desktop, unix))]
+    fn gaia_home_dir() -> std::path::PathBuf {
+        if let Ok(dir) = std::env::var("GAIA_HOME") {
+            if !dir.trim().is_empty() {
+                return std::path::PathBuf::from(dir);
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        std::path::Path::new(&home).join(".gaia")
+    }
+
+    #[cfg(all(desktop, unix))]
+    fn read_daemon_pid() -> Option<i32> {
+        let content = std::fs::read_to_string(gaia_home_dir().join("daemon.pid")).ok()?;
+        content.trim().parse::<i32>().ok()
+    }
+
+    /// Signal a whole process GROUP (negative pid), not just one process — the
+    /// daemon is spawned with `process_group(0)` so this reaches every
+    /// descendant (npm → tsx → node → any `gaia __run-agent` children) in one
+    /// shot. Shells out to the `kill` binary rather than an FFI syscall so this
+    /// needs no new Cargo dependency.
+    #[cfg(all(desktop, unix))]
+    fn kill_process_group(pid: i32, signal: &str) {
+        let _ = Command::new("kill").arg(format!("-{signal}")).arg(format!("-{pid}")).status();
+    }
+
     /// The repo directory the daemon runs from. Defaults to the source tree this
     /// binary was built in (baked at compile time via CARGO_MANIFEST_DIR, which is
     /// `<repo>/src-tauri`; the daemon lives one level up). This lets a double-clicked
@@ -328,12 +261,22 @@ mod webkit {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
             eprintln!("[gaia-shell] :{port} is dead; spawning daemon: `{cmd}` (cwd {dir})");
 
-            let child = Command::new(&shell)
+            let mut command = Command::new(&shell);
+            command
                 .arg("-lc")
                 .arg(&cmd)
                 .current_dir(&dir)
-                .env("GAIA_PORT", port.to_string())
-                .spawn();
+                .env("GAIA_PORT", port.to_string());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                // Its OWN process group (setpgid(0,0)), not ours: this is what lets
+                // cmd+Q later signal exactly the daemon's tree (shell → npm → tsx →
+                // node → any `gaia __run-agent` children) without touching the
+                // gaia-shell app process itself.
+                command.process_group(0);
+            }
+            let child = command.spawn();
 
             let child = match child {
                 Ok(c) => c,
@@ -408,8 +351,7 @@ mod webkit {
         if let (Some(px), Some(py)) = (x, y) {
             builder = builder.position(px, py);
         }
-        let window = builder.build().map_err(|e| e.to_string())?;
-        install_media_capture_permission_handler(&window);
+        let _window = builder.build().map_err(|e| e.to_string())?;
         Ok(label)
     }
 
@@ -609,6 +551,56 @@ mod webkit {
         }
     }
 
+    /// cmd+Q means TOTAL death: tear down the WHOLE process tree we spawned,
+    /// not just the immediate child. A harness turn can leave grandchild
+    /// runner processes (`gaia __run-agent`) hanging off the daemon; killing
+    /// only `child` would orphan those. The pidfile — not `child`'s own pid —
+    /// is the authority, because `/reload` re-execs the daemon into a brand
+    /// new process that rewrites the SAME pidfile on boot: by the time the
+    /// user quits, the live daemon may not be the process we originally
+    /// spawned at all. Falls back to the originally-spawned child's own pid
+    /// (which IS its process-group id, since it was spawned with
+    /// `process_group(0)`) only if the pidfile is missing.
+    #[cfg(all(desktop, unix))]
+    fn teardown_spawned_daemon(child: Child) {
+        let port = resolve_port();
+        let target_pid = read_daemon_pid().unwrap_or(child.id() as i32);
+        eprintln!("[gaia-shell] total death: SIGTERM process group {target_pid}");
+        kill_process_group(target_pid, "TERM");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut dead = false;
+        while Instant::now() < deadline {
+            if !port_alive(port) {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if dead {
+            eprintln!("[gaia-shell] stopped the daemon we spawned");
+        } else {
+            eprintln!("[gaia-shell] daemon still alive after 2s; SIGKILL process group {target_pid}");
+            kill_process_group(target_pid, "KILL");
+        }
+        // The OS reaps it independently of this (exiting) process; no need to
+        // block here waiting for it.
+        drop(child);
+    }
+
+    /// Non-unix desktop (Windows): no process-group signaling available this
+    /// way — best-effort direct kill, same as before this feature.
+    #[cfg(all(desktop, not(unix)))]
+    fn teardown_spawned_daemon(mut child: Child) {
+        let _ = child.kill();
+        eprintln!("[gaia-shell] stopped the daemon we spawned");
+    }
+
+    /// Mobile never spawns a daemon (see maybe_spawn_daemon), so this is
+    /// unreachable there — kept only so the exit handler compiles uniformly.
+    #[cfg(mobile)]
+    fn teardown_spawned_daemon(_child: Child) {}
+
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
         let builder = tauri::Builder::default()
@@ -670,7 +662,6 @@ mod webkit {
                 }
 
                 let main_window = main_window_builder.build()?;
-                install_media_capture_permission_handler(&main_window);
                 install_ios_scroll_inset_fix(&main_window);
 
                 Ok(())
@@ -678,12 +669,13 @@ mod webkit {
             .build(tauri::generate_context!())
             .expect("error while building the GAIA shell")
             .run(|app, event| {
-                // On exit, tear down ONLY a daemon we spawned ourselves.
+                // On exit, tear down ONLY a daemon we spawned ourselves — total
+                // death (the whole process tree), never a bare kill of the
+                // immediate child. See teardown_spawned_daemon.
                 if let tauri::RunEvent::ExitRequested { .. } = event {
                     if let Some(state) = app.try_state::<SpawnedDaemon>() {
-                        if let Some(mut child) = state.0.lock().unwrap().take() {
-                            let _ = child.kill();
-                            eprintln!("[gaia-shell] stopped the daemon we spawned");
+                        if let Some(child) = state.0.lock().unwrap().take() {
+                            teardown_spawned_daemon(child);
                         }
                     }
                 }

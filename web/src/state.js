@@ -56,7 +56,8 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   dictationBusy: boolean,
  *   dictationLevel: number,
  *   dictationBars: number[],
- *   dictationDraft: ({id: string, workspaceId: string, roomId: string, startedAt: string, updatedAt: string, mimeType: string, status: "recording"|"saved"|"transcribing"|"failed"|"transcribed", bytes: number, durationMs: number, error: string}|null),
+ *   dictationError: string,
+ *   dictationDrafts: {id: string, startedAt: number, durationMs: number, status: "recording"|"saved"|"failed", error: string}[],
  *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
@@ -129,14 +130,21 @@ export const state = {
   voicePendingAgentId: null,
   voiceStatusText: "",
   micMuted: false,
-  // Composer dictation (voice input, this tab only): recording the mic clip,
-  // then transcribing it. Distinct from a live call's micMuted (see voice.js /
-  // dictation.js).
+  // Composer dictation (voice input, this-tab-only): recording the mic clip,
+  // then transcribing it. Distinct from a live call's micMuted (see voice.js
+  // / dictation.js). The live session itself is in-memory only; dictation.js
+  // additionally mirrors it to IndexedDB for crash/reload durability —
+  // dictationDrafts below is the recovered summary of that durable layer, not
+  // the live recording state.
   dictating: false,
   dictationBusy: false,
   dictationLevel: 0,
   dictationBars: [],
-  dictationDraft: null,
+  dictationError: "",
+  // Recovered drafts (from a crash/reload) for the current room, surfaced as
+  // dismissable/transcribable chips in the composer. Never gates send or the
+  // mic — see dictation.js's refreshDictationDrafts / iron invariants.
+  dictationDrafts: [],
   // Transcript read-aloud playback (one message at a time, this tab only).
   readAloud: null,
   // The Thanks-Dario review popup: proposal + which suggestion ids are

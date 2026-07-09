@@ -15,7 +15,17 @@ import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
-import { cancelDictation, clearTranscribedDictationDraft, discardDictationDraft, finalizeDictationForSend, hasPendingDictation, restoreDictationDraftForCurrentRoom, toggleDictation, transcribeDraft } from "./dictation.js";
+import {
+  cancelDictation,
+  discardFailedDictation,
+  discardRecoveredDraft,
+  finalizeDictationForSend,
+  hasFailedDictation,
+  refreshDictationDrafts,
+  retryDictation,
+  toggleDictation,
+  transcribeRecoveredDraft,
+} from "./dictation.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").AgentStatus} AgentStatus */
@@ -182,9 +192,10 @@ function renderComposer() {
         }
       } catch {}
     }
+    // Recovered dictation drafts (crash/reload durability) are per-room too —
+    // refresh the chip list whenever the room switches.
+    void refreshDictationDrafts();
   }
-
-  void restoreDictationDraftForCurrentRoom();
 
   // Textarea chrome; the value is only written when state changed elsewhere
   // (voice transcription, background routing, submit) so typing keeps its caret.
@@ -203,11 +214,11 @@ function renderComposer() {
   }
   resizeComposer(textarea);
 
-  const dictationPending = hasPendingDictation();
+  const dictationPending = state.dictating || state.dictationBusy;
   sendButton.disabled = !snapshot;
   sendButton.textContent = state.dictationBusy ? "…" : busy ? "»" : ">";
   sendButton.title = dictationPending
-    ? "send voice draft — stops recording, transcribes, then sends (audio stays cached if transcription fails)"
+    ? "send voice message — stops recording, transcribes, then sends"
     : busy
       ? "steer the running turn — injects your message mid-turn (⌘/Ctrl+Enter to queue instead · Esc to stop)"
       : "send";
@@ -239,9 +250,15 @@ function renderComposer() {
   attachmentsEl.hidden = state.pendingAttachments.length === 0;
   attachmentsEl.replaceChildren(...AttachmentChips());
 
+  // The live panel (recording/transcribing/failed) and recovered-draft chips
+  // (from a crash/reload) are independent — a recovered chip renders
+  // regardless of whether a live recording is in progress, and never
+  // disables the mic or send button.
   const dictationPanel = DictationPanel();
-  dictationStatusEl.hidden = !dictationPanel;
-  dictationStatusEl.replaceChildren(...(dictationPanel ? [dictationPanel] : []));
+  const draftChips = DictationDraftChips();
+  const dictationChildren = [...(dictationPanel ? [dictationPanel] : []), ...draftChips];
+  dictationStatusEl.hidden = dictationChildren.length === 0;
+  dictationStatusEl.replaceChildren(...dictationChildren);
 
   // Autocomplete.
   const completion = completionFor(state.composerText);
@@ -270,7 +287,7 @@ registerRegion("composer", renderComposer);
 
 /** @param {{ focus?: boolean, queue?: boolean }} [options] */
 async function submitComposer(options = {}) {
-  if (hasPendingDictation()) {
+  if (state.dictating || state.dictationBusy) {
     const ok = await finalizeDictationForSend();
     if (ok) await submitComposer(options);
     return;
@@ -293,7 +310,6 @@ async function submitComposer(options = {}) {
   const restoreOnFailure = (/** @type {Promise<boolean>} */ p) => {
     void p.then((ok) => {
       if (ok) {
-        void clearTranscribedDictationDraft();
         clearDraft();
         return;
       }
@@ -820,57 +836,101 @@ function MemoryChip(snapshot) {
 
 /** @returns {HTMLElement|null} */
 function DictationPanel() {
-  const draft = state.dictationDraft;
-  if (!state.dictating && !state.dictationBusy && !draft) return null;
+  const failed = hasFailedDictation();
+  if (!state.dictating && !state.dictationBusy && !failed && !state.dictationError) return null;
   const bars = state.dictationBars.length ? state.dictationBars : Array.from({ length: 28 }, () => 0.04);
   const status = state.dictating
-    ? "recording — audio is being cached locally"
+    ? "recording"
     : state.dictationBusy
-      ? "transcribing saved audio…"
-      : draft?.status === "failed"
-        ? "transcription failed — audio kept locally"
-        : draft?.status === "transcribed"
-          ? "transcribed — audio cached until send succeeds"
-          : "audio draft saved locally";
-  const detail = draft
-    ? `${formatDuration(draft.durationMs)} · ${formatBytes(draft.bytes)}${draft.error ? ` · ${draft.error}` : ""}`
-    : "starting local audio cache…";
+      ? "transcribing…"
+      : failed
+        ? `transcription failed — ${state.dictationError}`
+        : state.dictationError;
   const actions = [];
   if (state.dictating) {
     actions.push(h("button", { type: "button", class: "dictation-action primary", text: "stop + transcribe", onclick: () => void toggleDictation() }));
-  } else if (draft && !state.dictationBusy) {
-    if (draft.status !== "transcribed") {
-      actions.push(h("button", { type: "button", class: "dictation-action primary", text: draft.status === "failed" ? "retry transcript" : "transcribe", onclick: () => void transcribeDraft(draft.id) }));
-    }
-    actions.push(h("button", { type: "button", class: "dictation-action danger", text: "discard audio", onclick: () => void discardDictationDraft() }));
+  } else if (state.dictationBusy) {
+    // Transcribing: no actions.
+  } else if (failed) {
+    actions.push(h("button", { type: "button", class: "dictation-action primary", text: "retry", onclick: () => void retryDictation() }));
+    actions.push(h("button", { type: "button", class: "dictation-action danger", text: "discard", onclick: () => discardFailedDictation() }));
+  } else {
+    // Error without a clip (e.g. secure-context message): dismiss only.
+    actions.push(h("button", { type: "button", class: "dictation-action danger", text: "dismiss", onclick: () => discardFailedDictation() }));
   }
   return h(
     "div",
-    { class: `dictation-panel${state.dictating ? " recording" : ""}${state.dictationBusy ? " busy" : ""}${draft?.status === "failed" ? " failed" : ""}` },
+    { class: `dictation-panel${state.dictating ? " recording" : ""}${state.dictationBusy ? " busy" : ""}${failed ? " failed" : ""}` },
     h(
       "div",
       { class: "dictation-wave", title: "live microphone level" },
       bars.map((level) => h("span", { class: "dictation-wave-bar", style: `--level:${Math.max(0.04, Math.min(1, level)).toFixed(3)}` })),
     ),
-    h("div", { class: "dictation-copy" }, h("strong", { text: status }), h("span", { text: detail })),
+    h("div", { class: "dictation-copy" }, h("strong", { text: status })),
     h("div", { class: "dictation-actions" }, actions),
   );
 }
 
-/** @param {number} ms */
-function formatDuration(ms) {
-  const total = Math.max(0, Math.round(ms / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+/**
+ * Chips for recovered dictation drafts (from a crash/reload) — one per
+ * state.dictationDrafts entry, each with "transcribe" / "discard" actions.
+ * Reuses the dictation-panel/dictation-action CSS classes; never disables
+ * the mic or the send button.
+ * @returns {HTMLElement[]}
+ */
+function DictationDraftChips() {
+  return state.dictationDrafts.map((draft) =>
+    h(
+      "div",
+      { class: `dictation-panel recovered${draft.status === "failed" ? " failed" : ""}` },
+      h(
+        "div",
+        { class: "dictation-wave", title: "recovered recording" },
+        Array.from({ length: 28 }, () => h("span", { class: "dictation-wave-bar", style: "--level:0.08" })),
+      ),
+      h(
+        "div",
+        { class: "dictation-copy" },
+        h("strong", { text: `recovered recording · ${formatDictationDuration(draft.durationMs)} · ${formatDictationTime(draft.startedAt)}` }),
+        draft.status === "failed" && draft.error ? h("span", { text: draft.error }) : null,
+      ),
+      h(
+        "div",
+        { class: "dictation-actions" },
+        h("button", {
+          type: "button",
+          class: "dictation-action primary",
+          text: "transcribe",
+          onclick: () => void transcribeRecoveredDraft(draft.id),
+        }),
+        h("button", {
+          type: "button",
+          class: "dictation-action danger",
+          text: "discard",
+          onclick: () => void discardRecoveredDraft(draft.id),
+        }),
+      ),
+    ),
+  );
 }
 
-/** @param {number} bytes */
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+/** @param {number} ms @returns {string} mm:ss */
+function formatDictationDuration(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
+
+/** @param {number} ms @returns {string} */
+function formatDictationTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
 
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
@@ -898,27 +958,22 @@ function VoiceButtons() {
   if (!state.snapshot) return [];
   const recording = state.dictating;
   const busy = state.dictationBusy;
-  const draft = state.dictationDraft;
   return [
     h("button", {
       type: "button",
       class: `voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
       title: busy
-        ? "transcribing… audio remains cached if this fails"
+        ? "transcribing…"
         : recording
           ? "stop & transcribe (right-click or Esc to discard)"
-          : draft?.status === "transcribed"
-            ? "audio cached locally until this message sends"
-            : draft
-              ? "audio draft saved locally — click to transcribe; press send to transcribe + send"
-              : "voice input — click to dictate a message",
-      disabled: busy || draft?.status === "transcribed",
-      onclick: () => (draft && !recording ? void transcribeDraft(draft.id) : void toggleDictation()),
+          : "voice input — click to dictate a message",
+      disabled: busy,
+      onclick: () => void toggleDictation(),
       oncontextmenu: (event) => {
         event.preventDefault();
         if (recording) cancelDictation();
       },
-      text: busy ? "…" : recording ? "⏺" : draft?.status === "transcribed" ? "💾" : draft ? "↻" : "\u{1F3A4}",
+      text: busy ? "…" : recording ? "⏺" : "\u{1F3A4}",
     }),
   ];
 }
@@ -1021,7 +1076,7 @@ export function installComposerRouting() {
         !state.settingsOpen &&
         !state.dario.open &&
         !isEditableElement(event.target) &&
-        (state.composerText.trim() || hasPendingDictation())
+        (state.composerText.trim() || state.dictating || state.dictationBusy)
       ) {
         event.preventDefault();
         void submitComposer({ focus: true, queue: true });
@@ -1033,7 +1088,7 @@ export function installComposerRouting() {
 
       if (event.key === "Enter") {
         if (event.shiftKey) state.composerText += "\n";
-        else if (state.composerText.trim() || hasPendingDictation()) {
+        else if (state.composerText.trim() || state.dictating || state.dictationBusy) {
           void submitComposer({ focus: true });
           return;
         }

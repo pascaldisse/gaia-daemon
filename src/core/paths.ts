@@ -62,7 +62,8 @@ export const workspacePaths = {
    * so a delete is recoverable (restore = move it back). */
   roomTrashDir: (rootDir: string) => join(rootDir, ".gaia", "trash", "rooms"),
   /** Room git worktrees (collab.isolation "worktree"): one isolated checkout
-   * per summon room, sharing the workspace repo's object store. */
+   * per top-level room (summon rooms inherit their owning ancestor's), sharing
+   * the workspace repo's object store. */
   worktreesDir: (rootDir: string) => join(rootDir, ".gaia", "worktrees"),
   worktreeDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "worktrees", roomId),
   transcript: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "transcript.jsonl"),

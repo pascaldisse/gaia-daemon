@@ -506,17 +506,21 @@ export class Daemon {
       this.services.delete(key);
     }
 
+    // Pick and persist the replacement BEFORE any post-trash workspace load.
+    // loadWorkspace() always ensures config.room exists; if config.room still
+    // points at the just-trashed room, it recreates an empty zombie directory
+    // and the sidebar appears to ignore the delete.
+    const current = this.currentRoom.get(workspaceId);
+    const next = current && current !== roomId && roomIds.includes(current) ? current : (roomIds.find((id) => id !== roomId) ?? DEFAULT_ROOM);
+
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const trash = await trashWorkspaceRoom(record.path, roomId, stamp);
+    await setWorkspaceRoom(record.path, next);
+    this.currentRoom.set(workspaceId, next);
+
     const workspace = await loadWorkspace(record.path);
     const episodesPurged = await this.memoryServiceFor(workspaceId, workspace, record.path).purgeRoom(roomId, trash || undefined);
     this.log(`deleted room ${roomId} (ws ${workspaceId}) → trash ${trash || "(already gone)"}; purged ${episodesPurged} episode(s) from memory`);
-
-    // Reselect a neighbour if the deleted room was current (or nothing is).
-    const current = this.currentRoom.get(workspaceId);
-    const next = current && current !== roomId ? current : (roomIds.find((id) => id !== roomId) ?? DEFAULT_ROOM);
-    await setWorkspaceRoom(record.path, next);
-    this.currentRoom.set(workspaceId, next);
 
     const nextService = await this.serviceFor(workspaceId, next);
     const snapshot = await nextService.getSnapshot();

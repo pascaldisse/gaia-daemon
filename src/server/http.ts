@@ -2,15 +2,16 @@
 // OpenAI-compatible voice endpoints. No business logic lives here — if a
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
-import { createReadStream, existsSync, watch, type FSWatcher } from "node:fs";
-import { access, readdir, readFile, stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createReadStream, existsSync, openSync, watch, type FSWatcher } from "node:fs";
+import { access, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gaiaHost, gaiaPort } from "../core/config.js";
-import { bundledDir } from "../core/paths.js";
+import { bundledDir, gaiaHome } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
 import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
@@ -20,6 +21,7 @@ import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
+import { configureRoomServiceReload } from "../services/room-service.js";
 import { summonAck } from "../services/summons.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
@@ -52,6 +54,22 @@ const MIME: Record<string, string> = {
 // A dictation clip is short spoken audio, not a media upload — a few MiB of
 // opus is minutes of speech. Cap well below the attachment limit.
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
+const bootId = randomUUID();
+const RELOAD_DELAY_MS = 250;
+const LISTEN_RETRY_DELAY_MS = 300;
+const LISTEN_RETRIES = 10;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+/** Total death (cmd+Q / SIGTERM) needs an authoritative pid: the shell reads
+ * this file rather than trusting the pid of whatever it originally spawned,
+ * because /reload re-execs the daemon into a NEW process that rewrites this
+ * same file on its own boot (see writePidfile/removePidfile below). */
+function pidfilePath(): string {
+  return join(gaiaHome(), "daemon.pid");
+}
 
 function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
@@ -192,10 +210,13 @@ export class GaiaWebServer {
   private readonly devWatchers: FSWatcher[] = [];
   private devReloadTimer: NodeJS.Timeout | undefined;
   private boundUrl = "";
+  private server: HttpServer | undefined;
+  private reloadStarted = false;
 
   constructor(private readonly options: WebServerOptions) {
     this.daemon = new Daemon({ cwd: options.cwd });
     this.daemon.subscribe((event) => this.broadcast(event));
+    configureRoomServiceReload(() => this.requestReload());
   }
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
@@ -208,16 +229,12 @@ export class GaiaWebServer {
         else response.end();
       });
     });
+    this.server = server;
 
     const host = this.options.host ?? gaiaHost();
     const port = this.options.port ?? gaiaPort();
-    await new Promise<void>((resolveListen, reject) => {
-      server.once("error", reject);
-      server.listen(port, host, () => {
-        server.off("error", reject);
-        resolveListen();
-      });
-    });
+    await this.listenWithRetry(server, port, host);
+    await this.writePidfile();
 
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;
@@ -226,24 +243,120 @@ export class GaiaWebServer {
 
     return {
       url: `${this.boundUrl}/`,
-      close: () =>
-        new Promise<void>((resolveClose, reject) => {
-          this.daemon.dispose();
-          for (const watcher of this.devWatchers) watcher.close();
-          this.devWatchers.length = 0;
-          if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
-          for (const client of this.devClients) client.end();
-          this.devClients.clear();
-          server.close((error) => (error ? reject(error) : resolveClose()));
-        }),
+      close: () => this.closeServer(server),
     };
+  }
+
+  private async listenWithRetry(server: HttpServer, port: number, host: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await new Promise<void>((resolveListen, reject) => {
+          const onError = (error: NodeJS.ErrnoException): void => {
+            server.off("listening", onListening);
+            reject(error);
+          };
+          const onListening = (): void => {
+            server.off("error", onError);
+            resolveListen();
+          };
+          server.once("error", onError);
+          server.listen(port, host, onListening);
+        });
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EADDRINUSE" && attempt < LISTEN_RETRIES) {
+          await sleep(LISTEN_RETRY_DELAY_MS);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async closeServer(server: HttpServer): Promise<void> {
+    // Idempotency guard: SIGTERM/SIGINT can race a second close (e.g. the
+    // process-level handler in cli.ts firing alongside another shutdown path)
+    // — a repeat call must no-op rather than double-dispose or double-close
+    // an already-closed net.Server.
+    if (this.server !== server) return;
+    this.server = undefined;
+    this.daemon.dispose();
+    for (const watcher of this.devWatchers) watcher.close();
+    this.devWatchers.length = 0;
+    if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
+    for (const client of this.clients) client.response.end();
+    this.clients.clear();
+    for (const client of this.devClients) client.end();
+    this.devClients.clear();
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+      server.closeAllConnections?.();
+    });
+    await this.removePidfile();
+  }
+
+  /** Write <gaia home>/daemon.pid after a successful bind — the authority the
+   * Tauri shell (and `kill -TERM`) uses to find and terminate the daemon.
+   * Best-effort: a pidfile write failure must not stop the daemon serving. */
+  private async writePidfile(): Promise<void> {
+    try {
+      await mkdir(gaiaHome(), { recursive: true });
+      await writeFile(pidfilePath(), `${process.pid}\n`, "utf8");
+    } catch (error) {
+      console.error(`gaia: failed to write pidfile: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Delete the pidfile on graceful shutdown. The /reload re-exec child
+   * rewrites it on its own boot (writePidfile runs on every listen()), so
+   * deleting here — before the new process comes up — is correct: there is
+   * a brief window with no pidfile, never a stale one pointing at a dead pid. */
+  private async removePidfile(): Promise<void> {
+    try {
+      await unlink(pidfilePath());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`gaia: failed to remove pidfile: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private requestReload(): void {
+    if (this.reloadStarted) return;
+    this.reloadStarted = true;
+    setTimeout(() => {
+      void this.reloadNow();
+    }, RELOAD_DELAY_MS);
+  }
+
+  private async reloadNow(): Promise<void> {
+    try {
+      if (this.server) await this.closeServer(this.server);
+      // Re-exec with the SAME node loader flags: tsx's --require/--import live
+      // in process.execArgv, NOT process.argv — without them the child is plain
+      // `node src/cli.ts`, which dies instantly and leaves the port dead (the
+      // exact "/reload froze the app" failure). And never stdio:"ignore" here:
+      // a crashing reload child must leave a corpse we can read.
+      const reloadLog = openSync(join(gaiaHome(), "reload.log"), "a");
+      const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+        detached: true,
+        stdio: ["ignore", reloadLog, reloadLog],
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      child.unref();
+      process.exit(0);
+    } catch (error) {
+      console.error(`gaia: reload failed: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://gaia.local");
     if (this.options.dev && request.method === "GET" && url.pathname === "/__dev/reload") {
       beginSse(response);
-      response.write(encodeSse("ready", {}));
+      response.write(encodeSse("ready", { bootId }));
       this.devClients.add(response);
       response.on("close", () => this.devClients.delete(response));
       return;
@@ -345,7 +458,7 @@ export class GaiaWebServer {
         response,
       };
       beginSse(response);
-      response.write(encodeSse("ready", {}));
+      response.write(encodeSse("ready", { bootId }));
       // Seed the account-usage chip: the SSE fan-out only carries events emitted
       // while this client is subscribed, so replay the cached usage now instead
       // of leaving the chip blank until the next daemon poll.

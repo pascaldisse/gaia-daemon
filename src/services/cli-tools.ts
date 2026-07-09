@@ -10,11 +10,13 @@
 //   GAIA_DAEMON_URL, GAIA_DAEMON_TOKEN
 
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
 import { gaiaToolByVerb } from "../harness/tools.js";
+import { compressCaryll, expandCaryll } from "./caryll.js";
 
 const MEMORY_USAGE = `Usage:
   gaia mem list                      list memory files
@@ -29,6 +31,10 @@ const MEMORY_USAGE = `Usage:
 const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
 const SUMMON_USAGE = `Usage: gaia summon <agent> <task>`;
+const CARYLL_USAGE = `Usage:
+  gaia caryll compress <file> [-o <out>]  compress a file in place (or to <out>)
+  gaia caryll expand <file> [-o <out>]    expand a file (default out: stdout)
+  gaia caryll stats <file>                compress in memory and print stats only`;
 
 // Minimal flag parser: --name value pairs plus positionals.
 function parseFlags(args: string[], booleans: ReadonlySet<string> = new Set()): { positional: string[]; flags: Record<string, string> } {
@@ -213,9 +219,70 @@ async function runSummon(args: string[]): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
-/** Dispatches `gaia mem|recall|summon …`. Returns a process exit code. */
+function statsLine(stats: { tokensBefore: number; tokensAfter: number; legendEntries: number }): string {
+  const saved = stats.tokensBefore > 0 ? Math.round((1 - stats.tokensAfter / stats.tokensBefore) * 100) : 0;
+  return `tokens ${stats.tokensBefore} -> ${stats.tokensAfter} (${saved}% saved, ${stats.legendEntries} legend entries)`;
+}
+
+async function runCaryll(args: string[]): Promise<number> {
+  const sub = args[0];
+  const rest = args.slice(1);
+  const positional: string[] = [];
+  let out: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "-o") {
+      out = rest[i + 1];
+      i++;
+    } else {
+      positional.push(rest[i]);
+    }
+  }
+  const file = positional[0]?.trim();
+  if (!sub || !file) return fail(CARYLL_USAGE);
+
+  try {
+    if (sub === "compress") {
+      const text = await readFile(file, "utf8");
+      const { output, stats } = compressCaryll(text);
+      // Pascal's ruling 2026-07-09: no filename/extension changes — the
+      // `~caryll/1` header makes the format self-describing, so default is
+      // in-place. Round trip is bit-lossless; `gaia caryll expand` restores.
+      await writeFile(out?.trim() || file, output);
+      console.log(statsLine(stats));
+      return 0;
+    }
+
+    if (sub === "expand") {
+      const text = await readFile(file, "utf8");
+      const output = expandCaryll(text);
+      if (out?.trim()) {
+        await writeFile(out.trim(), output);
+      } else {
+        console.log(output);
+      }
+      return 0;
+    }
+
+    if (sub === "stats") {
+      const text = await readFile(file, "utf8");
+      const { stats } = compressCaryll(text);
+      console.log(statsLine(stats));
+      return 0;
+    }
+  } catch (error) {
+    return fail(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return fail(CARYLL_USAGE);
+}
+
+/** Dispatches `gaia mem|recall|summon|caryll …`. Returns a process exit code. */
 export async function runHarnessCommand(args: string[]): Promise<number> {
   const [command, ...rest] = args;
+  // `caryll` is a plain file-transform CLI utility, not an agent GaiaTool
+  // (no Claude grant / Pi tool / system-prompt pointer) — dispatched directly,
+  // ahead of the registry-driven switch below.
+  if (command === "caryll") return runCaryll(rest);
   const tool = command ? gaiaToolByVerb(command) : undefined;
   switch (tool?.id) {
     case "memory":

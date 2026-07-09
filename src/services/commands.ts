@@ -22,6 +22,7 @@ export type SlashCommand =
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
+  | { type: "reload" }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
@@ -49,6 +50,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     description: "have Dario review recent messages for safeguard triggers and propose redactions: /thanks-dario [run|on|off]",
     aliases: ["dario"],
   },
+  { name: "reload", type: "reload", description: "restart the daemon in place (re-exec, sessions and queue survive)" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(

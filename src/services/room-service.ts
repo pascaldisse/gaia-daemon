@@ -46,6 +46,7 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
+import { resolveRoomWorkDir } from "../domain/worktree.js";
 import { effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
@@ -209,7 +210,14 @@ const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
  * optional event discriminator when the transcript should render it specially. */
 type CommandReply = string | { text: string; kind?: RoomEventKind };
-type CommandHandler = (service: RoomService, command: SlashCommand) => Promise<CommandReply>;
+type RoomCommand = SlashCommand;
+type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<CommandReply>;
+
+let reloadDaemon: (() => void | Promise<void>) | undefined;
+
+export function configureRoomServiceReload(callback: (() => void | Promise<void>) | undefined): void {
+  reloadDaemon = callback;
+}
 
 const COMMANDS: Record<string, CommandHandler> = {
   help: async () => HELP_TEXT,
@@ -223,6 +231,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
+  reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
@@ -342,7 +351,9 @@ export class RoomService {
    * RoomState.summonUntrusted) — feeds effectiveTrust for sandbox resolution. */
   private summonUntrusted = false;
   /** This room's isolated working directory (RoomState.workDir — its git
-   * worktree under collab isolation), validated against the filesystem at init.
+   * worktree under collab isolation), validated against the filesystem at
+   * init. Assigned at room-service init for EVERY room — default,
+   * interactive, and summon children alike — not at summon launch.
    * undefined = run at the workspace root. Feeds the runtimes' workDir thunk. */
   private workDir: string | undefined;
 
@@ -382,9 +393,15 @@ export class RoomService {
     const state = await this.room.state();
     this.isSummonRoom = Boolean(state.parentRoomId);
     this.summonUntrusted = state.summonUntrusted === true;
-    // A stamped worktree that vanished from disk (pruned by hand, trashed repo)
-    // degrades to the workspace root instead of wedging every spawn on a dead cwd.
-    this.workDir = state.workDir && existsSync(state.workDir) ? state.workDir : undefined;
+    // This room's working directory: top-level rooms OWN a git worktree under
+    // collab isolation (created here on first open); summon rooms INHERIT the
+    // parent's (resolved + stamped at summon launch). A vanished dir degrades
+    // to the workspace root instead of wedging every spawn on a dead cwd.
+    this.workDir = await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, this.room.roomId);
+    if (this.workDir && this.workDir !== state.workDir) {
+      const dir = this.workDir;
+      await this.room.updateState((s) => { s.workDir = dir; });
+    }
     // Restore the per-agent context accounting so the composer's `ctx` chip is
     // present from first paint after a restart, not blank until the next turn.
     if (state.contextUsage) this.contextUsage = { ...state.contextUsage };
@@ -449,7 +466,7 @@ export class RoomService {
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<Task> {
     await this.init();
 
-    let command = parseCommand(text);
+    let command: RoomCommand = parseCommand(text);
     // Harness-native passthrough: an unrecognized `/command` becomes a command
     // TURN to the active agent when that agent has CHECKED that command as a
     // skill (claude builtins like deep-research) and its harness can run them.
@@ -2083,7 +2100,7 @@ export class RoomService {
 
   // --- commands ----------------------------------------------------------------
 
-  private async runCommand(task: Task, command: SlashCommand): Promise<void> {
+  private async runCommand(task: Task, command: RoomCommand): Promise<void> {
     try {
       const handler = COMMANDS[command.type];
       const reply = handler ? await handler(this, command) : `Unknown command. Try /help.`;
@@ -2108,6 +2125,15 @@ export class RoomService {
     } catch (error) {
       if (!this.taskCancelled(task)) this.settleTask(task, "error", error);
     }
+  }
+
+  async runReloadCommand(): Promise<string> {
+    const reload = reloadDaemon;
+    if (!reload) return "Reload is unavailable in this process.";
+    setTimeout(() => {
+      void reload();
+    }, 0);
+    return "reloading daemon — in-flight turns resume after restart.";
   }
 
   // --- harness-native commands (passthrough) ------------------------------------

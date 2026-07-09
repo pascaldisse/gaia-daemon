@@ -12,7 +12,7 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`,
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`,
   );
 }
 
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon") {
+  if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon" || args[0] === "caryll") {
     const { runHarnessCommand } = await import("./services/cli-tools.js");
     process.exitCode = await runHarnessCommand(args);
     return;

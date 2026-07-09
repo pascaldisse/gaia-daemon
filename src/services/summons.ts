@@ -44,7 +44,7 @@ export interface SummonResultDelivery {
 }
 
 import { normalizeRoomState } from "../domain/rooms.js";
-import { ensureRoomWorktree } from "../domain/worktree.js";
+import { resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
@@ -134,6 +134,12 @@ export interface SummonRoomAccess {
   deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void>;
   /** Stamp this CHILD room's summon record delivered (idempotent). */
   markSummonDelivered(): Promise<void>;
+  /** Panic-stop this room's active turn — the EXACT plumbing the /cancel
+   * slash command uses (cancelActiveTask under the hood): aborts the runner,
+   * lets the partial commit (NO PROGRESS EVER LOST), settles the task
+   * "cancelled". The summon timeout's cancel path reuses this rather than
+   * inventing a second one. */
+  runCancelCommand(): Promise<string>;
 }
 
 /** Resolve when `task` settles (its object is live-mutated by the service), or
@@ -160,39 +166,51 @@ export function awaitTask(room: { subscribe(listener: (event: SummonTaskEvent) =
   });
 }
 
-/** Best-effort progress digest for a worker that ended without a usable
- * final reply (cancelled / errored / empty): the tail of what it actually
- * produced, extracted mechanically from the child transcript. Model-free
- * on purpose — the last-resort path must never be able to fail. */
-async function progressDigest(rootDir: string, roomId: string, agentId: string): Promise<string> {
+/** Best-effort read of what a worker actually did, extracted mechanically
+ * from the child transcript. Model-free on purpose — the last-resort path
+ * must never be able to fail. Feeds three things: the progress-digest tail
+ * appended to every non-clean outcome (`digest`, unchanged shape from the
+ * original progressDigest); whether the worker did ANYTHING at all — text or
+ * a tool call — which is the failure bar for a turn that completed with an
+ * empty final reply (`active`: false means it never got going); and the
+ * harness's own last words, passed through verbatim, preferred as a failure
+ * headline over the generic fallback when the worker said something before
+ * going quiet (`lastText`). */
+async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string }> {
   let raw: string;
   try {
     raw = await readFile(workspacePaths.transcript(rootDir, roomId), "utf8");
   } catch {
-    return "";
+    return { digest: "", active: false, lastText: "" };
   }
   let firstTs = "";
   let lastTs = "";
   const texts: string[] = [];
+  let active = false;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    let event: { author?: unknown; text?: unknown; timestamp?: unknown };
+    let event: { author?: unknown; text?: unknown; timestamp?: unknown; details?: { tools?: unknown[] } };
     try {
       event = JSON.parse(line);
     } catch {
       continue;
     }
-    if (event.author !== agentId || typeof event.text !== "string" || event.text.length === 0) continue;
+    if (event.author !== agentId) continue;
+    if (Array.isArray(event.details?.tools) && event.details.tools.length > 0) active = true;
+    if (typeof event.text !== "string" || event.text.length === 0) continue;
+    active = true;
     if (!firstTs) firstTs = typeof event.timestamp === "string" ? event.timestamp : "";
     if (typeof event.timestamp === "string") lastTs = event.timestamp;
     texts.push(event.text);
   }
-  if (texts.length === 0) return "the worker produced no output before it stopped.";
-  const tail = texts
-    .slice(-3)
-    .map((text) => (text.length > 600 ? `${text.slice(0, 600)}…` : text))
-    .join("\n---\n");
-  return `progress until then (${texts.length} update(s), ${firstTs} → ${lastTs}):\n\n${tail}`.slice(0, 2400);
+  const digest =
+    texts.length === 0
+      ? "the worker produced no output before it stopped."
+      : `progress until then (${texts.length} update(s), ${firstTs} → ${lastTs}):\n\n${texts
+          .slice(-3)
+          .map((text) => (text.length > 600 ? `${text.slice(0, 600)}…` : text))
+          .join("\n---\n")}`.slice(0, 2400);
+  return { digest, active, lastText: texts.at(-1) ?? "" };
 }
 
 export interface SummonOptions {
@@ -221,11 +239,15 @@ export interface SummonHost {
   runningChildren(parentRoomId?: string): SummonChild[];
 }
 
-/** summonAndWait callers stop waiting after this long; the worker's turn keeps
- * going in its room and the result is read from the transcript later.
- * Background (delivered) summons have NO deadline — they call back whenever
- * they finish, and a restart re-arms them. */
-export const SUMMON_TIMEOUT_MS = 300_000;
+/** Hard cap on a worker's FIRST turn (runFirstTurn) — covers a harness that
+ * hangs, loops, or silently runs out of usage without ever erroring. Applies
+ * uniformly to every summon path: awaited (summonAndWait) and background
+ * (deliver: "note"/"turn") alike — a background summon is exactly the one
+ * nobody is watching, so it must not be allowed to hang unnoticed forever.
+ * Past this, the turn is force-cancelled (the room's own /cancel plumbing —
+ * see SummonRoomAccess.runCancelCommand) and the summon fails loudly instead
+ * of leaving an orphaned turn running. */
+export const SUMMON_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 
 /** The tool-facing acknowledgment for a background summon — the ONE place this
  * contract is worded, shared by the HTTP endpoint and the in-process tool. */
@@ -296,17 +318,13 @@ export class SummonCoordinator implements SummonHost {
     // creation, immutable) so a daemon restart resumes the child's turn under
     // the SAME forced sandbox instead of quietly promoting it to trusted.
     if (untrusted) state.summonUntrusted = true;
-    // Worktree isolation (collab.isolation "worktree"): give the child room its
-    // own checkout so concurrent summons in one repo stop colliding on a single
-    // working tree/index. Stamped on durable state exactly like the trust tier:
-    // decided once at THIS choke point, read at child-service init, and a
-    // daemon restart resumes the room in the SAME checkout. Best-effort — a
-    // non-git workspace or a failed `worktree add` degrades to the root
-    // (ensureRoomWorktree returns undefined), never blocks the summon.
-    if (this.workspace.config.collab?.isolation === "worktree") {
-      const workDir = ensureRoomWorktree(this.workspace.rootDir, childRoomId, this.workspace.config.collab.branchPrefix);
-      if (workDir) state.workDir = workDir;
-    }
+    // Worktree isolation (collab.isolation "worktree"): summon rooms NEVER get
+    // their own checkout — the child INHERITS the parent room's worktree so a
+    // worker operates on the same branch/files as the room that summoned it.
+    // Resolution walks to the top-level ancestor (creating ITS worktree if
+    // needed); a non-git workspace degrades to the workspace root.
+    const workDir = await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, childRoomId);
+    if (workDir) state.workDir = workDir;
     if (options.deliver) {
       state.summon = {
         agentId,
@@ -331,12 +349,11 @@ export class SummonCoordinator implements SummonHost {
   /** Run the worker's first turn; with a delivery mode, land the result (or the
    * failure, loudly) in the parent room afterwards. */
   private async runChild(child: SummonRoomAccess, info: SummonChild, task: string, options: SummonOptions): Promise<string> {
-    if (!options.deliver) return this.runFirstTurn(child, info.agentId, task, info.roomId, SUMMON_TIMEOUT_MS);
+    if (!options.deliver) return this.runFirstTurn(child, info.agentId, task, info.roomId);
 
     let reply: string;
     let failed = false;
     try {
-      // No deadline: a background worker calls back whenever it finishes.
       reply = await this.runFirstTurn(child, info.agentId, task, info.roomId);
     } catch (error) {
       failed = true;
@@ -355,17 +372,33 @@ export class SummonCoordinator implements SummonHost {
 
   /** Summons run autonomously: the context gate (a human decision modal) must
    * never hold a worker's first turn. */
-  private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string, timeoutMs?: number): Promise<string> {
+  private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string): Promise<string> {
     const turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
-    await awaitTask(child, turn, timeoutMs);
+    await awaitTask(child, turn, SUMMON_TIMEOUT_MS);
     if (turn.status === "running" || turn.status === "queued") {
-      return `summon timed out after ${Math.round((timeoutMs ?? SUMMON_TIMEOUT_MS) / 60_000)} minutes`;
+      // Hard cap hit: the worker hung, is looping, or ran out of usage
+      // without the harness ever erroring out. Force it to stop via the SAME
+      // plumbing /cancel uses (no second cancel path) — its partial progress
+      // still commits (NO PROGRESS EVER LOST) — then fail loudly instead of
+      // leaving an orphaned turn running unwatched forever.
+      await child.runCancelCommand();
+      const { digest } = await inspectWorker(this.workspace.rootDir, roomId, agentId);
+      throw new Error(["summon timed out after 30 minutes", digest].filter(Boolean).join("\n\n"));
     }
-    const digest = await progressDigest(this.workspace.rootDir, roomId, agentId);
-    if (turn.status === "error") throw new Error([turn.error || "summon turn failed", digest].filter(Boolean).join("\n\n"));
-    if (turn.status === "cancelled") throw new Error(["cancelled before completion", digest].filter(Boolean).join("\n\n"));
+    const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
+    if (turn.status === "error") throw new Error([turn.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "cancelled") throw new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n"));
     const reply = (await child.latestReplyFrom(agentId)).trim();
-    return reply || `(no final reply)\n\n${digest || "the worker produced no output."}`;
+    if (reply) return reply;
+    // Empty completion: a worker that genuinely did something — produced
+    // text or ran a tool — anywhere in its transcript just wrote no closing
+    // prose; that's progress, not failure. A worker with NEITHER is one that
+    // never got going at all (harness likely out of usage or failed to
+    // start) — an explicit failure, not a silent "(no final reply)" success.
+    if (worker.active) return `(no final reply)\n\n${worker.digest}`;
+    throw new Error(
+      [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n"),
+    );
   }
 
   /** Land a worker's result in the parent room: a COLLAPSED note authored by
@@ -421,20 +454,31 @@ export class SummonCoordinator implements SummonHost {
   private async recoverOne(info: SummonChild, record: SummonDelivery): Promise<void> {
     const child = await this.serviceForRoom(info.roomId); // init() resumes the WAL turn / queue
     await child.waitForSettled();
-    const digest = await progressDigest(this.workspace.rootDir, info.roomId, info.agentId);
+    const worker = await inspectWorker(this.workspace.rootDir, info.roomId, info.agentId);
     const lastTask = (await child.getSnapshot()).tasks.at(-1);
     let reply: string;
     let failed: boolean;
     if (lastTask?.status === "error") {
-      reply = [lastTask.error || "summon turn failed", digest].filter(Boolean).join("\n\n");
+      reply = [lastTask.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
     } else if (lastTask?.status === "cancelled") {
-      reply = ["cancelled before completion", digest].filter(Boolean).join("\n\n");
+      reply = ["cancelled before completion", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
     } else {
       const raw = (await child.latestReplyFrom(info.agentId)).trim();
-      reply = raw || `(no final reply)\n\n${digest || "the worker produced no output."}`;
-      failed = false;
+      if (raw) {
+        reply = raw;
+        failed = false;
+      } else if (worker.active) {
+        // Did something, wrote no closing prose — progress, not failure.
+        reply = `(no final reply)\n\n${worker.digest}`;
+        failed = false;
+      } else {
+        // Never got going at all — same empty-completion failure bar as
+        // runFirstTurn.
+        reply = [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n");
+        failed = true;
+      }
     }
     await this.deliver(child, info, record, reply, failed);
   }
