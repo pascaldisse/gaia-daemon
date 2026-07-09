@@ -37,6 +37,19 @@ export function openSettings() {
   void selectTab(state.settingsTab);
 }
 
+/**
+ * Entry point for clickable agent rows (e.g. the room panel): opens the
+ * settings modal directly on that agent's files, as if its row in the
+ * Agents tab had been clicked.
+ * @param {string} agentId
+ */
+export async function openAgentSettings(agentId) {
+  state.settingsOpen = true;
+  state.settingsTab = "agents";
+  await selectAgent(agentId);
+  markDirty("settings");
+}
+
 export function closeSettings() {
   state.settingsOpen = false;
   markDirty("settings");
