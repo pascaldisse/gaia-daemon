@@ -758,6 +758,9 @@ export interface Task {
    * (failed-steer fallback) — the committed bubble renders it, so the client
    * must not add a queued ghost on top. */
   recorded?: boolean;
+  /** Attachments on a queued message — carried on the chip so the client's
+   * queued ghost bubble can render them before the user event commits. */
+  attachments?: MessageAttachment[];
 }
 
 export interface AgentStatus {

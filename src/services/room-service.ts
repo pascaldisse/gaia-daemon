@@ -446,6 +446,7 @@ export class RoomService {
           targets: message.targets,
           status: "queued" as const,
           startedAt: message.queuedAt,
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           // Agent-authored hand-offs/summon callbacks aren't "user →" ghosts.
           ...(message.fromAgentDialogue ? { callback: true } : {}),
         }));
@@ -559,6 +560,7 @@ export class RoomService {
     if (this.activeTask) {
       task.status = "queued";
       if (recordedSteerEventId) task.recorded = true;
+      if (options.attachments?.length) task.attachments = options.attachments;
       await this.room.enqueue({
         taskId: task.id,
         text,

@@ -293,6 +293,7 @@ function messageViews() {
       targets: task.targets ?? [],
       channel: undefined,
       text: task.text,
+      ...(task.attachments?.length ? { attachments: task.attachments } : {}),
       streaming: false,
       queued: true,
       queuedTaskId: task.id,
