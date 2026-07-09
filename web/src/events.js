@@ -14,6 +14,7 @@ import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
 /** @typedef {import("./types.js").ToolDetail} ToolDetail */
 /** @typedef {import("./types.js").EventDetails} EventDetails */
+/** @typedef {import("./types.js").Snapshot} Snapshot */
 /**
  * @template {UiEvent["type"]} T
  * @typedef {import("./types.js").Ev<T>} Ev
@@ -55,14 +56,10 @@ export function connectEvents() {
 
   source.addEventListener("snapshot", (event) => {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
-    state.snapshot = payload.snapshot;
-    pruneStreams();
-    seedLiveTurn();
-    syncReadMarks();
-    refreshAttention();
-    syncDarioFromSnapshot();
-    syncOlderFromSnapshot();
-    markDirty();
+    void (async () => {
+      await adoptSnapshotKeepingRoom(payload.snapshot);
+      syncDarioFromSnapshot();
+    })();
   });
 
   // A room somewhere started/finished a turn or advanced its activity. The
@@ -278,17 +275,45 @@ async function resyncSnapshot(workspaceId) {
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
     if (state.snapshot?.workspace.id !== workspaceId) return;
-    state.snapshot = body.snapshot;
     state.voice = body.voice ?? null;
-    pruneStreams();
-    seedLiveTurn();
-    syncReadMarks();
-    refreshAttention();
-    syncOlderFromSnapshot();
-    markDirty();
+    await adoptSnapshotKeepingRoom(body.snapshot);
   } catch {
     // Server unreachable again — the next successful reconnect retries.
   }
+}
+
+/**
+ * Server snapshots are advisory about WHICH room is open — the client's room
+ * choice is sticky and only changes by user action or room deletion.
+ *
+ * If a fresh snapshot points at a different room than the one currently open,
+ * and that open room still exists in the fresh snapshot's room list, re-fetch
+ * the open room's own snapshot (the same endpoint `selectRoom` in actions.js
+ * uses) and adopt that instead, so a server-pushed or resynced snapshot never
+ * yanks the user out of the room they're looking at. Falls back to the passed
+ * snapshot if that re-fetch fails.
+ * @param {Snapshot} snapshot
+ */
+async function adoptSnapshotKeepingRoom(snapshot) {
+  const wantedRoomId = state.snapshot?.room?.id;
+  if (wantedRoomId && snapshot.room.id !== wantedRoomId && snapshot.rooms.some((room) => room.id === wantedRoomId)) {
+    try {
+      const body = await api(
+        `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(wantedRoomId)}/select`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      snapshot = body.snapshot;
+    } catch {
+      // Re-fetch failed — fall back to adopting the snapshot as pushed.
+    }
+  }
+  state.snapshot = snapshot;
+  pruneStreams();
+  seedLiveTurn();
+  syncReadMarks();
+  refreshAttention();
+  syncOlderFromSnapshot();
+  markDirty();
 }
 
 /**

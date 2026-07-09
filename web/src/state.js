@@ -234,15 +234,25 @@ function persistReadMarks() {
  * refresh — or a full daemon restart — restores exactly where they were. The
  * daemon's own current-room map is in-memory and resets on restart, and `/api/app`
  * otherwise falls back to the most-recently-touched workspace, so this is the
- * only thing that survives both.
+ * only thing that survives both. Written to two stores: `sessionStorage` is
+ * per-window and gives an exact restore across dev reloads of that same window
+ * (each window keeps its own room instead of clobbering the others); `localStorage`
+ * is shared across windows/launches and is only consulted as a fallback — e.g. a
+ * brand-new window/tab with no session history yet, or a fresh app launch.
  * @typedef {{ workspaceId: string, roomId: string }} OpenLocation
  */
 
 /** @param {Snapshot|null} snapshot */
 export function rememberLocation(snapshot) {
   if (!snapshot) return;
+  const payload = JSON.stringify({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
   try {
-    localStorage.setItem("gaia.lastOpen", JSON.stringify({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id }));
+    sessionStorage.setItem("gaia.lastOpen", payload);
+  } catch {
+    // Private mode / quota — this window just won't get exact reload restore.
+  }
+  try {
+    localStorage.setItem("gaia.lastOpen", payload);
   } catch {
     // storage disabled — location just won't survive a reload.
   }
@@ -250,6 +260,12 @@ export function rememberLocation(snapshot) {
 
 /** @returns {OpenLocation|null} */
 export function recallLocation() {
+  try {
+    const value = JSON.parse(sessionStorage.getItem("gaia.lastOpen") ?? "null");
+    if (value && typeof value.workspaceId === "string" && typeof value.roomId === "string") return value;
+  } catch {
+    // fall through to localStorage
+  }
   try {
     const value = JSON.parse(localStorage.getItem("gaia.lastOpen") ?? "null");
     return value && typeof value.workspaceId === "string" && typeof value.roomId === "string" ? value : null;
