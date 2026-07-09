@@ -49,7 +49,7 @@ function renderSidebar() {
       // Inline + next to the header, so a new room is one click from the top —
       // not a button buried under the whole (possibly 100-chat) room list.
       state.snapshot
-        ? h("button", { class: "nav-title-add", title: "new room (Ctrl+T)", onclick: () => void addRoom(), text: "+" })
+        ? h("button", { class: "nav-title-add", title: "new room (Ctrl+T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" })
         : null,
     ),
     RoomTree(),

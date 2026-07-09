@@ -838,6 +838,29 @@ export class RoomService {
     }
   }
 
+  /** Remove ONE still-queued message from the durable queue — the ✕ on a queued
+   * ghost bubble. Harness-agnostic by construction: the queue is shared room
+   * plumbing (state.json.queue) and deletion touches no runtime, so it behaves
+   * identically for every harness with zero harness-id branching. Durable-first
+   * ordering (splice the persisted entry, then the in-memory chip) mirrors
+   * clearQueued so a crash can't resurrect a deleted message. Idempotent:
+   * returns the dropped task, or undefined when the entry already drained into a
+   * running turn (drain() pulls the chip out of queuedTasks first) or never
+   * existed — letting the caller 404 cleanly instead of racing an in-flight
+   * turn. */
+  async deleteQueuedMessage(taskId: string): Promise<Task | undefined> {
+    await this.init();
+    const task = this.queuedTasks.find((candidate) => candidate.id === taskId);
+    if (!task) return undefined;
+    await this.room.spliceQueued(taskId);
+    this.queuedTasks = this.queuedTasks.filter((candidate) => candidate.id !== taskId);
+    task.status = "cancelled";
+    task.endedAt = new Date().toISOString();
+    this.recentTasks = [...this.recentTasks.slice(-9), task];
+    this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
+    return task;
+  }
+
   /** Resolves when no task is running; rejects after timeoutMs (when given). */
   async waitForIdle(timeoutMs?: number): Promise<void> {
     await this.init();
@@ -1619,7 +1642,7 @@ export class RoomService {
         workspaceId: this.workspaceId,
         roomId: this.roomId,
         event: {
-          id: `system_sanitize_scope_${Date.now().toString(36)}`,
+          id: newId("system_sanitize_scope"),
           timestamp: new Date().toISOString(),
           author: "system",
           text: `⚠ Dario reviewed the most recent ${events.length} of ${inContext.length} in-context messages (${droppedOlder} older ones exceeded the review budget). If the reroute persists, run the review again after applying — the tail shifts back and the older span comes into scope.`,
@@ -1716,7 +1739,7 @@ export class RoomService {
       workspaceId: this.workspaceId,
       roomId: this.roomId,
       event: {
-        id: `system_sanitize_${Date.now().toString(36)}`,
+        id: newId("system_sanitize"),
         timestamp: new Date().toISOString(),
         author: "system",
         text: `✂ Rewrote ${edited.length} message${edited.length === 1 ? "" : "s"}${skipped > 0 ? ` (${skipped} skipped)` : ""} in place — context unchanged. Originals are preserved in redactions.jsonl; the next turn replays the full sanitized history.`,

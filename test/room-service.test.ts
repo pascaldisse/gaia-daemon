@@ -1468,6 +1468,35 @@ test("sanitize preview runs the reviewer through the summon host; apply rewrites
   );
 });
 
+test("a parse-error / no-suggestion review is never surfaced as pending (no re-pop on reload)", async () => {
+  // Dario's turn came back as non-JSON (e.g. an empty "(no output)" reply). It
+  // degrades to a proposal with a parseError and 0 suggestions — nothing to
+  // apply, so it can never be marked applied. It must NOT sit pending on the
+  // snapshot, or the popup re-pops on every reload forever.
+  const host = fakeSummonHost(() => "(no output)");
+  const { service, workspace, root } = await makeService({ agents: ["gaia", "terry", "dario"], summonHost: host });
+  await service.sendMessage("hello there");
+  await service.waitForIdle();
+
+  const proposal = await service.sanitizePreview();
+  assert.ok(proposal.parseError, "non-JSON degrades to a parseError proposal");
+  assert.equal(proposal.suggestions.length, 0);
+  // Not advertised as pending on the snapshot — the popup has nothing to open.
+  assert.equal((await service.getSnapshot()).room.sanitize, undefined);
+  // But the file is preserved, so a manual re-open still shows his raw notes.
+  assert.equal((await service.getSanitizeProposal())?.parseError, proposal.parseError);
+  assert.equal(((await readJson(join(root, ".gaia", "rooms", "default", "sanitize.json"))) as SanitizeProposal).raw, "(no output)");
+
+  // A fresh process (restart) must not restore it as pending either.
+  const reopened = await RoomService.open({
+    workspaceId: "ws1",
+    workspace,
+    memoryStore: new MemoryStore(),
+    runtimeFactory: (agent) => scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]),
+  });
+  assert.equal((await reopened.getSnapshot()).room.sanitize, undefined);
+});
+
 test("sanitize preview without a summon host or reviewer persona fails with a clear error", async () => {
   const { service: noHost } = await makeService();
   await noHost.sendMessage("hello");

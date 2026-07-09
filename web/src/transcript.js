@@ -7,7 +7,7 @@
 // rebuilding the whole transcript. v1's author+text merge heuristic is gone:
 // when the final room-event commits under the same id, the stream entry is
 // dropped and the keyed node swaps to the committed version in place.
-import { retryMessage } from "./actions.js";
+import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { api } from "./api.js";
 import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
@@ -41,6 +41,8 @@ import { state } from "./state.js";
  * @property {boolean} [redacted]
  * @property {boolean} streaming
  * @property {boolean} [queued] A not-yet-run queued message (ghost bubble).
+ * @property {string} [queuedTaskId] The durable queue task id behind a `queued`
+ *   ghost — the ✕ delete action removes exactly this entry from the queue.
  * @property {Map<string, MessageView>} [steers] Mid-turn steers this reply's
  *   blocks reference, resolved by messageViews (keyed by the steer's event id)
  *   for OrderedBlocks to render inline — their standalone bubbles are
@@ -215,24 +217,36 @@ export async function jumpToEvent(eventId) {
   }, 2600);
 }
 
+/** Epoch-ms floor a decoded mint segment must clear to be a real id-time (2001-09-09). */
+const MIN_MINT_MS = 1e12;
+/** Clock-skew slack: a mint segment can't be meaningfully in the client's future. */
+const MINT_SKEW_MS = 86_400_000;
+
 /**
  * Creation-time ordering key for a view. Room-event / task ids are
- * `<prefix>_<base36(Date.now())>_<rand>` (see core/ids.ts), so the middle
- * segment is the ms the id was minted. This is stable across a turn's
- * stream→commit because a committed agent event REUSES the id reserved at turn
- * START — its stored `timestamp` is commit time (later), but its id is the
- * reservation time. Ordering by id-time therefore keeps a streaming reply
- * anchored where it began (its text patches in place instead of the row jumping
- * when it commits). A message that COMMITTED mid-turn — a user steer or a summon
- * note — is re-keyed in messageViews so it reads ABOVE that reply rather than
- * below. Falls back to the timestamp for any id not in the minted shape (e.g.
- * imported history).
+ * `<prefix>_<base36(Date.now())>_<rand>` (see core/ids.ts), so the mint ms is
+ * the SECOND-TO-LAST segment. This is stable across a turn's stream→commit
+ * because a committed agent event REUSES the id reserved at turn START — its
+ * stored `timestamp` is commit time (later), but its id is the reservation time.
+ * Ordering by id-time therefore keeps a streaming reply anchored where it began
+ * (its text patches in place instead of the row jumping when it commits). A
+ * message that COMMITTED mid-turn — a user steer or a summon note — is re-keyed
+ * in messageViews so it reads ABOVE that reply rather than below.
+ *
+ * Read from the RIGHT, not the left: a prefix can itself contain an underscore
+ * (a persisted command reply is `system_${task.id}` → `system_task_<ms>_<rand>`),
+ * and taking segment[1] there decoded the word "task" as base36 — a valid number,
+ * ~22 minutes past the epoch — which silently sank every system event, /compact
+ * boundaries included, to the top of the transcript. Anything that doesn't decode
+ * to a real, past timestamp (an id with no rand suffix, `legacy_<index>`, imported
+ * history) falls back to the commit timestamp.
  * @param {string} id @param {string} timestamp @returns {number}
  */
 function creationOrder(id, timestamp) {
-  const seg = id.split("_")[1];
-  const ms = seg ? Number.parseInt(seg, 36) : Number.NaN;
-  if (Number.isFinite(ms)) return ms;
+  const segments = id.split("_");
+  const seg = segments.length >= 3 ? segments[segments.length - 2] : "";
+  const ms = /^[0-9a-z]+$/.test(seg) ? Number.parseInt(seg, 36) : Number.NaN;
+  if (ms >= MIN_MINT_MS && ms <= Date.now() + MINT_SKEW_MS) return ms;
   const parsed = Date.parse(timestamp);
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -281,6 +295,7 @@ function messageViews() {
       text: task.text,
       streaming: false,
       queued: true,
+      queuedTaskId: task.id,
     });
   }
   // A steer referenced by a reply's ordered blocks renders INLINE inside that
@@ -480,6 +495,19 @@ function Message(view) {
         })
       : null,
     isAgent && !view.streaming ? ReadAloudButton(view.id) : null,
+    // A queued ghost can't be forked, but it CAN be dropped from the queue
+    // before it runs — ✕ removes exactly this entry (harness-agnostic).
+    view.queued && view.queuedTaskId
+      ? h("button", {
+          type: "button",
+          class: "msg-action",
+          title: "delete — remove this message from the queue so it never runs",
+          text: "✕",
+          onclick: () => {
+            if (view.queuedTaskId) void deleteQueuedMessage(view.queuedTaskId);
+          },
+        })
+      : null,
   ].filter(Boolean);
   return h(
     "article",

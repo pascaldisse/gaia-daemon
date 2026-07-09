@@ -40,7 +40,7 @@ function renderTabs() {
       "div",
       { class: "tab-strip" },
       tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
-      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T)", onclick: () => void addRoom(), text: "+" }) : null,
+      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer" }),
     h("button", {

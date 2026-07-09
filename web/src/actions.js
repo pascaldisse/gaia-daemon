@@ -193,9 +193,23 @@ export async function setRoomAgentDialogue(on) {
   }
 }
 
-export async function addRoom() {
+/**
+ * Create a new room. Normally opens a name dialog with an incognito checkbox.
+ * @param {{ incognito?: boolean }} [opts] `incognito:true` skips the dialog and
+ *   creates a memory-off room instantly with an auto name (⌥-click on `+`).
+ */
+export async function addRoom(opts = {}) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
+  // ⌥-click / Alt: instant incognito room — no dialog, auto-named.
+  if (opts.incognito) {
+    try {
+      await selectRoom(snapshot.workspace.id, `incognito-${Date.now().toString(36)}`, { incognito: true });
+    } catch (error) {
+      setError(error);
+    }
+    return;
+  }
   const result = await promptText("New room name", {
     placeholder: "letters, numbers, dots, hyphens, underscores",
     checkbox: { label: "🕶 Incognito — no memory (no capture, recall, or memory tools)" },
@@ -335,6 +349,33 @@ async function forkMessage(action, payload) {
     if (body.task && state.snapshot === snapshot && !snapshot.tasks.some((task) => task.id === body.task.id)) {
       snapshot.tasks.push(body.task);
       markDirty("panel", "status", "composer");
+    }
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Delete a still-queued message so it never runs (the ✕ on a queued ghost
+ * bubble). Harness-agnostic: the durable queue is shared room plumbing, so this
+ * is a plain DELETE with no runtime involved. The server emits task-end
+ * (status "cancelled") which drops the ghost; a 404 means it already started
+ * running, so we just let the next snapshot reconcile.
+ * @param {string} taskId
+ */
+export async function deleteQueuedMessage(taskId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/queue/${encodeURIComponent(taskId)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    // Reflect immediately so the ghost vanishes without waiting for SSE.
+    if (state.snapshot === snapshot) {
+      const task = snapshot.tasks.find((candidate) => candidate.id === taskId);
+      if (task) task.status = "cancelled";
+      markDirty("transcript", "panel", "status", "composer");
     }
   } catch (error) {
     setError(error);

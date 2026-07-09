@@ -536,6 +536,18 @@ export class GaiaWebServer {
       return;
     }
 
+    // Drop ONE durably-queued message (the ✕ on a queued ghost bubble). Queue
+    // ops live entirely in the shared room layer, so this is harness-agnostic —
+    // no runtime is touched. 404 when it already started running (can't unqueue
+    // a turn in flight).
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/queue\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const task = await service.deleteQueuedMessage(params[2]);
+      if (!task) return json(response, 404, { error: "Queued message not found (it may have already started running)" });
+      json(response, 200, { task });
+      return;
+    }
+
     // Reversible room delete: moves the room dir to trash and purges it from
     // memory. Returns the neighbour room's snapshot (a room is always in view).
     if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)$/))) {
