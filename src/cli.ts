@@ -2,8 +2,13 @@
 // The one entrypoint. Lightweight subcommands (mem/recall/summon, init, agent
 // create) never pull in the web-server graph — heavy modules load lazily.
 
+import { hardenPath } from "./core/env.js";
 import { scaffoldGlobalAgent } from "./domain/agents.js";
 import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
+
+// Before anything else: repair PATH so harness CLIs resolve no matter what
+// launched us (terminal, native app shell, launchd). Children inherit it.
+hardenPath();
 
 function usage(): void {
   console.log(

@@ -18,6 +18,8 @@ import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { setAgentDefaultRole } from "./domain/agents.js";
+import { listAgentRoles } from "./domain/roles.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
@@ -570,6 +572,25 @@ export class Daemon {
     const snapshot = await service.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId), message };
+  }
+
+  /** Set an agent's GLOBAL default role (agent.json "role"), applied in every
+   * room that has no per-room override. Empty/"none"/"default" clears it. */
+  async setAgentDefaultRole(workspaceId: string, agentId: string, role: string): Promise<SelectionPayload> {
+    const service = await this.serviceFor(workspaceId);
+    const agent = service.workspace.agents[agentId];
+    if (!agent) throw new Error(`Unknown agent: @${agentId}`);
+
+    const normalized = role === "" || role === "none" || role === "default" ? undefined : role;
+    if (normalized) {
+      const roles = await listAgentRoles(agent);
+      if (!roles.includes(normalized)) throw new Error(`Unknown role: ${normalized}`);
+    }
+    await setAgentDefaultRole(agent, normalized);
+
+    const snapshot = await service.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
   /** Toggle room agent-dialogue (agents replying to each other's @mentions). */

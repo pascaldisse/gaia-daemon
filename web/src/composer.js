@@ -15,7 +15,7 @@ import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
-import { cancelDictation, toggleDictation } from "./dictation.js";
+import { cancelDictation, clearTranscribedDictationDraft, discardDictationDraft, finalizeDictationForSend, hasPendingDictation, restoreDictationDraftForCurrentRoom, toggleDictation, transcribeDraft } from "./dictation.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").AgentStatus} AgentStatus */
@@ -42,6 +42,8 @@ let editBannerEl = null;
 /** @type {HTMLElement|null} */
 let attachmentsEl = null;
 /** @type {HTMLElement|null} */
+let dictationStatusEl = null;
+/** @type {HTMLElement|null} */
 let targetStatusEl = null;
 /** @type {HTMLElement|null} */
 let thinkingWrapEl = null;
@@ -50,12 +52,43 @@ let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
 
+// Draft persistence (composer durability — "nothing is ever lost"): the
+// in-progress text survives a reload/crash and is restored per-room.
+/** @returns {string|null} */
+function draftKey() {
+  const s = state.snapshot;
+  return s ? `gaia.draft.${s.workspace.id}.${s.room.id}` : null;
+}
+
+/** @param {string} text */
+function persistDraft(text) {
+  const k = draftKey();
+  if (!k) return;
+  try {
+    if (text.trim()) localStorage.setItem(k, text);
+    else localStorage.removeItem(k);
+  } catch {}
+}
+
+function clearDraft() {
+  const k = draftKey();
+  if (!k) return;
+  try {
+    localStorage.removeItem(k);
+  } catch {}
+}
+
+// Tracks which room's draft has already been restored into state.composerText,
+// so switching rooms restores at most once (and doesn't clobber live typing).
+/** @type {string|null} */
+let restoredRoomKey = null;
+
 export function initComposer() {
   const form = $("#composer");
   if (!form) return;
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    submitComposer();
+    void submitComposer();
   });
 
   textarea = /** @type {HTMLTextAreaElement} */ (
@@ -66,6 +99,7 @@ export function initComposer() {
         if (!textarea) return;
         state.composerText = textarea.value;
         state.completionHidden = false;
+        persistDraft(textarea.value);
         resizeComposer(textarea);
         markDirty("composer");
       },
@@ -108,6 +142,7 @@ export function initComposer() {
     h("button", { type: "button", class: "stop-btn", title: "cancel editing (Esc)", text: "cancel", onclick: () => cancelEditing() }),
   );
   attachmentsEl = h("div", { class: "attachment-strip", hidden: true });
+  dictationStatusEl = h("div", { class: "dictation-status", hidden: true });
   targetStatusEl = h("div", { class: "target-status" });
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
   modelWrapEl = h("div", { class: "model-wrap" });
@@ -122,15 +157,34 @@ export function initComposer() {
     bannerEl,
     editBannerEl,
     attachmentsEl,
+    dictationStatusEl,
     h("div", { class: "input-shell" }, textarea, sendButton),
     h("div", { class: "composer-row" }, targetStatusEl, thinkingWrapEl, modelWrapEl, h("div", { class: "composer-spacer" }), voiceWrapEl),
   );
 }
 
 function renderComposer() {
-  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !editBannerEl || !attachmentsEl || !targetStatusEl || !thinkingWrapEl || !modelWrapEl || !voiceWrapEl) return;
+  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !editBannerEl || !attachmentsEl || !dictationStatusEl || !targetStatusEl || !thinkingWrapEl || !modelWrapEl || !voiceWrapEl) return;
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
+
+  // Restore a persisted draft once per room switch (never clobbers text
+  // already typed for this room, e.g. from a fresh page load mid-composition).
+  const currentDraftKey = draftKey();
+  if (currentDraftKey !== restoredRoomKey) {
+    restoredRoomKey = currentDraftKey;
+    if (!state.composerText.trim()) {
+      try {
+        const stored = currentDraftKey ? localStorage.getItem(currentDraftKey) : null;
+        if (stored) {
+          state.composerText = stored;
+          textarea.value = stored;
+        }
+      } catch {}
+    }
+  }
+
+  void restoreDictationDraftForCurrentRoom();
 
   // Textarea chrome; the value is only written when state changed elsewhere
   // (voice transcription, background routing, submit) so typing keeps its caret.
@@ -149,11 +203,14 @@ function renderComposer() {
   }
   resizeComposer(textarea);
 
+  const dictationPending = hasPendingDictation();
   sendButton.disabled = !snapshot;
-  sendButton.textContent = busy ? "»" : ">";
-  sendButton.title = busy
-    ? "steer the running turn — injects your message mid-turn (⌘/Ctrl+Enter to queue instead · Esc to stop)"
-    : "send";
+  sendButton.textContent = state.dictationBusy ? "…" : busy ? "»" : ">";
+  sendButton.title = dictationPending
+    ? "send voice draft — stops recording, transcribes, then sends (audio stays cached if transcription fails)"
+    : busy
+      ? "steer the running turn — injects your message mid-turn (⌘/Ctrl+Enter to queue instead · Esc to stop)"
+      : "send";
 
   // Running banner. While a compaction runs, the label carries the numbers and
   // the bar between it and ■ stop shows the estimated fraction.
@@ -182,6 +239,10 @@ function renderComposer() {
   attachmentsEl.hidden = state.pendingAttachments.length === 0;
   attachmentsEl.replaceChildren(...AttachmentChips());
 
+  const dictationPanel = DictationPanel();
+  dictationStatusEl.hidden = !dictationPanel;
+  dictationStatusEl.replaceChildren(...(dictationPanel ? [dictationPanel] : []));
+
   // Autocomplete.
   const completion = completionFor(state.composerText);
   if (completion && !state.completionHidden) {
@@ -208,7 +269,13 @@ function renderComposer() {
 registerRegion("composer", renderComposer);
 
 /** @param {{ focus?: boolean, queue?: boolean }} [options] */
-function submitComposer(options = {}) {
+async function submitComposer(options = {}) {
+  if (hasPendingDictation()) {
+    const ok = await finalizeDictationForSend();
+    if (ok) await submitComposer(options);
+    return;
+  }
+
   const text = state.composerText;
   const editing = state.editingEventId;
   const pending = state.pendingAttachments;
@@ -219,13 +286,33 @@ function submitComposer(options = {}) {
   state.completionHidden = false;
   markDirty("composer");
   if (options.focus) focusComposer();
+
+  // The clear above is optimistic — if the dispatch fails, put the text back
+  // (and re-arm edit mode) rather than silently losing it. Only restores when
+  // the composer is still empty (the user hasn't typed something new meanwhile).
+  const restoreOnFailure = (/** @type {Promise<boolean>} */ p) => {
+    void p.then((ok) => {
+      if (ok) {
+        void clearTranscribedDictationDraft();
+        clearDraft();
+        return;
+      }
+      if (!state.composerText.trim()) {
+        state.composerText = text;
+        if (editing) state.editingEventId = editing;
+        persistDraft(text);
+        markDirty("composer");
+      }
+    });
+  };
+
   if (editing && text.trim()) {
     releasePreviews(pending);
-    void editMessage(editing, text);
+    restoreOnFailure(editMessage(editing, text));
   } else if (pending.length > 0) {
-    void sendWithAttachments(text, pending, { queue: options.queue });
+    restoreOnFailure(sendWithAttachments(text, pending, { queue: options.queue }));
   } else {
-    void sendMessage(text, [], { queue: options.queue });
+    restoreOnFailure(sendMessage(text, [], { queue: options.queue }));
   }
 }
 
@@ -235,15 +322,17 @@ function submitComposer(options = {}) {
  * @param {string} text
  * @param {import("./types.js").PendingAttachment[]} pending
  * @param {{ queue?: boolean }} [options]
+ * @returns {Promise<boolean>}
  */
 async function sendWithAttachments(text, pending, options = {}) {
   try {
     /** @type {import("./types.js").UploadedAttachment[]} */
     const uploaded = [];
     for (const item of pending) uploaded.push(await uploadAttachment(item.file, item.name));
-    await sendMessage(text, uploaded, { queue: options.queue });
+    return await sendMessage(text, uploaded, { queue: options.queue });
   } catch (error) {
     setError(error);
+    return false;
   } finally {
     releasePreviews(pending);
   }
@@ -374,7 +463,7 @@ function onComposerKeydown(event) {
     // Enter is the default send. While busy the server STEERS the running turn
     // (injects the message mid-turn); Cmd/Ctrl+Enter forces the durable queue
     // instead. Stopping is a separate action (Esc / Ctrl+C / the banner ■).
-    submitComposer({ queue: event.metaKey || event.ctrlKey });
+    void submitComposer({ queue: event.metaKey || event.ctrlKey });
   }
 }
 
@@ -728,6 +817,61 @@ function MemoryChip(snapshot) {
   });
 }
 
+
+/** @returns {HTMLElement|null} */
+function DictationPanel() {
+  const draft = state.dictationDraft;
+  if (!state.dictating && !state.dictationBusy && !draft) return null;
+  const bars = state.dictationBars.length ? state.dictationBars : Array.from({ length: 28 }, () => 0.04);
+  const status = state.dictating
+    ? "recording — audio is being cached locally"
+    : state.dictationBusy
+      ? "transcribing saved audio…"
+      : draft?.status === "failed"
+        ? "transcription failed — audio kept locally"
+        : draft?.status === "transcribed"
+          ? "transcribed — audio cached until send succeeds"
+          : "audio draft saved locally";
+  const detail = draft
+    ? `${formatDuration(draft.durationMs)} · ${formatBytes(draft.bytes)}${draft.error ? ` · ${draft.error}` : ""}`
+    : "starting local audio cache…";
+  const actions = [];
+  if (state.dictating) {
+    actions.push(h("button", { type: "button", class: "dictation-action primary", text: "stop + transcribe", onclick: () => void toggleDictation() }));
+  } else if (draft && !state.dictationBusy) {
+    if (draft.status !== "transcribed") {
+      actions.push(h("button", { type: "button", class: "dictation-action primary", text: draft.status === "failed" ? "retry transcript" : "transcribe", onclick: () => void transcribeDraft(draft.id) }));
+    }
+    actions.push(h("button", { type: "button", class: "dictation-action danger", text: "discard audio", onclick: () => void discardDictationDraft() }));
+  }
+  return h(
+    "div",
+    { class: `dictation-panel${state.dictating ? " recording" : ""}${state.dictationBusy ? " busy" : ""}${draft?.status === "failed" ? " failed" : ""}` },
+    h(
+      "div",
+      { class: "dictation-wave", title: "live microphone level" },
+      bars.map((level) => h("span", { class: "dictation-wave-bar", style: `--level:${Math.max(0.04, Math.min(1, level)).toFixed(3)}` })),
+    ),
+    h("div", { class: "dictation-copy" }, h("strong", { text: status }), h("span", { text: detail })),
+    h("div", { class: "dictation-actions" }, actions),
+  );
+}
+
+/** @param {number} ms */
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+/** @param {number} bytes */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
   // On a call: mute + hang-up (live STT already fills the composer as you talk).
@@ -754,22 +898,27 @@ function VoiceButtons() {
   if (!state.snapshot) return [];
   const recording = state.dictating;
   const busy = state.dictationBusy;
+  const draft = state.dictationDraft;
   return [
     h("button", {
       type: "button",
       class: `voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
       title: busy
-        ? "transcribing…"
+        ? "transcribing… audio remains cached if this fails"
         : recording
-          ? "stop & transcribe (right-click or Esc to cancel)"
-          : "voice input — click to dictate a message",
-      disabled: busy,
-      onclick: () => void toggleDictation(),
+          ? "stop & transcribe (right-click or Esc to discard)"
+          : draft?.status === "transcribed"
+            ? "audio cached locally until this message sends"
+            : draft
+              ? "audio draft saved locally — click to transcribe; press send to transcribe + send"
+              : "voice input — click to dictate a message",
+      disabled: busy || draft?.status === "transcribed",
+      onclick: () => (draft && !recording ? void transcribeDraft(draft.id) : void toggleDictation()),
       oncontextmenu: (event) => {
         event.preventDefault();
         if (recording) cancelDictation();
       },
-      text: busy ? "…" : recording ? "⏺" : "\u{1F3A4}",
+      text: busy ? "…" : recording ? "⏺" : draft?.status === "transcribed" ? "💾" : draft ? "↻" : "\u{1F3A4}",
     }),
   ];
 }
@@ -872,10 +1021,10 @@ export function installComposerRouting() {
         !state.settingsOpen &&
         !state.dario.open &&
         !isEditableElement(event.target) &&
-        state.composerText.trim()
+        (state.composerText.trim() || hasPendingDictation())
       ) {
         event.preventDefault();
-        submitComposer({ focus: true, queue: true });
+        void submitComposer({ focus: true, queue: true });
         return;
       }
 
@@ -884,8 +1033,8 @@ export function installComposerRouting() {
 
       if (event.key === "Enter") {
         if (event.shiftKey) state.composerText += "\n";
-        else if (state.composerText.trim()) {
-          submitComposer({ focus: true });
+        else if (state.composerText.trim() || hasPendingDictation()) {
+          void submitComposer({ focus: true });
           return;
         }
       } else if (event.key === "Backspace") {

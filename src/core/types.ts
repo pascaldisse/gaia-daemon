@@ -493,6 +493,7 @@ export interface AgentDef {
   configPath: string;
   personaDir: string;
   rolesDir: string;
+  defaultRole?: string; // global default role from agent.json "role"; a room's activeRoles entry overrides it ("none" = explicitly no role)
   soulPath: string;
   memoryDir: string;
   projectDir?: string;
@@ -514,11 +515,6 @@ export interface AgentDef {
    * core stays harness-blind, exactly like `harness` above. Only harnesses
    * declaring supportsPermissionMode honor it. */
   permissionMode?: string;
-  /** Reveal the model's extended-thinking text (claude harness). Opt-in: it
-   * injects thinking.display:"summarized" into the CLI's Anthropic egress so the
-   * otherwise-redacted reasoning streams. Off by default — mutates provider
-   * requests, so it's a knowing choice like the credential proxy. */
-  revealThinking?: boolean;
   sandbox?: SandboxConfig;
   /** Trust tier (default true). false → forced real sandbox, may never summon. */
   trust?: boolean;
@@ -779,6 +775,7 @@ export interface AgentStatus {
   voice?: string;
   thinking?: string;
   activeRole?: string;
+  defaultRole?: string;
   roles: string[];
   status: "idle" | "running" | "error" | "compacting";
   /** Live compaction progress while status === "compacting"; absent otherwise.

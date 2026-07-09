@@ -255,16 +255,12 @@ export function buildClaudeToolGrant(tools: string[]): ClaudeToolGrant {
   return { tools: [...builtin], allowedTools: [...allowed] };
 }
 
-// Note shown in the thinking disclosure when no reasoning TEXT streamed — the
-// model redacted it (thinking.display defaults to "omitted" on newer models),
-// leaving only an encrypted signature. Names the real cause + the lever, rather
-// than the old (wrong) "it's -p mode" story.
-function thinkingNote(tokens: number, revealEnabled: boolean): string {
+// Note shown in the thinking disclosure when no reasoning TEXT streamed even
+// though the reveal shim is on (it always is, now): the turn simply produced no
+// reasoning text — a no-thinking model/turn, or the model returned none.
+function thinkingNote(tokens: number): string {
   const spend = tokens > 0 ? `~${tokens} tokens` : "a moment";
-  const why = revealEnabled
-    ? "no reasoning text returned for this turn"
-    : "this model returns encrypted reasoning — set the agent's revealThinking to show it";
-  return `Reasoned for ${spend} before answering (${why}).`;
+  return `Reasoned for ${spend} before answering (no reasoning text returned for this turn).`;
 }
 
 function shellQuote(value: string): string {
@@ -423,9 +419,9 @@ export class ClaudeRuntime implements AgentRuntime {
   private onActiveSteer: (() => void) | undefined;
   private readonly processFactory: ClaudeProcessFactory;
   private readonly label: ModelLabel;
-  /** Loopback egress shim that un-redacts thinking text (agent.revealThinking).
-   * Started once, lazily; memoized so a start failure fails open (turns proceed
-   * without thinking text rather than breaking). */
+  /** Loopback egress shim that un-redacts thinking text — always on, every
+   * claude agent. Started once, lazily; memoized so a start failure fails open
+   * (turns proceed without thinking text rather than breaking). */
   private thinkingProxy: ThinkingProxyHandle | undefined;
   private thinkingProxyPromise: Promise<ThinkingProxyHandle | undefined> | undefined;
 
@@ -532,7 +528,7 @@ export class ClaudeRuntime implements AgentRuntime {
       thinkingActive = false;
       // When no real reasoning text streamed (the usual -p case), hand the UI a
       // short note + token estimate so the thinking disclosure isn't empty.
-      const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens, this.agent.revealThinking === true);
+      const note = thinkingTextSeen ? undefined : thinkingNote(thinkingTokens);
       channel.push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
     };
 
@@ -1054,13 +1050,15 @@ export class ClaudeRuntime implements AgentRuntime {
     });
   }
 
-  // Start (once) the loopback shim that un-redacts extended-thinking text, when
-  // the agent opted in. Fails open: on any start error we return undefined and
-  // the turn runs straight to Anthropic (no thinking text, but unbroken). The
-  // upstream is whatever ANTHROPIC_BASE_URL would otherwise be — the credential
-  // proxy when it's on, else Anthropic direct — so this composes with that path.
+  // Start (once) the loopback shim that un-redacts extended-thinking text. Newer
+  // Claude models redact reasoning text by default (thinking.display:"omitted"),
+  // so this is ALWAYS on — reasoning is visible for every agent, no opt-in (the
+  // pi/codex harnesses already stream reasoning natively; this is Claude pulling
+  // even). Fails open: on any start error we return undefined and the turn runs
+  // straight to Anthropic (no thinking text, but unbroken). The upstream is
+  // whatever ANTHROPIC_BASE_URL would otherwise be — the credential proxy when
+  // it's on, else Anthropic direct — so this composes with that path.
   private async ensureThinkingProxy(): Promise<ThinkingProxyHandle | undefined> {
-    if (!this.agent.revealThinking) return undefined;
     if (this.thinkingProxy) return this.thinkingProxy;
     if (!this.thinkingProxyPromise) {
       const upstream = process.env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com";

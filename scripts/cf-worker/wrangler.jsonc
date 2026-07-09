@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gaia",
+  "main": "src/worker.js",
+  "compatibility_date": "2024-11-01",
+  "kv_namespaces": [
+    {
+      "binding": "GAIA_EDGE",
+      "id": "1ed521327e914a49a905ed8aeb320bf9"
+    }
+  ]
+}

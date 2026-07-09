@@ -1,6 +1,6 @@
 // Prompt assembly — the one place a turn's words are put together, shared by
 // every harness. Layering (identical for all three adapters):
-//   system prompt = soul → active role → project intent → AGENTS.md chain
+//   system prompt = soul → project intent → AGENTS.md chain → active role
 //   turn prompt   = room header → voice hints → memory (only when changed)
 //                   → new room events → newest message
 // CLI harnesses additionally inline role-skill text + a `gaia` CLI pointer
@@ -91,11 +91,14 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     ? `# Role Diagnostics\n\n${input.role.diagnostics.map((diagnostic) => `- ${diagnostic}`).join("\n")}`
     : "";
 
+  // The active role is the behavioral contract — it sits at the END of the
+  // system prompt so it is the most recent instruction, not buried under
+  // context files.
   return [
     `# Agent Soul\n\n${input.soulText.trim()}`,
-    roleSection,
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
+    roleSection,
     roleDiagnostics,
     "You are participating in a shared GAIA room. Reply only as the current agent.",
   ]

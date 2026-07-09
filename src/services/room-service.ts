@@ -46,7 +46,7 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
-import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
+import { effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
@@ -989,7 +989,7 @@ export class RoomService {
       // back — the only thing that ever reduces context is an explicit /compact
       // the user types. (The old size-based context gate that forced a
       // last-N/compact choice on big first loads is gone by design.)
-      const activeRoleName = state.activeRoles[target];
+      const activeRoleName = effectiveRoleName(state.activeRoles, agent);
       const activeRole = activeRoleName ? await resolveAgentRole(agent, activeRoleName) : undefined;
       if (activeRoleName && !activeRole) {
         this.emit({
@@ -1054,6 +1054,13 @@ export class RoomService {
 
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
+      // Role watchdog — event-driven enforcement; a role may declare a
+      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers one
+      // corrective message into the running turn when it crosses. Zero cost
+      // when the agent behaves.
+      let watchdogToolCalls = 0;
+      let watchdogFired = false;
+
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         turn = await runAgentTurn({
@@ -1071,6 +1078,13 @@ export class RoomService {
           },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
+            if (event.type === "tool-start") {
+              watchdogToolCalls += 1;
+              if (activeRole?.watchdog && !watchdogFired && watchdogToolCalls >= activeRole.watchdog.toolCalls) {
+                watchdogFired = true;
+                void runtime.steer?.(this.roomId, activeRole.watchdog.message).catch(() => {});
+              }
+            }
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
             }
@@ -1706,7 +1720,7 @@ export class RoomService {
   private async buildPersonaContext(agentId: string): Promise<SanitizeContext | undefined> {
     const agent = this.workspace.agents[agentId];
     if (!agent) return undefined;
-    const roleName = (await this.room.state()).activeRoles[agentId];
+    const roleName = effectiveRoleName((await this.room.state()).activeRoles, agent);
     const role = roleName ? await resolveAgentRole(agent, roleName) : undefined;
     const soul = await readOptional(agent.soulPath);
     const parts = [soul.trim(), role ? `# Active Role: ${role.name}\n\n${role.prompt.trim()}` : ""].filter(Boolean);
@@ -2113,7 +2127,7 @@ export class RoomService {
   /** The active role's skill grants for an agent (empty when no role active) —
    * merged into the native-command check so a role can enable a builtin too. */
   private async activeRoleSkills(agentId: string, agent: AgentDef): Promise<string[]> {
-    const roleName = (await this.room.state()).activeRoles[agentId];
+    const roleName = effectiveRoleName((await this.room.state()).activeRoles, agent);
     if (!roleName) return [];
     return (await resolveAgentRole(agent, roleName))?.skills ?? [];
   }
@@ -2160,7 +2174,9 @@ export class RoomService {
     return Object.values(this.workspace.agents)
       .map((agent) => {
         const defaultMark = agent.id === this.workspace.config.defaultAgent ? " (default)" : "";
-        const role = state.activeRoles[agent.id] ? ` [role: ${state.activeRoles[agent.id]}]` : "";
+        const roleName = effectiveRoleName(state.activeRoles, agent);
+        const fromGlobalDefault = state.activeRoles[agent.id] === undefined && roleName !== undefined;
+        const role = roleName ? ` [role: ${roleName}${fromGlobalDefault ? " (global default)" : ""}]` : "";
         return `${agent.icon} @${agent.id}${defaultMark}${role} - ${agent.displayName} [tools: ${agent.tools.join(", ") || "none"}]`;
       })
       .join("\n");
@@ -2178,17 +2194,27 @@ export class RoomService {
   }
 
   async setRole(agentId: string | undefined, role: string | undefined): Promise<string> {
-    if (!role) return "Usage: /role [agent] <role|none>";
+    if (!role) return "Usage: /role [agent] <role|none|default>";
     const targetId = agentId ?? this.workspace.config.defaultAgent;
     const agent = this.workspace.agents[targetId];
     if (!agent) return this.unknownAgentMessage(targetId);
 
+    // "none" is an explicit no-role override for this room; "default" (or empty)
+    // removes the override so the room inherits the agent's global default role.
     if (role === "none") {
+      await this.room.updateState((state) => {
+        state.activeRoles[agent.id] = "none";
+      });
+      await this.emitSnapshot();
+      return `Cleared role for @${agent.id} in this room.`;
+    }
+
+    if (role === "default") {
       await this.room.updateState((state) => {
         delete state.activeRoles[agent.id];
       });
       await this.emitSnapshot();
-      return `Cleared role for @${agent.id}.`;
+      return `@${agent.id} now inherits its global default role in this room.`;
     }
 
     const roles = await listAgentRoles(agent);
@@ -2468,6 +2494,7 @@ export class RoomService {
           voice: agent.voice,
           thinking: agent.thinking,
           activeRole: state.activeRoles[agent.id],
+          defaultRole: agent.defaultRole,
           roles: await listAgentRoles(agent),
           status: (this.compactingAgents.has(agent.id)
             ? "compacting"

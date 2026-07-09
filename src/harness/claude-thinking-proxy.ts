@@ -17,8 +17,9 @@
 //
 // FAIL-OPEN: every failure mode (unparseable body, upstream error, wrong path)
 // forwards bytes unchanged. A broken proxy must degrade to "no thinking text",
-// never to a broken turn. Opt-in per agent (AgentDef.revealThinking) because it
-// mutates provider requests — off by default, like the credential proxy.
+// never to a broken turn. Unconditional: every claude agent runs behind this so
+// reasoning text is always visible (pi/codex already stream it natively) — no
+// opt-in, matching gaia's "reveal thinking is always on" posture.
 
 import http from "node:http";
 import https from "node:https";

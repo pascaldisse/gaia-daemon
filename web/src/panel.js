@@ -1,7 +1,7 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks. The workspace settings panel below it is owned by
 // the settings region, so streaming re-renders here never wipe an edit there.
-import { setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -73,9 +73,12 @@ function renderPanel() {
         const onCall = state.voice?.agentId === agent.id;
         const connecting = state.voicePendingAgentId === agent.id;
         const roles = agent.roles ?? [];
+        // "none" is an explicit opt-out; otherwise a room override wins, falling
+        // back to the agent's global default role.
+        const effectiveRole = agent.activeRole === "none" ? undefined : (agent.activeRole ?? agent.defaultRole);
         return h(
           "div",
-          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${agent.activeRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
+          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
           h(
             "div",
             // The role-select is pinned to this cell's bottom-right (the model
@@ -99,13 +102,31 @@ function renderPanel() {
               ? h(
                   "select",
                   {
-                    class: `role-select ${agent.activeRole ? "active" : ""}`,
+                    class: `role-select ${effectiveRole ? "active" : ""}`,
                     title: `role for @${agent.id}`,
                     onchange: (event) => void setAgentRole(agent.id, /** @type {HTMLSelectElement} */ (event.target).value),
                   },
-                  h("option", { value: "none", text: "role", selected: !agent.activeRole }),
+                  h("option", {
+                    value: "default",
+                    text: agent.defaultRole ? `default (${agent.defaultRole})` : "default",
+                    selected: !agent.activeRole,
+                  }),
+                  h("option", { value: "none", text: "none", selected: agent.activeRole === "none" }),
                   roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === agent.activeRole })),
                 )
+              : null,
+            agent.activeRole && agent.activeRole !== "none"
+              ? h("button", {
+                  class: "role-global-button",
+                  text: "⌂",
+                  title: `make "${agent.activeRole}" the global default for @${agent.id} (all rooms)`,
+                  onclick: async () => {
+                    const role = agent.activeRole;
+                    if (!role) return;
+                    await setAgentDefaultRole(agent.id, role);
+                    await setAgentRole(agent.id, "default");
+                  },
+                })
               : null,
           ),
           h("button", {

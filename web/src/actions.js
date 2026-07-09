@@ -179,6 +179,25 @@ export async function setAgentRole(agentId, role) {
   }
 }
 
+/** @param {string} agentId @param {string} role */
+export async function setAgentDefaultRole(agentId, role) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/default-role`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, role: role || "none" }),
+    });
+    applySnapshotPayload(body);
+    connectEvents();
+    await loadSelectedWorkspaceFile();
+    state.error = body.message && /^Unknown|^Usage/.test(body.message) ? body.message : "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /** Toggle room agent-dialogue (agents responding to each other's @mentions).
  * @param {boolean} on */
 export async function setRoomAgentDialogue(on) {
@@ -370,10 +389,11 @@ export async function uploadAttachment(file, name) {
  * @param {import("./types.js").UploadedAttachment[]} [attachments]
  * @param {{ queue?: boolean }} [options] queue:true forces the durable queue
  *   (Cmd/Ctrl+Enter) instead of steering the running turn.
+ * @returns {Promise<boolean>}
  */
 export async function sendMessage(text, attachments = [], options = {}) {
   const snapshot = state.snapshot;
-  if (!snapshot || (!text.trim() && attachments.length === 0)) return;
+  if (!snapshot || (!text.trim() && attachments.length === 0)) return false;
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/messages`, {
       method: "POST",
@@ -388,8 +408,10 @@ export async function sendMessage(text, attachments = [], options = {}) {
       snapshot.tasks.push(body.task);
       markDirty("panel", "status", "composer");
     }
+    return true;
   } catch (error) {
     setError(error);
+    return false;
   }
 }
 
@@ -400,7 +422,7 @@ export async function sendMessage(text, attachments = [], options = {}) {
  * @param {string} eventId
  */
 export async function retryMessage(eventId) {
-  await forkMessage("retry", { eventId });
+  return forkMessage("retry", { eventId });
 }
 
 /**
@@ -409,13 +431,16 @@ export async function retryMessage(eventId) {
  * @param {string} text
  */
 export async function editMessage(eventId, text) {
-  await forkMessage("edit", { eventId, text });
+  return forkMessage("edit", { eventId, text });
 }
 
-/** @param {"retry"|"edit"} action @param {{ eventId: string, text?: string }} payload */
+/**
+ * @param {"retry"|"edit"} action @param {{ eventId: string, text?: string }} payload
+ * @returns {Promise<boolean>}
+ */
 async function forkMessage(action, payload) {
   const snapshot = state.snapshot;
-  if (!snapshot) return;
+  if (!snapshot) return false;
   try {
     const body = await api(
       `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/${action}`,
@@ -425,8 +450,10 @@ async function forkMessage(action, payload) {
       snapshot.tasks.push(body.task);
       markDirty("panel", "status", "composer");
     }
+    return true;
   } catch (error) {
     setError(error);
+    return false;
   }
 }
 

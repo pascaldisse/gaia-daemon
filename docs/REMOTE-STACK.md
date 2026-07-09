@@ -77,13 +77,13 @@ Consequence of restarting: the public hostname changes. After restarting you mus
 **Permanent fix**: once a real domain is available, switch to a *named* Cloudflare
 tunnel (`cloudflared tunnel create` + DNS route). Named tunnels have a stable
 hostname across restarts and reboots, and can then safely become a launchd agent
-like the other two.
+like `com.gaia.edge-proxy`.
 
 ## Sleep / power story
 
-- `com.gaia.keepawake` prevents idle *system* sleep via `caffeinate -s -i -m`, which
-  is normally sufficient — but `-s` (prevent sleep while on AC) only helps when the
-  Mac is plugged in.
+- The daemon-managed keep-awake setting (above) prevents idle *system* sleep via
+  `caffeinate -s -i -m -w <pid>`, which is normally sufficient — but `-s` (prevent
+  sleep while on AC) only helps when the Mac is plugged in.
 - **Lid-closed-on-battery** is a separate case caffeinate can't override: if you need
   the machine to stay up on battery with the lid closed, that requires
   `sudo pmset disablesleep 1` (persists across reboots until turned back off with

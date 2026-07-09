@@ -13,6 +13,7 @@ export interface RoleFile {
   path: string;
   body: string;
   skills: string[];
+  watchdog?: { toolCalls: number; message: string };
   diagnostics: string[];
 }
 
@@ -20,6 +21,7 @@ export interface ResolvedRole {
   name: string;
   prompt: string;
   skills: string[];
+  watchdog?: { toolCalls: number; message: string };
   diagnostics: string[];
 }
 
@@ -50,7 +52,21 @@ export function parseRoleMarkdown(content: string, path = "<role>"): Omit<RoleFi
     }
   }
 
-  return { body, skills: dedupe(skills), diagnostics };
+  let watchdog: { toolCalls: number; message: string } | undefined;
+  if (frontmatter.watchdog !== undefined) {
+    const raw = frontmatter.watchdog;
+    const toolCalls = raw && typeof raw === "object" ? (raw as Record<string, unknown>).toolCalls : undefined;
+    const message = raw && typeof raw === "object" ? (raw as Record<string, unknown>).message : undefined;
+    const validToolCalls = typeof toolCalls === "number" && Number.isFinite(toolCalls) && Math.floor(toolCalls) > 0;
+    const validMessage = typeof message === "string" && message.trim().length > 0;
+    if (raw && typeof raw === "object" && validToolCalls && validMessage) {
+      watchdog = { toolCalls: Math.floor(toolCalls as number), message: message as string };
+    } else {
+      diagnostics.push(`Malformed watchdog declaration in ${path}: expected { toolCalls: positive integer, message: non-empty string }`);
+    }
+  }
+
+  return { body, skills: dedupe(skills), ...(watchdog ? { watchdog } : {}), diagnostics };
 }
 
 async function readRoleFile(path: string): Promise<RoleFile> {
@@ -94,10 +110,22 @@ export async function resolveAgentRole(agent: AgentDef, name: string): Promise<R
 
   const promptParts = [globalFile?.body.trim(), projectFile?.body.trim()].filter((part): part is string => Boolean(part));
 
+  const watchdog = projectFile?.watchdog ?? globalFile?.watchdog;
+
   return {
     name,
     prompt: promptParts.join("\n\n"),
     skills: dedupe([...(globalFile?.skills ?? []), ...(projectFile?.skills ?? [])]),
+    ...(watchdog ? { watchdog } : {}),
     diagnostics: [...(globalFile?.diagnostics ?? []), ...(projectFile?.diagnostics ?? [])],
   };
+}
+
+// Effective role for an agent in a room: the room's activeRoles entry wins;
+// the literal "none" is an explicit override to no role; an absent entry
+// inherits the agent's global default (agent.json "role").
+export function effectiveRoleName(activeRoles: Record<string, string>, agent: AgentDef): string | undefined {
+  const entry = activeRoles[agent.id];
+  if (entry === "none") return undefined;
+  return entry ?? agent.defaultRole;
 }

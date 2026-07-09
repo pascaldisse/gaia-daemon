@@ -940,6 +940,29 @@ body.resizing { cursor: col-resize; user-select: none; }
 .voice-button.dictation.busy { opacity: 0.6; }
 @keyframes dictation-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); } 50% { box-shadow: 0 0 0 4px transparent; } }
 
+.dictation-status { margin-bottom: 8px; }
+.dictation-panel {
+  display: grid;
+  grid-template-columns: minmax(120px, 190px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--ink) 86%, var(--accent) 14%);
+}
+.dictation-panel.failed { border-color: color-mix(in srgb, var(--danger) 65%, transparent); background: color-mix(in srgb, var(--ink) 88%, var(--danger) 12%); }
+.dictation-wave { height: 30px; display: flex; align-items: center; gap: 2px; overflow: hidden; }
+.dictation-wave-bar { flex: 1; min-width: 2px; height: calc(4px + (var(--level) * 26px)); border-radius: 999px; background: var(--accent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent); transition: height 80ms linear; }
+.dictation-panel.recording .dictation-wave-bar { background: var(--danger); box-shadow: 0 0 8px color-mix(in srgb, var(--danger) 55%, transparent); }
+.dictation-copy { min-width: 0; display: grid; gap: 2px; }
+.dictation-copy strong { color: var(--fg); font-weight: 600; }
+.dictation-copy span { color: var(--muted); overflow-wrap: anywhere; }
+.dictation-actions { display: flex; align-items: center; gap: 6px; }
+.dictation-action { height: 28px; padding: 0 9px; white-space: nowrap; }
+.dictation-action.primary { border-color: color-mix(in srgb, var(--accent) 70%, transparent); color: var(--accent); }
+.dictation-action.danger { border-color: color-mix(in srgb, var(--danger) 60%, transparent); color: var(--danger); }
+@media (max-width: 760px) { .dictation-panel { grid-template-columns: 1fr; } .dictation-actions { justify-content: flex-end; } }
+
 .autocomplete {
   position: absolute;
   left: 14px;
@@ -1041,6 +1064,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .role-select.active { color: var(--warn); border-color: var(--warn); text-shadow: 0 0 6px color-mix(in srgb, var(--warn) 40%, transparent); }
 
+/* Pin-to-global button — sits just left of the role-select, same pinned
+   bottom-right anchoring, same size/color language, only shown while a room
+   override is active. */
+.role-global-button {
+  position: absolute;
+  right: 64px;
+  bottom: 6px;
+  padding: 2px 4px;
+  font-size: 0.82em;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.role-global-button:hover { color: var(--fg); }
+
 .call-button, .main-button { border: none; border-left: 1px solid var(--border); background: transparent; box-shadow: none; }
 .call-button { padding: 0 10px; }
 .call-button.active { color: var(--danger); text-shadow: 0 0 8px var(--danger); }
@@ -1061,6 +1101,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ============================================================
    settings editors (workspace panel + global modal)
    ============================================================ */
+
+/* Structured "global role" picker header, above an agent's file list in the
+   global settings modal — a select over fixed on-disk role names, never a
+   text input. */
+.settings-role-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.settings-role-label { text-transform: uppercase; }
+.settings-role-select { width: auto; min-width: 140px; }
+
 .settings-editor { margin-top: 10px; }
 .file-toolbar { margin-bottom: 8px; }
 .file-toolbar code { color: var(--accent); overflow-wrap: anywhere; }

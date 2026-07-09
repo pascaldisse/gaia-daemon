@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
 import { agentPaths } from "../core/paths.js";
-import { ensureDir, jsonText, readJson, writeText } from "../core/store.js";
+import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import { MemoryStore } from "./memory.js";
 
 interface RawAgentConfig {
@@ -23,11 +23,11 @@ interface RawAgentConfig {
   skills?: unknown;
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  role?: unknown;
   harness?: unknown;
   /** Legacy alias for `harness`; some seed configs use "runtime". */
   runtime?: unknown;
   permissionMode?: unknown;
-  revealThinking?: unknown;
   /** Deprecated: native commands are now enabled by adding the command name to
    * `skills` (e.g. "deep-research"). Read only to emit a migration warning. */
   nativeCommands?: unknown;
@@ -271,6 +271,16 @@ async function readAgentConfig(path: string): Promise<RawAgentConfig> {
   return ((await readJson(path)) ?? {}) as RawAgentConfig;
 }
 
+// Persist the agent's global default role into its agent.json ("role" key) and
+// mutate the in-memory AgentDef. Passing undefined removes the key.
+export async function setAgentDefaultRole(agent: AgentDef, role: string | undefined): Promise<void> {
+  const config = ((await readJson(agent.configPath)) ?? {}) as Record<string, unknown>;
+  if (role) config.role = role;
+  else delete config.role;
+  await writeJsonAtomic(agent.configPath, config);
+  agent.defaultRole = role;
+}
+
 function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAgentConfig {
   return {
     ...base,
@@ -279,7 +289,6 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
     harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
     permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
-    revealThinking: override.revealThinking !== undefined ? override.revealThinking : base.revealThinking,
     memory: override.memory !== undefined ? override.memory : base.memory,
     mcpServers: override.mcpServers !== undefined ? override.mcpServers : base.mcpServers,
     env: override.env !== undefined ? override.env : base.env,
@@ -344,6 +353,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       configPath,
       personaDir,
       rolesDir,
+      defaultRole: typeof raw.role === "string" && raw.role.trim() ? raw.role.trim() : undefined,
       soulPath,
       memoryDir,
       tools: stringList(raw.tools, []),
@@ -355,7 +365,6 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
-      revealThinking: raw.revealThinking === true ? true : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
       env: parseEnvMap(raw.env),

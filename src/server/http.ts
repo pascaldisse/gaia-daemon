@@ -424,6 +424,14 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.setAgentRole(params![0], params![1], agentId.trim(), role.trim()));
     }
 
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/default-role$/))) {
+      const body = await parseBody(request);
+      const agentId = stringField(body, "agentId");
+      const role = stringField(body, "role");
+      if (!agentId?.trim()) return json(response, 400, { error: "Missing agentId" });
+      return this.respond(response, () => this.daemon.setAgentDefaultRole(params![0], agentId.trim(), (role ?? "").trim()));
+    }
+
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/agent-dialogue$/))) {
       const body = await parseBody(request);
       const on = (body as { on?: unknown }).on === true;

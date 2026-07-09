@@ -28,7 +28,7 @@
 // summoning. Nested summons are default-deny. No approval gates anywhere —
 // summons run autonomously; the trust tier IS the boundary.
 
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
 
 /** How a finished worker's result lands in the parent room (see
@@ -122,6 +122,11 @@ export interface SummonRoomAccess {
   /** Fully settled: no running task, no durable pending turn, empty queue
    * (covers turns that init() resumes asynchronously after a restart). */
   waitForSettled(): Promise<void>;
+  /** Recent + in-flight/queued tasks for this room, most-recent last. Summon
+   * recovery reads the last entry's status/error to tell an errored or
+   * cancelled resumed turn apart from a plain empty reply — no other channel
+   * carries that distinction after a daemon restart. */
+  getSnapshot(): Promise<{ tasks: SummonTask[] }>;
   /** Land a worker's result in a PARENT room: a COLLAPSED, summon-labeled note
    * authored by the worker, then — when `triggerTarget` is set (deliver:"turn")
    * — nudge that caller agent to react (steer its running turn, else a fresh
@@ -153,6 +158,41 @@ export function awaitTask(room: { subscribe(listener: (event: SummonTaskEvent) =
     // Settled in the window before subscribing? The live object tells us.
     if (settled()) finish();
   });
+}
+
+/** Best-effort progress digest for a worker that ended without a usable
+ * final reply (cancelled / errored / empty): the tail of what it actually
+ * produced, extracted mechanically from the child transcript. Model-free
+ * on purpose — the last-resort path must never be able to fail. */
+async function progressDigest(rootDir: string, roomId: string, agentId: string): Promise<string> {
+  let raw: string;
+  try {
+    raw = await readFile(workspacePaths.transcript(rootDir, roomId), "utf8");
+  } catch {
+    return "";
+  }
+  let firstTs = "";
+  let lastTs = "";
+  const texts: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let event: { author?: unknown; text?: unknown; timestamp?: unknown };
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.author !== agentId || typeof event.text !== "string" || event.text.length === 0) continue;
+    if (!firstTs) firstTs = typeof event.timestamp === "string" ? event.timestamp : "";
+    if (typeof event.timestamp === "string") lastTs = event.timestamp;
+    texts.push(event.text);
+  }
+  if (texts.length === 0) return "the worker produced no output before it stopped.";
+  const tail = texts
+    .slice(-3)
+    .map((text) => (text.length > 600 ? `${text.slice(0, 600)}…` : text))
+    .join("\n---\n");
+  return `progress until then (${texts.length} update(s), ${firstTs} → ${lastTs}):\n\n${tail}`.slice(0, 2400);
 }
 
 export interface SummonOptions {
@@ -291,13 +331,13 @@ export class SummonCoordinator implements SummonHost {
   /** Run the worker's first turn; with a delivery mode, land the result (or the
    * failure, loudly) in the parent room afterwards. */
   private async runChild(child: SummonRoomAccess, info: SummonChild, task: string, options: SummonOptions): Promise<string> {
-    if (!options.deliver) return this.runFirstTurn(child, info.agentId, task, SUMMON_TIMEOUT_MS);
+    if (!options.deliver) return this.runFirstTurn(child, info.agentId, task, info.roomId, SUMMON_TIMEOUT_MS);
 
     let reply: string;
     let failed = false;
     try {
       // No deadline: a background worker calls back whenever it finishes.
-      reply = await this.runFirstTurn(child, info.agentId, task);
+      reply = await this.runFirstTurn(child, info.agentId, task, info.roomId);
     } catch (error) {
       failed = true;
       reply = error instanceof Error ? error.message : String(error);
@@ -315,15 +355,17 @@ export class SummonCoordinator implements SummonHost {
 
   /** Summons run autonomously: the context gate (a human decision modal) must
    * never hold a worker's first turn. */
-  private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, timeoutMs?: number): Promise<string> {
+  private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string, timeoutMs?: number): Promise<string> {
     const turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
     await awaitTask(child, turn, timeoutMs);
     if (turn.status === "running" || turn.status === "queued") {
       return `summon timed out after ${Math.round((timeoutMs ?? SUMMON_TIMEOUT_MS) / 60_000)} minutes`;
     }
-    if (turn.status === "error") throw new Error(turn.error || "summon turn failed");
+    const digest = await progressDigest(this.workspace.rootDir, roomId, agentId);
+    if (turn.status === "error") throw new Error([turn.error || "summon turn failed", digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "cancelled") throw new Error(["cancelled before completion", digest].filter(Boolean).join("\n\n"));
     const reply = (await child.latestReplyFrom(agentId)).trim();
-    return reply || "(no output)";
+    return reply || `(no final reply)\n\n${digest || "the worker produced no output."}`;
   }
 
   /** Land a worker's result in the parent room: a COLLAPSED note authored by
@@ -379,13 +421,21 @@ export class SummonCoordinator implements SummonHost {
   private async recoverOne(info: SummonChild, record: SummonDelivery): Promise<void> {
     const child = await this.serviceForRoom(info.roomId); // init() resumes the WAL turn / queue
     await child.waitForSettled();
-    const reply = (await child.latestReplyFrom(info.agentId)).trim();
-    await this.deliver(
-      child,
-      info,
-      record,
-      reply || "the worker produced no output before the daemon restarted — open the sub-room and re-summon if needed",
-      !reply,
-    );
+    const digest = await progressDigest(this.workspace.rootDir, info.roomId, info.agentId);
+    const lastTask = (await child.getSnapshot()).tasks.at(-1);
+    let reply: string;
+    let failed: boolean;
+    if (lastTask?.status === "error") {
+      reply = [lastTask.error || "summon turn failed", digest].filter(Boolean).join("\n\n");
+      failed = true;
+    } else if (lastTask?.status === "cancelled") {
+      reply = ["cancelled before completion", digest].filter(Boolean).join("\n\n");
+      failed = true;
+    } else {
+      const raw = (await child.latestReplyFrom(info.agentId)).trim();
+      reply = raw || `(no final reply)\n\n${digest || "the worker produced no output."}`;
+      failed = false;
+    }
+    await this.deliver(child, info, record, reply, failed);
   }
 }

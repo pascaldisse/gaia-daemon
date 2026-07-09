@@ -9,7 +9,7 @@ import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { setStatusbarVisible, statusbarVisible } from "./statusbar.js";
-import { setKeepAwake } from "./actions.js";
+import { setAgentDefaultRole, setKeepAwake } from "./actions.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
@@ -97,6 +97,35 @@ function globalAgentGroups(files = state.globalFiles) {
 /** @param {FileDescriptor} file */
 function globalAgentFileLabel(file) {
   return file.label.replace(/^agents\/[^/]+\//, "").replace(/^persona\//, "");
+}
+
+/**
+ * Structured "global role" picker for an agent group — a select over the
+ * agent's fixed on-disk role files, never free-form text. Needs the live
+ * snapshot agent (for `roles`/`defaultRole`); if this agent isn't in the
+ * current room's snapshot, the control disables rather than falling back to
+ * a text input.
+ * @param {AgentGroup} group
+ */
+function AgentDefaultRoleRow(group) {
+  const snapshotAgent = state.snapshot?.agents?.find((agent) => agent.id === group.id);
+  const roles = snapshotAgent?.roles ?? [];
+  return h(
+    "div",
+    { class: "settings-role-row" },
+    h("small", { class: "settings-role-label", text: "global role" }),
+    h(
+      "select",
+      {
+        class: "settings-role-select",
+        disabled: !snapshotAgent,
+        title: snapshotAgent ? `global default role for @${group.id}` : "open a room containing this agent to set its role",
+        onchange: (event) => void setAgentDefaultRole(group.id, /** @type {HTMLSelectElement} */ (event.target).value),
+      },
+      h("option", { value: "none", text: "none", selected: !snapshotAgent?.defaultRole }),
+      roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === snapshotAgent?.defaultRole })),
+    ),
+  );
 }
 
 function selectedGlobalFile() {
@@ -460,6 +489,7 @@ function SettingsModal() {
               { class: "settings-main-panel" },
               selectedAgent
                 ? [
+                    AgentDefaultRoleRow(selectedAgent),
                     h(
                       "div",
                       { class: "segmented-tabs nested" },

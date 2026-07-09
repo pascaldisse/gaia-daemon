@@ -805,34 +805,18 @@ test("ClaudeRuntime adds no bridge env of its own (RunnerHost owns it)", async (
   }
 });
 
-test("ClaudeRuntime routes egress through the thinking shim only when revealThinking is set", async () => {
+test("ClaudeRuntime always routes egress through the thinking shim (reveal is unconditional)", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
-    const agent = { ...fx.agent, revealThinking: true };
-    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    // No revealThinking flag: the shim is on for every claude agent now.
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     // ANTHROPIC_BASE_URL is redirected to a fresh loopback proxy.
     const base = fake.calls[0].env.ANTHROPIC_BASE_URL;
     assert.match(String(base), /^http:\/\/127\.0\.0\.1:\d+$/);
-    runtime.dispose();
-  } finally {
-    await fx.cleanup();
-  }
-});
-
-test("ClaudeRuntime leaves ANTHROPIC_BASE_URL untouched without revealThinking", async () => {
-  const fx = await fixture();
-  try {
-    const fake = new FakeClaude();
-    fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
-    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
-    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-
-    // Passthrough: whatever the ambient env had (usually nothing), never a shim.
-    assert.equal(fake.calls[0].env.ANTHROPIC_BASE_URL, process.env.ANTHROPIC_BASE_URL);
     runtime.dispose();
   } finally {
     await fx.cleanup();

@@ -54,6 +54,9 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   micMuted: boolean,
  *   dictating: boolean,
  *   dictationBusy: boolean,
+ *   dictationLevel: number,
+ *   dictationBars: number[],
+ *   dictationDraft: ({id: string, workspaceId: string, roomId: string, startedAt: string, updatedAt: string, mimeType: string, status: "recording"|"saved"|"transcribing"|"failed"|"transcribed", bytes: number, durationMs: number, error: string}|null),
  *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
@@ -131,6 +134,9 @@ export const state = {
   // dictation.js).
   dictating: false,
   dictationBusy: false,
+  dictationLevel: 0,
+  dictationBars: [],
+  dictationDraft: null,
   // Transcript read-aloud playback (one message at a time, this tab only).
   readAloud: null,
   // The Thanks-Dario review popup: proposal + which suggestion ids are
