@@ -3,6 +3,7 @@
 // event id in state.streams. No author+text snapshot-merge heuristic exists:
 // the final room-event with the same id simply replaces the stream entry.
 import { api } from "./api.js";
+import { refreshAttention } from "./attention.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
 import { loadSelectedGlobalFile, loadSelectedWorkspaceFile } from "./settings.js";
@@ -47,6 +48,7 @@ export function connectEvents() {
     pruneStreams();
     seedLiveTurn();
     syncReadMarks();
+    refreshAttention();
     syncDarioFromSnapshot();
     syncOlderFromSnapshot();
     markDirty();
@@ -63,6 +65,7 @@ export function connectEvents() {
     const currentId = state.snapshot.room.id;
     state.snapshot.rooms = payload.rooms.map((room) => ({ ...room, isCurrent: room.id === currentId }));
     syncReadMarks();
+    refreshAttention();
     markDirty("sidebar", "tabs");
   });
 
@@ -269,6 +272,7 @@ async function resyncSnapshot(workspaceId) {
     pruneStreams();
     seedLiveTurn();
     syncReadMarks();
+    refreshAttention();
     syncOlderFromSnapshot();
     markDirty();
   } catch {

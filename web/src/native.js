@@ -17,6 +17,38 @@ export function isNative() {
   return typeof window !== "undefined" && Boolean(T());
 }
 
+// Whether the native window is the active (key) window. `document.hasFocus()` is
+// unreliable in a background WKWebView — it keeps returning true even when the
+// GAIA app isn't frontmost — so the shell's real focus/blur events are the only
+// trustworthy signal for "is the user actually looking at this window". Starts
+// true (the shell opens focused); the first blur corrects it. Browser code never
+// reads this (it uses document.hasFocus()).
+let nativeFocused = true;
+
+/** The native window's current focus state (always true off-shell). */
+export function isNativeWindowFocused() {
+  return nativeFocused;
+}
+
+/**
+ * Track the native window's focus via Tauri's window focus/blur events (which
+ * DO fire correctly, unlike document.hasFocus in a background WKWebView). No-op
+ * in a browser. `onChange(focused)` runs on every transition so callers can
+ * re-read the open room / refresh the badge.
+ * @param {(focused: boolean) => void} [onChange]
+ */
+export async function installNativeFocusTracking(onChange) {
+  if (!isNative()) return;
+  try {
+    await T().window.getCurrentWindow().onFocusChanged((/** @type {{ payload: unknown }} */ event) => {
+      nativeFocused = Boolean(event.payload);
+      if (onChange) onChange(nativeFocused);
+    });
+  } catch (err) {
+    console.error("[native] focus tracking failed", err);
+  }
+}
+
 /** This window's Tauri label: "main" for the primary window, "win-N" otherwise. */
 export function currentLabel() {
   if (!isNative()) return "main";
@@ -61,6 +93,25 @@ export async function openWindow({ mode, room = null, x = null, y = null }) {
  *  @param {string} room */
 export async function redockCurrent(room) {
   return invoke("redock", { room });
+}
+
+/**
+ * Set the app's dock badge (the "N unread" red number). Native-only: in a plain
+ * browser this is a no-op (the caller falls back to the tab title). `count <= 0`
+ * clears the badge.
+ * @param {number} count
+ */
+export async function setDockBadge(count) {
+  return invoke("set_badge", { count: Math.max(0, Math.round(count)) });
+}
+
+/**
+ * Post a native OS notification. Native-only (the browser backup uses the web
+ * Notification API instead). Best-effort — resolves undefined off-shell.
+ * @param {{ title: string, body: string }} opts
+ */
+export async function nativeNotify({ title, body }) {
+  return invoke("notify", { title, body });
 }
 
 /** Close the current native window. */

@@ -43,6 +43,7 @@ mod webkit {
 
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+    use tauri_plugin_notification::NotificationExt;
 
     const DEFAULT_PORT: u16 = 8787;
 
@@ -329,6 +330,37 @@ mod webkit {
         Ok(())
     }
 
+    /// Set the app's dock badge (macOS) / taskbar badge — the "N unread" count the
+    /// web UI computes when agent turns finish in rooms the user isn't watching.
+    /// `count <= 0` clears it. The badge is application-global, so it's applied via
+    /// whichever GAIA window exists (main preferred); a windowless app is a silent
+    /// no-op. Called from the web bridge's `setDockBadge`.
+    #[tauri::command]
+    fn set_badge(app: tauri::AppHandle, count: i64) -> Result<(), String> {
+        let window = app
+            .get_webview_window("main")
+            .or_else(|| app.webview_windows().into_values().next());
+        let Some(window) = window else {
+            return Ok(());
+        };
+        let value = if count > 0 { Some(count) } else { None };
+        window.set_badge_count(value).map_err(|e| e.to_string())
+    }
+
+    /// Post a native OS notification (Notification Center banner) when an agent
+    /// finishes a turn the user isn't looking at. Called from the web bridge's
+    /// `nativeNotify`; the plugin's Rust API is used directly (no webview ACL
+    /// surface). The first call may trigger the OS's one-time permission prompt.
+    #[tauri::command]
+    fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+        app.notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|e| e.to_string())
+    }
+
     /// The currently focused GAIA window (main or a spawned one), so a menu action
     /// applies to the window the user is actually looking at.
     fn focused_webview(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -457,8 +489,9 @@ mod webkit {
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
         tauri::Builder::default()
+            .plugin(tauri_plugin_notification::init())
             .manage(SpawnedDaemon(Mutex::new(None)))
-            .invoke_handler(tauri::generate_handler![open_window, redock])
+            .invoke_handler(tauri::generate_handler![open_window, redock, set_badge, notify])
             .on_menu_event(|app, event| handle_menu(app, event.id().0.as_str()))
             .setup(|app| {
                 let port = resolve_port();

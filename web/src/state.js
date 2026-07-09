@@ -2,6 +2,8 @@
 // small action functions (actions.js, events.js, module-local helpers) which
 // then mark the affected render regions dirty (render.js).
 
+import { isNative, isNativeWindowFocused } from "./native.js";
+
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").Task} Task */
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
@@ -211,15 +213,31 @@ export function recallLocation() {
   }
 }
 
+/** The window is actually in front of the user (visible and focused). When it
+ * is NOT — minimized, another app on top, another tab — a finished turn in the
+ * open room stays "unread" so it still badges/notifies, mirroring how Claude
+ * Code / Codex ping you only when you've looked away. In the native shell,
+ * document.hasFocus() is unreliable (a background WKWebView still reports true),
+ * so the shell's real window focus state is used instead. */
+export function isWindowFocused() {
+  if (typeof document === "undefined") return true;
+  const visible = document.visibilityState !== "hidden";
+  if (isNative()) return visible && isNativeWindowFocused();
+  return visible && document.hasFocus();
+}
+
 /**
  * Baseline any room seen for the first time (so nothing is retroactively marked
  * unread on load) and advance the current room's mark to its latest activity —
- * viewing a room IS reading it. Call after any snapshot / rooms update.
+ * viewing a room IS reading it, but only while the window is actually focused
+ * (looking away must not silently clear the pending badge). Call after any
+ * snapshot / rooms update, and again when the window regains focus.
  */
 export function syncReadMarks() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
   const ws = snapshot.workspace.id;
+  const focused = isWindowFocused();
   let changed = false;
   for (const room of snapshot.rooms ?? []) {
     const key = readMarkKey(ws, room.id);
@@ -227,12 +245,19 @@ export function syncReadMarks() {
     if (state.readMarks[key] === undefined) {
       state.readMarks[key] = activity;
       changed = true;
-    } else if (room.isCurrent && state.readMarks[key] < activity) {
+    } else if (room.isCurrent && focused && state.readMarks[key] < activity) {
       state.readMarks[key] = activity;
       changed = true;
     }
   }
   if (changed) persistReadMarks();
+}
+
+/** Reload the read marks from localStorage — another GAIA window advanced them
+ * (a `storage` event). Lets the badge-driving main window notice a room was read
+ * elsewhere and drop it from the count. */
+export function reloadReadMarks() {
+  state.readMarks = loadReadMarks();
 }
 
 /** A room has unread agent activity: newer than what we saw while it was open.
@@ -241,6 +266,19 @@ export function syncReadMarks() {
 export function roomUnread(room) {
   const snapshot = state.snapshot;
   if (room.isCurrent || !snapshot) return false;
+  const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
+  return (room.lastActivity ?? 0) > mark;
+}
+
+/** A room has activity awaiting the user's attention — like roomUnread, but the
+ * open room counts too when the window isn't focused (an agent that finished
+ * while you looked away is exactly what the dock badge / notification is for).
+ * syncReadMarks keeps the focused-and-current room's mark level, so this stays
+ * false there. Drives the badge count and completion notifications.
+ * @param {RoomSummary} room @returns {boolean} */
+export function roomPending(room) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return false;
   const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
   return (room.lastActivity ?? 0) > mark;
 }

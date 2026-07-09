@@ -1,6 +1,7 @@
 // Entry point. The daemon serves these modules directly (no bundler); they are
 // plain browser JavaScript, typechecked via JSDoc (web2/tsconfig.json).
 import { loadApp, selectRoom } from "./actions.js";
+import { installAttention } from "./attention.js";
 import { adoptRoomTab, closeCurrent, dockBack, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { focusComposerFromBackground, initComposer, installComposerRouting } from "./composer.js";
 import { $ } from "./dom.js";
@@ -36,6 +37,7 @@ installKeybindings();
 installVoiceLifecycle();
 installDictationLifecycle();
 installNativeBridge();
+installAttention();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 
 // First paint of every region (empty states), then load the app.

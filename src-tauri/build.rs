@@ -1,4 +1,4 @@
-const APP_COMMANDS: &[&str] = &["open_window", "redock"];
+const APP_COMMANDS: &[&str] = &["open_window", "redock", "set_badge", "notify"];
 
 fn main() {
     tauri_build::try_build(

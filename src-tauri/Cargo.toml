@@ -17,6 +17,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Native OS notifications (dock/notification-center banner when an agent turn
+# finishes). Called from Rust via NotificationExt, so no plugin JS/ACL surface.
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cef = { version = "=149.3.0", optional = true, default-features = false, features = ["build-util"] }
