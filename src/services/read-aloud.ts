@@ -9,7 +9,7 @@
 // Voice calls are a different pipeline (services/voice.ts): live and duplex.
 // This module is one-shot: text in, a finished WAV out.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
@@ -649,11 +649,17 @@ registerTtsEngine({ id: "kyutai", voices: [], synthesize: kyutaiSynthesize });
 // ---------------------------------------------------------------------------
 // claude — the claude-voice daemon (claude.ai "Read aloud" voices through the
 // user's own account). POST /synthesize returns a finished WAV. When the
-// daemon is down and a checkout is configured, it is spawned like the unmute
-// services — detached, logged, and never killed by GAIA (it outlives calls).
+// daemon is down and a checkout is configured, it is spawned detached in its
+// own process group and killed on GAIA shutdown. With claudeVoiceDir set, any
+// pre-existing daemon on the port is killed and replaced at first use (fresh
+// start policy); manual mode without claudeVoiceDir is never killed.
 
 const CLAUDE_VOICES = ["airy", "buttery", "mellow", "glassy", "rounded"];
 const CLAUDE_SYNTH_TIMEOUT_MS = 180_000;
+
+let claudeVoiceChild: ChildProcess | undefined;
+let claudeVoiceOwned = false;
+let claudeVoiceExitHooked = false;
 
 interface ClaudeVoiceHealth {
   reachable: boolean;
@@ -680,14 +686,101 @@ async function claudeVoiceHealth(baseUrl: string): Promise<ClaudeVoiceHealth> {
   }
 }
 
+function claudeVoicePortPids(port: string): number[] | undefined {
+  const result = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (result.error) return undefined;
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split(/\s+/)
+    .map((pid) => Number(pid))
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function killClaudeVoicePortOccupants(baseUrl: string, log: (m: string) => void): Promise<void> {
+  let port: string;
+  try {
+    const url = new URL(baseUrl);
+    port = url.port || (url.protocol === "https:" ? "443" : "80");
+  } catch (error) {
+    log(`voice: could not parse claude-voice URL ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+
+  try {
+    const pids = claudeVoicePortPids(port);
+    if (!pids?.length) return;
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGTERM");
+        log(`voice: sent SIGTERM to pre-existing claude-voice daemon pid ${pid}`);
+      } catch (error) {
+        log(`voice: failed to SIGTERM claude-voice daemon pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const deadline = Date.now() + 4000;
+    let remaining = pids;
+    while (Date.now() < deadline) {
+      const current = claudeVoicePortPids(port);
+      if (!current) return;
+      remaining = current.filter((pid) => pids.includes(pid));
+      if (!remaining.length) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+
+    for (const pid of remaining) {
+      try {
+        process.kill(pid, "SIGKILL");
+        log(`voice: sent SIGKILL to stuck claude-voice daemon pid ${pid}`);
+      } catch (error) {
+        log(`voice: failed to SIGKILL claude-voice daemon pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  } catch (error) {
+    log(`voice: failed while killing pre-existing claude-voice daemon on ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function killOwnedClaudeVoiceDaemon(): void {
+  const child = claudeVoiceChild;
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // Already closed.
+    }
+  }
+}
+
+function hookClaudeVoiceExit(): void {
+  if (claudeVoiceExitHooked) return;
+  claudeVoiceExitHooked = true;
+  process.once("exit", () => killOwnedClaudeVoiceDaemon());
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.once(signal, () => {
+      killOwnedClaudeVoiceDaemon();
+      process.exit(0);
+    });
+  }
+}
+
 async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<string> {
   const baseUrl = context.settings.claudeVoiceUrl.replace(/\/+$/, "");
   let health = await claudeVoiceHealth(baseUrl);
-  if (health.ready) return baseUrl;
+  if (health.ready && claudeVoiceOwned) return baseUrl;
+  const dir = context.settings.claudeVoiceDir;
+  if (health.ready && !claudeVoiceOwned && !dir) return baseUrl;
+  if (health.reachable && !claudeVoiceOwned && dir) {
+    context.log(`voice: killing pre-existing claude-voice daemon at ${baseUrl} (fresh start policy)`);
+    await killClaudeVoicePortOccupants(baseUrl, context.log);
+    health = { reachable: false, ready: false };
+  }
   if (health.reachable) {
     context.log(`voice: claude-voice daemon is alive at ${baseUrl}, waiting for browser session readiness...`);
   } else {
-    const dir = context.settings.claudeVoiceDir;
     if (!dir) {
       throw new Error(`claude-voice daemon is not reachable at ${baseUrl} (start it, or set voice.claudeVoiceDir in ~/.gaia/voice.json to auto-start it)`);
     }
@@ -699,6 +792,9 @@ async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<st
     const log = openSync(join(globalPaths.voiceLogsDir(), "claude-voice.log"), "a");
     const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", log, log], detached: true });
     child.unref();
+    claudeVoiceChild = child;
+    claudeVoiceOwned = true;
+    hookClaudeVoiceExit();
   }
 
   const deadline = Date.now() + context.settings.startTimeoutSec * 1000;
