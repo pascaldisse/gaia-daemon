@@ -25,6 +25,10 @@ export const globalPaths = {
    * mid-call can never leave a "temporary" override applied forever. */
   voiceState: () => join(gaiaHome(), "voice-state.json"),
   voiceLogsDir: () => join(gaiaHome(), "logs", "voice"),
+  /** Durable landing spot for dictation audio: per-chunk clips streamed
+   * while recording, plus the finalized clip written just before transcribe
+   * starts — so a reload or STT failure never loses the recording. */
+  voiceClipsDir: () => join(gaiaHome(), "voice-clips"),
   /** Last-known subscription usage per account — the status-bar meter's
    * survives-everything cache: loaded at boot BEFORE the first probe, so a
    * restart (or an unreachable provider) never blanks the chip. */
