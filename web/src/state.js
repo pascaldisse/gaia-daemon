@@ -44,7 +44,6 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   roomsShown: number,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
  *   openTabs: string[],
- *   tabDragId: string|null,
  *   sidebarCollapsed: boolean,
  *   rightCollapsed: boolean,
  *   themePaletteOpen: boolean,
@@ -112,7 +111,6 @@ export const state = {
   // The tmux-style working set: room ids open as tabs, in user order. Persisted
   // per workspace; the sidebar tree remains the full list of every room.
   openTabs: [],
-  tabDragId: null,
   // Collapsible panes (Ctrl+B / Ctrl+G), like zooming a tmux pane.
   sidebarCollapsed: false,
   rightCollapsed: false,
