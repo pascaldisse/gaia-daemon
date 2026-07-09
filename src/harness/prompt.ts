@@ -36,6 +36,13 @@ export interface TurnPromptInput {
   channel?: "text" | "voice";
   /** Files attached to the newest message (pasted into the composer). */
   attachments?: MessageAttachment[];
+  /** Where this agent's child process actually runs (RunnerHost's cwd) and
+   * the workspace root it was cloned from. When they differ, the turn
+   * prompt tells the agent it is in an isolated per-room worktree. Optional
+   * so callers that have no notion of a worktree (e.g. tests) need not set
+   * it — no line is emitted in that case either. */
+  workDir?: string;
+  rootDir?: string;
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -188,6 +195,9 @@ export async function buildTurnPromptFor(
   input: AgentInput,
   memoryStore: Pick<MemoryStore, "promptBlock">,
   sessions: { memoryChanged(roomId: string, memory: string): boolean },
+  /** This runtime's own cwd (RunnerHost's per-room worktree or workspace
+   * root) and the workspace root it was cloned from — see TurnPromptInput. */
+  paths?: { workDir: string; rootDir: string },
 ): Promise<string> {
   const memory = await memoryStore.promptBlock(agent.memoryDir);
   const memoryChanged = sessions.memoryChanged(input.roomId, memory);
@@ -200,13 +210,20 @@ export async function buildTurnPromptFor(
     recall: input.recall,
     channel: input.channel,
     attachments: input.attachments,
+    workDir: paths?.workDir,
+    rootDir: paths?.rootDir,
   });
 }
 
 export function buildTurnPrompt(input: TurnPromptInput): string {
+  const worktreeLine =
+    input.workDir && input.rootDir && input.workDir !== input.rootDir
+      ? `Worktree: you are working in ${input.workDir} on this room's git branch — an isolated checkout of ${input.rootDir}. Commit your work; it is not in the main checkout until merged.`
+      : "";
   return [
     `Room: ${input.roomId}`,
     `Current agent: @${input.agentId}`,
+    worktreeLine,
     input.channel === "voice" ? VOICE_MODE_INSTRUCTIONS : "",
     input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
     input.recall?.trim() ?? "",

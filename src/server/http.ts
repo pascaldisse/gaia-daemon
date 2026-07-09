@@ -1028,6 +1028,7 @@ export class GaiaWebServer {
       const roomId = await coordinator.summon(claims.roomId, targetAgent, task.trim(), {
         deliver: "turn",
         callerAgentId: claims.agentId,
+        ownWorktree: boolField(body, "ownWorktree"),
       });
       json(response, 200, { roomId, result: summonAck(targetAgent, roomId) });
     } catch (error) {

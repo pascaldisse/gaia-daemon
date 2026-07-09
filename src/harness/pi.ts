@@ -301,7 +301,7 @@ export class PiRuntime implements AgentRuntime {
     // The uniform turn-prompt composition (memory travels only when it changed
     // — SessionMap's diff — so memory-tool writes never force a session
     // reload), shared with every runtime via buildTurnPromptFor.
-    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions);
+    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions, { workDir: this.workDir, rootDir: this.cwd });
     // Pasted images ride the SDK's native channel (PromptOptions.images, the
     // same ImageContent[] the pi CLI builds for clipboard pastes); the prompt
     // text keeps the uniform path breadcrumbs for non-image files.

@@ -22,7 +22,7 @@
 // repo is fast.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { workspacePaths } from "../core/paths.js";
 import { readJson } from "../core/store.js";
@@ -57,6 +57,20 @@ function branchExists(rootDir: string, branch: string): boolean {
   }
 }
 
+// A bare worktree checkout has no node_modules of its own, which breaks
+// npm/tsx for agents working in it — link the root's, best-effort only.
+function provisionDeps(rootDir: string, path: string): void {
+  try {
+    const rootDeps = join(rootDir, "node_modules");
+    const worktreeDeps = join(path, "node_modules");
+    if (existsSync(rootDeps) && !existsSync(worktreeDeps)) {
+      symlinkSync(rootDeps, worktreeDeps);
+    }
+  } catch {
+    // Best-effort: a missing/broken symlink just means slower first install.
+  }
+}
+
 /**
  * Ensure a worktree exists for this room and return its absolute path, or
  * undefined when isolation can't apply (not a git repo, git missing, add
@@ -75,7 +89,10 @@ export function ensureRoomWorktree(rootDir: string, roomId: string, branchPrefix
     git(rootDir, "worktree", "prune");
     // Healthy existing worktree: the .git link file is what makes a worktree
     // a worktree. Present after prune → it's still registered → reuse it.
-    if (existsSync(join(path, ".git"))) return path;
+    if (existsSync(join(path, ".git"))) {
+      provisionDeps(rootDir, path);
+      return path;
+    }
     const branch = roomBranch(branchPrefix, roomId);
     if (branchExists(rootDir, branch)) {
       // The room worked here before (worktree removed, branch kept — or a
@@ -84,6 +101,7 @@ export function ensureRoomWorktree(rootDir: string, roomId: string, branchPrefix
     } else {
       git(rootDir, "worktree", "add", "-b", branch, path, "HEAD");
     }
+    provisionDeps(rootDir, path);
     return path;
   } catch (error) {
     console.warn(`worktree: could not isolate room ${roomId} (${String(error)}); running at workspace root`);

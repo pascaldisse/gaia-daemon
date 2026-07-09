@@ -384,7 +384,7 @@ export class CodexRuntime implements AgentRuntime {
     // The uniform turn-prompt composition (memory travels only when it changed
     // — the persistent thread already saw the previous block), shared with
     // every runtime via buildTurnPromptFor.
-    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.threads);
+    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.threads, { workDir: this.workDir, rootDir: this.cwd });
 
     // Start the turn. Pasted images ride as localImage input items (the same
     // shape `codex -i <file>` produces); the app-server reads the paths itself.
