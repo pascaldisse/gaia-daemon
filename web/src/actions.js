@@ -16,6 +16,9 @@ import { syncDarioFromSnapshot } from "./dario.js";
 /** @param {AppPayload} body */
 async function applyAppPayload(body) {
   state.workspaces = body.workspaces ?? [];
+  // Seed the cross-workspace activity cache BEFORE syncReadMarks so every
+  // workspace's rooms get a first-sight baseline (nothing retroactively unread).
+  state.workspaceRooms = body.workspaceRooms ?? {};
   state.snapshot = body.snapshot ?? null;
   state.streams.clear();
   seedLiveTurn();

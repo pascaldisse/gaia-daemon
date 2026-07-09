@@ -7,7 +7,7 @@ import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
-import { effectiveSidebarFocus, roomUnread, state } from "./state.js";
+import { effectiveSidebarFocus, roomUnread, state, workspaceActivity } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -30,8 +30,12 @@ function renderSidebar() {
     h(
       "div",
       { class: "workspace-list" },
-      state.workspaces.map((workspace) =>
-        h(
+      state.workspaces.map((workspace) => {
+        // Roll the workspace's rooms up to one dot so activity in a workspace
+        // you're NOT viewing is still visible: green (pulsing) while any room in
+        // it has an agent running, else accent while any has unread replies.
+        const act = workspaceActivity(workspace.id);
+        return h(
           "button",
           {
             class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
@@ -45,10 +49,19 @@ function renderSidebar() {
               markDirty("sidebar");
             },
           },
-          h("span", { text: workspace.name }),
+          h(
+            "span",
+            { class: "room-label" },
+            act.running
+              ? h("span", { class: "room-dot running", title: "agent running in this workspace" })
+              : act.unread
+                ? h("span", { class: "room-dot unread", title: "unread messages in this workspace" })
+                : null,
+            h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
+          ),
           h("small", {}, PathText(workspace.path)),
-        ),
-      ),
+        );
+      }),
     ),
     h("button", { class: "nav-action", onclick: () => void addWorkspace(), text: "+ add workspace" }),
     h(
@@ -119,6 +132,31 @@ function RoomTree() {
 }
 
 /**
+ * Rolled-up activity of a room's descendants (children, grandchildren, …) so a
+ * COLLAPSED parent still surfaces a summon sub-room that's running or has unread
+ * replies. Rendered in the row's right gutter — a different position from the
+ * room's own left dot — to say the activity is down inside a subroom, not here.
+ * @param {RoomSummary} room
+ * @param {Map<string|null, RoomSummary[]>} childrenOf
+ * @returns {{running: boolean, unread: boolean}}
+ */
+function descendantActivity(room, childrenOf) {
+  let running = false;
+  let unread = false;
+  const stack = [...(childrenOf.get(room.id) ?? [])];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const kid = stack.pop();
+    if (!kid || seen.has(kid.id)) continue;
+    seen.add(kid.id);
+    if (kid.running) running = true;
+    if (roomUnread(kid)) unread = true;
+    for (const grand of childrenOf.get(kid.id) ?? []) stack.push(grand);
+  }
+  return { running, unread };
+}
+
+/**
  * @param {RoomSummary} room
  * @param {Map<string|null, RoomSummary[]>} childrenOf
  * @param {number} depth
@@ -127,6 +165,10 @@ function RoomTree() {
 function RoomNode(room, childrenOf, depth) {
   const kids = childrenOf.get(room.id) ?? [];
   const expanded = state.expandedRooms.has(room.id);
+  // A collapsed parent hides its subrooms, so bubble their activity up here;
+  // expanded, the children show their own dots (and bubble their own deeper
+  // ones), so the signal always reaches the deepest visible ancestor.
+  const sub = kids.length > 0 && !expanded ? descendantActivity(room, childrenOf) : { running: false, unread: false };
   /** @param {MouseEvent} event */
   const toggle = (event) => {
     event.stopPropagation();
@@ -176,6 +218,14 @@ function RoomNode(room, childrenOf, depth) {
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
+      // Collapsed-subtree activity rolls up into the right gutter (distinct from
+      // the room's own left dot) so a running/unread summon sub-room is visible
+      // without expanding.
+      sub.running
+        ? h("span", { class: "room-subdot running", title: "a subroom has an agent running" })
+        : sub.unread
+          ? h("span", { class: "room-subdot unread", title: "a subroom has unread messages" })
+          : null,
       // No per-row delete button: deletion is the OS delete chord (⌘⌫ on macOS,
       // Del elsewhere) acting on the focused room — see keys.js.
       kids.length > 0

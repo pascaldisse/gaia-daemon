@@ -1022,10 +1022,20 @@ export class GaiaWebServer {
 
   private broadcast(event: UiEvent): void {
     const payload = encodeSse(event.type, event);
+    // `rooms` is workspace-TAGGED but globally DELIVERED: it carries a
+    // workspaceId only so the client knows which workspace it describes, and
+    // must reach EVERY client (not just those viewing that workspace) so the
+    // sidebar's workspace-level running/unread dots stay live for workspaces
+    // you're not currently in. Every other workspace-scoped event targets a
+    // specific room — room ids are unique only WITHIN a workspace, so those stay
+    // scoped by both ids.
+    const ambient = event.type === "rooms";
     for (const client of this.clients) {
       const scoped = event as { workspaceId?: string; roomId?: string };
-      if (client.workspaceId && scoped.workspaceId && client.workspaceId !== scoped.workspaceId) continue;
-      if (client.roomId && scoped.roomId && client.roomId !== scoped.roomId) continue;
+      if (!ambient) {
+        if (client.workspaceId && scoped.workspaceId && client.workspaceId !== scoped.workspaceId) continue;
+        if (client.roomId && scoped.roomId && client.roomId !== scoped.roomId) continue;
+      }
       client.response.write(payload);
     }
   }

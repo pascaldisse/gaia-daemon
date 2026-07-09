@@ -18,7 +18,7 @@ import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
-import { RoomService } from "./services/room-service.js";
+import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
@@ -1060,9 +1060,26 @@ export class Daemon {
     snapshot: Snapshot | undefined;
     workspaceFiles: EditableFileDescriptor[];
     voice: VoiceCallInfo | null;
+    workspaceRooms: Record<string, Snapshot["rooms"]>;
   }> {
     const workspaces = await this.registry.list();
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
+    // Seed the sidebar's workspace-level running/unread dots: a disk-only room
+    // scan per initialized workspace (no live services spun up), kept fresh
+    // afterwards by the same cross-workspace `rooms` broadcasts. A scan failure
+    // for one workspace never sinks the whole payload.
+    const workspaceRooms: Record<string, Snapshot["rooms"]> = {};
+    await Promise.all(
+      workspaces
+        .filter((workspace) => workspace.isInitialized)
+        .map(async (workspace) => {
+          try {
+            workspaceRooms[workspace.id] = await scanRoomActivity(workspace.path);
+          } catch {
+            workspaceRooms[workspace.id] = [];
+          }
+        }),
+    );
     return {
       workspaces,
       currentWorkspaceId: current,
@@ -1070,6 +1087,7 @@ export class Daemon {
       snapshot: current ? await (await this.serviceFor(current)).getSnapshot() : undefined,
       workspaceFiles: current ? await this.files.listWorkspace(current) : [],
       voice: this.voiceFor(current),
+      workspaceRooms,
     };
   }
 }

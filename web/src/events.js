@@ -54,16 +54,20 @@ export function connectEvents() {
     markDirty();
   });
 
-  // Workspace-scoped: another room in this workspace started/finished a turn or
-  // advanced its activity. Refresh the room list so the sidebar's running dot
-  // and unread badge update live even for rooms we're not viewing.
+  // A room somewhere started/finished a turn or advanced its activity. The
+  // daemon broadcasts this for EVERY workspace (not just the open one), so cache
+  // it per workspace to keep the sidebar's workspace-level running/unread dots
+  // live even for workspaces we're not viewing. When it's the open workspace,
+  // also refresh the room list that drives the rooms tree + tab strip.
   source.addEventListener("rooms", (event) => {
     const payload = /** @type {Ev<"rooms">} */ (JSON.parse(event.data));
-    if (!state.snapshot || state.snapshot.workspace.id !== payload.workspaceId) return;
-    // `isCurrent` in the payload is relative to the EMITTING room's service, not
-    // this client's open room — recompute it against the room we're viewing.
-    const currentId = state.snapshot.room.id;
-    state.snapshot.rooms = payload.rooms.map((room) => ({ ...room, isCurrent: room.id === currentId }));
+    state.workspaceRooms[payload.workspaceId] = payload.rooms;
+    if (state.snapshot && state.snapshot.workspace.id === payload.workspaceId) {
+      // `isCurrent` in the payload is relative to the EMITTING room's service,
+      // not this client's open room — recompute it against the room we're viewing.
+      const currentId = state.snapshot.room.id;
+      state.snapshot.rooms = payload.rooms.map((room) => ({ ...room, isCurrent: room.id === currentId }));
+    }
     syncReadMarks();
     refreshAttention();
     markDirty("sidebar", "tabs");

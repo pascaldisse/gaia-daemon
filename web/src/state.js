@@ -68,6 +68,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   summonListOpen: boolean,
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   readMarks: Record<string, number>,
+ *   workspaceRooms: Record<string, RoomSummary[]>,
  * }}
  */
 export const state = {
@@ -164,6 +165,11 @@ export const state = {
   // current room (see effectiveSidebarFocus).
   sidebarFocus: null,
   readMarks: loadReadMarks(),
+  // Per-workspace room activity (running + last-activity), keyed by workspace id,
+  // for the sidebar's workspace-level dots. Seeded by the app payload, kept fresh
+  // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
+  // not just the open one). The open workspace reads live from state.snapshot.
+  workspaceRooms: {},
 };
 
 /** @param {string} workspaceId @param {string} roomId */
@@ -238,20 +244,36 @@ export function isWindowFocused() {
  * snapshot / rooms update, and again when the window regains focus.
  */
 export function syncReadMarks() {
-  const snapshot = state.snapshot;
-  if (!snapshot) return;
-  const ws = snapshot.workspace.id;
   const focused = isWindowFocused();
   let changed = false;
-  for (const room of snapshot.rooms ?? []) {
-    const key = readMarkKey(ws, room.id);
-    const activity = room.lastActivity ?? 0;
-    if (state.readMarks[key] === undefined) {
-      state.readMarks[key] = activity;
-      changed = true;
-    } else if (room.isCurrent && focused && state.readMarks[key] < activity) {
-      state.readMarks[key] = activity;
-      changed = true;
+  // Baseline every room in every OTHER workspace on first sight, so a workspace
+  // you haven't opened — or one that gains activity in the background — is never
+  // retroactively marked unread. Only NEW activity after this baseline lights
+  // its workspace dot. (The open workspace is handled with live marks below.)
+  const openWs = state.snapshot?.workspace.id;
+  for (const [workspaceId, rooms] of Object.entries(state.workspaceRooms)) {
+    if (workspaceId === openWs) continue;
+    for (const room of rooms) {
+      const key = readMarkKey(workspaceId, room.id);
+      if (state.readMarks[key] === undefined) {
+        state.readMarks[key] = room.lastActivity ?? 0;
+        changed = true;
+      }
+    }
+  }
+  const snapshot = state.snapshot;
+  if (snapshot) {
+    const ws = snapshot.workspace.id;
+    for (const room of snapshot.rooms ?? []) {
+      const key = readMarkKey(ws, room.id);
+      const activity = room.lastActivity ?? 0;
+      if (state.readMarks[key] === undefined) {
+        state.readMarks[key] = activity;
+        changed = true;
+      } else if (room.isCurrent && focused && state.readMarks[key] < activity) {
+        state.readMarks[key] = activity;
+        changed = true;
+      }
     }
   }
   if (changed) persistReadMarks();
@@ -264,14 +286,44 @@ export function reloadReadMarks() {
   state.readMarks = loadReadMarks();
 }
 
+/** A room in a given workspace has activity newer than the mark captured while
+ * it was last open. The workspace-scoped core shared by roomUnread (open
+ * workspace) and workspaceActivity (any workspace's rollup).
+ * @param {string} workspaceId @param {RoomSummary} room @returns {boolean} */
+function roomUnreadIn(workspaceId, room) {
+  const mark = state.readMarks[readMarkKey(workspaceId, room.id)] ?? 0;
+  return (room.lastActivity ?? 0) > mark;
+}
+
 /** A room has unread agent activity: newer than what we saw while it was open.
  * The room being viewed is never unread.
  * @param {RoomSummary} room @returns {boolean} */
 export function roomUnread(room) {
   const snapshot = state.snapshot;
   if (room.isCurrent || !snapshot) return false;
-  const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
-  return (room.lastActivity ?? 0) > mark;
+  return roomUnreadIn(snapshot.workspace.id, room);
+}
+
+/**
+ * The rolled-up activity of a whole workspace, for the sidebar's workspace-level
+ * dots: `running` if any room in it has a turn mid-flight, `unread` if any room
+ * has agent activity newer than the mark we captured for it. The open workspace
+ * reads its live rooms from the snapshot (correct running + a just-read open room
+ * clears); every other workspace reads from state.workspaceRooms, kept fresh by
+ * the cross-workspace `rooms` broadcasts. Because subrooms are listed flat, this
+ * already folds in a workspace's summon sub-rooms at every depth.
+ * @param {string} workspaceId @returns {{running: boolean, unread: boolean}}
+ */
+export function workspaceActivity(workspaceId) {
+  const rooms = state.snapshot?.workspace.id === workspaceId ? (state.snapshot.rooms ?? []) : (state.workspaceRooms[workspaceId] ?? []);
+  let running = false;
+  let unread = false;
+  for (const room of rooms) {
+    if (room.running) running = true;
+    if (roomUnreadIn(workspaceId, room)) unread = true;
+    if (running && unread) break;
+  }
+  return { running, unread };
 }
 
 /** A room has activity awaiting the user's attention — like roomUnread, but the

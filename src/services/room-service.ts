@@ -2475,44 +2475,18 @@ export class RoomService {
 
   async listRooms(): Promise<Snapshot["rooms"]> {
     const roomsDir = workspacePaths.roomsDir(this.workspace.rootDir);
-    const fallback = [{ id: this.roomId, path: join(roomsDir, this.roomId), isCurrent: true }];
-    if (!existsSync(roomsDir)) return fallback;
-    const entries = await readdir(roomsDir, { withFileTypes: true });
+    const base = await scanRoomActivity(this.workspace.rootDir);
+    if (base.length === 0) return [{ id: this.roomId, path: join(roomsDir, this.roomId), isCurrent: true }];
+    // Overlay this live service's view on the disk scan: which room is open, its
+    // in-memory turn (the durable pendingTurn marker lands a tick later, so this
+    // closes the start-of-turn gap), and any live summon children (whose markers
+    // likewise trail their start).
     const running = new Set(this.options.summonHost?.runningChildren().map((child) => child.roomId) ?? []);
-    const rooms = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory())
-        .map(async (entry) => {
-          const state = normalizeRoomState(await readJson(workspacePaths.roomState(this.workspace.rootDir, entry.name)));
-          // Rooms are chats: order by last transcript write, like a chat list.
-          // The importer stamps original chat dates onto imported transcripts,
-          // so archives sit at their historical position until touched again.
-          const activity = await stat(workspacePaths.transcript(this.workspace.rootDir, entry.name)).then(
-            (info) => info.mtimeMs,
-            () => 0,
-          );
-          return {
-            activity,
-            summary: {
-              id: entry.name,
-              path: join(roomsDir, entry.name),
-              isCurrent: entry.name === this.roomId,
-              ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-              // Running = a turn is mid-flight: the durable WAL marker (covers
-              // every room, not only summons), a live summon, or — for THIS
-              // service's own room — its in-memory turn (the marker is written a
-              // tick later, so this closes the start-of-turn gap).
-              ...(state.pendingTurn || running.has(entry.name) || (entry.name === this.roomId && this.activeAgentTurn) ? { running: true } : {}),
-              ...(state.title ? { title: state.title } : {}),
-              ...(state.imported ? { imported: state.imported } : {}),
-              ...(state.incognito ? { incognito: true } : {}),
-              ...(activity ? { lastActivity: activity } : {}),
-            },
-          };
-        }),
-    );
-    rooms.sort((a, b) => b.activity - a.activity || a.summary.id.localeCompare(b.summary.id));
-    return rooms.length > 0 ? rooms.map((room) => room.summary) : fallback;
+    return base.map((room) => {
+      const isCurrent = room.id === this.roomId;
+      const live = room.running || running.has(room.id) || (isCurrent && Boolean(this.activeAgentTurn));
+      return { ...room, isCurrent, ...(live ? { running: true } : {}) };
+    });
   }
 
   /** The most recent reply text from an agent in this room (summon results). */
@@ -2714,4 +2688,49 @@ export class RoomService {
       .map((id) => `@${id}`)
       .join(", ")}`;
   }
+}
+
+
+/**
+ * Disk-only scan of a workspace's rooms — the shared basis for both the sidebar
+ * room list (RoomService.listRooms overlays its live state on top) and the
+ * cross-workspace activity rollup the app payload / `rooms` broadcasts feed to
+ * the sidebar's workspace-level dots. Everything here is readable from each
+ * room's durable state.json + transcript mtime, so it needs NO live service:
+ * `running` comes from the durable pendingTurn marker alone (a resident service
+ * adds its in-flight in-memory turn + live summon children), and `isCurrent` is
+ * always false (it's relative to a service's open room, which a rollup lacks).
+ * Rooms are chats: ordered by last transcript write, newest first.
+ */
+export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms"]> {
+  const roomsDir = workspacePaths.roomsDir(rootDir);
+  if (!existsSync(roomsDir)) return [];
+  const entries = await readdir(roomsDir, { withFileTypes: true });
+  const rooms = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        const state = normalizeRoomState(await readJson(workspacePaths.roomState(rootDir, entry.name)));
+        const activity = await stat(workspacePaths.transcript(rootDir, entry.name)).then(
+          (info) => info.mtimeMs,
+          () => 0,
+        );
+        return {
+          activity,
+          summary: {
+            id: entry.name,
+            path: join(roomsDir, entry.name),
+            isCurrent: false,
+            ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
+            ...(state.pendingTurn ? { running: true } : {}),
+            ...(state.title ? { title: state.title } : {}),
+            ...(state.imported ? { imported: state.imported } : {}),
+            ...(state.incognito ? { incognito: true } : {}),
+            ...(activity ? { lastActivity: activity } : {}),
+          } as Snapshot["rooms"][number],
+        };
+      }),
+  );
+  rooms.sort((a, b) => b.activity - a.activity || a.summary.id.localeCompare(b.summary.id));
+  return rooms.map((room) => room.summary);
 }

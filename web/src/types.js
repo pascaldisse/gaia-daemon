@@ -53,6 +53,9 @@
  * @property {Snapshot} [snapshot]
  * @property {FileDescriptor[]} [workspaceFiles]
  * @property {VoiceCallInfo|null} [voice]
+ * @property {Record<string, RoomSummary[]>} [workspaceRooms] per-workspace room
+ *   activity (running/last-activity), seeding the sidebar's workspace-level dots
+ *   so activity in a workspace you're not viewing is still visible.
  */
 
 /**

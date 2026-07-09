@@ -934,11 +934,12 @@ export type UiEvent =
   | ({ type: "steered"; steerEventId: string } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
   | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
-  // Workspace-scoped (NO roomId): the room list changed — a room started or
-  // finished a turn, or its activity advanced. Fans out to EVERY client in the
-  // workspace so a sidebar updates a room's running dot / unread badge even when
-  // that room isn't the one being viewed (the per-room SSE only carries the open
-  // room's own events).
+  // Workspace-TAGGED, globally DELIVERED (NO roomId): the room list of the named
+  // workspace changed — a room started or finished a turn, or its activity
+  // advanced. The workspaceId only says WHICH workspace this describes; the
+  // fan-out sends it to EVERY connected client (not just those viewing that
+  // workspace) so a sidebar can update both the open workspace's room tree AND
+  // the running/unread dots rolled up onto every OTHER workspace in the list.
   | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] }
   // Daemon-global (NO workspaceId → fans out to EVERY connected client): one
   // harness's account usage limits refreshed. Usage is account-level, not
