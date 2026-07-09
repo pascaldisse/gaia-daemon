@@ -152,8 +152,12 @@ export function syncDarioFromSnapshot() {
   const roomId = snapshot.room.id;
   const at = snapshot.room.sanitize?.at ?? "";
   const applied = Boolean(snapshot.room.sanitize?.appliedAt);
-  // Nothing pending, or already applied: record it so it never pops later.
-  if (!at || applied) {
+  const actionable = (snapshot.room.sanitize?.suggestions ?? 0) > 0;
+  // Nothing pending, already applied, or nothing to act on: record it so it
+  // never pops later. A review that returned no output, didn't parse, or found
+  // nothing has 0 suggestions and can never be applied — surfacing it would
+  // re-pop the popup on every reload (the seen-marker is per page load).
+  if (!at || applied || !actionable) {
     seenSanitizeAt.set(roomId, at);
     state.dario.knownAt = at;
     return;
