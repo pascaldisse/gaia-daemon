@@ -881,9 +881,10 @@ export class GaiaWebServer {
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/agents\/([^/]+)\/thinking$/))) {
       const body = await parseBody(request);
       const level = stringField(body, "level");
+      const roomId = stringField(body, "roomId");
       if (level === undefined) return json(response, 400, { error: "Missing thinking level" });
       try {
-        const result = await this.daemon.applyThinking(params[0], params[1], level);
+        const result = await this.daemon.applyThinking(params[0], roomId, params[1], level);
         json(response, 200, { scope: result.scope, thinking: level || undefined });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -209,6 +209,10 @@ export interface SummonDelivery {
 
 export interface RoomState {
   activeRoles: Record<string, string>;
+  /** Per-agent room-scoped thinking-level override (mirrors activeRoles):
+   * room entry wins; absent inherits the agent.json global default
+   * (agent.thinking). Never written to agent.json. */
+  thinkingOverrides: Record<string, string>;
   agentCursors: Record<string, number>;
   /** Per-agent active-context floor: the transcript line index below which
    * content is NOT in the agent's live context (never loaded via a context-gate

@@ -1091,7 +1091,7 @@ export class RoomService {
             transcript: events,
             activeRole,
             channel: options.channel,
-            thinking: options.thinking,
+            thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
           },
@@ -2261,14 +2261,41 @@ export class RoomService {
     const agent = this.workspace.agents[target];
     if (!agent) return this.unknownAgentMessage(target);
     if (!level) {
-      return `Usage: /thinking [agent] <${sdkThinkingLevels().join("|")}>\n@${agent.id} thinking is ${agent.thinking ?? "off"}.`;
+      const state = await this.room.state();
+      const effective = state.thinkingOverrides[agent.id] ?? agent.thinking ?? "off";
+      return `Usage: /thinking [agent] <${sdkThinkingLevels().join("|")}>\n@${agent.id} thinking is ${effective}.`;
     }
     try {
+      // Routes through the daemon closure so an active voice CALL still gets
+      // call-scoped thinking (reverts on hang-up); the non-call path resolves
+      // to THIS room's scope via daemon.applyThinking → setRoomThinking below.
       if (this.options.setThinking) return await this.options.setThinking(agent.id, level);
-      return await this.setAgentThinking(agent.id, level);
+      return await this.setRoomThinking(agent.id, level);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
+  }
+
+  /** Room-scoped thinking override (mirrors setRole): writes ONLY
+   * state.thinkingOverrides via room state, never agent.json, and never
+   * respawns runners — the harness reads the resolved value per-turn
+   * (runAgentTurn input.thinking). "" clears the override, reverting this
+   * room to the agent's global default (agent.thinking). */
+  async setRoomThinking(agentId: string, level: string): Promise<string> {
+    const levels = sdkThinkingLevels();
+    if (level !== "" && !levels.includes(level)) {
+      throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
+    }
+    const agent = this.workspace.agents[agentId];
+    if (!agent) throw new Error(this.unknownAgentMessage(agentId));
+
+    await this.room.updateState((state) => {
+      if (level === "") delete state.thinkingOverrides[agent.id];
+      else state.thinkingOverrides[agent.id] = level;
+    });
+    await this.emitSnapshot();
+    if (level === "") return `Cleared @${agent.id} room thinking (using global default ${agent.thinking ?? "off"}).`;
+    return `Set @${agent.id} thinking to ${level} for this room.`;
   }
 
   /** Persists an agent's thinking level to the effective agent.json (project
@@ -2448,7 +2475,10 @@ export class RoomService {
       // Never-written transcript — the branch starts empty.
     }
     const state = await this.room.state();
-    await writeJsonAtomic(workspacePaths.roomState(this.workspace.rootDir, target), normalizeRoomState({ activeRoles: { ...state.activeRoles } }));
+    await writeJsonAtomic(
+      workspacePaths.roomState(this.workspace.rootDir, target),
+      normalizeRoomState({ activeRoles: { ...state.activeRoles }, thinkingOverrides: { ...state.thinkingOverrides } }),
+    );
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
   }
@@ -2520,7 +2550,7 @@ export class RoomService {
           ...(this.contextFor(agent) ? { context: this.contextFor(agent) } : {}),
           tools: agent.tools,
           voice: agent.voice,
-          thinking: agent.thinking,
+          thinking: state.thinkingOverrides[agent.id] ?? agent.thinking,
           activeRole: state.activeRoles[agent.id],
           defaultRole: agent.defaultRole,
           roles: await listAgentRoles(agent),

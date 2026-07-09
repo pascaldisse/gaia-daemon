@@ -58,6 +58,19 @@ test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   assert.equal(state.queue?.[0].taskId, "q1");
 });
 
+test("normalizeRoomState round-trips thinkingOverrides (mirrors activeRoles)", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    thinkingOverrides: { gaia: "high", bad: 42 },
+  });
+  assert.deepEqual(state.thinkingOverrides, { gaia: "high" });
+  // Absent block still normalizes to an empty record, never undefined —
+  // callers index it directly (state.thinkingOverrides[agentId]).
+  assert.deepEqual(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).thinkingOverrides, {});
+  assert.deepEqual(normalizeRoomState(undefined).thinkingOverrides, {});
+});
+
 test("queue: enqueue/peek/splice/clear are durable", async () => {
   const room = await openRoom();
   await room.enqueue({ taskId: "t1", text: "one", targets: ["gaia"], queuedAt: "2026-01-01" });

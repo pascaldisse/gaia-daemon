@@ -1452,7 +1452,7 @@ test("/model rewrites agent.json AND fires the settings reload that reaches live
   assert.deepEqual(reloads, ["global", "global", "global"]);
 });
 
-test("/thinking fires the same settings reload (it rewrites agent.json too)", async () => {
+test("setAgentThinking (the global-default write path, e.g. the agent-config editor) rewrites agent.json and fires the settings reload", async () => {
   const reloads: string[] = [];
   const { service } = await makeService({
     settingsChanged: async (scope) => {
@@ -1463,6 +1463,87 @@ test("/thinking fires the same settings reload (it rewrites agent.json too)", as
   const reply = await service.setAgentThinking("gaia", "high");
   assert.match(reply, /Set @gaia thinking to high/);
   assert.deepEqual(reloads, ["global"]);
+});
+
+test("/thinking (runThinkingCommand, no active call) is room-scoped: it does NOT touch agent.json or fire a settings reload", async () => {
+  const reloads: string[] = [];
+  const { service, root } = await makeService({
+    settingsChanged: async (scope) => {
+      reloads.push(scope);
+    },
+  });
+  await service.init();
+
+  const reply = await service.runThinkingCommand("gaia", "high");
+  assert.match(reply, /Set @gaia thinking to high for this room/);
+  assert.deepEqual(reloads, []); // no agent.json write → no reload
+
+  // Nothing landed in the effective agent.json — it doesn't even exist yet.
+  assert.equal(await readJson(join(root, "agents", "gaia", "agent.json")), undefined);
+
+  // Room state carries the override directly.
+  const state = await (await RoomHandle.open(root, "default")).state();
+  assert.equal(state.thinkingOverrides.gaia, "high");
+
+  // "" clears the override, reverting to the (unset) global default. (The
+  // slash command's own `!level` guard means /thinking with no argument shows
+  // usage instead — unchanged pre-existing UX; clearing is reached directly,
+  // e.g. from the composer chip / HTTP route, via setRoomThinking itself.)
+  const cleared = await service.setRoomThinking("gaia", "");
+  assert.match(cleared, /Cleared @gaia room thinking \(using global default off\)/);
+  const clearedState = await (await RoomHandle.open(root, "default")).state();
+  assert.equal(clearedState.thinkingOverrides.gaia, undefined);
+});
+
+test("room-scoped thinking never leaks across rooms (mirrors role isolation) and never mutates the shared in-memory agent object", async () => {
+  const { service: roomA, workspace, root } = await makeService({ roomId: "room-a" });
+  await roomA.init();
+  const roomB = await RoomService.open({
+    workspaceId: "ws1",
+    workspace,
+    roomId: "room-b",
+    memoryStore: new MemoryStore(),
+    runtimeFactory: (agent) => scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi from b" } as AgentEvent]),
+  });
+  await roomB.init();
+
+  const reply = await roomA.runThinkingCommand("gaia", "high");
+  assert.match(reply, /Set @gaia thinking to high for this room/);
+
+  // Room A's snapshot shows the override; room B's does not — genuinely
+  // isolated, not just "hasn't refreshed yet".
+  const snapA = await roomA.getSnapshot();
+  const snapB = await roomB.getSnapshot();
+  assert.equal(snapA.agents.find((a) => a.id === "gaia")?.thinking, "high");
+  assert.equal(snapB.agents.find((a) => a.id === "gaia")?.thinking, undefined);
+
+  // The shared in-memory agent object (workspace.agents.gaia, read by every
+  // room service on this workspace) is untouched — this is the actual bug:
+  // a room-scoped change must never mutate shared agent state.
+  assert.equal(workspace.agents.gaia.thinking, undefined);
+
+  // A turn run in room B does NOT inherit room A's override.
+  const inputsB: (string | undefined)[] = [];
+  const bRuntime = {
+    agent: workspace.agents.gaia,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    async *send(input: AgentInput) {
+      inputsB.push(input.thinking);
+      yield { type: "text-delta", delta: "hi" } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  } as unknown as AgentRuntime;
+  // Swap room B's runtime for one that records the thinking it was fed.
+  (roomB as unknown as { runtimes: Record<string, AgentRuntime> }).runtimes.gaia = bRuntime;
+  await roomB.sendMessage("hello", { targets: ["gaia"] });
+  await roomB.waitForIdle();
+  assert.equal(inputsB[0], undefined);
+
+  // agent.json was never written by the room-scoped path.
+  assert.equal(await readJson(join(root, "agents", "gaia", "agent.json")), undefined);
 });
 
 // --- thanks-dario context sanitize ------------------------------------------
