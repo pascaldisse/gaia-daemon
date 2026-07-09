@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
 import {
@@ -25,6 +27,51 @@ import { createTempDir } from "./helpers/temp.js";
 
 function voiceSettings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
   return { ...VOICE_SETTINGS_DEFAULTS, ...overrides };
+}
+
+async function waitForHealthy(baseUrl: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      if (response.ok) return;
+    } catch {
+      // Not listening yet.
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`server did not become healthy at ${baseUrl}`);
+}
+
+function listeningPids(port: number): number[] {
+  const result = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return [];
+  return result.stdout
+    .split(/\s+/)
+    .map((pid) => Number(pid))
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function killRandomTestPort(port: number): Promise<void> {
+  for (const pid of listeningPids(port)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Best effort cleanup on a random test port.
+    }
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (!listeningPids(port).length) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  for (const pid of listeningPids(port)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Best effort cleanup on a random test port.
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +545,79 @@ test("claude readAloudStream waits for browser-session readiness before opening 
     assert.equal(streamHits, 0);
   } finally {
     server.close();
+    await temp.cleanup();
+  }
+});
+
+test("claude readAloudStream kills pre-existing claude-voice daemon when claudeVoiceDir is set", async () => {
+  const temp = await createTempDir();
+  const daemonDir = await createTempDir();
+  const portHolder = http.createServer();
+  await new Promise<void>((resolve) => portHolder.listen(0, "127.0.0.1", resolve));
+  const port = (portHolder.address() as AddressInfo).port;
+  await new Promise<void>((resolve, reject) => portHolder.close((error) => (error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const foreign = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const server = http.createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, loggedIn: true }));
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+    server.listen(${port}, "127.0.0.1");
+  `], { stdio: "ignore" });
+  const foreignExit = once(foreign, "exit");
+
+  try {
+    await waitForHealthy(baseUrl);
+    await writeFile(join(daemonDir.path, "voiced.js"), `
+      const http = require("node:http");
+      const server = http.createServer((req, res) => {
+        if (req.url === "/health") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, loggedIn: true }));
+          return;
+        }
+        if (req.url === "/stream") {
+          res.writeHead(200, {
+            "content-type": "audio/pcm",
+            "x-tts-rate": "16000",
+            "x-tts-channels": "1",
+            "x-tts-bits": "16",
+          });
+          res.end(Buffer.from([1, 0, 2, 0]));
+          return;
+        }
+        res.writeHead(404);
+        res.end("not found");
+      });
+      server.listen(${port}, "127.0.0.1");
+    `);
+
+    const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: baseUrl, claudeVoiceDir: daemonDir.path, startTimeoutSec: 3 });
+    const delivery = await readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path });
+    assert.equal(delivery.mode, "stream");
+    if (delivery.mode !== "stream") throw new Error("unreachable");
+    assert.equal((await collect(delivery.frames)).toString("hex"), "01000200");
+
+    const [, signal] = (await Promise.race([
+      foreignExit,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("foreign claude-voice daemon was not killed")), 2000)),
+    ])) as [number | null, NodeJS.Signals | null];
+    assert.equal(signal, "SIGTERM");
+  } finally {
+    try {
+      foreign.kill("SIGTERM");
+    } catch {
+      // Already killed by the lifecycle policy.
+    }
+    await killRandomTestPort(port);
+    await daemonDir.cleanup();
     await temp.cleanup();
   }
 });
