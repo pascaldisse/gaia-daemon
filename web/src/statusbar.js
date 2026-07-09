@@ -426,6 +426,10 @@ function BgTasksPopover() {
 
 /** @type {number|null} */
 let usageAgeTimer = null;
+// The popover fully rebuilds every second to tick the age + reset countdowns.
+// Only animate the entrance on the first render after opening — otherwise the
+// `palette-pop` keyframe replays on every tick and the whole panel pulses.
+let usagePopoverWasOpen = false;
 
 function renderUsagePopover() {
   const slot = $("#overlay-usage");
@@ -433,6 +437,7 @@ function renderUsagePopover() {
   const shouldShow = state.usagePopoverOpen && Object.keys(state.usage).length > 0;
   if (!shouldShow) {
     slot.replaceChildren();
+    usagePopoverWasOpen = false;
     if (usageAgeTimer !== null) {
       clearInterval(usageAgeTimer);
       usageAgeTimer = null;
@@ -442,12 +447,15 @@ function renderUsagePopover() {
   if (usageAgeTimer === null) {
     usageAgeTimer = window.setInterval(() => markDirty("usage"), 1000);
   }
-  slot.replaceChildren(UsagePopover());
+  const firstRender = !usagePopoverWasOpen;
+  usagePopoverWasOpen = true;
+  slot.replaceChildren(UsagePopover(firstRender));
 }
 
 registerRegion("usage", renderUsagePopover);
 
-function UsagePopover() {
+/** @param {boolean} [animate] Play the entrance pop — only on first open, not on the 1s refresh tick. */
+function UsagePopover(animate = false) {
   const activeTokens = activeRoomModelTokens();
   const groups = Object.values(state.usage).map((limits) => {
     const visible = limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens));
@@ -463,7 +471,7 @@ function UsagePopover() {
     },
     h(
       "div",
-      { class: "palette usage-popover" },
+      { class: animate ? "palette usage-popover" : "palette usage-popover no-anim" },
       h(
         "div",
         { class: "palette-head" },

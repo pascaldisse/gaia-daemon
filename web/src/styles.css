@@ -1254,6 +1254,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   animation: palette-pop 0.14s ease-out;
 }
 
+/* Suppress the entrance pop on overlays that rebuild on a timer (usage popover)
+   so the panel doesn't re-animate — and visibly flicker — every second. */
+.palette.no-anim { animation: none; }
+
 @keyframes palette-pop {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to { opacity: 1; transform: none; }
