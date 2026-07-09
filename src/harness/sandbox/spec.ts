@@ -78,9 +78,15 @@ function defaultRealBackend(): string {
  *   the agent's own agent.json (the trust bit itself) back to read-only via
  *   `extra.readonly`, which the backend applies AFTER the allows (last match
  *   wins).
- * - **Trusted agents** default a *summon* to a real backend too (summons are
- *   never naked by default), but a trusted agent may override that, including
- *   back to "none". A trusted top-level turn defaults to no sandbox.
+ * - **Trusted agents** default to NO sandbox — top-level turns AND summons
+ *   alike. A trusted agent is trusted everywhere it runs; its background
+ *   workers inherit that, so a summon is not confined merely for being a summon
+ *   (this is what lets a subscription-OAuth harness read its keychain login in a
+ *   summon). The boundary that still holds is the TRUST tier, not the
+ *   summon-ness: a summon launched by — or running under — an untrusted agent is
+ *   forced-sandboxed via the untrusted branch above, and no config can weaken
+ *   that. A trusted agent may still opt INTO a sandbox explicitly (enabled /
+ *   backend, on its own config or the workspace's).
  *
  * Agent override wins over the workspace default throughout.
  */
@@ -111,9 +117,13 @@ export function resolveSandboxPolicy(
     };
   }
 
+  // Trusted: no sandbox by default, summon or not. `isSummon` no longer forces
+  // isolation — a trusted agent's workers run with the same reach it has (so a
+  // summoned claude/Fable turn can reach its keychain OAuth login). An explicit
+  // enabled/backend still lets a trusted agent opt into confinement.
   return {
-    enabled: ag.enabled ?? ws.enabled ?? isSummon,
-    backend: configuredBackend ?? (isSummon ? real : "none"),
+    enabled: ag.enabled ?? ws.enabled ?? false,
+    backend: configuredBackend ?? "none",
     writable,
     net,
     credentialProxy,

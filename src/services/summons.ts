@@ -18,13 +18,15 @@
 //     a summon result is NEVER silently lost;
 //   - failures are delivered too, loudly — never swallowed.
 //
-// Trust policy lives here as well: one bit (`trust: false`) forces the sandbox,
-// and the tier FOLLOWS delegation as data — a summon launched by an untrusted
+// Trust policy lives here as well: one bit (`trust: false`) forces the sandbox.
+// A TRUSTED agent's summon runs unsandboxed, exactly like its top-level turns —
+// being a summon is not itself a reason to confine. The boundary is the TRUST
+// tier, and it FOLLOWS delegation as data: a summon launched by an untrusted
 // caller (or from a room already running under the untrusted tier) runs under
-// the untrusted tier itself: forced real sandbox regardless of the worker
-// agent's own trust bit, so summoning can never escape the caller's sandbox.
-// Nested summons are default-deny. No approval gates anywhere — summons run
-// autonomously; the sandbox IS the boundary.
+// the untrusted tier itself — forced real sandbox regardless of the worker
+// agent's own trust bit, so an untrusted agent can never escape its sandbox by
+// summoning. Nested summons are default-deny. No approval gates anywhere —
+// summons run autonomously; the trust tier IS the boundary.
 
 import { readdir } from "node:fs/promises";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";

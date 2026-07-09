@@ -16,17 +16,20 @@ import "../src/harness/sandbox/none.js";
 const ARGV = ["/usr/bin/node", "cli.js", "__run-agent"];
 const DARWIN = { platform: "darwin" };
 
-test("resolveSandboxPolicy: trusted top-level off, trusted summon on with a real backend", () => {
+test("resolveSandboxPolicy: trusted agents run unsandboxed — top-level AND summons", () => {
   assert.equal(resolveSandboxPolicy(undefined, undefined, false, DARWIN).enabled, false);
+  // A summon is no longer confined just for being a summon: a trusted agent's
+  // background worker runs with the same reach it has (so a summoned
+  // subscription-OAuth turn can read its keychain login).
   const summon = resolveSandboxPolicy(undefined, undefined, true, DARWIN);
-  assert.equal(summon.enabled, true);
-  assert.equal(summon.backend, "macos-seatbelt"); // never "none" by default — summons are never naked
+  assert.equal(summon.enabled, false);
+  assert.equal(summon.backend, "none");
 });
 
-test("resolveSandboxPolicy: a trusted agent may still override a summon back to none", () => {
-  const policy = resolveSandboxPolicy(undefined, { enabled: false, backend: "none" }, true, DARWIN);
-  assert.equal(policy.enabled, false);
-  assert.equal(policy.backend, "none");
+test("resolveSandboxPolicy: a trusted agent may opt INTO a sandbox explicitly", () => {
+  const policy = resolveSandboxPolicy(undefined, { enabled: true, backend: "macos-seatbelt" }, true, DARWIN);
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.backend, "macos-seatbelt");
 });
 
 test("resolveSandboxPolicy: untrusted agents are forced into a real backend, top-level included", () => {
