@@ -360,6 +360,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .nav-item, .nav-action, .file-tabs button, .segmented-tabs button { width: 100%; text-align: left; }
 .nav-item span, .file-tabs span, .segmented-tabs span { display: block; }
 
+/* A row of pill tabs (Settings modal's general/workspace/agents, and its nested
+   agent config/persona/memory view) — one .active button at a time. */
+.segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.segmented-tabs button { width: auto; display: flex; align-items: center; gap: 6px; }
+
 /* The sidebar is a tmux session tree: names matter, absolute paths are noise.
    Keep just the names; the full path lives on the button's hover title. */
 .sidebar .nav-item small { display: none; }
@@ -1566,6 +1571,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 .dario-apply { border-color: var(--accent) !important; color: var(--accent) !important; }
 .dario-apply:disabled { opacity: 0.5; cursor: not-allowed; }
 .redacted-tag { color: var(--warn); cursor: help; }
+
+/* ============================================================
+   Settings modal (settings.js): tabbed general/workspace/agents editor over
+   the server's editable-file catalog. .segmented-tabs / .file-tabs / .modal /
+   .panel-head / .file-toolbar / .empty are the shared components (see the
+   sidebar + dario sections above); everything below is settings-specific.
+   ============================================================ */
+.settings2-modal { width: min(860px, calc(100vw - 32px)); }
+.settings2-body { margin-top: 12px; }
+
+/* One general-tab preference row (label + control), e.g. keep-awake. */
+.settings2-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.settings2-row input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+
+/* Workspace/agents tabs: a narrow file/agent list beside the editor. */
+.settings2-split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
+.settings2-sidebar { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.settings2-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.settings2-editor { display: flex; flex-direction: column; gap: 8px; }
+.settings2-raw { min-height: 380px; resize: vertical; white-space: pre; overflow-wrap: normal; }
+.settings2-dirty { color: var(--warn); }
+.settings2-error-line { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); padding: 6px 8px; font-size: 13px; }
+
+@media (max-width: 640px) {
+  .settings2-split { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Context-gate modal: a new agent joining a big room. */
 .contextgate-modal { width: min(620px, calc(100vw - 32px)); }

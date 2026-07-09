@@ -16,6 +16,7 @@ import { jumpTab, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggl
 import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
+import { closeSettings } from "./settings.js";
 import { effectiveSidebarFocus, state } from "./state.js";
 import { closeBgTasks, closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
 import { cycleTheme } from "./themes.js";
@@ -50,13 +51,13 @@ function isTypingTarget() {
 }
 
 /** Block sidebar destructive/rename chords while typing or with any modal/overlay up — a
- * confirm/prompt dialog (`.modal-backdrop`), search, the theme palette,
+ * confirm/prompt dialog (`.modal-backdrop`), search, settings, the theme palette,
  * the Dario/usage/background-tasks popovers. Keeps it from double-firing into, or
  * deleting behind, an open dialog. */
 function sidebarActionBlocked() {
   if (isTypingTarget()) return true;
   if (document.querySelector(".modal-backdrop")) return true;
-  return state.search.open || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
+  return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
 }
 
 export function installKeybindings() {
@@ -98,6 +99,12 @@ export function installKeybindings() {
         event.stopImmediatePropagation();
         state.dario.open = false;
         markDirty("dario");
+        return;
+      }
+      // Then the Settings modal.
+      if (event.key === "Escape" && state.settingsOpen) {
+        event.preventDefault();
+        closeSettings();
         return;
       }
       // Delete the focused sidebar item — workspace or room — with the OS-native

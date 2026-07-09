@@ -6,9 +6,9 @@
 import { $, h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"} Region */
+/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
 
-const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks"]);
+const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
 
 /** @type {Map<Region, () => void>} */
 const renderers = new Map();
@@ -100,6 +100,7 @@ export function mountApp() {
       h("div", { id: "overlay-usage" }),
       h("div", { id: "overlay-bgtasks" }),
       h("div", { id: "overlay-search" }),
+      h("div", { id: "overlay-settings" }),
     ),
   );
 }

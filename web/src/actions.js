@@ -25,6 +25,12 @@ async function applyAppPayload(body) {
   syncDarioFromSnapshot(); // surface a pending Dario proposal on initial load
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
   state.voice = body.voice ?? null;
+  // Settings modal catalogs — file LISTS ride along on the payloads that already
+  // fetch everything else; only individual file content is a separate call
+  // (loadSettingsFile below), made on demand as the modal selects a file.
+  state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
+  state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
+  state.keepAwake = body.keepAwake ?? state.keepAwake;
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
@@ -61,6 +67,7 @@ function applySnapshotPayload(body) {
   syncDarioFromSnapshot(); // surface a pending Dario proposal when switching into a room
   // Workspace/room switch: paged-in older history belongs to the old room.
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
+  state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
   state.voice = body.voice ?? null;
   rememberLocation(state.snapshot);
 }
@@ -483,6 +490,71 @@ export async function stopAll() {
       ),
     ]);
     setError("");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings modal: editable-file content load/save + keep-awake. File LISTS
+// (state.settingsWorkspaceFiles / settingsGlobalFiles) arrive for free on the
+// app/snapshot payloads above; only a single file's content+hints and the
+// keep-awake toggle need their own round trip.
+
+/**
+ * Load one editable file's content (+ server-computed field hints) into
+ * state.settingsFile / settingsFileHints for the Settings modal. Workspace-scoped
+ * files need `workspaceId` so the daemon resolves the right workspace's copy;
+ * global files (general/voice/agents) omit it.
+ * @param {string} fileId
+ * @param {{ workspaceId?: string }} [opts]
+ */
+export async function loadSettingsFile(fileId, opts = {}) {
+  state.settingsError = "";
+  try {
+    const params = opts.workspaceId ? `?${new URLSearchParams({ workspaceId: opts.workspaceId })}` : "";
+    const body = await api(`/api/files/${encodeURIComponent(fileId)}${params}`);
+    state.settingsFile = body.file;
+    state.settingsFileHints = body.file.hints;
+  } catch (error) {
+    state.settingsFile = null;
+    state.settingsFileHints = undefined;
+    state.settingsError = error instanceof Error ? error.message : String(error);
+  }
+  markDirty("settings");
+}
+
+/**
+ * Save the Settings modal's currently open file with new raw text content.
+ * @param {string} content
+ */
+export async function saveSettingsFile(content) {
+  const file = state.settingsFile;
+  if (!file) return;
+  state.settingsError = "";
+  try {
+    const params = file.scope === "workspace" && state.snapshot ? `?${new URLSearchParams({ workspaceId: state.snapshot.workspace.id })}` : "";
+    const body = await api(`/api/files/${encodeURIComponent(file.id)}${params}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+    state.settingsFile = body.file;
+    state.settingsFileHints = body.file.hints;
+  } catch (error) {
+    state.settingsError = error instanceof Error ? error.message : String(error);
+  }
+  markDirty("settings");
+}
+
+/** "Keep laptop awake while GAIA runs" (Settings ▸ general): persist + apply
+ * immediately via the daemon (services/keep-awake.ts, macOS-only — the toggle
+ * hides itself elsewhere via state.keepAwake.supported).
+ * @param {boolean} enabled */
+export async function setKeepAwake(enabled) {
+  try {
+    const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });
+    state.keepAwake = body.keepAwake ?? state.keepAwake;
+    markDirty("settings");
   } catch (error) {
     setError(error);
   }

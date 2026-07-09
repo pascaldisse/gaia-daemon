@@ -14,6 +14,10 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").SanitizeProposal} SanitizeProposal */
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").ChatSearchHit} ChatSearchHit */
+/** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
+/** @typedef {import("./types.js").EditableFile} EditableFile */
+/** @typedef {import("./types.js").FileHints} FileHints */
+/** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
 
 /**
  * @type {{
@@ -58,6 +62,18 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   readMarks: Record<string, number>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
+ *   settingsOpen: boolean,
+ *   settingsTab: "general"|"workspace"|"agents",
+ *   settingsAgentId: string|null,
+ *   settingsAgentView: "config"|"persona"|"memory",
+ *   settingsWorkspaceFiles: FileDescriptor[],
+ *   settingsGlobalFiles: FileDescriptor[],
+ *   settingsSelectedWorkspaceFileId: string|null,
+ *   settingsSelectedAgentFileId: string|null,
+ *   settingsFile: EditableFile|null,
+ *   settingsFileHints: FileHints|undefined,
+ *   settingsError: string,
+ *   keepAwake: KeepAwakeCapability,
  * }}
  */
 export const state = {
@@ -158,6 +174,27 @@ export const state = {
   // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
   // not just the open one). The open workspace reads live from state.snapshot.
   workspaceRooms: {},
+  // The Settings modal (sidebar's "settings" button / see settings.js). Files are
+  // raw-edited for now (JSON/markdown content + textarea); settingsFileHints mirrors
+  // whatever file is currently open so a later smart-form renderer can drive
+  // hint-aware controls off one place without threading through settingsFile.
+  settingsOpen: false,
+  settingsTab: "general",
+  settingsAgentId: null,
+  settingsAgentView: "config",
+  // Editable-file catalogs: workspace-scoped ones refresh on every app/snapshot
+  // payload (see actions.js); global ones (general/voice/agents) only arrive with
+  // the app payload, since they don't vary per workspace.
+  settingsWorkspaceFiles: [],
+  settingsGlobalFiles: [],
+  settingsSelectedWorkspaceFileId: null,
+  settingsSelectedAgentFileId: null,
+  settingsFile: null,
+  settingsFileHints: undefined,
+  settingsError: "",
+  // "Keep laptop awake while GAIA runs" — daemon-managed, macOS-only capability
+  // served in /api/app; `supported` false elsewhere hides the control entirely.
+  keepAwake: { supported: false, enabled: false },
 };
 
 /** @param {string} workspaceId @param {string} roomId */
