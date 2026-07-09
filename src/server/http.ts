@@ -3,7 +3,7 @@
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
 import { createReadStream, existsSync, openSync, watch, type FSWatcher } from "node:fs";
-import { access, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -11,7 +11,7 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gaiaHost, gaiaPort } from "../core/config.js";
-import { bundledDir, gaiaHome } from "../core/paths.js";
+import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
 import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
@@ -830,6 +830,27 @@ export class GaiaWebServer {
       return;
     }
 
+    // Composer dictation durability: while a clip is still recording, the client
+    // streams each recorder chunk here and appends it straight to disk under
+    // <gaia home>/voice-clips/<clipId>.bin. This is fire-and-forget from the
+    // client's side and must never gate or delay send/transcribe — a reload or
+    // an STT failure can never lose audio that already made it to this route.
+    if (method === "POST" && (params = match(/^\/api\/voice\/clip\/([^/]+)\/chunk$/))) {
+      const clipId = params[0];
+      if (!/^[a-z0-9-]{1,64}$/.test(clipId)) return json(response, 400, { error: "Invalid clipId" });
+      try {
+        const data = await readRawBody(request, TRANSCRIBE_MAX_BYTES);
+        await mkdir(globalPaths.voiceClipsDir(), { recursive: true });
+        await appendFile(join(globalPaths.voiceClipsDir(), `${clipId}.bin`), data);
+        response.writeHead(204);
+        response.end();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        json(response, 500, { error: message });
+      }
+      return;
+    }
+
     // Composer dictation (voice INPUT): the recorded clip is POSTed as the bare
     // body (content-type = the recorder's MIME), transcribed by the resolved STT
     // engine (voice.json sttEngine; ?engine= / ?language= override), and the
@@ -842,6 +863,13 @@ export class GaiaWebServer {
       try {
         const data = await readRawBody(request, TRANSCRIBE_MAX_BYTES);
         if (data.length === 0) return json(response, 400, { error: "No audio to transcribe" });
+        // Durability: land the complete clip on disk before transcription even
+        // starts. Fire-and-forget — a slow or failing write must never delay
+        // (or gate) the transcribe path the user is waiting on.
+        const finalExt = mime.includes("mp4") ? "m4a" : mime.includes("webm") ? "webm" : mime.includes("wav") ? "wav" : "bin";
+        void mkdir(globalPaths.voiceClipsDir(), { recursive: true })
+          .then(() => writeFile(join(globalPaths.voiceClipsDir(), `final-${Date.now()}.${finalExt}`), data))
+          .catch(() => {});
         const result = await this.daemon.transcribe({ data, contentType: mime }, { engineId, language });
         return json(response, 200, { text: result.text, engine: result.engine });
       } catch (error) {

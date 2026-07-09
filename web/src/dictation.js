@@ -32,6 +32,7 @@ const FINISH_WATCHDOG_MS = 1500;
  * @property {number} timerId
  * @property {number} lastMeterMs
  * @property {Blob[]} chunks
+ * @property {string} clipId
  */
 
 /** @type {DictationSession|null} */
@@ -98,6 +99,7 @@ async function startDictation() {
     timerId: 0,
     lastMeterMs: 0,
     chunks: [],
+    clipId: newClipId(),
   };
   session = current;
   state.dictating = true;
@@ -111,6 +113,11 @@ async function startDictation() {
   recorder.ondataavailable = (event) => {
     if (!event.data || !event.data.size) return;
     current.chunks.push(event.data);
+    // Durability: stream the chunk to disk server-side, fire-and-forget. This
+    // must never gate or delay recording/stop/transcribe — no await, and any
+    // failure (offline, reload mid-flight) is silently swallowed since the
+    // in-memory chunks array remains the source of truth for the send path.
+    void fetch(`/api/voice/clip/${current.clipId}/chunk`, { method: "POST", body: event.data }).catch(() => {});
   };
   recorder.start(1000);
   current.timerId = window.setTimeout(() => void stopAndTranscribe(), MAX_RECORD_MS);
@@ -353,6 +360,14 @@ function insertTranscript(text) {
     textarea.focus();
     textarea.setSelectionRange(state.composerText.length, state.composerText.length);
   }
+}
+
+/** An opaque id for this recording session's server-side clip file. Must match
+ * the server's /^[a-z0-9-]{1,64}$/ — base36 is already lowercase, but force it
+ * in case a future Math.random() implementation ever isn't.
+ * @returns {string} */
+function newClipId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toLowerCase();
 }
 
 /** Prefer opus in webm/ogg (small, widely accepted), fall back to mp4/mpeg. */
