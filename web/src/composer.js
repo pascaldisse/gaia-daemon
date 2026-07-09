@@ -669,9 +669,11 @@ async function postThinking(snapshot, agent, level, onCall) {
   try {
     await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/agents/${encodeURIComponent(agent.id)}/thinking`, {
       method: "POST",
-      body: JSON.stringify({ level }),
+      body: JSON.stringify({ level, roomId: snapshot.room.id }),
     });
     if (onCall && state.voice) state.voice.thinking = level;
+    // Optimistic: updates the snapshot's per-agent effective view for THIS
+    // room; the next snapshot refresh reflects the room-scoped override.
     else agent.thinking = level;
     state.thinkingMenuOpen = false;
     markDirty("composer");
@@ -683,7 +685,8 @@ async function postThinking(snapshot, agent, level, onCall) {
 /**
  * Thinking-effort indicator: click toggles between the current level and
  * off; right-click opens a menu with all levels. On a call the change is
- * call-scoped (reverts on hang-up); otherwise it persists to agent.json.
+ * call-scoped (reverts on hang-up); otherwise it is room-scoped (matches
+ * /role) — it never persists to agent.json.
  * @param {Snapshot|null} snapshot
  * @param {string} text
  * @returns {HTMLElement|null}

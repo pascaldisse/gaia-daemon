@@ -288,7 +288,7 @@ function summonDeliveryFrom(value: unknown): SummonDelivery | undefined {
 }
 
 export function normalizeRoomState(value: unknown): RoomState {
-  if (!isRecord(value)) return { activeRoles: {}, agentCursors: {} };
+  if (!isRecord(value)) return { activeRoles: {}, agentCursors: {}, thinkingOverrides: {} };
   const runtimeDetails = isRecord(value.runtimeDetails)
     ? Object.fromEntries(
         Object.entries(value.runtimeDetails)
@@ -305,6 +305,7 @@ export function normalizeRoomState(value: unknown): RoomState {
   const contextFloors = cursorRecord(value.contextFloors);
   return {
     activeRoles: stringRecord(value.activeRoles),
+    thinkingOverrides: stringRecord(value.thinkingOverrides),
     agentCursors: cursorRecord(value.agentCursors),
     ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),

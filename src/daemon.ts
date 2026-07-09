@@ -292,7 +292,7 @@ export class Daemon {
       // Same LLM caller consolidation uses — backs the context-gate compact.
       llm: consolidateLlm(),
       summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
-      setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
+      setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, resolvedRoom, agentId, level)).message,
       // Same reload the settings-file save route uses: /model + /thinking
       // rewrite agent.json, and only a service rebuild reaches the runner
       // subprocesses (they snapshot the config at spawn).
@@ -844,12 +844,16 @@ export class Daemon {
 
   // --- thinking (call-scoped vs persistent) --------------------------------------------
 
-  async applyThinking(workspaceId: string, agentId: string, level: string): Promise<{ scope: "call" | "agent"; message: string }> {
+  async applyThinking(
+    workspaceId: string,
+    roomId: string | undefined,
+    agentId: string,
+    level: string,
+  ): Promise<{ scope: "call" | "room"; message: string }> {
     const levels = sdkThinkingLevels();
     if (level !== "" && !levels.includes(level)) {
       throw new Error(`Invalid thinking level: ${level}. Use one of: ${levels.join(", ")}`);
     }
-    const service = await this.serviceFor(workspaceId);
 
     const call = this.activeCall;
     if (call && call.workspaceId === workspaceId && call.info.agentId === agentId) {
@@ -859,7 +863,8 @@ export class Daemon {
       return { scope: "call", message: `Set @${agentId} thinking to ${level || "agent default"} for this call. It reverts on hang-up.` };
     }
 
-    return { scope: "agent", message: await service.setAgentThinking(agentId, level) };
+    const service = await this.serviceFor(workspaceId, roomId);
+    return { scope: "room", message: await service.setRoomThinking(agentId, level) };
   }
 
   // --- voice call session -----------------------------------------------------------
