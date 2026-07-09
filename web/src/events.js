@@ -6,7 +6,6 @@ import { api } from "./api.js";
 import { refreshAttention } from "./attention.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
-import { loadSelectedGlobalFile, loadSelectedWorkspaceFile } from "./settings.js";
 import { state, syncReadMarks } from "./state.js";
 import { syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
@@ -268,10 +267,6 @@ export function connectEvents() {
     markDirty("transcript", "panel", "composer", "tabs", "sidebar");
   });
 
-  source.addEventListener("settings-saved", (event) => {
-    const payload = /** @type {Ev<"settings-saved">} */ (JSON.parse(event.data));
-    void refreshSavedFile(payload.fileId);
-  });
 }
 
 /**
@@ -294,21 +289,6 @@ async function resyncSnapshot(workspaceId) {
   } catch {
     // Server unreachable again — the next successful reconnect retries.
   }
-}
-
-/**
- * A save (this tab or another) invalidates the cached content of that file;
- * refetch before re-rendering so the editor never rebuilds from a stale copy.
- * @param {string} fileId
- */
-async function refreshSavedFile(fileId) {
-  try {
-    if (state.workspaceFile?.id === fileId) await loadSelectedWorkspaceFile();
-    if (state.globalFile?.id === fileId) await loadSelectedGlobalFile();
-  } catch {
-    // Keep the cached copy if the refetch fails.
-  }
-  markDirty("settings");
 }
 
 /**

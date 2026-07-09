@@ -1,87 +1,97 @@
-// Settings: the workspace panel (right pane) and the global settings modal,
-// both driven by server-listed editable files with hint-driven editors
-// (dropdowns / multiselect / boolean / number / text + raw view toggle).
-// Files carry server-computed metadata (agentId, category) so grouping never
-// has to parse label paths. Everything here renders inside the "settings"
-// region, so streaming SSE traffic never wipes an in-progress edit.
-import { api } from "./api.js";
+// The Settings modal: a workspace-scoped file browser + editor over the
+// server's editable-file catalog (general/voice/agents), plus the keep-awake
+// toggle. The editor renders a hints-driven FORM for JSON files that carry
+// field hints (state.settingsFileHints) — a raw textarea remains the escape
+// hatch (view toggle) and the only option for files with no hints or
+// unparseable JSON (persona/memory markdown included).
+import { loadSettingsFile, saveSettingsFile, setKeepAwake } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
-import { markDirty, registerRegion, setError } from "./render.js";
-import { setStatusbarVisible, statusbarVisible } from "./statusbar.js";
-import { setAgentDefaultRole, setKeepAwake } from "./actions.js";
+import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
-/** @typedef {import("./types.js").EditableFile} EditableFile */
 /** @typedef {import("./types.js").FieldHint} FieldHint */
 /** @typedef {import("./types.js").FieldHintOption} FieldHintOption */
 /** @typedef {import("./types.js").FileHints} FileHints */
 /** @typedef {import("./types.js").HarnessHintsMeta} HarnessHintsMeta */
-/** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
+/** @typedef {(string|number)[]} JsonPath */
+/** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
+/**
+ * @typedef {{
+ *   draft: any,
+ *   hints: Record<string, FieldHint>,
+ *   harnessMeta: HarnessHintsMeta|undefined,
+ *   rerender: () => void,
+ *   markDirtyBadge: () => void,
+ * }} FormCtx
+ */
 
 // ---------------------------------------------------------------------------
-// Region: workspace panel + modal.
+// Open/close + tab & selection state.
 
-function renderSettings() {
-  renderWorkspacePanel();
-  renderModal();
+export function openSettings() {
+  state.settingsOpen = true;
+  markDirty("settings");
+  void selectTab(state.settingsTab);
 }
 
-registerRegion("settings", renderSettings);
-
-function renderWorkspacePanel() {
-  const panel = $("#workspace-panel");
-  if (!panel) return;
-  panel.replaceChildren(
-    h("div", { class: "panel-head" }, h("h2", { text: "Workspace" }), h("small", {}, state.snapshot?.workspace.rootDir ? PathText(state.snapshot.workspace.rootDir) : "none")),
-    FileSelector(state.workspaceFiles, state.selectedWorkspaceFileId, async (id) => {
-      state.selectedWorkspaceFileId = id;
-      await loadSelectedWorkspaceFile();
-      markDirty("settings");
-    }),
-    FileSettingsEditor({
-      file: state.workspaceFile,
-      raw: state.workspaceRaw,
-      setRaw: (value) => {
-        state.workspaceRaw = value;
-        markDirty("settings");
-      },
-    }),
-  );
+export function closeSettings() {
+  state.settingsOpen = false;
+  markDirty("settings");
 }
 
-function renderModal() {
-  const slot = $("#overlay-settings");
-  if (!slot) return;
-  if (!state.settingsOpen) slot.replaceChildren();
-  else slot.replaceChildren(SettingsModal());
+/** @param {"general"|"workspace"|"agents"} tab */
+async function selectTab(tab) {
+  state.settingsTab = tab;
+  markDirty("settings");
+  if (tab === "workspace") {
+    const files = state.settingsWorkspaceFiles;
+    const stillPresent = files.some((file) => file.id === state.settingsSelectedWorkspaceFileId);
+    const id = stillPresent ? state.settingsSelectedWorkspaceFileId : (files[0]?.id ?? null);
+    if (id) await selectWorkspaceFile(id);
+    else clearFile();
+  } else if (tab === "agents") {
+    const group = selectedAgentGroup();
+    if (group) await selectAgent(group.id);
+    else clearFile();
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Selection state helpers.
-
-/** @param {string} category @param {FileDescriptor[]} [files] */
-function filesInCategory(category, files = state.globalFiles) {
-  return files.filter((file) => file.category === category);
+function clearFile() {
+  state.settingsFile = null;
+  state.settingsFileHints = undefined;
+  state.settingsDraft = null;
+  markDirty("settings");
 }
 
-/** @param {FileDescriptor[]} [files] */
-function globalSettingsSections(files = state.globalFiles) {
-  const agentIds = new Set(files.map((file) => file.agentId).filter(Boolean));
-  return [
-    { id: "general", label: "General", count: filesInCategory("general", files).length },
-    { id: "voice", label: "Voice", count: filesInCategory("voice", files).length },
-    { id: "agents", label: "Agents", count: agentIds.size },
-  ];
+/**
+ * Load a file's content+hints (actions.js) then derive the form draft from
+ * it and reset the view to the default (form, whenever a form is possible) —
+ * every entry point that opens a *different* file goes through this, so the
+ * form/raw toggle never carries a stale draft or view choice from the file
+ * that was open before.
+ * @param {string} id @param {{ workspaceId?: string }} [opts]
+ */
+async function loadFileForEditing(id, opts) {
+  await loadSettingsFile(id, opts);
+  syncDraftFromFile();
+  state.settingsView = "form";
 }
 
-/** @param {FileDescriptor[]} [files] @returns {AgentGroup[]} */
-function globalAgentGroups(files = state.globalFiles) {
+/** @param {string} id */
+async function selectWorkspaceFile(id) {
+  state.settingsSelectedWorkspaceFileId = id;
+  markDirty("settings");
+  await loadFileForEditing(id, { workspaceId: state.snapshot?.workspace.id });
+}
+
+/** @returns {AgentGroup[]} */
+function agentGroups() {
   /** @type {Map<string, AgentGroup>} */
   const groups = new Map();
-  for (const file of files) {
+  for (const file of state.settingsGlobalFiles) {
     if (!file.agentId) continue;
     let group = groups.get(file.agentId);
     if (!group) {
@@ -94,436 +104,216 @@ function globalAgentGroups(files = state.globalFiles) {
   return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** @param {FileDescriptor} file */
-function globalAgentFileLabel(file) {
-  return file.label.replace(/^agents\/[^/]+\//, "").replace(/^persona\//, "");
+function selectedAgentGroup() {
+  const groups = agentGroups();
+  return groups.find((group) => group.id === state.settingsAgentId) ?? groups[0] ?? null;
 }
 
-/**
- * Structured "global role" picker for an agent group — a select over the
- * agent's fixed on-disk role files, never free-form text. Needs the live
- * snapshot agent (for `roles`/`defaultRole`); if this agent isn't in the
- * current room's snapshot, the control disables rather than falling back to
- * a text input.
- * @param {AgentGroup} group
- */
-function AgentDefaultRoleRow(group) {
-  const snapshotAgent = state.snapshot?.agents?.find((agent) => agent.id === group.id);
-  const roles = snapshotAgent?.roles ?? [];
-  return h(
-    "div",
-    { class: "settings-role-row" },
-    h("small", { class: "settings-role-label", text: "global role" }),
-    h(
-      "select",
-      {
-        class: "settings-role-select",
-        disabled: !snapshotAgent,
-        title: snapshotAgent ? `global default role for @${group.id}` : "open a room containing this agent to set its role",
-        onchange: (event) => void setAgentDefaultRole(group.id, /** @type {HTMLSelectElement} */ (event.target).value),
-      },
-      h("option", { value: "none", text: "none", selected: !snapshotAgent?.defaultRole }),
-      roles.map((roleName) => h("option", { value: roleName, text: roleName, selected: roleName === snapshotAgent?.defaultRole })),
-    ),
-  );
-}
-
-function selectedGlobalFile() {
-  return state.globalFiles.find((file) => file.id === state.selectedGlobalFileId) ?? null;
-}
-
-function selectedGlobalAgentGroup() {
-  const groups = globalAgentGroups();
-  const agentId = selectedGlobalFile()?.agentId;
-  return groups.find((group) => group.id === agentId) ?? groups[0] ?? null;
-}
-
-/** @returns {"config"|"persona"|"memory"} */
-function selectedGlobalAgentView() {
-  const file = selectedGlobalFile();
-  const category = file?.agentId ? file.category : "config";
-  return category === "config" || category === "persona" || category === "memory" ? category : "config";
-}
-
-function currentGlobalFiles() {
-  if (state.selectedGlobalSection !== "agents") return filesInCategory(state.selectedGlobalSection);
-  const group = selectedGlobalAgentGroup();
+/** @param {AgentGroup|null} group @param {"config"|"persona"|"memory"} view */
+function agentViewFiles(group, view) {
   if (!group) return [];
-  const files = group[selectedGlobalAgentView()];
+  const files = group[view];
   return files.length > 0 ? files : group.files;
 }
 
-export function syncGlobalSettingsSelection() {
-  const selected = selectedGlobalFile();
-  if (selected) {
-    state.selectedGlobalSection = selected.agentId ? "agents" : (selected.category ?? "general");
-    return;
-  }
-  const generalFiles = filesInCategory("general");
-  state.selectedGlobalSection = generalFiles.length > 0 ? "general" : "agents";
-  state.selectedGlobalFileId = generalFiles[0]?.id ?? globalAgentGroups()[0]?.files[0]?.id ?? null;
-}
-
-/** @param {string} sectionId */
-async function selectGlobalSection(sectionId) {
-  state.selectedGlobalSection = sectionId;
-  const files = currentGlobalFiles();
-  if (!files.some((file) => file.id === state.selectedGlobalFileId)) state.selectedGlobalFileId = files[0]?.id ?? null;
-  await loadSelectedGlobalFile();
-  markDirty("settings");
-}
-
 /** @param {string} agentId */
-async function selectGlobalAgent(agentId) {
-  state.selectedGlobalSection = "agents";
-  const group = globalAgentGroups().find((candidate) => candidate.id === agentId);
-  state.selectedGlobalFileId = group?.config[0]?.id ?? group?.files[0]?.id ?? null;
-  await loadSelectedGlobalFile();
+async function selectAgent(agentId) {
+  state.settingsAgentId = agentId;
+  const group = agentGroups().find((candidate) => candidate.id === agentId) ?? null;
+  const fileId = agentViewFiles(group, state.settingsAgentView)[0]?.id ?? group?.files[0]?.id ?? null;
+  state.settingsSelectedAgentFileId = fileId;
   markDirty("settings");
-}
-
-/**
- * Entry point for clickable agent rows: opens the global settings modal with
- * that agent's files selected.
- * @param {string} agentId
- */
-export async function openAgentSettings(agentId) {
-  state.settingsOpen = true;
-  await selectGlobalAgent(agentId);
+  if (fileId) await loadFileForEditing(fileId);
+  else clearFile();
 }
 
 /** @param {"config"|"persona"|"memory"} view */
-async function selectGlobalAgentView(view) {
-  const group = selectedGlobalAgentGroup();
-  state.selectedGlobalFileId = group?.[view]?.[0]?.id ?? state.selectedGlobalFileId;
-  await loadSelectedGlobalFile();
+async function selectAgentView(view) {
+  state.settingsAgentView = view;
+  const group = selectedAgentGroup();
+  const fileId = agentViewFiles(group, view)[0]?.id ?? state.settingsSelectedAgentFileId;
+  state.settingsSelectedAgentFileId = fileId;
   markDirty("settings");
+  if (fileId) await loadFileForEditing(fileId);
+  else clearFile();
+}
+
+/** @param {string} id */
+async function selectAgentFile(id) {
+  state.settingsSelectedAgentFileId = id;
+  markDirty("settings");
+  await loadFileForEditing(id);
 }
 
 // ---------------------------------------------------------------------------
-// File loading + saving.
+// Region: the modal renders into its own overlay slot.
 
-export async function loadInitialFiles() {
-  // Keep the current selection only if it still exists in this workspace's file
-  // list — switching/adding a workspace brings a fresh set, and a stale id from
-  // the previous workspace would 500 as "Editable file not found".
-  const stillPresent = state.workspaceFiles.some((file) => file.id === state.selectedWorkspaceFileId);
-  state.selectedWorkspaceFileId = (stillPresent ? state.selectedWorkspaceFileId : state.workspaceFiles[0]?.id) ?? null;
-  syncGlobalSettingsSelection();
-  await Promise.all([loadSelectedWorkspaceFile(), loadSelectedGlobalFile()]);
-}
-
-export async function loadSelectedWorkspaceFile() {
-  if (!state.selectedWorkspaceFileId || !state.snapshot) return;
-  const params = new URLSearchParams({ workspaceId: state.snapshot.workspace.id });
-  state.workspaceFile = (await api(`/api/files/${encodeURIComponent(state.selectedWorkspaceFileId)}?${params}`)).file;
-}
-
-export async function loadSelectedGlobalFile() {
-  if (!state.selectedGlobalFileId) {
-    state.globalFile = null;
+function renderSettingsModal() {
+  const slot = $("#overlay-settings");
+  if (!slot) return;
+  if (!state.settingsOpen) {
+    slot.replaceChildren();
     return;
   }
-  state.globalFile = (await api(`/api/files/${encodeURIComponent(state.selectedGlobalFileId)}`)).file;
+  slot.replaceChildren(SettingsModal());
 }
 
-/** @param {EditableFile} file @param {string} content */
-async function saveFile(file, content) {
-  if (!file) return;
-  const params = file.scope === "workspace" && state.snapshot ? `?${new URLSearchParams({ workspaceId: state.snapshot.workspace.id })}` : "";
-  const body = await api(`/api/files/${encodeURIComponent(file.id)}${params}`, {
-    method: "PUT",
-    body: JSON.stringify({ content }),
-  });
-  if (file.scope === "workspace") state.workspaceFile = body.file;
-  else state.globalFile = body.file;
-  markDirty("settings");
-}
-
-// ---------------------------------------------------------------------------
-// Modal.
-
-async function handleAddAgent() {
-  const id = state.addAgentId.trim();
-  if (!id) {
-    state.addAgentError = "Agent id is required";
-    markDirty("settings");
-    return;
-  }
-  try {
-    await api("/api/agents", {
-      method: "POST",
-      body: JSON.stringify({ id, displayName: state.addAgentName.trim() || undefined }),
-    });
-    // Refresh global files and select the new agent.
-    const app = await api("/api/app");
-    state.globalFiles = app.globalFiles ?? state.globalFiles;
-    state.addAgentOpen = false;
-    state.addAgentId = "";
-    state.addAgentName = "";
-    state.addAgentError = "";
-    syncGlobalSettingsSelection();
-    await selectGlobalAgent(id);
-    await loadSelectedGlobalFile();
-    markDirty("settings");
-  } catch (error) {
-    state.addAgentError = error instanceof Error ? error.message : String(error);
-    markDirty("settings");
-  }
-}
-
-function AddAgentForm() {
-  return h(
-    "div",
-    { class: "add-agent-form" },
-    state.addAgentError ? h("div", { class: "error", text: state.addAgentError }) : null,
-    h(
-      "label",
-      { class: "setting-row" },
-      h("span", { text: "id" }),
-      h("input", {
-        type: "text",
-        placeholder: "agent-id",
-        value: state.addAgentId,
-        oninput: (event) => {
-          state.addAgentId = /** @type {HTMLInputElement} */ (event.target).value;
-          state.addAgentError = "";
-        },
-        onkeydown: (event) => {
-          if (event.key === "Enter") void handleAddAgent();
-        },
-      }),
-    ),
-    h(
-      "label",
-      { class: "setting-row" },
-      h("span", { text: "name" }),
-      h("input", {
-        type: "text",
-        placeholder: "Display Name",
-        value: state.addAgentName,
-        oninput: (event) => {
-          state.addAgentName = /** @type {HTMLInputElement} */ (event.target).value;
-          state.addAgentError = "";
-        },
-        onkeydown: (event) => {
-          if (event.key === "Enter") void handleAddAgent();
-        },
-      }),
-    ),
-    h(
-      "div",
-      { class: "add-agent-actions" },
-      h("button", { onclick: () => void handleAddAgent(), text: "create" }),
-      h("button", {
-        onclick: () => {
-          state.addAgentOpen = false;
-          state.addAgentId = "";
-          state.addAgentName = "";
-          state.addAgentError = "";
-          markDirty("settings");
-        },
-        text: "cancel",
-      }),
-    ),
-  );
-}
-
-/** @param {{ labeler?: (file: FileDescriptor) => string }} [options] */
-function GlobalFileEditor(options = {}) {
-  return [
-    FileSelector(
-      currentGlobalFiles(),
-      state.selectedGlobalFileId,
-      async (id) => {
-        state.selectedGlobalFileId = id;
-        syncGlobalSettingsSelection();
-        await loadSelectedGlobalFile();
-        markDirty("settings");
-      },
-      options,
-    ),
-    FileSettingsEditor({
-      file: state.globalFile,
-      raw: state.globalRaw,
-      setRaw: (value) => {
-        state.globalRaw = value;
-        markDirty("settings");
-      },
-    }),
-  ];
-}
-
-/**
- * Purely client-side display preferences — no server file backs these, so
- * they render above the General section's file editor and persist straight
- * to localStorage instead of going through saveFile (see statusbarVisible /
- * setStatusbarVisible in statusbar.js).
- */
-function ClientDisplayPrefs() {
-  return h(
-    "div",
-    { class: "settings-editor" },
-    h("div", { class: "file-toolbar" }, h("code", { text: "display (this device)" })),
-    h(
-      "label",
-      { class: "setting-row" },
-      h("span", { class: "field-name", text: "Show status bar" }),
-      h("input", {
-        type: "checkbox",
-        checked: statusbarVisible(),
-        onchange: (event) => setStatusbarVisible(/** @type {HTMLInputElement} */ (event.target).checked),
-      }),
-    ),
-  );
-}
-
-/**
- * "Keep laptop awake while GAIA runs" — unlike ClientDisplayPrefs above, this
- * governs the HOST MAC the daemon runs on, so it is not a localStorage pref:
- * it reads/writes through the daemon API (GET /api/app's `keepAwake`, POST
- * /api/app/keep-awake), like every other server-persisted setting. macOS-only
- * server-side (services/keep-awake.ts); the checkbox hides itself elsewhere
- * rather than showing a control that can't do anything.
- */
-function ServerDisplayPrefs() {
-  if (!state.keepAwake.supported) return null;
-  return h(
-    "div",
-    { class: "settings-editor" },
-    h("div", { class: "file-toolbar" }, h("code", { text: "this machine" })),
-    h(
-      "label",
-      { class: "setting-row" },
-      h("span", { class: "field-name", text: "Keep laptop awake while GAIA runs" }),
-      h("input", {
-        type: "checkbox",
-        checked: state.keepAwake.enabled,
-        onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
-      }),
-    ),
-  );
-}
+registerRegion("settings", renderSettingsModal);
 
 function SettingsModal() {
-  const sections = globalSettingsSections();
-  const agents = globalAgentGroups();
-  const selectedAgent = selectedGlobalAgentGroup();
-  const selectedView = selectedGlobalAgentView();
-  const agentViews = /** @type {const} */ ([
-    { id: "config", label: "Config", files: selectedAgent?.config ?? [] },
-    { id: "persona", label: "Persona", files: selectedAgent?.persona ?? [] },
-    { id: "memory", label: "Memory", files: selectedAgent?.memory ?? [] },
+  const tabs = /** @type {const} */ ([
+    { id: "general", label: "General" },
+    { id: "workspace", label: "Workspace" },
+    { id: "agents", label: "Agents" },
   ]);
-
   return h(
     "div",
-    { class: "modal-backdrop" },
+    {
+      class: "modal-backdrop",
+      onclick: (/** @type {MouseEvent} */ event) => {
+        if (event.target === event.currentTarget) closeSettings();
+      },
+    },
     h(
       "section",
-      { class: "modal" },
+      { class: "modal settings2-modal" },
       h(
         "div",
         { class: "panel-head" },
-        h("h2", { text: "Global Settings" }),
-        h("button", {
-          onclick: () => {
-            state.settingsOpen = false;
-            markDirty("settings");
-          },
-          text: "x",
-        }),
+        h("h2", { text: "Settings" }),
+        h("button", { onclick: closeSettings, text: "x" }),
       ),
       h(
         "div",
         { class: "segmented-tabs" },
-        sections.map((section) =>
+        tabs.map((tab) =>
           h(
             "button",
-            {
-              class: `${section.id === state.selectedGlobalSection ? "active" : ""} ${section.count === 0 ? "muted" : ""}`.trim(),
-              onclick: () => void selectGlobalSection(section.id),
-              disabled: section.count === 0,
-            },
-            h("span", { text: section.label }),
-            h("small", { text: String(section.count) }),
+            { class: tab.id === state.settingsTab ? "active" : "", onclick: () => void selectTab(tab.id) },
+            h("span", { text: tab.label }),
           ),
         ),
       ),
-      state.selectedGlobalSection !== "agents"
-        ? [state.selectedGlobalSection === "general" ? ClientDisplayPrefs() : null, state.selectedGlobalSection === "general" ? ServerDisplayPrefs() : null, ...GlobalFileEditor()]
-        : h(
-            "div",
-            { class: "settings-split" },
-            h(
-              "div",
-              { class: "settings-sidebar-panel" },
-              h("div", { class: "nav-title", text: "agents" }),
-              h(
-                "div",
-                { class: "file-tabs" },
-                agents.length === 0
-                  ? h("span", { class: "empty", text: "no agents" })
-                  : agents.map((agent) =>
-                      h(
-                        "button",
-                        { class: agent.id === selectedAgent?.id ? "active" : "", onclick: () => void selectGlobalAgent(agent.id) },
-                        h("span", { text: agent.id }),
-                        h("small", { text: `${agent.files.length} files` }),
-                      ),
-                    ),
-              ),
-              state.addAgentOpen
-                ? AddAgentForm()
-                : h("button", {
-                    class: "nav-action",
-                    onclick: () => {
-                      state.addAgentOpen = true;
-                      markDirty("settings");
-                    },
-                    text: "+ add agent",
-                  }),
-            ),
-            h(
-              "div",
-              { class: "settings-main-panel" },
-              selectedAgent
-                ? [
-                    AgentDefaultRoleRow(selectedAgent),
-                    h(
-                      "div",
-                      { class: "segmented-tabs nested" },
-                      agentViews.map((view) =>
-                        h(
-                          "button",
-                          {
-                            class: `${view.id === selectedView ? "active" : ""} ${view.files.length === 0 ? "muted" : ""}`.trim(),
-                            onclick: () => void selectGlobalAgentView(view.id),
-                            disabled: view.files.length === 0,
-                          },
-                          h("span", { text: view.label }),
-                          h("small", { text: String(view.files.length) }),
-                        ),
-                      ),
-                    ),
-                    ...GlobalFileEditor({ labeler: globalAgentFileLabel }),
-                  ]
-                : h("div", { class: "empty", text: "no agent selected" }),
-            ),
-          ),
+      h(
+        "div",
+        { class: "settings2-body" },
+        state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : AgentsTab(),
+      ),
     ),
   );
 }
+
+// ---------------------------------------------------------------------------
+// General tab: just the keep-awake toggle (only where the daemon supports it).
+
+function GeneralTab() {
+  if (!state.keepAwake.supported) return h("div", { class: "empty", text: "no general settings on this host" });
+  return h(
+    "label",
+    { class: "settings2-row" },
+    h("span", { text: "Keep laptop awake while GAIA runs" }),
+    h("input", {
+      type: "checkbox",
+      checked: state.keepAwake.enabled,
+      onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Workspace tab: this workspace's editable files (left) + raw editor (right).
+
+function WorkspaceTab() {
+  return h(
+    "div",
+    { class: "settings2-split" },
+    h(
+      "div",
+      { class: "settings2-sidebar" },
+      FileList(state.settingsWorkspaceFiles, state.settingsSelectedWorkspaceFileId, selectWorkspaceFile, "no editable workspace files"),
+    ),
+    h("div", { class: "settings2-main" }, FileEditor()),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agents tab: agent list (left) + that agent's config/persona/memory files.
+
+function AgentsTab() {
+  const groups = agentGroups();
+  const selected = selectedAgentGroup();
+  const views = /** @type {const} */ ([
+    { id: "config", label: "Config" },
+    { id: "persona", label: "Persona" },
+    { id: "memory", label: "Memory" },
+  ]);
+  return h(
+    "div",
+    { class: "settings2-split" },
+    h(
+      "div",
+      { class: "settings2-sidebar" },
+      h("div", { class: "nav-title", text: "agents" }),
+      h(
+        "div",
+        { class: "file-tabs" },
+        groups.length === 0
+          ? h("span", { class: "empty", text: "no agents" })
+          : groups.map((group) =>
+              h(
+                "button",
+                { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
+                h("span", { text: group.id }),
+                h("small", { text: `${group.files.length} files` }),
+              ),
+            ),
+      ),
+    ),
+    h(
+      "div",
+      { class: "settings2-main" },
+      selected
+        ? [
+            h(
+              "div",
+              { class: "segmented-tabs" },
+              views.map((view) =>
+                h(
+                  "button",
+                  {
+                    class: `${view.id === state.settingsAgentView ? "active" : ""} ${selected[view.id].length === 0 ? "muted" : ""}`.trim(),
+                    onclick: () => void selectAgentView(view.id),
+                    disabled: selected[view.id].length === 0,
+                  },
+                  h("span", { text: view.label }),
+                  h("small", { text: String(selected[view.id].length) }),
+                ),
+              ),
+            ),
+            FileList(agentViewFiles(selected, state.settingsAgentView), state.settingsSelectedAgentFileId, selectAgentFile, "no files in this category", agentFileLabel),
+            FileEditor(),
+          ]
+        : h("div", { class: "empty", text: "no agent selected" }),
+    ),
+  );
+}
+
+/** @param {FileDescriptor} file */
+function agentFileLabel(file) {
+  return file.label.replace(/^agents\/[^/]+\//, "").replace(/^persona\//, "");
+}
+
+// ---------------------------------------------------------------------------
+// Shared file list + raw editor.
 
 /**
  * @param {FileDescriptor[]} files
  * @param {string|null} selectedId
  * @param {(id: string) => void|Promise<void>} onSelect
- * @param {{ labeler?: (file: FileDescriptor) => string, emptyText?: string }} [options]
+ * @param {string} [emptyText]
+ * @param {(file: FileDescriptor) => string} [labeler]
  */
-function FileSelector(files, selectedId, onSelect, options = {}) {
-  const labeler = options.labeler ?? ((/** @type {FileDescriptor} */ file) => file.label);
-  const emptyText = options.emptyText ?? "no editable files";
+function FileList(files, selectedId, onSelect, emptyText = "no editable files", labeler = (file) => file.label) {
   return h(
     "div",
     { class: "file-tabs" },
@@ -540,38 +330,31 @@ function FileSelector(files, selectedId, onSelect, options = {}) {
   );
 }
 
-/** @param {{ file: EditableFile|null, raw: boolean, setRaw: (value: boolean) => void }} options */
-function FileSettingsEditor({ file, raw, setRaw }) {
-  if (!file) return h("div", { class: "empty", text: "select a file" });
-  const editor = h("div", { class: "settings-editor" });
-  const rawText = /** @type {HTMLTextAreaElement} */ (h("textarea", { class: "raw-editor", value: file.content }));
-  const view = file.kind === "json" ? JsonSettingsView(file.content, file.hints) : MarkdownSettingsView(file.content);
-  editor.append(
-    h(
-      "div",
-      { class: "file-toolbar" },
-      h("code", {}, PathText(file.path)),
-      h("button", { onclick: () => setRaw(!raw), text: raw ? "view" : "raw" }),
-      h("button", { onclick: () => void saveFile(file, raw ? rawText.value : serializeSettings(view, file.kind)), text: "save" }),
-    ),
-    raw ? rawText : view,
-  );
-  return editor;
+// ---------------------------------------------------------------------------
+// Hints-driven form model: the draft + dotted-path helpers (copied semantics
+// from the pre-purge settings.js — git show 72551cd~1:web/src/settings.js).
+
+/** Only FieldHint entries drive rendering; `_harness` (HarnessHintsMeta) is
+ * consumed separately by harnessHiddenKeys.
+ * @param {FileHints|undefined} hints @returns {Record<string, FieldHint>} */
+function hintFieldDict(hints) {
+  /** @type {Record<string, FieldHint>} */
+  const dict = {};
+  for (const [key, hint] of Object.entries(hints ?? {})) {
+    if (hint && typeof hint === "object" && "input" in hint) dict[key] = /** @type {FieldHint} */ (hint);
+  }
+  return dict;
 }
 
-// --- Hint-aware JSON settings view -----------------------------------------
-//
-// Hints come from the server keyed by normalized JSON path ("defaultAgent",
-// "model.provider", "tools"). The renderer is generic: it knows input shapes
-// (select/multiselect/number/text), never specific fields. Files stay plain
-// JSON; this only changes the editing controls.
+/** @param {FileHints|undefined} hints @returns {HarnessHintsMeta|undefined} */
+function harnessMetaOf(hints) {
+  const meta = hints?._harness;
+  return meta && typeof meta === "object" && "configs" in meta ? /** @type {HarnessHintsMeta} */ (meta) : undefined;
+}
 
-/** Hint attached to a rendered select, for dependent-option rebuilds. @type {WeakMap<HTMLSelectElement, FieldHint>} */
-const hintOf = new WeakMap();
-
-/** @param {JsonPath} path */
-function pathKey(path) {
-  return path.map((segment) => (typeof segment === "number" ? "[]" : segment)).join(".");
+/** @param {string} key @returns {JsonPath} */
+function keyPath(key) {
+  return key.split(".");
 }
 
 /** @param {any} root @param {JsonPath} path @returns {any} */
@@ -584,547 +367,15 @@ function getJsonPathValue(root, path) {
   return current;
 }
 
-/** @param {FieldHintOption} option */
-function optionText(option) {
-  const label = option.label ?? option.value;
-  return option.description ? `${label} — ${option.description}` : label;
-}
-
-/**
- * @param {HTMLSelectElement} select
- * @param {FieldHint} hint
- * @param {string} currentValue
- * @param {unknown} groupValue
- */
-function buildSelectOptions(select, hint, currentValue, groupValue) {
-  select.replaceChildren();
-  if (hint.optional) select.append(h("option", { value: "", text: "(not set)" }));
-  const options = hint.options ?? [];
-  const visible = options.filter((option) => !hint.groupBy || !groupValue || !option.group || option.group === groupValue);
-  let currentListed = currentValue === "" || currentValue === undefined;
-  for (const option of visible) {
-    if (option.value === currentValue) currentListed = true;
-    select.append(h("option", { value: option.value, text: optionText(option) }));
-  }
-  if (!currentListed) select.append(h("option", { value: currentValue, text: `${currentValue} (current)` }));
-  select.value = currentValue ?? "";
-}
-
-/**
- * @param {JsonPath} entryPath
- * @param {string} key
- * @param {FieldHint} hint
- * @param {unknown} currentValue
- * @param {any} parsedRoot
- */
-function HintedSelect(entryPath, key, hint, currentValue, parsedRoot) {
-  const select = /** @type {HTMLSelectElement} */ (
-    h("select", {
-      "data-json-path": JSON.stringify(entryPath),
-      "data-path-key": pathKey(entryPath),
-      ...(hint.optional ? { "data-json-optional": "1" } : {}),
-      ...(hint.groupBy ? { "data-group-by": hint.groupBy } : {}),
-    })
-  );
-  const groupValue = hint.groupBy ? getJsonPathValue(parsedRoot, hint.groupBy.split(".")) : undefined;
-  buildSelectOptions(select, hint, currentValue === undefined || currentValue === null ? "" : String(currentValue), groupValue);
-  hintOf.set(select, hint);
-  return h("label", { class: "setting-row", ...rowTitle(hint) }, fieldLabel(key, hint), select);
-}
-
-/** Field description → tooltip + a `data-desc` attr the CSS renders as a visible
- * full-width help line under the row. @param {FieldHint} hint */
-function rowTitle(hint) {
-  return hint.description ? { title: hint.description, "data-desc": hint.description } : {};
-}
-
-/**
- * The name cell of a setting row: the friendly `hint.label` when set, else the
- * raw JSON key — so a setting like "Voice mode" is findable by name rather than
- * hidden behind "ttsEngine". The description renders below via rowTitle's CSS.
- * @param {string} key @param {FieldHint} hint
- */
-function fieldLabel(key, hint) {
-  return h("span", { class: "field-name", text: hint.label ?? key });
-}
-
-/** One checkbox chip for a multiselect option. @param {FieldHintOption} option @param {string[]} values */
-function multiOption(option, values) {
-  return h(
-    "label",
-    { class: "multi-option", title: option.description ?? "", "data-skill-name": String(option.label ?? option.value).toLowerCase() },
-    h("input", { type: "checkbox", "data-value": option.value, ...(values.includes(option.value) ? { checked: true } : {}) }),
-    h("span", { text: option.label ?? option.value }),
-    option.badge ? h("span", { class: "multi-badge", text: option.badge }) : null,
-  );
-}
-
-/** True when a section holds at least one checked skill. @param {Element} details */
-function sectionHasChecked(details) {
-  return [...details.querySelectorAll("input[type=checkbox]")].some((box) => /** @type {HTMLInputElement} */ (box).checked);
-}
-
-/** Rewrite each group's "checked/total" header count. @param {HTMLElement} container */
-function updateGroupCounts(container) {
-  for (const details of container.querySelectorAll("details.skill-group")) {
-    const boxes = [...details.querySelectorAll("input[type=checkbox]")];
-    const checked = boxes.filter((box) => /** @type {HTMLInputElement} */ (box).checked).length;
-    const count = details.querySelector(".skill-group-count");
-    if (count) count.textContent = `${checked}/${boxes.length}`;
-  }
-}
-
-/**
- * Hide options whose name doesn't match, hide sections left empty, and expand
- * matches. Options are only hidden (display:none) — the checkboxes stay in the
- * DOM so a checked-but-filtered skill is still collected on save.
- * @param {HTMLElement} container @param {string} query
- */
-function filterGroupedOptions(container, query) {
-  const q = query.trim().toLowerCase();
-  for (const details of container.querySelectorAll("details.skill-group")) {
-    let anyVisible = false;
-    for (const option of details.querySelectorAll(".multi-option")) {
-      const match = !q || (option.getAttribute("data-skill-name") ?? "").includes(q);
-      /** @type {HTMLElement} */ (option).style.display = match ? "" : "none";
-      if (match) anyVisible = true;
-    }
-    /** @type {HTMLElement} */ (details).style.display = anyVisible ? "" : "none";
-    // While filtering, expand matches; cleared, fall back to "open iff it holds a
-    // checked skill" (live state — so a box just ticked under the filter stays open).
-    /** @type {HTMLDetailsElement} */ (details).open = q ? anyVisible : sectionHasChecked(details);
-  }
-}
-
-/**
- * Render options grouped into collapsible <details> sections. Options arrive
- * contiguous by `group` (server-ordered), so a new section starts on each group
- * change. A section opens by default only when it already holds a checked skill.
- * @param {HTMLElement} container @param {FieldHintOption[]} options @param {string[]} values
- */
-function renderGroupedOptions(container, options, values) {
-  let currentGroup = /** @type {string|null} */ (null);
-  let body = /** @type {HTMLElement|null} */ (null);
-  for (const option of options) {
-    const group = option.group ?? "";
-    if (body === null || group !== currentGroup) {
-      currentGroup = group;
-      body = h("div", { class: "multi-options" });
-      const count = h("span", { class: "skill-group-count" });
-      container.append(
-        h("details", { class: "skill-group" }, h("summary", {}, h("span", { class: "skill-group-name", text: group || "other" }), count), body),
-      );
-    }
-    body.append(multiOption(option, values));
-  }
-  updateGroupCounts(container);
-  // Open only the sections that already hold a checked skill.
-  for (const details of container.querySelectorAll("details.skill-group")) {
-    /** @type {HTMLDetailsElement} */ (details).open = sectionHasChecked(details);
-  }
-}
-
-/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValues */
-function HintedMultiselect(entryPath, key, hint, currentValues) {
-  const values = Array.isArray(currentValues) ? currentValues.map(String) : [];
-  const options = /** @type {FieldHintOption[]} */ (hint.options ?? []);
-  const known = options.map((option) => option.value);
-  const extras = values.filter((value) => !known.includes(value)).map((value) => /** @type {FieldHintOption} */ ({ value, group: "other" }));
-  const grouped = options.some((option) => option.group);
-  const container = h("div", {
-    class: grouped ? "multi-grouped" : "multi-options",
-    "data-json-path": JSON.stringify(entryPath),
-    "data-json-multi": "1",
-    "data-path-key": pathKey(entryPath),
-  });
-
-  if (grouped) {
-    container.append(
-      h("input", {
-        type: "text",
-        class: "skill-filter",
-        placeholder: "filter skills…",
-        oninput: (/** @type {Event} */ event) => filterGroupedOptions(container, /** @type {HTMLInputElement} */ (event.target).value),
-      }),
-    );
-    renderGroupedOptions(container, [...options, ...extras], values);
-    container.addEventListener("change", () => updateGroupCounts(container));
-  } else {
-    for (const option of [...options, ...extras]) container.append(multiOption(option, values));
-  }
-  return h("div", { class: "setting-row stacked", ...rowTitle(hint) }, fieldLabel(key, hint), container);
-}
-
-/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
-function HintedNumber(entryPath, key, hint, currentValue) {
-  return h(
-    "label",
-    { class: "setting-row", ...rowTitle(hint) },
-    fieldLabel(key, hint),
-    h("input", {
-      type: "number",
-      "data-json-path": JSON.stringify(entryPath),
-      "data-json-number": "1",
-      value: currentValue === undefined || currentValue === null ? "" : String(currentValue),
-    }),
-  );
-}
-
-/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
-function HintedBoolean(entryPath, key, hint, currentValue) {
-  const select = /** @type {HTMLSelectElement} */ (
-    h("select", {
-      "data-json-path": JSON.stringify(entryPath),
-      "data-path-key": pathKey(entryPath),
-      "data-json-boolean": "1",
-    })
-  );
-  if (hint.optional || (currentValue !== true && currentValue !== false)) select.append(h("option", { value: "", text: "(not set)" }));
-  select.append(h("option", { value: "true", text: "true" }));
-  select.append(h("option", { value: "false", text: "false" }));
-  select.value = currentValue === true ? "true" : currentValue === false ? "false" : "";
-  return h("label", { class: "setting-row", ...rowTitle(hint) }, fieldLabel(key, hint), select);
-}
-
-/** Plain string field. Hinted so absent-but-known settings still render a row. */
-/** @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue */
-function HintedText(entryPath, key, hint, currentValue) {
-  return h(
-    "label",
-    { class: "setting-row", ...rowTitle(hint) },
-    fieldLabel(key, hint),
-    h("input", {
-      "data-json-path": JSON.stringify(entryPath),
-      "data-json-text": "1",
-      "data-path-key": pathKey(entryPath),
-      ...(hint.optional ? { "data-json-optional": "1" } : {}),
-      value: currentValue === undefined || currentValue === null ? "" : String(currentValue),
-      ...(hint.description ? { placeholder: hint.description } : {}),
-    }),
-  );
-}
-
-/**
- * Structured subtree (mcpServers, hooks.*, sandbox.writable) edited as raw
- * JSON in place. Empty clears the key; invalid JSON keeps the saved value.
- * @param {JsonPath} entryPath @param {string} key @param {FieldHint} hint @param {unknown} currentValue
- */
-function HintedJson(entryPath, key, hint, currentValue) {
-  return h(
-    "div",
-    { class: "setting-row stacked", ...rowTitle(hint) },
-    fieldLabel(key, hint),
-    h("textarea", {
-      class: "json-field",
-      "data-json-path": JSON.stringify(entryPath),
-      "data-json-json": "1",
-      "data-path-key": pathKey(entryPath),
-      value: currentValue === undefined ? "" : JSON.stringify(currentValue, null, 2),
-      ...(hint.description ? { placeholder: hint.description } : {}),
-    }),
-  );
-}
-
-/**
- * @param {JsonPath} entryPath
- * @param {string} key
- * @param {FieldHint} hint
- * @param {unknown} currentValue
- * @param {any} parsedRoot
- * @returns {HTMLElement|null}
- */
-function hintedField(entryPath, key, hint, currentValue, parsedRoot) {
-  if (hint.input === "select") return HintedSelect(entryPath, key, hint, currentValue, parsedRoot);
-  if (hint.input === "multiselect") return HintedMultiselect(entryPath, key, hint, currentValue);
-  if (hint.input === "number") return HintedNumber(entryPath, key, hint, currentValue);
-  if (hint.input === "boolean") return HintedBoolean(entryPath, key, hint, currentValue);
-  if (hint.input === "text") return HintedText(entryPath, key, hint, currentValue);
-  if (hint.input === "json") return HintedJson(entryPath, key, hint, currentValue);
-  return null;
-}
-
-/** @param {unknown} value */
-function jsonFieldText(value) {
-  if (typeof value === "string") return value;
-  if (value === null) return "null";
-  if (value === undefined) return "";
-  return JSON.stringify(value);
-}
-
-/** @param {string} value @returns {unknown} */
-function parseJsonFieldValue(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-/** @param {unknown} value @returns {value is object} */
-function isStructuredJsonValue(value) {
-  return value !== null && typeof value === "object";
-}
-
-/** @typedef {{ hints: Record<string, FieldHint>, parsedRoot: any, renderedKeys: Set<string> }} JsonRenderCtx */
-
-/**
- * @param {HTMLElement} container
- * @param {any} value
- * @param {JsonPath} path
- * @param {JsonRenderCtx} ctx
- */
-function renderJsonFields(container, value, path, ctx) {
-  /** @type {[string, any][]} */
-  const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value ?? {});
-  if (entries.length === 0) {
-    container.append(h("div", { class: "empty", text: Array.isArray(value) ? "empty list" : "empty object" }));
-    return;
-  }
-
-  for (const [key, entryValue] of entries) {
-    const entryPath = [...path, Array.isArray(value) ? Number(key) : key];
-    const entryKey = pathKey(entryPath);
-    const hint = ctx.hints[entryKey];
-
-    if (hint) {
-      const field = hintedField(entryPath, Array.isArray(value) ? `[${key}]` : key, hint, entryValue, ctx.parsedRoot);
-      if (field) {
-        ctx.renderedKeys.add(entryKey);
-        container.append(field);
-        continue;
-      }
-    }
-
-    if (isStructuredJsonValue(entryValue)) {
-      const nested = h("div", { class: "json-nested" });
-      renderJsonFields(nested, entryValue, entryPath, ctx);
-      container.append(h("div", { class: "setting-row stacked" }, h("span", { text: Array.isArray(value) ? `[${key}]` : key }), nested));
-      continue;
-    }
-
-    container.append(
-      h(
-        "label",
-        { class: "setting-row" },
-        h("span", { text: Array.isArray(value) ? `[${key}]` : key }),
-        h("input", { "data-json-path": JSON.stringify(entryPath), value: jsonFieldText(entryValue) }),
-      ),
-    );
-  }
-}
-
-/**
- * Hinted fields that are absent from the file still show up as editable rows
- * (e.g. "model.provider" on an agent.json without a model block). Saving with
- * a value creates the key; "(not set)" keeps it out of the file.
- * @param {HTMLElement} container
- * @param {any} parsed
- * @param {JsonRenderCtx} ctx
- */
-function appendMissingHintedFields(container, parsed, ctx) {
-  const missing = Object.entries(ctx.hints).filter(([key]) => !ctx.renderedKeys.has(key) && !key.includes("[]"));
-  if (missing.length === 0) return;
-
-  for (const [key, hint] of missing) {
-    const entryPath = key.split(".");
-    const currentValue = getJsonPathValue(parsed, entryPath);
-    const field = hintedField(entryPath, key, hint, currentValue, ctx.parsedRoot);
-    if (field) container.append(field);
-  }
-}
-
-/** @param {HTMLElement} root */
-function wireDependentSelects(root) {
-  for (const element of root.querySelectorAll("select[data-group-by]")) {
-    const dependent = /** @type {HTMLSelectElement} */ (element);
-    const source = /** @type {HTMLSelectElement|null} */ (root.querySelector(`[data-path-key="${dependent.dataset.groupBy}"]`));
-    if (!source) continue;
-    source.addEventListener("change", () => {
-      const hint = hintOf.get(dependent);
-      if (hint) buildSelectOptions(dependent, hint, dependent.value, source.value);
-    });
-  }
-}
-
-/**
- * @param {string} content
- * @param {FileHints|undefined} hints
- * @returns {HTMLElement}
- */
-function JsonSettingsView(content, hints) {
-  /** @type {any} */
-  let parsed = {};
-  try {
-    parsed = JSON.parse(content || "{}");
-  } catch {
-    return h("textarea", { class: "raw-editor", value: content });
-  }
-
-  // Only FieldHint entries drive rendering; non-FieldHint entries (e.g.
-  // _harness) are consumed separately by wireHarnessFieldVisibility.
-  /** @type {Record<string, FieldHint>} */
-  const hintDict = {};
-  for (const [key, hint] of Object.entries(hints ?? {})) {
-    if (typeof hint === "object" && hint !== null && "input" in hint) hintDict[key] = hint;
-  }
-
-  const root = h("div", { class: "settings-view", "data-kind": "json", "data-json-source": JSON.stringify(parsed) });
-  /** @type {JsonRenderCtx} */
-  const ctx = { hints: hintDict, parsedRoot: parsed, renderedKeys: new Set() };
-  renderJsonFields(root, parsed, [], ctx);
-  appendMissingHintedFields(root, parsed, ctx);
-  wireDependentSelects(root);
-
-  // Wire harness-driven field visibility using the _harness meta the server
-  // attaches to hints. Harness configs declare which fields to hide/show;
-  // model-provider locking and model-name filtering also live here.
-  const harnessMeta = (hints ?? {})._harness;
-  if (harnessMeta) wireHarnessFieldVisibility(root, harnessMeta, hintDict, parsed);
-
-  return root;
-}
-
-/**
- * Harness-driven field visibility. Reads harness configs from `_harness` meta
- * attached by the server. When the harness select changes:
- * - fields in the config's `hiddenFields` are hidden / re-shown
- * - if the config has `lockedProvider`, model.provider is hidden and model.name
- *   options are rebuilt from only the locked provider's models
- * - if the config has `modelProviderIds`, model.name options are filtered
- *
- * No harness-specific branches are hardcoded; the meta dict drives everything.
- * @param {HTMLElement} root
- * @param {HarnessHintsMeta} harnessMeta
- * @param {Record<string, FieldHint>} hints
- * @param {any} parsed
- */
-function wireHarnessFieldVisibility(root, harnessMeta, hints, parsed) {
-  const harnessSelect = /** @type {HTMLSelectElement|null} */ (root.querySelector('[data-path-key="harness"]'));
-  if (!harnessSelect) return;
-
-  const allModelHint = hints["model.name"];
-  const allModelOptions = (allModelHint?.options ?? []).slice();
-
-  /** @param {string[]|null} providerIds */
-  function buildModelNameOptions(providerIds) {
-    if (!allModelHint) return;
-    const modelSelect = /** @type {HTMLSelectElement|null} */ (root.querySelector('[data-path-key="model.name"]'));
-    if (!modelSelect) return;
-    const filtered = providerIds ? allModelOptions.filter((opt) => providerIds.includes(opt.group ?? "")) : allModelOptions;
-    // Preserve current value through rebuild.
-    const currentValue = modelSelect.value;
-    modelSelect.replaceChildren();
-    if (allModelHint.optional) modelSelect.append(h("option", { value: "", text: "(not set)" }));
-    let currentListed = currentValue === "" || currentValue === undefined;
-    for (const option of filtered) {
-      if (option.value === currentValue) currentListed = true;
-      modelSelect.append(h("option", { value: option.value, text: optionText(option) }));
-    }
-    if (!currentListed) modelSelect.append(h("option", { value: currentValue, text: `${currentValue} (current)` }));
-    modelSelect.value = currentValue ?? "";
-  }
-
-  // Some harnesses (e.g. Claude Code) take their own model aliases rather than
-  // a Pi catalog id. Offer exactly those names and drop any stale value that
-  // isn't valid for the harness.
-  /** @param {string[]} names */
-  function buildModelNameFromNames(names) {
-    const modelSelect = /** @type {HTMLSelectElement|null} */ (root.querySelector('[data-path-key="model.name"]'));
-    if (!modelSelect) return;
-    const currentValue = modelSelect.value;
-    modelSelect.replaceChildren();
-    if (allModelHint?.optional !== false) modelSelect.append(h("option", { value: "", text: "(not set)" }));
-    for (const name of names) modelSelect.append(h("option", { value: name, text: name }));
-    modelSelect.value = names.includes(currentValue) ? currentValue : "";
-  }
-
-  /** @param {string} fieldKey @returns {HTMLElement|null} */
-  function findFieldRow(fieldKey) {
-    const el = /** @type {HTMLElement|null} */ (root.querySelector(`[data-path-key="${fieldKey}"]`));
-    if (!el) return null;
-    return /** @type {HTMLElement|null} */ (el.closest(".setting-row")) ?? el;
-  }
-
-  /** @param {string} harnessValue */
-  function applyHarnessVisibility(harnessValue) {
-    const config = (harnessMeta?.configs ?? {})[harnessValue] ?? null;
-
-    // Collect all field keys that any harness might hide.
-    /** @type {Set<string>} */
-    const allHiddenFields = new Set();
-    for (const cfg of Object.values(harnessMeta?.configs ?? {})) {
-      for (const field of cfg.hiddenFields ?? []) allHiddenFields.add(field);
-    }
-
-    for (const fieldKey of allHiddenFields) {
-      const shouldHide = config ? (config.hiddenFields ?? []).includes(fieldKey) : false;
-      const row = findFieldRow(fieldKey);
-
-      if (shouldHide) {
-        if (row) {
-          row.setAttribute("data-skip-serialize", "1");
-          row.style.display = "none";
-        }
-      } else {
-        if (row) {
-          row.removeAttribute("data-skip-serialize");
-          row.style.display = "";
-        } else {
-          const hint = hints[fieldKey];
-          if (!hint) continue;
-          const entryPath = fieldKey.split(".");
-          const field = hintedField(entryPath, entryPath[entryPath.length - 1], hint, getJsonPathValue(parsed, entryPath), parsed);
-          if (field) root.append(field);
-        }
-      }
-    }
-
-    // Harness supplies its own model-name aliases (e.g. Claude): hide provider,
-    // offer exactly those names, and discard any stale value.
-    const providerRow = findFieldRow("model.provider");
-    if (config?.modelNameOptions) {
-      if (providerRow) {
-        providerRow.setAttribute("data-skip-serialize", "1");
-        providerRow.style.display = "none";
-      }
-      buildModelNameFromNames(config.modelNameOptions);
-      return;
-    }
-
-    // Handle locked provider: hide model.provider row, rebuild model.name options.
-    const providerLocked = config?.lockedProvider;
-    if (providerLocked) {
-      if (providerRow) {
-        providerRow.setAttribute("data-skip-serialize", "1");
-        providerRow.style.display = "none";
-      }
-      buildModelNameOptions(config?.modelProviderIds ?? [providerLocked]);
-    } else {
-      if (providerRow) {
-        providerRow.removeAttribute("data-skip-serialize");
-        providerRow.style.display = "";
-      }
-      buildModelNameOptions(config?.modelProviderIds ?? null);
-    }
-  }
-
-  harnessSelect.addEventListener("change", () => applyHarnessVisibility(harnessSelect.value));
-  applyHarnessVisibility(harnessSelect.value);
-}
-
 /** @param {any} root @param {JsonPath} path @param {unknown} value */
 function setJsonPathValue(root, path, value) {
-  if (path.length === 0) return value;
   let current = root;
   for (let index = 0; index < path.length - 1; index += 1) {
     const key = path[index];
-    if (current[key] === null || typeof current[key] !== "object") {
-      current[key] = typeof path[index + 1] === "number" ? [] : {};
-    }
+    if (current[key] === null || typeof current[key] !== "object") current[key] = {};
     current = current[key];
   }
   current[path[path.length - 1]] = value;
-  return root;
 }
 
 /** @param {any} root @param {JsonPath} path */
@@ -1137,108 +388,489 @@ function deleteJsonPathValue(root, path) {
   if (current && typeof current === "object") delete current[path[path.length - 1]];
 }
 
-/** @param {string} content */
-function MarkdownSettingsView(content) {
-  const root = h("div", { class: "settings-view", "data-kind": "markdown" });
-  const lines = content.split("\n");
-  /** @type {string[]} */
-  let block = [];
-  const flushBlock = () => {
-    while (block.length > 0 && block[0].trim() === "") block.shift();
-    while (block.length > 0 && block[block.length - 1].trim() === "") block.pop();
-    const value = block.join("\n");
-    if (value.trim()) {
-      root.append(h("textarea", { class: "text-setting", rows: String(Math.max(3, Math.min(12, value.split("\n").length + 1))), "data-md": "text", value }));
-    }
-    block = [];
-  };
-
-  for (const line of lines) {
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      flushBlock();
-      root.append(h("div", { class: "setting-heading", "data-md": "heading", "data-level": heading[1].length, text: heading[2] }));
-      continue;
-    }
-    block.push(line);
-  }
-
-  flushBlock();
-  return root;
+/** @param {any} draft */
+function serializeDraft(draft) {
+  return `${JSON.stringify(draft, null, 2)}\n`;
 }
 
-/** @param {HTMLElement} view @param {string} kind */
-function serializeSettings(view, kind) {
-  if (kind === "json") {
-    /** @type {any} */
-    let next = {};
-    try {
-      next = JSON.parse(view.dataset.jsonSource || "{}");
-    } catch {
-      next = {};
-    }
-    for (const raw of view.querySelectorAll("[data-json-path]")) {
-      const element = /** @type {HTMLElement} */ (raw);
-      if (element.closest("[data-skip-serialize]")) continue;
-      const path = /** @type {JsonPath} */ (JSON.parse(element.dataset.jsonPath || "[]"));
-      if (element.dataset.jsonMulti !== undefined) {
-        const checked = [...element.querySelectorAll("input[type=checkbox]")]
-          .map((box) => /** @type {HTMLInputElement} */ (box))
-          .filter((box) => box.checked)
-          .map((box) => box.dataset.value ?? "");
-        setJsonPathValue(next, path, checked);
-        continue;
-      }
-      if (element.dataset.jsonBoolean !== undefined) {
-        const value = /** @type {HTMLSelectElement} */ (element).value;
-        if (value === "") deleteJsonPathValue(next, path);
-        else setJsonPathValue(next, path, value === "true");
-        continue;
-      }
-      if (element.tagName === "SELECT") {
-        const select = /** @type {HTMLSelectElement} */ (element);
-        if (select.value === "" && select.dataset.jsonOptional !== undefined) deleteJsonPathValue(next, path);
-        else setJsonPathValue(next, path, select.value);
-        continue;
-      }
-      if (element.dataset.jsonNumber !== undefined) {
-        const input = /** @type {HTMLInputElement} */ (element);
-        if (input.value.trim() === "") deleteJsonPathValue(next, path);
-        else setJsonPathValue(next, path, Number(input.value));
-        continue;
-      }
-      if (element.dataset.jsonText !== undefined) {
-        const input = /** @type {HTMLInputElement} */ (element);
-        if (input.value === "" && element.dataset.jsonOptional !== undefined) deleteJsonPathValue(next, path);
-        else setJsonPathValue(next, path, input.value);
-        continue;
-      }
-      if (element.dataset.jsonJson !== undefined) {
-        const text = /** @type {HTMLTextAreaElement} */ (element).value.trim();
-        if (text === "") {
-          deleteJsonPathValue(next, path);
-          continue;
-        }
-        // Invalid JSON keeps whatever the file already holds rather than
-        // corrupting it; the raw editor is the escape hatch for fixing it.
-        try {
-          setJsonPathValue(next, path, JSON.parse(text));
-        } catch {
-          /* keep saved value */
-        }
-        continue;
-      }
-      setJsonPathValue(next, path, parseJsonFieldValue(/** @type {HTMLInputElement} */ (element).value));
-    }
-    return `${JSON.stringify(next, null, 2)}\n`;
+/**
+ * Re-derive state.settingsDraft from the just-loaded/just-saved
+ * state.settingsFile: parses only when the file carries at least one field
+ * hint AND its content is valid JSON. Never touches state.settingsView — a
+ * raw save that keeps the content valid should NOT yank the user back to the
+ * form they deliberately left; see FileEditor's `canForm` gate, which falls
+ * back to raw regardless of settingsView when the draft comes back null.
+ */
+function syncDraftFromFile() {
+  const file = state.settingsFile;
+  const hasHints = Object.keys(hintFieldDict(state.settingsFileHints)).length > 0;
+  if (!file || !hasHints) {
+    state.settingsDraft = null;
+    return;
   }
+  try {
+    state.settingsDraft = JSON.parse(file.content || "{}");
+  } catch {
+    state.settingsDraft = null;
+  }
+}
 
+/**
+ * Harness-driven hidden-field set for the CURRENT draft, mirroring the
+ * pre-purge reference's applyHarnessVisibility: server-computed hint.hidden
+ * flags reflect the harness that was saved when hints were built, so once the
+ * "harness" field changes in the live draft they'd be stale — this recomputes
+ * from `_harness` meta + the draft's live value instead.
+ * @param {HarnessHintsMeta|undefined} harnessMeta @param {any} draft @returns {Set<string>}
+ */
+function harnessHiddenKeys(harnessMeta, draft) {
+  if (!harnessMeta) return new Set();
+  const harnessValue = getJsonPathValue(draft, ["harness"]);
+  if (harnessValue === undefined || harnessValue === null || harnessValue === "") return new Set();
+  const config = harnessMeta.configs?.[String(harnessValue)];
+  return new Set(config?.hiddenFields ?? []);
+}
+
+/** Parent keys of every "[]" (array-item) hint, in first-appearance order —
+ * e.g. "jobs.[].id" / "jobs.[].schedule" both yield "jobs". @param {Record<string, FieldHint>} hints @returns {string[]} */
+function arrayParentKeysOf(hints) {
+  /** @type {Set<string>} */
+  const seen = new Set();
   /** @type {string[]} */
-  const lines = [];
-  for (const child of view.children) {
-    const node = /** @type {HTMLElement} */ (child);
-    if (node.dataset.md === "heading") lines.push(`${"#".repeat(Number(node.dataset.level ?? 1))} ${node.textContent}`);
-    else if (node.dataset.md === "text") lines.push(/** @type {HTMLTextAreaElement} */ (node).value);
+  const order = [];
+  for (const key of Object.keys(hints)) {
+    const segments = key.split(".");
+    const index = segments.indexOf("[]");
+    if (index === -1) continue;
+    const parent = segments.slice(0, index).join(".");
+    if (!seen.has(parent)) {
+      seen.add(parent);
+      order.push(parent);
+    }
   }
-  return `${lines.join("\n").trimEnd()}\n`;
+  return order;
+}
+
+/**
+ * The rows a form renders, in order: required hints first, then set optional
+ * hints (each group in hints-dict declaration order), then honest json-widget
+ * rows for any "[]" hint's parent key that itself holds an array in the draft
+ * (rule 6 — no array-item sub-forms, just the raw shape).
+ * @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft
+ * @returns {{ requiredRows: FieldEntry[], optionalRows: FieldEntry[], arrayRows: FieldEntry[] }}
+ */
+function computeRows(hints, harnessHidden, draft) {
+  /** @type {FieldEntry[]} */
+  const requiredRows = [];
+  /** @type {FieldEntry[]} */
+  const optionalRows = [];
+  for (const [key, hint] of Object.entries(hints)) {
+    if (key.includes("[]")) continue;
+    if (hint.hidden) continue;
+    if (harnessHidden.has(key)) continue;
+    const path = keyPath(key);
+    const entry = { key, hint, path };
+    if (!hint.optional) requiredRows.push(entry);
+    else if (getJsonPathValue(draft, path) !== undefined) optionalRows.push(entry);
+  }
+  /** @type {FieldEntry[]} */
+  const arrayRows = [];
+  for (const parentKey of arrayParentKeysOf(hints)) {
+    if (parentKey in hints) continue; // has its own real hint — handled by the loop above already
+    if (harnessHidden.has(parentKey)) continue;
+    const path = keyPath(parentKey);
+    const value = getJsonPathValue(draft, path);
+    if (Array.isArray(value)) arrayRows.push({ key: parentKey, hint: { input: "json", label: parentKey }, path });
+  }
+  return { requiredRows, optionalRows, arrayRows };
+}
+
+/** Hinted keys not currently rendered as a row: unset optional keys, minus the
+ * same skips rows themselves apply. @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft
+ * @returns {{ key: string, hint: FieldHint }[]} */
+function addableKeys(hints, harnessHidden, draft) {
+  /** @type {{ key: string, hint: FieldHint }[]} */
+  const result = [];
+  for (const [key, hint] of Object.entries(hints)) {
+    if (key.includes("[]")) continue;
+    if (hint.hidden) continue;
+    if (harnessHidden.has(key)) continue;
+    if (!hint.optional) continue; // required rows always render already
+    if (getJsonPathValue(draft, keyPath(key)) !== undefined) continue; // already rendered
+    result.push({ key, hint });
+  }
+  return result;
+}
+
+/** @param {FieldHint["input"]} input @returns {unknown} */
+function emptyValueFor(input) {
+  if (input === "boolean") return false;
+  if (input === "multiselect") return [];
+  if (input === "json") return {};
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Widgets, one per FieldHint.input.
+
+/** @param {FieldHintOption} option @returns {HTMLOptionElement} */
+function optionElement(option) {
+  return /** @type {HTMLOptionElement} */ (h("option", { value: option.value, text: option.label ?? option.value, ...(option.description ? { title: option.description } : {}) }));
+}
+
+/** @param {HTMLSelectElement} select @param {FieldHintOption[]} options */
+function appendGroupedOptions(select, options) {
+  /** @type {Map<string, FieldHintOption[]>} */
+  const groups = new Map();
+  for (const option of options) {
+    if (!option.group) continue;
+    const bucket = groups.get(option.group);
+    if (bucket) bucket.push(option);
+    else groups.set(option.group, [option]);
+  }
+  for (const option of options) {
+    if (!option.group) select.append(optionElement(option));
+  }
+  for (const [name, opts] of groups) {
+    const optgroup = h("optgroup", { label: name });
+    for (const option of opts) optgroup.append(optionElement(option));
+    select.append(optgroup);
+  }
+}
+
+/** A stale draft value not among the visible options is never silently
+ * dropped — it gets one extra "(current)" option instead. @param {HTMLSelectElement} select @param {FieldHintOption[]} options @param {string} currentValue */
+function addCurrentIfMissing(select, options, currentValue) {
+  if (currentValue === "" || options.some((option) => option.value === currentValue)) return;
+  select.append(h("option", { value: currentValue, text: `${currentValue} (current)` }));
+}
+
+/**
+ * The model-picker fix: when hint.groupBy points at another field (e.g.
+ * "model.name" groupBy "model.provider"), read that field's RAW draft value,
+ * resolve it to a LABEL via the groupBy field's own hint options (option.group
+ * on the dependent field's options holds the label, not the id — commit
+ * 022bf32), and show only options in that group, flat (a single group needs no
+ * optgroup). Unset/unresolved groupBy falls back to every option, grouped by
+ * <optgroup> — same as a plain grouped select with no groupBy at all.
+ * @param {FieldHint} hint @param {Record<string, FieldHint>} hints @param {any} draft
+ * @returns {{ options: FieldHintOption[], useGroups: boolean }}
+ */
+function resolveSelectOptions(hint, hints, draft) {
+  const all = hint.options ?? [];
+  if (hint.groupBy) {
+    const rawValue = getJsonPathValue(draft, keyPath(hint.groupBy));
+    if (rawValue !== undefined && rawValue !== null && rawValue !== "") {
+      const sourceOption = hints[hint.groupBy]?.options?.find((option) => option.value === String(rawValue));
+      const label = sourceOption?.label ?? sourceOption?.value ?? String(rawValue);
+      return { options: all.filter((option) => option.group === label), useGroups: false };
+    }
+    return { options: all, useGroups: true };
+  }
+  return { options: all, useGroups: all.some((option) => option.group) };
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLSelectElement} */
+function SelectWidget(entry, ctx) {
+  const currentRaw = getJsonPathValue(ctx.draft, entry.path);
+  const currentValue = currentRaw === undefined || currentRaw === null ? "" : String(currentRaw);
+  const { options, useGroups } = resolveSelectOptions(entry.hint, ctx.hints, ctx.draft);
+  const select = /** @type {HTMLSelectElement} */ (
+    h("select", {
+      onchange: () => {
+        if (select.value === "" && entry.hint.optional) deleteJsonPathValue(ctx.draft, entry.path);
+        else setJsonPathValue(ctx.draft, entry.path, select.value);
+        ctx.rerender();
+      },
+    })
+  );
+  if (entry.hint.optional) select.append(h("option", { value: "", text: "—" }));
+  if (useGroups) appendGroupedOptions(select, options);
+  else for (const option of options) select.append(optionElement(option));
+  addCurrentIfMissing(select, options, currentValue);
+  select.value = currentValue;
+  return select;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
+function MultiselectWidget(entry, ctx) {
+  const rawValue = getJsonPathValue(ctx.draft, entry.path);
+  const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
+  const container = /** @type {HTMLDivElement} */ (h("div", { class: "settings2-multiselect" }));
+  for (const option of entry.hint.options ?? []) {
+    const box = /** @type {HTMLInputElement} */ (
+      h("input", {
+        type: "checkbox",
+        checked: values.includes(option.value),
+        onchange: () => {
+          const current = Array.isArray(getJsonPathValue(ctx.draft, entry.path)) ? [...getJsonPathValue(ctx.draft, entry.path)] : [];
+          const at = current.indexOf(option.value);
+          if (box.checked && at === -1) current.push(option.value);
+          else if (!box.checked && at !== -1) current.splice(at, 1);
+          setJsonPathValue(ctx.draft, entry.path, current);
+          ctx.rerender();
+        },
+      })
+    );
+    container.append(h("label", { class: "settings2-multi-option", ...(option.description ? { title: option.description } : {}) }, box, h("span", { text: option.label ?? option.value })));
+  }
+  return container;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */
+function NumberWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "number",
+      value: value === undefined || value === null ? "" : String(value),
+      oninput: () => {
+        const text = input.value.trim();
+        if (text !== "" && !Number.isNaN(Number(text))) setJsonPathValue(ctx.draft, entry.path, Number(text));
+        ctx.markDirtyBadge();
+      },
+      onblur: () => {
+        // Empty + optional: unset the key (rule 4) — a discrete boundary
+        // event, so re-rendering (which may drop this very row) is fine here,
+        // unlike oninput above which must never fight the caret mid-type.
+        if (input.value.trim() === "" && entry.hint.optional) {
+          deleteJsonPathValue(ctx.draft, entry.path);
+          ctx.rerender();
+        }
+      },
+    })
+  );
+  return input;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */
+function TextWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "text",
+      value: value === undefined || value === null ? "" : String(value),
+      oninput: () => {
+        setJsonPathValue(ctx.draft, entry.path, input.value);
+        ctx.markDirtyBadge();
+      },
+    })
+  );
+  return input;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLTextAreaElement} */
+function JsonWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    h("textarea", {
+      class: "settings2-json-field",
+      rows: "4",
+      value: value === undefined ? "" : JSON.stringify(value, null, 2),
+      oninput: () => {
+        try {
+          setJsonPathValue(ctx.draft, entry.path, JSON.parse(textarea.value));
+          textarea.classList.remove("settings2-invalid");
+        } catch {
+          // Invalid JSON keeps whatever the draft already holds — never crash,
+          // never corrupt; the red border is the only feedback needed.
+          textarea.classList.add("settings2-invalid");
+        }
+        ctx.markDirtyBadge();
+      },
+    })
+  );
+  return textarea;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLLabelElement} */
+function BooleanWidget(entry, ctx) {
+  const checked = getJsonPathValue(ctx.draft, entry.path) === true;
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "checkbox",
+      checked,
+      onchange: () => {
+        setJsonPathValue(ctx.draft, entry.path, input.checked);
+        ctx.rerender();
+      },
+    })
+  );
+  return /** @type {HTMLLabelElement} */ (h("label", { class: "settings2-bool" }, input, h("span", { text: input.checked ? "on" : "off" })));
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLElement} */
+function renderWidget(entry, ctx) {
+  if (entry.hint.input === "boolean") return BooleanWidget(entry, ctx);
+  if (entry.hint.input === "select") return SelectWidget(entry, ctx);
+  if (entry.hint.input === "multiselect") return MultiselectWidget(entry, ctx);
+  if (entry.hint.input === "number") return NumberWidget(entry, ctx);
+  if (entry.hint.input === "json") return JsonWidget(entry, ctx);
+  return TextWidget(entry, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Form assembly: one row per entry + the add-setting picker.
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLElement} */
+function FieldRow(entry, ctx) {
+  const widget = renderWidget(entry, ctx);
+  const removeButton = entry.hint.optional
+    ? h("button", {
+        class: "settings2-row-remove",
+        title: "remove this setting",
+        onclick: () => {
+          deleteJsonPathValue(ctx.draft, entry.path);
+          ctx.rerender();
+        },
+        text: "✕",
+      })
+    : null;
+  return h(
+    "div",
+    { class: "settings2-field-row" },
+    h("div", { class: "settings2-field-label" }, h("span", { text: entry.hint.label ?? entry.key })),
+    h(
+      "div",
+      { class: "settings2-field-widget" },
+      h("div", { class: "settings2-field-control" }, widget, removeButton),
+      entry.hint.description ? h("small", { class: "settings2-field-desc", text: entry.hint.description }) : null,
+    ),
+  );
+}
+
+/** @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft @param {FormCtx} ctx @returns {HTMLElement|null} */
+function AddSettingPicker(hints, harnessHidden, draft, ctx) {
+  const candidates = addableKeys(hints, harnessHidden, draft);
+  if (candidates.length === 0) return null;
+  const select = /** @type {HTMLSelectElement} */ (
+    h("select", {
+      class: "settings2-add-picker",
+      onchange: () => {
+        const chosen = candidates.find((candidate) => candidate.key === select.value);
+        if (chosen) setJsonPathValue(draft, keyPath(chosen.key), emptyValueFor(chosen.hint.input));
+        select.value = "";
+        if (chosen) ctx.rerender();
+      },
+    })
+  );
+  select.append(h("option", { value: "", text: "+ add setting" }));
+  for (const { key, hint } of candidates) {
+    const label = hint.label ?? key;
+    const desc = hint.description ? ` — ${hint.description.slice(0, 60)}` : "";
+    select.append(h("option", { value: key, text: `${label}${desc}` }));
+  }
+  return h("div", { class: "settings2-field-row settings2-add-row" }, select);
+}
+
+/** @param {FormCtx} ctx @returns {HTMLElement} */
+function FormBody(ctx) {
+  const harnessHidden = harnessHiddenKeys(ctx.harnessMeta, ctx.draft);
+  const { requiredRows, optionalRows, arrayRows } = computeRows(ctx.hints, harnessHidden, ctx.draft);
+  const rows = [...requiredRows, ...optionalRows, ...arrayRows];
+  return h(
+    "div",
+    { class: "settings2-form" },
+    rows.length === 0 ? h("div", { class: "empty", text: "no settings to show" }) : rows.map((entry) => FieldRow(entry, ctx)),
+    AddSettingPicker(ctx.hints, harnessHidden, ctx.draft, ctx),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The editor: hints-driven form (default, when possible) with a raw textarea
+// as the always-available escape hatch.
+
+/**
+ * File editor for state.settingsFile. Structural form edits — select/boolean/
+ * multiselect changes, ✕ remove, + add setting, the form/raw toggle itself —
+ * call the real markDirty("settings"): a full region re-render is fine there
+ * because they're discrete clicks, never mid-keystroke. Free-typed widgets
+ * (text/number/json) and the raw textarea instead mutate state directly and
+ * flip their own "unsaved" badge via a direct DOM toggle, exactly like the
+ * pre-form raw editor did — re-rendering on every keystroke would fight the
+ * caret. See MEMORY: this mirrors the reference's uncontrolled-textarea
+ * rationale, just extended to the form's text-ish widgets.
+ */
+function FileEditor() {
+  const file = state.settingsFile;
+  if (!file) return h("div", { class: "empty", text: "select a file" });
+
+  const hints = hintFieldDict(state.settingsFileHints);
+  const hasHints = Object.keys(hints).length > 0;
+  const draft = state.settingsDraft;
+  const canForm = hasHints && draft !== null;
+  const view = canForm && state.settingsView === "form" ? "form" : "raw";
+
+  const dirtyBadge = h("small", { class: "settings2-dirty", hidden: true, text: "unsaved" });
+  const rawSeed = canForm ? serializeDraft(draft) : file.content;
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    h("textarea", {
+      class: "settings2-raw",
+      value: rawSeed,
+      oninput: () => {
+        dirtyBadge.hidden = textarea.value === rawSeed;
+      },
+    })
+  );
+
+  const saveButton = h("button", {
+    text: "save",
+    onclick: () => {
+      saveButton.setAttribute("disabled", "");
+      saveButton.textContent = "saving…";
+      const content = view === "form" ? serializeDraft(draft) : textarea.value;
+      void saveSettingsFile(content).then(() => syncDraftFromFile());
+    },
+  });
+
+  const toggle = canForm
+    ? h(
+        "div",
+        { class: "segmented-tabs settings2-view-toggle" },
+        h(
+          "button",
+          {
+            class: view === "form" ? "active" : "",
+            onclick: () => {
+              state.settingsView = "form";
+              markDirty("settings");
+            },
+          },
+          h("span", { text: "form" }),
+        ),
+        h(
+          "button",
+          {
+            class: view === "raw" ? "active" : "",
+            onclick: () => {
+              state.settingsView = "raw";
+              markDirty("settings");
+            },
+          },
+          h("span", { text: "raw" }),
+        ),
+      )
+    : null;
+
+  /** @type {FormCtx} */
+  const ctx = {
+    draft,
+    hints,
+    harnessMeta: harnessMetaOf(state.settingsFileHints),
+    rerender: () => markDirty("settings"),
+    markDirtyBadge: () => {
+      dirtyBadge.hidden = canForm && serializeDraft(draft) === file.content;
+    },
+  };
+
+  const body = view === "form" && canForm ? FormBody(ctx) : textarea;
+
+  return h(
+    "div",
+    { class: "settings2-editor" },
+    h("div", { class: "file-toolbar" }, h("code", {}, PathText(file.path)), h("div", { class: "settings2-toolbar-actions" }, toggle, dirtyBadge, saveButton)),
+    hasHints && !canForm ? h("div", { class: "settings2-notice", text: "not valid JSON — raw only" }) : null,
+    body,
+    state.settingsError ? h("div", { class: "settings2-error-line", text: state.settingsError }) : null,
+  );
 }

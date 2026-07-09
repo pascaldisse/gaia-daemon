@@ -7,6 +7,7 @@ import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
+import { openSettings } from "./settings.js";
 import { effectiveSidebarFocus, roomUnread, state, workspaceActivity } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
@@ -76,14 +77,7 @@ function renderSidebar() {
     ),
     RoomTree(),
     h("div", { class: "spacer" }),
-    h("button", {
-      class: "nav-action",
-      onclick: () => {
-        state.settingsOpen = true;
-        markDirty("settings");
-      },
-      text: "global settings",
-    }),
+    h("button", { class: "nav-action", onclick: () => openSettings(), text: "settings" }),
   ];
   nav.replaceChildren(...children.filter((child) => child !== null));
   if (scrollTop) nav.scrollTop = scrollTop;

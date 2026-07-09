@@ -1,13 +1,11 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
-// button) and recent tasks. The workspace settings panel below it is owned by
-// the settings region, so streaming re-renders here never wipe an edit there.
+// button) and recent tasks.
 import { setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { shortModel } from "./models.js";
 import { registerRegion } from "./render.js";
-import { openAgentSettings } from "./settings.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
 
@@ -86,8 +84,8 @@ function renderPanel() {
             // horizontal space with, or overlap, the @name above it.
             { class: `agent-cell ${roles.length > 0 ? "with-role" : ""}` },
             h(
-              "button",
-              { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
+              "div",
+              { class: "agent-main" },
               h("span", { class: `dot ${agent.status}` }),
               h("strong", { text: `${agent.icon} @${agent.id}` }),
               h("small", {

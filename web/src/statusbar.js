@@ -153,7 +153,7 @@ export function clockText() {
 // always hides it via CSS regardless; this only gates the desktop bar).
 // Persisted so a reload keeps the choice; applied by toggling a class on #app
 // rather than a region re-render, so it takes effect instantly with no dirty
-// region plumbing (see settings.js for the toggle UI).
+// region plumbing.
 
 const STATUSBAR_STORAGE_KEY = "gaia.statusbar";
 

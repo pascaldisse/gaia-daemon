@@ -16,6 +16,7 @@ import { jumpTab, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggl
 import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
+import { closeSettings } from "./settings.js";
 import { effectiveSidebarFocus, state } from "./state.js";
 import { closeBgTasks, closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
 import { cycleTheme } from "./themes.js";
@@ -100,14 +101,12 @@ export function installKeybindings() {
         markDirty("dario");
         return;
       }
-      // Then the settings modal.
+      // Then the Settings modal.
       if (event.key === "Escape" && state.settingsOpen) {
         event.preventDefault();
-        state.settingsOpen = false;
-        markDirty("settings");
+        closeSettings();
         return;
       }
-
       // Delete the focused sidebar item — workspace or room — with the OS-native
       // delete chord (⌘⌫ on macOS, Del elsewhere). This is the ONLY way to delete
       // a workspace or room; there's no per-row button. App-specific (no native

@@ -216,7 +216,7 @@ function modelOptions(models: ModelChoice[]): FieldHintOption[] {
     value: model.id,
     label: model.id,
     description: `${model.providerLabel} · ${model.label} · ${authNote(model)}`,
-    group: model.provider,
+    group: model.providerLabel,
   }));
 }
 
@@ -340,13 +340,24 @@ function hooksHints(): FileHints {
 // the registry (engines with none — free-form voices — are skipped). A newly
 // registered engine's voices surface here without touching shared code; never
 // a hardcoded engine id.
-function ttsVoiceHintDescription(): string {
-  const catalog = ttsEngineIds()
+function ttsVoiceCatalog(): TtsEngineSpec[] {
+  return ttsEngineIds()
     .map((id) => findTtsEngine(id))
-    .filter((engine): engine is TtsEngineSpec => Boolean(engine?.voices.length))
+    .filter((engine): engine is TtsEngineSpec => Boolean(engine?.voices.length));
+}
+
+function ttsVoiceHintDescription(): string {
+  const catalog = ttsVoiceCatalog()
     .map((engine) => `${engine.id}: ${engine.voices.join(" | ")}`)
     .join("; ");
   return `voice for the engine, read-aloud + calls${catalog ? ` (${catalog})` : ""}`;
+}
+
+// Same catalog as picker options, one voice per row, grouped by its engine —
+// this is the enumeration shared with the native (unmute) call-voice picker
+// so both stay in lockstep with the TTS engine registry.
+function ttsVoiceOptions(): FieldHintOption[] {
+  return ttsVoiceCatalog().flatMap((engine) => engine.voices.map((voice) => ({ value: voice, group: engine.id })));
 }
 
 function mcpServersHint(extra: Partial<FieldHint> = {}): FieldHint {
@@ -388,8 +399,11 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
   const modelFilterProviders = currentHarnessUi?.modelProviderIds;
 
   const allModels = sources.models;
+  // Filter by the raw provider id (harness spec data) BEFORE building options —
+  // `group` on the built options is the display label, not the id, so the id
+  // match has to happen against the source ModelChoice, not the option.
   const modelNameOptions = modelFilterProviders
-    ? modelOptions(allModels).filter((opt) => modelFilterProviders.includes(opt.group ?? ""))
+    ? modelOptions(allModels.filter((model) => modelFilterProviders.includes(model.provider)))
     : modelOptions(allModels);
   const providerOptionList = providerOptions(allModels);
 
@@ -417,7 +431,11 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       description: "may summon further workers when itself running as a summon (default false)",
     },
     mcpServers: mcpServersHint({ hidden: hiddenByHarness.has("mcpServers") }),
-    voice: { input: "text", optional: true, label: "Native call voice (unmute)", description: "native unmute call voice (a voices.yaml id); ignored when tts.engine drives the call (e.g. claude)" },
+    voice: select(ttsVoiceOptions(), {
+      optional: true,
+      label: "Native call voice (unmute)",
+      description: "native unmute call voice (a voices.yaml id); ignored when tts.engine drives the call (e.g. claude)",
+    }),
     "tts.engine": select(values(ttsEngineIds()), {
       optional: true,
       label: "Voice mode for this agent",

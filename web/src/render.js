@@ -6,9 +6,9 @@
 import { $, h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"settings"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"} Region */
+/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
 
-const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "settings", "dario", "contextgate", "theme", "usage", "search", "bgtasks"]);
+const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
 
 /** @type {Map<Region, () => void>} */
 const renderers = new Map();
@@ -86,22 +86,21 @@ export function mountApp() {
         "aside",
         { class: "right", id: "right" },
         h("section", { class: "panel", id: "room-panel" }),
-        h("section", { class: "panel workspace-panel", id: "workspace-panel" }),
       ),
     ),
     h("footer", { class: "statusbar", id: "statusbar" }),
-    // Overlay slots: the settings modal and theme palette render into their
+    // Overlay slots: the theme palette and other overlays render into their
     // own mount points, so neither region's re-render can touch the other.
     h(
       "div",
       { id: "overlays" },
-      h("div", { id: "overlay-settings" }),
       h("div", { id: "overlay-dario" }),
       h("div", { id: "overlay-contextgate" }),
       h("div", { id: "overlay-theme" }),
       h("div", { id: "overlay-usage" }),
       h("div", { id: "overlay-bgtasks" }),
       h("div", { id: "overlay-search" }),
+      h("div", { id: "overlay-settings" }),
     ),
   );
 }
