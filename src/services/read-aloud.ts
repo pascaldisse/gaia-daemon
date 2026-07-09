@@ -655,38 +655,65 @@ registerTtsEngine({ id: "kyutai", voices: [], synthesize: kyutaiSynthesize });
 const CLAUDE_VOICES = ["airy", "buttery", "mellow", "glassy", "rounded"];
 const CLAUDE_SYNTH_TIMEOUT_MS = 180_000;
 
-async function claudeVoiceHealthy(baseUrl: string): Promise<boolean> {
+interface ClaudeVoiceHealth {
+  reachable: boolean;
+  ready: boolean;
+  detail?: string;
+}
+
+async function claudeVoiceHealth(baseUrl: string): Promise<ClaudeVoiceHealth> {
   try {
     const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
-    return response.ok;
+    if (!response.ok) return { reachable: false, ready: false, detail: `HTTP ${response.status}` };
+    const body = (await response.json().catch(() => undefined)) as { loggedIn?: unknown; ready?: unknown } | undefined;
+    // Newer claude-voice answers immediately even while the browser session is
+    // still relaunching: { ok:true, loggedIn:false }. Treat that as alive but
+    // NOT ready, so GAIA waits (and never spawns a competing daemon) instead of
+    // handing /stream to a browser session that is guaranteed to 500.
+    if (typeof body?.loggedIn === "boolean") return { reachable: true, ready: body.loggedIn, detail: body.loggedIn ? undefined : "browser session not ready" };
+    if (typeof body?.ready === "boolean") return { reachable: true, ready: body.ready, detail: body.ready ? undefined : "browser session not ready" };
+    // Back-compat with older claude-voice checkouts whose /health was a plain
+    // liveness probe.
+    return { reachable: true, ready: true };
   } catch {
-    return false;
+    return { reachable: false, ready: false };
   }
 }
 
 async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<string> {
   const baseUrl = context.settings.claudeVoiceUrl.replace(/\/+$/, "");
-  if (await claudeVoiceHealthy(baseUrl)) return baseUrl;
+  let health = await claudeVoiceHealth(baseUrl);
+  if (health.ready) return baseUrl;
+  if (health.reachable) {
+    context.log(`voice: claude-voice daemon is alive at ${baseUrl}, waiting for browser session readiness...`);
+  } else {
+    const dir = context.settings.claudeVoiceDir;
+    if (!dir) {
+      throw new Error(`claude-voice daemon is not reachable at ${baseUrl} (start it, or set voice.claudeVoiceDir in ~/.gaia/voice.json to auto-start it)`);
+    }
+    const script = join(dir, "voiced.js");
+    if (!existsSync(script)) throw new Error(`claude-voice checkout not found at ${dir} (no voiced.js)`);
 
-  const dir = context.settings.claudeVoiceDir;
-  if (!dir) {
-    throw new Error(`claude-voice daemon is not reachable at ${baseUrl} (start it, or set voice.claudeVoiceDir in ~/.gaia/voice.json to auto-start it)`);
+    context.log(`voice: starting claude-voice daemon from ${dir}...`);
+    mkdirSync(globalPaths.voiceLogsDir(), { recursive: true });
+    const log = openSync(join(globalPaths.voiceLogsDir(), "claude-voice.log"), "a");
+    const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", log, log], detached: true });
+    child.unref();
   }
-  const script = join(dir, "voiced.js");
-  if (!existsSync(script)) throw new Error(`claude-voice checkout not found at ${dir} (no voiced.js)`);
-
-  context.log(`voice: starting claude-voice daemon from ${dir}...`);
-  mkdirSync(globalPaths.voiceLogsDir(), { recursive: true });
-  const log = openSync(join(globalPaths.voiceLogsDir(), "claude-voice.log"), "a");
-  const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", log, log], detached: true });
-  child.unref();
 
   const deadline = Date.now() + context.settings.startTimeoutSec * 1000;
   while (Date.now() < deadline) {
-    if (await claudeVoiceHealthy(baseUrl)) return baseUrl;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    health = await claudeVoiceHealth(baseUrl);
+    if (health.ready) return baseUrl;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(1500, remaining)));
   }
-  throw new Error(`claude-voice daemon did not become healthy at ${baseUrl} - see ${join(globalPaths.voiceLogsDir(), "claude-voice.log")}`);
+  throw new Error(
+    health.reachable
+      ? `claude-voice daemon is reachable at ${baseUrl}, but its browser session is not ready (${health.detail ?? "not logged in or still relaunching"}) - see ${join(globalPaths.voiceLogsDir(), "claude-voice.log")}`
+      : `claude-voice daemon did not become healthy at ${baseUrl} - see ${join(globalPaths.voiceLogsDir(), "claude-voice.log")}`,
+  );
 }
 
 async function claudeSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {

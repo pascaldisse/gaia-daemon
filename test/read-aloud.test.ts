@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
@@ -473,6 +475,29 @@ test("readAloudStream: an aborted stream is not cached (no truncated replay)", a
     assert.equal((await collect(second.frames)).length, 6);
     assert.equal(synths, 2);
   } finally {
+    await temp.cleanup();
+  }
+});
+
+test("claude readAloudStream waits for browser-session readiness before opening stream", async () => {
+  const temp = await createTempDir();
+  let streamHits = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":false}'); return; }
+    if (req.url === "/stream") streamHits++;
+    res.writeHead(500); res.end("stream should not be called while the browser session is not ready");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: "", startTimeoutSec: 0.03 });
+  try {
+    await assert.rejects(
+      () => readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path }),
+      /browser session is not ready/,
+    );
+    assert.equal(streamHits, 0);
+  } finally {
+    server.close();
     await temp.cleanup();
   }
 });

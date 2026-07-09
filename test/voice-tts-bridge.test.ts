@@ -219,7 +219,7 @@ test("bridge feeds whole sentences to a duplex engine as they stream, ends on Eo
 test("the claude duplex engine streams NDJSON text in (duplex request) and PCM out", async () => {
   const received: Array<{ text?: string; end?: boolean }> = [];
   const server = http.createServer((req, res) => {
-    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true}'); return; }
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":true}'); return; }
     if (req.url?.startsWith("/stream-in")) {
       // Answer headers immediately (before the body) so the fetch resolves and
       // the caller can start pushing — the duplex contract. flushHeaders() is
@@ -266,6 +266,35 @@ test("the claude duplex engine streams NDJSON text in (duplex request) and PCM o
     assert.equal(frames.reduce((sum, f) => sum + f.length, 0), 640, "PCM for both fed lines streamed back");
     assert.deepEqual(received.filter((m) => m.text).map((m) => m.text), ["Hello.", "World."], "each sentence arrived as its own NDJSON line");
     assert.ok(received.some((m) => m.end === true), "the end signal was sent");
+  } finally {
+    server.close();
+  }
+});
+
+test("the claude duplex engine waits for browser-session readiness before opening stream-in", async () => {
+  let streamInHits = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":false}'); return; }
+    if (req.url?.startsWith("/stream-in")) streamInHits++;
+    res.writeHead(500); res.end("stream-in should not be called while the browser session is not ready");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const engine = findTtsEngine("claude");
+    assert.ok(engine?.synthesizeDuplex, "claude advertises duplex");
+    const settings = { ...VOICE_SETTINGS_DEFAULTS, claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: "", startTimeoutSec: 0.03 };
+    await assert.rejects(
+      () => engine.synthesizeDuplex!({
+        voice: "airy",
+        settings,
+        ensureTts: async () => ({ ttsUrl: "" }),
+        log: () => {},
+        signal: new AbortController().signal,
+      }),
+      /browser session is not ready/,
+    );
+    assert.equal(streamInHits, 0);
   } finally {
     server.close();
   }
