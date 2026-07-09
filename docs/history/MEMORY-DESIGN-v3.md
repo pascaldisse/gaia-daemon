@@ -15,8 +15,8 @@ Adopted (strong evidence):
 1. **Distilled, dated, self-contained facts** beat raw-chunk RAG. Every top
    LongMemEval system retrieves extracted dated fact sentences, not transcript
    chunks.
-2. **Background consolidation** ("sleep-time compute", OpenAI's "Dreaming",
-   Letta's sleep agents, Hermes's review fork). Runs off the hot path,
+2. **Background consolidation** ("sleep-time compute", Letta's sleep agents,
+   Hermes's review fork). Runs off the hot path,
    debounced on idle, loop-protected, capped.
 3. **Bi-temporal facts: supersede, never delete.** Zep's temporal/knowledge-update
    wins come from `validFrom`/`validTo`/`supersededBy` columns, not the graph.
@@ -142,7 +142,7 @@ lexical-only, logged once, everything still works (that's still Hermes
 parity). Vectors are cached in `index.db` by content hash; indexing embeds in
 batches off the hot path; a query embed is one short call with a timeout.
 
-## Consolidation — the dreaming loop
+## Consolidation
 
 `src/services/consolidate.ts`, daemon-side, per agent:
 

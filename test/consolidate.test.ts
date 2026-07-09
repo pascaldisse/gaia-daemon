@@ -1,4 +1,4 @@
-// The dreaming loop (src/services/consolidate.ts): one guarded LLM call that
+// Background consolidation (src/services/consolidate.ts): one guarded LLM call that
 // distills episodes into facts, supersessions, and core edits. The LLM is a
 // recorded fake — no network. Every apply path is exercised through the same
 // guarded writers the agent uses (dup drop, caps, secret filter), plus the
