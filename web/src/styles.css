@@ -577,6 +577,21 @@ body.resizing { cursor: col-resize; user-select: none; }
 .code-block pre { grid-column: auto; margin: 0; padding: 8px; overflow: auto; white-space: pre; }
 .code-block code { display: block; background: transparent; border: 0; padding: 0; }
 
+.markdown-message .md-table-wrap { overflow-x: auto; max-width: 100%; }
+.markdown-message .md-table { border-collapse: collapse; font-size: 0.95em; }
+.markdown-message .md-table th, .markdown-message .md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-message .md-table thead th {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg);
+  font-weight: 600;
+}
+.markdown-message .md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, white 3%, transparent); }
+
 /* thinking + tool-call expanders */
 .tool-activity, .message > .activity-details { grid-column: 2; }
 .tool-activity, .activity-details { margin-top: 6px; }

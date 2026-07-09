@@ -53,6 +53,41 @@ function renderMarkdownBlock(root, lines) {
     }
   }
 
+  // GFM table: a header row, a `|---|:--:|` delimiter row, then data rows. The
+  // delimiter row is the signal (a lone pipe-y line isn't a table); column
+  // alignment comes from the `:` markers on each delimiter cell.
+  if (lines.length >= 2 && lines[0].includes("|") && isTableDelimiter(lines[1])) {
+    const aligns = splitTableRow(lines[1]).map((cell) => {
+      const left = cell.startsWith(":");
+      const right = cell.endsWith(":");
+      return left && right ? "center" : right ? "right" : left ? "left" : "";
+    });
+    /** @param {string} tag @param {string} text @param {number} i */
+    const cell = (tag, text, i) =>
+      h(tag, aligns[i] ? { style: `text-align:${aligns[i]}` } : {}, InlineMarkdown(text));
+    const headers = splitTableRow(lines[0]);
+    root.append(
+      h(
+        "div",
+        { class: "md-table-wrap" },
+        h(
+          "table",
+          { class: "md-table" },
+          h("thead", {}, h("tr", {}, headers.map((c, i) => cell("th", c, i)))),
+          h(
+            "tbody",
+            {},
+            lines.slice(2).map((line) => {
+              const row = splitTableRow(line);
+              return h("tr", {}, headers.map((_, i) => cell("td", row[i] ?? "", i)));
+            }),
+          ),
+        ),
+      ),
+    );
+    return;
+  }
+
   if (lines.every((line) => /^[-*]\s+/.test(line))) {
     root.append(h("ul", {}, lines.map((line) => h("li", {}, InlineMarkdown(line.replace(/^[-*]\s+/, ""))))));
     return;
@@ -69,6 +104,38 @@ function renderMarkdownBlock(root, lines) {
   }
 
   root.append(h("p", {}, InlineMarkdown(lines.join("\n"))));
+}
+
+// A GFM table delimiter row: pipe-separated cells of dashes with optional `:`
+// alignment markers, e.g. `|---|:--:|--:|`. Requires at least one pipe so a
+// horizontal-rule-ish line can't masquerade as a one-column table.
+/** @param {string} line @returns {boolean} */
+function isTableDelimiter(line) {
+  return line.includes("|") && /^\s*\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/.test(line);
+}
+
+// Split a table row on unescaped pipes, dropping the empties that optional
+// leading/trailing edge pipes create, then trim each cell.
+/** @param {string} line @returns {string[]} */
+function splitTableRow(line) {
+  /** @type {string[]} */
+  const cells = [];
+  let cur = "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\" && line[i + 1] === "|") {
+      cur += "|";
+      i++;
+    } else if (line[i] === "|") {
+      cells.push(cur);
+      cur = "";
+    } else {
+      cur += line[i];
+    }
+  }
+  cells.push(cur);
+  if (cells.length > 0 && cells[0].trim() === "") cells.shift();
+  if (cells.length > 0 && cells[cells.length - 1].trim() === "") cells.pop();
+  return cells.map((c) => c.trim());
 }
 
 // Inline spans, ordered so a longer delimiter wins over its own prefix (`**`
