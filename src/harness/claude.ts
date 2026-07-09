@@ -461,7 +461,9 @@ export class ClaudeRuntime implements AgentRuntime {
     // resumed session still carries prior context.
     const native = input.nativeCommand === true;
     const systemPrompt = await this.buildSystemPrompt(input);
-    const prompt = native ? input.message.trim() : await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions);
+    const prompt = native
+      ? input.message.trim()
+      : await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions, { workDir: this.workDir, rootDir: this.cwd });
     const args = this.buildArgs(room.sessionId, firstTurn, systemPrompt, input.thinking, native);
 
     // Every non-native turn is delivered via stream-json INPUT with stdin kept

@@ -30,7 +30,7 @@ const MEMORY_USAGE = `Usage:
 
 const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
-const SUMMON_USAGE = `Usage: gaia summon <agent> <task>`;
+const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>`;
 const DREAM_USAGE = `Usage:
   gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
   gaia dream [agent] --apply   apply the proposal from the last dream run`;
@@ -213,11 +213,12 @@ async function runRecall(args: string[]): Promise<number> {
 }
 
 async function runSummon(args: string[]): Promise<number> {
-  const { positional } = parseFlags(args);
+  const ownWorktree = args[0] === "--worktree";
+  const { positional } = parseFlags(ownWorktree ? args.slice(1) : args);
   const agent = positional[0];
   const task = positional.slice(1).join(" ").trim();
   if (!agent || !task) return fail(SUMMON_USAGE);
-  const result = await daemonPost("/api/harness/summon", { agent, task });
+  const result = await daemonPost("/api/harness/summon", { agent, task, ownWorktree });
   console.log(result.text);
   return result.ok ? 0 : 1;
 }

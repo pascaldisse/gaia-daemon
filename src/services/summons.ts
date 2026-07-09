@@ -44,7 +44,7 @@ export interface SummonResultDelivery {
 }
 
 import { normalizeRoomState } from "../domain/rooms.js";
-import { resolveRoomWorkDir } from "../domain/worktree.js";
+import { ensureRoomWorktree, resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
@@ -227,6 +227,10 @@ export interface SummonOptions {
    * coordinator looks the agent up itself (summonUntrustedTier), so an
    * untrusted caller cannot claim trust for its workers. */
   callerAgentId?: string;
+  /** Opt-in checkout isolation for this child: when true under worktree
+   * isolation, the child owns its own worktree instead of inheriting the
+   * parent room's checkout. */
+  ownWorktree?: boolean;
 }
 
 export interface SummonHost {
@@ -318,12 +322,15 @@ export class SummonCoordinator implements SummonHost {
     // creation, immutable) so a daemon restart resumes the child's turn under
     // the SAME forced sandbox instead of quietly promoting it to trusted.
     if (untrusted) state.summonUntrusted = true;
-    // Worktree isolation (collab.isolation "worktree"): summon rooms NEVER get
-    // their own checkout — the child INHERITS the parent room's worktree so a
-    // worker operates on the same branch/files as the room that summoned it.
-    // Resolution walks to the top-level ancestor (creating ITS worktree if
-    // needed); a non-git workspace degrades to the workspace root.
-    const workDir = await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, childRoomId);
+    // Worktree isolation (collab.isolation "worktree"): summons inherit the
+    // parent room's checkout by default. ownWorktree is an explicit opt-in for
+    // a child-owned checkout; if that cannot be created, degrade to the normal
+    // inherited resolution.
+    let workDir: string | undefined;
+    if (options.ownWorktree && this.workspace.config.collab?.isolation === "worktree") {
+      workDir = ensureRoomWorktree(this.workspace.rootDir, childRoomId, this.workspace.config.collab.branchPrefix);
+    }
+    workDir ??= await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, childRoomId);
     if (workDir) state.workDir = workDir;
     if (options.deliver) {
       state.summon = {
