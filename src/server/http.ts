@@ -3,7 +3,7 @@
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
 import { createReadStream, existsSync, openSync, watch, type FSWatcher } from "node:fs";
-import { access, appendFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -876,6 +876,84 @@ export class GaiaWebServer {
         const message = error instanceof Error ? error.message : String(error);
         return json(response, message.startsWith("Unknown STT engine") || message.startsWith("No audio") ? 400 : 502, { error: message });
       }
+    }
+
+    // Composer dictation (voice INPUT), durable-clip variant: transcribe a clip
+    // that was already streamed to disk via the /chunk route above rather than
+    // sent as one POST body. On success, archive it exactly like the plain
+    // /api/voice/transcribe route (final-<ts>.<ext>) — moved there via rename
+    // so the archive copy IS the preservation and the .bin is never touched on
+    // failure.
+    if (method === "POST" && (params = match(/^\/api\/voice\/clip\/([^/]+)\/transcribe$/))) {
+      const clipId = params[0];
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(clipId)) return json(response, 400, { error: "Invalid clipId" });
+      const clipPath = join(globalPaths.voiceClipsDir(), `${clipId}.bin`);
+      let data: Buffer;
+      try {
+        data = await readFile(clipPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return json(response, 404, { error: "No such clip" });
+        return json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (data.length === 0) return json(response, 400, { error: "No audio to transcribe" });
+      const mime = url.searchParams.get("mime")?.trim() || "audio/webm";
+      const engineId = url.searchParams.get("engine")?.trim() || undefined;
+      const language = url.searchParams.get("language")?.trim() || undefined;
+      try {
+        const result = await this.daemon.transcribe({ data, contentType: mime }, { engineId, language });
+        const finalExt = mime.includes("mp4") ? "m4a" : mime.includes("webm") ? "webm" : mime.includes("wav") ? "wav" : "bin";
+        await mkdir(globalPaths.voiceClipsDir(), { recursive: true });
+        await rename(clipPath, join(globalPaths.voiceClipsDir(), `final-${Date.now()}.${finalExt}`));
+        return json(response, 200, { text: result.text, engine: result.engine });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return json(response, message.startsWith("Unknown STT engine") || message.startsWith("No audio") ? 400 : 502, { error: message });
+      }
+    }
+
+    // Composer dictation: list clips still parked on disk (e.g. after a reload
+    // interrupted transcribe/send) so the client can offer to resume or discard
+    // them. Only live "<id>.bin" clips — final-*/discarded-* are archives, not
+    // pending clips.
+    if (method === "GET" && match(/^\/api\/voice\/clips$/)) {
+      let entries: string[];
+      try {
+        entries = await readdir(globalPaths.voiceClipsDir());
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") entries = [];
+        else return json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      const names = entries.filter(
+        (name) => /^[a-z0-9][a-z0-9-]{0,63}\.bin$/.test(name) && !name.startsWith("final-") && !name.startsWith("discarded-"),
+      );
+      const clips = await Promise.all(
+        names.map(async (name) => {
+          const info = await stat(join(globalPaths.voiceClipsDir(), name));
+          return { id: name.slice(0, -".bin".length), bytes: info.size, mtimeMs: info.mtimeMs };
+        }),
+      );
+      clips.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return json(response, 200, { clips });
+    }
+
+    // Composer dictation: discard a parked clip. Never unlink — rename it out
+    // of the way (discarded-<ts>-<id>.bin) so an accidental discard is still
+    // recoverable from disk, same durability posture as the archive path above.
+    if (method === "DELETE" && (params = match(/^\/api\/voice\/clip\/([^/]+)$/))) {
+      const clipId = params[0];
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(clipId)) return json(response, 400, { error: "Invalid clipId" });
+      try {
+        await rename(
+          join(globalPaths.voiceClipsDir(), `${clipId}.bin`),
+          join(globalPaths.voiceClipsDir(), `discarded-${Date.now()}-${clipId}.bin`),
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return json(response, 404, { error: "No such clip" });
+        return json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      response.writeHead(204);
+      response.end();
+      return;
     }
 
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/agents\/([^/]+)\/thinking$/))) {

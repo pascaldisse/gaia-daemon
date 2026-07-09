@@ -48,7 +48,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   dictationLevel: number,
  *   dictationBars: number[],
  *   dictationError: string,
- *   dictationDrafts: {id: string, startedAt: number, durationMs: number, status: "recording"|"saved"|"failed", error: string}[],
+ *   dictationDrafts: {id: string, bytes: number, mtimeMs: number}[],
  *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
@@ -122,18 +122,20 @@ export const state = {
   micMuted: false,
   // Composer dictation (voice input, this-tab-only): recording the mic clip,
   // then transcribing it. Distinct from a live call's micMuted (see voice.js
-  // / dictation.js). The live session itself is in-memory only; dictation.js
-  // additionally mirrors it to IndexedDB for crash/reload durability —
-  // dictationDrafts below is the recovered summary of that durable layer, not
-  // the live recording state.
+  // / dictation.js). The live session itself is in-memory-only on the
+  // client; the daemon separately keeps each clip on disk (streamed there
+  // chunk-by-chunk during recording) for crash/reload durability —
+  // dictationDrafts below is the recovered summary of that server-side layer,
+  // not the live recording state.
   dictating: false,
   dictationBusy: false,
   dictationLevel: 0,
   dictationBars: [],
   dictationError: "",
-  // Recovered drafts (from a crash/reload) for the current room, surfaced as
-  // dismissable/transcribable chips in the composer. Never gates send or the
-  // mic — see dictation.js's refreshDictationDrafts / iron invariants.
+  // Recovered clips (from a crash/reload) the daemon still has on disk for
+  // the current room, surfaced as dismissable/transcribable chips in the
+  // composer. Never gates send or the mic — see dictation.js's
+  // refreshRecoveredClips.
   dictationDrafts: [],
   // Transcript read-aloud playback (one message at a time, this tab only).
   readAloud: null,

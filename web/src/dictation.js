@@ -4,14 +4,17 @@
 // one-shot mirror of read-aloud; live-CALL STT is the separate streaming path
 // in voice.js (which writes the composer as the agent hears you).
 //
-// IN-MEMORY ONLY: recorded chunks live in a plain array on the session
-// object, nothing is persisted to disk. Browser disk-database transactions
-// hang in WKWebView, and the stop→transcribe→send path must never await
-// anything except the recorder stop (watchdogged) and the transcription
-// fetch itself.
-// A failed clip is kept in a module variable so the user can retry or
-// discard it, but nothing survives a reload/crash — there are no recovered
-// drafts anymore.
+// IN-MEMORY ONLY on the client: recorded chunks live in a plain array on the
+// session object, nothing is persisted to browser disk (no IndexedDB — those
+// transactions hang in WKWebView, and the stop→transcribe→send path must
+// never await anything except the recorder stop (watchdogged) and the
+// transcription fetch itself). Durability instead comes from the SERVER: each
+// recorded chunk is also streamed, fire-and-forget, to a clip file the daemon
+// keeps on disk (see ondataavailable below); refreshRecoveredClips/
+// transcribeRecoveredClip/discardRecoveredClip below recover from that
+// server-side file after a crash/reload, with zero client-side storage.
+// A failed clip also stays in a module variable so the user can retry or
+// discard it without a round trip to the server.
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
@@ -19,6 +22,15 @@ const WAVE_BARS = 28;
 const METER_THROTTLE_MS = 100;
 const MAX_RECORD_MS = 5 * 60 * 1000;
 const FINISH_WATCHDOG_MS = 1500;
+// One transcription attempt (which may cover two sequential fetches — the
+// clip-transcribe try, then the upload fallback) gets this long before it's
+// treated as failed. Recording itself is never subject to this timeout.
+const TRANSCRIBE_TIMEOUT_MS = 45000;
+
+/** @param {number} ms @returns {AbortSignal|undefined} */
+function fetchTimeout(ms) {
+  return typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined;
+}
 
 /**
  * @typedef {Object} DictationSession
@@ -41,6 +53,14 @@ let session = null;
 let lastFailedClip = null;
 /** @type {Promise<boolean>|null} */
 let activeTranscriptionPromise = null;
+/** Tail of the transcription queue — chains each transcribe() call behind the
+ * previous one so a hung/failed earlier attempt can never swallow a later
+ * clip; each call still resolves to its OWN result. @type {Promise<boolean>} */
+let queueTail = Promise.resolve(false);
+/** The AbortController backing whichever transcription fetch is currently in
+ * flight, so the composer's "cancel" chip (abortActiveTranscription) can
+ * reach in and abort it. @type {AbortController|null} */
+let activeAbortController = null;
 
 /** Toggle recording: start if idle, else stop-and-transcribe. */
 export async function toggleDictation() {
@@ -171,55 +191,111 @@ async function stopAndTranscribe() {
     return false;
   }
 
-  return await transcribe(clip);
+  return await transcribe(clip, current.clipId);
 }
 
 /**
- * POST the clip to the daemon and insert the transcript.
+ * Transcribe a recorded clip and insert the result into the composer. Calls
+ * queue behind one another (queueTail) instead of the old singleton
+ * early-return, so a hung or failed earlier transcription can never swallow a
+ * later clip — every call still resolves to its OWN result once its turn
+ * comes up.
  * @param {Blob} blob
- * @param {string} [draftId] unused — kept for call-site compatibility.
+ * @param {string} [clipId] the recording session's server-side clip id (see
+ *   newClipId) — lets runTranscribe try the cheaper already-uploaded-clip
+ *   path before falling back to a full upload. Omitted when retrying a
+ *   previously-failed clip, which has no clip id.
  * @returns {Promise<boolean>}
  */
-export async function transcribe(blob, draftId) {
-  if (activeTranscriptionPromise) return await activeTranscriptionPromise;
-  activeTranscriptionPromise = runTranscribe(blob);
+export async function transcribe(blob, clipId) {
+  const next = queueTail.catch(() => false).then(() => runTranscribe(blob, clipId));
+  queueTail = next;
+  activeTranscriptionPromise = next;
   try {
-    return await activeTranscriptionPromise;
+    return await next;
   } finally {
-    activeTranscriptionPromise = null;
+    if (activeTranscriptionPromise === next) activeTranscriptionPromise = null;
   }
 }
 
-/** @param {Blob} blob @returns {Promise<boolean>} */
-async function runTranscribe(blob) {
+/**
+ * @param {Blob} blob
+ * @param {string} [clipId]
+ * @returns {Promise<boolean>}
+ */
+async function runTranscribe(blob, clipId) {
   state.dictationBusy = true;
   state.dictating = false;
   state.dictationError = "";
   markDirty("composer");
-  const result = await postClip(blob);
-  if (result.ok) {
-    insertTranscript(result.text);
-    lastFailedClip = null;
-    state.dictationError = "";
-    state.dictationBars = flatBars();
-    state.dictationLevel = 0;
+
+  const { signal, settle } = requestSignal(TRANSCRIBE_TIMEOUT_MS);
+  try {
+    // Prefer the clip already streamed to the daemon during recording (no
+    // second upload of the audio); fall back to a full upload on ANY failure
+    // of that call (non-ok response or thrown, including our own abort/timeout).
+    if (clipId) {
+      const viaClip = await postClipTranscribe(clipId, blob?.type, signal);
+      if (viaClip.ok) {
+        insertTranscript(viaClip.text);
+        lastFailedClip = null;
+        state.dictationError = "";
+        state.dictationBars = flatBars();
+        state.dictationLevel = 0;
+        state.dictationBusy = false;
+        markDirty("composer");
+        return true;
+      }
+    }
+    const result = await postClip(blob, signal);
+    if (result.ok) {
+      insertTranscript(result.text);
+      lastFailedClip = null;
+      state.dictationError = "";
+      state.dictationBars = flatBars();
+      state.dictationLevel = 0;
+      state.dictationBusy = false;
+      markDirty("composer");
+      return true;
+    }
+    lastFailedClip = blob;
+    state.dictationError = result.error;
     state.dictationBusy = false;
     markDirty("composer");
-    return true;
+    return false;
+  } finally {
+    settle();
   }
-  lastFailedClip = blob;
-  state.dictationError = result.error;
-  state.dictationBusy = false;
-  markDirty("composer");
-  return false;
+}
+
+/**
+ * Ask the daemon to transcribe a clip it already has on disk (streamed there
+ * during recording, or recovered after a crash/reload) — no blob upload.
+ * @param {string} clipId
+ * @param {string} [mimeType] only sent for the just-recorded clip, whose MIME
+ *   the daemon otherwise can't know; recovered clips are transcribed without it.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{ok: boolean, text: string, engine: string, error: string}>}
+ */
+async function postClipTranscribe(clipId, mimeType, signal) {
+  const query = mimeType ? `?mime=${encodeURIComponent(mimeType)}` : "";
+  try {
+    const response = await fetch(`/api/voice/clip/${clipId}/transcribe${query}`, { method: "POST", signal });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, text: "", engine: "", error: String(data.error ?? `transcription failed: ${response.status}`) };
+    return { ok: true, text: String(data.text ?? ""), engine: String(data.engine ?? ""), error: "" };
+  } catch (error) {
+    return { ok: false, text: "", engine: "", error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
  * Raw network call — no state mutation.
  * @param {Blob} blob
+ * @param {AbortSignal} [signal]
  * @returns {Promise<{ok: boolean, text: string, error: string}>}
  */
-async function postClip(blob) {
+async function postClip(blob, signal) {
   try {
     // Not via api.js: the body is raw audio, not JSON, so the content-type
     // must be the clip's MIME.
@@ -227,6 +303,7 @@ async function postClip(blob) {
       method: "POST",
       headers: { "content-type": blob.type || "application/octet-stream" },
       body: blob,
+      signal,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return { ok: false, text: "", error: String(data.error ?? `transcription failed: ${response.status}`) };
@@ -236,6 +313,39 @@ async function postClip(blob) {
   } catch (error) {
     return { ok: false, text: "", error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * A timeout for one transcription attempt, backed by a real AbortController
+ * when available so abortActiveTranscription() (the composer's "cancel" chip)
+ * can reach in and abort whichever fetch is currently in flight — the busy
+ * state can span two sequential fetches (clip-transcribe try, then upload
+ * fallback), and both share this one controller/timer. Falls back to a
+ * plain timeout-only signal when AbortController isn't available.
+ * @param {number} ms
+ * @returns {{signal: AbortSignal|undefined, settle: () => void}}
+ */
+function requestSignal(ms) {
+  if (typeof AbortController === "undefined") return { signal: fetchTimeout(ms), settle: () => {} };
+  const controller = new AbortController();
+  activeAbortController = controller;
+  const timer = window.setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    settle: () => {
+      clearTimeout(timer);
+      if (activeAbortController === controller) activeAbortController = null;
+    },
+  };
+}
+
+/** Cancel whatever transcription attempt is currently in flight (the
+ * composer's "cancel" chip, shown while state.dictationBusy). The abort
+ * rejects the in-flight fetch, which flows into runTranscribe's existing
+ * failure/fallback handling exactly like a timeout or network error would —
+ * clearing busy and leaving a retry/discard chip behind. */
+export function abortActiveTranscription() {
+  activeAbortController?.abort();
 }
 
 /** Retry transcribing the clip that previously failed. @returns {Promise<boolean>} */
@@ -300,7 +410,7 @@ export async function finalizeDictationForSend() {
 }
 
 export function installDictationLifecycle() {
-  void refreshDictationDrafts();
+  void refreshRecoveredClips();
   window.addEventListener("pagehide", () => {
     if (!session) return;
     const current = session;
@@ -322,26 +432,75 @@ export function installDictationLifecycle() {
   });
 }
 
-/** No persistence layer anymore: always clears the (now-vestigial) drafts list. */
-export async function refreshDictationDrafts() {
-  if (state.dictationDrafts.length) {
-    state.dictationDrafts = [];
+/**
+ * Pull the list of clips the daemon still has on disk — streamed there by the
+ * fire-and-forget chunk uploads in ondataavailable, so this recovers clips
+ * left behind by a crash/reload with zero client-side storage. Surfaced as
+ * recovered-recording chips in the composer (see composer.js's
+ * DictationDraftChips). Silently no-ops on any fetch failure (offline, daemon
+ * restarting) — whatever drafts are already shown just stay as they are.
+ * @returns {Promise<void>}
+ */
+export async function refreshRecoveredClips() {
+  try {
+    const response = await fetch("/api/voice/clips");
+    if (!response.ok) return;
+    const data = await response.json().catch(() => ({}));
+    /** @type {{id?: unknown, bytes?: unknown, mtimeMs?: unknown}[]} */
+    const clips = Array.isArray(data.clips) ? data.clips : [];
+    const activeClipId = session?.clipId;
+    state.dictationDrafts = clips
+      .filter((clip) => typeof clip.id === "string" && clip.id !== activeClipId)
+      .map((clip) => ({ id: /** @type {string} */ (clip.id), bytes: Number(clip.bytes) || 0, mtimeMs: Number(clip.mtimeMs) || 0 }));
     markDirty("composer");
+  } catch {
+    // Offline / daemon restarting — keep whatever drafts were already shown.
   }
 }
 
-/** @returns {Promise<never[]>} */
-export async function listRecoveredDrafts() {
-  return [];
+/**
+ * Transcribe a clip the daemon recovered from a previous crash/reload — it
+ * already lives server-side, so this is a bare POST with no blob to upload.
+ * On success, inserts the transcript the same way a live recording does and
+ * drops the recovered entry; on failure the entry is NOT removed (it stays as
+ * a still-clickable chip — the failure just surfaces via state.dictationError).
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
+export async function transcribeRecoveredClip(id) {
+  const { signal, settle } = requestSignal(TRANSCRIBE_TIMEOUT_MS);
+  try {
+    const result = await postClipTranscribe(id, undefined, signal);
+    if (result.ok) {
+      insertTranscript(result.text);
+      state.dictationDrafts = state.dictationDrafts.filter((draft) => draft.id !== id);
+      markDirty("composer");
+      return true;
+    }
+    state.dictationError = result.error;
+    markDirty("composer");
+    return false;
+  } finally {
+    settle();
+  }
 }
 
-/** @param {string} id @returns {Promise<boolean>} */
-export async function transcribeRecoveredDraft(id) {
-  return false;
+/**
+ * Drop a recovered clip. The daemon archives the file rather than deleting it
+ * outright, so this is safe even if the DELETE call itself fails offline —
+ * the chip is removed from the composer either way.
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+export async function discardRecoveredClip(id) {
+  try {
+    await fetch(`/api/voice/clip/${id}`, { method: "DELETE" });
+  } catch {
+    // Offline — the server-side file just outlives this client's view of it.
+  }
+  state.dictationDrafts = state.dictationDrafts.filter((draft) => draft.id !== id);
+  markDirty("composer");
 }
-
-/** @param {string} id @returns {Promise<void>} */
-export async function discardRecoveredDraft(id) {}
 
 /**
  * Append the transcript to whatever is already in the composer (so dictation
