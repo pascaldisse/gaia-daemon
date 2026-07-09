@@ -6,7 +6,7 @@
 // (AGENTS.md §RULE #0).
 
 import { DEFAULTS } from "../core/config.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageLimits, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -239,19 +239,22 @@ export interface HarnessSpec {
    * Absent ⇒ sessions are not detectable a-priori; treated as present. */
   hasDurableSession?(rootDir: string, roomId: string, agentId: string): boolean;
   /** Fetch this harness's account-level usage limits (subscription session /
-   * weekly caps), or null when it can't say (no OAuth creds, API-key auth,
-   * offline). Data on the spec — the harness owns HOW it reaches its provider's
-   * usage endpoint; the daemon polls it uniformly and never learns which harness
-   * it is (same pattern as credentialProxy). Absent ⇒ reports no account usage.
-   * Account-level, so it takes no room/agent — one call describes the whole
-   * subscription. */
-  probeUsage?(): Promise<UsageLimits | null>;
+   * weekly caps). Returns a discriminated {@link UsageProbeResult}: `ok` with
+   * the limits, `none` when there is authoritatively nothing to show (no OAuth
+   * creds, API-key auth, no such concept), or `error` for a TRANSIENT failure
+   * (rate-limited, offline, token mid-rotation) that must NOT blank a healthy
+   * chip. Data on the spec — the harness owns HOW it reaches its provider's
+   * usage endpoint and how it classifies a failure; the daemon polls it
+   * uniformly and never learns which harness it is (same pattern as
+   * credentialProxy). Absent ⇒ reports no account usage. Account-level, so it
+   * takes no room/agent — one call describes the whole subscription. */
+  probeUsage?(): Promise<UsageProbeResult>;
 }
 
 /** Every registered harness's usage probe (skipping those without one), read
  * uniformly by the daemon's poll loop. No harness-id branch — each harness
  * declares its own probe as data on its spec. */
-export function usageProbes(): { harness: string; probe: () => Promise<UsageLimits | null> }[] {
+export function usageProbes(): { harness: string; probe: () => Promise<UsageProbeResult> }[] {
   return harnessSpecs()
     .filter((spec): spec is HarnessSpec & { probeUsage: NonNullable<HarnessSpec["probeUsage"]> } => typeof spec.probeUsage === "function")
     .map((spec) => ({ harness: spec.id, probe: () => spec.probeUsage() }));

@@ -36,6 +36,16 @@ interface RawAgentConfig {
   allowNestedSummon?: unknown;
   memory?: unknown;
   mcpServers?: unknown;
+  env?: unknown;
+}
+
+function parseEnvMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "string" || typeof v === "number") out[k] = String(v);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 // `harness` is canonical; older configs use `runtime`. Prefer harness, fall
@@ -272,6 +282,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     revealThinking: override.revealThinking !== undefined ? override.revealThinking : base.revealThinking,
     memory: override.memory !== undefined ? override.memory : base.memory,
     mcpServers: override.mcpServers !== undefined ? override.mcpServers : base.mcpServers,
+    env: override.env !== undefined ? override.env : base.env,
     // Trust is a GLOBAL-level decision: a workspace overlay (repo-shippable
     // .gaia/agents/<id>/agent.json) may only TIGHTEN it, never re-trust an
     // agent the global config marked untrusted — trust:false is never
@@ -347,6 +358,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       revealThinking: raw.revealThinking === true ? true : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
+      env: parseEnvMap(raw.env),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,
       projectPersonaDir: existsSync(projectPersonaDir) ? projectPersonaDir : undefined,

@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type UsageLimits, type UsageWindow, type Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type UsageProbeResult, type UsageWindow, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { scanSkillRoot } from "../domain/skills.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -1068,6 +1068,8 @@ export class ClaudeRuntime implements AgentRuntime {
     // Route Claude Code's Anthropic egress through the thinking shim when up (it
     // forwarded the prior ANTHROPIC_BASE_URL as its own upstream at start time).
     if (this.thinkingProxy) env.ANTHROPIC_BASE_URL = this.thinkingProxy.url;
+    // Per-agent env from agent.json (cost knobs like CLAUDE_CODE_MAX_CONTEXT_TOKENS).
+    if (this.agent.env) Object.assign(env, this.agent.env);
     return env;
   }
 
@@ -1140,9 +1142,12 @@ function discoverClaudeCommands(): NativeCommandDef[] {
 // per-turn tokens), so we read the OAuth token Claude Code stored (macOS
 // keychain, else ~/.claude/.credentials.json) and GET the account usage
 // endpoint directly. All of this is claude-specific knowledge that lives HERE;
-// the daemon only sees a normalized UsageLimits (RULE #0). Fail-soft: any
-// missing-creds / non-OAuth / offline / non-200 case returns null so the chip
-// simply hides rather than erroring.
+// the daemon only sees a normalized UsageProbeResult (RULE #0). We classify the
+// outcome so the daemon can react correctly: `none` for missing-creds / API-key
+// auth / a hard 4xx (authoritatively nothing to show → hide), but `error` for
+// rate-limits (429), 5xx, a token caught mid-rotation (401/403), or offline —
+// TRANSIENT states that must keep the last-known chip rather than blank it. The
+// endpoint rate-limits aggressively, so a 429 carries Retry-After up as backoff.
 
 const execFileAsync = promisify(execFile);
 const USAGE_ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
@@ -1217,14 +1222,27 @@ function usageSeverity(limit: RawLimit): UsageWindow["severity"] {
   return pct >= 95 ? "critical" : pct >= 80 ? "warning" : "normal";
 }
 
-async function probeClaudeUsage(): Promise<UsageLimits | null> {
+/** Parse a Retry-After header (delta-seconds or HTTP-date) into a backoff in ms.
+ * A 429 without the header still means "back off" — fall back to a minute so a
+ * rate-limited endpoint isn't hammered by the post-turn refresh. */
+function parseRetryAfterMs(res: Response): number {
+  const fallback = 60_000;
+  const raw = res.headers.get("retry-after");
+  if (!raw) return fallback;
+  const secs = Number(raw);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const when = Date.parse(raw);
+  if (Number.isFinite(when)) return Math.max(0, when - Date.now());
+  return fallback;
+}
+
+async function probeClaudeUsage(): Promise<UsageProbeResult> {
   const oauth = await readClaudeOauth();
-  if (!oauth?.accessToken) return null; // API-key auth or signed out — no subscription caps to show.
-  let payload: { limits?: RawLimit[] };
+  if (!oauth?.accessToken) return { status: "none" }; // API-key auth or signed out — no subscription caps to show.
+  let res: Response;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
-    let res: Response;
     try {
       res = await fetch(USAGE_ENDPOINT, {
         headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
@@ -1233,10 +1251,23 @@ async function probeClaudeUsage(): Promise<UsageLimits | null> {
     } finally {
       clearTimeout(timer);
     }
-    if (!res.ok) return null;
+  } catch {
+    return { status: "error" }; // offline / aborted / DNS — keep the last-known value, don't blank it.
+  }
+  if (!res.ok) {
+    // Rate-limited (429), provider hiccup (5xx), or a token caught mid-rotation
+    // (401/403) are TRANSIENT: keep the last-known chip and back off (honouring
+    // Retry-After) instead of hammering — the hammering is what earns the 429.
+    if (res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403) {
+      return { status: "error", retryAfterMs: parseRetryAfterMs(res) };
+    }
+    return { status: "none" }; // a hard 4xx (bad request/not found) — nothing to show.
+  }
+  let payload: { limits?: RawLimit[] };
+  try {
     payload = (await res.json()) as { limits?: RawLimit[] };
   } catch {
-    return null; // offline / aborted / unparseable — hide rather than error.
+    return { status: "error" }; // truncated/unparseable body — transient, keep last-known.
   }
   const limits = Array.isArray(payload.limits) ? payload.limits : [];
   // Report the session cap, the all-models weekly cap, and EVERY per-model
@@ -1259,12 +1290,15 @@ async function probeClaudeUsage(): Promise<UsageLimits | null> {
         ...(model ? { model } : {}),
       };
     });
-  if (windows.length === 0) return null;
+  if (windows.length === 0) return { status: "none" }; // authenticated but no caps reported — nothing to show.
   return {
-    harness: "claude",
-    ...(oauth.subscriptionType ? { plan: oauth.subscriptionType } : {}),
-    windows,
-    fetchedAt: new Date().toISOString(),
+    status: "ok",
+    usage: {
+      harness: "claude",
+      ...(oauth.subscriptionType ? { plan: oauth.subscriptionType } : {}),
+      windows,
+      fetchedAt: new Date().toISOString(),
+    },
   };
 }
 

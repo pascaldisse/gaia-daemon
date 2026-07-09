@@ -500,6 +500,11 @@ export interface AgentDef {
   memory?: MemoryConfigPatch;
   /** Per-agent MCP servers, merged over the workspace set (agent wins). */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Extra environment for the harness subprocess (agent wins over inherited
+   * process.env). The cost knobs live here: e.g. CLAUDE_CODE_MAX_CONTEXT_TOKENS
+   * caps the effective window so autocompact fires earlier and every turn
+   * re-reads a smaller context. */
+  env?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +654,19 @@ export interface UsageLimits {
   /** ISO 8601 instant this snapshot was fetched. */
   fetchedAt: string;
 }
+
+/** Outcome of one harness usage probe. The critical distinction is between an
+ * AUTHORITATIVE "nothing to show" (`none` — API-key auth, signed out, no such
+ * concept) and a TRANSIENT failure (`error` — rate-limited, offline, token
+ * mid-rotation). The daemon clears the chip on `none` but KEEPS the last-known
+ * value on `error`, so a passing 429/blip never blanks a healthy meter. `error`
+ * may carry a backoff hint (from a provider Retry-After) the daemon honours
+ * uniformly — the harness owns HOW it derives it; the daemon never branches on
+ * which harness it is. */
+export type UsageProbeResult =
+  | { status: "ok"; usage: UsageLimits }
+  | { status: "none" }
+  | { status: "error"; retryAfterMs?: number };
 
 // ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)

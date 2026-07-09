@@ -12,7 +12,7 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, UsageProbeResult, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor, usageProbes } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
@@ -105,6 +105,10 @@ export interface DaemonOptions {
 // debounced refresh.
 const USAGE_POLL_MS = 5 * 60_000;
 const USAGE_REFRESH_DEBOUNCE_MS = 4000;
+// A subscription meter moves slowly; never probe more than once per minute from
+// the per-turn refresh path (the slow poll and boot probe force through). This
+// is the second guard against 429s, alongside each probe's own Retry-After.
+const USAGE_MIN_INTERVAL_MS = 60_000;
 
 /** True when two usage snapshots differ in anything the UI shows (ignoring the
  * ever-changing fetchedAt stamp) — gates a redundant broadcast. */
@@ -112,6 +116,26 @@ function usageChanged(a: UsageLimits | null | undefined, b: UsageLimits | null):
   if (!a || !b) return (a ?? null) !== (b ?? null);
   const strip = (u: UsageLimits) => JSON.stringify({ plan: u.plan, windows: u.windows });
   return strip(a) !== strip(b);
+}
+
+/** What the daemon should do with one harness's probe outcome, given its cached
+ * value. Pure so the resilience is testable in isolation: the ONLY way a healthy
+ * chip gets cleared is an authoritative `none` — a transient `error` leaves the
+ * cache untouched (`set`/`clear` both absent) and merely parks the harness for a
+ * backoff. `broadcast` present ⇒ emit it (a `null` payload clears the chip);
+ * absent ⇒ nothing changed worth sending. */
+export function reduceUsageProbe(
+  prev: UsageLimits | undefined,
+  result: UsageProbeResult,
+): { set?: UsageLimits; clear?: true; cooldownMs?: number; broadcast?: UsageLimits | null } {
+  if (result.status === "ok") {
+    return usageChanged(prev, result.usage) ? { set: result.usage, broadcast: result.usage } : { set: result.usage };
+  }
+  if (result.status === "none") {
+    return prev ? { clear: true, broadcast: null } : {};
+  }
+  // Transient failure — keep the last-known value; back off if asked.
+  return result.retryAfterMs && result.retryAfterMs > 0 ? { cooldownMs: result.retryAfterMs } : {};
 }
 
 export interface SelectionPayload {
@@ -145,6 +169,13 @@ export class Daemon {
    * so a newly-connected client can be seeded immediately (see currentUsage).
    * Refreshed on a slow timer + after each turn; harness-agnostic. */
   private readonly usage = new Map<string, UsageLimits>();
+  /** Per-harness backoff floor: a probe that reports a transient failure (e.g. a
+   * 429 with Retry-After) parks that harness until this instant, so the poll
+   * loop stops hammering the very endpoint that rate-limited it. */
+  private readonly usageCooldown = new Map<string, number>();
+  /** When the last probe round actually ran — throttles the per-turn refresh so
+   * a busy multi-agent room doesn't fire a probe on every task-end. */
+  private lastUsageProbeAt = 0;
   private usagePollTimer: ReturnType<typeof setInterval> | undefined;
   private usageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   private usageRefreshing = false;
@@ -207,8 +238,8 @@ export class Daemon {
     // Account usage chip: one probe now, then a slow safety-net poll (post-turn
     // refreshes keep it live between ticks). Harness-agnostic — refreshUsage
     // asks every harness that declares a probe.
-    void this.refreshUsage();
-    this.usagePollTimer = setInterval(() => void this.refreshUsage(), USAGE_POLL_MS);
+    void this.refreshUsage(true);
+    this.usagePollTimer = setInterval(() => void this.refreshUsage(true), USAGE_POLL_MS);
     this.usagePollTimer.unref?.();
   }
 
@@ -231,25 +262,39 @@ export class Daemon {
 
   /** Poll every harness that declares a usage probe (RULE #0: no harness-id
    * branch — each declares its own probe as data on its spec) and broadcast any
-   * change. Fail-soft: a probe that throws or returns null clears that chip. */
-  async refreshUsage(): Promise<void> {
+   * change. Resilient by design: a probe reports `ok` (update), `none`
+   * (authoritatively clear), or `error` (TRANSIENT — keep the last-known value
+   * so a 429/blip never blanks a healthy chip). `error` may carry a backoff the
+   * we honour per-harness so we stop hammering the endpoint that rate-limited us.
+   * @param force bypass the per-turn min-interval throttle (boot + slow poll). */
+  async refreshUsage(force = false): Promise<void> {
     if (this.usageRefreshing) return;
+    if (!force && Date.now() - this.lastUsageProbeAt < USAGE_MIN_INTERVAL_MS) return;
     this.usageRefreshing = true;
+    this.lastUsageProbeAt = Date.now();
     try {
       await Promise.all(
         usageProbes().map(async ({ harness, probe }) => {
-          let usage: UsageLimits | null = null;
+          // Respect a prior transient failure's backoff: leave the cached value
+          // in place and skip the call entirely until the cooldown elapses.
+          if (Date.now() < (this.usageCooldown.get(harness) ?? 0)) return;
+          let result: UsageProbeResult;
           try {
-            usage = await probe();
+            result = await probe();
           } catch {
-            usage = null;
+            result = { status: "error" }; // a thrown probe is a transient failure, not a clear.
           }
-          const prev = this.usage.get(harness);
-          if (usage) this.usage.set(harness, usage);
-          else this.usage.delete(harness);
-          // Skip a redundant broadcast when nothing meaningful changed (the
-          // fetchedAt stamp always differs, so compare the payload sans it).
-          if (usageChanged(prev, usage)) this.broadcast({ type: "usage-limits", harness, usage });
+          const decision = reduceUsageProbe(this.usage.get(harness), result);
+          if (decision.set) this.usage.set(harness, decision.set);
+          if (decision.clear) this.usage.delete(harness);
+          // A definitive answer (ok/none) lifts any backoff; a transient error
+          // parks this harness so we stop hammering the endpoint that limited us.
+          if (result.status === "error") {
+            if (decision.cooldownMs) this.usageCooldown.set(harness, Date.now() + decision.cooldownMs);
+          } else {
+            this.usageCooldown.delete(harness);
+          }
+          if (decision.broadcast !== undefined) this.broadcast({ type: "usage-limits", harness, usage: decision.broadcast });
         }),
       );
     } finally {
