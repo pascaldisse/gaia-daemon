@@ -108,7 +108,7 @@ class FakeCodexClient implements CodexClient {
     }
 
     // turn/start and thread/compact/start each complete via a deferred
-    // notification (turn/completed, thread/compacted) — release the next sequence.
+    // notification sequence — release the next sequence.
     if (method === "turn/start" || method === "thread/compact/start") {
       this.emitNextSequence();
     }
@@ -427,11 +427,23 @@ test("CodexRuntime.compact resumes a cold (unattached) persisted thread before c
     fake2.addResponse("initialize", {});
     fake2.addResponse("thread/resume", { thread: { id: "th-persist" }, model: "gpt-5-codex", modelProvider: "openai" });
     fake2.addResponse("thread/compact/start", {});
-    fake2.addNotificationSequence({ method: "thread/compacted", params: { threadId: "th-persist" } });
+    fake2.addNotificationSequence(
+      { method: "turn/started", params: { threadId: "th-persist", turn: { id: "compact-turn", status: "inProgress" } } },
+      {
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "th-persist", tokenUsage: { last: { totalTokens: 512 }, modelContextWindow: 258400 } },
+      },
+      { method: "item/completed", params: { threadId: "th-persist", item: { type: "contextCompaction" } } },
+      { method: "turn/completed", params: { threadId: "th-persist", turn: { status: "completed" } } },
+    );
     const second = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake2 });
-    const result = await second.compact("default");
+    const progress: number[] = [];
+    const result = await second.compact("default", (update) => {
+      if (typeof update.outputTokens === "number") progress.push(update.outputTokens);
+    });
 
     assert.equal(result.compacted, true);
+    assert.deepEqual(progress, [512], "codex compaction streams the post-compact token count");
     assert.equal(fake2.requests.some((request) => request.method === "thread/resume"), true);
     const compactReq = fake2.requests.find((request) => request.method === "thread/compact/start");
     assert.equal((compactReq?.params as { threadId: string }).threadId, "th-persist");

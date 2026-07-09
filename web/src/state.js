@@ -16,6 +16,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").SanitizeProposal} SanitizeProposal */
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").ChatSearchHit} ChatSearchHit */
+/** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
 
 /**
  * @type {{
@@ -64,11 +65,13 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   addAgentError: string,
  *   usage: Record<string, import("./types.js").UsageLimits>,
  *   usagePopoverOpen: boolean,
+ *   usageRefreshing: boolean,
  *   bgTasksOpen: boolean,
  *   summonListOpen: boolean,
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   readMarks: Record<string, number>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
+ *   keepAwake: KeepAwakeCapability,
  * }}
  */
 export const state = {
@@ -152,11 +155,14 @@ export const state = {
   // "<workspaceId>::<roomId>". Persisted so unread survives a reload. A room
   // reads as unread when its lastActivity exceeds the mark captured while it
   // was last open (see syncReadMarks / roomUnread).
-  // Account usage limits per harness (subscription session/weekly caps),
-  // pushed by the daemon's `usage-limits` SSE event. Account-level, not tied to
-  // the open room; rendered as the status-bar usage chip + popover.
+  // Usage limits per subscription ACCOUNT ("anthropic", "openai"), pushed by
+  // the daemon's `usage-limits` SSE event (and re-seeded on every SSE connect
+  // from the daemon's disk-backed cache). Not tied to the open room; rendered
+  // as the status-bar usage chip + popover.
   usage: {},
   usagePopoverOpen: false,
+  // True while the popover's manual-refresh POST is in flight (disables the button).
+  usageRefreshing: false,
   bgTasksOpen: false,
   summonListOpen: false,
   // The sidebar's delete target: the last workspace/room the user clicked. The
@@ -170,6 +176,10 @@ export const state = {
   // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
   // not just the open one). The open workspace reads live from state.snapshot.
   workspaceRooms: {},
+  // "Keep laptop awake" (Global Settings ▸ General) — seeded by the app
+  // payload; `supported: false` until then so the checkbox stays hidden
+  // rather than flashing enabled on an unsupported platform.
+  keepAwake: { supported: false, enabled: true },
 };
 
 /** @param {string} workspaceId @param {string} roomId */

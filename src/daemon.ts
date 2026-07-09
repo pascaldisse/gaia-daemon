@@ -12,14 +12,15 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, Snapshot, UiEvent, UsageLimits, UsageProbeResult, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
-import { capabilitiesFor, type GaiaTool, harnessIdFor, usageProbes } from "./harness/spec.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
+import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
 import type { ConsolidateLlm } from "./services/consolidate.js";
@@ -41,6 +42,7 @@ import {
 import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
 import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
+import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -111,45 +113,6 @@ export interface DaemonOptions {
   log?: (message: string) => void;
 }
 
-// Usage limits change slowly (only your own turns spend, and windows reset on
-// their own clock the client counts down locally) — so the interval is just a
-// safety net for reset rollovers; the real freshness comes from the post-turn
-// debounced refresh.
-const USAGE_POLL_MS = 5 * 60_000;
-const USAGE_REFRESH_DEBOUNCE_MS = 4000;
-// A subscription meter moves slowly; never probe more than once per minute from
-// the per-turn refresh path (the slow poll and boot probe force through). This
-// is the second guard against 429s, alongside each probe's own Retry-After.
-const USAGE_MIN_INTERVAL_MS = 60_000;
-
-/** True when two usage snapshots differ in anything the UI shows (ignoring the
- * ever-changing fetchedAt stamp) — gates a redundant broadcast. */
-function usageChanged(a: UsageLimits | null | undefined, b: UsageLimits | null): boolean {
-  if (!a || !b) return (a ?? null) !== (b ?? null);
-  const strip = (u: UsageLimits) => JSON.stringify({ plan: u.plan, windows: u.windows });
-  return strip(a) !== strip(b);
-}
-
-/** What the daemon should do with one harness's probe outcome, given its cached
- * value. Pure so the resilience is testable in isolation: the ONLY way a healthy
- * chip gets cleared is an authoritative `none` — a transient `error` leaves the
- * cache untouched (`set`/`clear` both absent) and merely parks the harness for a
- * backoff. `broadcast` present ⇒ emit it (a `null` payload clears the chip);
- * absent ⇒ nothing changed worth sending. */
-export function reduceUsageProbe(
-  prev: UsageLimits | undefined,
-  result: UsageProbeResult,
-): { set?: UsageLimits; clear?: true; cooldownMs?: number; broadcast?: UsageLimits | null } {
-  if (result.status === "ok") {
-    return usageChanged(prev, result.usage) ? { set: result.usage, broadcast: result.usage } : { set: result.usage };
-  }
-  if (result.status === "none") {
-    return prev ? { clear: true, broadcast: null } : {};
-  }
-  // Transient failure — keep the last-known value; back off if asked.
-  return result.retryAfterMs && result.retryAfterMs > 0 ? { cooldownMs: result.retryAfterMs } : {};
-}
-
 export interface SelectionPayload {
   snapshot: Snapshot;
   workspaceFiles: EditableFileDescriptor[];
@@ -160,6 +123,8 @@ export class Daemon {
   readonly registry = new WorkspaceRegistry();
   readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
   readonly voiceStack = new VoiceStackManager(globalPaths.voiceLogsDir());
+  /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
+  private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });
   private readonly services = new Map<string, RoomService>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
@@ -177,20 +142,9 @@ export class Daemon {
   private readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly bus = new Bus<UiEvent>();
   private readonly pendingReloads = new Set<string>();
-  /** Latest account usage per harness (subscription session/weekly caps), cached
-   * so a newly-connected client can be seeded immediately (see currentUsage).
-   * Refreshed on a slow timer + after each turn; harness-agnostic. */
-  private readonly usage = new Map<string, UsageLimits>();
-  /** Per-harness backoff floor: a probe that reports a transient failure (e.g. a
-   * 429 with Retry-After) parks that harness until this instant, so the poll
-   * loop stops hammering the very endpoint that rate-limited it. */
-  private readonly usageCooldown = new Map<string, number>();
-  /** When the last probe round actually ran — throttles the per-turn refresh so
-   * a busy multi-agent room doesn't fire a probe on every task-end. */
-  private lastUsageProbeAt = 0;
-  private usagePollTimer: ReturnType<typeof setInterval> | undefined;
-  private usageRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  private usageRefreshing = false;
+  /** Subscription-usage meter (account-keyed, disk-cached, self-polling) —
+   * see services/usage-service.ts. The daemon only wires broadcast + lifecycle. */
+  private readonly usageService = new UsageService({ broadcast: (event) => this.broadcast(event) });
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
   private bridge: HarnessBridge | undefined;
   private scheduler: SchedulerService | undefined;
@@ -247,12 +201,18 @@ export class Daemon {
     }).catch(() => {});
     const cwd = resolve(this.options.cwd);
     if (existsSync(workspacePath(cwd))) await this.registry.add(cwd);
-    // Account usage chip: one probe now, then a slow safety-net poll (post-turn
-    // refreshes keep it live between ticks). Harness-agnostic — refreshUsage
-    // asks every harness that declares a probe.
-    void this.refreshUsage(true);
-    this.usagePollTimer = setInterval(() => void this.refreshUsage(true), USAGE_POLL_MS);
-    this.usagePollTimer.unref?.();
+    // Account usage chip: seed from the disk cache (a restart must NEVER blank
+    // it), then one probe now and a slow safety-net poll (post-turn refreshes
+    // keep it live between ticks). Harness-agnostic — the service asks every
+    // harness that declares usage accounts.
+    await this.usageService.start();
+    // Keep-awake: one-time migration off the old launchd agent, then apply the
+    // persisted setting (default on) so a fresh boot starts caffeinate without
+    // waiting for a settings-modal round trip. macOS-only; a no-op elsewhere.
+    await migrateLegacyLaunchdAgent({ log: (message) => this.log(message) }).catch((error) =>
+      this.log(`keep-awake: legacy launchd migration failed: ${error instanceof Error ? error.message : String(error)}`),
+    );
+    await this.keepAwakeManager.ensure(await readKeepAwakeSetting());
   }
 
   subscribe(listener: (event: UiEvent) => void): () => void {
@@ -263,74 +223,37 @@ export class Daemon {
     this.bus.emit(event);
   }
 
-  // --- account usage limits (harness-agnostic) ----------------------------------
+  // --- account usage limits (account-keyed; see services/usage-service.ts) ------
 
   /** Current cached usage as replayable events — used to seed a client the
    * moment it connects (SSE fan-out only carries events broadcast while it's
    * subscribed, so without this a fresh tab shows no chip until the next poll). */
   currentUsage(): Extract<UiEvent, { type: "usage-limits" }>[] {
-    return [...this.usage.entries()].map(([harness, usage]) => ({ type: "usage-limits", harness, usage }));
+    return this.usageService.currentUsage();
   }
 
-  /** Poll every harness that declares a usage probe (RULE #0: no harness-id
-   * branch — each declares its own probe as data on its spec) and broadcast any
-   * change. Resilient by design: a probe reports `ok` (update), `none`
-   * (authoritatively clear), or `error` (TRANSIENT — keep the last-known value
-   * so a 429/blip never blanks a healthy chip). `error` may carry a backoff the
-   * we honour per-harness so we stop hammering the endpoint that rate-limited us.
-   * @param force bypass the per-turn min-interval throttle (boot + slow poll). */
-  async refreshUsage(force = false): Promise<void> {
-    if (this.usageRefreshing) return;
-    if (!force && Date.now() - this.lastUsageProbeAt < USAGE_MIN_INTERVAL_MS) return;
-    this.usageRefreshing = true;
-    this.lastUsageProbeAt = Date.now();
-    try {
-      await Promise.all(
-        usageProbes().map(async ({ harness, probe }) => {
-          // Respect a prior transient failure's backoff: leave the cached value
-          // in place and skip the call entirely until the cooldown elapses.
-          if (Date.now() < (this.usageCooldown.get(harness) ?? 0)) return;
-          let result: UsageProbeResult;
-          try {
-            result = await probe();
-          } catch {
-            result = { status: "error" }; // a thrown probe is a transient failure, not a clear.
-          }
-          const decision = reduceUsageProbe(this.usage.get(harness), result);
-          if (decision.set) this.usage.set(harness, decision.set);
-          if (decision.clear) this.usage.delete(harness);
-          // A definitive answer (ok/none) lifts any backoff; a transient error
-          // parks this harness so we stop hammering the endpoint that limited us.
-          if (result.status === "error") {
-            if (decision.cooldownMs) this.usageCooldown.set(harness, Date.now() + decision.cooldownMs);
-          } else {
-            this.usageCooldown.delete(harness);
-          }
-          if (decision.broadcast !== undefined) this.broadcast({ type: "usage-limits", harness, usage: decision.broadcast });
-        }),
-      );
-    } finally {
-      this.usageRefreshing = false;
-    }
+  /** Current cached usage keyed by account — the manual-refresh endpoint's
+   * direct response. */
+  usageSnapshot(): Record<string, UsageLimits> {
+    return this.usageService.snapshot();
   }
 
-  /** Debounced usage refresh — a turn's token spend lands a few seconds after it
-   * ends, and rapid multi-agent turns coalesce into one probe. */
+  /** Probe every declared usage account now (the manual refresh button —
+   * bypasses throttle AND backoff: one human-paced attempt is what it promises). */
+  async refreshUsage(): Promise<void> {
+    await this.usageService.refresh({ force: true, manual: true });
+  }
+
   private scheduleUsageRefresh(): void {
-    if (this.usageRefreshTimer) return;
-    this.usageRefreshTimer = setTimeout(() => {
-      this.usageRefreshTimer = undefined;
-      void this.refreshUsage();
-    }, USAGE_REFRESH_DEBOUNCE_MS);
-    this.usageRefreshTimer.unref?.();
+    this.usageService.scheduleRefresh();
   }
 
   dispose(): void {
-    if (this.usagePollTimer) clearInterval(this.usagePollTimer);
-    if (this.usageRefreshTimer) clearTimeout(this.usageRefreshTimer);
+    this.usageService.dispose();
     this.scheduler?.dispose();
     this.ttsBridge?.stop();
     this.voiceStack.stop();
+    this.keepAwakeManager.dispose();
     this.embedSidecar.dispose();
     for (const service of this.services.values()) service.dispose();
     this.services.clear();
@@ -537,6 +460,24 @@ export class Daemon {
       .map((entry) => entry.name);
   }
 
+  /** Rename a room's display title without changing its durable id/path. */
+  async renameRoom(workspaceId: string, roomId: string, title: string): Promise<{ rooms: Snapshot["rooms"] }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    if (!isValidRoomId(roomId)) throw new Error("Invalid room id.");
+    if (!this.roomIdsOnDisk(record.path).includes(roomId)) throw new Error(`Room not found: ${roomId}`);
+
+    const service = await this.serviceFor(workspaceId, roomId);
+    await service.setTitle(title);
+
+    // Return/broadcast the room list relative to the currently viewed room, so
+    // renaming a background room never switches the user's active chat.
+    const current = await this.serviceFor(workspaceId);
+    const rooms = await current.listRooms();
+    this.broadcast({ type: "rooms", workspaceId, rooms });
+    return { rooms };
+  }
+
   /** Delete a room: dispose its live service, move its directory to the
    * workspace trash (reversible — never rm -rf), purge it from memory (index
    * rows + every agent's episodes), and reselect a neighbour so a room is always
@@ -654,6 +595,22 @@ export class Daemon {
     const snapshot = await rebuilt.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  // --- keep-awake (Global Settings ▸ General) ---------------------------------------
+
+  /** Current keep-awake capability/state — served in /api/app. */
+  async keepAwake(): Promise<KeepAwakeCapability> {
+    return keepAwakeCapability();
+  }
+
+  /** Toggle the setting: persist it, then apply it immediately (spawn/kill the
+   * caffeinate child). No-op capability-wise off macOS, but the preference
+   * still persists so it takes effect if the daemon later runs on a Mac. */
+  async setKeepAwake(enabled: boolean): Promise<KeepAwakeCapability> {
+    await writeKeepAwakeSetting(enabled);
+    await this.keepAwakeManager.ensure(enabled);
+    return this.keepAwake();
   }
 
   // --- settings hot-reload ----------------------------------------------------------
@@ -1061,6 +1018,7 @@ export class Daemon {
     workspaceFiles: EditableFileDescriptor[];
     voice: VoiceCallInfo | null;
     workspaceRooms: Record<string, Snapshot["rooms"]>;
+    keepAwake: KeepAwakeCapability;
   }> {
     const workspaces = await this.registry.list();
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
@@ -1088,6 +1046,7 @@ export class Daemon {
       workspaceFiles: current ? await this.files.listWorkspace(current) : [],
       voice: this.voiceFor(current),
       workspaceRooms,
+      keepAwake: await this.keepAwake(),
     };
   }
 }

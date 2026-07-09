@@ -18,9 +18,17 @@ function currentRoomId() {
   return state.snapshot?.room?.id;
 }
 
-/** New chat tab (prompts for a name — same as the "+" button). */
+/** New room in the current workspace (auto-named — no dialog). A tab *is* a
+ * room here, so this backs both "New Tab" (⌘T) and "New Room" (⌘⇧N) and the
+ * "+" button. */
 export function newTab() {
   void addRoom();
+}
+
+/** New incognito (memory-off) room in the current workspace — auto-named, no
+ * dialog. Backs "New Incognito Room" (⌥⌘⇧N) and ⌥-click on the "+" button. */
+export function newIncognitoRoom() {
+  void addRoom({ incognito: true });
 }
 
 /** New native window with the standard view (panels normal). Native only. */

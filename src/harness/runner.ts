@@ -116,7 +116,7 @@ export async function runAgentRunner(): Promise<void> {
         void runtime.abort();
         return;
       case "steer":
-        void (runtime.steer?.(command.roomId, command.message) ?? Promise.resolve(false))
+        void (runtime.steer?.(command.roomId, command.message, command.attachments) ?? Promise.resolve(false))
           .catch(() => false)
           .then((ok) => send({ type: "steer-result", ok }));
         return;

@@ -675,6 +675,7 @@ function SteerInline(steer) {
       h("time", { text: formatTime(steer.timestamp) }),
     ),
     h("pre", {}, LinkedText(stripLeadingRouteMentions(steer.text, steer.targets))),
+    steer.attachments?.length ? AttachmentGallery(steer.attachments) : null,
   );
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "gaia-daemon",
   "version": "2.0.0",
-  "description": "GAIA — local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
+  "description": "GAIA \u2014 local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
@@ -20,7 +20,14 @@
     "tauri:build": "node scripts/gaia-engine.mjs build",
     "tauri:build:cef": "GAIA_ENGINE=cef node scripts/gaia-engine.mjs build",
     "tauri:bundle:scratch": "node scripts/gaia-engine.mjs bundle",
-    "tauri:bundle:scratch:cef": "GAIA_ENGINE=cef node scripts/gaia-engine.mjs bundle"
+    "tauri:bundle:scratch:cef": "GAIA_ENGINE=cef node scripts/gaia-engine.mjs bundle",
+    "mobile:ios:init": "npm exec tauri -- ios init --ci",
+    "mobile:ios:dev": "node scripts/gaia-mobile.mjs ios-dev",
+    "mobile:ios:open": "node scripts/gaia-mobile.mjs ios-open",
+    "mobile:url": "node scripts/gaia-mobile.mjs url",
+    "tauri": "tauri",
+    "mobile:ios:sim": "node scripts/gaia-mobile.mjs ios-dev --simulator --device \"iPhone 17 Pro\"",
+    "mobile:ios:device": "node scripts/gaia-mobile.mjs device"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.80.3",
@@ -29,6 +36,7 @@
     "typebox": "^1.1.24"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.3.0",
     "tsx": "^4.20.6",
     "typescript": "^5.7.3"

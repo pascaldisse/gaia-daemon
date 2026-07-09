@@ -61,7 +61,7 @@ function renderTabs() {
       "div",
       { class: "tab-strip" },
       tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
-      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
+      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer" }),
     h("button", {
@@ -89,7 +89,7 @@ function Tab(room, number, isActive, wsId) {
     "div",
     {
       class: `tab ${isActive ? "active" : ""} ${room.running ? "running" : ""}`,
-      title: room.id,
+      title: room.title ? `${room.title} — ${room.id}` : room.id,
       onpointerdown: (event) => beginDrag(event, room.id, wsId),
       onpointermove: (event) => moveDrag(event),
       onpointerup: (event) => endDrag(event),

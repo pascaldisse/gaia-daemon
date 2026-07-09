@@ -3,10 +3,11 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
+import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { stopReadAloud } from "./readaloud.js";
-import { markDirty, registerRegion } from "./render.js";
+import { clearError, markDirty, registerRegion } from "./render.js";
 import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
@@ -63,7 +64,17 @@ function renderErrorBanner() {
   const banner = $("#error");
   if (!banner) return;
   banner.hidden = !state.error;
-  banner.textContent = state.error;
+  banner.replaceChildren(
+    h("span", { class: "error-text", text: state.error }),
+    h("button", {
+      class: "error-close",
+      type: "button",
+      title: "dismiss",
+      "aria-label": "dismiss error",
+      text: "✕",
+      onclick: () => clearError(),
+    }),
+  );
 }
 
 function renderStatusbar() {
@@ -76,8 +87,10 @@ function renderStatusbar() {
     const runningAgents = (snapshot.agents ?? []).filter((agent) => agent.status === "running" || agent.status === "compacting").length;
     const runningRooms = (snapshot.rooms ?? []).filter((room) => room.running).length;
     const running = runningAgents + runningRooms;
+    const activeRoom = snapshot.rooms?.find((room) => room.id === snapshot.room.id);
+    const activeRoomLabel = activeRoom?.title ?? snapshot.room.id;
     segs.push({ text: snapshot.workspace.rootDir.split("/").filter(Boolean).pop() ?? snapshot.workspace.id, cls: "seg-head", title: snapshot.workspace.rootDir });
-    segs.push({ text: `⊞ ${snapshot.room.id}`, cls: "seg-a", title: "active room" });
+    segs.push({ text: `⊞ ${activeRoomLabel}`, cls: "seg-a", title: `active room: ${snapshot.room.id}` });
     segs.push({ text: `${snapshot.rooms?.length ?? 0} rooms`, cls: "seg-b" });
     segs.push({
       text: running ? `● ${running} running` : "○ idle",
@@ -136,13 +149,68 @@ export function clockText() {
 }
 
 // ---------------------------------------------------------------------------
-// Account usage chip — the subscription session/weekly caps a harness reports
-// (Claude Code's `/usage`, but harness-agnostic: whatever declares a probe).
-// Compact in the bar; a click opens the full breakdown with bars.
+// Status bar visibility — a purely client-side display preference (mobile
+// always hides it via CSS regardless; this only gates the desktop bar).
+// Persisted so a reload keeps the choice; applied by toggling a class on #app
+// rather than a region re-render, so it takes effect instantly with no dirty
+// region plumbing (see settings.js for the toggle UI).
 
-/** @returns {import("./types.js").UsageWindow[]} every window across harnesses, session-first */
+const STATUSBAR_STORAGE_KEY = "gaia.statusbar";
+
+/** @returns {boolean} true unless the user has explicitly hidden it */
+export function statusbarVisible() {
+  try {
+    return localStorage.getItem(STATUSBAR_STORAGE_KEY) !== "hidden";
+  } catch {
+    return true;
+  }
+}
+
+/** @param {boolean} visible */
+function applyStatusbarVisibility(visible) {
+  const app = $("#app");
+  if (app) app.classList.toggle("statusbar-hidden", !visible);
+}
+
+/** @param {boolean} visible */
+export function setStatusbarVisible(visible) {
+  applyStatusbarVisibility(visible);
+  try {
+    localStorage.setItem(STATUSBAR_STORAGE_KEY, visible ? "shown" : "hidden");
+  } catch {
+    // private mode / storage disabled — the choice just won't persist.
+  }
+}
+
+// Restore before first paint so there is no flash of the status bar.
+export function initStatusbarPref() {
+  applyStatusbarVisibility(statusbarVisible());
+}
+
+// ---------------------------------------------------------------------------
+// Account usage chip — subscription session/weekly caps per ACCOUNT
+// ("anthropic", "openai"), fed by whatever harness can currently read that
+// account's credentials and cached on disk by the daemon so it survives
+// restarts and provider outages. Compact in the bar (scoped to the open room's
+// provider when it can tell); a click opens the full breakdown with bars, each
+// account stamped with when it was last pulled, plus a manual refresh.
+
+/** The cached usage groups relevant to the open room: accounts whose id
+ * prefixes one of the active model tokens ("anthropic/fable" → "anthropic",
+ * "openai-codex/gpt-5" → "openai"). No match — no room open, unknown provider —
+ * falls back to EVERY cached account: the chip must never blank while a cache
+ * exists just because we couldn't tell whose meter you're spending.
+ * @returns {import("./types.js").UsageLimits[]} */
+function visibleUsageGroups() {
+  const groups = Object.values(state.usage);
+  const tokens = activeRoomModelTokens();
+  const matched = groups.filter((limits) => tokens.some((token) => token.startsWith(limits.account.toLowerCase())));
+  return matched.length > 0 ? matched : groups;
+}
+
+/** @returns {import("./types.js").UsageWindow[]} every window across the visible accounts */
 function allUsageWindows() {
-  return Object.values(state.usage)
+  return visibleUsageGroups()
     .flatMap((limits) => limits.windows)
     .filter((win) => win && typeof win.percent === "number");
 }
@@ -356,20 +424,35 @@ function BgTasksPopover() {
   );
 }
 
+/** @type {number|null} */
+let usageAgeTimer = null;
+
 function renderUsagePopover() {
   const slot = $("#overlay-usage");
   if (!slot) return;
-  if (!state.usagePopoverOpen || visibleUsageWindows().length === 0) slot.replaceChildren();
-  else slot.replaceChildren(UsagePopover());
+  const shouldShow = state.usagePopoverOpen && Object.keys(state.usage).length > 0;
+  if (!shouldShow) {
+    slot.replaceChildren();
+    if (usageAgeTimer !== null) {
+      clearInterval(usageAgeTimer);
+      usageAgeTimer = null;
+    }
+    return;
+  }
+  if (usageAgeTimer === null) {
+    usageAgeTimer = window.setInterval(() => markDirty("usage"), 1000);
+  }
+  slot.replaceChildren(UsagePopover());
 }
 
 registerRegion("usage", renderUsagePopover);
 
 function UsagePopover() {
   const activeTokens = activeRoomModelTokens();
-  const groups = Object.values(state.usage)
-    .map((limits) => ({ ...limits, windows: limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens)) }))
-    .filter((limits) => limits.windows.length > 0);
+  const groups = Object.values(state.usage).map((limits) => {
+    const visible = limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens));
+    return { limits, windows: visible.length > 0 ? visible : limits.windows };
+  });
   return h(
     "div",
     {
@@ -386,18 +469,27 @@ function UsagePopover() {
         { class: "palette-head" },
         h("strong", { text: "usage" }),
         h("small", { text: "subscription limits · esc to close" }),
+        h("button", {
+          class: "usage-refresh",
+          type: "button",
+          title: "refresh from provider",
+          disabled: state.usageRefreshing,
+          text: state.usageRefreshing ? "…" : "↻",
+          onclick: () => void refreshUsageNow(),
+        }),
       ),
-      ...groups.map((limits) =>
+      ...groups.map(({ limits, windows }) =>
         h(
           "div",
           { class: "usage-group" },
           h(
             "div",
             { class: "usage-group-head" },
-            h("span", { class: "usage-harness", text: limits.harness }),
+            h("span", { class: "usage-harness", text: limits.account }),
             limits.plan ? h("span", { class: "usage-plan", text: limits.plan }) : null,
+            h("span", { class: "usage-age", text: formatAge(limits.fetchedAt) }),
           ),
-          ...limits.windows.map((win) =>
+          ...windows.map((win) =>
             h(
               "div",
               { class: "usage-row" },
@@ -415,6 +507,44 @@ function UsagePopover() {
       ),
     ),
   );
+}
+
+async function refreshUsageNow() {
+  if (state.usageRefreshing) return;
+  state.usageRefreshing = true;
+  markDirty("usage");
+  try {
+    const response = await api("/api/usage/refresh", { method: "POST" });
+    const accounts = /** @type {Record<string, import("./types.js").UsageLimits>} */ (response?.accounts ?? {});
+    for (const account of Object.keys(state.usage)) {
+      if (!(account in accounts)) delete state.usage[account];
+    }
+    for (const [account, limits] of Object.entries(accounts)) {
+      state.usage[account] = limits;
+    }
+  } catch {
+    // Keep the cached meter visible if the manual refresh endpoint/provider hiccups.
+  } finally {
+    state.usageRefreshing = false;
+    markDirty("status", "usage");
+  }
+}
+
+/** Relative fetch age for an account snapshot (empty when unknown).
+ * @param {string|undefined} iso */
+function formatAge(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  if (hours < 24) return `${hours}h ${remMin}m ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 /** Short room label for the now-playing chip (room ids can be long imports).

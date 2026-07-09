@@ -47,6 +47,13 @@ export function setError(error) {
   markDirty("status");
 }
 
+/** Dismiss the current error banner, if any. */
+export function clearError() {
+  if (!state.error) return;
+  state.error = "";
+  markDirty("status");
+}
+
 // ---------------------------------------------------------------------------
 // Static skeleton, mounted once. Regions render INTO these containers; the
 // transcript node in particular is never replaced, so its keyed per-event

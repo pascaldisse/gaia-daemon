@@ -231,9 +231,22 @@ export interface RoomState {
    * launch by the summon coordinator, derived data never config: absence means
    * trusted, and no workspace/agent setting can clear it. */
   summonUntrusted?: true;
+  /** Absolute path this room's turns use as their working directory (OS cwd +
+   * sandbox cwd) when it is NOT the workspace root — the git worktree a summon
+   * room was isolated into (collab.isolation "worktree"). Stamped ONCE at
+   * summon launch like summonUntrusted; absence = run at the workspace root.
+   * `.gaia/` is always addressed via the root (the runner child reads
+   * GAIA_RUNNER_WORKSPACE, never cwd), so a moved workDir never strands the
+   * room's transcript/state/memory. Validated against the filesystem on read:
+   * a vanished worktree degrades to the root instead of wedging the spawn. */
+  workDir?: string;
   /** Display name when the room id alone isn't it (e.g. an imported chat's
    * original title). */
   title?: string;
+  /** Provenance for mutable titles. Manual wins forever; auto/model titles may
+   * be refined only while they are still machine-owned. Absent covers legacy
+   * imported titles and old state files. */
+  titleSource?: "auto" | "model" | "manual";
   /** Set on rooms created by a history import (scripts/import-claude-export):
    * the original conversation's created_at. The sidebar groups these into a
    * collapsed archive section instead of the live rooms list. */
@@ -446,6 +459,21 @@ export interface SandboxConfig {
   credentialProxy?: boolean;
 }
 
+/** How concurrent rooms share the workspace repo (config `collab`).
+ * - `shared` (default): every room runs at the workspace root — one working
+ *   tree, one index; simultaneous agents can collide.
+ * - `worktree`: each summon room gets its own git worktree under
+ *   `.gaia/worktrees/<roomId>` on branch `<branchPrefix><roomId>` (shared
+ *   object store, isolated checkout + index). The path is stamped on the
+ *   room's durable state at launch (RoomState.workDir); merging back is the
+ *   humans'/agents' call — the daemon never auto-integrates.
+ * Only fields that DO something live here: no speculative knobs. */
+export interface CollabConfig {
+  isolation: "shared" | "worktree";
+  /** Branch namespace for room worktrees. Default "gaia/". */
+  branchPrefix: string;
+}
+
 /** Per-agent read-aloud TTS choice (agent.json `tts`): which registered engine
  * speaks this agent's messages, and the engine-specific voice to use. */
 export interface AgentTtsConfig {
@@ -518,6 +546,10 @@ export interface WorkspaceConfig {
   harness?: string;
   maxSummonsPerRoom?: number;
   sandbox?: SandboxConfig;
+  /** Multi-agent same-repo collaboration policy (.gaia/config.json `collab`).
+   * Optional like `sandbox`: absent = `shared` = today's one-working-tree
+   * behavior, byte-for-byte. */
+  collab?: CollabConfig;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HooksConfig;
   /** Context-gate: warn before a NEWLY-addressed agent loads a transcript above
@@ -550,6 +582,15 @@ export interface WorkspaceRecord {
   name: string;
   lastOpenedAt: string;
   isInitialized: boolean;
+}
+
+/** "Keep laptop awake while GAIA runs" — a daemon-managed (macOS-only)
+ * setting served in /api/app so the client can render the Global Settings
+ * checkbox and hide/disable it where the capability doesn't exist. */
+export interface KeepAwakeCapability {
+  /** false off-macOS: the setting is inert there (see services/keep-awake.ts). */
+  supported: boolean;
+  enabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -618,12 +659,14 @@ export interface EditableFileContent extends EditableFileDescriptor {
 }
 
 // ---------------------------------------------------------------------------
-// Account usage limits (a harness's subscription/rate caps — NOT per-room
-// context). Harness-agnostic: every harness that can report account usage maps
-// its provider's shape onto this one shape; the daemon polls each spec's
-// probeUsage() and the status bar renders the result uniformly, never learning
-// which harness produced it. The same standing applies to every room/agent on
-// that harness, so this is broadcast daemon-global, not per-room.
+// Account usage limits (a subscription account's session/weekly caps — NOT
+// per-room context). Keyed by ACCOUNT ("anthropic", "openai"), not by harness:
+// several harnesses can read the SAME subscription (claude and pi both hold
+// Anthropic OAuth), so each harness declares which accounts it can probe as
+// DATA on its spec (usageAccounts) and the daemon dedupes by account id —
+// one meter per subscription, uniform rendering, never a harness branch. The
+// same standing applies to every room/agent on that account, so this is
+// broadcast daemon-global, not per-room.
 
 export interface UsageWindow {
   /** Stable window id, e.g. "session" | "weekly_all" | "weekly_scoped". Only
@@ -645,8 +688,9 @@ export interface UsageWindow {
 }
 
 export interface UsageLimits {
-  /** Which harness reported this (display + client keying; never a branch). */
-  harness: string;
+  /** The subscription account this meters ("anthropic", "openai") — display +
+   * client keying; never a branch. */
+  account: string;
   /** Optional plan/account label, e.g. the subscription tier. */
   plan?: string;
   /** Windows to show, most-relevant first. */
@@ -655,14 +699,15 @@ export interface UsageLimits {
   fetchedAt: string;
 }
 
-/** Outcome of one harness usage probe. The critical distinction is between an
- * AUTHORITATIVE "nothing to show" (`none` — API-key auth, signed out, no such
- * concept) and a TRANSIENT failure (`error` — rate-limited, offline, token
- * mid-rotation). The daemon clears the chip on `none` but KEEPS the last-known
- * value on `error`, so a passing 429/blip never blanks a healthy meter. `error`
- * may carry a backoff hint (from a provider Retry-After) the daemon honours
- * uniformly — the harness owns HOW it derives it; the daemon never branches on
- * which harness it is. */
+/** Outcome of one usage probe candidate. The critical distinction is between
+ * an AUTHORITATIVE "nothing to show" (`none` — API-key auth, signed out, no
+ * such concept) and a TRANSIENT failure (`error` — rate-limited, offline,
+ * token mid-rotation, LOCKED KEYCHAIN). The daemon clears an account's chip
+ * only when EVERY candidate says `none`; any `error` keeps the last-known
+ * value, so a passing 429/blip/keychain hiccup never blanks a healthy meter.
+ * `error` may carry a backoff hint (from a provider Retry-After) the daemon
+ * honours uniformly — the harness owns HOW it derives it; the daemon never
+ * branches on which harness it is. */
 export type UsageProbeResult =
   | { status: "ok"; usage: UsageLimits }
   | { status: "none" }
@@ -942,10 +987,10 @@ export type UiEvent =
   // the running/unread dots rolled up onto every OTHER workspace in the list.
   | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] }
   // Daemon-global (NO workspaceId → fans out to EVERY connected client): one
-  // harness's account usage limits refreshed. Usage is account-level, not
-  // per-workspace/room. `usage: null` clears that harness's chip (probe failed,
-  // signed out, or API-key auth with no subscription caps).
-  | { type: "usage-limits"; harness: string; usage: UsageLimits | null };
+  // subscription account's usage limits refreshed. Usage is account-level, not
+  // per-workspace/room. `usage: null` clears that account's meter (every
+  // credential source authoritatively reports signed out / API-key auth).
+  | { type: "usage-limits"; account: string; usage: UsageLimits | null };
 
 // ---------------------------------------------------------------------------
 // Monad vocabulary (embedded in state.json → core, not a layer above)

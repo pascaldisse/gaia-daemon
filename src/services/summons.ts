@@ -44,6 +44,7 @@ export interface SummonResultDelivery {
 }
 
 import { normalizeRoomState } from "../domain/rooms.js";
+import { ensureRoomWorktree } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
@@ -255,6 +256,17 @@ export class SummonCoordinator implements SummonHost {
     // creation, immutable) so a daemon restart resumes the child's turn under
     // the SAME forced sandbox instead of quietly promoting it to trusted.
     if (untrusted) state.summonUntrusted = true;
+    // Worktree isolation (collab.isolation "worktree"): give the child room its
+    // own checkout so concurrent summons in one repo stop colliding on a single
+    // working tree/index. Stamped on durable state exactly like the trust tier:
+    // decided once at THIS choke point, read at child-service init, and a
+    // daemon restart resumes the room in the SAME checkout. Best-effort — a
+    // non-git workspace or a failed `worktree add` degrades to the root
+    // (ensureRoomWorktree returns undefined), never blocks the summon.
+    if (this.workspace.config.collab?.isolation === "worktree") {
+      const workDir = ensureRoomWorktree(this.workspace.rootDir, childRoomId, this.workspace.config.collab.branchPrefix);
+      if (workDir) state.workDir = workDir;
+    }
     if (options.deliver) {
       state.summon = {
         agentId,

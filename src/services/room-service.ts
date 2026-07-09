@@ -43,16 +43,16 @@ import type {
   UiEvent,
   Workspace,
 } from "../core/types.js";
-import { DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
+import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
-import { newRoomEventId, normalizeRoomState, RoomHandle } from "../domain/rooms.js";
+import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
-import { readOptional, renderRoomTranscript } from "../harness/prompt.js";
+import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
@@ -322,6 +322,7 @@ export class RoomService {
                 resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, this.isSummonRoom, {
                   trusted: effectiveTrust(agent, this.summonUntrusted),
                 }),
+              workDir: () => this.workDir,
             }),
       ]),
     );
@@ -340,6 +341,10 @@ export class RoomService {
   /** This room inherited the untrusted tier from its summon chain (see
    * RoomState.summonUntrusted) — feeds effectiveTrust for sandbox resolution. */
   private summonUntrusted = false;
+  /** This room's isolated working directory (RoomState.workDir — its git
+   * worktree under collab isolation), validated against the filesystem at init.
+   * undefined = run at the workspace root. Feeds the runtimes' workDir thunk. */
+  private workDir: string | undefined;
 
   get workspace(): Workspace {
     return this.options.workspace;
@@ -377,6 +382,9 @@ export class RoomService {
     const state = await this.room.state();
     this.isSummonRoom = Boolean(state.parentRoomId);
     this.summonUntrusted = state.summonUntrusted === true;
+    // A stamped worktree that vanished from disk (pruned by hand, trashed repo)
+    // degrades to the workspace root instead of wedging every spawn on a dead cwd.
+    this.workDir = state.workDir && existsSync(state.workDir) ? state.workDir : undefined;
     // Restore the per-agent context accounting so the composer's `ctx` chip is
     // present from first paint after a restart, not blank until the next turn.
     if (state.contextUsage) this.contextUsage = { ...state.contextUsage };
@@ -501,15 +509,16 @@ export class RoomService {
     // instead of queuing behind it. Queuing is the explicit opt-in
     // (options.queue, from the Cmd/Ctrl+Enter shortcut) or the fallback when
     // steering can't apply — the message is addressed to a different agent,
-    // several agents are running, the running harness can't inject, or the
-    // message carries attachments (steer is text-only). Uniform: gated on the
-    // runtime's supportsSteer, never a harness id.
+    // several agents are running, or the running harness can't inject.
+    // Attachments ride along as the uniform breadcrumb lines (the file is
+    // already on disk; see renderAttachmentLines), so a pasted screenshot
+    // steers exactly like plain text. Uniform: gated on the runtime's
+    // supportsSteer, never a harness id.
     let recordedSteerEventId: string | undefined;
     if (
       command.type === "message" &&
       !options.nativeCommand &&
       !options.queue &&
-      !options.attachments?.length &&
       this.activeAgentTurn &&
       this.activeAgentTurn.targets.length === 1
     ) {
@@ -517,7 +526,7 @@ export class RoomService {
       const runtime = this.runtimes[runner];
       const aimedAtRunner = targets.length > 0 && targets.every((id) => id === runner);
       if (aimedAtRunner && runtime?.capabilities.supportsSteer) {
-        const steered = await this.steerRunningTurn(runner, text, task);
+        const steered = await this.steerRunningTurn(runner, text, task, options.attachments);
         if (steered === true) return task;
         // The turn just ended under us: the guidance is ALREADY committed to
         // the transcript (persist-first). Fall through to the queue with the
@@ -910,7 +919,13 @@ export class RoomService {
         }
         userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments, eventId);
       }
-      if (userEvent) this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
+      if (userEvent) {
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
+        // Auto-named rooms take their display title from their first human
+        // message (never from a name dialog) — the Claude Code / Codex pattern.
+        // Agent-dialogue turns don't count as the human naming the room.
+        if (!options.fromAgentDialogue) await this.maybeAutoTitle(text);
+      }
       // Authoritative refresh right after the commit: this snapshot has the
       // queued ghost dropped AND the committed user event present, so it
       // reconciles the ghost→committed swap on the client even when this turn
@@ -1416,10 +1431,17 @@ export class RoomService {
    * renders the message inline right there, live and after commit), and the
    * steer task completes — the running turn's continued output IS the reply,
    * so there's no turn of its own. */
-  private async steerRunningTurn(target: string, text: string, task: Task): Promise<true | string> {
-    const event = await this.room.addUserMessage(text, [target]);
+  private async steerRunningTurn(target: string, text: string, task: Task, attachments?: MessageAttachment[]): Promise<true | string> {
+    const event = await this.room.addUserMessage(text, [target], undefined, attachments);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    const ok = (await this.runtimes[target]?.steer?.(this.roomId, text)) ?? false;
+    // Attachments travel two ways, uniformly: the same breadcrumb lines the turn
+    // prompt uses ride in the text (the file sits on disk at that path, openable
+    // by any harness's tools), AND the attachments are handed to the harness's
+    // steer() so one with a native mid-turn image channel additionally inlines
+    // the bytes (pi steer images, claude stream-json image blocks, codex
+    // localImage) — its own translation, no shared-code branch.
+    const steerText = attachments?.length ? `${text}\n\n${renderAttachmentLines(attachments)}` : text;
+    const ok = (await this.runtimes[target]?.steer?.(this.roomId, steerText, attachments)) ?? false;
     if (!ok) return event.id;
     // Best-effort marker — if the stream just closed, the standalone bubble
     // simply keeps the legacy placement.
@@ -1433,7 +1455,7 @@ export class RoomService {
   }
 
   /** /steer: inject guidance into the RUNNING turn (capability-gated data —
-   * pi session.steer, codex turn/steer; claude declines). The guidance is
+   * pi session.steer, codex turn/steer, claude stdin stream-json). The guidance is
    * recorded as a user event for history, but the running harness already
    * received it, and the commit cursor advances past it — so it is never
    * replayed as fresh context. */
@@ -2489,6 +2511,18 @@ export class RoomService {
     });
   }
 
+  /** Human rename. This is display metadata only: the durable room id/path stay
+   * unchanged, so transcripts, tabs, summons, and references don't break. */
+  async setTitle(rawTitle: string): Promise<void> {
+    const title = normalizeRoomTitle(rawTitle);
+    if (!title) throw new Error("Room title cannot be empty.");
+    await this.room.updateState((state) => {
+      state.title = title;
+      state.titleSource = "manual";
+    });
+    await this.emitRoomsChanged();
+  }
+
   /** The most recent reply text from an agent in this room (summon results). */
   async latestReplyFrom(agentId: string): Promise<string> {
     await this.init();
@@ -2683,13 +2717,63 @@ export class RoomService {
     }
   }
 
+  /** Give an auto-created room (a `chat-<slug>` id) a display title from its
+   * first human message. We do what Claude/Codex-style chat UIs effectively do:
+   * show a cheap local title immediately, then (best-effort) ask the same
+   * daemon LLM surface used for consolidation/compact to refine it into a short
+   * human label. Manual renames set `titleSource: manual`, and that state is the
+   * lock: background title jobs never overwrite it. */
+  private async maybeAutoTitle(text: string): Promise<void> {
+    if (this.incognito || !isAutoRoomId(this.roomId)) return;
+    const state = await this.room.state();
+    if (state.title || state.imported || state.titleSource === "manual") return;
+    const fallback = deriveRoomTitle(text);
+    if (!fallback) return;
+
+    await this.room.updateState((current) => {
+      if (!current.title && !current.imported && current.titleSource !== "manual") {
+        current.title = fallback;
+        current.titleSource = "auto";
+      }
+    });
+    await this.emitRoomsChanged();
+
+    if (this.options.llm) void this.refineAutoTitle(text, fallback);
+  }
+
+  private async refineAutoTitle(firstMessage: string, fallback: string): Promise<void> {
+    try {
+      const reply = await this.options.llm?.({
+        system:
+          "You name chat rooms. Return ONLY a concise title, 2-6 words, no quotes, no period. Preserve key project or product names. Do not mention the assistant.",
+        user: `First user message:
+${firstMessage}
+
+Title:`,
+        model: DEFAULTS.roomTitleModel,
+      });
+      const title = normalizeRoomTitle(reply ?? "");
+      if (!title || title === fallback) return;
+      let changed = false;
+      await this.room.updateState((current) => {
+        if (current.titleSource === "auto" && current.title === fallback && !current.imported) {
+          current.title = title;
+          current.titleSource = "model";
+          changed = true;
+        }
+      });
+      if (changed) await this.emitRoomsChanged();
+    } catch {
+      // A title is chrome, not turn durability. Keep the local fallback.
+    }
+  }
+
   private unknownAgentMessage(agentId: string): string {
     return `Unknown agent: @${agentId}\nAvailable agents: ${Object.keys(this.workspace.agents)
       .map((id) => `@${id}`)
       .join(", ")}`;
   }
 }
-
 
 /**
  * Disk-only scan of a workspace's rooms — the shared basis for both the sidebar

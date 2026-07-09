@@ -3,13 +3,39 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomHandle, newRoomEventId, normalizeRoomState } from "../src/domain/rooms.js";
+import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
 
 async function openRoom(): Promise<RoomHandle> {
   const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
   return RoomHandle.open(root, "default");
 }
+
+test("isAutoRoomId matches only the auto-created chat- prefix", () => {
+  assert.equal(isAutoRoomId("chat-lx9a2-4f0b"), true);
+  assert.equal(isAutoRoomId("chat-"), true);
+  assert.equal(isAutoRoomId("default"), false);
+  assert.equal(isAutoRoomId("incognito-lx9a2"), false);
+  assert.equal(isAutoRoomId("claude-20260421-first-chat"), false);
+});
+
+test("deriveRoomTitle distills a one-line, capped title from the first message", () => {
+  assert.equal(deriveRoomTitle("  fix the tab shortcut  "), "fix the tab shortcut");
+  assert.equal(deriveRoomTitle("@jareth fix the tab shortcut"), "fix the tab shortcut");
+  assert.equal(deriveRoomTitle("line one\nline two\nline three"), "line one");
+  assert.equal(deriveRoomTitle("   \n\t  "), ""); // whitespace-only → untitled
+  assert.equal(deriveRoomTitle(""), "");
+  const long = "a".repeat(80);
+  const title = deriveRoomTitle(long);
+  assert.equal(title.length, 48);
+  assert.ok(title.endsWith("…"));
+});
+
+test("normalizeRoomTitle cleans model/manual title proposals", () => {
+  assert.equal(normalizeRoomTitle('"Room rename UX."'), "Room rename UX");
+  assert.equal(normalizeRoomTitle("first line\nignored line"), "first line");
+  assert.equal(normalizeRoomTitle("   "), "");
+});
 
 test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   const state = normalizeRoomState({
@@ -288,12 +314,14 @@ test("normalizeRoomState: incognito flag survives the whitelist (only literal tr
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).incognito, undefined);
 });
 
-test("normalizeRoomState: title and imported survive the whitelist", () => {
-  const state = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "My chat", imported: "2026-04-21T00:00:00Z" });
+test("normalizeRoomState: title metadata and imported survive the whitelist", () => {
+  const state = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "My chat", titleSource: "manual", imported: "2026-04-21T00:00:00Z" });
   assert.equal(state.title, "My chat");
+  assert.equal(state.titleSource, "manual");
   assert.equal(state.imported, "2026-04-21T00:00:00Z");
-  const junk = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "   ", imported: 42 });
+  const junk = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "   ", titleSource: "weird", imported: 42 });
   assert.equal(junk.title, undefined);
+  assert.equal(junk.titleSource, undefined);
   assert.equal(junk.imported, undefined);
 });
 

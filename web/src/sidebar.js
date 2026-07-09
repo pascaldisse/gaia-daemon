@@ -2,7 +2,7 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.js";
+import { addRoom, addWorkspace, loadWorkspace, renameRoom, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
@@ -179,6 +179,7 @@ function RoomNode(room, childrenOf, depth) {
   const snapshot = state.snapshot;
   const focus = effectiveSidebarFocus();
   const focused = focus?.kind === "room" && focus.id === room.id;
+  const label = room.title ?? room.id;
   return h(
     "div",
     { class: "room-node" },
@@ -192,7 +193,7 @@ function RoomNode(room, childrenOf, depth) {
         "button",
         {
           class: `nav-item room-item ${room.isCurrent ? "active" : ""} ${focused ? "focused" : ""}`,
-          title: room.path,
+          title: `${label} — ${room.path}`,
           // Clicking makes this the delete target (the ⌘⌫ / Del chord acts on
           // it) and opens it. Re-clicking the current room just re-targets it.
           onclick: !snapshot
@@ -201,6 +202,12 @@ function RoomNode(room, childrenOf, depth) {
                 state.sidebarFocus = { kind: "room", id: room.id };
                 if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
                 else markDirty("sidebar");
+              },
+          ondblclick: !snapshot
+            ? null
+            : (/** @type {MouseEvent} */ event) => {
+                event.preventDefault();
+                void renameRoom(room.id, label);
               },
         },
         h(
@@ -214,7 +221,7 @@ function RoomNode(room, childrenOf, depth) {
               ? h("span", { class: "room-dot unread", title: "unread messages" })
               : null,
           room.incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null,
-          h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: room.title ?? room.id }),
+          h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),

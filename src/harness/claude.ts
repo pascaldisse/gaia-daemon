@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { loadNativeImages } from "../core/attachments.js";
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type UsageProbeResult, type UsageWindow, type Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type UsageProbeResult, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { scanSkillRoot } from "../domain/skills.js";
 import { GAIA_TOOLS } from "./tools.js";
@@ -29,6 +29,7 @@ import { ModelLabel } from "./model-label.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
+import { ANTHROPIC_USAGE_ACCOUNT, fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Process abstraction (injectable for tests)
@@ -43,6 +44,13 @@ export interface ClaudeProcessCallbacks {
   onError(error: Error): void;
 }
 
+/** stream-json user-message content: a bare prompt string, or the text-block +
+ * base64-image-block array the Agent SDK wire uses when a turn carries native
+ * images. Shared by the first turn (send) and mid-turn steer. */
+export type ClaudeUserContent =
+  | string
+  | Array<{ type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: string; data: string } }>;
+
 export interface ClaudeProcessHandle {
   /** Best-effort terminate (used by abort()). */
   kill(): void;
@@ -50,8 +58,9 @@ export interface ClaudeProcessHandle {
    * (backs steering). The CLI applies it at the next tool boundary — same as
    * typing while Claude Code works interactively. Returns false when stdin is
    * no longer writable (turn already finished). Present only on stream-json
-   * turns spawned with keepStdinOpen. */
-  steer?(text: string): boolean;
+   * turns spawned with keepStdinOpen. `content` is a bare string, or the same
+   * text+image block array a first turn uses when the steer carries images. */
+  steer?(content: ClaudeUserContent): boolean;
   /** Signal end-of-input (stdin EOF) so a keepStdinOpen turn's CLI finishes and
    * exits. Called once the turn's `result` has streamed. */
   endInput?(): void;
@@ -124,10 +133,10 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
     kill() {
       killProcessTree(proc);
     },
-    steer(text: string): boolean {
+    steer(content: ClaudeUserContent): boolean {
       const stdin = proc.stdin;
       if (!stdin || !stdin.writable || stdin.writableEnded) return false;
-      stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+      stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`);
       return true;
     },
     endInput(): void {
@@ -139,6 +148,21 @@ function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcessHandle 
 
 function claudeStartupError(error: unknown, stderr?: string): Error {
   return missingBinaryError("claude", "Claude Code", error, stderr);
+}
+
+/** Build stream-json user content for a turn or steer: the bare text when there
+ * are no native images, else a text block followed by base64 image blocks (the
+ * same wire the Agent SDK uses). Shared by send() and steer() so the mid-turn
+ * image path is identical to the first-turn one. */
+function claudeUserContent(text: string, images: { attachment: MessageAttachment; base64: string }[]): ClaudeUserContent {
+  if (images.length === 0) return text;
+  return [
+    { type: "text", text },
+    ...images.map(({ attachment, base64 }) => ({
+      type: "image" as const,
+      source: { type: "base64" as const, media_type: attachment.mime, data: base64 },
+    })),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -447,16 +471,7 @@ export class ClaudeRuntime implements AgentRuntime {
     const images = native ? [] : await loadNativeImages(input.attachments);
     const keepStdinOpen = !native;
     if (keepStdinOpen) args.push("--input-format", "stream-json");
-    const content =
-      images.length > 0
-        ? [
-            { type: "text", text: prompt },
-            ...images.map(({ attachment, base64 }) => ({
-              type: "image",
-              source: { type: "base64", media_type: attachment.mime, data: base64 },
-            })),
-          ]
-        : prompt;
+    const content = claudeUserContent(prompt, images);
     const stdinPayload = native ? prompt : `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 
     const channel = createEventChannel();
@@ -883,9 +898,9 @@ export class ClaudeRuntime implements AgentRuntime {
    * default). Writes an extra user message to the live turn's open stdin; the
    * CLI applies it at the next tool boundary. Resolves false when nothing is
    * streaming for this room or stdin already closed (turn just finished). */
-  async steer(roomId: string, message: string): Promise<boolean> {
+  async steer(roomId: string, message: string, attachments?: MessageAttachment[]): Promise<boolean> {
     if (roomId !== this.activeRoomId) return false;
-    const ok = this.active?.steer?.(message) ?? false;
+    const ok = this.active?.steer?.(claudeUserContent(message, await loadNativeImages(attachments))) ?? false;
     // Tell the streaming turn a steer landed so it keeps its channel open for
     // the injected message's continuation instead of ending on the next result.
     if (ok) this.onActiveSteer?.();
@@ -1140,28 +1155,31 @@ function discoverClaudeCommands(): NativeCommandDef[] {
 // Account usage probe — the same session/weekly caps Claude Code's `/usage`
 // renders. The subscription figures are NOT in the -p stream (that carries only
 // per-turn tokens), so we read the OAuth token Claude Code stored (macOS
-// keychain, else ~/.claude/.credentials.json) and GET the account usage
-// endpoint directly. All of this is claude-specific knowledge that lives HERE;
-// the daemon only sees a normalized UsageProbeResult (RULE #0). We classify the
-// outcome so the daemon can react correctly: `none` for missing-creds / API-key
-// auth / a hard 4xx (authoritatively nothing to show → hide), but `error` for
-// rate-limits (429), 5xx, a token caught mid-rotation (401/403), or offline —
-// TRANSIENT states that must keep the last-known chip rather than blank it. The
-// endpoint rate-limits aggressively, so a 429 carries Retry-After up as backoff.
+// keychain, else ~/.claude/.credentials.json) and hand it to the shared
+// Anthropic usage client. Only the CREDENTIAL READING is claude-specific and
+// lives here; provider knowledge is harness/usage.ts, and the daemon only sees
+// a normalized UsageProbeResult (RULE #0). Credential-read outcomes are
+// tri-state on purpose: `missing` (signed out / API-key auth — authoritatively
+// nothing to show) vs `transient` (a LOCKED keychain, an exec timeout, a torn
+// file — the login almost certainly still exists, so the meter must NOT be
+// cleared; report `error` and let the UsageService keep the last-known value
+// or fall through to another harness's copy of the same Anthropic account).
 
 const execFileAsync = promisify(execFile);
-const USAGE_ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
-const USAGE_TIMEOUT_MS = 6000;
 
 interface ClaudeOauth {
   accessToken?: string;
   subscriptionType?: string;
 }
 
+type OauthRead = { status: "ok"; oauth: ClaudeOauth } | { status: "missing" } | { status: "transient" };
+
 /** Read the Claude Code OAuth blob from wherever the CLI persisted it: the macOS
  * login keychain first (its default on darwin), then the plaintext credentials
- * file (Linux / older installs). Returns undefined when neither yields a token. */
-async function readClaudeOauth(): Promise<ClaudeOauth | undefined> {
+ * file (Linux / older installs). `missing` ONLY when every store authoritatively
+ * has no entry — any read that failed for an ambient reason makes the combined
+ * answer `transient`, because "I couldn't look" must never render as "signed out". */
+async function readClaudeOauth(): Promise<OauthRead> {
   const parse = (raw: string): ClaudeOauth | undefined => {
     try {
       const outer = JSON.parse(raw) as { claudeAiOauth?: ClaudeOauth } & ClaudeOauth;
@@ -1171,135 +1189,38 @@ async function readClaudeOauth(): Promise<ClaudeOauth | undefined> {
       return undefined;
     }
   };
+  let sawTransient = false;
   if (process.platform === "darwin") {
     try {
       const { stdout } = await execFileAsync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
         timeout: USAGE_TIMEOUT_MS,
       });
       const oauth = parse(stdout.trim());
-      if (oauth) return oauth;
-    } catch {
-      // No keychain entry (or locked) — fall through to the file.
+      if (oauth) return { status: "ok", oauth };
+      sawTransient = true; // entry exists but didn't parse — torn write, not signed-out.
+    } catch (err) {
+      // `security` exits 44 ("could not be found") when the item is absent —
+      // that alone is authoritative. Anything else (LOCKED keychain, denied
+      // access, timeout) is ambient: note it and still try the file.
+      const absent = (err as { code?: number | string }).code === 44 || /could not be found/i.test(String((err as Error).message ?? ""));
+      if (!absent) sawTransient = true;
     }
   }
   try {
-    return parse(readFileSync(realClaudeCredentials(), "utf8"));
-  } catch {
-    return undefined;
+    const oauth = parse(readFileSync(realClaudeCredentials(), "utf8"));
+    if (oauth) return { status: "ok", oauth };
+    sawTransient = true; // file exists but didn't parse — torn write, not signed-out.
+  } catch (err) {
+    if ((err as { code?: string }).code !== "ENOENT") sawTransient = true;
   }
-}
-
-/** One entry of the endpoint's normalized `limits[]`. */
-interface RawLimit {
-  kind?: string;
-  group?: string;
-  percent?: number;
-  severity?: string;
-  resets_at?: string;
-  is_active?: boolean;
-  scope?: { model?: { display_name?: string | null } | null } | null;
-}
-
-function usageLabel(limit: RawLimit): string {
-  switch (limit.kind) {
-    case "session":
-      return "Current session";
-    case "weekly_all":
-      return "Weekly · all models";
-    case "weekly_scoped": {
-      const model = limit.scope?.model?.display_name;
-      return model ? `Weekly · ${model}` : "Weekly · scoped";
-    }
-    default:
-      return limit.group === "weekly" ? "Weekly" : (limit.kind ?? "Usage");
-  }
-}
-
-/** Map the provider severity onto ours, deriving from percent when absent. */
-function usageSeverity(limit: RawLimit): UsageWindow["severity"] {
-  if (limit.severity === "critical" || limit.severity === "warning" || limit.severity === "normal") return limit.severity;
-  const pct = limit.percent ?? 0;
-  return pct >= 95 ? "critical" : pct >= 80 ? "warning" : "normal";
-}
-
-/** Parse a Retry-After header (delta-seconds or HTTP-date) into a backoff in ms.
- * A 429 without the header still means "back off" — fall back to a minute so a
- * rate-limited endpoint isn't hammered by the post-turn refresh. */
-function parseRetryAfterMs(res: Response): number {
-  const fallback = 60_000;
-  const raw = res.headers.get("retry-after");
-  if (!raw) return fallback;
-  const secs = Number(raw);
-  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
-  const when = Date.parse(raw);
-  if (Number.isFinite(when)) return Math.max(0, when - Date.now());
-  return fallback;
+  return sawTransient ? { status: "transient" } : { status: "missing" };
 }
 
 async function probeClaudeUsage(): Promise<UsageProbeResult> {
-  const oauth = await readClaudeOauth();
-  if (!oauth?.accessToken) return { status: "none" }; // API-key auth or signed out — no subscription caps to show.
-  let res: Response;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
-    try {
-      res = await fetch(USAGE_ENDPOINT, {
-        headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return { status: "error" }; // offline / aborted / DNS — keep the last-known value, don't blank it.
-  }
-  if (!res.ok) {
-    // Rate-limited (429), provider hiccup (5xx), or a token caught mid-rotation
-    // (401/403) are TRANSIENT: keep the last-known chip and back off (honouring
-    // Retry-After) instead of hammering — the hammering is what earns the 429.
-    if (res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403) {
-      return { status: "error", retryAfterMs: parseRetryAfterMs(res) };
-    }
-    return { status: "none" }; // a hard 4xx (bad request/not found) — nothing to show.
-  }
-  let payload: { limits?: RawLimit[] };
-  try {
-    payload = (await res.json()) as { limits?: RawLimit[] };
-  } catch {
-    return { status: "error" }; // truncated/unparseable body — transient, keep last-known.
-  }
-  const limits = Array.isArray(payload.limits) ? payload.limits : [];
-  // Report the session cap, the all-models weekly cap, and EVERY per-model
-  // weekly cap (each tagged with its model). The status bar defaults to the
-  // account-wide windows and reveals a per-model cap only when that model is
-  // active in the open room — that room-awareness is client-side, so the probe
-  // stays account-global and just hands over everything it knows.
-  const rank: Record<string, number> = { session: 0, weekly_all: 1, weekly_scoped: 2 };
-  const windows: UsageWindow[] = limits
-    .filter((limit) => limit.kind === "session" || limit.kind === "weekly_all" || limit.kind === "weekly_scoped")
-    .sort((a, b) => (rank[a.kind ?? ""] ?? 9) - (rank[b.kind ?? ""] ?? 9))
-    .map((limit) => {
-      const model = limit.kind === "weekly_scoped" ? limit.scope?.model?.display_name : undefined;
-      return {
-        kind: limit.kind ?? "usage",
-        label: usageLabel(limit),
-        percent: Math.max(0, Math.min(100, Math.round(limit.percent ?? 0))),
-        severity: usageSeverity(limit),
-        ...(typeof limit.resets_at === "string" ? { resetsAt: limit.resets_at } : {}),
-        ...(model ? { model } : {}),
-      };
-    });
-  if (windows.length === 0) return { status: "none" }; // authenticated but no caps reported — nothing to show.
-  return {
-    status: "ok",
-    usage: {
-      harness: "claude",
-      ...(oauth.subscriptionType ? { plan: oauth.subscriptionType } : {}),
-      windows,
-      fetchedAt: new Date().toISOString(),
-    },
-  };
+  const read = await readClaudeOauth();
+  if (read.status === "transient") return { status: "error" }; // couldn't look ≠ signed out — keep the last-known meter.
+  if (read.status === "missing" || !read.oauth.accessToken) return { status: "none" }; // API-key auth or signed out — no caps to show.
+  return fetchAnthropicUsage(read.oauth.accessToken, read.oauth.subscriptionType);
 }
 
 registerHarness({
@@ -1336,5 +1257,5 @@ registerHarness({
   // turn must write there to stay resumable); its stored credential file is
   // carved back to read-only inside that tree.
   sandboxPaths: { writable: ["~/.claude"], readonly: ["~/.claude/.credentials.json"] },
-  probeUsage: () => probeClaudeUsage(),
+  usageAccounts: () => [{ account: ANTHROPIC_USAGE_ACCOUNT, probe: probeClaudeUsage }],
 });

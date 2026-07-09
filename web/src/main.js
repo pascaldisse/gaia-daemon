@@ -2,7 +2,7 @@
 // plain browser JavaScript, typechecked via JSDoc (web2/tsconfig.json).
 import { loadApp, selectRoom } from "./actions.js";
 import { installAttention } from "./attention.js";
-import { adoptRoomTab, closeCurrent, dockBack, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
+import { adoptRoomTab, closeCurrent, dockBack, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { focusComposerFromBackground, initComposer, installComposerRouting } from "./composer.js";
 import { $ } from "./dom.js";
 import { installKeybindings } from "./keys.js";
@@ -10,7 +10,7 @@ import { installOpenModifierTracking } from "./links.js";
 import { launchIntent, onNativeEvent } from "./native.js";
 import { markDirty, mountApp } from "./render.js";
 import { recallLocation, state } from "./state.js";
-import { clockText } from "./statusbar.js";
+import { clockText, initStatusbarPref } from "./statusbar.js";
 import { initTheme } from "./themes.js";
 import { installVoiceLifecycle } from "./voice.js";
 import { installDictationLifecycle } from "./dictation.js";
@@ -24,8 +24,10 @@ import "./sidebar.js";
 import "./tabsbar.js";
 import "./transcript.js";
 
-// Restore the theme and pane widths before the first paint so there is no flash.
+// Restore the theme, status-bar visibility, and pane widths before the first
+// paint so there is no flash.
 initTheme();
+initStatusbarPref();
 restoreColumnWidths();
 
 mountApp();
@@ -57,11 +59,21 @@ void boot();
  * server's fallback workspace/room. A torn-off window is pinned to its own room
  * by the launch hash, so it skips the restore and lets applyLaunchIntent drive.
  */
+
+function isMobileViewport() {
+  return window.matchMedia?.("(max-width: 760px), (pointer: coarse)").matches ?? false;
+}
+
 async function boot() {
   const last = launchIntent().mode === "torn" ? null : recallLocation();
   await loadApp(last?.workspaceId);
   if (last && state.snapshot && state.snapshot.room.id !== last.roomId && state.snapshot.rooms.some((room) => room.id === last.roomId)) {
     await selectRoom(state.snapshot.workspace.id, last.roomId);
+  }
+  if (isMobileViewport()) {
+    state.sidebarCollapsed = true;
+    state.rightCollapsed = true;
+    markDirty("layout", "tabs");
   }
   await applyLaunchIntent();
 }
@@ -95,7 +107,11 @@ function installNativeBridge() {
   void onNativeEvent("gaia://menu", (event) => {
     switch (String(event.payload)) {
       case "new_tab":
+      case "new_room": // a tab is a room here; both create an auto-named room
         newTab();
+        break;
+      case "new_incognito_room":
+        newIncognitoRoom();
         break;
       case "close_tab":
         closeCurrent();

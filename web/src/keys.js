@@ -11,7 +11,7 @@
 //   mod+B  sessions sidebar            mod+Alt+B  room panel
 //   mod+K  search all chats            mod+F  search this chat
 //   Alt+T  theme palette   Alt+Shift+T  cycle theme   Esc  close overlays
-import { deleteRoom, deleteWorkspace } from "./actions.js";
+import { deleteRoom, deleteWorkspace, renameRoom } from "./actions.js";
 import { jumpTab, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
@@ -49,11 +49,11 @@ function isTypingTarget() {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
 }
 
-/** Block the sidebar delete chord while typing or with any modal/overlay up — a
+/** Block sidebar destructive/rename chords while typing or with any modal/overlay up — a
  * confirm/prompt dialog (`.modal-backdrop`), search, settings, the theme palette,
  * the Dario/usage/background-tasks popovers. Keeps it from double-firing into, or
  * deleting behind, an open dialog. */
-function sidebarDeleteBlocked() {
+function sidebarActionBlocked() {
   if (isTypingTarget()) return true;
   if (document.querySelector(".modal-backdrop")) return true;
   return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
@@ -114,12 +114,24 @@ export function installKeybindings() {
       // menu standard), so it runs in both the shell and a plain browser.
       // Suppressed while typing (⌘⌫ is "delete to line start" in a field) or with
       // any modal/overlay up, so it never fights an open dialog.
-      if (isDeleteChord(event) && !sidebarDeleteBlocked()) {
+      if (isDeleteChord(event) && !sidebarActionBlocked()) {
         const focus = effectiveSidebarFocus();
         if (focus) {
           event.preventDefault();
           if (focus.kind === "workspace") void deleteWorkspace(focus.id);
           else void deleteRoom(focus.id);
+          return;
+        }
+      }
+
+      // Rename the explicitly selected room with Enter. Double-clicking the row
+      // does the same thing (sidebar.js); no separate pencil button.
+      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !sidebarActionBlocked()) {
+        const focus = state.sidebarFocus;
+        if (focus?.kind === "room") {
+          const room = state.snapshot?.rooms.find((item) => item.id === focus.id);
+          event.preventDefault();
+          void renameRoom(focus.id, room?.title ?? room?.id ?? focus.id);
           return;
         }
       }

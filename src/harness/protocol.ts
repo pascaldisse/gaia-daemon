@@ -2,14 +2,14 @@
 // subprocess. One newline-delimited JSON object per line, both directions.
 // The runner is single-flight: at most one active turn per runner.
 
-import type { AgentEvent, CompactProgressUpdate } from "../core/types.js";
+import type { AgentEvent, CompactProgressUpdate, MessageAttachment } from "../core/types.js";
 import type { AgentInput } from "./spec.js";
 
 /** Daemon -> runner. */
 export type RunnerCommand =
   | { type: "turn"; input: AgentInput }
   | { type: "abort" }
-  | { type: "steer"; roomId: string; message: string }
+  | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
   | { type: "reset"; roomId: string }
   | { type: "dispose" };

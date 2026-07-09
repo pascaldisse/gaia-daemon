@@ -6,6 +6,9 @@ src/.bin/
 src-tauri/target/
 src-tauri/gen/
 
+# baked mobile daemon URL (contains a secret auth token) — file-driven bake input
+src-tauri/mobile-daemon-url.txt
+
 # dev tooling artifacts (tools/)
 tools/cdp/node_modules/
 tools/cdp/out/

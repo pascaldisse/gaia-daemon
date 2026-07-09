@@ -35,12 +35,17 @@ mod webkit {
     // LATER: the optional macOS Chromium enhancement (Phase 3). See
     // IMPLEMENTATION-PLAN.md and webview2-re/BUILD-SPEC.md.
 
+    #[cfg(desktop)]
     use std::net::{TcpStream, ToSocketAddrs};
-    use std::process::{Child, Command};
+    use std::process::Child;
+    #[cfg(desktop)]
+    use std::process::Command;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
+    #[cfg(desktop)]
     use std::time::{Duration, Instant};
 
+    #[cfg(desktop)]
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
     use tauri_plugin_notification::NotificationExt;
@@ -127,7 +132,9 @@ mod webkit {
             let is_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
             let is_web_origin = matches!(scheme.as_str(), "http" | "https");
             let decision = if is_loopback && is_web_origin {
-                eprintln!("[gaia-shell] granted WKWebView media-capture request for {scheme}://{host}");
+                eprintln!(
+                    "[gaia-shell] granted WKWebView media-capture request for {scheme}://{host}"
+                );
                 WKPermissionDecision::Grant
             } else {
                 eprintln!(
@@ -151,6 +158,58 @@ mod webkit {
     #[cfg(not(target_os = "macos"))]
     fn install_media_capture_permission_handler(_window: &tauri::WebviewWindow) {}
 
+    // iOS WKWebView layout viewport: wry 0.55.1 never sets
+    // WKWebView.scrollView.contentInsetAdjustmentBehavior, so UIKit leaves it at
+    // .automatic. Even with viewport-fit=cover in the page's viewport meta, that
+    // default shrinks the layout viewport by the safe-area insets (e.g. 728pt
+    // instead of the true 812pt on an iPhone 13 mini), leaving a dead band of
+    // page background below the composer. Force .never so JS gets the real
+    // device height; the CSS already adds env(safe-area-inset-*) padding back.
+    #[cfg(target_os = "ios")]
+    mod ios_scroll_insets {
+        use objc2::runtime::AnyObject;
+        use objc2::msg_send;
+
+        /// UIScrollView.ContentInsetAdjustmentBehavior.never
+        const CONTENT_INSET_ADJUSTMENT_NEVER: i64 = 2;
+
+        pub fn disable_content_inset_adjustment(wk_webview: *mut std::ffi::c_void) {
+            if wk_webview.is_null() {
+                eprintln!("[gaia-shell] iOS scroll-inset hook skipped: null WKWebView");
+                return;
+            }
+
+            unsafe {
+                let webview = wk_webview.cast::<AnyObject>();
+                let scroll_view: *mut AnyObject = msg_send![&*webview, scrollView];
+                if scroll_view.is_null() {
+                    eprintln!("[gaia-shell] iOS scroll-inset hook skipped: no scrollView");
+                    return;
+                }
+
+                let _: () = msg_send![
+                    &*scroll_view,
+                    setContentInsetAdjustmentBehavior: CONTENT_INSET_ADJUSTMENT_NEVER
+                ];
+                eprintln!(
+                    "[gaia-shell] set UIScrollView.contentInsetAdjustmentBehavior = .never"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn install_ios_scroll_inset_fix(window: &tauri::WebviewWindow) {
+        if let Err(e) = window.with_webview(|webview| {
+            ios_scroll_insets::disable_content_inset_adjustment(webview.inner());
+        }) {
+            eprintln!("[gaia-shell] failed to access WKWebView for scroll-inset fix: {e}");
+        }
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    fn install_ios_scroll_inset_fix(_window: &tauri::WebviewWindow) {}
+
     /// Monotonic label source for spawned windows (`win-1`, `win-2`, …). The initial
     /// window is always `main`; every window opened at runtime gets a fresh label.
     static WINDOW_SEQ: AtomicU32 = AtomicU32::new(1);
@@ -167,9 +226,42 @@ mod webkit {
             .unwrap_or(DEFAULT_PORT)
     }
 
+    fn env_url(name: &str) -> Option<String> {
+        std::env::var(name).ok().and_then(|url| {
+            let trimmed = url.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
+
+    #[cfg(mobile)]
+    fn compile_time_url(name: &str) -> Option<String> {
+        let raw = match name {
+            "GAIA_SHELL_URL" => option_env!("GAIA_SHELL_URL"),
+            "GAIA_MOBILE_DAEMON_URL" => option_env!("GAIA_MOBILE_DAEMON_URL"),
+            _ => None,
+        }?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
     fn resolve_url() -> String {
-        if let Ok(url) = std::env::var("GAIA_SHELL_URL") {
-            if !url.trim().is_empty() {
+        if let Some(url) = env_url("GAIA_SHELL_URL") {
+            return url;
+        }
+        #[cfg(mobile)]
+        {
+            if let Some(url) = env_url("GAIA_MOBILE_DAEMON_URL")
+                .or_else(|| compile_time_url("GAIA_MOBILE_DAEMON_URL"))
+                .or_else(|| compile_time_url("GAIA_SHELL_URL"))
+            {
                 return url;
             }
         }
@@ -177,6 +269,7 @@ mod webkit {
     }
 
     /// Is something accepting TCP connections on 127.0.0.1:port?
+    #[cfg(desktop)]
     fn port_alive(port: u16) -> bool {
         let addr = match ("127.0.0.1", port).to_socket_addrs() {
             Ok(mut it) => match it.next() {
@@ -193,6 +286,7 @@ mod webkit {
     /// `<repo>/src-tauri`; the daemon lives one level up). This lets a double-clicked
     /// app find `package.json` + `node_modules` without any runtime path guessing.
     /// Override with GAIA_SHELL_SPAWN_DIR to point at a different checkout.
+    #[cfg(desktop)]
     fn spawn_dir() -> String {
         if let Ok(dir) = std::env::var("GAIA_SHELL_SPAWN_DIR") {
             if !dir.trim().is_empty() {
@@ -208,49 +302,59 @@ mod webkit {
     /// serving the port, so it can never compete with a dev/room daemon that is
     /// already up. Set GAIA_SHELL_AUTOSTART=0 to disable spawning entirely.
     fn maybe_spawn_daemon(port: u16) -> Option<Child> {
-        match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
-            Ok("0") | Ok("false") | Ok("off") => return None,
-            _ => {}
-        }
-        if port_alive(port) {
-            // A daemon is already up — attach, do not compete with it.
+        #[cfg(mobile)]
+        {
+            let _ = port;
             return None;
         }
 
-        let cmd = std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "npm run dev".to_string());
-        let dir = spawn_dir();
-        // Run through a LOGIN shell: a Finder-launched .app inherits only the bare
-        // GUI PATH, so `node`/`npm` (nvm/homebrew) are not visible to a plain `sh
-        // -c`. `$SHELL -lc` sources the user's profile and restores them.
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        eprintln!("[gaia-shell] :{port} is dead; spawning daemon: `{cmd}` (cwd {dir})");
-
-        let child = Command::new(&shell)
-            .arg("-lc")
-            .arg(&cmd)
-            .current_dir(&dir)
-            .env("GAIA_PORT", port.to_string())
-            .spawn();
-
-        let child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[gaia-shell] failed to spawn daemon: {e}");
+        #[cfg(desktop)]
+        {
+            match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
+                Ok("0") | Ok("false") | Ok("off") => return None,
+                _ => {}
+            }
+            if port_alive(port) {
+                // A daemon is already up — attach, do not compete with it.
                 return None;
             }
-        };
 
-        // Wait (up to ~30s) for the daemon to start listening.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if port_alive(port) {
-                eprintln!("[gaia-shell] daemon is up on :{port}");
-                return Some(child);
+            let cmd =
+                std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "npm run dev".to_string());
+            let dir = spawn_dir();
+            // Run through a LOGIN shell: a Finder-launched .app inherits only the bare
+            // GUI PATH, so `node`/`npm` (nvm/homebrew) are not visible to a plain `sh
+            // -c`. `$SHELL -lc` sources the user's profile and restores them.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+            eprintln!("[gaia-shell] :{port} is dead; spawning daemon: `{cmd}` (cwd {dir})");
+
+            let child = Command::new(&shell)
+                .arg("-lc")
+                .arg(&cmd)
+                .current_dir(&dir)
+                .env("GAIA_PORT", port.to_string())
+                .spawn();
+
+            let child = match child {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[gaia-shell] failed to spawn daemon: {e}");
+                    return None;
+                }
+            };
+
+            // Wait (up to ~30s) for the daemon to start listening.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                if port_alive(port) {
+                    eprintln!("[gaia-shell] daemon is up on :{port}");
+                    return Some(child);
+                }
+                std::thread::sleep(Duration::from_millis(250));
             }
-            std::thread::sleep(Duration::from_millis(250));
+            eprintln!("[gaia-shell] daemon did not come up within timeout; loading anyway");
+            Some(child)
         }
-        eprintln!("[gaia-shell] daemon did not come up within timeout; loading anyway");
-        Some(child)
     }
 
     /// Build the URL for a spawned window: the same localhost UI the main window
@@ -336,6 +440,7 @@ mod webkit {
     /// whichever GAIA window exists (main preferred); a windowless app is a silent
     /// no-op. Called from the web bridge's `setDockBadge`.
     #[tauri::command]
+    #[cfg(desktop)]
     fn set_badge(app: tauri::AppHandle, count: i64) -> Result<(), String> {
         let window = app
             .get_webview_window("main")
@@ -345,6 +450,12 @@ mod webkit {
         };
         let value = if count > 0 { Some(count) } else { None };
         window.set_badge_count(value).map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
+    #[cfg(mobile)]
+    fn set_badge(_app: tauri::AppHandle, _count: i64) -> Result<(), String> {
+        Ok(())
     }
 
     /// Post a native OS notification (Notification Center banner) when an agent
@@ -363,6 +474,7 @@ mod webkit {
 
     /// The currently focused GAIA window (main or a spawned one), so a menu action
     /// applies to the window the user is actually looking at.
+    #[cfg(desktop)]
     fn focused_webview(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         app.webview_windows()
             .into_values()
@@ -374,6 +486,7 @@ mod webkit {
     /// actions (New/Close Window) are handled in the shell; the rest are forwarded to
     /// the focused webview as `gaia://menu` so the web UI performs them. The Edit
     /// submenu keeps the system copy/paste/undo working.
+    #[cfg(desktop)]
     fn build_and_set_menu(handle: &tauri::AppHandle) -> tauri::Result<()> {
         let app_menu = SubmenuBuilder::new(handle, "GAIA")
             .about(Some(AboutMetadata::default()))
@@ -388,6 +501,13 @@ mod webkit {
         let new_tab = MenuItemBuilder::with_id("new_tab", "New Tab")
             .accelerator("CmdOrCtrl+T")
             .build(handle)?;
+        let new_room = MenuItemBuilder::with_id("new_room", "New Room")
+            .accelerator("CmdOrCtrl+Shift+N")
+            .build(handle)?;
+        let new_incognito_room =
+            MenuItemBuilder::with_id("new_incognito_room", "New Incognito Room")
+                .accelerator("CmdOrCtrl+Alt+Shift+N")
+                .build(handle)?;
         let new_window = MenuItemBuilder::with_id("new_window", "New Window")
             .accelerator("CmdOrCtrl+N")
             .build(handle)?;
@@ -399,6 +519,8 @@ mod webkit {
             .build(handle)?;
         let file_menu = SubmenuBuilder::new(handle, "File")
             .item(&new_tab)
+            .item(&new_room)
+            .item(&new_incognito_room)
             .item(&new_window)
             .separator()
             .item(&close_tab)
@@ -462,6 +584,7 @@ mod webkit {
 
     /// Route a native-menu click. New/Close Window act on native windows directly;
     /// everything else is forwarded to the focused webview for the web UI to run.
+    #[cfg(desktop)]
     fn handle_menu(app: &tauri::AppHandle, id: &str) {
         match id {
             "new_window" => {
@@ -488,11 +611,20 @@ mod webkit {
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
-        tauri::Builder::default()
+        let builder = tauri::Builder::default()
             .plugin(tauri_plugin_notification::init())
             .manage(SpawnedDaemon(Mutex::new(None)))
-            .invoke_handler(tauri::generate_handler![open_window, redock, set_badge, notify])
-            .on_menu_event(|app, event| handle_menu(app, event.id().0.as_str()))
+            .invoke_handler(tauri::generate_handler![
+                open_window,
+                redock,
+                set_badge,
+                notify
+            ]);
+
+        #[cfg(desktop)]
+        let builder = builder.on_menu_event(|app, event| handle_menu(app, event.id().0.as_str()));
+
+        builder
             .setup(|app| {
                 let port = resolve_port();
                 let url = resolve_url();
@@ -500,6 +632,7 @@ mod webkit {
                 // Native menu: standard macOS chords for the window/tab chrome, plus a
                 // working Edit menu (copy/paste). Best-effort — a menu failure must not
                 // stop the window from opening.
+                #[cfg(desktop)]
                 if let Err(e) = build_and_set_menu(app.handle()) {
                     eprintln!("[gaia-shell] menu setup failed: {e}");
                 }
@@ -515,16 +648,30 @@ mod webkit {
                     .parse()
                     .unwrap_or_else(|e| panic!("invalid GAIA shell URL `{url}`: {e}"));
 
-                let main_window =
+                #[allow(unused_mut)]
+                let mut main_window_builder =
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(external))
                         .title("GAIA")
+                        // See open_window: needed for the tab strip's HTML5 drag-and-drop.
+                        .disable_drag_drop_handler();
+
+                // Desktop gets an explicit window size. On iOS/Android a fixed
+                // inner_size becomes the WKWebView's frame, so the page lays out
+                // at that CSS width (1180px here) and `width=device-width` never
+                // resolves to real device points — the whole UI renders far too
+                // wide and the screen shows only the left slice. Mobile must let
+                // the webview fill the device screen.
+                #[cfg(desktop)]
+                {
+                    main_window_builder = main_window_builder
                         .inner_size(1180.0, 820.0)
                         .min_inner_size(720.0, 480.0)
-                        // See open_window: needed for the tab strip's HTML5 drag-and-drop.
-                        .disable_drag_drop_handler()
-                        .resizable(true)
-                        .build()?;
+                        .resizable(true);
+                }
+
+                let main_window = main_window_builder.build()?;
                 install_media_capture_permission_handler(&main_window);
+                install_ios_scroll_inset_fix(&main_window);
 
                 Ok(())
             })

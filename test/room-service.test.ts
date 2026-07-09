@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AGENT_DIALOGUE_MAX_HOPS, RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
 import { RoomHandle } from "../src/domain/rooms.js";
 import { MemoryStore } from "../src/domain/memory.js";
+import { DEFAULTS } from "../src/core/config.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
 import type { AgentDef, AgentEvent, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
@@ -64,16 +65,19 @@ async function makeService(options: {
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
+  /** Room id to open (default "default"). */
+  roomId?: string;
   /** Seed the room's state.json as incognito before RoomService.open reads it. */
   incognito?: boolean;
   /** Tool ids granted to every test agent (default none). */
   tools?: string[];
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
-  await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
+  const roomId = options.roomId ?? "default";
+  await mkdir(join(root, ".gaia", "rooms", roomId), { recursive: true });
   await writeFile(join(root, ".gaia", "config.json"), "{}", "utf8");
   if (options.incognito) {
-    await writeFile(workspacePaths.roomState(root, "default"), JSON.stringify({ activeRoles: {}, agentCursors: {}, incognito: true }), "utf8");
+    await writeFile(workspacePaths.roomState(root, roomId), JSON.stringify({ activeRoles: {}, agentCursors: {}, incognito: true }), "utf8");
   }
 
   const agentIds = options.agents ?? ["gaia", "terry"];
@@ -85,7 +89,7 @@ async function makeService(options: {
     agentsOverrideDir: join(root, ".gaia", "agents"),
     roomsDir: join(root, ".gaia", "rooms"),
     globalAgentsDir: join(root, "agents"),
-    config: { defaultAgent: "gaia", room: "default", transcriptWindow: 20, ...options.config },
+    config: { defaultAgent: "gaia", room: roomId, transcriptWindow: 20, ...options.config },
     contextFiles: [],
     agents,
   };
@@ -95,6 +99,7 @@ async function makeService(options: {
   const service = await RoomService.open({
     workspaceId: "ws1",
     workspace,
+    roomId,
     memoryStore: new MemoryStore(),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.settingsChanged ? { settingsChanged: options.settingsChanged } : {}),
@@ -142,6 +147,45 @@ test("a plain message routes to the default agent and commits a detailed reply",
   // Streaming deltas carried the reserved eventId that the commit used.
   const delta = events.find((event) => event.type === "text-delta") as { eventId?: string } | undefined;
   assert.equal(delta?.eventId, reply["id" as keyof typeof reply]);
+});
+
+test("auto-created rooms get a fallback title and manual rename locks it", async () => {
+  const { service, root } = await makeService({ roomId: "chat-test123" });
+  await service.sendMessage("@gaia fix room naming and renames");
+  await service.waitForIdle();
+
+  let state = await RoomHandle.open(root, "chat-test123").then((room) => room.state());
+  assert.equal(state.title, "fix room naming and renames");
+  assert.equal(state.titleSource, "auto");
+
+  await service.setTitle('"Readable room titles."');
+  state = await RoomHandle.open(root, "chat-test123").then((room) => room.state());
+  assert.equal(state.title, "Readable room titles");
+  assert.equal(state.titleSource, "manual");
+});
+
+test("auto title refinement uses the cheap DeepSeek flash model", async () => {
+  const calls: Parameters<ConsolidateLlm>[0][] = [];
+  const { service, root } = await makeService({
+    roomId: "chat-title-flash",
+    llm: async (input) => {
+      calls.push(input);
+      return "Room Rename Controls";
+    },
+  });
+  await service.sendMessage("no remove rename btn, double click is enough");
+  await service.waitForIdle();
+
+  let state = await RoomHandle.open(root, "chat-title-flash").then((room) => room.state());
+  for (let i = 0; i < 20 && state.titleSource !== "model"; i += 1) {
+    await sleep(10);
+    state = await RoomHandle.open(root, "chat-title-flash").then((room) => room.state());
+  }
+
+  assert.equal(calls[0]?.model?.provider, DEFAULTS.roomTitleModel.provider);
+  assert.equal(calls[0]?.model?.name, DEFAULTS.roomTitleModel.name);
+  assert.equal(state.title, "Room Rename Controls");
+  assert.equal(state.titleSource, "model");
 });
 
 test("@mentions route to multiple agents in order; unknown mentions fail at send time", async () => {
@@ -898,6 +942,49 @@ test("steer-by-default: a plain message to the busy agent injects; @other and qu
     transcript.some((event) => event.text === "also check the logs" && event.author === "user"),
     "steered message recorded for history",
   );
+});
+
+test("steer-by-default: a message WITH attachments steers too — breadcrumb lines ride the steer text", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const steerCalls: string[] = [];
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: true },
+    async *send() {
+      await gate;
+      yield { type: "text-delta", delta: "done" } as AgentEvent;
+    },
+    async steer(_roomId: string, message: string) {
+      steerCalls.push(message);
+      return true;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service, root } = await makeService({ agents: ["gaia"], runtimeFactory: factory });
+
+  await service.sendMessage("start a long task"); // gaia now running (gated open)
+
+  const attachment = { name: "shot.png", mime: "image/png", size: 2048, path: "/tmp/shot.png" };
+  const steered = await service.sendMessage("look at this", { attachments: [attachment] });
+  assert.equal(steered.status, "complete", "attachment message steers instead of queueing");
+  assert.equal(steerCalls.length, 1);
+  assert.match(steerCalls[0], /^look at this\n\n\[attached file: shot\.png \(image\/png, 2 kB\) at \/tmp\/shot\.png\]$/, "breadcrumb line rides the steer text");
+
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
+  assert.equal(state.queue?.length ?? 0, 0, "nothing fell to the durable queue");
+
+  release();
+  await service.waitForIdle();
+
+  // The committed user event carries the attachments (chips render after commit).
+  const { events: transcript } = await service.room.eventsFrom(0);
+  const event = transcript.find((candidate) => candidate.text === "look at this" && candidate.author === "user");
+  assert.ok(event, "steered message recorded for history");
+  assert.equal((event as { attachments?: unknown[] }).attachments?.length, 1, "attachments committed on the user event");
 });
 
 test("a mid-turn steer pins its position in the reply's committed ordered blocks", async () => {

@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { env } from "../core/env.js";
 import { workspacePaths } from "../core/paths.js";
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
@@ -122,6 +122,13 @@ export interface RunnerHostOptions {
   allowSummon: () => boolean;
   /** Resolved lazily at spawn, so the caller can read room state (summon?) first. */
   sandbox: () => SandboxPolicy;
+  /** Where the child RUNS (OS cwd + sandbox cwd): the room's isolated git
+   * worktree when collab stamped one (RoomState.workDir), else the workspace
+   * root. Lazy like sandbox — read from room state at spawn. This moves ONLY
+   * the working directory: `.gaia/` stays addressed via RUNNER_ENV
+   * workspacePath/roomDir (absolute, root-anchored), so state/transcript/
+   * memory never follow the checkout. */
+  workDir?: () => string | undefined;
   /** Test seam: override the argv launched (default is `gaia __run-agent`). */
   runnerArgv?: string[];
   /** Launch breaker keyed by target; defaults to the daemon-wide shared one. */
@@ -243,7 +250,7 @@ export class RunnerHost implements AgentRuntime {
 
   /** Forward /steer to the runner; resolves with the harness's answer (false
    * when no child, no support, or no reply within the timeout). */
-  async steer(roomId: string, message: string): Promise<boolean> {
+  async steer(roomId: string, message: string, attachments?: MessageAttachment[]): Promise<boolean> {
     if (!this.child || !this.capabilities.supportsSteer) return false;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -256,7 +263,7 @@ export class RunnerHost implements AgentRuntime {
         this.steerWaiter = undefined;
         resolve(ok);
       };
-      this.write({ type: "steer", roomId, message });
+      this.write({ type: "steer", roomId, message, ...(attachments?.length ? { attachments } : {}) });
     });
   }
 
@@ -414,10 +421,20 @@ export class RunnerHost implements AgentRuntime {
     // store read-only inside it) — HarnessSpec.sandboxPaths, data on the spec,
     // threaded here with zero knowledge of which harness declared it.
     const sandboxPaths = harnessSpecFor(this.options.harness).sandboxPaths;
+    // The child's working directory: the room's git worktree when collab
+    // isolation stamped one, else the workspace root — identical for the OS
+    // spawn and the sandbox profile (the sandbox's writable cwd IS where the
+    // agent works). With a worktree cwd, the room's scratch under the root's
+    // .gaia/rooms/<id> is no longer inside cwd, so it gets its writable grant
+    // explicitly; the governance carves below still win (applied last).
+    const workDir = this.options.workDir?.() ?? this.options.workspace.rootDir;
     let launch;
     try {
-      launch = await resolveSandboxLaunch(policy, argv, this.options.workspace.rootDir, {
-        writable: (sandboxPaths?.writable ?? []).map(expandHome),
+      launch = await resolveSandboxLaunch(policy, argv, workDir, {
+        writable: [
+          ...(sandboxPaths?.writable ?? []).map(expandHome),
+          ...(workDir !== this.options.workspace.rootDir ? [workspacePaths.roomDir(this.options.workspace.rootDir, roomId)] : []),
+        ],
         readonly: [
           this.options.workspace.configPath,
           this.options.workspace.agentsOverrideDir,
@@ -440,7 +457,7 @@ export class RunnerHost implements AgentRuntime {
     const handle = spawnLineReader({
       command: launch.command,
       args: launch.args,
-      cwd: this.options.workspace.rootDir,
+      cwd: workDir,
       env: this.buildEnv(roomId, launchCtx),
       onLine: (line) => this.onMessage(line),
     });
@@ -618,6 +635,9 @@ export interface CreateAgentRuntimeOptions {
   allowSummon?: () => boolean;
   /** Resolved lazily at spawn so the caller can read room state (summon?) first. */
   sandbox?: () => SandboxPolicy;
+  /** Lazy working directory for the child (RoomState.workDir — the room's git
+   * worktree under collab isolation). Absent/undefined = the workspace root. */
+  workDir?: () => string | undefined;
   /** Test seam: override the argv launched (default is `gaia __run-agent`). */
   runnerArgv?: string[];
   /** Launch breaker override (tests); defaults to the daemon-wide shared one. */
@@ -640,6 +660,7 @@ export function createAgentRuntime(options: CreateAgentRuntimeOptions): AgentRun
     harnessHost: options.harnessHost,
     allowSummon: options.allowSummon ?? (() => true),
     sandbox: options.sandbox ?? (() => ({ enabled: false, backend: "none" })),
+    workDir: options.workDir,
     runnerArgv: options.runnerArgv,
     breaker: options.breaker,
   });

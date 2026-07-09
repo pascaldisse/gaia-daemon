@@ -26,6 +26,49 @@ export function newRoomEventId(): string {
   return newId("evt");
 }
 
+/** Rooms created by the "new room" UI get an opaque `chat-<slug>` id (see
+ * newAutoRoomId in web/src/actions.js) and take their display title from their
+ * first human message — so a room is never named by hand, the way a Claude Code
+ * or Codex session titles itself from its opening prompt. This prefix is the
+ * one signal that scopes that auto-title behaviour to freshly created rooms and
+ * leaves existing / imported / hand-named rooms untouched. */
+export const AUTO_ROOM_PREFIX = "chat-";
+
+export function isAutoRoomId(roomId: string): boolean {
+  return roomId.startsWith(AUTO_ROOM_PREFIX);
+}
+
+export type RoomTitleSource = "auto" | "model" | "manual";
+
+export const ROOM_TITLE_MAX = 48;
+
+/** Normalize a user/model-proposed room title: one line, no wrapping quotes or
+ * terminal sentence punctuation, capped for sidebar/tab use. Empty means
+ * unusable. */
+export function normalizeRoomTitle(text: string): string {
+  let title = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? "";
+  title = title
+    .replace(/^```(?:\w+)?\s*/, "")
+    .replace(/```$/, "")
+    .replace(/^[\s"'`“”‘’]+|[\s"'`“”‘’]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?;:,]+$/g, "")
+    .trim();
+  if (!title) return "";
+  return title.length > ROOM_TITLE_MAX ? `${title.slice(0, ROOM_TITLE_MAX - 1).trimEnd()}…` : title;
+}
+
+/** A one-line fallback display title distilled from a room's first message:
+ * strip leading @mentions, collapse whitespace, cap. Empty (→ leave the room
+ * untitled) when the message carries no usable text. */
+export function deriveRoomTitle(text: string): string {
+  return normalizeRoomTitle(text.replace(/^(?:@[A-Za-z0-9_-]+\s+)+/, ""));
+}
+
 // --- state normalization (accepts every v1 shape) ---------------------------
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -268,7 +311,9 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
     ...(summon ? { summon } : {}),
     ...(value.summonUntrusted === true ? { summonUntrusted: true } : {}),
+    ...(typeof value.workDir === "string" && value.workDir.trim() ? { workDir: value.workDir } : {}),
     ...(typeof value.title === "string" && value.title.trim() ? { title: value.title } : {}),
+    ...(value.titleSource === "auto" || value.titleSource === "model" || value.titleSource === "manual" ? { titleSource: value.titleSource } : {}),
     ...(typeof value.imported === "string" && value.imported.trim() ? { imported: value.imported } : {}),
     ...(monad ? { monad } : {}),
     ...(pendingTurn ? { pendingTurn } : {}),

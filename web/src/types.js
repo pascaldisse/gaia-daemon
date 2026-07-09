@@ -25,6 +25,7 @@
 /** @typedef {import("../../src/core/types.js").UsageLimits} UsageLimits */
 /** @typedef {import("../../src/core/types.js").UsageWindow} UsageWindow */
 /** @typedef {import("../../src/core/types.js").WorkspaceRecord} WorkspaceRecord */
+/** @typedef {import("../../src/core/types.js").KeepAwakeCapability} KeepAwakeCapability */
 /** @typedef {import("../../src/core/types.js").EditableFileDescriptor} FileDescriptor */
 /** @typedef {import("../../src/core/types.js").FieldHintOption} FieldHintOption */
 /** @typedef {import("../../src/core/types.js").FieldHint} FieldHint */
@@ -56,6 +57,8 @@
  * @property {Record<string, RoomSummary[]>} [workspaceRooms] per-workspace room
  *   activity (running/last-activity), seeding the sidebar's workspace-level dots
  *   so activity in a workspace you're not viewing is still visible.
+ * @property {KeepAwakeCapability} [keepAwake] "keep laptop awake" — daemon-managed,
+ *   macOS-only (see services/keep-awake.ts). `supported` false elsewhere.
  */
 
 /**

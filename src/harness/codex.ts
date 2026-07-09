@@ -10,7 +10,10 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type McpServerConfig, type Workspace } from "../core/types.js";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type McpServerConfig, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
@@ -31,6 +34,7 @@ import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 import { buildPiTools } from "./tools.js";
+import { fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Internal JSON-RPC client abstraction (injectable for tests)
@@ -599,15 +603,21 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  /** Inject guidance into the room's running turn via turn/steer. */
-  async steer(roomId: string, message: string): Promise<boolean> {
+  /** Inject guidance into the room's running turn via turn/steer. Pasted images
+   * ride as localImage input items — the same shape turn/start uses (the
+   * app-server reads the paths itself); non-image files stay path breadcrumbs
+   * in the message text. */
+  async steer(roomId: string, message: string, attachments?: MessageAttachment[]): Promise<boolean> {
     const thread = this.threads.get(roomId);
     if (!this.client || !this.activeTurn || !thread || this.activeTurn.threadId !== thread.threadId) return false;
     try {
       await this.client.request("turn/steer", {
         threadId: this.activeTurn.threadId,
         expectedTurnId: this.activeTurn.turnId,
-        input: [{ type: "text", text: message, text_elements: [] }],
+        input: [
+          { type: "text", text: message, text_elements: [] },
+          ...nativeImageAttachments(attachments).map((file) => ({ type: "localImage", path: file.path })),
+        ],
       });
       return true;
     } catch {
@@ -616,16 +626,18 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   /** Native codex compaction (backs /compact): thread/compact/start returns
-   * `{}` immediately; completion is the thread/compacted notification. Runs
-   * only between turns (room-service gates on an idle room), so temporarily
-   * owning the notification handler is safe — the next send() replaces it.
+   * `{}` immediately; completion is the compact turn settling. Codex 0.142.x
+   * emits this as an `item/completed` for `contextCompaction` followed by
+   * `turn/completed` (older builds may still emit `thread/compacted`). Runs only
+   * between turns (room-service gates on an idle room), so temporarily owning
+   * the notification handler is safe — the next send() replaces it.
    *
-   * CompactResult.summary is legitimately ABSENT here: the app-server's
-   * thread/compacted notification carries only the threadId — codex never
-   * exposes its summary text on the wire (0.142.2) — and the shared layer
-   * degrades gracefully by storing none (see CompactResult in core/types.ts).
-   * This is the documented can't-expose case, not a wire-it-later gap. */
-  async compact(roomId: string): Promise<CompactResult> {
+   * CompactResult.summary is legitimately ABSENT here: the app-server's compact
+   * notifications do not expose the summary text on the wire, and the shared
+   * layer degrades gracefully by storing none (see CompactResult in
+   * core/types.ts). This is the documented can't-expose case, not a
+   * wire-it-later gap. */
+  async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     // The persisted thread lives on disk (SessionMap hydrates from the store), so
     // a cold app-server — daemon restart, idle-disposed or freshly-spawned runner
     // — has NOT attached it yet. thread/compact/start requires an attached thread,
@@ -644,15 +656,72 @@ export class CodexRuntime implements AgentRuntime {
       return NO_SESSION_TO_COMPACT;
     }
     const attached = thread;
-    const done = new Promise<void>((resolve) => {
+    let sawContextCompaction = false;
+    const done = new Promise<void>((resolve, reject) => {
       client.setNotificationHandler((msg) => {
-        if (msg.method === "thread/compacted" && (msg.params as { threadId?: string } | undefined)?.threadId === attached.threadId) {
+        const params = msg.params as
+          | {
+              threadId?: string;
+              item?: { type?: string };
+              turn?: { id?: string; status?: string; error?: { message?: string } };
+              usage?: CodexTokenUsage;
+              tokenUsage?: CodexTokenUsage;
+              error?: { message?: string };
+            }
+          | undefined;
+        if (params?.threadId !== attached.threadId) return;
+
+        // Legacy app-server builds used a single compacted notification. Keep
+        // accepting it, but current Codex reports compaction as an ordinary
+        // compact turn: contextCompaction item -> turn/completed.
+        if (msg.method === "thread/compacted") {
           resolve();
+          return;
+        }
+
+        if (msg.method === "turn/started") {
+          if (typeof params.turn?.id === "string") this.activeTurn = { threadId: attached.threadId, turnId: params.turn.id };
+          return;
+        }
+
+        if (msg.method === "thread/tokenUsage/updated") {
+          const usage = params.usage ?? params.tokenUsage;
+          const used = usage?.last?.totalTokens ?? usage?.total?.totalTokens;
+          if (typeof used === "number") onProgress?.({ outputTokens: used });
+          return;
+        }
+
+        if (msg.method === "item/completed" && params.item?.type === "contextCompaction") {
+          sawContextCompaction = true;
+          return;
+        }
+
+        if (msg.method === "turn/completed") {
+          if (params.turn?.status === "failed") {
+            reject(new Error(params.turn.error?.message ?? "codex compaction failed."));
+            return;
+          }
+          // For the current protocol wait until the contextCompaction item has
+          // completed, then let the turn/completed notification be the durable
+          // boundary. If a future app-server suppresses item notifications for
+          // compact turns, the first matching completed turn after our compact
+          // request is still the right boundary: compact() is only invoked while
+          // no normal turn is active.
+          if (sawContextCompaction || params.turn?.status === "completed") resolve();
+          return;
+        }
+
+        if (msg.method === "error") {
+          reject(new Error(params.error?.message ?? "codex compaction failed."));
         }
       });
     });
-    await client.request("thread/compact/start", { threadId: attached.threadId });
-    await done; // the RunnerHost round-trip timeout bounds this wait
+    try {
+      await client.request("thread/compact/start", { threadId: attached.threadId });
+      await done; // the RunnerHost round-trip timeout bounds this wait
+    } finally {
+      if (this.activeTurn?.threadId === attached.threadId) this.activeTurn = null;
+    }
     return { compacted: true, message: "thread compacted by codex." };
   }
 
@@ -862,6 +931,36 @@ export class CodexRuntime implements AgentRuntime {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Account usage probe — the ChatGPT-subscription rate-limit meter (5h primary
+// window + weekly secondary) the codex CLI itself renders. Only the CREDENTIAL
+// READING (~/.codex/auth.json's shape) is codex-specific and lives here; the
+// provider client is harness/usage.ts (RULE #0: shared code sees only the
+// declared usageAccounts data).
+
+async function probeCodexUsage(): Promise<UsageProbeResult> {
+  let raw: string;
+  try {
+    raw = readFileSync(join(homedir(), ".codex", "auth.json"), "utf8");
+  } catch (err) {
+    // No auth file = never signed in — authoritatively nothing to show. Any
+    // other read failure is ambient (permissions, transient FS) — keep the
+    // last-known meter rather than blanking it.
+    return (err as { code?: string }).code === "ENOENT" ? { status: "none" } : { status: "error" };
+  }
+  let parsed: { tokens?: { access_token?: string; account_id?: string } };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return { status: "error" }; // torn mid-write by a concurrent codex refresh — transient.
+  }
+  const tokens = parsed?.tokens;
+  if (typeof tokens?.access_token !== "string" || !tokens.access_token) {
+    return { status: "none" }; // API-key mode — no subscription meter to show.
+  }
+  return fetchChatGptUsage(tokens.access_token, typeof tokens.account_id === "string" ? tokens.account_id : undefined);
+}
+
 registerHarness({
   id: "codex",
   capabilities: CODEX_CAPABILITIES,
@@ -888,4 +987,5 @@ registerHarness({
   // write there); its credential store inside that tree is carved back to
   // read-only so a confined turn can't tamper with it.
   sandboxPaths: { writable: ["~/.codex"], readonly: ["~/.codex/auth.json"] },
+  usageAccounts: () => [{ account: OPENAI_USAGE_ACCOUNT, probe: probeCodexUsage }],
 });

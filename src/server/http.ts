@@ -264,6 +264,16 @@ export class GaiaWebServer {
       return;
     }
 
+    // "Keep laptop awake" (Global Settings ▸ General): persist + apply
+    // immediately. `enabled` off-macOS still persists the preference (inert
+    // there — services/keep-awake.ts) so it takes effect if this daemon later
+    // runs on a Mac.
+    if (method === "POST" && path === "/api/app/keep-awake") {
+      const body = await parseBody(request);
+      const enabled = boolField(body, "enabled");
+      return this.respond(response, async () => ({ keepAwake: await this.daemon.setKeepAwake(enabled) }));
+    }
+
     if (method === "POST" && (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall")) {
       return this.handleHarness(request, response, path);
     }
@@ -315,6 +325,15 @@ export class GaiaWebServer {
       const target = await this.resolveOpenTarget(rawTarget, stringField(body, "workspaceId"));
       await openWithSystem(target);
       json(response, 200, { target });
+      return;
+    }
+
+    // Manual usage refresh (the popover's ↻ button) — probes every declared
+    // account NOW, bypassing throttle and backoff, and answers with the fresh
+    // snapshot directly so the button works even when SSE hiccups.
+    if (method === "POST" && path === "/api/usage/refresh") {
+      await this.daemon.refreshUsage();
+      json(response, 200, { accounts: this.daemon.usageSnapshot() });
       return;
     }
 
@@ -409,6 +428,13 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const on = (body as { on?: unknown }).on === true;
       return this.respond(response, () => this.daemon.setRoomAgentDialogue(params![0], params![1], on));
+    }
+
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/title$/))) {
+      const body = await parseBody(request);
+      const title = stringField(body, "title")?.trim();
+      if (!title) return json(response, 400, { error: "Missing room title" });
+      return this.respond(response, () => this.daemon.renameRoom(params![0], params![1], title));
     }
 
     // Attachment upload: the pasted file's bytes as the raw body, original

@@ -28,6 +28,7 @@ async function applyAppPayload(body) {
   state.workspaceFiles = body.workspaceFiles ?? [];
   state.globalFiles = body.globalFiles ?? state.globalFiles;
   state.voice = body.voice ?? null;
+  state.keepAwake = body.keepAwake ?? state.keepAwake;
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
@@ -196,6 +197,22 @@ export async function setRoomAgentDialogue(on) {
   }
 }
 
+/** Toggle "keep laptop awake while GAIA runs" (Global Settings ▸ General) — a
+ * daemon-managed (macOS-only) setting, not a client pref: it governs the host
+ * Mac, so it round-trips through the server like other server-persisted
+ * settings, unlike the status-bar toggle (statusbar.js, pure localStorage).
+ * @param {boolean} enabled */
+export async function setKeepAwake(enabled) {
+  try {
+    const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });
+    state.keepAwake = body.keepAwake ?? state.keepAwake;
+    state.error = "";
+    markDirty("settings");
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /** An opaque, collision-resistant id for an auto-created room. The user never
  * types or sees it: the room takes its display title from its first message
  * (server-side — see isAutoRoomId/deriveRoomTitle in src/domain/rooms.ts), the
@@ -246,6 +263,35 @@ export async function closeRoomTab(roomId) {
  * neighbour and returns its snapshot, so a room is always in view afterward.
  * @param {string} roomId
  */
+/**
+ * Rename a room's display title. The room id/path stays stable.
+ * @param {string} roomId
+ * @param {string} [currentTitle]
+ */
+export async function renameRoom(roomId, currentTitle = "") {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const title = await promptText("Rename room", { value: currentTitle || roomId, okLabel: "Rename" });
+  if (!title) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(roomId)}/title`, {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    });
+    if (Array.isArray(body.rooms)) {
+      /** @type {import("./types.js").RoomSummary[]} */
+      const rooms = body.rooms;
+      state.workspaceRooms[snapshot.workspace.id] = rooms;
+      if (state.snapshot) state.snapshot.rooms = rooms.map((/** @type {import("./types.js").RoomSummary} */ room) => ({ ...room, isCurrent: room.id === snapshot.room.id }));
+    }
+    state.error = "";
+    markDirty("sidebar", "tabs", "status");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** @param {string} roomId */
 export async function deleteRoom(roomId) {
   const snapshot = state.snapshot;
   if (!snapshot) return;

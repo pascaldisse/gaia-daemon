@@ -906,6 +906,9 @@ export function installComposerRouting() {
 
 /** @param {PointerEvent} event */
 export function focusComposerFromBackground(event) {
+  // On touch, focusing = popping the iOS keyboard on every tap; keep this
+  // background-click-to-focus convenience for desktop mice/trackpads only.
+  if (event.pointerType === "touch") return;
   if (state.settingsOpen || state.dario.open || state.search.open) return;
   if (isEditableElement(event.target)) return;
   if (event.target instanceof HTMLElement && event.target.closest("button")) return;

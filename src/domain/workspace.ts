@@ -10,6 +10,7 @@ import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
 import { normalizeRoomState } from "./rooms.js";
+import { removeRoomWorktree } from "./worktree.js";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "./agents.js";
 
 export const WORKSPACE_DIRNAME = ".gaia";
@@ -57,6 +58,10 @@ export async function trashWorkspaceRoom(cwd: string, roomId: string, stamp: str
   assertRoomId(roomId);
   const source = workspacePaths.roomDir(cwd, roomId);
   if (!existsSync(source)) return "";
+  // The room's git worktree (collab isolation) goes with the room — the
+  // disposable checkout only, never the branch: committed work stays reachable.
+  // Best-effort by design; a wedged worktree never blocks the room delete.
+  removeRoomWorktree(cwd, roomId);
   const trashRoot = workspacePaths.roomTrashDir(cwd);
   await mkdir(trashRoot, { recursive: true });
   const dest = join(trashRoot, `${roomId}__${stamp}`);

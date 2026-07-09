@@ -17,7 +17,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
@@ -36,6 +36,7 @@ import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
+import { ANTHROPIC_USAGE_ACCOUNT, fetchAnthropicUsage, fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Subprocess-side egress redirect for the credential proxy (v1's
@@ -94,8 +95,9 @@ export interface PiSessionLike {
   setThinkingLevel?(level: string): void;
   subscribe(listener: (event: any) => void): () => void;
   prompt(text: string, options?: { source?: "interactive"; images?: { type: "image"; data: string; mimeType: string }[] }): Promise<void>;
-  /** Queue a steering message into the running prompt (pi SDK). */
-  steer?(text: string): Promise<void>;
+  /** Queue a steering message into the running prompt (pi SDK). Pasted images
+   * ride the SDK's mid-turn image channel, the same shape prompt() takes. */
+  steer?(text: string, images?: { type: "image"; data: string; mimeType: string }[]): Promise<void>;
   /** Window-relative context accounting (pi SDK getContextUsage). `tokens`
    * is null right after a compaction, until the next assistant reply. */
   getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
@@ -339,11 +341,19 @@ export class PiRuntime implements AgentRuntime {
     await Promise.all(this.sessions.rooms().map((roomId) => this.sessions.get(roomId)?.session.abort()));
   }
 
-  /** Inject guidance into the room's running prompt (backs /steer). */
-  async steer(roomId: string, message: string): Promise<boolean> {
+  /** Inject guidance into the room's running prompt (backs /steer). Pasted
+   * images ride the SDK's mid-turn image channel (session.steer's images arg —
+   * the same ImageContent[] send() builds for a normal turn); non-image files
+   * stay path breadcrumbs in the message text. */
+  async steer(roomId: string, message: string, attachments?: MessageAttachment[]): Promise<boolean> {
     const session = this.sessions.get(roomId)?.session;
     if (!session?.steer) return false;
-    await session.steer(message);
+    const images = (await loadNativeImages(attachments)).map(({ attachment, base64 }) => ({
+      type: "image" as const,
+      data: base64,
+      mimeType: attachment.mime,
+    }));
+    await session.steer(message, images.length ? images : undefined);
     return true;
   }
 
@@ -499,6 +509,33 @@ function realPiAuthJson(): string {
   return join(homedir(), ".pi", "agent", "auth.json");
 }
 
+// ---------------------------------------------------------------------------
+// Account usage probes — Pi's AuthStorage can hold OAuth logins for the same
+// subscription accounts the CLIs use ("anthropic" = Claude, "openai-codex" =
+// ChatGPT), so Pi declares BOTH as usage candidates: when another harness's
+// credential store is unreadable (a locked keychain, say), Pi's copy keeps the
+// meter alive. The provider-id branch below is PI-INTERNAL knowledge of Pi's
+// own provider vocabulary — not a harness-id branch (RULE #0 intact); the
+// provider clients themselves are shared (harness/usage.ts).
+
+async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<UsageProbeResult> {
+  let cred: { type?: string; accountId?: unknown } | undefined;
+  let token: string | undefined;
+  try {
+    const storage = AuthStorage.create();
+    cred = storage.get(provider) as typeof cred;
+    if (!cred || cred.type !== "oauth") return { status: "none" }; // API-key or no login — no subscription meter.
+    // getApiKey auto-refreshes an expired OAuth token (with file locking).
+    token = await storage.getApiKey(provider);
+  } catch {
+    return { status: "error" }; // store unreadable / refresh raced — transient, keep last-known.
+  }
+  if (!token) return { status: "error" }; // an oauth login exists but no token could be minted — transient.
+  return provider === "anthropic"
+    ? fetchAnthropicUsage(token)
+    : fetchChatGptUsage(token, typeof cred.accountId === "string" ? cred.accountId : undefined);
+}
+
 registerHarness({
   id: "pi",
   capabilities: PI_CAPABILITIES,
@@ -528,4 +565,8 @@ registerHarness({
   // denied writes there); its credential store inside that tree is carved back
   // to read-only so a confined turn can't tamper with the key it can read.
   sandboxPaths: { writable: ["~/.pi"], readonly: ["~/.pi/agent/auth.json"] },
+  usageAccounts: () => [
+    { account: ANTHROPIC_USAGE_ACCOUNT, probe: () => probePiUsage("anthropic") },
+    { account: OPENAI_USAGE_ACCOUNT, probe: () => probePiUsage("openai-codex") },
+  ],
 });

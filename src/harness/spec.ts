@@ -48,8 +48,12 @@ export interface AgentRuntime {
   abort(): Promise<void>;
   /** Inject guidance into the room's RUNNING turn (backs /steer). Resolves
    * false when there is nothing to steer. Only present when
-   * capabilities.supportsSteer. */
-  steer?(roomId: string, message: string): Promise<boolean>;
+   * capabilities.supportsSteer. `attachments` mirror AgentInput.attachments:
+   * the shared caller always appends the uniform path breadcrumb to `message`,
+   * and a harness with a mid-turn native image channel additionally inlines the
+   * bytes in its own steer() (pi steer images, claude stream-json image blocks,
+   * codex localImage items) — its own translation, never a shared-code branch. */
+  steer?(roomId: string, message: string, attachments?: MessageAttachment[]): Promise<boolean>;
   /** Push a daemon-synthesized event (e.g. the `steered` position marker) into
    * the ACTIVE turn's event stream at its current position. Implemented ONCE by
    * the daemon-side RunnerHost — uniform for every harness, which never sees
@@ -238,26 +242,45 @@ export interface HarnessSpec {
    * cursor is gone and must be replayed (through the context gate when large).
    * Absent ⇒ sessions are not detectable a-priori; treated as present. */
   hasDurableSession?(rootDir: string, roomId: string, agentId: string): boolean;
-  /** Fetch this harness's account-level usage limits (subscription session /
-   * weekly caps). Returns a discriminated {@link UsageProbeResult}: `ok` with
-   * the limits, `none` when there is authoritatively nothing to show (no OAuth
-   * creds, API-key auth, no such concept), or `error` for a TRANSIENT failure
-   * (rate-limited, offline, token mid-rotation) that must NOT blank a healthy
-   * chip. Data on the spec — the harness owns HOW it reaches its provider's
-   * usage endpoint and how it classifies a failure; the daemon polls it
-   * uniformly and never learns which harness it is (same pattern as
-   * credentialProxy). Absent ⇒ reports no account usage. Account-level, so it
-   * takes no room/agent — one call describes the whole subscription. */
-  probeUsage?(): Promise<UsageProbeResult>;
+  /** The SUBSCRIPTION ACCOUNTS this harness can read usage for, each with a
+   * probe that fetches that account's limits (session / weekly caps). Data on
+   * the spec — the harness owns WHICH accounts its credential store covers and
+   * HOW it reaches the provider's usage endpoint; the daemon groups candidates
+   * by account id uniformly and never learns which harness supplied one (same
+   * pattern as credentialProxy). Several harnesses may declare the SAME account
+   * (claude and pi both hold Anthropic OAuth): the daemon probes candidates in
+   * registration order until one returns `ok`, so a broken credential source
+   * never blanks a meter another source can still feed — and one account is
+   * never double-fetched against a rate-limited endpoint. Each probe returns a
+   * discriminated {@link UsageProbeResult}: `ok` with the limits, `none` when
+   * there is authoritatively nothing to show (no OAuth creds, API-key auth),
+   * or `error` for a TRANSIENT failure (rate-limited, offline, locked
+   * keychain, token mid-rotation) that must NOT blank a healthy meter. Absent
+   * ⇒ reports no account usage. Account-level, so probes take no room/agent —
+   * one call describes the whole subscription. */
+  usageAccounts?(): UsageAccountProbe[];
 }
 
-/** Every registered harness's usage probe (skipping those without one), read
- * uniformly by the daemon's poll loop. No harness-id branch — each harness
- * declares its own probe as data on its spec. */
-export function usageProbes(): { harness: string; probe: () => Promise<UsageProbeResult> }[] {
-  return harnessSpecs()
-    .filter((spec): spec is HarnessSpec & { probeUsage: NonNullable<HarnessSpec["probeUsage"]> } => typeof spec.probeUsage === "function")
-    .map((spec) => ({ harness: spec.id, probe: () => spec.probeUsage() }));
+/** One (account, probe) candidate a harness declares (see usageAccounts). */
+export interface UsageAccountProbe {
+  /** Subscription account id, e.g. "anthropic" | "openai". */
+  account: string;
+  probe(): Promise<UsageProbeResult>;
+}
+
+/** Every registered harness's usage candidates, grouped by account id in
+ * registration order — read uniformly by the daemon's poll loop. No harness-id
+ * branch — each harness declares its accounts as data on its spec. */
+export function usageAccountProbes(): Map<string, Array<() => Promise<UsageProbeResult>>> {
+  const byAccount = new Map<string, Array<() => Promise<UsageProbeResult>>>();
+  for (const spec of harnessSpecs()) {
+    for (const candidate of spec.usageAccounts?.() ?? []) {
+      const list = byAccount.get(candidate.account) ?? [];
+      list.push(candidate.probe);
+      byAccount.set(candidate.account, list);
+    }
+  }
+  return byAccount;
 }
 
 const registry = new Map<string, HarnessSpec>();

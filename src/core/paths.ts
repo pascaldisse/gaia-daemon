@@ -25,6 +25,10 @@ export const globalPaths = {
    * mid-call can never leave a "temporary" override applied forever. */
   voiceState: () => join(gaiaHome(), "voice-state.json"),
   voiceLogsDir: () => join(gaiaHome(), "logs", "voice"),
+  /** Last-known subscription usage per account — the status-bar meter's
+   * survives-everything cache: loaded at boot BEFORE the first probe, so a
+   * restart (or an unreachable provider) never blanks the chip. */
+  usageCache: () => join(gaiaHome(), "usage.json"),
   /** Derived read-aloud audio, content-addressed per speech chunk. */
   ttsCacheDir: () => join(gaiaHome(), "cache", "tts"),
   /** Local model files (embedding/reranker GGUFs) pulled once, checksummed. */
@@ -57,6 +61,10 @@ export const workspacePaths = {
   /** Reversible room deletion moves the whole room dir here rather than rm -rf,
    * so a delete is recoverable (restore = move it back). */
   roomTrashDir: (rootDir: string) => join(rootDir, ".gaia", "trash", "rooms"),
+  /** Room git worktrees (collab.isolation "worktree"): one isolated checkout
+   * per summon room, sharing the workspace repo's object store. */
+  worktreesDir: (rootDir: string) => join(rootDir, ".gaia", "worktrees"),
+  worktreeDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "worktrees", roomId),
   transcript: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "transcript.jsonl"),
   roomState: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "state.json"),
   /** Memory v4 (MEMORY-DESIGN.md): ONE derived index per workspace. */

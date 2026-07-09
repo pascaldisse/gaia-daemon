@@ -1,12 +1,13 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
-import type { AgentTtsConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 
 export const DEFAULTS = {
   harness: "pi",
   model: { provider: "deepseek", name: "deepseek-v4-pro" },
+  roomTitleModel: { provider: "deepseek", name: "deepseek-v4-flash" },
   defaultAgent: "gaia",
   room: "default",
   thinking: "medium",
@@ -53,6 +54,27 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (raw.net === "full" || raw.net === "none") config.net = raw.net;
   if (typeof raw.credentialProxy === "boolean") config.credentialProxy = raw.credentialProxy;
   return Object.keys(config).length > 0 ? config : undefined;
+}
+
+/** Default branch namespace for room worktrees (collab.isolation "worktree"). */
+export const COLLAB_BRANCH_PREFIX = "gaia/";
+
+/** Parse the `collab` section (config.json). Absent/garbage → undefined =
+ * shared (today's behavior). Legacy isolation spellings from the first
+ * iteration of this feature ("worktree-per-room"/"worktree-per-summon") are
+ * tolerated and mean "worktree" — old configs keep working; unknown extra
+ * fields drop silently like every other section. */
+export function parseCollabConfig(raw: unknown): CollabConfig | undefined {
+  if (!isRecord(raw)) return undefined;
+  const isolation =
+    raw.isolation === "worktree" || raw.isolation === "worktree-per-room" || raw.isolation === "worktree-per-summon"
+      ? "worktree"
+      : raw.isolation === "shared"
+        ? "shared"
+        : undefined;
+  if (!isolation) return undefined;
+  const branchPrefix = typeof raw.branchPrefix === "string" && raw.branchPrefix.trim() ? raw.branchPrefix.trim() : COLLAB_BRANCH_PREFIX;
+  return { isolation, branchPrefix };
 }
 
 /** Parse an agent.json `tts` section: `{ engine, voice }` (both optional) or
@@ -193,6 +215,8 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   }
   const sandbox = parseSandboxConfig(obj.sandbox);
   if (sandbox) config.sandbox = sandbox;
+  const collab = parseCollabConfig(obj.collab);
+  if (collab) config.collab = collab;
   const mcpServers = parseMcpServers(obj.mcpServers);
   if (mcpServers) config.mcpServers = mcpServers;
   const hooks = parseHooksConfig(obj.hooks);

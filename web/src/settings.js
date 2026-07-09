@@ -8,6 +8,8 @@ import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
+import { setStatusbarVisible, statusbarVisible } from "./statusbar.js";
+import { setKeepAwake } from "./actions.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
@@ -323,6 +325,57 @@ function GlobalFileEditor(options = {}) {
   ];
 }
 
+/**
+ * Purely client-side display preferences — no server file backs these, so
+ * they render above the General section's file editor and persist straight
+ * to localStorage instead of going through saveFile (see statusbarVisible /
+ * setStatusbarVisible in statusbar.js).
+ */
+function ClientDisplayPrefs() {
+  return h(
+    "div",
+    { class: "settings-editor" },
+    h("div", { class: "file-toolbar" }, h("code", { text: "display (this device)" })),
+    h(
+      "label",
+      { class: "setting-row" },
+      h("span", { class: "field-name", text: "Show status bar" }),
+      h("input", {
+        type: "checkbox",
+        checked: statusbarVisible(),
+        onchange: (event) => setStatusbarVisible(/** @type {HTMLInputElement} */ (event.target).checked),
+      }),
+    ),
+  );
+}
+
+/**
+ * "Keep laptop awake while GAIA runs" — unlike ClientDisplayPrefs above, this
+ * governs the HOST MAC the daemon runs on, so it is not a localStorage pref:
+ * it reads/writes through the daemon API (GET /api/app's `keepAwake`, POST
+ * /api/app/keep-awake), like every other server-persisted setting. macOS-only
+ * server-side (services/keep-awake.ts); the checkbox hides itself elsewhere
+ * rather than showing a control that can't do anything.
+ */
+function ServerDisplayPrefs() {
+  if (!state.keepAwake.supported) return null;
+  return h(
+    "div",
+    { class: "settings-editor" },
+    h("div", { class: "file-toolbar" }, h("code", { text: "this machine" })),
+    h(
+      "label",
+      { class: "setting-row" },
+      h("span", { class: "field-name", text: "Keep laptop awake while GAIA runs" }),
+      h("input", {
+        type: "checkbox",
+        checked: state.keepAwake.enabled,
+        onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
+      }),
+    ),
+  );
+}
+
 function SettingsModal() {
   const sections = globalSettingsSections();
   const agents = globalAgentGroups();
@@ -369,7 +422,7 @@ function SettingsModal() {
         ),
       ),
       state.selectedGlobalSection !== "agents"
-        ? GlobalFileEditor()
+        ? [state.selectedGlobalSection === "general" ? ClientDisplayPrefs() : null, state.selectedGlobalSection === "general" ? ServerDisplayPrefs() : null, ...GlobalFileEditor()]
         : h(
             "div",
             { class: "settings-split" },
