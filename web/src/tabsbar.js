@@ -2,9 +2,9 @@
 // carries its jump number (Alt+N), drags to reorder, and closes from the
 // working set without deleting the room.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
-import { dockBack, tearOff } from "./chrome.js";
+import { tearOff } from "./chrome.js";
 import { $, h } from "./dom.js";
-import { isMainWindow, isNative } from "./native.js";
+import { isNative } from "./native.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 import { moveTab, visibleTabs } from "./tabs.js";
@@ -25,14 +25,7 @@ function renderTabs() {
   const wsId = snapshot?.workspace.id;
   const currentId = snapshot?.room?.id;
   const tabs = visibleTabs(snapshot);
-  // Torn-off window: a leading button to merge this chat back into the main window
-  // as a tab (the reliable path; drag-window-onto-tabbar is the fiddly follow-up).
-  const leading =
-    isNative() && !isMainWindow()
-      ? [h("button", { class: "chrome-btn", title: "merge back into the main window (⌘⇧M)", onclick: () => dockBack(), text: "⇤" })]
-      : [];
   bar.replaceChildren(
-    ...leading,
     h("button", {
       class: "chrome-btn",
       title: state.sidebarCollapsed ? "show sessions" : "hide sessions",
