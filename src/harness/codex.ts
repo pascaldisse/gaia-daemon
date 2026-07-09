@@ -321,6 +321,12 @@ export class CodexRuntime implements AgentRuntime {
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
+  /** Where the agent child RUNS: this runner process's own cwd — RunnerHost
+   * set it to the room's git worktree (RoomState.workDir) or the workspace
+   * root. Distinct from this.cwd (workspace root), which anchors daemon
+   * state paths (session stores, room dirs) that must never move with the
+   * checkout. */
+  private readonly workDir: string;
   private readonly threads: SessionMap<ThreadState>;
   /** In-process dynamic tools per room (rebuilt per process — not persisted). */
   private readonly roomTools = new Map<string, Map<string, PiToolLike>>();
@@ -338,6 +344,7 @@ export class CodexRuntime implements AgentRuntime {
     this.summonCreate = options.summonCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
+    this.workDir = process.cwd();
     this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex", this.agent.id));
     this.clientFactory = options.clientFactory ?? defaultFactory;
     this.label = new ModelLabel(this.resolveModelLabel());
@@ -762,7 +769,7 @@ export class CodexRuntime implements AgentRuntime {
       // uniform gaia bridge env (GAIA_MEMORY_DIR/GAIA_ROOM_*/GAIA_AGENT_ID/
       // GAIA_DAEMON_*) was composed ONCE by RunnerHost.buildEnv, and gaia tools
       // run in THIS process via dynamicTools — nothing codex-local to add.
-      this.initPromise = this.clientFactory(this.cwd, process.env)
+      this.initPromise = this.clientFactory(this.workDir, process.env)
         .then(async (client) => {
           try {
             await client.request("initialize", {
@@ -800,7 +807,7 @@ export class CodexRuntime implements AgentRuntime {
     const tools = await this.buildRoomTools(input.roomId);
 
     const response = (await client.request("thread/start", {
-      cwd: this.cwd,
+      cwd: this.workDir,
       model: this.agent.model?.name ?? null,
       modelProvider: this.agent.model?.provider ?? null,
       baseInstructions,
@@ -841,7 +848,7 @@ export class CodexRuntime implements AgentRuntime {
       await this.buildRoomTools(roomId);
       const response = (await client.request("thread/resume", {
         threadId: state.threadId,
-        cwd: this.cwd,
+        cwd: this.workDir,
         model: this.agent.model?.name ?? null,
         modelProvider: this.agent.model?.provider ?? null,
         baseInstructions,

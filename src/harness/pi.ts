@@ -191,6 +191,12 @@ export class PiRuntime implements AgentRuntime {
   private readonly sessions = new SessionMap<PiSessionMeta>((meta) => meta.session.dispose());
   private readonly label: ModelLabel;
   private readonly cwd: string;
+  /** Where the agent child RUNS: this runner process's own cwd — RunnerHost
+   * set it to the room's git worktree (RoomState.workDir) or the workspace
+   * root. Distinct from this.cwd (workspace root), which anchors daemon
+   * state paths (session stores, room dirs) that must never move with the
+   * checkout. */
+  private readonly workDir: string;
 
   constructor(options: PiRuntimeOptions) {
     this.workspace = options.workspace;
@@ -200,6 +206,7 @@ export class PiRuntime implements AgentRuntime {
     this.summonCreate = options.summonCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
+    this.workDir = process.cwd();
     this.applyCredentialProxy();
     this.label = new ModelLabel(this.resolveModelLabel());
   }
@@ -430,7 +437,7 @@ export class PiRuntime implements AgentRuntime {
     const systemPromptRef = { current: systemPrompt };
 
     const loader = new DefaultResourceLoader({
-      cwd: this.cwd,
+      cwd: this.workDir,
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
       noExtensions: true,
@@ -446,7 +453,7 @@ export class PiRuntime implements AgentRuntime {
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
       ? await this.sessionFactory({
-          cwd: this.cwd,
+          cwd: this.workDir,
           roomId,
           agent: this.agent,
           loader,
@@ -458,7 +465,7 @@ export class PiRuntime implements AgentRuntime {
           sessionDir,
         })
       : await createAgentSession({
-          cwd: this.cwd,
+          cwd: this.workDir,
           authStorage: this.authStorage,
           modelRegistry: this.modelRegistry,
           model,
@@ -470,8 +477,8 @@ export class PiRuntime implements AgentRuntime {
           // this is the one site that knows they are pi tool definitions.
           customTools: customTools as NonNullable<Parameters<typeof createAgentSession>[0]>["customTools"],
           resourceLoader: loader,
-          sessionManager: SessionManager.continueRecent(this.cwd, sessionDir),
-          settingsManager: readOnlyPiSettings(this.cwd),
+          sessionManager: SessionManager.continueRecent(this.workDir, sessionDir),
+          settingsManager: readOnlyPiSettings(this.workDir),
         });
 
     if (modelFallbackMessage) console.warn(modelFallbackMessage);

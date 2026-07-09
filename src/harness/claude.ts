@@ -407,6 +407,12 @@ export class ClaudeRuntime implements AgentRuntime {
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
   private readonly cwd: string;
+  /** Where the agent child RUNS: this runner process's own cwd — RunnerHost
+   * set it to the room's git worktree (RoomState.workDir) or the workspace
+   * root. Distinct from this.cwd (workspace root), which anchors daemon
+   * state paths (session stores, room dirs) that must never move with the
+   * checkout. */
+  private readonly workDir: string;
   /** Persisted per room: --resume continues the same CLI session across
    * daemon/runner restarts (the CLI keeps the conversation on disk). */
   private readonly sessions: SessionMap<ClaudeRoomMeta>;
@@ -430,6 +436,7 @@ export class ClaudeRuntime implements AgentRuntime {
     this.agent = options.agent;
     this.memoryStore = options.memoryStore;
     this.cwd = options.workspace.rootDir;
+    this.workDir = process.cwd();
     this.sessions = new SessionMap<ClaudeRoomMeta>(undefined, fileSessionStore(this.cwd, "claude", this.agent.id));
     this.processFactory = options.processFactory ?? spawnClaudeProcess;
     this.label = new ModelLabel(this.resolveModelLabel());
@@ -693,7 +700,7 @@ export class ClaudeRuntime implements AgentRuntime {
       args,
       prompt: stdinPayload,
       keepStdinOpen,
-      cwd: this.cwd,
+      cwd: this.workDir,
       env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
@@ -781,7 +788,7 @@ export class ClaudeRuntime implements AgentRuntime {
       const handle = this.processFactory({
         args,
         prompt: "/compact",
-        cwd: this.cwd,
+        cwd: this.workDir,
         env: this.buildEnv(),
         onMessage: (raw) => {
           const msg = raw as {
