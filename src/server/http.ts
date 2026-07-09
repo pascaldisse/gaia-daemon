@@ -387,7 +387,10 @@ export class GaiaWebServer {
       return this.respond(response, async () => ({ keepAwake: await this.daemon.setKeepAwake(enabled) }));
     }
 
-    if (method === "POST" && (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall")) {
+    if (
+      method === "POST" &&
+      (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall" || path === "/api/harness/dream")
+    ) {
       return this.handleHarness(request, response, path);
     }
 
@@ -894,6 +897,9 @@ export class GaiaWebServer {
   // Memory writes and summon for harness subprocesses (the `gaia` CLI). The
   // bearer token resolves the (workspace, agent, room), so the body cannot
   // spoof identity; the verb is capability-gated against the harness registry.
+  // `dream` is the one exception: it is never a grantable GaiaTool (no entry,
+  // no Claude/Pi grant — see cli-tools.ts's runDream comment), so it skips the
+  // gate below and only needs the same bearer-token authentication.
   private async handleHarness(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
     const claims = this.daemon.verifyHarnessToken(bearerToken(request));
     if (!claims) return json(response, 401, { error: "Invalid or missing harness token." });
@@ -905,8 +911,8 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall";
-    if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream";
+    if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
     }
 
@@ -979,6 +985,27 @@ export class GaiaWebServer {
         const summarize = (body as Record<string, unknown>).summarize === true;
         const { result, hits } = await this.daemon.harnessRecall(claims, query, numberField("limit"), { summarize });
         json(response, 200, { ok: true, result, hits });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/dream (Dream v2) — user-triggered memory consolidation, not
+    // an agent capability (see the gate skip above). `agent` is the CLI's
+    // `[agent]` argument, already resolved client-side to GAIA_AGENT_ID when
+    // omitted — same body-driven target-agent shape as summon below, since a
+    // person may dream an agent other than the one whose turn context they
+    // are borrowing the token from. No `apply` → propose (preview, applies
+    // nothing); `apply` → commit the pending proposal. A missing proposal on
+    // apply throws, caught below as a 400 → the CLI sees ok:false and exits
+    // nonzero, same as every other harness error.
+    if (pathname === "/api/harness/dream") {
+      const agentId = stringField(body, "agent")?.trim() || claims.agentId;
+      const apply = boolField(body, "apply");
+      try {
+        const result = apply ? await this.daemon.harnessDreamApply(claims, agentId) : await this.daemon.harnessDreamPropose(claims, agentId);
+        json(response, 200, { ok: true, result });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

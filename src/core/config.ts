@@ -25,7 +25,9 @@ export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecallBudget: 2_400,
   embeddings: "auto",
   reranker: "auto",
-  consolidate: { enabled: true, idleMinutes: 30, maxPerDay: 8 },
+  // Dream v2: background dreaming is OFF by default — consolidation now runs
+  // only when explicitly invoked (`gaia dream`), as a reviewable proposal.
+  consolidate: { enabled: false, idleMinutes: 30, maxPerDay: 8 },
   decayHalfLifeDays: 60,
 };
 

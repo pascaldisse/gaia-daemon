@@ -15,6 +15,8 @@ import type { Episode } from "../src/domain/episodes.js";
 import { appendFactOp, readFactOpsFrom, replayFacts } from "../src/domain/facts.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../src/domain/memory.js";
 import {
+  applyDreamProposal,
+  DREAM_PROPOSAL_FILE,
   parseConsolidateOps,
   readConsolidateState,
   runConsolidation,
@@ -243,6 +245,93 @@ test("maxPerDay caps runs; force bypasses the cap", async () => {
   const forced = await run(dir, store, cannedLlm("[]"), { maxPerDay: 3, force: true });
   assert.equal(forced.ran, true);
   assert.equal((await readConsolidateState(dir)).runs.length, 4, "forced run lands in the ledger");
+});
+
+// --- Dream v2: propose-then-apply --------------------------------------------
+
+test("propose writes dream-proposal.json without mutating facts/files; apply applies it and deletes the file", async () => {
+  const dir = await memDir();
+  const store = new MemoryStore();
+  await store.init(dir, "Gaia");
+  await seedFact(dir, "f_port", "The GAIA port is 8787");
+  await appendEpisode(dir, episode());
+  const memoryBefore = await readFile(join(dir, CORE_MEMORY_FILE), "utf8");
+
+  const ops = [
+    { kind: "fact-add", text: "User deploys to fly.io in region fra" },
+    { kind: "memory-edit", file: "MEMORY.md", action: "add", content: "Ships from fly.io region fra" },
+  ];
+
+  // Propose: LLM runs, ops validated, NOTHING applied, cursor/ledger untouched.
+  const proposed = await runConsolidation({
+    memoryDir: dir,
+    agentId: "gaia",
+    memoryStore: store,
+    llm: cannedLlm(JSON.stringify(ops)),
+    maxPerDay: 8,
+    propose: true,
+    now: NOW,
+  });
+  assert.equal(proposed.ran, true);
+  assert.equal(proposed.factsAdded, 0, "propose applies no facts");
+  assert.equal(proposed.memoryEdits, 0, "propose applies no memory edits");
+  assert.equal(proposed.proposedOps?.length, 2, "proposed ops returned");
+
+  const proposal = JSON.parse(await readFile(join(dir, DREAM_PROPOSAL_FILE), "utf8"));
+  assert.equal(typeof proposal.ts, "string");
+  assert.equal(proposal.episodeCursorAtPropose, 1);
+  assert.equal(proposal.ops.length, 2);
+
+  // Nothing mutated yet.
+  assert.equal(await readFile(join(dir, CORE_MEMORY_FILE), "utf8"), memoryBefore, "MEMORY.md untouched by propose");
+  assert.equal(replayFacts((await readFactOpsFrom(dir, 0)).items).active.filter((f) => f.source === "consolidator").length, 0, "no consolidator facts yet");
+  assert.equal((await readConsolidateState(dir)).episodeCursor, 0, "cursor not advanced by propose");
+  assert.deepEqual((await readConsolidateState(dir)).runs, [], "ledger not touched by propose");
+
+  // Apply: the SAME guarded path applies ops, advances the cursor, records the
+  // run, deletes the proposal.
+  const applied = await applyDreamProposal({ memoryDir: dir, agentId: "gaia", memoryStore: store, now: NOW });
+  assert.ok(applied, "apply returns a result");
+  assert.equal(applied.applied, 2, "both ops applied");
+  assert.equal(applied.skipped, 0);
+
+  const active = replayFacts((await readFactOpsFrom(dir, 0)).items).active;
+  assert.ok(active.some((f) => f.text === "User deploys to fly.io in region fra"), "fact applied");
+  assert.match(await readFile(join(dir, CORE_MEMORY_FILE), "utf8"), /Ships from fly\.io region fra/, "memory edit applied");
+  assert.equal((await readConsolidateState(dir)).episodeCursor, 1, "cursor advanced on apply");
+  assert.deepEqual((await readConsolidateState(dir)).runs, [NOW.toISOString()], "run recorded on apply");
+  await assert.rejects(readFile(join(dir, DREAM_PROPOSAL_FILE), "utf8"), "proposal file deleted");
+
+  // No pending proposal → null.
+  assert.equal(await applyDreamProposal({ memoryDir: dir, agentId: "gaia", memoryStore: store, now: NOW }), null);
+});
+
+test("propose surfaces topic files and rejects a SOUL.md edit", async () => {
+  const dir = await memDir();
+  const store = new MemoryStore();
+  await store.init(dir, "Gaia");
+  // A topic file the dreamer should see under CORE MEMORY FILES.
+  await store.mutate(dir, "procedures.md", "add", { content: "always run npm run check before pushing" });
+  await appendEpisode(dir, episode());
+
+  const calls: ConsolidateLlmInput[] = [];
+  const proposed = await runConsolidation({
+    memoryDir: dir,
+    agentId: "gaia",
+    memoryStore: store,
+    llm: cannedLlm(JSON.stringify([{ kind: "memory-edit", file: "SOUL.md", action: "add", content: "rewrite identity" }]), calls),
+    maxPerDay: 8,
+    propose: true,
+    now: NOW,
+  });
+  assert.ok(calls[0].user.includes("## procedures.md"), "topic file shown to the dreamer");
+  assert.ok(calls[0].user.includes("always run npm run check"), "topic file content shown");
+  assert.equal(proposed.proposedOps?.length, 1, "SOUL.md op parses (rejection happens at apply)");
+
+  const applied = await applyDreamProposal({ memoryDir: dir, agentId: "gaia", memoryStore: store, now: NOW });
+  assert.ok(applied);
+  assert.equal(applied.applied, 0, "SOUL.md edit not applied");
+  assert.equal(applied.skipped, 1, "SOUL.md edit skipped");
 });
 
 // --- MemoryService.consolidate ------------------------------------------------

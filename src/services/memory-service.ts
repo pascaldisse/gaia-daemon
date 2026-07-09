@@ -33,8 +33,8 @@ import {
   syncWorkspaceIndex,
 } from "../domain/workspace-index.js";
 import type { MemoryStore } from "../domain/memory.js";
-import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
-import { runConsolidation } from "./consolidate.js";
+import type { ApplyDreamProposalResult, ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
+import { applyDreamProposal, runConsolidation } from "./consolidate.js";
 import type { EmbedderDeps, ResolvedEmbedder, ResolvedReranker } from "./embeddings.js";
 import { resolveEmbedder, resolveReranker } from "./embeddings.js";
 
@@ -627,13 +627,15 @@ export class MemoryService {
     this.consolidateTimers.set(agentId, timer);
   }
 
-  async consolidate(agentId: string, options: { force?: boolean } = {}): Promise<ConsolidateResult> {
+  async consolidate(agentId: string, options: { force?: boolean; propose?: boolean } = {}): Promise<ConsolidateResult> {
     const agent = this.agentOrThrow(agentId);
     const config = this.configFor(agentId);
     if (!this.options.llm) {
       return { ran: false, reason: "no consolidation model available", episodesSeen: 0, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0 };
     }
-    if (!config.consolidate.enabled && !options.force) {
+    // Dream v2: a propose run is always user-triggered — it never applies, so
+    // it is not gated by the (now default-off) `enabled` background switch.
+    if (!config.consolidate.enabled && !options.force && !options.propose) {
       return { ran: false, reason: "consolidation disabled", episodesSeen: 0, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0 };
     }
     if (this.consolidating.has(agentId)) {
@@ -650,6 +652,7 @@ export class MemoryService {
         maxPerDay: config.consolidate.maxPerDay,
         sharedFactsDir: sharedMemorySource(this.options.workspaceRoot).memoryDir,
         force: options.force,
+        propose: options.propose,
         now: this.now(),
       });
       if (result.factsAdded > 0) this.scheduleEmbedSync(agentId);
@@ -657,6 +660,22 @@ export class MemoryService {
     } finally {
       this.consolidating.delete(agentId);
     }
+  }
+
+  /** Apply a previously-proposed dream (Dream v2): reads the agent's
+   * dream-proposal.json, applies its ops through the guarded writers, advances
+   * the cursor/ledger, and deletes the proposal. null → no proposal pending. */
+  async applyDreamProposal(agentId: string): Promise<ApplyDreamProposalResult | null> {
+    const agent = this.agentOrThrow(agentId);
+    const result = await applyDreamProposal({
+      memoryDir: agent.memoryDir,
+      agentId,
+      memoryStore: this.options.memoryStore,
+      sharedFactsDir: sharedMemorySource(this.options.workspaceRoot).memoryDir,
+      now: this.now(),
+    });
+    if (result && result.applied > 0) this.scheduleEmbedSync(agentId);
+    return result;
   }
 
   dispose(): void {

@@ -25,7 +25,7 @@ import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
-import type { ConsolidateLlm } from "./services/consolidate.js";
+import type { ConsolidateLlm, ConsolidateOp, ConsolidateResult } from "./services/consolidate.js";
 import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
@@ -793,6 +793,36 @@ export class Daemon {
     return window ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`;
   }
 
+  /** Dream v2 propose: a user-triggered consolidation preview for `agentId`
+   * (the CLI's `[agent]` argument — may differ from the caller, same as
+   * summon's target). Never gated by a GaiaTool grant (see cli-tools.ts's
+   * runDream comment): it is a human-operated CLI utility, not an in-turn
+   * agent capability. Force semantics bypass the daily cap and the
+   * "nothing new" skip; applies nothing — writes dream-proposal.json. Returns
+   * preformatted text the CLI prints verbatim. */
+  async harnessDreamPropose(claims: HarnessTokenClaims, agentId: string): Promise<string> {
+    const record = await this.registry.find(claims.workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
+    const result = await memory.consolidate(agentId, { propose: true, force: true });
+    return formatDreamProposal(result);
+  }
+
+  /** Dream v2 apply: commits the proposal `harnessDreamPropose` wrote, through
+   * the guarded writers, then deletes it. Throws when there is no pending
+   * proposal — caught by handleHarness same as every other harness route, so
+   * the CLI sees ok:false and exits nonzero. */
+  async harnessDreamApply(claims: HarnessTokenClaims, agentId: string): Promise<string> {
+    const record = await this.registry.find(claims.workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
+    const result = await memory.applyDreamProposal(agentId);
+    if (!result) throw new Error(`no pending dream proposal for @${agentId} — run \`gaia dream\` first`);
+    return `applied ${result.applied} ops (${result.skipped} skipped)`;
+  }
+
   /** Memory health rows for `gaia memory status` and the web status surface. */
   async memoryHealth(workspaceId: string): Promise<MemoryHealthRow[]> {
     const record = await this.registry.find(workspaceId);
@@ -1074,6 +1104,31 @@ export class Daemon {
       keepAwake: await this.keepAwake(),
     };
   }
+}
+
+// --- dream v2 proposal rendering (harnessDreamPropose's preformatted text) -----
+
+function truncate(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+function dreamOpLine(op: ConsolidateOp): string {
+  switch (op.kind) {
+    case "fact-add":
+      return `fact-add: ${truncate(op.text, 120)}`;
+    case "fact-invalidate":
+      return `fact-invalidate: ${op.id}`;
+    case "memory-edit":
+      return `memory-edit (${op.action}): ${truncate(op.file, 120)}`;
+  }
+}
+
+function formatDreamProposal(result: ConsolidateResult): string {
+  if (!result.ran) return `dream: ${result.reason ?? "did not run"}`;
+  const ops = result.proposedOps ?? [];
+  if (!ops.length) return "dream: no ops proposed — memory is already tidy.";
+  return [...ops.map(dreamOpLine), "", "run: gaia dream [agent] --apply to accept, or dream again to regenerate."].join("\n");
 }
 
 // --- consolidation LLM (daemon-side, same credential store as the proxy) ---------

@@ -31,6 +31,9 @@ const MEMORY_USAGE = `Usage:
 const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
 const SUMMON_USAGE = `Usage: gaia summon <agent> <task>`;
+const DREAM_USAGE = `Usage:
+  gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
+  gaia dream [agent] --apply   apply the proposal from the last dream run`;
 const CARYLL_USAGE = `Usage:
   gaia caryll compress <file> [-o <out>]  compress a file in place (or to <out>)
   gaia caryll expand <file> [-o <out>]    expand a file (default out: stdout)
@@ -219,6 +222,25 @@ async function runSummon(args: string[]): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
+// `gaia dream` — user-triggered memory consolidation ("Dream v2"). Unlike
+// mem/recall/summon it is never granted to an agent (no GaiaTool entry, no
+// Claude/Pi grant): a person runs it from a shell against their own workspace.
+// It still needs the daemon-wired consolidation LLM (consolidateLlm(), built
+// in src/daemon.ts), so — same as memory writes and summon, NOT the caryll
+// template — it routes over daemonPost to the running daemon; never runs bare.
+async function runDream(args: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(args, new Set(["apply"]));
+  if (positional.length > 1) return fail(DREAM_USAGE);
+  // "current agent" resolution mirrors runRecall's bare-mode fallback below:
+  // env GAIA_AGENT_ID is the invoking agent when none is given explicitly.
+  const agent = positional[0]?.trim() || env("GAIA_AGENT_ID");
+  const apply = flags.apply === "true";
+
+  const result = await daemonPost("/api/harness/dream", { agent, apply });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
+
 function statsLine(stats: { tokensBefore: number; tokensAfter: number; legendEntries: number }): string {
   const saved = stats.tokensBefore > 0 ? Math.round((1 - stats.tokensAfter / stats.tokensBefore) * 100) : 0;
   return `tokens ${stats.tokensBefore} -> ${stats.tokensAfter} (${saved}% saved, ${stats.legendEntries} legend entries)`;
@@ -276,13 +298,18 @@ async function runCaryll(args: string[]): Promise<number> {
   return fail(CARYLL_USAGE);
 }
 
-/** Dispatches `gaia mem|recall|summon|caryll …`. Returns a process exit code. */
+/** Dispatches `gaia mem|recall|summon|caryll|dream …`. Returns a process exit code. */
 export async function runHarnessCommand(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   // `caryll` is a plain file-transform CLI utility, not an agent GaiaTool
   // (no Claude grant / Pi tool / system-prompt pointer) — dispatched directly,
   // ahead of the registry-driven switch below.
   if (command === "caryll") return runCaryll(rest);
+  // `dream` is daemon-backed like memory/recall/summon (needs the daemon's
+  // consolidation LLM) but, like caryll, is never granted to an agent — a
+  // person runs it, not a harness — so it also dispatches directly rather
+  // than through the GAIA_TOOLS registry below.
+  if (command === "dream") return runDream(rest);
   const tool = command ? gaiaToolByVerb(command) : undefined;
   switch (tool?.id) {
     case "memory":
