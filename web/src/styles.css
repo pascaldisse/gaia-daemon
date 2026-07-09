@@ -1594,6 +1594,56 @@ body.resizing { cursor: col-resize; user-select: none; }
 .settings2-raw { min-height: 380px; resize: vertical; white-space: pre; overflow-wrap: normal; }
 .settings2-dirty { color: var(--warn); }
 .settings2-error-line { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); padding: 6px 8px; font-size: 13px; }
+.settings2-notice { color: var(--muted); font-size: 12px; margin: -2px 0 2px; }
+
+/* file-toolbar's trailing controls (form/raw toggle, dirty badge, save) as one
+   group so justify-content:space-between still just splits code-path | rest. */
+.settings2-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.settings2-view-toggle { gap: 0; }
+.settings2-view-toggle button { padding: 4px 10px; font-size: 12px; }
+
+/* The hints-driven form: one row per field, aligned label column + widget
+   column, a muted description line under the widget, compact vertical rhythm. */
+.settings2-form { display: flex; flex-direction: column; max-height: 460px; overflow-y: auto; padding-right: 2px; }
+.settings2-field-row {
+  display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; align-items: start;
+  padding: 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.settings2-field-row:last-child { border-bottom: none; }
+.settings2-field-label { padding-top: 8px; font-size: 12.5px; color: var(--fg); }
+.settings2-field-widget { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.settings2-field-control { display: flex; align-items: center; gap: 6px; }
+.settings2-field-control > select, .settings2-field-control > input, .settings2-field-control > textarea, .settings2-field-control > div { flex: 1; min-width: 0; }
+.settings2-field-desc { font-size: 11px; line-height: 1.4; color: var(--muted); }
+
+/* Optional-row delete (✕): a plain ghost button, not the app's default filled
+   button chrome — it only needs to read as "remove", not compete visually. */
+.settings2-row-remove {
+  flex: 0 0 auto; width: auto; padding: 3px 7px; background: transparent; border: 1px solid transparent; color: var(--muted);
+}
+.settings2-row-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Boolean toggle: no dedicated switch component exists elsewhere yet, so this
+   is the "clean checkbox+label" fallback the spec allows, matching .room-toggle. */
+.settings2-bool { display: inline-flex; align-items: center; gap: 6px; width: auto; cursor: pointer; }
+.settings2-bool input[type="checkbox"] { width: auto; accent-color: var(--accent); cursor: pointer; }
+.settings2-bool span { color: var(--muted); font-size: 12px; }
+
+/* Multiselect: a scrollable vertical checkbox list. */
+.settings2-multiselect {
+  display: flex; flex-direction: column; gap: 5px; max-height: 180px; overflow-y: auto;
+  border: 1px solid var(--border); background: var(--bg); padding: 7px 9px;
+}
+.settings2-multi-option { display: flex; align-items: center; gap: 7px; width: auto; cursor: pointer; font-size: 12.5px; }
+.settings2-multi-option input[type="checkbox"] { width: auto; accent-color: var(--accent); cursor: pointer; }
+
+/* JSON sub-editor: monospace, red border while what's typed doesn't parse. */
+.settings2-json-field { font-family: var(--font); font-size: 12px; resize: vertical; }
+.settings2-json-field.settings2-invalid { border-color: var(--danger); }
+
+/* "+ add setting" row: full-width picker, no label column. */
+.settings2-add-row { grid-template-columns: minmax(0, 1fr); border-bottom: none; padding-top: 10px; }
+.settings2-add-picker { max-width: 420px; }
 
 @media (max-width: 640px) {
   .settings2-split { grid-template-columns: minmax(0, 1fr); }

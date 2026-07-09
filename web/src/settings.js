@@ -1,8 +1,9 @@
-// The Settings modal: a workspace-scoped file browser + raw text editor over
-// the server's editable-file catalog (general/voice/agents), plus the
-// keep-awake toggle. Files stay RAW for now (plain textarea, read on save) —
-// a later task adds a hint-driven smart form on top, consuming
-// state.settingsFileHints, which every file load already populates.
+// The Settings modal: a workspace-scoped file browser + editor over the
+// server's editable-file catalog (general/voice/agents), plus the keep-awake
+// toggle. The editor renders a hints-driven FORM for JSON files that carry
+// field hints (state.settingsFileHints) — a raw textarea remains the escape
+// hatch (view toggle) and the only option for files with no hints or
+// unparseable JSON (persona/memory markdown included).
 import { loadSettingsFile, saveSettingsFile, setKeepAwake } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -10,7 +11,22 @@ import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
+/** @typedef {import("./types.js").FieldHint} FieldHint */
+/** @typedef {import("./types.js").FieldHintOption} FieldHintOption */
+/** @typedef {import("./types.js").FileHints} FileHints */
+/** @typedef {import("./types.js").HarnessHintsMeta} HarnessHintsMeta */
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
+/** @typedef {(string|number)[]} JsonPath */
+/** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
+/**
+ * @typedef {{
+ *   draft: any,
+ *   hints: Record<string, FieldHint>,
+ *   harnessMeta: HarnessHintsMeta|undefined,
+ *   rerender: () => void,
+ *   markDirtyBadge: () => void,
+ * }} FormCtx
+ */
 
 // ---------------------------------------------------------------------------
 // Open/close + tab & selection state.
@@ -46,14 +62,29 @@ async function selectTab(tab) {
 function clearFile() {
   state.settingsFile = null;
   state.settingsFileHints = undefined;
+  state.settingsDraft = null;
   markDirty("settings");
+}
+
+/**
+ * Load a file's content+hints (actions.js) then derive the form draft from
+ * it and reset the view to the default (form, whenever a form is possible) —
+ * every entry point that opens a *different* file goes through this, so the
+ * form/raw toggle never carries a stale draft or view choice from the file
+ * that was open before.
+ * @param {string} id @param {{ workspaceId?: string }} [opts]
+ */
+async function loadFileForEditing(id, opts) {
+  await loadSettingsFile(id, opts);
+  syncDraftFromFile();
+  state.settingsView = "form";
 }
 
 /** @param {string} id */
 async function selectWorkspaceFile(id) {
   state.settingsSelectedWorkspaceFileId = id;
   markDirty("settings");
-  await loadSettingsFile(id, { workspaceId: state.snapshot?.workspace.id });
+  await loadFileForEditing(id, { workspaceId: state.snapshot?.workspace.id });
 }
 
 /** @returns {AgentGroup[]} */
@@ -92,7 +123,7 @@ async function selectAgent(agentId) {
   const fileId = agentViewFiles(group, state.settingsAgentView)[0]?.id ?? group?.files[0]?.id ?? null;
   state.settingsSelectedAgentFileId = fileId;
   markDirty("settings");
-  if (fileId) await loadSettingsFile(fileId);
+  if (fileId) await loadFileForEditing(fileId);
   else clearFile();
 }
 
@@ -103,7 +134,7 @@ async function selectAgentView(view) {
   const fileId = agentViewFiles(group, view)[0]?.id ?? state.settingsSelectedAgentFileId;
   state.settingsSelectedAgentFileId = fileId;
   markDirty("settings");
-  if (fileId) await loadSettingsFile(fileId);
+  if (fileId) await loadFileForEditing(fileId);
   else clearFile();
 }
 
@@ -111,7 +142,7 @@ async function selectAgentView(view) {
 async function selectAgentFile(id) {
   state.settingsSelectedAgentFileId = id;
   markDirty("settings");
-  await loadSettingsFile(id);
+  await loadFileForEditing(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +232,7 @@ function WorkspaceTab() {
       { class: "settings2-sidebar" },
       FileList(state.settingsWorkspaceFiles, state.settingsSelectedWorkspaceFileId, selectWorkspaceFile, "no editable workspace files"),
     ),
-    h("div", { class: "settings2-main" }, RawFileEditor()),
+    h("div", { class: "settings2-main" }, FileEditor()),
   );
 }
 
@@ -260,7 +291,7 @@ function AgentsTab() {
               ),
             ),
             FileList(agentViewFiles(selected, state.settingsAgentView), state.settingsSelectedAgentFileId, selectAgentFile, "no files in this category", agentFileLabel),
-            RawFileEditor(),
+            FileEditor(),
           ]
         : h("div", { class: "empty", text: "no agent selected" }),
     ),
@@ -299,38 +330,547 @@ function FileList(files, selectedId, onSelect, emptyText = "no editable files", 
   );
 }
 
+// ---------------------------------------------------------------------------
+// Hints-driven form model: the draft + dotted-path helpers (copied semantics
+// from the pre-purge settings.js — git show 72551cd~1:web/src/settings.js).
+
+/** Only FieldHint entries drive rendering; `_harness` (HarnessHintsMeta) is
+ * consumed separately by harnessHiddenKeys.
+ * @param {FileHints|undefined} hints @returns {Record<string, FieldHint>} */
+function hintFieldDict(hints) {
+  /** @type {Record<string, FieldHint>} */
+  const dict = {};
+  for (const [key, hint] of Object.entries(hints ?? {})) {
+    if (hint && typeof hint === "object" && "input" in hint) dict[key] = /** @type {FieldHint} */ (hint);
+  }
+  return dict;
+}
+
+/** @param {FileHints|undefined} hints @returns {HarnessHintsMeta|undefined} */
+function harnessMetaOf(hints) {
+  const meta = hints?._harness;
+  return meta && typeof meta === "object" && "configs" in meta ? /** @type {HarnessHintsMeta} */ (meta) : undefined;
+}
+
+/** @param {string} key @returns {JsonPath} */
+function keyPath(key) {
+  return key.split(".");
+}
+
+/** @param {any} root @param {JsonPath} path @returns {any} */
+function getJsonPathValue(root, path) {
+  let current = root;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+/** @param {any} root @param {JsonPath} path @param {unknown} value */
+function setJsonPathValue(root, path, value) {
+  let current = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    if (current[key] === null || typeof current[key] !== "object") current[key] = {};
+    current = current[key];
+  }
+  current[path[path.length - 1]] = value;
+}
+
+/** @param {any} root @param {JsonPath} path */
+function deleteJsonPathValue(root, path) {
+  let current = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    current = current?.[path[index]];
+    if (current === null || typeof current !== "object") return;
+  }
+  if (current && typeof current === "object") delete current[path[path.length - 1]];
+}
+
+/** @param {any} draft */
+function serializeDraft(draft) {
+  return `${JSON.stringify(draft, null, 2)}\n`;
+}
+
 /**
- * Raw text editor for state.settingsFile. The textarea is UNCONTROLLED — its
- * value is read only on save — so a full "settings" region re-render (e.g. from
- * another tick) never fights the caret while typing. The dirty badge is a
- * direct DOM toggle for the same reason, not a state field.
+ * Re-derive state.settingsDraft from the just-loaded/just-saved
+ * state.settingsFile: parses only when the file carries at least one field
+ * hint AND its content is valid JSON. Never touches state.settingsView — a
+ * raw save that keeps the content valid should NOT yank the user back to the
+ * form they deliberately left; see FileEditor's `canForm` gate, which falls
+ * back to raw regardless of settingsView when the draft comes back null.
  */
-function RawFileEditor() {
+function syncDraftFromFile() {
   const file = state.settingsFile;
-  if (!file) return h("div", { class: "empty", text: "select a file" });
-  const dirtyBadge = h("small", { class: "settings2-dirty", hidden: true, text: "unsaved" });
-  const textarea = /** @type {HTMLTextAreaElement} */ (
-    h("textarea", {
-      class: "settings2-raw",
-      value: file.content,
-      oninput: () => {
-        dirtyBadge.hidden = textarea.value === file.content;
+  const hasHints = Object.keys(hintFieldDict(state.settingsFileHints)).length > 0;
+  if (!file || !hasHints) {
+    state.settingsDraft = null;
+    return;
+  }
+  try {
+    state.settingsDraft = JSON.parse(file.content || "{}");
+  } catch {
+    state.settingsDraft = null;
+  }
+}
+
+/**
+ * Harness-driven hidden-field set for the CURRENT draft, mirroring the
+ * pre-purge reference's applyHarnessVisibility: server-computed hint.hidden
+ * flags reflect the harness that was saved when hints were built, so once the
+ * "harness" field changes in the live draft they'd be stale — this recomputes
+ * from `_harness` meta + the draft's live value instead.
+ * @param {HarnessHintsMeta|undefined} harnessMeta @param {any} draft @returns {Set<string>}
+ */
+function harnessHiddenKeys(harnessMeta, draft) {
+  if (!harnessMeta) return new Set();
+  const harnessValue = getJsonPathValue(draft, ["harness"]);
+  if (harnessValue === undefined || harnessValue === null || harnessValue === "") return new Set();
+  const config = harnessMeta.configs?.[String(harnessValue)];
+  return new Set(config?.hiddenFields ?? []);
+}
+
+/** Parent keys of every "[]" (array-item) hint, in first-appearance order —
+ * e.g. "jobs.[].id" / "jobs.[].schedule" both yield "jobs". @param {Record<string, FieldHint>} hints @returns {string[]} */
+function arrayParentKeysOf(hints) {
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {string[]} */
+  const order = [];
+  for (const key of Object.keys(hints)) {
+    const segments = key.split(".");
+    const index = segments.indexOf("[]");
+    if (index === -1) continue;
+    const parent = segments.slice(0, index).join(".");
+    if (!seen.has(parent)) {
+      seen.add(parent);
+      order.push(parent);
+    }
+  }
+  return order;
+}
+
+/**
+ * The rows a form renders, in order: required hints first, then set optional
+ * hints (each group in hints-dict declaration order), then honest json-widget
+ * rows for any "[]" hint's parent key that itself holds an array in the draft
+ * (rule 6 — no array-item sub-forms, just the raw shape).
+ * @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft
+ * @returns {{ requiredRows: FieldEntry[], optionalRows: FieldEntry[], arrayRows: FieldEntry[] }}
+ */
+function computeRows(hints, harnessHidden, draft) {
+  /** @type {FieldEntry[]} */
+  const requiredRows = [];
+  /** @type {FieldEntry[]} */
+  const optionalRows = [];
+  for (const [key, hint] of Object.entries(hints)) {
+    if (key.includes("[]")) continue;
+    if (hint.hidden) continue;
+    if (harnessHidden.has(key)) continue;
+    const path = keyPath(key);
+    const entry = { key, hint, path };
+    if (!hint.optional) requiredRows.push(entry);
+    else if (getJsonPathValue(draft, path) !== undefined) optionalRows.push(entry);
+  }
+  /** @type {FieldEntry[]} */
+  const arrayRows = [];
+  for (const parentKey of arrayParentKeysOf(hints)) {
+    if (parentKey in hints) continue; // has its own real hint — handled by the loop above already
+    if (harnessHidden.has(parentKey)) continue;
+    const path = keyPath(parentKey);
+    const value = getJsonPathValue(draft, path);
+    if (Array.isArray(value)) arrayRows.push({ key: parentKey, hint: { input: "json", label: parentKey }, path });
+  }
+  return { requiredRows, optionalRows, arrayRows };
+}
+
+/** Hinted keys not currently rendered as a row: unset optional keys, minus the
+ * same skips rows themselves apply. @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft
+ * @returns {{ key: string, hint: FieldHint }[]} */
+function addableKeys(hints, harnessHidden, draft) {
+  /** @type {{ key: string, hint: FieldHint }[]} */
+  const result = [];
+  for (const [key, hint] of Object.entries(hints)) {
+    if (key.includes("[]")) continue;
+    if (hint.hidden) continue;
+    if (harnessHidden.has(key)) continue;
+    if (!hint.optional) continue; // required rows always render already
+    if (getJsonPathValue(draft, keyPath(key)) !== undefined) continue; // already rendered
+    result.push({ key, hint });
+  }
+  return result;
+}
+
+/** @param {FieldHint["input"]} input @returns {unknown} */
+function emptyValueFor(input) {
+  if (input === "boolean") return false;
+  if (input === "multiselect") return [];
+  if (input === "json") return {};
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Widgets, one per FieldHint.input.
+
+/** @param {FieldHintOption} option @returns {HTMLOptionElement} */
+function optionElement(option) {
+  return /** @type {HTMLOptionElement} */ (h("option", { value: option.value, text: option.label ?? option.value, ...(option.description ? { title: option.description } : {}) }));
+}
+
+/** @param {HTMLSelectElement} select @param {FieldHintOption[]} options */
+function appendGroupedOptions(select, options) {
+  /** @type {Map<string, FieldHintOption[]>} */
+  const groups = new Map();
+  for (const option of options) {
+    if (!option.group) continue;
+    const bucket = groups.get(option.group);
+    if (bucket) bucket.push(option);
+    else groups.set(option.group, [option]);
+  }
+  for (const option of options) {
+    if (!option.group) select.append(optionElement(option));
+  }
+  for (const [name, opts] of groups) {
+    const optgroup = h("optgroup", { label: name });
+    for (const option of opts) optgroup.append(optionElement(option));
+    select.append(optgroup);
+  }
+}
+
+/** A stale draft value not among the visible options is never silently
+ * dropped — it gets one extra "(current)" option instead. @param {HTMLSelectElement} select @param {FieldHintOption[]} options @param {string} currentValue */
+function addCurrentIfMissing(select, options, currentValue) {
+  if (currentValue === "" || options.some((option) => option.value === currentValue)) return;
+  select.append(h("option", { value: currentValue, text: `${currentValue} (current)` }));
+}
+
+/**
+ * The model-picker fix: when hint.groupBy points at another field (e.g.
+ * "model.name" groupBy "model.provider"), read that field's RAW draft value,
+ * resolve it to a LABEL via the groupBy field's own hint options (option.group
+ * on the dependent field's options holds the label, not the id — commit
+ * 022bf32), and show only options in that group, flat (a single group needs no
+ * optgroup). Unset/unresolved groupBy falls back to every option, grouped by
+ * <optgroup> — same as a plain grouped select with no groupBy at all.
+ * @param {FieldHint} hint @param {Record<string, FieldHint>} hints @param {any} draft
+ * @returns {{ options: FieldHintOption[], useGroups: boolean }}
+ */
+function resolveSelectOptions(hint, hints, draft) {
+  const all = hint.options ?? [];
+  if (hint.groupBy) {
+    const rawValue = getJsonPathValue(draft, keyPath(hint.groupBy));
+    if (rawValue !== undefined && rawValue !== null && rawValue !== "") {
+      const sourceOption = hints[hint.groupBy]?.options?.find((option) => option.value === String(rawValue));
+      const label = sourceOption?.label ?? sourceOption?.value ?? String(rawValue);
+      return { options: all.filter((option) => option.group === label), useGroups: false };
+    }
+    return { options: all, useGroups: true };
+  }
+  return { options: all, useGroups: all.some((option) => option.group) };
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLSelectElement} */
+function SelectWidget(entry, ctx) {
+  const currentRaw = getJsonPathValue(ctx.draft, entry.path);
+  const currentValue = currentRaw === undefined || currentRaw === null ? "" : String(currentRaw);
+  const { options, useGroups } = resolveSelectOptions(entry.hint, ctx.hints, ctx.draft);
+  const select = /** @type {HTMLSelectElement} */ (
+    h("select", {
+      onchange: () => {
+        if (select.value === "" && entry.hint.optional) deleteJsonPathValue(ctx.draft, entry.path);
+        else setJsonPathValue(ctx.draft, entry.path, select.value);
+        ctx.rerender();
       },
     })
   );
+  if (entry.hint.optional) select.append(h("option", { value: "", text: "—" }));
+  if (useGroups) appendGroupedOptions(select, options);
+  else for (const option of options) select.append(optionElement(option));
+  addCurrentIfMissing(select, options, currentValue);
+  select.value = currentValue;
+  return select;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
+function MultiselectWidget(entry, ctx) {
+  const rawValue = getJsonPathValue(ctx.draft, entry.path);
+  const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
+  const container = /** @type {HTMLDivElement} */ (h("div", { class: "settings2-multiselect" }));
+  for (const option of entry.hint.options ?? []) {
+    const box = /** @type {HTMLInputElement} */ (
+      h("input", {
+        type: "checkbox",
+        checked: values.includes(option.value),
+        onchange: () => {
+          const current = Array.isArray(getJsonPathValue(ctx.draft, entry.path)) ? [...getJsonPathValue(ctx.draft, entry.path)] : [];
+          const at = current.indexOf(option.value);
+          if (box.checked && at === -1) current.push(option.value);
+          else if (!box.checked && at !== -1) current.splice(at, 1);
+          setJsonPathValue(ctx.draft, entry.path, current);
+          ctx.rerender();
+        },
+      })
+    );
+    container.append(h("label", { class: "settings2-multi-option", ...(option.description ? { title: option.description } : {}) }, box, h("span", { text: option.label ?? option.value })));
+  }
+  return container;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */
+function NumberWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "number",
+      value: value === undefined || value === null ? "" : String(value),
+      oninput: () => {
+        const text = input.value.trim();
+        if (text !== "" && !Number.isNaN(Number(text))) setJsonPathValue(ctx.draft, entry.path, Number(text));
+        ctx.markDirtyBadge();
+      },
+      onblur: () => {
+        // Empty + optional: unset the key (rule 4) — a discrete boundary
+        // event, so re-rendering (which may drop this very row) is fine here,
+        // unlike oninput above which must never fight the caret mid-type.
+        if (input.value.trim() === "" && entry.hint.optional) {
+          deleteJsonPathValue(ctx.draft, entry.path);
+          ctx.rerender();
+        }
+      },
+    })
+  );
+  return input;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */
+function TextWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "text",
+      value: value === undefined || value === null ? "" : String(value),
+      oninput: () => {
+        setJsonPathValue(ctx.draft, entry.path, input.value);
+        ctx.markDirtyBadge();
+      },
+    })
+  );
+  return input;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLTextAreaElement} */
+function JsonWidget(entry, ctx) {
+  const value = getJsonPathValue(ctx.draft, entry.path);
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    h("textarea", {
+      class: "settings2-json-field",
+      rows: "4",
+      value: value === undefined ? "" : JSON.stringify(value, null, 2),
+      oninput: () => {
+        try {
+          setJsonPathValue(ctx.draft, entry.path, JSON.parse(textarea.value));
+          textarea.classList.remove("settings2-invalid");
+        } catch {
+          // Invalid JSON keeps whatever the draft already holds — never crash,
+          // never corrupt; the red border is the only feedback needed.
+          textarea.classList.add("settings2-invalid");
+        }
+        ctx.markDirtyBadge();
+      },
+    })
+  );
+  return textarea;
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLLabelElement} */
+function BooleanWidget(entry, ctx) {
+  const checked = getJsonPathValue(ctx.draft, entry.path) === true;
+  const input = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "checkbox",
+      checked,
+      onchange: () => {
+        setJsonPathValue(ctx.draft, entry.path, input.checked);
+        ctx.rerender();
+      },
+    })
+  );
+  return /** @type {HTMLLabelElement} */ (h("label", { class: "settings2-bool" }, input, h("span", { text: input.checked ? "on" : "off" })));
+}
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLElement} */
+function renderWidget(entry, ctx) {
+  if (entry.hint.input === "boolean") return BooleanWidget(entry, ctx);
+  if (entry.hint.input === "select") return SelectWidget(entry, ctx);
+  if (entry.hint.input === "multiselect") return MultiselectWidget(entry, ctx);
+  if (entry.hint.input === "number") return NumberWidget(entry, ctx);
+  if (entry.hint.input === "json") return JsonWidget(entry, ctx);
+  return TextWidget(entry, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Form assembly: one row per entry + the add-setting picker.
+
+/** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLElement} */
+function FieldRow(entry, ctx) {
+  const widget = renderWidget(entry, ctx);
+  const removeButton = entry.hint.optional
+    ? h("button", {
+        class: "settings2-row-remove",
+        title: "remove this setting",
+        onclick: () => {
+          deleteJsonPathValue(ctx.draft, entry.path);
+          ctx.rerender();
+        },
+        text: "✕",
+      })
+    : null;
+  return h(
+    "div",
+    { class: "settings2-field-row" },
+    h("div", { class: "settings2-field-label" }, h("span", { text: entry.hint.label ?? entry.key })),
+    h(
+      "div",
+      { class: "settings2-field-widget" },
+      h("div", { class: "settings2-field-control" }, widget, removeButton),
+      entry.hint.description ? h("small", { class: "settings2-field-desc", text: entry.hint.description }) : null,
+    ),
+  );
+}
+
+/** @param {Record<string, FieldHint>} hints @param {Set<string>} harnessHidden @param {any} draft @param {FormCtx} ctx @returns {HTMLElement|null} */
+function AddSettingPicker(hints, harnessHidden, draft, ctx) {
+  const candidates = addableKeys(hints, harnessHidden, draft);
+  if (candidates.length === 0) return null;
+  const select = /** @type {HTMLSelectElement} */ (
+    h("select", {
+      class: "settings2-add-picker",
+      onchange: () => {
+        const chosen = candidates.find((candidate) => candidate.key === select.value);
+        if (chosen) setJsonPathValue(draft, keyPath(chosen.key), emptyValueFor(chosen.hint.input));
+        select.value = "";
+        if (chosen) ctx.rerender();
+      },
+    })
+  );
+  select.append(h("option", { value: "", text: "+ add setting" }));
+  for (const { key, hint } of candidates) {
+    const label = hint.label ?? key;
+    const desc = hint.description ? ` — ${hint.description.slice(0, 60)}` : "";
+    select.append(h("option", { value: key, text: `${label}${desc}` }));
+  }
+  return h("div", { class: "settings2-field-row settings2-add-row" }, select);
+}
+
+/** @param {FormCtx} ctx @returns {HTMLElement} */
+function FormBody(ctx) {
+  const harnessHidden = harnessHiddenKeys(ctx.harnessMeta, ctx.draft);
+  const { requiredRows, optionalRows, arrayRows } = computeRows(ctx.hints, harnessHidden, ctx.draft);
+  const rows = [...requiredRows, ...optionalRows, ...arrayRows];
+  return h(
+    "div",
+    { class: "settings2-form" },
+    rows.length === 0 ? h("div", { class: "empty", text: "no settings to show" }) : rows.map((entry) => FieldRow(entry, ctx)),
+    AddSettingPicker(ctx.hints, harnessHidden, ctx.draft, ctx),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The editor: hints-driven form (default, when possible) with a raw textarea
+// as the always-available escape hatch.
+
+/**
+ * File editor for state.settingsFile. Structural form edits — select/boolean/
+ * multiselect changes, ✕ remove, + add setting, the form/raw toggle itself —
+ * call the real markDirty("settings"): a full region re-render is fine there
+ * because they're discrete clicks, never mid-keystroke. Free-typed widgets
+ * (text/number/json) and the raw textarea instead mutate state directly and
+ * flip their own "unsaved" badge via a direct DOM toggle, exactly like the
+ * pre-form raw editor did — re-rendering on every keystroke would fight the
+ * caret. See MEMORY: this mirrors the reference's uncontrolled-textarea
+ * rationale, just extended to the form's text-ish widgets.
+ */
+function FileEditor() {
+  const file = state.settingsFile;
+  if (!file) return h("div", { class: "empty", text: "select a file" });
+
+  const hints = hintFieldDict(state.settingsFileHints);
+  const hasHints = Object.keys(hints).length > 0;
+  const draft = state.settingsDraft;
+  const canForm = hasHints && draft !== null;
+  const view = canForm && state.settingsView === "form" ? "form" : "raw";
+
+  const dirtyBadge = h("small", { class: "settings2-dirty", hidden: true, text: "unsaved" });
+  const rawSeed = canForm ? serializeDraft(draft) : file.content;
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    h("textarea", {
+      class: "settings2-raw",
+      value: rawSeed,
+      oninput: () => {
+        dirtyBadge.hidden = textarea.value === rawSeed;
+      },
+    })
+  );
+
   const saveButton = h("button", {
     text: "save",
     onclick: () => {
       saveButton.setAttribute("disabled", "");
       saveButton.textContent = "saving…";
-      void saveSettingsFile(textarea.value);
+      const content = view === "form" ? serializeDraft(draft) : textarea.value;
+      void saveSettingsFile(content).then(() => syncDraftFromFile());
     },
   });
+
+  const toggle = canForm
+    ? h(
+        "div",
+        { class: "segmented-tabs settings2-view-toggle" },
+        h(
+          "button",
+          {
+            class: view === "form" ? "active" : "",
+            onclick: () => {
+              state.settingsView = "form";
+              markDirty("settings");
+            },
+          },
+          h("span", { text: "form" }),
+        ),
+        h(
+          "button",
+          {
+            class: view === "raw" ? "active" : "",
+            onclick: () => {
+              state.settingsView = "raw";
+              markDirty("settings");
+            },
+          },
+          h("span", { text: "raw" }),
+        ),
+      )
+    : null;
+
+  /** @type {FormCtx} */
+  const ctx = {
+    draft,
+    hints,
+    harnessMeta: harnessMetaOf(state.settingsFileHints),
+    rerender: () => markDirty("settings"),
+    markDirtyBadge: () => {
+      dirtyBadge.hidden = canForm && serializeDraft(draft) === file.content;
+    },
+  };
+
+  const body = view === "form" && canForm ? FormBody(ctx) : textarea;
+
   return h(
     "div",
     { class: "settings2-editor" },
-    h("div", { class: "file-toolbar" }, h("code", {}, PathText(file.path)), dirtyBadge, saveButton),
-    textarea,
+    h("div", { class: "file-toolbar" }, h("code", {}, PathText(file.path)), h("div", { class: "settings2-toolbar-actions" }, toggle, dirtyBadge, saveButton)),
+    hasHints && !canForm ? h("div", { class: "settings2-notice", text: "not valid JSON — raw only" }) : null,
+    body,
     state.settingsError ? h("div", { class: "settings2-error-line", text: state.settingsError }) : null,
   );
 }

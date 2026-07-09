@@ -72,6 +72,8 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsSelectedAgentFileId: string|null,
  *   settingsFile: EditableFile|null,
  *   settingsFileHints: FileHints|undefined,
+ *   settingsDraft: any,
+ *   settingsView: "form"|"raw",
  *   settingsError: string,
  *   keepAwake: KeepAwakeCapability,
  * }}
@@ -191,6 +193,14 @@ export const state = {
   settingsSelectedAgentFileId: null,
   settingsFile: null,
   settingsFileHints: undefined,
+  // The hints-driven form's working copy of the open JSON file, parsed once on
+  // load (settings.js's syncDraftFromFile); null when the file has no hints or
+  // fails to parse, which forces the raw-only fallback. settingsView is the
+  // user's form/raw toggle choice, only meaningful while a draft exists — see
+  // FileEditor's `canForm` gate, which coerces back to raw regardless of this
+  // when a draft isn't available.
+  settingsDraft: null,
+  settingsView: "form",
   settingsError: "",
   // "Keep laptop awake while GAIA runs" — daemon-managed, macOS-only capability
   // served in /api/app; `supported` false elsewhere hides the control entirely.
