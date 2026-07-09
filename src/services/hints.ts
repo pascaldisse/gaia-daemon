@@ -11,12 +11,12 @@
 // consumes it unchanged.
 
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename as pathBasename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
 import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ThinkingLevel, Workspace } from "../core/types.js";
-import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
+import { agentPaths, gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { writeTextAtomic } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
@@ -224,6 +224,35 @@ function values(items: string[]): FieldHintOption[] {
   return items.map((value) => ({ value }));
 }
 
+function isRoleName(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function roleNamesInDir(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => pathBasename(entry.name, ".md"))
+    .filter(isRoleName);
+}
+
+function roleHintOptions(agentId: string | undefined): FieldHintOption[] {
+  if (!agentId) return [];
+  const rolesDir = agentPaths.rolesDir(globalPaths.agentDir(agentId));
+  return [...new Set(roleNamesInDir(rolesDir))]
+    .sort((a, b) => a.localeCompare(b))
+    .map((value) => ({ value }));
+}
+
+function agentIdFromAgentJsonLabel(label: string): string | undefined {
+  const parts = label.split(/[\\/]+/);
+  const agentJson = parts[parts.length - 1] === "agent.json";
+  if (!agentJson) return undefined;
+  const agentsIndex = parts.lastIndexOf("agents");
+  const agentId = agentsIndex >= 0 ? parts[agentsIndex + 1] : undefined;
+  return agentId && isRoleName(agentId) ? agentId : undefined;
+}
+
 function harnessSelectOptions(): FieldHintOption[] {
   return harnessSpecs().map((spec) => ({
     value: spec.id,
@@ -384,7 +413,7 @@ function configJsonHints(sources: HintSources): FileHints {
   };
 }
 
-function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>): FileHints {
+function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, agentId?: string): FileHints {
   const rawHarness = typeof parsed?.harness === "string" ? parsed.harness : undefined;
   const currentHarnessUi = rawHarness ? findHarness(rawHarness)?.ui : undefined;
 
@@ -416,6 +445,11 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>):
       label: "Skills",
       description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
     },
+    role: select(roleHintOptions(agentId), {
+      optional: true,
+      label: "Role",
+      description: "default role loaded for this agent (roles are markdown files in the roles dir)",
+    }),
     permissionMode: select(values(permissionModeOptions(rawHarness)), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
@@ -518,7 +552,7 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
     }
   }
   if (basename === "config.json") return configJsonHints(sources);
-  if (basename === "agent.json") return agentJsonHints(sources, parsed);
+  if (basename === "agent.json") return agentJsonHints(sources, parsed, agentIdFromAgentJsonLabel(file.label));
   if (basename === "voice.json") return voiceJsonHints();
   if (basename === "schedules.json") return schedulesJsonHints(sources);
   return undefined;
