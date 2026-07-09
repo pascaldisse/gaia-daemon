@@ -16,15 +16,16 @@ import { buildAudioPlayer } from "./readaloud.js";
 import { isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
+  abortActiveTranscription,
   cancelDictation,
   discardFailedDictation,
-  discardRecoveredDraft,
+  discardRecoveredClip,
   finalizeDictationForSend,
   hasFailedDictation,
-  refreshDictationDrafts,
+  refreshRecoveredClips,
   retryDictation,
   toggleDictation,
-  transcribeRecoveredDraft,
+  transcribeRecoveredClip,
 } from "./dictation.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
@@ -192,9 +193,9 @@ function renderComposer() {
         }
       } catch {}
     }
-    // Recovered dictation drafts (crash/reload durability) are per-room too —
-    // refresh the chip list whenever the room switches.
-    void refreshDictationDrafts();
+    // Recovered dictation clips (crash/reload durability, server-backed) are
+    // per-room too — refresh the chip list whenever the room switches.
+    void refreshRecoveredClips();
   }
 
   // Textarea chrome; the value is only written when state changed elsewhere
@@ -850,7 +851,7 @@ function DictationPanel() {
   if (state.dictating) {
     actions.push(h("button", { type: "button", class: "dictation-action primary", text: "stop + transcribe", onclick: () => void toggleDictation() }));
   } else if (state.dictationBusy) {
-    // Transcribing: no actions.
+    actions.push(h("button", { type: "button", class: "dictation-action danger", text: "cancel", onclick: () => abortActiveTranscription() }));
   } else if (failed) {
     actions.push(h("button", { type: "button", class: "dictation-action primary", text: "retry", onclick: () => void retryDictation() }));
     actions.push(h("button", { type: "button", class: "dictation-action danger", text: "discard", onclick: () => discardFailedDictation() }));
@@ -872,28 +873,25 @@ function DictationPanel() {
 }
 
 /**
- * Chips for recovered dictation drafts (from a crash/reload) — one per
- * state.dictationDrafts entry, each with "transcribe" / "discard" actions.
- * Reuses the dictation-panel/dictation-action CSS classes; never disables
- * the mic or the send button.
+ * Chips for recovered dictation clips (from a crash/reload, server-backed —
+ * see dictation.js's refreshRecoveredClips) — one per state.dictationDrafts
+ * entry, each with "transcribe" / "discard" actions. Reuses the
+ * dictation-panel/dictation-action CSS classes; never disables the mic or
+ * the send button.
  * @returns {HTMLElement[]}
  */
 function DictationDraftChips() {
+  if (state.dictating || !state.dictationDrafts.length) return [];
   return state.dictationDrafts.map((draft) =>
     h(
       "div",
-      { class: `dictation-panel recovered${draft.status === "failed" ? " failed" : ""}` },
+      { class: "dictation-panel recovered" },
       h(
         "div",
         { class: "dictation-wave", title: "recovered recording" },
         Array.from({ length: 28 }, () => h("span", { class: "dictation-wave-bar", style: "--level:0.08" })),
       ),
-      h(
-        "div",
-        { class: "dictation-copy" },
-        h("strong", { text: `recovered recording · ${formatDictationDuration(draft.durationMs)} · ${formatDictationTime(draft.startedAt)}` }),
-        draft.status === "failed" && draft.error ? h("span", { text: draft.error }) : null,
-      ),
+      h("div", { class: "dictation-copy" }, h("strong", { text: `recovered recording (${Math.round(draft.bytes / 1024)} KB)` })),
       h(
         "div",
         { class: "dictation-actions" },
@@ -901,36 +899,18 @@ function DictationDraftChips() {
           type: "button",
           class: "dictation-action primary",
           text: "transcribe",
-          onclick: () => void transcribeRecoveredDraft(draft.id),
+          onclick: () => void transcribeRecoveredClip(draft.id),
         }),
         h("button", {
           type: "button",
           class: "dictation-action danger",
           text: "discard",
-          onclick: () => void discardRecoveredDraft(draft.id),
+          onclick: () => void discardRecoveredClip(draft.id),
         }),
       ),
     ),
   );
 }
-
-/** @param {number} ms @returns {string} mm:ss */
-function formatDictationDuration(ms) {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-/** @param {number} ms @returns {string} */
-function formatDictationTime(ms) {
-  try {
-    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "";
-  }
-}
-
 
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
