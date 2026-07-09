@@ -625,7 +625,9 @@ function MultiselectWidget(entry, ctx) {
         },
       })
     );
-    container.append(h("label", { class: "settings2-multi-option", ...(option.description ? { title: option.description } : {}) }, box, h("span", { text: option.label ?? option.value })));
+    const name = option.label ?? option.value;
+    const title = option.description ? `${name} — ${option.description}` : name;
+    container.append(h("label", { class: "settings2-multi-option", title }, box, h("span", { text: name })));
   }
   return container;
 }
