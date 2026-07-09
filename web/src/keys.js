@@ -5,16 +5,18 @@
 // chords, so they behave exactly like every other Mac app and appear in the menu
 // bar; this handler then only covers the in-web bits below. In a plain browser
 // there is no menu, so the same chords are handled here as a fallback.
-//   mod+T  new tab        mod+N  new window     mod+W  close tab / window
+//   mod+T  new tab / room        mod+Shift+N  new room        mod+N  new window
+//   mod+Alt+Shift+N  new incognito room        mod+W  close tab / window
 //   mod+1..9  jump to tab N            mod+Shift+] / mod+Shift+[  next / prev tab
 //   mod+B  sessions sidebar            mod+Alt+B  room panel
 //   mod+K  search all chats            mod+F  search this chat
 //   Alt+T  theme palette   Alt+Shift+T  cycle theme   Esc  close overlays
-import { jumpTab, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
+import { deleteRoom, deleteWorkspace } from "./actions.js";
+import { jumpTab, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { isNative } from "./native.js";
 import { markDirty } from "./render.js";
 import { closeSearch, openSearch } from "./search.js";
-import { state } from "./state.js";
+import { effectiveSidebarFocus, state } from "./state.js";
 import { closeBgTasks, closeThemePalette, closeUsagePopover, openThemePalette } from "./statusbar.js";
 import { cycleTheme } from "./themes.js";
 
@@ -28,6 +30,33 @@ const IS_MAC = /mac|iphone|ipad/i.test(
  * @param {KeyboardEvent} event */
 function mod(event) {
   return IS_MAC ? event.metaKey : event.ctrlKey;
+}
+
+/** The OS-standard "delete this item" chord: ⌘⌫ on macOS (Finder's move-to-trash),
+ * the Delete key elsewhere. Bare — no extra modifiers — so it never collides with
+ * editing chords like ⌥⌫ or ⇧⌘⌫.
+ * @param {KeyboardEvent} event */
+function isDeleteChord(event) {
+  if (event.altKey || event.shiftKey) return false;
+  return IS_MAC ? event.metaKey && !event.ctrlKey && event.key === "Backspace" : !event.metaKey && !event.ctrlKey && event.key === "Delete";
+}
+
+/** True while focus is in a text field — where ⌘⌫ is "delete to line start" and
+ * Delete removes a character, so the sidebar delete chord must stand down. */
+function isTypingTarget() {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement)) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
+/** Block the sidebar delete chord while typing or with any modal/overlay up — a
+ * confirm/prompt dialog (`.modal-backdrop`), search, settings, the theme palette,
+ * the Dario/usage/background-tasks popovers. Keeps it from double-firing into, or
+ * deleting behind, an open dialog. */
+function sidebarDeleteBlocked() {
+  if (isTypingTarget()) return true;
+  if (document.querySelector(".modal-backdrop")) return true;
+  return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
 }
 
 export function installKeybindings() {
@@ -79,6 +108,22 @@ export function installKeybindings() {
         return;
       }
 
+      // Delete the focused sidebar item — workspace or room — with the OS-native
+      // delete chord (⌘⌫ on macOS, Del elsewhere). This is the ONLY way to delete
+      // a workspace or room; there's no per-row button. App-specific (no native
+      // menu standard), so it runs in both the shell and a plain browser.
+      // Suppressed while typing (⌘⌫ is "delete to line start" in a field) or with
+      // any modal/overlay up, so it never fights an open dialog.
+      if (isDeleteChord(event) && !sidebarDeleteBlocked()) {
+        const focus = effectiveSidebarFocus();
+        if (focus) {
+          event.preventDefault();
+          if (focus.kind === "workspace") void deleteWorkspace(focus.id);
+          else void deleteRoom(focus.id);
+          return;
+        }
+      }
+
       const isMod = mod(event);
       const has = Boolean(state.snapshot);
 
@@ -121,6 +166,21 @@ export function installKeybindings() {
       if (isNative()) return;
 
       if (isMod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t" && has) {
+        event.preventDefault();
+        newTab();
+        return;
+      }
+      // New incognito (memory-off) room (mod+Alt+Shift+N). Checked before the
+      // plain new-room chord since it also carries Shift+N. Code-based, not
+      // key-based: on macOS Option composes a dead key, so `event.key` isn't "n".
+      if (isMod && event.altKey && event.shiftKey && event.code === "KeyN" && has) {
+        event.preventDefault();
+        newIncognitoRoom();
+        return;
+      }
+      // New room in the current workspace (mod+Shift+N). A tab is a room here, so
+      // this is newTab under an explicit "new room" chord — auto-named, no dialog.
+      if (isMod && event.shiftKey && !event.altKey && event.key.toLowerCase() === "n" && has) {
         event.preventDefault();
         newTab();
         return;

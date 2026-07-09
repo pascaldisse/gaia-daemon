@@ -67,6 +67,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   usagePopoverOpen: boolean,
  *   bgTasksOpen: boolean,
  *   summonListOpen: boolean,
+ *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   readMarks: Record<string, number>,
  * }}
  */
@@ -159,6 +160,11 @@ export const state = {
   usagePopoverOpen: false,
   bgTasksOpen: false,
   summonListOpen: false,
+  // The sidebar's delete target: the last workspace/room the user clicked. The
+  // OS delete chord (⌘⌫ on macOS, Del elsewhere) removes whatever this points
+  // at — the only way to delete a workspace or room. null falls back to the
+  // current room (see effectiveSidebarFocus).
+  sidebarFocus: null,
   readMarks: loadReadMarks(),
 };
 
@@ -281,6 +287,19 @@ export function roomPending(room) {
   if (!snapshot) return false;
   const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
   return (room.lastActivity ?? 0) > mark;
+}
+
+/**
+ * The sidebar item the delete chord acts on: the explicit click-selected focus,
+ * or — when nothing is explicitly selected — the current room, so a room is
+ * always a safe default target and the highlight always matches what delete
+ * removes. Returns null only when there's no snapshot at all.
+ * @returns {{kind: "workspace"|"room", id: string}|null}
+ */
+export function effectiveSidebarFocus() {
+  if (state.sidebarFocus) return state.sidebarFocus;
+  const roomId = state.snapshot?.room.id;
+  return roomId ? { kind: "room", id: roomId } : null;
 }
 
 /** @param {Snapshot|null} [snapshot] @returns {Task|null} */

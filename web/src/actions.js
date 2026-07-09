@@ -193,30 +193,30 @@ export async function setRoomAgentDialogue(on) {
   }
 }
 
+/** An opaque, collision-resistant id for an auto-created room. The user never
+ * types or sees it: the room takes its display title from its first message
+ * (server-side — see isAutoRoomId/deriveRoomTitle in src/domain/rooms.ts), the
+ * way a Claude Code / Codex session names itself from its opening prompt. The
+ * `chat-` prefix is what the daemon keys the auto-title on, so keep it in sync
+ * with AUTO_ROOM_PREFIX there.
+ * @param {string} prefix */
+function newAutoRoomId(prefix) {
+  return `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 /**
- * Create a new room. Normally opens a name dialog with an incognito checkbox.
- * @param {{ incognito?: boolean }} [opts] `incognito:true` skips the dialog and
- *   creates a memory-off room instantly with an auto name (⌥-click on `+`).
+ * Create a new room in the current workspace and switch to it — instantly, no
+ * name dialog. The room is auto-named (its title is distilled from the first
+ * message). ⌥-click / `incognito:true` makes it memory-off instead.
+ * @param {{ incognito?: boolean }} [opts]
  */
 export async function addRoom(opts = {}) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  // ⌥-click / Alt: instant incognito room — no dialog, auto-named.
-  if (opts.incognito) {
-    try {
-      await selectRoom(snapshot.workspace.id, `incognito-${Date.now().toString(36)}`, { incognito: true });
-    } catch (error) {
-      setError(error);
-    }
-    return;
-  }
-  const result = await promptText("New room name", {
-    placeholder: "letters, numbers, dots, hyphens, underscores",
-    checkbox: { label: "🕶 Incognito — no memory (no capture, recall, or memory tools)" },
-  });
-  if (!result || !result.value.trim()) return;
+  const incognito = opts.incognito === true;
+  const roomId = newAutoRoomId(incognito ? "incognito-" : "chat-");
   try {
-    await selectRoom(snapshot.workspace.id, result.value.trim(), { incognito: result.checked });
+    await selectRoom(snapshot.workspace.id, roomId, { incognito });
   } catch (error) {
     setError(error);
   }
@@ -258,12 +258,38 @@ export async function deleteRoom(roomId) {
       method: "DELETE",
       body: "{}",
     });
+    state.sidebarFocus = null; // the target is gone; fall back to the new current room
     applySnapshotPayload(body);
     if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
     await loadSelectedWorkspaceFile();
     state.error = "";
     markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Remove a workspace from GAIA's list. De-registration only — nothing on disk is
+ * deleted (its .gaia data and project files stay put, so re-adding the folder
+ * restores it). Confirms first, then DELETEs; the server returns the fresh app
+ * payload with a remaining workspace selected (or none, if it was the last).
+ * @param {string} workspaceId
+ */
+export async function deleteWorkspace(workspaceId) {
+  const workspace = state.workspaces.find((item) => item.id === workspaceId);
+  const name = workspace?.name ?? workspaceId;
+  const ok = await confirmDialog(`Remove workspace "${name}"?`, {
+    detail: "Removes it from GAIA's workspace list. Nothing on disk is deleted — its .gaia data and files stay put, and you can re-add the folder to restore it.",
+    okLabel: "Remove workspace",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE", body: "{}" });
+    state.sidebarFocus = null; // the target is gone; fall back to the new current room
+    await applyAppPayload(body);
   } catch (error) {
     setError(error);
   }

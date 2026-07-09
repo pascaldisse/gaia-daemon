@@ -2,12 +2,12 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, deleteRoom, loadWorkspace, selectRoom } from "./actions.js";
+import { addRoom, addWorkspace, loadWorkspace, selectRoom } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
-import { roomUnread, state } from "./state.js";
+import { effectiveSidebarFocus, roomUnread, state } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -16,6 +16,8 @@ function renderSidebar() {
   if (!nav) return;
   const scrollTop = nav.scrollTop;
   const current = state.snapshot?.workspace.id;
+  // The delete target: which workspace/room the OS delete chord will remove.
+  const focus = effectiveSidebarFocus();
   /** @type {(HTMLElement|null)[]} */
   const children = [
     h("button", {
@@ -32,9 +34,16 @@ function renderSidebar() {
         h(
           "button",
           {
-            class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"}`,
+            class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
             title: workspace.path,
-            onclick: () => (workspace.isInitialized ? void loadWorkspace(workspace.id) : setError(`Missing .gaia workspace: ${workspace.path}`)),
+            // Clicking makes this the delete target (the ⌘⌫ / Del chord acts on
+            // it) and opens it. The muted state means its .gaia is missing.
+            onclick: () => {
+              state.sidebarFocus = { kind: "workspace", id: workspace.id };
+              if (workspace.isInitialized) void loadWorkspace(workspace.id);
+              else setError(`Missing .gaia workspace: ${workspace.path}`);
+              markDirty("sidebar");
+            },
           },
           h("span", { text: workspace.name }),
           h("small", {}, PathText(workspace.path)),
@@ -126,6 +135,8 @@ function RoomNode(room, childrenOf, depth) {
     markDirty("sidebar");
   };
   const snapshot = state.snapshot;
+  const focus = effectiveSidebarFocus();
+  const focused = focus?.kind === "room" && focus.id === room.id;
   return h(
     "div",
     { class: "room-node" },
@@ -138,9 +149,17 @@ function RoomNode(room, childrenOf, depth) {
       h(
         "button",
         {
-          class: `nav-item room-item ${room.isCurrent ? "active" : ""}`,
+          class: `nav-item room-item ${room.isCurrent ? "active" : ""} ${focused ? "focused" : ""}`,
           title: room.path,
-          onclick: room.isCurrent || !snapshot ? null : () => void selectRoom(snapshot.workspace.id, room.id),
+          // Clicking makes this the delete target (the ⌘⌫ / Del chord acts on
+          // it) and opens it. Re-clicking the current room just re-targets it.
+          onclick: !snapshot
+            ? null
+            : () => {
+                state.sidebarFocus = { kind: "room", id: room.id };
+                if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
+                else markDirty("sidebar");
+              },
         },
         h(
           "span",
@@ -157,17 +176,8 @@ function RoomNode(room, childrenOf, depth) {
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
-      // Hover-revealed delete: moves the room to trash and purges it from memory
-      // (confirmed first). Server refuses the last room, so it's always safe here.
-      h("button", {
-        class: "room-del",
-        title: "delete room (moves to trash)",
-        onclick: (/** @type {MouseEvent} */ event) => {
-          event.stopPropagation();
-          void deleteRoom(room.id);
-        },
-        text: "🗑",
-      }),
+      // No per-row delete button: deletion is the OS delete chord (⌘⌫ on macOS,
+      // Del elsewhere) acting on the focused room — see keys.js.
       kids.length > 0
         ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
         : h("span", { class: "room-twisty leaf" }),

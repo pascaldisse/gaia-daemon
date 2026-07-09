@@ -82,6 +82,18 @@ export class WorkspaceRegistry {
   async find(id: string): Promise<WorkspaceRecord | undefined> {
     return (await this.list()).find((record) => record.id === id);
   }
+
+  /** Drop a workspace from the recent-workspaces list. De-registration only —
+   * the folder on disk (project files + .gaia data) is never touched, so
+   * re-adding the path restores it. Returns false if the id wasn't listed. */
+  async remove(id: string): Promise<boolean> {
+    const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    const list = config.recentWorkspaces ?? [];
+    const next = list.filter((item) => item.id !== id);
+    if (next.length === list.length) return false;
+    await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
+    return true;
+  }
 }
 
 // --- the daemon -----------------------------------------------------------------
@@ -568,6 +580,47 @@ export class Daemon {
     this.broadcast({ type: "rooms", workspaceId, rooms: await nextService.listRooms() });
     this.broadcast({ type: "snapshot", workspaceId, roomId: nextService.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  /** Remove a workspace from GAIA's registry (the recent-workspaces list). This
+   * de-registers it and tears down its resident room services / memory service /
+   * summon coordinator — it does NOT delete anything on disk: the workspace's
+   * .gaia data and project files stay put, so re-adding the folder restores
+   * everything. Refuses while a voice call is active in that workspace. Returns
+   * the fresh app payload with a remaining workspace selected (or none, if this
+   * was the last one). */
+  async deleteWorkspace(workspaceId: string): Promise<Awaited<ReturnType<Daemon["appPayload"]>>> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    if (this.activeCall?.workspaceId === workspaceId) {
+      throw new Error("Stop the active voice call before deleting this workspace.");
+    }
+
+    // Cancel any in-flight turn, then drop every resident room service for this
+    // workspace so nothing keeps writing under a workspace we're forgetting.
+    for (const key of this.workspaceServiceKeys(workspaceId)) {
+      const service = this.services.get(key);
+      if (!service) continue;
+      if (service.isBusy) await service.cancelActiveTask();
+      service.dispose();
+      this.services.delete(key);
+    }
+    const memory = this.memoryServices.get(workspaceId);
+    if (memory) {
+      memory.service.dispose();
+      this.memoryServices.delete(workspaceId);
+    }
+    this.memoryStores.delete(workspaceId);
+    this.summonCoordinators.delete(workspaceId);
+    this.currentRoom.delete(workspaceId);
+
+    await this.registry.remove(workspaceId);
+    this.log(`removed workspace ${record.name} (${workspaceId}) from the registry; files left on disk`);
+
+    // Select a remaining initialized workspace (if any) for the returned payload.
+    const remaining = await this.registry.list();
+    const nextCurrent = remaining.find((workspace) => workspace.isInitialized)?.id;
+    return this.appPayload(nextCurrent);
   }
 
   async setAgentRole(workspaceId: string, roomId: string, agentId: string, role: string): Promise<SelectionPayload & { message: string }> {
