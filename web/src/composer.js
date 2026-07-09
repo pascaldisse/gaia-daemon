@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, sendMessage, stopAll, uploadAttachment } from "./actions.js";
+import { editMessage, selectRoom, sendMessage, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
@@ -19,6 +19,7 @@ import { cancelDictation, toggleDictation } from "./dictation.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").AgentStatus} AgentStatus */
+/** @typedef {import("./types.js").RoomSummary} RoomSummary */
 /** @typedef {{ label: string, value: string, description?: string, suffix?: string }} CompletionOption */
 /** @typedef {{ kind: "/"|"@", start: number, query: string, options: CompletionOption[] }} Completion */
 
@@ -34,6 +35,8 @@ let bannerEl = null;
 let bannerLabelEl = null;
 /** @type {HTMLElement|null} */
 let bannerBarEl = null;
+/** @type {HTMLElement|null} */
+let summonListEl = null;
 /** @type {HTMLElement|null} */
 let editBannerEl = null;
 /** @type {HTMLElement|null} */
@@ -75,8 +78,20 @@ export function initComposer() {
   );
   sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: ">" }));
   autocompleteEl = h("div", { class: "autocomplete", hidden: true });
-  bannerLabelEl = h("span", { class: "running-label" });
+  // Clicking the label toggles the summon list (only meaningful when this room
+  // has running summons — renderComposer adds/removes the `has-summons` class).
+  bannerLabelEl = h("span", {
+    class: "running-label",
+    onclick: () => {
+      if (runningSummonRooms(state.snapshot).length === 0) return;
+      state.summonListOpen = !state.summonListOpen;
+      markDirty("composer");
+    },
+  });
   bannerBarEl = h("span", { class: "compact-bar-wrap", hidden: true });
+  // Expandable list of this room's running summons; each row jumps to its
+  // sub-room. Anchored above the banner, populated + shown in renderComposer.
+  summonListEl = h("div", { class: "summon-list", hidden: true });
   bannerEl = h(
     "div",
     { class: "running-banner", hidden: true },
@@ -84,6 +99,7 @@ export function initComposer() {
     bannerLabelEl,
     bannerBarEl,
     h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
+    summonListEl,
   );
   editBannerEl = h(
     "div",
@@ -147,6 +163,17 @@ function renderComposer() {
   if (bannerBarEl) {
     bannerBarEl.hidden = !compactingAgent;
     bannerBarEl.replaceChildren(...(compactingAgent?.compact ? [CompactBar(compactingAgent.compact)] : []));
+  }
+
+  // Summon list: the label is a click target only when this room has running
+  // summons; clicking expands the list of them, each a jump to its sub-room.
+  const summons = busy ? runningSummonRooms(snapshot) : [];
+  bannerLabelEl.classList.toggle("has-summons", summons.length > 0);
+  if (summons.length === 0) state.summonListOpen = false;
+  if (summonListEl) {
+    const open = state.summonListOpen && summons.length > 0;
+    summonListEl.hidden = !open;
+    summonListEl.replaceChildren(...(open && snapshot ? SummonRows(summons, snapshot.workspace.id) : []));
   }
 
   editBannerEl.hidden = !state.editingEventId;
@@ -446,6 +473,33 @@ function runningLabel(snapshot) {
   let label = parts.length ? `running: ${parts.join(" + ")}` : "running…";
   if (queued) label += ` · ${queued} queued`;
   return label;
+}
+
+/**
+ * Rows for the expandable summon list — one clickable button per running summon
+ * sub-room; clicking jumps to that room's live output and collapses the list.
+ * @param {RoomSummary[]} summons
+ * @param {string} workspaceId
+ * @returns {HTMLElement[]}
+ */
+function SummonRows(summons, workspaceId) {
+  return summons.map((room) =>
+    h(
+      "button",
+      {
+        type: "button",
+        class: "summon-row",
+        title: `jump to ${room.id}`,
+        onclick: () => {
+          state.summonListOpen = false;
+          void selectRoom(workspaceId, room.id);
+        },
+      },
+      h("span", { class: "summon-row-dot" }),
+      h("span", { class: "summon-row-name", text: room.title ?? room.id }),
+      h("span", { class: "summon-row-hint", text: "watch →" }),
+    ),
+  );
 }
 
 // Mirror of the server-side mention router (services/commands.ts): mentions

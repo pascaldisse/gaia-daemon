@@ -64,6 +64,7 @@
  *   usage: Record<string, import("./types.js").UsageLimits>,
  *   usagePopoverOpen: boolean,
  *   bgTasksOpen: boolean,
+ *   summonListOpen: boolean,
  *   readMarks: Record<string, number>,
  * }}
  */
@@ -155,6 +156,7 @@ export const state = {
   usage: {},
   usagePopoverOpen: false,
   bgTasksOpen: false,
+  summonListOpen: false,
   readMarks: loadReadMarks(),
 };
 

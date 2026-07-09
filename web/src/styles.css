@@ -680,6 +680,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .composer-spacer { flex: 1; }
 
 .running-banner {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -700,8 +701,51 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 .running-banner .running-label { flex: 1; min-width: 0; color: var(--good); }
+.running-banner .running-label.has-summons { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .running-banner .stop-btn { padding: 2px 10px; color: var(--danger); border: 1px solid var(--danger); background: transparent; }
 .running-banner .compact-bar-wrap { flex: 1; min-width: 80px; max-width: 260px; display: flex; }
+
+/* Expandable list of this room's running summons, anchored above the banner. */
+.running-banner .summon-list {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  max-width: min(360px, 90vw);
+  max-height: 240px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--good);
+  background: var(--bg3);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.running-banner .summon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.running-banner .summon-row:hover { background: color-mix(in srgb, var(--good) 16%, transparent); }
+.running-banner .summon-row-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--good);
+  box-shadow: 0 0 6px var(--good);
+}
+.running-banner .summon-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.running-banner .summon-row-hint { flex: none; color: var(--muted); font-size: 0.85em; }
 
 /* Compaction progress bar: determinate width from the estimated fraction, or
    an indeterminate slide when the job size is unknown. Also rendered inside
