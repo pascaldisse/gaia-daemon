@@ -18,7 +18,6 @@ import { installDictationLifecycle } from "./dictation.js";
 import "./dario.js";
 import "./contextgate.js";
 import "./panel.js";
-import "./settings.js";
 import "./search.js";
 import "./sidebar.js";
 import "./tabsbar.js";

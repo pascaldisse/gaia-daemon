@@ -5,7 +5,6 @@ import { api } from "./api.js";
 import { connectEvents, seedLiveTurn } from "./events.js";
 import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
-import { loadInitialFiles, loadSelectedWorkspaceFile } from "./settings.js";
 import { activeTask, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
@@ -25,17 +24,13 @@ async function applyAppPayload(body) {
   syncReadMarks();
   syncDarioFromSnapshot(); // surface a pending Dario proposal on initial load
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
-  state.workspaceFiles = body.workspaceFiles ?? [];
-  state.globalFiles = body.globalFiles ?? state.globalFiles;
   state.voice = body.voice ?? null;
-  state.keepAwake = body.keepAwake ?? state.keepAwake;
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
   }
   rememberLocation(state.snapshot);
   connectEvents();
-  await loadInitialFiles();
   state.error = "";
   markDirty();
 }
@@ -66,7 +61,6 @@ function applySnapshotPayload(body) {
   syncDarioFromSnapshot(); // surface a pending Dario proposal when switching into a room
   // Workspace/room switch: paged-in older history belongs to the old room.
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
-  state.workspaceFiles = body.workspaceFiles ?? [];
   state.voice = body.voice ?? null;
   rememberLocation(state.snapshot);
 }
@@ -76,14 +70,11 @@ export async function loadWorkspace(workspaceId) {
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
     applySnapshotPayload(body);
-    state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
-    state.workspaceFile = null;
     if (state.snapshot) {
       restoreTabs(state.snapshot.workspace.id);
       openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     }
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = "";
     markDirty();
   } catch (error) {
@@ -126,11 +117,8 @@ export async function selectRoom(workspaceId, roomId, opts = {}) {
       body: JSON.stringify(opts.incognito ? { incognito: true } : {}),
     });
     applySnapshotPayload(body);
-    state.selectedWorkspaceFileId = state.workspaceFiles[0]?.id ?? null;
-    state.workspaceFile = null;
     if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = "";
     markDirty();
   } catch (error) {
@@ -149,7 +137,6 @@ export async function setDefaultAgent(agentId) {
     });
     applySnapshotPayload(body);
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = "";
     markDirty();
   } catch (error) {
@@ -171,7 +158,6 @@ export async function setAgentRole(agentId, role) {
     );
     applySnapshotPayload(body);
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = body.message && /^Unknown|^Usage/.test(body.message) ? body.message : "";
     markDirty();
   } catch (error) {
@@ -190,7 +176,6 @@ export async function setAgentDefaultRole(agentId, role) {
     });
     applySnapshotPayload(body);
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = body.message && /^Unknown|^Usage/.test(body.message) ? body.message : "";
     markDirty();
   } catch (error) {
@@ -211,22 +196,6 @@ export async function setRoomAgentDialogue(on) {
     applySnapshotPayload(body);
     state.error = "";
     markDirty();
-  } catch (error) {
-    setError(error);
-  }
-}
-
-/** Toggle "keep laptop awake while GAIA runs" (Global Settings ▸ General) — a
- * daemon-managed (macOS-only) setting, not a client pref: it governs the host
- * Mac, so it round-trips through the server like other server-persisted
- * settings, unlike the status-bar toggle (statusbar.js, pure localStorage).
- * @param {boolean} enabled */
-export async function setKeepAwake(enabled) {
-  try {
-    const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });
-    state.keepAwake = body.keepAwake ?? state.keepAwake;
-    state.error = "";
-    markDirty("settings");
   } catch (error) {
     setError(error);
   }
@@ -330,7 +299,6 @@ export async function deleteRoom(roomId) {
     applySnapshotPayload(body);
     if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
-    await loadSelectedWorkspaceFile();
     state.error = "";
     markDirty();
   } catch (error) {

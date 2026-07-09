@@ -1008,7 +1008,7 @@ export function isEditableElement(element) {
 
 /** @param {KeyboardEvent} event */
 function shouldRouteKeyToComposer(event) {
-  if (!state.snapshot || state.settingsOpen || state.dario.open || state.search.open) return false;
+  if (!state.snapshot || state.dario.open || state.search.open) return false;
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
   if (isEditableElement(event.target)) return false;
   if (event.key.length === 1) return true;
@@ -1023,7 +1023,7 @@ export function installComposerRouting() {
   window.addEventListener(
     "paste",
     (event) => {
-      if (!state.snapshot || state.settingsOpen || state.dario.open || state.search.open) return;
+      if (!state.snapshot || state.dario.open || state.search.open) return;
       if (event.defaultPrevented || isEditableElement(event.target)) return;
       if (capturePastedFiles(event)) focusComposer();
     },
@@ -1073,7 +1073,6 @@ export function installComposerRouting() {
         !event.altKey &&
         !event.shiftKey &&
         state.snapshot &&
-        !state.settingsOpen &&
         !state.dario.open &&
         !isEditableElement(event.target) &&
         (state.composerText.trim() || state.dictating || state.dictationBusy)
@@ -1113,7 +1112,7 @@ export function focusComposerFromBackground(event) {
   // On touch, focusing = popping the iOS keyboard on every tap; keep this
   // background-click-to-focus convenience for desktop mice/trackpads only.
   if (event.pointerType === "touch") return;
-  if (state.settingsOpen || state.dario.open || state.search.open) return;
+  if (state.dario.open || state.search.open) return;
   if (isEditableElement(event.target)) return;
   if (event.target instanceof HTMLElement && event.target.closest("button")) return;
   focusComposer();

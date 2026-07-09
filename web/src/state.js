@@ -9,30 +9,17 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 /** @typedef {import("./types.js").VoiceCallInfo} VoiceCallInfo */
 /** @typedef {import("./types.js").WorkspaceRecord} WorkspaceRecord */
-/** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
-/** @typedef {import("./types.js").EditableFile} EditableFile */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
 /** @typedef {import("./types.js").PendingAttachment} PendingAttachment */
 /** @typedef {import("./types.js").SanitizeProposal} SanitizeProposal */
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").ChatSearchHit} ChatSearchHit */
-/** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
 
 /**
  * @type {{
  *   workspaces: WorkspaceRecord[],
  *   snapshot: Snapshot|null,
  *   streams: Map<string, StreamEntry>,
- *   workspaceFiles: FileDescriptor[],
- *   globalFiles: FileDescriptor[],
- *   selectedWorkspaceFileId: string|null,
- *   selectedGlobalFileId: string|null,
- *   workspaceFile: EditableFile|null,
- *   globalFile: EditableFile|null,
- *   workspaceRaw: boolean,
- *   globalRaw: boolean,
- *   selectedGlobalSection: string,
- *   settingsOpen: boolean,
  *   eventSource: EventSource|null,
  *   error: string,
  *   composerText: string,
@@ -63,10 +50,6 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   contextGate: {resolving: boolean, error: string, lastN: number},
  *   search: {open: boolean, scope: "chatwide"|"room", query: string, workspace: string, hits: ChatSearchHit[], degraded: string[], loading: boolean, seq: number, active: number, highlightEventId: string},
  *   thinkingMenuOpen: boolean,
- *   addAgentOpen: boolean,
- *   addAgentId: string,
- *   addAgentName: string,
- *   addAgentError: string,
  *   usage: Record<string, import("./types.js").UsageLimits>,
  *   usagePopoverOpen: boolean,
  *   usageRefreshing: boolean,
@@ -75,7 +58,6 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   readMarks: Record<string, number>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
- *   keepAwake: KeepAwakeCapability,
  * }}
  */
 export const state = {
@@ -84,16 +66,6 @@ export const state = {
   // In-flight agent replies keyed by the reserved transcript event id (the
   // v2 SSE `eventId`). v1's author+text snapshot-merge heuristic is gone.
   streams: new Map(),
-  workspaceFiles: [],
-  globalFiles: [],
-  selectedWorkspaceFileId: null,
-  selectedGlobalFileId: null,
-  workspaceFile: null,
-  globalFile: null,
-  workspaceRaw: false,
-  globalRaw: false,
-  selectedGlobalSection: "general",
-  settingsOpen: false,
   eventSource: null,
   error: "",
   composerText: "",
@@ -161,10 +133,6 @@ export const state = {
   // a result jumped to (folded into the transcript version stamp).
   search: { open: false, scope: "chatwide", query: "", workspace: "all", hits: [], degraded: [], loading: false, seq: 0, active: 0, highlightEventId: "" },
   thinkingMenuOpen: false,
-  addAgentOpen: false,
-  addAgentId: "",
-  addAgentName: "",
-  addAgentError: "",
   // Per-room "last activity seen" marks for the sidebar unread badge, keyed
   // "<workspaceId>::<roomId>". Persisted so unread survives a reload. A room
   // reads as unread when its lastActivity exceeds the mark captured while it
@@ -190,10 +158,6 @@ export const state = {
   // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
   // not just the open one). The open workspace reads live from state.snapshot.
   workspaceRooms: {},
-  // "Keep laptop awake" (Global Settings ▸ General) — seeded by the app
-  // payload; `supported: false` until then so the checkbox stays hidden
-  // rather than flashing enabled on an unsupported platform.
-  keepAwake: { supported: false, enabled: true },
 };
 
 /** @param {string} workspaceId @param {string} roomId */

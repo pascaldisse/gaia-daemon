@@ -76,14 +76,6 @@ function renderSidebar() {
     ),
     RoomTree(),
     h("div", { class: "spacer" }),
-    h("button", {
-      class: "nav-action",
-      onclick: () => {
-        state.settingsOpen = true;
-        markDirty("settings");
-      },
-      text: "global settings",
-    }),
   ];
   nav.replaceChildren(...children.filter((child) => child !== null));
   if (scrollTop) nav.scrollTop = scrollTop;

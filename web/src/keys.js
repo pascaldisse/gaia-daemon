@@ -50,13 +50,13 @@ function isTypingTarget() {
 }
 
 /** Block sidebar destructive/rename chords while typing or with any modal/overlay up — a
- * confirm/prompt dialog (`.modal-backdrop`), search, settings, the theme palette,
+ * confirm/prompt dialog (`.modal-backdrop`), search, the theme palette,
  * the Dario/usage/background-tasks popovers. Keeps it from double-firing into, or
  * deleting behind, an open dialog. */
 function sidebarActionBlocked() {
   if (isTypingTarget()) return true;
   if (document.querySelector(".modal-backdrop")) return true;
-  return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
+  return state.search.open || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
 }
 
 export function installKeybindings() {
@@ -100,14 +100,6 @@ export function installKeybindings() {
         markDirty("dario");
         return;
       }
-      // Then the settings modal.
-      if (event.key === "Escape" && state.settingsOpen) {
-        event.preventDefault();
-        state.settingsOpen = false;
-        markDirty("settings");
-        return;
-      }
-
       // Delete the focused sidebar item — workspace or room — with the OS-native
       // delete chord (⌘⌫ on macOS, Del elsewhere). This is the ONLY way to delete
       // a workspace or room; there's no per-row button. App-specific (no native
