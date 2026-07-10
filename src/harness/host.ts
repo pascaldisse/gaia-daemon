@@ -102,6 +102,17 @@ function expandHome(path: string): string {
  * (wedged), and 15 min covers even a silent full-context prefill. */
 const COMPACT_TIMEOUT_MS = 900_000;
 
+/** IDLE backstop for a normal turn — re-armed on EVERY event frame the runner
+ * streams, so it only ever fires on total silence. A turn with no output for
+ * this long is wedged (a hung CLI retry loop against a dead gateway, an
+ * upstream that connects but never answers): without this net it wedges
+ * FOREVER — no error, no toast, just a spinner — because nothing else in the
+ * stack times out a silent turn (the 2026-07-10 poisoned-gateway incident).
+ * Generous on purpose: a long in-harness tool run (a big build) streams
+ * nothing between tool start and result, and killing a healthy slow turn is
+ * worse than reporting a wedged one late. Uniform for every harness. */
+const TURN_IDLE_TIMEOUT_MS = 1_800_000;
+
 /** How long abort() waits for the runner to confirm the turn ended before
  * escalating to SIGKILL. A cooperative abort (harness kills its child, stream
  * errors, runner reports turn-error) lands well under a second; a runner that
@@ -135,6 +146,8 @@ export interface RunnerHostOptions {
   runnerArgv?: string[];
   /** Launch breaker keyed by target; defaults to the daemon-wide shared one. */
   breaker?: CircuitBreaker;
+  /** Test seam: override the turn idle backstop (default TURN_IDLE_TIMEOUT_MS). */
+  turnIdleTimeoutMs?: number;
 }
 
 export class RunnerHost implements AgentRuntime {
@@ -168,6 +181,8 @@ export class RunnerHost implements AgentRuntime {
   private turnInFlight = false;
   /** Resolvers waiting for the runner to go idle (see abort()). */
   private turnIdleWaiters: Array<() => void> = [];
+  /** The turn idle backstop (see TURN_IDLE_TIMEOUT_MS). */
+  private turnIdleTimer: ReturnType<typeof setTimeout> | undefined;
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
@@ -201,6 +216,7 @@ export class RunnerHost implements AgentRuntime {
     this.activeChannel = channel;
     this.turnInFlight = true;
     this.write({ type: "turn", input });
+    this.armTurnIdle();
     try {
       for await (const event of channel.stream()) yield event;
     } finally {
@@ -208,9 +224,27 @@ export class RunnerHost implements AgentRuntime {
     }
   }
 
+  /** (Re)arm the turn idle backstop: called when the turn frame is written and
+   * on every event frame the runner streams. Firing means TOTAL silence for
+   * the whole window — fail the channel with the reason (so the turn commits
+   * its partials and surfaces an explicit error instead of spinning forever),
+   * then abort authoritatively (cooperative first, SIGKILL escalation). */
+  private armTurnIdle(): void {
+    if (!this.turnInFlight) return;
+    clearTimeout(this.turnIdleTimer);
+    const timeout = this.options.turnIdleTimeoutMs ?? TURN_IDLE_TIMEOUT_MS;
+    this.turnIdleTimer = setTimeout(() => {
+      process.stderr.write(`[runner ${this.agent.id}] turn stalled — no output for ${Math.round(timeout / 1000)}s; aborting the wedged turn\n`);
+      this.failActive(new Error(`turn stalled — no output from the harness for ${Math.round(timeout / 1000)}s; aborted the wedged turn (partial progress, if any, is kept)`));
+      void this.abort();
+    }, timeout);
+    this.turnIdleTimer.unref?.();
+  }
+
   /** The runner confirmed the turn is over (turn-end/turn-error/child death):
    * release everyone waiting in abort(). */
   private settleTurn(): void {
+    clearTimeout(this.turnIdleTimer);
     this.turnInFlight = false;
     for (const waiter of this.turnIdleWaiters.splice(0)) waiter();
   }
@@ -525,6 +559,8 @@ export class RunnerHost implements AgentRuntime {
         if (message.event.type === "model-info") {
           this._modelLabel = liveModelLabel(message.event.provider, message.event.modelId, message.event.subscription);
         }
+        // Sign of life from the harness stream — the idle backstop starts over.
+        this.armTurnIdle();
         this.activeChannel?.push(message.event);
         return;
       case "turn-end":

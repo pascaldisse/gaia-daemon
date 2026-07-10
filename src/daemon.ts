@@ -144,6 +144,11 @@ export class Daemon {
    * eviction race: a service is protected while a caller's in-flight operation
    * (e.g. sendMessage's init+routing, before activeTask is set) completes. */
   private readonly handedOutAt = new Map<string, number>();
+  /** serviceKey -> in-flight creation. Two concurrent cache misses for the same
+   * room (SSE reconnect burst right after a restart) must share ONE creation:
+   * independent RoomService instances each run initOnce — double pendingTurn
+   * resume, two runner subprocesses, racing writes to the same state.json. */
+  private readonly servicePending = new Map<string, Promise<RoomService>>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
   private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
@@ -305,6 +310,22 @@ export class Daemon {
       return existing;
     }
 
+    // A creation already in flight IS this room's service — join it.
+    const pending = this.servicePending.get(key);
+    if (pending) {
+      this.handedOutAt.set(key, Date.now());
+      return pending;
+    }
+    const creation = this.createService(workspaceId, resolvedRoom, key);
+    this.servicePending.set(key, creation);
+    try {
+      return await creation;
+    } finally {
+      this.servicePending.delete(key);
+    }
+  }
+
+  private async createService(workspaceId: string, resolvedRoom: string, key: string): Promise<RoomService> {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     await ensureWorkspaceRoom(record.path, resolvedRoom);

@@ -5,6 +5,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { connect } from "node:net";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -451,6 +452,24 @@ export class ClaudeRuntime implements AgentRuntime {
   // -----------------------------------------------------------------------
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
+    // A re-pointed egress (ANTHROPIC_BASE_URL — the credential proxy, or any
+    // gateway inherited from the environment) that is DOWN must fail the turn
+    // NOW, with the reason. Without this, the CLI silently retries the dead
+    // gateway with backoff for ~10 minutes before surfacing anything — the
+    // turn looks wedged and the eventual error ("502 (no body)") never names
+    // the culprit. One loopback/remote TCP dial per turn is negligible; the
+    // default Anthropic endpoint is never probed (a false negative there
+    // would block turns that had every chance of succeeding).
+    const gateway = process.env.ANTHROPIC_BASE_URL?.trim();
+    if (gateway) {
+      const unreachable = await probeGateway(gateway);
+      if (unreachable) {
+        throw new Error(
+          `configured inference gateway ${gateway} (ANTHROPIC_BASE_URL) is unreachable: ${unreachable}. ` +
+            `Start the gateway — or unset ANTHROPIC_BASE_URL where the daemon was launched — and retry.`,
+        );
+      }
+    }
     const room = this.sessions.ensure(input.roomId, () => ({ sessionId: randomUUID(), started: false }));
     const firstTurn = !room.started;
 
@@ -1119,6 +1138,38 @@ export class ClaudeRuntime implements AgentRuntime {
   private resolveModelLabel(): string {
     const name = this.agent.model?.name;
     return name ? `anthropic/${name}` : "Claude default";
+  }
+}
+
+/** TCP-dial an overridden gateway's host:port. Returns the failure reason, or
+ * undefined when reachable. Reachability only — no TLS, no HTTP: the question
+ * is "is anything listening there", which is exactly what a stale/poisoned
+ * ANTHROPIC_BASE_URL gets wrong (see send()'s preflight). */
+async function probeGateway(url: string, timeoutMs = 1_500): Promise<string | undefined> {
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    return "not a valid URL";
+  }
+  const port = target.port ? Number(target.port) : target.protocol === "http:" ? 80 : 443;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect({ host: target.hostname, port });
+      const fail = (error: Error): void => {
+        socket.destroy();
+        reject(error);
+      };
+      socket.setTimeout(timeoutMs, () => fail(new Error(`no answer within ${timeoutMs}ms`)));
+      socket.once("error", fail);
+      socket.once("connect", () => {
+        socket.end();
+        resolve();
+      });
+    });
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }
 

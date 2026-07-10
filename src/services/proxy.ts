@@ -65,6 +65,13 @@ function fail(response: ServerResponse, status: number, message: string): void {
   response.end(message);
 }
 
+/** How long the upstream may stay fully silent — first awaiting response
+ * headers, then between body chunks — before the hop is declared wedged and
+ * aborted. This fetch previously had NO timeout at all, so an upstream that
+ * connected but never answered parked the harness's HTTP call (and with it the
+ * whole turn) forever. Generous: a healthy SSE stream re-arms per chunk. */
+const UPSTREAM_STALL_MS = 300_000;
+
 /**
  * Forward an authenticated, resolved LLM request to the real upstream and
  * stream the response back verbatim. The caller MUST have verified the token
@@ -76,6 +83,17 @@ export async function forwardLlmRequest(request: IncomingMessage, response: Serv
   const body = method === "GET" || method === "HEAD" ? undefined : await readBody(request);
   const target = joinUrl(upstream.baseUrl, subpath);
 
+  // Stall net: armed until headers arrive, re-armed per body chunk. Aborting
+  // rejects the awaited fetch / throws in the body iterator below.
+  const controller = new AbortController();
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStall = (): void => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => controller.abort(new Error(`upstream silent for ${Math.round(UPSTREAM_STALL_MS / 1000)}s`)), UPSTREAM_STALL_MS);
+    stallTimer.unref?.();
+  };
+  armStall();
+
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(target, {
@@ -84,9 +102,12 @@ export async function forwardLlmRequest(request: IncomingMessage, response: Serv
       // Buffer satisfies fetch's body at runtime; the undici typing only admits
       // Uint8Array views, which a Buffer is.
       body: body ? new Uint8Array(body) : undefined,
+      signal: controller.signal,
     });
   } catch (error) {
-    fail(response, 502, `llm proxy: upstream request failed: ${error instanceof Error ? error.message : String(error)}`);
+    clearTimeout(stallTimer);
+    const reason = controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : error;
+    fail(response, 502, `llm proxy: upstream ${target} request failed: ${reason instanceof Error ? reason.message : String(reason)}`);
     return;
   }
 
@@ -97,17 +118,23 @@ export async function forwardLlmRequest(request: IncomingMessage, response: Serv
   response.writeHead(upstreamResponse.status, outHeaders);
 
   if (!upstreamResponse.body) {
+    clearTimeout(stallTimer);
     response.end();
     return;
   }
   try {
     // Web ReadableStream is async-iterable on Node 18+; stream chunks straight
     // through so token-by-token SSE reaches the harness with no buffering.
+    armStall();
     for await (const chunk of upstreamResponse.body as unknown as AsyncIterable<Uint8Array>) {
+      armStall();
       response.write(chunk);
     }
   } catch {
-    // Upstream cut the stream mid-flight; close what we have rather than hang.
+    // Upstream cut the stream mid-flight (or the stall net aborted it); close
+    // what we have rather than hang.
+  } finally {
+    clearTimeout(stallTimer);
   }
   response.end();
 }

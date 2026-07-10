@@ -66,6 +66,30 @@ function joinPath(basePath: string, reqPath: string): string {
   return `${trimmed}${reqPath}`;
 }
 
+/** How long the upstream may stay silent — no response headers, then no body
+ * chunk — before the hop is declared wedged. Generous: this is a last-resort
+ * net for a hung upstream (one that CONNECTS but never answers), not a latency
+ * bound; a healthy streaming response re-arms it on every chunk. Without it a
+ * black-holed upstream parks the CLI's HTTP call forever and the turn wedges
+ * with zero feedback. */
+const UPSTREAM_STALL_MS = 300_000;
+
+/** Claude Code renders an error response's Anthropic-shaped body as the turn's
+ * failure reason. An empty 502 surfaces as "502 (no body)" — undiagnosable
+ * (tonight's poisoned-ANTHROPIC_BASE_URL incident took live socket forensics to
+ * root-cause). Name the upstream and the socket error so the turn error IS the
+ * diagnosis, and mirror it on stderr for the daemon log. */
+function failLoud(cRes: import("node:http").ServerResponse, status: number, message: string): void {
+  process.stderr.write(`thinking-proxy: ${message}\n`);
+  if (!cRes.headersSent) {
+    const body = JSON.stringify({ type: "error", error: { type: "api_error", message: `gaia egress shim: ${message}` } });
+    cRes.writeHead(status, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) });
+    cRes.end(body);
+    return;
+  }
+  cRes.end();
+}
+
 /**
  * Start a loopback proxy in front of `upstream` that injects
  * thinking.display:"summarized" into Messages requests. Resolves once it is
@@ -80,7 +104,7 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
   const server = http.createServer((cReq, cRes) => {
     const chunks: Buffer[] = [];
     cReq.on("data", (c) => chunks.push(c as Buffer));
-    cReq.on("error", () => cRes.writeHead(502).end());
+    cReq.on("error", (error) => failLoud(cRes, 502, `client request failed: ${error.message}`));
     cReq.on("end", () => {
       const reqPath = cReq.url ?? "/";
       let outBody = Buffer.concat(chunks);
@@ -95,6 +119,15 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
       headers.host = target.host;
       headers["content-length"] = String(outBody.length);
 
+      // Stall net: armed until response headers arrive, re-armed per body chunk.
+      let stallTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearStall = (): void => clearTimeout(stallTimer);
+      const armStall = (onStall: () => void): void => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(onStall, UPSTREAM_STALL_MS);
+        stallTimer.unref?.();
+      };
+
       const uReq = forward.request(
         {
           protocol: target.protocol,
@@ -107,12 +140,23 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
         (uRes) => {
           // Pipe the response straight back — we never parse it; Claude Code does.
           cRes.writeHead(uRes.statusCode ?? 502, uRes.headers);
+          uRes.on("data", () => armStall(() => uRes.destroy(new Error("upstream body stalled"))));
+          uRes.on("end", clearStall);
+          uRes.on("error", (error) => {
+            clearStall();
+            process.stderr.write(`thinking-proxy: upstream ${upstream} body failed mid-stream: ${error.message}\n`);
+            cRes.end();
+          });
+          armStall(() => uRes.destroy(new Error("upstream body stalled")));
           uRes.pipe(cRes);
         },
       );
-      uReq.on("error", () => {
-        if (!cRes.headersSent) cRes.writeHead(502);
-        cRes.end();
+      // The header stall is superseded by the body stall the response callback
+      // arms (armStall clears the previous timer first) — no explicit clear.
+      armStall(() => uReq.destroy(new Error(`no response headers within ${Math.round(UPSTREAM_STALL_MS / 1000)}s`)));
+      uReq.on("error", (error) => {
+        clearStall();
+        failLoud(cRes, 502, `upstream ${upstream} unreachable: ${error.message}`);
       });
       uReq.end(outBody);
     });

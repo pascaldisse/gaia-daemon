@@ -1161,3 +1161,22 @@ test("hasDurableSession: only an ESTABLISHED handle counts; legacy bare key hono
     await temp.cleanup();
   }
 });
+
+test("ClaudeRuntime fails the turn immediately when the configured ANTHROPIC_BASE_URL gateway is unreachable (regression: CLI retried a dead gateway silently for ~10 minutes)", async () => {
+  const fx = await fixture();
+  const prev = process.env.ANTHROPIC_BASE_URL;
+  // A loopback port with nothing listening — the poisoned-env shape exactly.
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1";
+  try {
+    const fake = new FakeClaude();
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await assert.rejects(collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })), /inference gateway http:\/\/127\.0\.0\.1:1 \(ANTHROPIC_BASE_URL\) is unreachable/);
+    // Fail-fast means the CLI was never spawned.
+    assert.equal(fake.calls.length, 0);
+    runtime.dispose();
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = prev;
+    await fx.cleanup();
+  }
+});

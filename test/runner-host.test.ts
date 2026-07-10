@@ -468,3 +468,36 @@ process.stdin.on("data", () => process.exit(3));
     await temp.cleanup();
   }
 });
+
+test("RunnerHost aborts a turn that goes fully silent past the idle backstop (regression: wedged CLI spun forever with no error)", async () => {
+  const temp = await createTempDir();
+  try {
+    const stubPath = join(temp.path, "stub-runner.mjs");
+    await writeFile(stubPath, STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+      turnIdleTimeoutMs: 250,
+    });
+    // "hold" streams one delta then goes silent forever — the re-armed backstop
+    // must fail the stream with the stall reason instead of hanging.
+    const events: AgentEvent[] = [];
+    await assert.rejects(
+      (async () => {
+        for await (const event of host.send({ roomId: "default", message: "hold", transcript: [] })) events.push(event);
+      })(),
+      /turn stalled — no output/,
+    );
+    assert.ok(
+      events.some((e) => e.type === "text-delta" && e.delta === "held:start"),
+      "progress streamed before the stall is preserved",
+    );
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});

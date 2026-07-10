@@ -125,3 +125,21 @@ test("composes with a path-bearing upstream (credential-proxy mount)", async () 
     await up.close();
   }
 });
+
+test("names the dead upstream in an Anthropic-shaped 502 body (regression: poisoned gateway surfaced as '502 (no body)')", async () => {
+  // A port with nothing listening: bind, note the URL, close — connection refused.
+  const up = await fakeUpstream();
+  await up.close();
+  const proxy = await startThinkingProxy(up.url);
+  try {
+    const res = await post(proxy.url, "/v1/messages", JSON.stringify({ model: "m", messages: [] }));
+    assert.equal(res.status, 502);
+    const parsed = JSON.parse(res.text) as { type: string; error: { type: string; message: string } };
+    assert.equal(parsed.type, "error");
+    assert.equal(parsed.error.type, "api_error");
+    assert.match(parsed.error.message, /gaia egress shim/);
+    assert.ok(parsed.error.message.includes(up.url), `the error names the unreachable upstream (got: ${parsed.error.message})`);
+  } finally {
+    proxy.close();
+  }
+});

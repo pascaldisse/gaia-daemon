@@ -1155,6 +1155,7 @@ export class RoomService {
         this.liveTurn = undefined;
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
         else await this.room.clearPendingTurn();
+        await this.appendTurnFailure(target, error);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
@@ -1205,6 +1206,7 @@ export class RoomService {
       if (failed) {
         // Genuine mid-stream failure (not a user stop): the progress is now
         // durable; surface the error so the task settles as error.
+        await this.appendTurnFailure(target, turn.error);
         await this.captureEpisode(target, text, reply, "error", turn.details, channel);
         throw turn.error;
       }
@@ -1412,6 +1414,28 @@ export class RoomService {
     // turn, installs the next target's marker in the same atomic write.
     await this.room.commitTurn(event, nextPending);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+  }
+
+  /** Durable failure marker: a turn that dies must leave a trace in the
+   * transcript, not just the ephemeral task-error toast (which vanishes on the
+   * next reload — the poisoned-gateway incident left rooms full of failed
+   * turns with zero on-disk evidence). Authored by "system" so it renders as a
+   * system line and stays out of every agent's context. Best-effort: marking
+   * the failure must never mask the failure itself. */
+  private async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
+    try {
+      const message = error instanceof Error ? error.message : String(error);
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `⚠ turn failed (@${agentId}): ${message}`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
   }
 
   /** Episodic capture is best-effort derived data: a failure must never fail
