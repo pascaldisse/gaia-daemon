@@ -1,14 +1,35 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
-import { setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { accountsCatalog, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { shortModel } from "./models.js";
-import { registerRegion } from "./render.js";
+import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
+
+/** Account catalog for the per-agent picker below: fetched once (accountsCatalog()
+ * caches the request itself), held here as the last resolved value so a render
+ * pass stays synchronous. Guarded by `accountsCatalogRequested` so attaching
+ * .then() doesn't re-fire markDirty on every render once it has resolved. */
+/** @type {import("./actions.js").AccountsCatalog | null} */
+let accountsCatalogValue = null;
+let accountsCatalogRequested = false;
+
+function ensureAccountsCatalog() {
+  if (accountsCatalogRequested) return;
+  accountsCatalogRequested = true;
+  void accountsCatalog()
+    .then((catalog) => {
+      accountsCatalogValue = catalog;
+      markDirty("panel");
+    })
+    .catch(() => {
+      accountsCatalogRequested = false; // let the next render retry
+    });
+}
 
 /**
  * The one-line agent subtitle (status / model), shown under the @id and mirrored
@@ -34,6 +55,7 @@ function agentSubtitle(agent, activeAgent) {
 function renderPanel() {
   const panel = $("#room-panel");
   if (!panel) return;
+  ensureAccountsCatalog();
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
   const tasks = snapshot?.tasks ?? [];
@@ -75,6 +97,11 @@ function renderPanel() {
         // "none" is an explicit opt-out; otherwise a room override wins, falling
         // back to the agent's global default role.
         const effectiveRole = agent.activeRole === "none" ? undefined : (agent.activeRole ?? agent.defaultRole);
+        // Only offer an account picker when there's actually a choice: at least
+        // one named account declared for THIS agent's harness. Renders nothing
+        // (not even a "shared login" no-op select) while the catalog is
+        // unresolved, and for harnesses/accounts with zero matches.
+        const agentAccounts = (accountsCatalogValue?.accounts ?? []).filter((account) => account.harness === agent.harness);
         return h(
           "div",
           { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
@@ -82,8 +109,9 @@ function renderPanel() {
             "div",
             // The role-select is pinned to this cell's bottom-right (the model
             // line) and lives OUTSIDE the name's flow, so it can never share
-            // horizontal space with, or overlap, the @name above it.
-            { class: `agent-cell ${roles.length > 0 ? "with-role" : ""}` },
+            // horizontal space with, or overlap, the @name above it. Same
+            // anchoring for the account-select, pinned just left of it.
+            { class: `agent-cell ${roles.length > 0 ? "with-role" : ""} ${agentAccounts.length > 0 ? "with-account" : ""}` },
             h(
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
@@ -97,6 +125,20 @@ function renderPanel() {
               }),
               agent.status === "compacting" && agent.compact ? CompactBar(agent.compact) : null,
             ),
+            agentAccounts.length > 0
+              ? h(
+                  "select",
+                  {
+                    class: `account-select ${agent.account ? "active" : ""}`,
+                    title: `account for @${agent.id}`,
+                    onchange: (event) => void setAgentAccount(agent.id, /** @type {HTMLSelectElement} */ (event.target).value || null),
+                  },
+                  h("option", { value: "", text: "shared login", selected: !agent.account }),
+                  agentAccounts.map((account) =>
+                    h("option", { value: account.id, text: account.label || account.id, selected: account.id === agent.account }),
+                  ),
+                )
+              : null,
             roles.length > 0
               ? h(
                   "select",

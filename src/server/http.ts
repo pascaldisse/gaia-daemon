@@ -10,15 +10,16 @@ import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { gaiaHost, gaiaPort } from "../core/config.js";
+import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
 import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
+import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
-import { redactedAccounts, removeAccount } from "../domain/accounts.js";
+import { findAccount, redactedAccounts, removeAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
@@ -540,6 +541,38 @@ export class GaiaWebServer {
 
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
+    }
+
+    // Per-agent account binding: which named account (if any) an agent's
+    // harness subprocess runs under. Harness-blind — compares harness id
+    // STRINGS pulled from agent.json/accounts.json data, never a literal id.
+    if (method === "POST" && (params = match(/^\/api\/agents\/([^/]+)\/account$/))) {
+      const agentId = params[0];
+      const configPath = join(globalAgentsPath(), agentId, "agent.json");
+      if (!existsSync(configPath)) return json(response, 404, { error: `unknown agent '${agentId}'` });
+      const body = await parseBody(request);
+      const rawAccount = (body as { account?: unknown } | undefined)?.account;
+      const account = typeof rawAccount === "string" && rawAccount.trim() ? rawAccount.trim() : null;
+      try {
+        const config = ((await readJson(configPath)) ?? {}) as Record<string, unknown>;
+        if (account) {
+          const record = findAccount(account);
+          if (!record) return json(response, 400, { error: `unknown account '${account}'` });
+          const agentHarness = typeof config.harness === "string" && config.harness.trim() ? config.harness : DEFAULTS.harness;
+          if (record.harness !== agentHarness) {
+            return json(response, 400, { error: `account '${account}' is for harness '${record.harness}', agent uses '${agentHarness}'` });
+          }
+          config.account = account;
+        } else {
+          delete config.account;
+        }
+        await writeJsonAtomic(configPath, config);
+        await this.daemon.applySettingsChange("global");
+        json(response, 200, { agent: { id: agentId, account } });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
     }
 
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {

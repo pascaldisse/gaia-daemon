@@ -808,6 +808,12 @@ export interface AgentStatus {
   thinking?: string;
   activeRole?: string;
   defaultRole?: string;
+  /** Effective harness id (agent.json's own, else the workspace/global default) —
+   * harness-blind consumers just compare this string, never a literal id. */
+  harness: string;
+  /** Named provider account (a record id in ~/.gaia/accounts.json) this agent is
+   * pinned to; absent = the harness's ambient/shared login. Mirrors AgentDef.account. */
+  account?: string;
   roles: string[];
   status: "idle" | "running" | "error" | "compacting";
   /** Live compaction progress while status === "compacting"; absent otherwise.

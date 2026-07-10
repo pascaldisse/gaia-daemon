@@ -2553,6 +2553,8 @@ export class RoomService {
           thinking: state.thinkingOverrides[agent.id] ?? agent.thinking,
           activeRole: state.activeRoles[agent.id],
           defaultRole: agent.defaultRole,
+          harness: harnessIdFor(agent, this.workspace),
+          ...(agent.account ? { account: agent.account } : {}),
           roles: await listAgentRoles(agent),
           status: (this.compactingAgents.has(agent.id)
             ? "compacting"
