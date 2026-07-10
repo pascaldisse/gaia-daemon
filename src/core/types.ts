@@ -252,6 +252,9 @@ export interface RoomState {
    * be refined only while they are still machine-owned. Absent covers legacy
    * imported titles and old state files. */
   titleSource?: "auto" | "model" | "manual";
+  /** Pinned by the human for quick filtering in the room list. Display-only
+   * room metadata, like title: the room id/path stay stable. */
+  favorite?: boolean;
   /** Set on rooms created by a history import (scripts/import-claude-export):
    * the original conversation's created_at. The sidebar groups these into a
    * collapsed archive section instead of the live rooms list. */
@@ -852,6 +855,8 @@ export interface RoomSummary {
    * dot lights the moment its turn starts and clears when it commits. */
   running?: boolean;
   title?: string;
+  /** Human-pinned room (see RoomState.favorite). */
+  favorite?: boolean;
   /** Original created_at of an imported chat (see RoomState.imported). */
   imported?: string;
   /** Incognito room (see RoomState.incognito) — the tab/list marks it so an

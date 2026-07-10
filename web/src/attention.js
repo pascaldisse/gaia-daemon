@@ -134,7 +134,7 @@ export function installAttention() {
   // Another GAIA window advanced the shared read marks (localStorage); the main
   // window that owns the badge would not otherwise notice a room was read there.
   window.addEventListener("storage", (event) => {
-    if (event.key && event.key !== "gaia.readMarks") return;
+    if (event.key && event.key !== "gaia.readMarks" && event.key !== "gaia.manualUnread") return;
     reloadReadMarks();
     refreshAttention();
   });

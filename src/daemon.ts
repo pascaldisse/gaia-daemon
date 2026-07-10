@@ -464,16 +464,30 @@ export class Daemon {
 
   /** Rename a room's display title without changing its durable id/path. */
   async renameRoom(workspaceId: string, roomId: string, title: string): Promise<{ rooms: Snapshot["rooms"] }> {
+    const service = await this.serviceForExistingRoom(workspaceId, roomId);
+    await service.setTitle(title);
+    return this.refreshRoomList(workspaceId);
+  }
+
+  /** Mark/unmark a room as a favorite. This is display metadata only: no
+   * transcript, memory, sandbox, or harness behaviour changes. */
+  async setRoomFavorite(workspaceId: string, roomId: string, favorite: boolean): Promise<{ rooms: Snapshot["rooms"] }> {
+    const service = await this.serviceForExistingRoom(workspaceId, roomId);
+    await service.setFavorite(favorite);
+    return this.refreshRoomList(workspaceId);
+  }
+
+  private async serviceForExistingRoom(workspaceId: string, roomId: string): Promise<RoomService> {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     if (!isValidRoomId(roomId)) throw new Error("Invalid room id.");
     if (!this.roomIdsOnDisk(record.path).includes(roomId)) throw new Error(`Room not found: ${roomId}`);
+    return this.serviceFor(workspaceId, roomId);
+  }
 
-    const service = await this.serviceFor(workspaceId, roomId);
-    await service.setTitle(title);
-
-    // Return/broadcast the room list relative to the currently viewed room, so
-    // renaming a background room never switches the user's active chat.
+  /** Return/broadcast the room list relative to the currently viewed room, so
+   * changing background room chrome never switches the user's active chat. */
+  private async refreshRoomList(workspaceId: string): Promise<{ rooms: Snapshot["rooms"] }> {
     const current = await this.serviceFor(workspaceId);
     const rooms = await current.listRooms();
     this.broadcast({ type: "rooms", workspaceId, rooms });

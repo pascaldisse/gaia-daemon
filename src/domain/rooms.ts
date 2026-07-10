@@ -315,6 +315,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(typeof value.workDir === "string" && value.workDir.trim() ? { workDir: value.workDir } : {}),
     ...(typeof value.title === "string" && value.title.trim() ? { title: value.title } : {}),
     ...(value.titleSource === "auto" || value.titleSource === "model" || value.titleSource === "manual" ? { titleSource: value.titleSource } : {}),
+    ...(value.favorite === true ? { favorite: true } : {}),
     ...(typeof value.imported === "string" && value.imported.trim() ? { imported: value.imported } : {}),
     ...(monad ? { monad } : {}),
     ...(pendingTurn ? { pendingTurn } : {}),

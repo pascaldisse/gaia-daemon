@@ -561,6 +561,11 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.renameRoom(params![0], params![1], title));
     }
 
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/favorite$/))) {
+      const favorite = (await parseBody(request) as { favorite?: unknown }).favorite === true;
+      return this.respond(response, () => this.daemon.setRoomFavorite(params![0], params![1], favorite));
+    }
+
     // Attachment upload: the pasted file's bytes as the raw body, original
     // filename in ?name=. Returns the server-issued id the client echoes back
     // on the message send. Serving is GET on the same path + /<id>.

@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { connectEvents, seedLiveTurn } from "./events.js";
 import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
-import { activeTask, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
+import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
 
@@ -21,6 +21,8 @@ async function applyAppPayload(body) {
   state.snapshot = body.snapshot ?? null;
   state.streams.clear();
   seedLiveTurn();
+  const current = state.snapshot?.rooms.find((room) => room.id === state.snapshot?.room.id);
+  if (state.snapshot && current) markRoomRead(state.snapshot.workspace.id, current.id, current.lastActivity ?? 0);
   syncReadMarks();
   syncDarioFromSnapshot(); // surface a pending Dario proposal on initial load
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
@@ -63,6 +65,8 @@ function applySnapshotPayload(body) {
   state.snapshot = body.snapshot;
   state.streams.clear();
   seedLiveTurn();
+  const current = body.snapshot.rooms.find((room) => room.id === body.snapshot.room.id);
+  markRoomRead(body.snapshot.workspace.id, body.snapshot.room.id, current?.lastActivity ?? 0);
   syncReadMarks();
   syncDarioFromSnapshot(); // surface a pending Dario proposal when switching into a room
   // Workspace/room switch: paged-in older history belongs to the old room.
@@ -273,12 +277,36 @@ export async function renameRoom(roomId, currentTitle = "") {
       method: "POST",
       body: JSON.stringify({ title }),
     });
-    if (Array.isArray(body.rooms)) {
-      /** @type {import("./types.js").RoomSummary[]} */
-      const rooms = body.rooms;
-      state.workspaceRooms[snapshot.workspace.id] = rooms;
-      if (state.snapshot) state.snapshot.rooms = rooms.map((/** @type {import("./types.js").RoomSummary} */ room) => ({ ...room, isCurrent: room.id === snapshot.room.id }));
-    }
+    applyRoomsPayload(snapshot.workspace.id, body.rooms);
+    state.error = "";
+    markDirty("sidebar", "tabs", "status");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** @param {string} workspaceId @param {unknown} rooms */
+function applyRoomsPayload(workspaceId, rooms) {
+  const snapshot = state.snapshot;
+  if (!Array.isArray(rooms)) return;
+  /** @type {import("./types.js").RoomSummary[]} */
+  const summaries = rooms;
+  state.workspaceRooms[workspaceId] = summaries;
+  if (snapshot && snapshot.workspace.id === workspaceId) {
+    snapshot.rooms = summaries.map((/** @type {import("./types.js").RoomSummary} */ room) => ({ ...room, isCurrent: room.id === snapshot.room.id }));
+  }
+}
+
+/** @param {string} roomId @param {boolean} favorite */
+export async function setRoomFavorite(roomId, favorite) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(roomId)}/favorite`, {
+      method: "POST",
+      body: JSON.stringify({ favorite }),
+    });
+    applyRoomsPayload(snapshot.workspace.id, body.rooms);
     state.error = "";
     markDirty("sidebar", "tabs", "status");
   } catch (error) {

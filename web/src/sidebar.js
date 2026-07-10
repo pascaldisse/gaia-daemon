@@ -2,13 +2,14 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, loadWorkspace, renameRoom, selectRoom } from "./actions.js";
+import { addRoom, addWorkspace, loadWorkspace, renameRoom, selectRoom, setRoomFavorite } from "./actions.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
+import { refreshAttention } from "./attention.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { openSettings } from "./settings.js";
-import { effectiveSidebarFocus, roomUnread, state, workspaceActivity } from "./state.js";
+import { effectiveSidebarFocus, markRoomRead, markRoomUnread, persistRoomsFavoritesOnly, roomUnread, state, workspaceActivity } from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -72,10 +73,25 @@ function renderSidebar() {
       // Inline + next to the header, so a new room is one click from the top —
       // not a button buried under the whole (possibly 100-chat) room list.
       state.snapshot
-        ? h("button", { class: "nav-title-add", title: "new room (Ctrl+T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" })
+        ? h(
+            "span",
+            { class: "nav-title-actions" },
+            h("button", {
+              class: `nav-title-add ${state.roomsFavoritesOnly ? "active" : ""}`,
+              title: state.roomsFavoritesOnly ? "show all rooms" : "show favorites only",
+              onclick: () => {
+                state.roomsFavoritesOnly = !state.roomsFavoritesOnly;
+                persistRoomsFavoritesOnly();
+                markDirty("sidebar");
+              },
+              text: "★",
+            }),
+            h("button", { class: "nav-title-add", title: "new room (Ctrl+T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }),
+          )
         : null,
     ),
     RoomTree(),
+    RoomContextMenu(),
     h("div", { class: "spacer" }),
     h("button", { class: "nav-action", onclick: () => openSettings(), text: "settings" }),
   ];
@@ -104,10 +120,11 @@ function RoomTree() {
   // Rooms ARE chats: the daemon lists them latest-activity first, so render a
   // chunk at a time — a 100-chat history import must not flood the sidebar.
   const top = childrenOf.get(null) ?? [];
-  const visible = top.slice(0, state.roomsShown);
+  const filteredTop = state.roomsFavoritesOnly ? top.filter((room) => room.favorite || hasFavoriteDescendant(room, childrenOf)) : top;
+  const visible = filteredTop.slice(0, state.roomsShown);
   const current = top.find((room) => room.isCurrent);
-  if (current && !visible.includes(current)) visible.push(current);
-  const remaining = top.length - visible.length;
+  if (!state.roomsFavoritesOnly && current && !visible.includes(current)) visible.push(current);
+  const remaining = filteredTop.length - visible.length;
   return h(
     "div",
     { class: "room-tree" },
@@ -123,6 +140,31 @@ function RoomTree() {
         })
       : null,
   );
+}
+
+/**
+ * @param {RoomSummary} room
+ * @param {Map<string|null, RoomSummary[]>} childrenOf
+ */
+function hasFavoriteDescendant(room, childrenOf) {
+  const stack = [...(childrenOf.get(room.id) ?? [])];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const kid = stack.pop();
+    if (!kid || seen.has(kid.id)) continue;
+    seen.add(kid.id);
+    if (kid.favorite) return true;
+    for (const grand of childrenOf.get(kid.id) ?? []) stack.push(grand);
+  }
+  return false;
+}
+
+/**
+ * @param {RoomSummary} room
+ * @param {Map<string|null, RoomSummary[]>} childrenOf
+ */
+function favoriteVisible(room, childrenOf) {
+  return !state.roomsFavoritesOnly || room.favorite || hasFavoriteDescendant(room, childrenOf);
 }
 
 /**
@@ -157,7 +199,7 @@ function descendantActivity(room, childrenOf) {
  * @returns {HTMLElement}
  */
 function RoomNode(room, childrenOf, depth) {
-  const kids = childrenOf.get(room.id) ?? [];
+  const kids = (childrenOf.get(room.id) ?? []).filter((kid) => favoriteVisible(kid, childrenOf));
   const expanded = state.expandedRooms.has(room.id);
   // A collapsed parent hides its subrooms, so bubble their activity up here;
   // expanded, the children show their own dots (and bubble their own deeper
@@ -193,10 +235,20 @@ function RoomNode(room, childrenOf, depth) {
           onclick: !snapshot
             ? null
             : () => {
+                state.roomContextMenu = null;
                 state.sidebarFocus = { kind: "room", id: room.id };
+                if (room.isCurrent) markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
                 if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
                 else markDirty("sidebar");
               },
+          oncontextmenu: snapshot
+            ? (/** @type {MouseEvent} */ event) => {
+                event.preventDefault();
+                state.sidebarFocus = { kind: "room", id: room.id };
+                state.roomContextMenu = { roomId: room.id, x: event.clientX, y: event.clientY };
+                markDirty("sidebar");
+              }
+            : undefined,
           ondblclick: !snapshot
             ? null
             : (/** @type {MouseEvent} */ event) => {
@@ -214,6 +266,7 @@ function RoomNode(room, childrenOf, depth) {
             : roomUnread(room)
               ? h("span", { class: "room-dot unread", title: "unread messages" })
               : null,
+          room.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
           room.incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null,
           h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
         ),
@@ -236,3 +289,57 @@ function RoomNode(room, childrenOf, depth) {
     kids.length > 0 && expanded ? h("div", { class: "room-children" }, kids.map((kid) => RoomNode(kid, childrenOf, depth + 1))) : null,
   );
 }
+
+/** @returns {HTMLElement|null} */
+function RoomContextMenu() {
+  const snapshot = state.snapshot;
+  const open = state.roomContextMenu;
+  if (!snapshot || !open) return null;
+  const room = snapshot.rooms.find((candidate) => candidate.id === open.roomId);
+  if (!room) return null;
+  const close = () => {
+    state.roomContextMenu = null;
+    markDirty("sidebar");
+  };
+  const label = room.title ?? room.id;
+  return h(
+    "div",
+    { class: "room-menu", style: `left:${open.x}px;top:${open.y}px`, oncontextmenu: (/** @type {MouseEvent} */ event) => event.preventDefault() },
+    h("div", { class: "room-menu-title", text: label }),
+    h("button", {
+      type: "button",
+      onclick: () => {
+        markRoomUnread(snapshot.workspace.id, room);
+        refreshAttention();
+        close();
+      },
+      text: "Mark as unread",
+    }),
+    roomUnread(room)
+      ? h("button", {
+          type: "button",
+          onclick: () => {
+            markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
+            refreshAttention();
+            close();
+          },
+          text: "Mark as read",
+        })
+      : null,
+    h("button", {
+      type: "button",
+      onclick: () => {
+        close();
+        void setRoomFavorite(room.id, !room.favorite);
+      },
+      text: room.favorite ? "Remove favorite" : "Add favorite",
+    }),
+  );
+}
+
+window.addEventListener("click", (event) => {
+  if (!state.roomContextMenu) return;
+  if (event.target instanceof HTMLElement && event.target.closest(".room-menu")) return;
+  state.roomContextMenu = null;
+  markDirty("sidebar");
+});

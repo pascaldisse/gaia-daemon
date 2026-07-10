@@ -97,6 +97,7 @@ function Tab(room, number, isActive, wsId) {
     },
     h("span", { class: "tab-num", text: String(number) }),
     room.running ? h("span", { class: "tab-dot" }) : null,
+    room.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
     room.incognito ? h("span", { class: "tab-incognito", title: "incognito — no memory", text: "🕶" }) : null,
     h("span", { class: "tab-name", text: room.title ?? room.id }),
     h("button", {

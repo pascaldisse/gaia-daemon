@@ -2608,6 +2608,16 @@ export class RoomService {
     await this.emitRoomsChanged();
   }
 
+  /** Human favorite flag. Like title, this is display metadata only: the durable
+   * room id/path stay stable and no transcript/memory semantics change. */
+  async setFavorite(favorite: boolean): Promise<void> {
+    await this.room.updateState((state) => {
+      if (favorite) state.favorite = true;
+      else delete state.favorite;
+    });
+    await this.emitRoomsChanged();
+  }
+
   /** The most recent reply text from an agent in this room (summon results). */
   async latestReplyFrom(agentId: string): Promise<string> {
     await this.init();
@@ -2893,6 +2903,7 @@ export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms
             ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
             ...(state.pendingTurn ? { running: true } : {}),
             ...(state.title ? { title: state.title } : {}),
+            ...(state.favorite ? { favorite: true } : {}),
             ...(state.imported ? { imported: state.imported } : {}),
             ...(state.incognito ? { incognito: true } : {}),
             ...(activity ? { lastActivity: activity } : {}),

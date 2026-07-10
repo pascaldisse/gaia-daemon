@@ -34,6 +34,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   expandedActivities: Set<string>,
  *   expandedRooms: Set<string>,
  *   roomsShown: number,
+ *   roomsFavoritesOnly: boolean,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
  *   openTabs: string[],
  *   sidebarCollapsed: boolean,
@@ -60,7 +61,9 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   bgTasksOpen: boolean,
  *   summonListOpen: boolean,
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
+ *   roomContextMenu: {roomId: string, x: number, y: number}|null,
  *   readMarks: Record<string, number>,
+ *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
  *   settingsOpen: boolean,
  *   settingsTab: "general"|"workspace"|"agents",
@@ -102,6 +105,9 @@ export const state = {
   // How many top-level rooms the sidebar list renders before "show more" —
   // rooms are chats, and a 100-chat history import must not flood the list.
   roomsShown: 25,
+  // Sidebar room-list filter: show just favorited rooms (plus their ancestor
+  // containers so favorite summon subrooms stay reachable). Persisted per app.
+  roomsFavoritesOnly: loadBoolean("gaia.roomsFavoritesOnly"),
   // Older committed events paged in by the transcript's "load older" button,
   // strictly preceding the snapshot's tail window. Cleared on room switch and
   // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
@@ -172,7 +178,9 @@ export const state = {
   // at — the only way to delete a workspace or room. null falls back to the
   // current room (see effectiveSidebarFocus).
   sidebarFocus: null,
+  roomContextMenu: null,
   readMarks: loadReadMarks(),
+  manualUnread: loadManualUnread(),
   // Per-workspace room activity (running + last-activity), keyed by workspace id,
   // for the sidebar's workspace-level dots. Seeded by the app payload, kept fresh
   // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
@@ -214,10 +222,28 @@ function readMarkKey(workspaceId, roomId) {
   return `${workspaceId}::${roomId}`;
 }
 
+/** @param {string} key @returns {boolean} */
+function loadBoolean(key) {
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
 /** @returns {Record<string, number>} */
 function loadReadMarks() {
   try {
     return JSON.parse(localStorage.getItem("gaia.readMarks") ?? "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+/** @returns {Record<string, boolean>} */
+function loadManualUnread() {
+  try {
+    return JSON.parse(localStorage.getItem("gaia.manualUnread") ?? "{}") || {};
   } catch {
     return {};
   }
@@ -228,6 +254,22 @@ function persistReadMarks() {
     localStorage.setItem("gaia.readMarks", JSON.stringify(state.readMarks));
   } catch {
     // Private mode / quota — unread just won't survive a reload.
+  }
+}
+
+function persistManualUnread() {
+  try {
+    localStorage.setItem("gaia.manualUnread", JSON.stringify(state.manualUnread));
+  } catch {
+    // Private mode / quota — manual unread just won't survive a reload.
+  }
+}
+
+export function persistRoomsFavoritesOnly() {
+  try {
+    localStorage.setItem("gaia.roomsFavoritesOnly", state.roomsFavoritesOnly ? "true" : "false");
+  } catch {
+    // storage disabled — the filter just won't survive a reload.
   }
 }
 
@@ -332,11 +374,35 @@ export function syncReadMarks() {
   if (changed) persistReadMarks();
 }
 
+/** Mark a room read from the client's attention ledger. Used when a room is
+ * explicitly opened; separate from syncReadMarks so a user can deliberately mark
+ * the currently-open room unread from the context menu.
+ * @param {string} workspaceId @param {string} roomId @param {number} [activity] */
+export function markRoomRead(workspaceId, roomId, activity = 0) {
+  const key = readMarkKey(workspaceId, roomId);
+  state.readMarks[key] = activity;
+  delete state.manualUnread[key];
+  persistReadMarks();
+  persistManualUnread();
+}
+
+/** Force a room to show the existing unread marker until it is explicitly opened
+ * again or marked read. This is client-local, like the rest of unread state.
+ * @param {string} workspaceId @param {RoomSummary} room */
+export function markRoomUnread(workspaceId, room) {
+  const key = readMarkKey(workspaceId, room.id);
+  state.manualUnread[key] = true;
+  state.readMarks[key] = Math.max(0, (room.lastActivity ?? 1) - 1);
+  persistReadMarks();
+  persistManualUnread();
+}
+
 /** Reload the read marks from localStorage — another GAIA window advanced them
  * (a `storage` event). Lets the badge-driving main window notice a room was read
  * elsewhere and drop it from the count. */
 export function reloadReadMarks() {
   state.readMarks = loadReadMarks();
+  state.manualUnread = loadManualUnread();
 }
 
 /** A room in a given workspace has activity newer than the mark captured while
@@ -344,16 +410,17 @@ export function reloadReadMarks() {
  * workspace) and workspaceActivity (any workspace's rollup).
  * @param {string} workspaceId @param {RoomSummary} room @returns {boolean} */
 function roomUnreadIn(workspaceId, room) {
-  const mark = state.readMarks[readMarkKey(workspaceId, room.id)] ?? 0;
-  return (room.lastActivity ?? 0) > mark;
+  const key = readMarkKey(workspaceId, room.id);
+  const mark = state.readMarks[key] ?? 0;
+  return state.manualUnread[key] === true || (room.lastActivity ?? 0) > mark;
 }
 
-/** A room has unread agent activity: newer than what we saw while it was open.
- * The room being viewed is never unread.
+/** A room has unread agent activity: newer than what we saw while it was open,
+ * or explicitly marked unread from the room context menu.
  * @param {RoomSummary} room @returns {boolean} */
 export function roomUnread(room) {
   const snapshot = state.snapshot;
-  if (room.isCurrent || !snapshot) return false;
+  if (!snapshot) return false;
   return roomUnreadIn(snapshot.workspace.id, room);
 }
 
@@ -388,8 +455,7 @@ export function workspaceActivity(workspaceId) {
 export function roomPending(room) {
   const snapshot = state.snapshot;
   if (!snapshot) return false;
-  const mark = state.readMarks[readMarkKey(snapshot.workspace.id, room.id)] ?? 0;
-  return (room.lastActivity ?? 0) > mark;
+  return roomUnreadIn(snapshot.workspace.id, room);
 }
 
 /**

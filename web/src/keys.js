@@ -57,7 +57,7 @@ function isTypingTarget() {
 function sidebarActionBlocked() {
   if (isTypingTarget()) return true;
   if (document.querySelector(".modal-backdrop")) return true;
-  return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen;
+  return state.search.open || state.settingsOpen || state.themePaletteOpen || state.dario.open || state.bgTasksOpen || state.usagePopoverOpen || Boolean(state.roomContextMenu);
 }
 
 export function installKeybindings() {
@@ -91,6 +91,14 @@ export function installKeybindings() {
         event.preventDefault();
         event.stopImmediatePropagation();
         closeUsagePopover();
+        return;
+      }
+      // Then room context menus.
+      if (event.key === "Escape" && state.roomContextMenu) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        state.roomContextMenu = null;
+        markDirty("sidebar");
         return;
       }
       // Then the Dario review popup.
