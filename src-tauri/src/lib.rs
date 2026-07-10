@@ -1,6 +1,9 @@
 mod daemon_lifecycle;
 
 #[cfg(feature = "webkit")]
+mod debug_server;
+
+#[cfg(feature = "webkit")]
 mod webkit {
     // The GAIA native shell.
     //
@@ -197,6 +200,7 @@ mod webkit {
             .title("GAIA")
             .inner_size(w, h)
             .min_inner_size(560.0, 420.0)
+            .initialization_script(&crate::debug_server::init_script())
             // Required so the web UI's HTML5 drag-and-drop (tab reorder + tear-off)
             // fires: with Tauri's OS drag-drop handler on, the webview swallows it.
             .disable_drag_drop_handler()
@@ -453,6 +457,7 @@ mod webkit {
                 let mut main_window_builder =
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(external))
                         .title("GAIA")
+                        .initialization_script(&crate::debug_server::init_script())
                         // See open_window: needed for the tab strip's HTML5 drag-and-drop.
                         .disable_drag_drop_handler();
 
@@ -472,6 +477,7 @@ mod webkit {
 
                 let main_window = main_window_builder.build()?;
                 install_ios_scroll_inset_fix(&main_window);
+                crate::debug_server::spawn(app.handle().clone());
 
                 Ok(())
             })
