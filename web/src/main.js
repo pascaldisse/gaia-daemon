@@ -42,6 +42,9 @@ installNativeBridge();
 installAttention();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 
+// First paint of every region (empty states), then load the app.
+markDirty();
+
 // Keep the status-bar clock current without re-rendering anything else.
 setInterval(() => {
   const clock = $("#statusClock");
@@ -64,9 +67,13 @@ async function boot() {
   if (last && state.snapshot && state.snapshot.room.id !== last.roomId && state.snapshot.rooms.some((room) => room.id === last.roomId)) {
     await selectRoom(state.snapshot.workspace.id, last.roomId);
   }
-  if (isOverlayLayout()) state.sidebarCollapsed = true; // phones boot showing the room, menu slides in on demand.
+  if (isOverlayLayout()) {
+    // Phones boot showing the room; menus slide in on demand and never block the view.
+    state.sidebarCollapsed = true;
+    state.rightCollapsed = true;
+    markDirty("layout", "tabs");
+  }
   await applyLaunchIntent();
-  markDirty();
 }
 
 /**
