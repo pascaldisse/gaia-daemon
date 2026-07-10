@@ -2,7 +2,7 @@
 // plain browser JavaScript, typechecked via JSDoc (web2/tsconfig.json).
 import { loadApp, selectRoom } from "./actions.js";
 import { installAttention } from "./attention.js";
-import { adoptRoomTab, closeCurrent, dockBack, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
+import { adoptRoomTab, closeCurrent, dockBack, isOverlayLayout, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { focusComposerFromBackground, initComposer, installComposerRouting } from "./composer.js";
 import { $ } from "./dom.js";
 import { installKeybindings } from "./keys.js";
@@ -42,9 +42,6 @@ installNativeBridge();
 installAttention();
 window.addEventListener("pointerdown", focusComposerFromBackground);
 
-// First paint of every region (empty states), then load the app.
-markDirty();
-
 // Keep the status-bar clock current without re-rendering anything else.
 setInterval(() => {
   const clock = $("#statusClock");
@@ -60,9 +57,6 @@ void boot();
  * by the launch hash, so it skips the restore and lets applyLaunchIntent drive.
  */
 
-function isMobileViewport() {
-  return window.matchMedia?.("(max-width: 760px), (pointer: coarse)").matches ?? false;
-}
 
 async function boot() {
   const last = launchIntent().mode === "torn" ? null : recallLocation();
@@ -70,12 +64,9 @@ async function boot() {
   if (last && state.snapshot && state.snapshot.room.id !== last.roomId && state.snapshot.rooms.some((room) => room.id === last.roomId)) {
     await selectRoom(state.snapshot.workspace.id, last.roomId);
   }
-  if (isMobileViewport()) {
-    state.sidebarCollapsed = true;
-    state.rightCollapsed = true;
-    markDirty("layout", "tabs");
-  }
+  if (isOverlayLayout()) state.sidebarCollapsed = true; // phones boot showing the room, menu slides in on demand.
   await applyLaunchIntent();
+  markDirty();
 }
 
 /**

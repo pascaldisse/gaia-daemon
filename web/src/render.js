@@ -68,6 +68,7 @@ export function mountApp() {
       "div",
       { class: "body", id: "body" },
       h("nav", { class: "sidebar", id: "sidebar" }),
+      h("div", { class: "scrim", id: "scrim", onclick: () => { void import("./chrome.js").then((mod) => mod.closeSidebarOverlay()); } }),
       h("div", { class: "col-resizer", id: "resizer-left", title: "drag to resize", onpointerdown: (event) => startResize(event, "left") }),
       h(
         "main",
@@ -111,10 +112,12 @@ function renderLayout() {
   const body = $("#body");
   const sidebar = $("#sidebar");
   const left = $("#resizer-left");
+  const scrim = $("#scrim");
   const right = $("#right");
   const rightResizer = $("#resizer-right");
   if (!body || !sidebar || !left || !right || !rightResizer) return;
   sidebar.hidden = state.sidebarCollapsed;
+  if (scrim) scrim.hidden = state.sidebarCollapsed;
   left.hidden = state.sidebarCollapsed;
   right.hidden = state.rightCollapsed;
   rightResizer.hidden = state.rightCollapsed;

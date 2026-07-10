@@ -76,6 +76,19 @@ export function jumpTab(index) {
   if (room && wsId && room.id !== currentRoomId()) void selectRoom(wsId, room.id);
 }
 
+
+/** Must mirror the styles.css overlay media query. */
+export function isOverlayLayout() {
+  return window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+}
+
+/** Close the left sessions sidebar when it is acting as a phone overlay. */
+export function closeSidebarOverlay() {
+  if (!isOverlayLayout() || state.sidebarCollapsed) return;
+  state.sidebarCollapsed = true;
+  markDirty("layout", "tabs");
+}
+
 /** Toggle the left sessions sidebar. */
 export function toggleSidebar() {
   state.sidebarCollapsed = !state.sidebarCollapsed;

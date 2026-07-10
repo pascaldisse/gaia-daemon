@@ -3,6 +3,7 @@
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
 import { addRoom, addWorkspace, loadWorkspace, renameRoom, selectRoom, setRoomFavorite } from "./actions.js";
+import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { refreshAttention } from "./attention.js";
@@ -240,6 +241,7 @@ function RoomNode(room, childrenOf, depth) {
                 if (room.isCurrent) markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
                 if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
                 else markDirty("sidebar");
+                closeSidebarOverlay();
               },
           oncontextmenu: snapshot
             ? (/** @type {MouseEvent} */ event) => {
