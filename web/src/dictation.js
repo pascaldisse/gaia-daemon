@@ -22,6 +22,12 @@ const WAVE_BARS = 28;
 const METER_THROTTLE_MS = 100;
 const MAX_RECORD_MS = 5 * 60 * 1000;
 const FINISH_WATCHDOG_MS = 1500;
+// After stopping, how long to wait for the chunk-upload chain to flush before
+// giving up on the server-side clip file and uploading the full in-memory
+// blob instead. Transcribing the on-disk clip is only safe once every chunk
+// has landed — otherwise the daemon reads a truncated file and the tail of
+// the recording is cut off.
+const UPLOAD_FLUSH_WATCHDOG_MS = 2000;
 // One transcription attempt (which may cover two sequential fetches — the
 // clip-transcribe try, then the upload fallback) gets this long before it's
 // treated as failed. Recording itself is never subject to this timeout.
@@ -45,6 +51,7 @@ function fetchTimeout(ms) {
  * @property {number} lastMeterMs
  * @property {Blob[]} chunks
  * @property {string} clipId
+ * @property {Promise<void>} uploadChain
  */
 
 /** @type {DictationSession|null} */
@@ -120,6 +127,7 @@ async function startDictation() {
     lastMeterMs: 0,
     chunks: [],
     clipId: newClipId(),
+    uploadChain: Promise.resolve(),
   };
   session = current;
   state.dictating = true;
@@ -133,11 +141,17 @@ async function startDictation() {
   recorder.ondataavailable = (event) => {
     if (!event.data || !event.data.size) return;
     current.chunks.push(event.data);
-    // Durability: stream the chunk to disk server-side, fire-and-forget. This
-    // must never gate or delay recording/stop/transcribe — no await, and any
-    // failure (offline, reload mid-flight) is silently swallowed since the
-    // in-memory chunks array remains the source of truth for the send path.
-    void fetch(`/api/voice/clip/${current.clipId}/chunk`, { method: "POST", body: event.data }).catch(() => {});
+    // Durability: stream the chunk to disk server-side. Chained behind the
+    // previous chunk's upload (not fired in parallel) so the server's appends
+    // land in recording order AND so stopAndTranscribe can tell when the
+    // on-disk file is complete — parallel fire-and-forget uploads let the
+    // final chunk race the clip-transcribe call and cut off the recording's
+    // tail. Still never awaited here (recording/stop are never gated), and
+    // failures are swallowed: the in-memory chunks array remains the source
+    // of truth for the send path.
+    current.uploadChain = current.uploadChain
+      .then(() => fetch(`/api/voice/clip/${current.clipId}/chunk`, { method: "POST", body: event.data }))
+      .then(() => undefined, () => undefined);
   };
   recorder.start(1000);
   current.timerId = window.setTimeout(() => void stopAndTranscribe(), MAX_RECORD_MS);
@@ -191,7 +205,16 @@ async function stopAndTranscribe() {
     return false;
   }
 
-  return await transcribe(clip, current.clipId);
+  // Only let the daemon transcribe its on-disk clip file if every chunk
+  // upload has actually landed — otherwise it reads a truncated file and the
+  // tail of the recording (everything said after the last flushed chunk) is
+  // silently cut off. Watchdogged: if the chain hasn't flushed in time, the
+  // full in-memory blob is uploaded instead, which always has the tail.
+  const clipFileComplete = await Promise.race([
+    current.uploadChain.then(() => true),
+    /** @type {Promise<boolean>} */ (new Promise((resolve) => window.setTimeout(() => resolve(false), UPLOAD_FLUSH_WATCHDOG_MS))),
+  ]);
+  return await transcribe(clip, current.clipId, clipFileComplete);
 }
 
 /**
@@ -205,10 +228,13 @@ async function stopAndTranscribe() {
  *   newClipId) — lets runTranscribe try the cheaper already-uploaded-clip
  *   path before falling back to a full upload. Omitted when retrying a
  *   previously-failed clip, which has no clip id.
+ * @param {boolean} [clipFileComplete] whether every chunk upload for clipId
+ *   has landed on disk — the cheaper clip-transcribe path is only safe (and
+ *   only tried) when true; otherwise the full blob is uploaded.
  * @returns {Promise<boolean>}
  */
-export async function transcribe(blob, clipId) {
-  const next = queueTail.catch(() => false).then(() => runTranscribe(blob, clipId));
+export async function transcribe(blob, clipId, clipFileComplete) {
+  const next = queueTail.catch(() => false).then(() => runTranscribe(blob, clipId, clipFileComplete));
   queueTail = next;
   activeTranscriptionPromise = next;
   try {
@@ -221,9 +247,10 @@ export async function transcribe(blob, clipId) {
 /**
  * @param {Blob} blob
  * @param {string} [clipId]
+ * @param {boolean} [clipFileComplete]
  * @returns {Promise<boolean>}
  */
-async function runTranscribe(blob, clipId) {
+async function runTranscribe(blob, clipId, clipFileComplete) {
   state.dictationBusy = true;
   state.dictating = false;
   state.dictationError = "";
@@ -232,9 +259,10 @@ async function runTranscribe(blob, clipId) {
   const { signal, settle } = requestSignal(TRANSCRIBE_TIMEOUT_MS);
   try {
     // Prefer the clip already streamed to the daemon during recording (no
-    // second upload of the audio); fall back to a full upload on ANY failure
+    // second upload of the audio) — but ONLY when the upload chain confirmed
+    // the on-disk file is complete; fall back to a full upload on ANY failure
     // of that call (non-ok response or thrown, including our own abort/timeout).
-    if (clipId) {
+    if (clipId && clipFileComplete) {
       const viaClip = await postClipTranscribe(clipId, blob?.type, signal);
       if (viaClip.ok) {
         insertTranscript(viaClip.text);
@@ -249,6 +277,11 @@ async function runTranscribe(blob, clipId) {
     }
     const result = await postClip(blob, signal);
     if (result.ok) {
+      // The upload route archived the complete audio server-side (final-*),
+      // so the partially-streamed .bin is now redundant — discard it (the
+      // server renames it to discarded-*, never deletes) so it can't
+      // resurface as a ghost recovered-recording chip.
+      if (clipId) void fetch(`/api/voice/clip/${clipId}`, { method: "DELETE" }).catch(() => {});
       insertTranscript(result.text);
       lastFailedClip = null;
       state.dictationError = "";
