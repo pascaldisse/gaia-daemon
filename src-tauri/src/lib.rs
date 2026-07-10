@@ -1,9 +1,3 @@
-#[cfg(all(feature = "webkit", feature = "cef"))]
-compile_error!("features `webkit` and `cef` are mutually exclusive; use default WebKit or `--no-default-features --features cef`");
-
-#[cfg(not(any(feature = "webkit", feature = "cef")))]
-compile_error!("select exactly one engine feature: `webkit` or `cef`");
-
 mod daemon_lifecycle;
 
 #[cfg(feature = "webkit")]
@@ -500,9 +494,3 @@ mod webkit {
 
 #[cfg(feature = "webkit")]
 pub use webkit::run;
-
-#[cfg(feature = "cef")]
-pub mod cef_shell;
-
-#[cfg(feature = "cef")]
-pub use cef_shell::run_cef;
