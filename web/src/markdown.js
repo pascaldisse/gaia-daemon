@@ -173,5 +173,58 @@ function CodeBlock(lang, code) {
     { class: "code-block" },
     lang ? h("div", { class: "code-lang", text: lang }) : null,
     h("pre", {}, h("code", {}, LinkedText(code))),
+    CopyButton(code),
   );
+}
+
+// Bottom-right copy affordance, like the Claude/Codex apps. Reveals on hover of
+// the block, flashes "Copied" on success. Uses the async Clipboard API with a
+// legacy execCommand fallback for shells without clipboard permission.
+/** @param {string} code */
+function CopyButton(code) {
+  const label = h("span", { class: "code-copy-label", text: "Copy" });
+  const btn = h(
+    "button",
+    {
+      type: "button",
+      class: "code-copy",
+      title: "Copy code",
+      "aria-label": "Copy code",
+      onclick: () => void copyCode(code, btn, label),
+    },
+    label,
+  );
+  return btn;
+}
+
+/** @param {string} code @param {HTMLElement} btn @param {HTMLElement} label */
+async function copyCode(code, btn, label) {
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(code);
+    ok = true;
+  } catch {
+    ok = legacyCopy(code);
+  }
+  label.textContent = ok ? "Copied" : "Failed";
+  btn.classList.toggle("ok", ok);
+  window.setTimeout(() => {
+    label.textContent = "Copy";
+    btn.classList.remove("ok");
+  }, 1400);
+}
+
+/** @param {string} text @returns {boolean} */
+function legacyCopy(text) {
+  const area = h("textarea", { value: text, style: "position:fixed;opacity:0;pointer-events:none" });
+  document.body.append(area);
+  /** @type {HTMLTextAreaElement} */ (area).select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
 }

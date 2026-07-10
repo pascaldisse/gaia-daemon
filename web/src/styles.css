@@ -641,10 +641,26 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 0 3px;
 }
 
-.code-block { border: 1px solid var(--border); background: color-mix(in srgb, black 35%, transparent); min-width: 0; }
+.code-block { position: relative; border: 1px solid var(--border); background: color-mix(in srgb, black 35%, transparent); min-width: 0; }
 .code-lang { border-bottom: 1px solid var(--border); color: var(--muted); padding: 4px 7px; text-transform: uppercase; }
 .code-block pre { grid-column: auto; margin: 0; padding: 8px; overflow: auto; white-space: pre; }
 .code-block code { display: block; background: transparent; border: 0; padding: 0; }
+
+/* Bottom-right copy button, revealed on hover of the block (always visible on
+   touch, where there is no hover). */
+.code-copy {
+  position: absolute; right: 6px; bottom: 6px; z-index: 1;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; font: inherit; font-size: 11px; line-height: 1.6;
+  color: var(--muted); cursor: pointer;
+  background: color-mix(in srgb, black 45%, transparent);
+  border: 1px solid var(--border); border-radius: 5px;
+  opacity: 0; transition: opacity 90ms ease, color 90ms ease;
+}
+.code-block:hover .code-copy, .code-copy:focus-visible { opacity: 1; }
+.code-copy:hover { color: var(--fg); }
+.code-copy.ok { color: var(--fg); border-color: color-mix(in srgb, var(--fg) 40%, var(--border)); opacity: 1; }
+@media (hover: none) { .code-copy { opacity: 1; } }
 
 .markdown-message .md-table-wrap { overflow-x: auto; max-width: 100%; }
 .markdown-message .md-table { border-collapse: collapse; font-size: 0.95em; }
