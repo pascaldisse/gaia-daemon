@@ -4,6 +4,8 @@ compile_error!("features `webkit` and `cef` are mutually exclusive; use default 
 #[cfg(not(any(feature = "webkit", feature = "cef")))]
 compile_error!("select exactly one engine feature: `webkit` or `cef`");
 
+mod daemon_lifecycle;
+
 #[cfg(feature = "webkit")]
 mod webkit {
     // The GAIA native shell.
@@ -13,15 +15,13 @@ mod webkit {
     // frontend is bundled; the window loads the same http://127.0.0.1:<port>/ a
     // browser would.
     //
-    // Daemon lifecycle (spawn-or-attach):
-    //   * Default: the app OWNS its daemon. On launch, if the port is already
-    //     serving (e.g. a dev/room daemon on :8787) the window just attaches and
-    //     renders it — the running daemon is never touched. If the port is DEAD,
-    //     the shell SPAWNS the daemon itself (`npm run dev` from the source tree)
-    //     and tears it down on quit. A double-clicked app is thus self-contained:
-    //     start the app, it starts the app.
-    //   * Opt-out: set GAIA_SHELL_AUTOSTART=0 to never spawn (pure attach) — for a
-    //     dev who runs the daemon by hand and wants the shell to keep hands off.
+    // Daemon lifecycle (owned):
+    //   * Default: the app OWNS :8787. On launch, anything serving it is killed,
+    //     then a fresh daemon is spawned as an owned child (`npm run dev` from the
+    //     source tree). GAIA_PARENT_PID lets the daemon suicide if the shell dies.
+    //     On quit, the whole daemon process tree dies.
+    //   * Dev-only opt-out: set GAIA_SHELL_AUTOSTART=0 (or false/off) for pure
+    //     attach mode when a developer deliberately runs the daemon by hand.
     //
     // Configuration (all optional):
     //   GAIA_SHELL_URL        full URL to load (wins over everything)
@@ -35,16 +35,9 @@ mod webkit {
     // LATER: the optional macOS Chromium enhancement (Phase 3). See
     // IMPLEMENTATION-PLAN.md and webview2-re/BUILD-SPEC.md.
 
-    #[cfg(desktop)]
-    use std::net::{TcpStream, ToSocketAddrs};
     use std::process::Child;
-    #[cfg(desktop)]
-    use std::process::Command;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
-    #[cfg(desktop)]
-    use std::time::{Duration, Instant};
-
     #[cfg(desktop)]
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -67,8 +60,8 @@ mod webkit {
     // device height; the CSS already adds env(safe-area-inset-*) padding back.
     #[cfg(target_os = "ios")]
     mod ios_scroll_insets {
-        use objc2::runtime::AnyObject;
         use objc2::msg_send;
+        use objc2::runtime::AnyObject;
 
         /// UIScrollView.ContentInsetAdjustmentBehavior.never
         const CONTENT_INSET_ADJUSTMENT_NEVER: i64 = 2;
@@ -91,9 +84,7 @@ mod webkit {
                     &*scroll_view,
                     setContentInsetAdjustmentBehavior: CONTENT_INSET_ADJUSTMENT_NEVER
                 ];
-                eprintln!(
-                    "[gaia-shell] set UIScrollView.contentInsetAdjustmentBehavior = .never"
-                );
+                eprintln!("[gaia-shell] set UIScrollView.contentInsetAdjustmentBehavior = .never");
             }
         }
     }
@@ -166,138 +157,6 @@ mod webkit {
             }
         }
         format!("http://127.0.0.1:{}/", resolve_port())
-    }
-
-    /// Is something accepting TCP connections on 127.0.0.1:port?
-    #[cfg(desktop)]
-    fn port_alive(port: u16) -> bool {
-        let addr = match ("127.0.0.1", port).to_socket_addrs() {
-            Ok(mut it) => match it.next() {
-                Some(a) => a,
-                None => return false,
-            },
-            Err(_) => return false,
-        };
-        TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
-    }
-
-    /// `<gaia home>/daemon.pid` — mirrors src/core/paths.ts `gaiaHome()`
-    /// (GAIA_HOME env override, else `~/.gaia`). The daemon (src/server/http.ts)
-    /// writes its own pid here after every successful bind, INCLUDING the
-    /// process a `/reload` re-exec spawns — so this file, not the pid of
-    /// whatever we originally spawned, is the one honest answer to "what do I
-    /// kill on cmd+Q".
-    #[cfg(all(desktop, unix))]
-    fn gaia_home_dir() -> std::path::PathBuf {
-        if let Ok(dir) = std::env::var("GAIA_HOME") {
-            if !dir.trim().is_empty() {
-                return std::path::PathBuf::from(dir);
-            }
-        }
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        std::path::Path::new(&home).join(".gaia")
-    }
-
-    #[cfg(all(desktop, unix))]
-    fn read_daemon_pid() -> Option<i32> {
-        let content = std::fs::read_to_string(gaia_home_dir().join("daemon.pid")).ok()?;
-        content.trim().parse::<i32>().ok()
-    }
-
-    /// Signal a whole process GROUP (negative pid), not just one process — the
-    /// daemon is spawned with `process_group(0)` so this reaches every
-    /// descendant (npm → tsx → node → any `gaia __run-agent` children) in one
-    /// shot. Shells out to the `kill` binary rather than an FFI syscall so this
-    /// needs no new Cargo dependency.
-    #[cfg(all(desktop, unix))]
-    fn kill_process_group(pid: i32, signal: &str) {
-        let _ = Command::new("kill").arg(format!("-{signal}")).arg(format!("-{pid}")).status();
-    }
-
-    /// The repo directory the daemon runs from. Defaults to the source tree this
-    /// binary was built in (baked at compile time via CARGO_MANIFEST_DIR, which is
-    /// `<repo>/src-tauri`; the daemon lives one level up). This lets a double-clicked
-    /// app find `package.json` + `node_modules` without any runtime path guessing.
-    /// Override with GAIA_SHELL_SPAWN_DIR to point at a different checkout.
-    #[cfg(desktop)]
-    fn spawn_dir() -> String {
-        if let Ok(dir) = std::env::var("GAIA_SHELL_SPAWN_DIR") {
-            if !dir.trim().is_empty() {
-                return dir;
-            }
-        }
-        concat!(env!("CARGO_MANIFEST_DIR"), "/..").to_string()
-    }
-
-    /// Spawn the gaia daemon when the port is dead so the app owns its own backend.
-    /// Returns the child if we started one, so the caller can kill it on exit — and
-    /// ONLY if we started it. Attaches (never spawns) when a daemon is already
-    /// serving the port, so it can never compete with a dev/room daemon that is
-    /// already up. Set GAIA_SHELL_AUTOSTART=0 to disable spawning entirely.
-    fn maybe_spawn_daemon(port: u16) -> Option<Child> {
-        #[cfg(mobile)]
-        {
-            let _ = port;
-            return None;
-        }
-
-        #[cfg(desktop)]
-        {
-            match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
-                Ok("0") | Ok("false") | Ok("off") => return None,
-                _ => {}
-            }
-            if port_alive(port) {
-                // A daemon is already up — attach, do not compete with it.
-                return None;
-            }
-
-            let cmd =
-                std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "npm run dev".to_string());
-            let dir = spawn_dir();
-            // Run through a LOGIN shell: a Finder-launched .app inherits only the bare
-            // GUI PATH, so `node`/`npm` (nvm/homebrew) are not visible to a plain `sh
-            // -c`. `$SHELL -lc` sources the user's profile and restores them.
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-            eprintln!("[gaia-shell] :{port} is dead; spawning daemon: `{cmd}` (cwd {dir})");
-
-            let mut command = Command::new(&shell);
-            command
-                .arg("-lc")
-                .arg(&cmd)
-                .current_dir(&dir)
-                .env("GAIA_PORT", port.to_string());
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                // Its OWN process group (setpgid(0,0)), not ours: this is what lets
-                // cmd+Q later signal exactly the daemon's tree (shell → npm → tsx →
-                // node → any `gaia __run-agent` children) without touching the
-                // gaia-shell app process itself.
-                command.process_group(0);
-            }
-            let child = command.spawn();
-
-            let child = match child {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[gaia-shell] failed to spawn daemon: {e}");
-                    return None;
-                }
-            };
-
-            // Wait (up to ~30s) for the daemon to start listening.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                if port_alive(port) {
-                    eprintln!("[gaia-shell] daemon is up on :{port}");
-                    return Some(child);
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            eprintln!("[gaia-shell] daemon did not come up within timeout; loading anyway");
-            Some(child)
-        }
     }
 
     /// Build the URL for a spawned window: the same localhost UI the main window
@@ -551,56 +410,6 @@ mod webkit {
         }
     }
 
-    /// cmd+Q means TOTAL death: tear down the WHOLE process tree we spawned,
-    /// not just the immediate child. A harness turn can leave grandchild
-    /// runner processes (`gaia __run-agent`) hanging off the daemon; killing
-    /// only `child` would orphan those. The pidfile — not `child`'s own pid —
-    /// is the authority, because `/reload` re-execs the daemon into a brand
-    /// new process that rewrites the SAME pidfile on boot: by the time the
-    /// user quits, the live daemon may not be the process we originally
-    /// spawned at all. Falls back to the originally-spawned child's own pid
-    /// (which IS its process-group id, since it was spawned with
-    /// `process_group(0)`) only if the pidfile is missing.
-    #[cfg(all(desktop, unix))]
-    fn teardown_spawned_daemon(child: Child) {
-        let port = resolve_port();
-        let target_pid = read_daemon_pid().unwrap_or(child.id() as i32);
-        eprintln!("[gaia-shell] total death: SIGTERM process group {target_pid}");
-        kill_process_group(target_pid, "TERM");
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut dead = false;
-        while Instant::now() < deadline {
-            if !port_alive(port) {
-                dead = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if dead {
-            eprintln!("[gaia-shell] stopped the daemon we spawned");
-        } else {
-            eprintln!("[gaia-shell] daemon still alive after 2s; SIGKILL process group {target_pid}");
-            kill_process_group(target_pid, "KILL");
-        }
-        // The OS reaps it independently of this (exiting) process; no need to
-        // block here waiting for it.
-        drop(child);
-    }
-
-    /// Non-unix desktop (Windows): no process-group signaling available this
-    /// way — best-effort direct kill, same as before this feature.
-    #[cfg(all(desktop, not(unix)))]
-    fn teardown_spawned_daemon(mut child: Child) {
-        let _ = child.kill();
-        eprintln!("[gaia-shell] stopped the daemon we spawned");
-    }
-
-    /// Mobile never spawns a daemon (see maybe_spawn_daemon), so this is
-    /// unreachable there — kept only so the exit handler compiles uniformly.
-    #[cfg(mobile)]
-    fn teardown_spawned_daemon(_child: Child) {}
-
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
         let builder = tauri::Builder::default()
@@ -629,10 +438,16 @@ mod webkit {
                     eprintln!("[gaia-shell] menu setup failed: {e}");
                 }
 
-                // Own our daemon: spawn it if the port is dead, else attach.
-                if let Some(child) = maybe_spawn_daemon(port) {
-                    if let Some(state) = app.try_state::<SpawnedDaemon>() {
-                        *state.0.lock().unwrap() = Some(child);
+                // Own our daemon unless explicitly disabled for a dev-only pure attach.
+                match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
+                    Ok("0") | Ok("false") | Ok("off") => {}
+                    _ => {
+                        crate::daemon_lifecycle::kill_existing(port);
+                        if let Some(child) = crate::daemon_lifecycle::spawn_owned(port) {
+                            if let Some(state) = app.try_state::<SpawnedDaemon>() {
+                                *state.0.lock().unwrap() = Some(child);
+                            }
+                        }
                     }
                 }
 
@@ -671,11 +486,11 @@ mod webkit {
             .run(|app, event| {
                 // On exit, tear down ONLY a daemon we spawned ourselves — total
                 // death (the whole process tree), never a bare kill of the
-                // immediate child. See teardown_spawned_daemon.
+                // immediate child.
                 if let tauri::RunEvent::ExitRequested { .. } = event {
                     if let Some(state) = app.try_state::<SpawnedDaemon>() {
                         if let Some(child) = state.0.lock().unwrap().take() {
-                            teardown_spawned_daemon(child);
+                            crate::daemon_lifecycle::teardown(resolve_port(), child);
                         }
                     }
                 }

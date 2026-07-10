@@ -74,6 +74,23 @@ function pidfilePath(): string {
   return join(gaiaHome(), "daemon.pid");
 }
 
+/** A daemon spawned by the Tauri shell with GAIA_PARENT_PID must never outlive
+ * that shell: poll every 2s and exit as soon as the parent is gone (a signal-0
+ * kill throws once the pid no longer exists). No-op when the env var is
+ * absent or not a positive integer — e.g. a daemon started standalone. */
+function installParentWatchdog(): void {
+  const parentPid = Number.parseInt(process.env.GAIA_PARENT_PID ?? "", 10);
+  if (!Number.isInteger(parentPid) || parentPid <= 0) return;
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      console.error(`[daemon] parent GAIA shell (pid ${parentPid}) is gone — exiting`);
+      process.exit(0);
+    }
+  }, 2000).unref();
+}
+
 function stringField(body: unknown, field: string): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[field];
@@ -238,6 +255,7 @@ export class GaiaWebServer {
     const port = this.options.port ?? gaiaPort();
     await this.listenWithRetry(server, port, host);
     await this.writePidfile();
+    installParentWatchdog();
 
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;

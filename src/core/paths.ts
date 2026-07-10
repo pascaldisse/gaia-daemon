@@ -1,8 +1,9 @@
 // Every path the system reads or writes is computed here, once. If you are
 // join()ing toward ~/.gaia or .gaia/ anywhere else, you are doing it wrong.
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
 
@@ -99,10 +100,27 @@ export function workspaceRootFromRoomDir(roomDir: string): string {
   return resolve(roomDir, "..", "..", "..");
 }
 
+/** Root holding bundled resources (setups/, web/), resolved once.
+ * Source-relative resolution (repo root = two levels up from src/core/) works
+ * for node/tsx and interpreted bun, but inside a bun single-file executable
+ * import.meta.url points at the virtual /$bunfs root and "../.." collapses to
+ * "/" — so when the source-relative root has no web/, fall back to dirs near
+ * the real binary (next to it, or ../Resources for a macOS .app bundle).
+ * GAIA_BUNDLE_DIR overrides everything. fileURLToPath, not URL.pathname —
+ * the latter percent-encodes and breaks install paths containing spaces. */
+const bundleRoot: string = (() => {
+  const override = process.env.GAIA_BUNDLE_DIR;
+  if (override) return resolve(override);
+  const fromSource = fileURLToPath(new URL("../..", import.meta.url));
+  const candidates = [
+    fromSource,
+    dirname(process.execPath),
+    resolve(dirname(process.execPath), "..", "Resources"),
+  ];
+  return candidates.find((dir) => existsSync(join(dir, "web"))) ?? fromSource;
+})();
+
 /** Bundled resources (setups/, web/) shipped inside the install itself. */
 export function bundledDir(...segments: string[]): string {
-  // src/core/paths.ts → repo root is two levels up from core/. fileURLToPath,
-  // not URL.pathname — the latter percent-encodes and breaks install paths
-  // containing spaces.
-  return resolve(fileURLToPath(new URL("../..", import.meta.url)), ...segments);
+  return resolve(bundleRoot, ...segments);
 }
