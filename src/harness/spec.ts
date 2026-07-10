@@ -220,6 +220,25 @@ export interface AccountFieldDef {
   hint?: string;
 }
 
+/** Interactive login flow for creating an account, declared as data+extractors
+ * on the spec: the shared AccountLoginService allocates a pseudo-tty, runs
+ * `command`, feeds ANSI-stripped output through the extractors, forwards the
+ * user's paste-back input, and stores the resulting credential bag — never
+ * learning what any of it means (RULE #0). */
+export interface AccountLoginSpec {
+  /** The interactive command. ctx.configDir is a THROWAWAY isolated dir the
+   * flow must be pointed at so it can never disturb the machine's ambient
+   * login (e.g. claude's keychain session). */
+  command(ctx: { configDir: string }): { argv: string[]; env?: Record<string, string> };
+  /** Extract the sign-in URL from the output so far, once present. */
+  signInUrl(output: string): string | undefined;
+  /** True while the flow is waiting for a paste-back code from the user. */
+  awaitingInput(output: string): boolean;
+  /** Extract the finished credential bag; configDir may hold fallback state
+   * the CLI wrote (checked again after the process exits). */
+  credentials(ctx: { output: string; configDir: string }): Record<string, string> | undefined;
+}
+
 /** Multi-account support, declared as DATA on the spec (same law as
  * credentialProxy): the daemon stores NAMED accounts as opaque credential bags
  * and RunnerHost merges `env(credentials)` into the subprocess env of any agent
@@ -236,6 +255,9 @@ export interface HarnessAccountsSpec {
   /** Env merged into a bound agent's subprocess — e.g. claude's
    * CLAUDE_CODE_OAUTH_TOKEN, which its CLI honors over the keychain login. */
   env(credentials: Record<string, string>): Record<string, string>;
+  /** Interactive in-app login; absent = accounts for this harness are created
+   * by pasting credentials into accounts.json directly. */
+  login?: AccountLoginSpec;
 }
 
 // --- the spec + registry ----------------------------------------------------------

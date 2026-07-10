@@ -57,3 +57,48 @@ export function listAccounts(): AccountRecord[] {
 export function findAccount(id: string): AccountRecord | undefined {
   return listAccounts().find((account) => account.id === id);
 }
+
+/** Redacted view for clients — never includes the credential bag. */
+export function redactedAccounts(): Array<{ id: string; harness: string; label?: string }> {
+  return listAccounts().map(({ id, harness, label }) => ({ id, harness, ...(label ? { label } : {}) }));
+}
+
+/** First free id: slugified label ("Work Account" -> "work-account") when given
+ * and unused, else `${harness}-2`, `${harness}-3`, ... skipping taken ids. */
+export function newAccountId(harness: string, label?: string): string {
+  const taken = new Set(listAccounts().map((account) => account.id));
+  if (label) {
+    const slug = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (slug && !taken.has(slug)) return slug;
+  }
+  for (let n = 2; ; n++) {
+    const candidate = `${harness}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+export function addAccount(record: AccountRecord): void {
+  ensureAccountsFile();
+  const path = accountsPath();
+  const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
+  const list = Array.isArray(raw.accounts) ? (raw.accounts as unknown[]) : [];
+  if (list.some((entry) => (entry as Partial<AccountRecord>)?.id === record.id)) {
+    throw new Error(`account '${record.id}' already exists`);
+  }
+  list.push(record);
+  writeFileSync(path, JSON.stringify({ ...raw, accounts: list }, null, 2) + "\n", { mode: 0o600 });
+}
+
+export function removeAccount(id: string): boolean {
+  const path = accountsPath();
+  if (!existsSync(path)) return false;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
+  const list = Array.isArray(raw.accounts) ? (raw.accounts as unknown[]) : [];
+  const kept = list.filter((entry) => (entry as Partial<AccountRecord>)?.id !== id);
+  if (kept.length === list.length) return false;
+  writeFileSync(path, JSON.stringify({ ...raw, accounts: kept }, null, 2) + "\n", { mode: 0o600 });
+  return true;
+}

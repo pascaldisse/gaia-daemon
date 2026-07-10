@@ -18,6 +18,8 @@ import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
+import { redactedAccounts, removeAccount } from "../domain/accounts.js";
+import { harnessSpecs } from "../harness/spec.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
@@ -495,6 +497,50 @@ export class GaiaWebServer {
     };
 
     let params: string[] | null;
+
+    // Named accounts. The login routes are registered BEFORE DELETE
+    // /api/accounts/<id> so "login" is never mistaken for an account id.
+    if (method === "GET" && path === "/api/accounts") {
+      return this.respond(response, async () => ({
+        accounts: redactedAccounts(),
+        harnesses: harnessSpecs()
+          .filter((s) => s.accounts)
+          .map((s) => ({ id: s.id, label: s.accounts?.label, login: Boolean(s.accounts?.login) })),
+      }));
+    }
+
+    if (method === "POST" && path === "/api/accounts/login") {
+      const body = await parseBody(request);
+      const harness = stringField(body, "harness");
+      const label = stringField(body, "label");
+      return this.respond(response, async () => ({
+        session: this.daemon.accountLogins.start((harness ?? "").trim(), label?.trim() || undefined),
+      }));
+    }
+
+    if (method === "GET" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
+      return this.respond(response, async () => ({ session: this.daemon.accountLogins.status(params![0]) }));
+    }
+
+    if (method === "POST" && (params = match(/^\/api\/accounts\/login\/([^/]+)\/input$/))) {
+      const body = await parseBody(request);
+      const textValue = stringField(body, "text") ?? "";
+      return this.respond(response, async () => {
+        this.daemon.accountLogins.input(params![0], textValue);
+        return { session: this.daemon.accountLogins.status(params![0]) };
+      });
+    }
+
+    if (method === "DELETE" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
+      return this.respond(response, async () => {
+        this.daemon.accountLogins.cancel(params![0]);
+        return { session: this.daemon.accountLogins.status(params![0]) };
+      });
+    }
+
+    if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
+      return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
+    }
 
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {
       const service = await this.daemon.serviceFor(params[0]);
