@@ -7,9 +7,7 @@
 
 use cef::*;
 use std::cell::RefCell;
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 mod mac;
@@ -65,17 +63,6 @@ fn resolve_cef_cache_path() -> CefString {
         .unwrap_or_else(|_| std::env::temp_dir().join("gaia-cef-cache"));
     let _ = std::fs::create_dir_all(&path);
     CefString::from(path.to_string_lossy().as_ref())
-}
-
-fn port_alive(port: u16) -> bool {
-    let addr = match ("127.0.0.1", port).to_socket_addrs() {
-        Ok(mut it) => match it.next() {
-            Some(a) => a,
-            None => return false,
-        },
-        Err(_) => return false,
-    };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
 fn load_cef(is_helper: bool) -> Library {
@@ -162,6 +149,15 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine, sandbox_info: *mut u8)
         return;
     }
 
+    let port = resolve_port();
+    let mut daemon_child = match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
+        Ok("0") | Ok("false") | Ok("off") => None,
+        _ => {
+            crate::daemon_lifecycle::kill_existing(port);
+            crate::daemon_lifecycle::spawn_owned(port)
+        }
+    };
+
     let mut app = GaiaCefApp::new();
     let cache_path = resolve_cef_cache_path();
     let settings = Settings {
@@ -184,14 +180,16 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine, sandbox_info: *mut u8)
     );
 
     let url = resolve_url();
-    let port = resolve_port();
     eprintln!(
         "[gaia-shell:cef] loading {url} (daemon_alive={}, cdp=http://127.0.0.1:{}/)",
-        port_alive(port),
+        crate::daemon_lifecycle::port_alive(port),
         settings.remote_debugging_port
     );
 
     run_message_loop();
+    if let Some(child) = daemon_child.take() {
+        crate::daemon_lifecycle::teardown(port, child);
+    }
     shutdown();
 }
 

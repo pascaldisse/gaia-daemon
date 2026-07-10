@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AgentDef, MemoryConfig } from "../core/types.js";
 import { newId } from "../core/ids.js";
 import { resolveMemoryConfig } from "../core/config.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { SqliteDatabase as DatabaseSync } from "../core/sqlite.js";
 import type { Episode, EpisodeOutcome } from "../domain/episodes.js";
 import { appendEpisode, purgeRoomEpisodes } from "../domain/episodes.js";
 import type { ActiveContextRef, MemoryHealthRow, MemorySearchHit, RoomRef, TranscriptSearchHit } from "../domain/workspace-index.js";

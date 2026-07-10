@@ -1,5 +1,6 @@
 // Memory v4 (MEMORY-DESIGN.md): ONE derived index per workspace at
-// <workspace>/.gaia/memory/index.db (node:sqlite, zero dependencies).
+// <workspace>/.gaia/memory/index.db (the platform's built-in sqlite via
+// src/core/sqlite.ts — node:sqlite or bun:sqlite, zero dependencies).
 //
 // The union store: verbatim transcript CHUNKS over every room, plus each
 // agent's facts and episodes, all FTS5-indexed in one file with global corpus
@@ -21,7 +22,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { SqliteDatabase as DatabaseSync } from "../core/sqlite.js";
+import { openSqlite } from "../core/sqlite.js";
 import { workspacePaths } from "../core/paths.js";
 import type { EpisodeOutcome } from "./episodes.js";
 import { readEpisodesFrom } from "./episodes.js";
@@ -126,7 +128,7 @@ CREATE INDEX IF NOT EXISTS episodes_hash ON episodes (hash);
  * writes and a CLI reader (`gaia memory status|eval`) can coexist. */
 export function openWorkspaceIndex(workspaceRoot: string): DatabaseSync {
   mkdirSync(workspacePaths.memoryDir(workspaceRoot), { recursive: true });
-  const db = new DatabaseSync(workspacePaths.memoryIndexDb(workspaceRoot));
+  const db = openSqlite(workspacePaths.memoryIndexDb(workspaceRoot));
   db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000;");
   db.exec(SCHEMA);
   // P1 indexes predate the fmt column; the index is derived, so patching the
