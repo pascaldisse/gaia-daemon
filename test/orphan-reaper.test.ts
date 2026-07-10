@@ -1,6 +1,6 @@
-// Orphan reaping: pure selection (marker + dead parent, never self or a live
-// sibling daemon's children) and the guarded reapOrphans driver via injected
-// process-list / kill seams — no real `ps`, no real signals.
+// Orphan reaping: pure selection (marker + not current daemon/current child) and
+// the guarded reapOrphans driver via injected process-list / kill / sleep seams —
+// no real `ps`, no real signals.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -21,62 +21,117 @@ test("parsePsTable keeps the command intact despite its inner spaces", () => {
 });
 
 const ID = "deadbeef0001";
-const mark = (s: string) => `node cli.js __run-agent ${INSTALL_MARKER_FLAG} ${ID} ${s}`;
+const OTHER_ID = "feed0000ffff";
+const mark = (s: string, id = ID) => `node cli.js __run-agent ${INSTALL_MARKER_FLAG} ${id} ${s}`;
 
-test("selectOrphans reaps only this install's marked, parent-dead processes", () => {
+test("selectOrphans selects marked processes with live non-self parents", () => {
   const entries = parsePsTable(
     [
-      `  900 1 ${mark("orphan-reparented-to-init")}`, // ppid 1 → reap
-      `  901 4242 ${mark("orphan-parent-gone")}`, // ppid not in table → reap
-      `  902 500 ${mark("child-of-live-sibling-daemon")}`, // ppid 500 alive → keep
-      `  500 1 node cli.js serve`, // a live (sibling) daemon
-      `  903 1 node cli.js __run-agent ${INSTALL_MARKER_FLAG} feed0000ffff other-install`, // other checkout → keep
-      `  904 1 /usr/bin/unrelated`, // unmarked → keep
+      `  900 500 ${mark("runner-of-live-predecessor")}`,
+      `  500 1 node cli.js serve`,
     ].join("\n"),
   );
-  const orphans = selectOrphans(entries, ID, /*selfPid*/ 333);
-  assert.deepEqual(orphans.sort((a, b) => a - b), [900, 901]);
+  assert.deepEqual(selectOrphans(entries, ID, /*selfPid*/ 333), [900]);
 });
 
-test("selectOrphans never targets the daemon itself or its own children", () => {
-  const self = 333;
-  const entries = parsePsTable([`  ${self} 1 ${mark("the-daemon")}`, `  905 ${self} ${mark("my-own-live-child")}`].join("\n"));
-  assert.deepEqual(selectOrphans(entries, ID, self), []);
+test("selectOrphans excludes current daemon children", () => {
+  const entries = parsePsTable(`  905 333 ${mark("my-own-live-child")}`);
+  assert.deepEqual(selectOrphans(entries, ID, /*selfPid*/ 333), []);
 });
 
-test("reapOrphans signals each selected orphan and reports the count", () => {
-  const killed: number[] = [];
-  const table = [`  900 1 ${mark("a")}`, `  901 1 ${mark("b")}`, `  902 7 node cli.js serve`].join("\n");
+test("selectOrphans excludes the current daemon pid", () => {
+  const entries = parsePsTable(`  333 1 ${mark("the-daemon")}`);
+  assert.deepEqual(selectOrphans(entries, ID, /*selfPid*/ 333), []);
+});
+
+test("selectOrphans excludes a different install id", () => {
+  const entries = parsePsTable(`  903 1 ${mark("other-install", OTHER_ID)}`);
+  assert.deepEqual(selectOrphans(entries, ID, /*selfPid*/ 333), []);
+});
+
+test("reapOrphans escalates SIGTERM survivors to SIGKILL", async () => {
+  const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  const table = `  900 500 ${mark("stubborn")}`;
   const logs: string[] = [];
-  const result = reapOrphans({ id: ID, selfPid: 333, listProcesses: () => table, kill: (pid) => killed.push(pid), log: (m) => logs.push(m) });
-  assert.deepEqual(killed.sort((a, b) => a - b), [900, 901]);
-  assert.deepEqual(result, { found: 2, reaped: 2 });
-  assert.match(logs.join("\n"), /reaped 2\/2/);
-});
-
-test("reapOrphans is best-effort: a kill failure (already gone) doesn't abort the sweep", () => {
-  const killed: number[] = [];
-  const table = [`  900 1 ${mark("a")}`, `  901 1 ${mark("b")}`].join("\n");
-  const result = reapOrphans({
+  const result = await reapOrphans({
     id: ID,
     selfPid: 333,
     listProcesses: () => table,
-    kill: (pid) => {
+    kill: (pid, signal) => killed.push({ pid, signal }),
+    sleep: async () => {},
+    graceMs: 1,
+    pollMs: 1,
+    log: (m) => logs.push(m),
+  });
+  assert.deepEqual(killed, [
+    { pid: 900, signal: "SIGTERM" },
+    { pid: 900, signal: "SIGKILL" },
+  ]);
+  assert.deepEqual(result, { found: 1, reaped: 0 });
+  assert.match(logs.join("\n"), /SIGKILL needed for 1; SURVIVED 1/);
+});
+
+test("reapOrphans does not SIGKILL an orphan that disappears after SIGTERM", async () => {
+  const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  let calls = 0;
+  const result = await reapOrphans({
+    id: ID,
+    selfPid: 333,
+    listProcesses: () => (++calls === 1 ? `  900 500 ${mark("gone-after-term")}` : ""),
+    kill: (pid, signal) => killed.push({ pid, signal }),
+    sleep: async () => {},
+    graceMs: 1,
+    pollMs: 1,
+  });
+  assert.deepEqual(killed, [{ pid: 900, signal: "SIGTERM" }]);
+  assert.deepEqual(result, { found: 1, reaped: 1 });
+});
+
+test("reapOrphans treats same pid without marker after SIGTERM as gone", async () => {
+  const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  let calls = 0;
+  const result = await reapOrphans({
+    id: ID,
+    selfPid: 333,
+    listProcesses: () => (++calls === 1 ? `  900 500 ${mark("reused")}` : "  900 500 node unrelated-process"),
+    kill: (pid, signal) => killed.push({ pid, signal }),
+    sleep: async () => {},
+    graceMs: 1,
+    pollMs: 1,
+  });
+  assert.deepEqual(killed, [{ pid: 900, signal: "SIGTERM" }]);
+  assert.deepEqual(result, { found: 1, reaped: 1 });
+});
+
+test("reapOrphans is best-effort: a kill failure (already gone) doesn't abort the sweep", async () => {
+  const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  let calls = 0;
+  const result = await reapOrphans({
+    id: ID,
+    selfPid: 333,
+    listProcesses: () => (++calls === 1 ? [`  900 1 ${mark("a")}`, `  901 1 ${mark("b")}`].join("\n") : `  901 1 ${mark("b")}`),
+    kill: (pid, signal) => {
       if (pid === 900) {
         const err = new Error("no such process") as NodeJS.ErrnoException;
         err.code = "ESRCH";
         throw err;
       }
-      killed.push(pid);
+      killed.push({ pid, signal });
     },
+    sleep: async () => {},
+    graceMs: 1,
+    pollMs: 1,
   });
-  assert.deepEqual(killed, [901]);
+  assert.deepEqual(killed, [
+    { pid: 901, signal: "SIGTERM" },
+    { pid: 901, signal: "SIGKILL" },
+  ]);
   assert.equal(result.found, 2);
   assert.equal(result.reaped, 1);
 });
 
-test("reapOrphans swallows a ps failure and reaps nothing", () => {
-  const result = reapOrphans({
+test("reapOrphans swallows a ps failure and reaps nothing", async () => {
+  const result = await reapOrphans({
     id: ID,
     listProcesses: () => {
       throw new Error("ps exploded");

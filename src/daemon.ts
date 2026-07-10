@@ -169,6 +169,11 @@ export class Daemon {
 
   /** Boot-time sweeps. Called once the server knows its base URL. */
   async boot(baseUrl: string): Promise<void> {
+    // The orphan-runner sweep must complete before anything can resume a pending
+    // turn (scheduler tick, summon recovery, serviceFor from HTTP). Otherwise a
+    // surviving runner from the previous daemon and the freshly resumed runner
+    // can execute the same turn in parallel.
+    await reapOrphans({ log: (message) => this.log(message) });
     this.bridge = new HarnessBridge(baseUrl);
     // Proactive runs: one tick across every initialized workspace. The first
     // tick also recovers runs a prior process left marked "running".
@@ -179,7 +184,6 @@ export class Daemon {
       log: (message) => this.log(message),
     });
     this.scheduler.start();
-    reapOrphans({ log: (message) => this.log(message) });
     // Summon recovery: a prior process may have died with background summons
     // running or finished-but-undelivered. Re-arm each one (the child room's
     // WAL resumes its turn; the coordinator re-delivers the result to the
