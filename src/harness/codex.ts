@@ -267,6 +267,26 @@ function dynamicToolSpec(tool: PiToolLike): { type: "function"; name: string; de
   };
 }
 
+// GAIA thinking levels -> Codex `turn/start.effort` (ReasoningEffort). Codex's
+// reasoning models have no "off"; floor at "low" — same shape as claude.ts's
+// effortFor (Claude and Codex share the low/medium/high/xhigh vocabulary).
+function effortFor(level: string | undefined): string | undefined {
+  switch (level) {
+    case "off":
+    case "minimal":
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "xhigh":
+      return "xhigh";
+    default:
+      return undefined;
+  }
+}
+
 /** GAIA's harness-neutral MCP shape → codex `mcp_servers` config overrides
  * (the config.toml table, passed per thread). Exported for tests. */
 export function codexMcpServersConfig(servers: Record<string, McpServerConfig>): Record<string, Record<string, unknown>> {
@@ -388,6 +408,13 @@ export class CodexRuntime implements AgentRuntime {
 
     // Start the turn. Pasted images ride as localImage input items (the same
     // shape `codex -i <file>` produces); the app-server reads the paths itself.
+    // Reasoning summary is ALWAYS "detailed" — forced thread-wide via
+    // configOverride() at thread/start/resume (see there for why); no need to
+    // repeat it per turn. Effort DOES need to travel per turn/start: it's the
+    // one knob a per-turn override (e.g. voice forcing thinking off) can
+    // change mid-thread, mirroring claude.ts's effortFor(thinkingOverride ??
+    // this.agent.thinking).
+    const effort = effortFor(input.thinking ?? this.agent.thinking);
     const turnResponse = (await client.request("turn/start", {
       threadId: thread.threadId,
       input: [
@@ -395,6 +422,7 @@ export class CodexRuntime implements AgentRuntime {
         ...nativeImageAttachments(input.attachments).map((file) => ({ type: "localImage", path: file.path })),
       ],
       model: this.agent.model?.name ?? null,
+      ...(effort ? { effort } : {}),
     })) as { turn: { id: string; status: string } };
 
     this.activeTurn = { threadId: thread.threadId, turnId: turnResponse.turn.id };
@@ -915,15 +943,25 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   /** Per-thread codex config override — the config.toml sections gaia drives as
-   * data: `mcp_servers` (configured MCP) and `tools.web_search` (the `web`
-   * tool → codex's native Responses web_search). Returns {} when nothing
-   * applies so the spread adds nothing. */
+   * data: `mcp_servers` (configured MCP), `tools.web_search` (the `web` tool →
+   * codex's native Responses web_search), and `model_reasoning_summary`.
+   *
+   * model_reasoning_summary is ALWAYS "detailed" — never a per-agent/UI
+   * option. Without it the Responses API returns reasoning items with an
+   * EMPTY summary (verified against a live rollout: 28/28 reasoning items had
+   * `summary: []`), so the room saw nothing but tool-call rows with zero
+   * commentary between them — indistinguishable from a broken harness. This
+   * mirrors claude.ts's ensureThinkingProxy: "reveal thinking" is always on
+   * for every agent, across every harness, unconditionally (see MEMORY: reveal
+   * thinking is always true for all agents across all harnesses) — codex was
+   * simply never wired to request it. Returns {} only when nothing else
+   * applies; this field itself is never conditional. */
   private configOverride(): { config?: Record<string, unknown> } {
-    const config: Record<string, unknown> = {};
+    const config: Record<string, unknown> = { model_reasoning_summary: "detailed" };
     const servers = resolveMcpServers(this.workspace.config, this.agent);
     if (Object.keys(servers).length > 0) config.mcp_servers = codexMcpServersConfig(servers);
     if (this.agent.tools.includes("web")) config.tools = { web_search: true };
-    return Object.keys(config).length > 0 ? { config } : {};
+    return { config };
   }
 
   private roomForThread(threadId: string): string | undefined {

@@ -319,6 +319,72 @@ test("CodexRuntime inherits the runner env untouched; no dynamic tools without g
   }
 });
 
+test("CodexRuntime always requests detailed reasoning summaries — not a per-agent option", async () => {
+  const fx = await fixture();
+  try {
+    // First life: thread/start.
+    const fake1 = new FakeCodexClient();
+    fake1.addResponse("initialize", {});
+    fake1.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake1.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake1.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const first = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake1 });
+    await collect(first.send({ roomId: "default", message: "hi", transcript: [] }));
+    const threadStart = fake1.requests.find((request) => request.method === "thread/start");
+    assert.equal(
+      (threadStart?.params as { config?: { model_reasoning_summary?: string } }).config?.model_reasoning_summary,
+      "detailed",
+    );
+    first.dispose();
+
+    // Second life: thread/resume must carry the same override — without it,
+    // the Responses API returns reasoning items with an EMPTY summary (a live
+    // rollout showed 28/28 empty), leaving the room with tool-call rows and
+    // zero commentary in between.
+    const fake2 = new FakeCodexClient();
+    fake2.addResponse("initialize", {});
+    fake2.addResponse("thread/resume", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake2.addResponse("turn/start", { turn: { id: "turn-2", status: "inProgress" } });
+    fake2.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const second = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake2 });
+    await collect(second.send({ roomId: "default", message: "hi again", transcript: [] }));
+    const resume = fake2.requests.find((request) => request.method === "thread/resume");
+    assert.equal(
+      (resume?.params as { config?: { model_reasoning_summary?: string } }).config?.model_reasoning_summary,
+      "detailed",
+    );
+    second.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime maps agent.thinking to turn/start.effort, honoring a per-turn override", async () => {
+  const fx = await harnessFixture({ tools: [], harness: "codex", model: { provider: "openai", name: "gpt-5-codex" }, thinking: "high" });
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", { thread: { id: "th-1" }, model: "gpt-5-codex", modelProvider: "openai" });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: async () => fake });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const turnStart = fake.requests.find((request) => request.method === "turn/start");
+    assert.equal((turnStart?.params as { effort?: string }).effort, "high");
+
+    // A per-turn override (e.g. voice forcing thinking off) wins over the
+    // agent's configured level, exactly like claude.ts's thinkingOverride.
+    fake.addResponse("turn/start", { turn: { id: "turn-2", status: "inProgress" } });
+    fake.addNotificationSequence({ method: "turn/completed", params: { turn: { status: "completed" } } });
+    await collect(runtime.send({ roomId: "default", message: "hi again", transcript: [], thinking: "low" }));
+    const turnStart2 = fake.requests.filter((request) => request.method === "turn/start")[1];
+    assert.equal((turnStart2?.params as { effort?: string }).effort, "low");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("CodexRuntime passes configured MCP servers as per-thread config overrides", async () => {
   const fx = await fixture();
   try {
