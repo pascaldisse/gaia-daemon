@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tungstenite = "0.24"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 # Raw objc message-send, shared by the macOS media-capture patch and the iOS
