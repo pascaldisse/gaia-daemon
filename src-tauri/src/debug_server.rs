@@ -280,7 +280,7 @@ fn eval_in_page(
         let source_json = serde_json::to_string(source).map_err(|e| e.to_string())?;
         let port = state.port;
         let script = format!(
-            "(async()=>{{let o;try{{const v=await (0,eval)({source_json});let s;try{{s=JSON.parse(JSON.stringify(v===undefined?null:v))}}catch(_){{s=String(v)}}o={{id:{id},ok:true,value:s}}}}catch(e){{o={{id:{id},ok:false,error:String(e&&e.stack||e)}}}}try{{await fetch('http://127.0.0.1:{port}/__result',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify(o)}})}}catch(_){{}}}})();"
+            "(async()=>{{let o;try{{const v=await (0,eval)({source_json});let s;try{{s=JSON.parse(JSON.stringify(v===undefined?null:v))}}catch(_){{s=String(v)}}o={{id:{id},ok:true,value:s}}}}catch(e){{o={{id:{id},ok:false,error:String(e&&e.message?e.message+String.fromCharCode(10)+(e.stack||''):e&&e.stack||e)}}}}try{{await fetch('http://127.0.0.1:{port}/__result',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify(o)}})}}catch(_){{}}}})();"
         );
         let window = app
             .get_webview_window(label)
