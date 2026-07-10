@@ -139,7 +139,7 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -174,7 +174,7 @@ test("injectEvent lands in the ACTIVE turn's stream at its current position; ski
       "the marker sits exactly between the pre-steer and post-steer stream",
     );
     assert.equal(host.injectEvent({ type: "steered", eventId: "ev_too_late" }), false, "turn over → marker skipped");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -206,7 +206,7 @@ test("a turn whose content contains U+2028 survives the wire round trip (regress
     const echo = events.find((e) => e.type === "text-delta");
     assert.ok(echo && echo.type === "text-delta", "turn must stream back instead of wedging");
     assert.equal(echo.delta, `echo:${poison}`, "content must arrive intact, separators included");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -252,7 +252,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const echo = events.find((e) => e.type === "text-delta");
     assert.ok(echo && echo.type === "text-delta", "the turn must stream");
     assert.equal(echo.delta, "reset-before-turn:yes", "the queued reset must reach the fresh runner before the turn frame");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -292,7 +292,7 @@ test("RunnerHost threads the spec's sandboxPaths (~ expanded) + governance carve
     assert.ok(seen.readonly.includes(join(temp.path, ".gaia", "config.json")), "workspace config stays read-only");
     assert.ok(seen.readonly.includes(join(temp.path, ".gaia", "agents")), "agents override dir stays read-only");
     assert.ok(seen.readonly.includes(agent.configPath), "the agent's own agent.json (trust bit) stays read-only");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -308,7 +308,7 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
     // The runner's structured `compacted` flag rides through the wire.
     assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -330,7 +330,46 @@ test("RunnerHost /compact cold-spawns the runner when a durable session exists (
     // No turn has run this process-lifetime, but the harness has a durable
     // session — /compact must spawn the runner and resume it, not bail.
     assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
-    host.dispose();
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost.dispose waits for a wedged runner to die after SIGTERM escalates", async () => {
+  const temp = await createTempDir();
+  try {
+    const WEDGED_STUB = `
+import { createInterface } from "node:readline";
+const send = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+process.on("SIGTERM", () => {});
+send({ type: "ready", modelLabel: "stub/model" });
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  const cmd = JSON.parse(line);
+  if (cmd.type === "turn") {
+    send({ type: "event", event: { type: "text-delta", delta: "alive" } });
+    send({ type: "turn-end" });
+  }
+});
+`;
+    const stubPath = join(temp.path, "wedged-runner.mjs");
+    await writeFile(stubPath, WEDGED_STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+    });
+    for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+
+    const started = Date.now();
+    await host.dispose();
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 1500, `dispose returned before SIGKILL escalation (${elapsed}ms)`);
+    assert.ok(elapsed < 3500, `dispose should resolve before the 3s cap plus slack (${elapsed}ms)`);
   } finally {
     await temp.cleanup();
   }
@@ -373,7 +412,7 @@ test("RunnerHost trips the launch breaker on crash-on-start, then fast-fails", a
       },
       /circuit open/i,
     );
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -388,7 +427,7 @@ test("RunnerHost surfaces a turn-error as a thrown stream", async () => {
         // drain
       }
     }, /stub failure/);
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }
@@ -424,7 +463,7 @@ process.stdin.on("data", () => process.exit(3));
     }, /agent runner exited/);
     // ready arrived before the death → the LAUNCH succeeded; breaker closed.
     assert.equal(breaker.snapshot("stub:deepseek/x").state, "closed");
-    host.dispose();
+    await host.dispose();
   } finally {
     await temp.cleanup();
   }

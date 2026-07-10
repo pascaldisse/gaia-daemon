@@ -280,7 +280,7 @@ export class GaiaWebServer {
     // an already-closed net.Server.
     if (this.server !== server) return;
     this.server = undefined;
-    this.daemon.dispose();
+    await this.daemon.dispose();
     for (const watcher of this.devWatchers) watcher.close();
     this.devWatchers.length = 0;
     if (this.devReloadTimer) clearTimeout(this.devReloadTimer);

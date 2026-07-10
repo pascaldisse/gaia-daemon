@@ -169,6 +169,11 @@ export class Daemon {
 
   /** Boot-time sweeps. Called once the server knows its base URL. */
   async boot(baseUrl: string): Promise<void> {
+    // The orphan-runner sweep must complete before anything can resume a pending
+    // turn (scheduler tick, summon recovery, serviceFor from HTTP). Otherwise a
+    // surviving runner from the previous daemon and the freshly resumed runner
+    // can execute the same turn in parallel.
+    await reapOrphans({ log: (message) => this.log(message) });
     this.bridge = new HarnessBridge(baseUrl);
     // Proactive runs: one tick across every initialized workspace. The first
     // tick also recovers runs a prior process left marked "running".
@@ -179,7 +184,6 @@ export class Daemon {
       log: (message) => this.log(message),
     });
     this.scheduler.start();
-    reapOrphans({ log: (message) => this.log(message) });
     // Summon recovery: a prior process may have died with background summons
     // running or finished-but-undelivered. Re-arm each one (the child room's
     // WAL resumes its turn; the coordinator re-delivers the result to the
@@ -250,14 +254,15 @@ export class Daemon {
     this.usageService.scheduleRefresh();
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.usageService.dispose();
     this.scheduler?.dispose();
     this.ttsBridge?.stop();
     this.voiceStack.stop();
     this.keepAwakeManager.dispose();
     this.embedSidecar.dispose();
-    for (const service of this.services.values()) service.dispose();
+    const serviceDisposals = [...this.services.values()].map((service) => service.dispose());
+    await Promise.all(serviceDisposals);
     this.services.clear();
     for (const { service: memory } of this.memoryServices.values()) memory.dispose();
     this.memoryServices.clear();
@@ -331,7 +336,8 @@ export class Daemon {
     for (const [key, service] of this.services) {
       if (this.services.size <= MAX_LIVE_SERVICES) break;
       if (service.isBusy) continue;
-      service.dispose();
+      // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
+      void service.dispose();
       this.services.delete(key);
       this.log(`evicted idle room service ${key} (soft cap ${MAX_LIVE_SERVICES})`);
     }
@@ -516,7 +522,7 @@ export class Daemon {
     const service = this.services.get(key);
     if (service) {
       if (service.isBusy) await service.cancelActiveTask();
-      service.dispose();
+      await service.dispose();
       this.services.delete(key);
     }
 
@@ -563,7 +569,7 @@ export class Daemon {
       const service = this.services.get(key);
       if (!service) continue;
       if (service.isBusy) await service.cancelActiveTask();
-      service.dispose();
+      await service.dispose();
       this.services.delete(key);
     }
     const memory = this.memoryServices.get(workspaceId);
@@ -686,7 +692,8 @@ export class Daemon {
     }
 
     const { workspaceId, roomId } = service;
-    service.dispose();
+    // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
+    void service.dispose();
     this.services.delete(key);
     const fresh = await this.serviceFor(workspaceId, roomId);
     this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });

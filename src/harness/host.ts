@@ -17,7 +17,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
 import { configuredModelLabel, liveModelLabel } from "./model-label.js";
-import { selfRelaunchArgv, spawnLineReader } from "./proc.js";
+import { killProcessTree, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { encodeFrame, parseRunnerMessage, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
 import { installMarkerArgs } from "./reaper.js";
 // Side-effect imports: the backends resolveSandboxLaunch picks from.
@@ -348,13 +348,22 @@ export class RunnerHost implements AgentRuntime {
     return spec.hasDurableSession?.(this.options.workspace.rootDir, roomId, this.agent.id) ?? true;
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
     this.disposed = true;
-    if (this.child) {
-      this.write({ type: "dispose" });
-      this.child.kill();
-      this.child = null;
-    }
+    if (!this.child) return Promise.resolve();
+    this.write({ type: "dispose" });
+    const child = this.child;
+    this.child = null;
+    killProcessTree(child);
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      // Do not unref: this cap holds the loop open so killProcessTree's unref'd 2s SIGKILL can fire.
+      const cap = setTimeout(resolve, 3000);
+      child.once("exit", () => {
+        clearTimeout(cap);
+        resolve();
+      });
+    });
   }
 
   private write(command: RunnerCommand): void {
