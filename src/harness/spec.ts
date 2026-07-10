@@ -205,6 +205,61 @@ export interface CredentialProxyWiring {
   denyRead?: string[];
 }
 
+// --- named accounts (data, applied uniformly by RunnerHost) ---------------------
+
+/** One add-account form field a harness declares; collected VERBATIM into the
+ * stored record's credential bag (~/.gaia/accounts.json) — the shared layer
+ * never interprets it. */
+export interface AccountFieldDef {
+  key: string;
+  label: string;
+  /** Mask in UIs / never echo back. */
+  secret?: boolean;
+  placeholder?: string;
+  /** How the user obtains the value (rendered as help text). */
+  hint?: string;
+}
+
+/** Interactive login flow for creating an account, declared as data+extractors
+ * on the spec: the shared AccountLoginService allocates a pseudo-tty, runs
+ * `command`, feeds ANSI-stripped output through the extractors, forwards the
+ * user's paste-back input, and stores the resulting credential bag — never
+ * learning what any of it means (RULE #0). */
+export interface AccountLoginSpec {
+  /** The interactive command. ctx.configDir is a THROWAWAY isolated dir the
+   * flow must be pointed at so it can never disturb the machine's ambient
+   * login (e.g. claude's keychain session). */
+  command(ctx: { configDir: string }): { argv: string[]; env?: Record<string, string> };
+  /** Extract the sign-in URL from the output so far, once present. */
+  signInUrl(output: string): string | undefined;
+  /** True while the flow is waiting for a paste-back code from the user. */
+  awaitingInput(output: string): boolean;
+  /** Extract the finished credential bag; configDir may hold fallback state
+   * the CLI wrote (checked again after the process exits). */
+  credentials(ctx: { output: string; configDir: string }): Record<string, string> | undefined;
+}
+
+/** Multi-account support, declared as DATA on the spec (same law as
+ * credentialProxy): the daemon stores NAMED accounts as opaque credential bags
+ * and RunnerHost merges `env(credentials)` into the subprocess env of any agent
+ * bound to one (AgentDef.account) — read uniformly, so the shared layer never
+ * learns which harness an account belongs to or what its fields mean. Agents
+ * may only bind to accounts of their own harness (enforced at spawn, loudly).
+ * Absent ⇒ this harness has no account concept: its agents always run on the
+ * ambient login (keychain / config dir / env of the daemon). */
+export interface HarnessAccountsSpec {
+  /** UI noun for one of this harness's accounts, e.g. "Claude account". */
+  label: string;
+  /** The fields the add-account form collects. */
+  fields: AccountFieldDef[];
+  /** Env merged into a bound agent's subprocess — e.g. claude's
+   * CLAUDE_CODE_OAUTH_TOKEN, which its CLI honors over the keychain login. */
+  env(credentials: Record<string, string>): Record<string, string>;
+  /** Interactive in-app login; absent = accounts for this harness are created
+   * by pasting credentials into accounts.json directly. */
+  login?: AccountLoginSpec;
+}
+
 // --- the spec + registry ----------------------------------------------------------
 
 export interface HarnessSpec {
@@ -213,6 +268,9 @@ export interface HarnessSpec {
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
+  /** Named multi-account wiring (see HarnessAccountsSpec). Absent ⇒ this
+   * harness has no account concept. */
+  accounts?: HarnessAccountsSpec;
   /** Home-dir carves this harness's CLI needs inside the sandbox, declared as
    * DATA on the spec (same pattern as credentialProxy): `writable` is the
    * regenerable state the CLI must write to stay alive/resumable (session +

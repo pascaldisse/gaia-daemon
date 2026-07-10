@@ -525,6 +525,12 @@ export interface AgentDef {
    * core stays harness-blind, exactly like `harness` above. Only harnesses
    * declaring supportsPermissionMode honor it. */
   permissionMode?: string;
+  /** Named provider account (a record id in ~/.gaia/accounts.json) whose
+   * credentials this agent's harness subprocess runs under. Harness-blind
+   * here — the wiring is data on the harness spec (HarnessSpec.accounts),
+   * exactly like `harness`/`permissionMode` above. Unset = the harness's
+   * ambient login. */
+  account?: string;
   sandbox?: SandboxConfig;
   /** Trust tier (default true). false → forced real sandbox, may never summon. */
   trust?: boolean;
@@ -635,7 +641,20 @@ export interface FieldHint {
 
 /** Metadata the server attaches to hints so the frontend can react to harness changes without reloading. */
 export interface HarnessHintsMeta {
-  configs: Record<string, { lockedProvider?: string; modelProviderIds?: string[]; modelNameOptions?: string[]; permissionModes?: string[]; hiddenFields: string[] }>;
+  configs: Record<
+    string,
+    {
+      lockedProvider?: string;
+      modelProviderIds?: string[];
+      modelNameOptions?: string[];
+      permissionModes?: string[];
+      /** UI noun for this harness's account records ("Claude account"); absent = no account support. */
+      accountsLabel?: string;
+      /** Select options (stored account id/label) for THIS harness's accounts. */
+      accountOptions?: FieldHintOption[];
+      hiddenFields: string[];
+    }
+  >;
 }
 
 export interface FileHints {

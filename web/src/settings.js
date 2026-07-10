@@ -5,6 +5,7 @@
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
 import { loadSettingsFile, saveSettingsFile, setKeepAwake } from "./actions.js";
+import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion } from "./render.js";
@@ -18,6 +19,17 @@ import { state } from "./state.js";
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
 /** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
+/** @typedef {{ id: string, harness: string, label?: string }} Account */
+/** @typedef {{ id: string, label?: string, login: boolean }} AccountHarness */
+/** @typedef {{ accounts: Account[], harnesses: AccountHarness[] }} AccountsCatalog */
+/** @typedef {{
+ *   sessionId: string,
+ *   harness: string,
+ *   status: "starting"|"awaiting-signin"|"awaiting-code"|"done"|"error"|"cancelled",
+ *   url?: string,
+ *   account?: Account,
+ *   error?: string,
+ * }} LoginSession */
 /**
  * @typedef {{
  *   draft: any,
@@ -161,12 +173,23 @@ async function selectAgentFile(id) {
 // ---------------------------------------------------------------------------
 // Region: the modal renders into its own overlay slot.
 
+/** Tracks the open/closed *edge* (not the level) so accounts reload once per
+ * settings-modal open — regardless of which entry point opened it (openSettings
+ * vs. openAgentSettings) — rather than on every re-render while it stays open.
+ * @type {boolean} */
+let settingsWasOpen = false;
+
 function renderSettingsModal() {
   const slot = $("#overlay-settings");
   if (!slot) return;
   if (!state.settingsOpen) {
+    settingsWasOpen = false;
     slot.replaceChildren();
     return;
+  }
+  if (!settingsWasOpen) {
+    settingsWasOpen = true;
+    void loadAccounts();
   }
   slot.replaceChildren(SettingsModal());
 }
@@ -212,6 +235,7 @@ function SettingsModal() {
         { class: "settings2-body" },
         state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : AgentsTab(),
       ),
+      AccountsSection(),
     ),
   );
 }
@@ -314,6 +338,278 @@ function AgentsTab() {
 /** @param {FileDescriptor} file */
 function agentFileLabel(file) {
   return file.label.replace(/^agents\/[^/]+\//, "").replace(/^persona\//, "");
+}
+
+// ---------------------------------------------------------------------------
+// Accounts section: harness-grouped credentials + at most one in-flight
+// in-app login session, both held as MODULE state (not on the shared `state`
+// object from state.js — nothing else in the app needs them) and rerendered
+// through the same markDirty("settings") trigger every other view in this
+// file uses. Section is always mounted below the General/Workspace/Agents
+// tabs (see AccountsSection() call in SettingsModal) rather than gated behind
+// its own tab, so it never touches state.settingsTab's typed union.
+
+/** @type {AccountsCatalog|null} */
+let accountsCatalog = null;
+/** @type {string} */
+let accountsError = "";
+/** @type {string} */
+let accountsNotice = "";
+/** @type {LoginSession|null} */
+let loginSession = null;
+/** @type {ReturnType<typeof setInterval>|undefined} */
+let loginPollTimer;
+/** @type {Record<string, string>} */
+let loginLabelDrafts = {};
+/** @type {string} */
+let loginCodeDraft = "";
+
+/** @param {LoginSession["status"]} status @returns {boolean} */
+function isActiveLoginStatus(status) {
+  return status === "starting" || status === "awaiting-signin" || status === "awaiting-code";
+}
+
+function stopLoginPolling() {
+  if (loginPollTimer === undefined) return;
+  clearInterval(loginPollTimer);
+  loginPollTimer = undefined;
+}
+
+/** Guards against duplicate intervals: any existing poll is cleared before a
+ * new one starts. @param {string} sessionId */
+function startLoginPolling(sessionId) {
+  stopLoginPolling();
+  loginPollTimer = setInterval(() => void pollLoginSession(sessionId), 1000);
+}
+
+/** @param {string} sessionId */
+async function pollLoginSession(sessionId) {
+  try {
+    const body = await api(`/api/accounts/login/${encodeURIComponent(sessionId)}`);
+    applyLoginSession(body.session);
+  } catch (error) {
+    stopLoginPolling();
+    loginSession = null;
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
+/** Apply a fresh LoginSession from any of the login endpoints, handling the
+ * per-status side effects the spec calls for (stop polling + clear/reload on
+ * terminal statuses). @param {LoginSession} session */
+function applyLoginSession(session) {
+  loginSession = session;
+  if (session.status === "done") {
+    stopLoginPolling();
+    loginSession = null;
+    accountsNotice = `account ${session.account?.id ?? session.harness} added`;
+    markDirty("settings"); // reflect the cleared session/notice now — loadAccounts's own markDirty lands later, once the refetch resolves
+    void loadAccounts();
+    return;
+  }
+  if (session.status === "cancelled") {
+    stopLoginPolling();
+    loginSession = null;
+  } else if (session.status === "error") {
+    stopLoginPolling(); // kept in state (with .error) until the user hits Dismiss
+  }
+  markDirty("settings");
+}
+
+/** @param {string} harnessId */
+async function startLogin(harnessId) {
+  if (loginSession) return; // only one active login session at a time
+  accountsError = "";
+  accountsNotice = "";
+  const label = (loginLabelDrafts[harnessId] ?? "").trim();
+  try {
+    const body = await api("/api/accounts/login", {
+      method: "POST",
+      body: JSON.stringify({ harness: harnessId, ...(label ? { label } : {}) }),
+    });
+    applyLoginSession(body.session);
+    if (isActiveLoginStatus(body.session.status)) startLoginPolling(body.session.sessionId);
+  } catch (error) {
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
+/** @param {string} text */
+async function submitLoginInput(text) {
+  if (!loginSession) return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  try {
+    const body = await api(`/api/accounts/login/${encodeURIComponent(loginSession.sessionId)}/input`, {
+      method: "POST",
+      body: JSON.stringify({ text: trimmed }),
+    });
+    loginCodeDraft = "";
+    applyLoginSession(body.session);
+  } catch (error) {
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
+async function cancelLogin() {
+  if (!loginSession) return;
+  const sessionId = loginSession.sessionId;
+  try {
+    const body = await api(`/api/accounts/login/${encodeURIComponent(sessionId)}`, { method: "DELETE", body: "{}" });
+    applyLoginSession(body.session);
+  } catch (error) {
+    // Never get stuck on a dead session just because the cancel call itself failed.
+    stopLoginPolling();
+    loginSession = null;
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
+function dismissLoginError() {
+  stopLoginPolling();
+  loginSession = null;
+  markDirty("settings");
+}
+
+/** @param {string} id */
+async function removeAccount(id) {
+  if (!confirm(`Remove account "${id}"?`)) return;
+  accountsError = "";
+  accountsNotice = "";
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}`, { method: "DELETE", body: "{}" });
+    await loadAccounts();
+  } catch (error) {
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
+async function loadAccounts() {
+  try {
+    /** @type {{ accounts?: Account[], harnesses?: AccountHarness[] }} */
+    const body = await api("/api/accounts");
+    accountsCatalog = { accounts: body.accounts ?? [], harnesses: body.harnesses ?? [] };
+  } catch (error) {
+    accountsCatalog = accountsCatalog ?? { accounts: [], harnesses: [] };
+    accountsError = error instanceof Error ? error.message : String(error);
+  }
+  markDirty("settings");
+}
+
+/** @param {Account} account @returns {HTMLElement} */
+function AccountRow(account) {
+  return h(
+    "div",
+    { class: "settings2-row" },
+    h("div", {}, h("span", { text: account.label ?? account.id }), h("small", { class: "muted", text: ` ${account.id}` })),
+    h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
+  );
+}
+
+/** @param {AccountHarness} harness @returns {HTMLElement} */
+function LoginControls(harness) {
+  const disabled = loginSession !== null;
+  const input = h("input", {
+    type: "text",
+    placeholder: "label (optional)",
+    value: loginLabelDrafts[harness.id] ?? "",
+    disabled,
+    oninput: (/** @type {Event} */ event) => {
+      loginLabelDrafts[harness.id] = /** @type {HTMLInputElement} */ (event.target).value;
+    },
+  });
+  return h(
+    "div",
+    { class: "settings2-field-control" },
+    input,
+    h("button", { disabled, onclick: () => void startLogin(harness.id), text: "Log in" }),
+  );
+}
+
+/** @param {LoginSession} session @returns {HTMLElement} */
+function LoginSessionPanel(session) {
+  const cancelButton = h("button", { onclick: () => void cancelLogin(), text: "Cancel" });
+  if (session.status === "error") {
+    return h(
+      "div",
+      { class: "settings2-row" },
+      h("span", { class: "settings2-error-line", text: session.error ?? "login failed" }),
+      h("button", { onclick: dismissLoginError, text: "Dismiss" }),
+    );
+  }
+  if (session.status === "starting") {
+    return h("div", { class: "settings2-row" }, h("span", { class: "muted", text: "starting login…" }), cancelButton);
+  }
+  if (session.status === "awaiting-signin") {
+    return h(
+      "div",
+      {},
+      h(
+        "div",
+        { class: "settings2-row" },
+        session.url ? h("a", { href: session.url, target: "_blank", rel: "noreferrer", text: "Open sign-in page" }) : h("span", { class: "muted", text: "waiting for a sign-in link…" }),
+        cancelButton,
+      ),
+      h("small", { class: "muted", text: "a browser may also have opened on the machine running gaia — sign in there, then come back" }),
+    );
+  }
+  // "awaiting-code"
+  const codeInput = /** @type {HTMLInputElement} */ (
+    h("input", {
+      type: "text",
+      placeholder: "paste code",
+      value: loginCodeDraft,
+      oninput: (/** @type {Event} */ event) => {
+        loginCodeDraft = /** @type {HTMLInputElement} */ (event.target).value;
+      },
+    })
+  );
+  return h(
+    "div",
+    {},
+    session.url ? h("div", { class: "settings2-row" }, h("a", { href: session.url, target: "_blank", rel: "noreferrer", text: "Open sign-in page" })) : null,
+    h(
+      "div",
+      { class: "settings2-field-control" },
+      codeInput,
+      h("button", { onclick: () => void submitLoginInput(codeInput.value), text: "Submit" }),
+      cancelButton,
+    ),
+  );
+}
+
+/** @param {AccountHarness} harness @returns {HTMLElement} */
+function HarnessAccountsGroup(harness) {
+  const accounts = (accountsCatalog?.accounts ?? []).filter((account) => account.harness === harness.id);
+  const isThisSession = loginSession?.harness === harness.id;
+  return h(
+    "div",
+    { class: "settings2-form" },
+    h("div", { class: "nav-title", text: harness.label ?? harness.id }),
+    accounts.length === 0 ? h("div", { class: "empty", text: "no accounts" }) : accounts.map((account) => AccountRow(account)),
+    isThisSession ? null : harness.login ? LoginControls(harness) : h("div", { class: "muted", text: "add credentials via accounts.json" }),
+    isThisSession && loginSession ? LoginSessionPanel(loginSession) : null,
+  );
+}
+
+function AccountsSection() {
+  return h(
+    "div",
+    { class: "settings2-body" },
+    h("h3", { text: "Accounts" }),
+    accountsError ? h("div", { class: "settings2-error-line", text: accountsError }) : null,
+    accountsNotice ? h("div", { class: "settings2-notice", text: accountsNotice }) : null,
+    accountsCatalog === null
+      ? h("div", { class: "empty", text: "loading…" })
+      : accountsCatalog.harnesses.length === 0
+        ? h("div", { class: "empty", text: "no harnesses support accounts" })
+        : accountsCatalog.harnesses.map((harness) => HarnessAccountsGroup(harness)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +738,18 @@ function harnessHiddenKeys(harnessMeta, draft) {
   if (harnessValue === undefined || harnessValue === null || harnessValue === "") return new Set();
   const config = harnessMeta.configs?.[String(harnessValue)];
   return new Set(config?.hiddenFields ?? []);
+}
+
+/** Account select options for the draft's CURRENT harness (falls back to the
+ * server-computed hint options when the meta has none).
+ * @param {HarnessHintsMeta|undefined} harnessMeta @param {any} draft @param {FieldHintOption[]|undefined} fallback @returns {FieldHintOption[]}
+ */
+function accountOptionsFor(harnessMeta, draft, fallback) {
+  if (!harnessMeta) return fallback ?? [];
+  const harnessValue = getJsonPathValue(draft, ["harness"]);
+  if (harnessValue === undefined || harnessValue === null || harnessValue === "") return fallback ?? [];
+  const config = harnessMeta.configs?.[String(harnessValue)];
+  return /** @type {any} */ (config)?.accountOptions ?? fallback ?? [];
 }
 
 /** Parent keys of every "[]" (array-item) hint, in first-appearance order —
@@ -782,7 +1090,11 @@ function AddSettingPicker(hints, harnessHidden, draft, ctx) {
 function FormBody(ctx) {
   const harnessHidden = harnessHiddenKeys(ctx.harnessMeta, ctx.draft);
   const { requiredRows, optionalRows, arrayRows } = computeRows(ctx.hints, harnessHidden, ctx.draft);
-  const rows = [...requiredRows, ...optionalRows, ...arrayRows];
+  const rows = [...requiredRows, ...optionalRows, ...arrayRows].map((entry) =>
+    entry.key === "account"
+      ? { ...entry, hint: { ...entry.hint, options: accountOptionsFor(ctx.harnessMeta, ctx.draft, entry.hint.options) } }
+      : entry,
+  );
   return h(
     "div",
     { class: "settings2-form" },

@@ -28,6 +28,7 @@ interface RawAgentConfig {
   /** Legacy alias for `harness`; some seed configs use "runtime". */
   runtime?: unknown;
   permissionMode?: unknown;
+  account?: unknown;
   /** Deprecated: native commands are now enabled by adding the command name to
    * `skills` (e.g. "deep-research"). Read only to emit a migration warning. */
   nativeCommands?: unknown;
@@ -289,6 +290,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
     harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
     permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
+    account: override.account !== undefined ? override.account : base.account,
     memory: override.memory !== undefined ? override.memory : base.memory,
     mcpServers: override.mcpServers !== undefined ? override.mcpServers : base.mcpServers,
     env: override.env !== undefined ? override.env : base.env,
@@ -365,6 +367,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
       permissionMode: normalizePermissionMode(raw.permissionMode),
+      account: typeof raw.account === "string" && raw.account.trim() ? raw.account.trim() : undefined,
       memory: parseMemoryPatch(raw.memory),
       mcpServers: parseMcpServers(raw.mcpServers),
       env: parseEnvMap(raw.env),

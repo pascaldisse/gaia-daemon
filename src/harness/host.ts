@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { env } from "../core/env.js";
 import { workspacePaths } from "../core/paths.js";
+import { accountsPath, findAccount } from "../domain/accounts.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
@@ -46,6 +47,7 @@ import {
 export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
   "ANTHROPIC_OAUTH_TOKEN",
   "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN", // per-account subscription token (HarnessSpec.accounts)
   "COPILOT_GITHUB_TOKEN",
   "OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY",
@@ -583,6 +585,15 @@ export class RunnerHost implements AgentRuntime {
       [RUNNER_ENV.agentIdPublic]: this.agent.id,
       ...(this.options.incognito ? { [RUNNER_ENV.incognito]: "1" } : {}),
     };
+
+    // Named-account wiring (HarnessSpec.accounts × AgentDef.account): applied
+    // BEFORE the credential-proxy block so a proxied (sandboxed) turn strips it
+    // with every other provider key — a stored account never leaks into a
+    // sandbox. Broken bindings THROW: silently falling back to the shared
+    // login is the one behavior worse than failing.
+    const accountEnv = this.resolveAccountEnv();
+    if (accountEnv) Object.assign(childEnv, accountEnv);
+
     if (ctx.host && ctx.token !== undefined) {
       childEnv[RUNNER_ENV.daemonUrl] = ctx.host.baseUrl;
       childEnv[RUNNER_ENV.daemonToken] = ctx.token;
@@ -599,6 +610,21 @@ export class RunnerHost implements AgentRuntime {
       }
     }
     return childEnv;
+  }
+
+  // Resolve the env for this agent's named account (AgentDef.account →
+  // ~/.gaia/accounts.json → the harness spec's accounts.env). Uniform: the
+  // record is an opaque bag only the harness's own declared wiring interprets —
+  // RunnerHost never learns what the fields mean (RULE #0).
+  private resolveAccountEnv(): Record<string, string> | undefined {
+    const accountId = this.agent.account;
+    if (!accountId) return undefined;
+    const spec = harnessSpecFor(this.options.harness);
+    if (!spec.accounts) throw new Error(`Agent '${this.agent.id}' names account '${accountId}', but harness '${this.options.harness}' has no account support`);
+    const record = findAccount(accountId);
+    if (!record) throw new Error(`Agent '${this.agent.id}' names account '${accountId}', which is not in ${accountsPath()}`);
+    if (record.harness !== this.options.harness) throw new Error(`Agent '${this.agent.id}' (harness '${this.options.harness}') names account '${accountId}', which belongs to harness '${record.harness}'`);
+    return spec.accounts.env(record.credentials);
   }
 
   // Test seam: the full child env for a (room, policy), resolving the bridge token

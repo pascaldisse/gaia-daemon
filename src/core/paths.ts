@@ -16,6 +16,7 @@ export function gaiaHome(): string {
 export const globalPaths = {
   /** Daemon-global app state (workspace registry, current workspace). */
   appSettings: () => join(gaiaHome(), "app.json"),
+  accounts: () => join(gaiaHome(), "accounts.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   agentDir: (agentId: string) => join(gaiaHome(), "agents", agentId),
   skillsDir: () => join(gaiaHome(), "skills"),

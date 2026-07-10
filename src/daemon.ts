@@ -20,11 +20,13 @@ import { MemoryStore } from "./domain/memory.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
+import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
+import { AccountLoginService } from "./services/account-login.js";
 import type { ConsolidateLlm, ConsolidateOp, ConsolidateResult } from "./services/consolidate.js";
 import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
@@ -147,6 +149,7 @@ export class Daemon {
   /** Subscription-usage meter (account-keyed, disk-cached, self-polling) —
    * see services/usage-service.ts. The daemon only wires broadcast + lifecycle. */
   private readonly usageService = new UsageService({ broadcast: (event) => this.broadcast(event) });
+  readonly accountLogins = new AccountLoginService();
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
   private bridge: HarnessBridge | undefined;
   private scheduler: SchedulerService | undefined;
@@ -157,7 +160,9 @@ export class Daemon {
   // (claude-voice); torn down on hang-up.
   private ttsBridge: TtsCallBridge | undefined;
 
-  constructor(private readonly options: DaemonOptions) {}
+  constructor(private readonly options: DaemonOptions) {
+    ensureAccountsFile(); // seed ~/.gaia/accounts.json so it lists as an editable settings file
+  }
 
   get cwd(): string {
     return this.options.cwd;
