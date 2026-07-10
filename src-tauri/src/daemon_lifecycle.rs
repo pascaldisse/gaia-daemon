@@ -165,19 +165,46 @@ pub fn kill_existing(_port: u16) {}
 /// the caller can kill it on exit.
 #[cfg(all(desktop, unix))]
 pub fn spawn_owned(port: u16) -> Option<Child> {
-    let cmd = std::env::var("GAIA_SHELL_SPAWN_CMD").unwrap_or_else(|_| "npm run dev".to_string());
-    let dir = spawn_dir();
-    // Run through a LOGIN shell: a Finder-launched .app inherits only the bare
-    // GUI PATH, so `node`/`npm` (nvm/homebrew) are not visible to a plain `sh
-    // -c`. `$SHELL -lc` sources the user's profile and restores them.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    eprintln!("[gaia-shell] spawning owned daemon on :{port}: `{cmd}` (cwd {dir})");
+    // Resolution order:
+    //   1. GAIA_SHELL_SPAWN_CMD — explicit override, via login shell.
+    //   2. Bundled daemon binary shipped NEXT TO this executable
+    //      (.app: Contents/MacOS/gaia-daemon) — direct exec, no shell,
+    //      no node/npm/tsx anywhere; assets resolve via ../Resources
+    //      (see bundledDir in src/core/paths.ts).
+    //   3. Dev fallback: `npm run dev` through a LOGIN shell — a
+    //      Finder-launched .app inherits only the bare GUI PATH, so
+    //      `$SHELL -lc` sources the profile to find node/npm.
+    let override_cmd = std::env::var("GAIA_SHELL_SPAWN_CMD")
+        .ok()
+        .filter(|c| !c.trim().is_empty());
+    let bundled = if override_cmd.is_none() {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.join("gaia-daemon")))
+            .filter(|p| p.is_file())
+    } else {
+        None
+    };
 
-    let mut command = Command::new(&shell);
+    let mut command;
+    if let Some(bin) = &bundled {
+        // cwd = home, never a repo checkout: the bundle must run standalone.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        eprintln!(
+            "[gaia-shell] spawning owned daemon on :{port}: bundled binary {}",
+            bin.display()
+        );
+        command = Command::new(bin);
+        command.arg("--dev").current_dir(&home);
+    } else {
+        let cmd = override_cmd.unwrap_or_else(|| "npm run dev".to_string());
+        let dir = spawn_dir();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        eprintln!("[gaia-shell] spawning owned daemon on :{port}: `{cmd}` (cwd {dir})");
+        command = Command::new(&shell);
+        command.arg("-lc").arg(&cmd).current_dir(&dir);
+    }
     command
-        .arg("-lc")
-        .arg(&cmd)
-        .current_dir(&dir)
         .env("GAIA_PORT", port.to_string())
         .env("GAIA_PARENT_PID", std::process::id().to_string());
     {
