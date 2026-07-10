@@ -206,6 +206,9 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 fn route(request: Request, app: tauri::AppHandle, state: Arc<DebugState>) -> Vec<u8> {
     let method = request.method.as_str();
     let path = request.path.as_str();
+    if method == "OPTIONS" {
+        return empty_response(204);
+    }
     match (method, path) {
         ("POST", "/eval") => {
             let source = String::from_utf8_lossy(&request.body).to_string();
@@ -256,16 +259,7 @@ fn route(request: Request, app: tauri::AppHandle, state: Arc<DebugState>) -> Vec
                 "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/page/main", state.port),
             }),
         ),
-        ("GET", "/info") => match eval_in_page(
-            app,
-            state,
-            "main",
-            "({url:location.href,title:document.title,ready:document.readyState})",
-            Duration::from_secs(5),
-        ) {
-            Ok(body) => raw_response(200, "application/json", body.into_bytes()),
-            Err(error) => json_response(504, json!({ "ok": false, "error": error })),
-        },
+        ("GET", "/info") => info_response(app),
         ("GET", "/screenshot") => screenshot_response(app, "main"),
         _ => json_response(404, json!({ "ok": false, "error": "unknown endpoint" })),
     }
@@ -305,6 +299,44 @@ fn screenshot_response(app: tauri::AppHandle, label: &str) -> Vec<u8> {
     match screenshot_bytes(app, label) {
         Ok(bytes) => raw_response(200, "image/png", bytes),
         Err(error) => json_response(500, json!({ "ok": false, "error": error })),
+    }
+}
+
+fn info_response(app: tauri::AppHandle) -> Vec<u8> {
+    let (sender, receiver) = mpsc::channel();
+    if let Err(error) = app.clone().run_on_main_thread(move || {
+        let windows: Vec<Value> = app
+            .webview_windows()
+            .into_iter()
+            .map(|(label, window)| {
+                let mut info = serde_json::Map::new();
+                info.insert("label".to_string(), Value::String(label));
+                if let Ok(scale_factor) = window.scale_factor() {
+                    info.insert("scaleFactor".to_string(), json!(scale_factor));
+                }
+                if let Ok(position) = window.outer_position() {
+                    info.insert(
+                        "outerPosition".to_string(),
+                        json!({ "x": position.x, "y": position.y }),
+                    );
+                }
+                if let Ok(size) = window.outer_size() {
+                    info.insert(
+                        "outerSize".to_string(),
+                        json!({ "width": size.width, "height": size.height }),
+                    );
+                }
+                Value::Object(info)
+            })
+            .collect();
+        let _ = sender.send(json!({ "ok": true, "windows": windows }));
+    }) {
+        return json_response(500, json!({ "ok": false, "error": error.to_string() }));
+    }
+
+    match receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(value) => json_response(200, value),
+        Err(_) => json_response(500, json!({ "ok": false, "error": "info timeout" })),
     }
 }
 
@@ -530,17 +562,22 @@ fn screenshot_bytes(app: tauri::AppHandle, label: &str) -> Result<Vec<u8>, Strin
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let x = (f64::from(pos.x) / scale).round();
-    let y = (f64::from(pos.y) / scale).round();
-    let w = (f64::from(size.width) / scale).round();
-    let h = (f64::from(size.height) / scale).round();
+    let x = (f64::from(pos.x) / scale).round() as i32;
+    let y = (f64::from(pos.y) / scale).round() as i32;
+    let w = (f64::from(size.width) / scale).round() as i32;
+    let h = (f64::from(size.height) / scale).round() as i32;
+    let rect = format!("{x},{y},{w},{h}");
     let path = "/tmp/gaia-shell-debug-shot.png";
-    let status = Command::new("screencapture")
-        .args(["-x", &format!("-R{x},{y},{w},{h}"), path])
-        .status()
+    let output = Command::new("screencapture")
+        .args(["-x", &format!("-R{rect}"), path])
+        .output()
         .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("screencapture failed: {status}"));
+    if !output.status.success() {
+        return Err(format!(
+            "screencapture failed for rect {rect}: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
     std::fs::read(path).map_err(|e| e.to_string())
 }
@@ -591,7 +628,7 @@ fn raw_response(status: u16, content_type: &str, body: Vec<u8>) -> Vec<u8> {
         _ => "OK",
     };
     let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Max-Age: 86400\r\n\r\n",
         body.len()
     );
     let mut response = headers.into_bytes();
