@@ -177,28 +177,31 @@ function CodeBlock(lang, code) {
   );
 }
 
+// Copy/check glyphs as inline SVG (stroke:currentColor so they inherit button
+// colour). Icon-only, like the Claude/Codex apps.
+const COPY_ICON =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+const CHECK_ICON =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
 // Bottom-right copy affordance, like the Claude/Codex apps. Reveals on hover of
-// the block, flashes "Copied" on success. Uses the async Clipboard API with a
-// legacy execCommand fallback for shells without clipboard permission.
+// the block, swaps to a checkmark on success. Uses the async Clipboard API with
+// a legacy execCommand fallback for shells without clipboard permission.
 /** @param {string} code */
 function CopyButton(code) {
-  const label = h("span", { class: "code-copy-label", text: "Copy" });
-  const btn = h(
-    "button",
-    {
-      type: "button",
-      class: "code-copy",
-      title: "Copy code",
-      "aria-label": "Copy code",
-      onclick: () => void copyCode(code, btn, label),
-    },
-    label,
-  );
+  const btn = h("button", {
+    type: "button",
+    class: "code-copy",
+    title: "Copy code",
+    "aria-label": "Copy code",
+    onclick: () => void copyCode(code, btn),
+  });
+  btn.innerHTML = COPY_ICON;
   return btn;
 }
 
-/** @param {string} code @param {HTMLElement} btn @param {HTMLElement} label */
-async function copyCode(code, btn, label) {
+/** @param {string} code @param {HTMLElement} btn */
+async function copyCode(code, btn) {
   let ok = false;
   try {
     await navigator.clipboard.writeText(code);
@@ -206,10 +209,12 @@ async function copyCode(code, btn, label) {
   } catch {
     ok = legacyCopy(code);
   }
-  label.textContent = ok ? "Copied" : "Failed";
+  btn.innerHTML = ok ? CHECK_ICON : COPY_ICON;
+  btn.title = ok ? "Copied" : "Copy failed";
   btn.classList.toggle("ok", ok);
   window.setTimeout(() => {
-    label.textContent = "Copy";
+    btn.innerHTML = COPY_ICON;
+    btn.title = "Copy code";
     btn.classList.remove("ok");
   }, 1400);
 }
