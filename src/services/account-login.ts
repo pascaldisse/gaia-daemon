@@ -2,15 +2,14 @@
 // setup-token, ...) is a TUI that needs a real terminal: it prints a sign-in
 // URL, waits for the user to approve in a browser and paste back a code, then
 // prints a long-lived credential. This service drives that flow FROM the daemon
-// without a terminal by wrapping the command in `script` (a pty allocator) so
+// without a terminal by wrapping the command in `expect` (a pty allocator) so
 // the CLI believes it has a tty; it strips the TUI's ANSI escapes, feeds the
 // running output through the spec's extractors to lift the URL / detect the
 // paste prompt / capture the credential, forwards the user's pasted code on
 // stdin, and stores the account. It is HARNESS-BLIND: every bit of harness
 // knowledge (which command, how to find the URL, what the credential looks
 // like) is DATA on the spec (AccountLoginSpec) — this file never branches on a
-// harness id (RULE #0). The only branch here is on PLATFORM (how `script`
-// wraps a command differs on darwin vs. linux), which is not a harness branch.
+// harness id (RULE #0).
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
@@ -64,17 +63,22 @@ export class AccountLoginService {
 
     const cmd = login.command({ configDir });
     const opts: SpawnOptions = { env: { ...process.env, ...cmd.env }, stdio: ["pipe", "pipe", "pipe"] };
-    // `script` allocates a pseudo-tty so the login CLI (which silently hangs
-    // without a tty) runs. macOS `script -q /dev/null <cmd...>` forwards our
-    // stdin; other platforms use `script -qec "<quoted cmd>" /dev/null`.
-    const child =
-      process.platform === "darwin"
-        ? spawn("script", ["-q", "/dev/null", ...cmd.argv], opts)
-        : spawn(
-            "script",
-            ["-qec", cmd.argv.map((a) => `'${a.replaceAll("'", `'\\''`)}'`).join(" "), "/dev/null"],
-            opts,
-          );
+    // `expect` allocates the pseudo-tty (the login CLI silently hangs without
+    // one). script(1) cannot do this job: on macOS it err()s at tcgetattr when
+    // its stdin is a Node pipe/socketpair — and FIFOs are sockets there too —
+    // so it dies in milliseconds under a daemon. expect ships with macOS and
+    // virtually every Linux, tolerates piped stdio, and the fileevent line
+    // below forwards our piped stdin into the pty so the pasted code reaches
+    // the CLI. Tcl braces pass each argv element verbatim (no substitution).
+    const expectScript = [
+      "set timeout -1",
+      `spawn -noecho ${cmd.argv.map((arg) => `{${arg}}`).join(" ")}`,
+      "fileevent stdin readable {",
+      '  if {[gets stdin line] >= 0} { send -- "$line\\r" } else { fileevent stdin readable {} }',
+      "}",
+      "expect eof",
+    ].join("\n");
+    const child = spawn("expect", ["-c", expectScript], opts);
 
     const session: LoginSession = {
       state: { sessionId, harness: harnessId, status: "starting" },
@@ -104,8 +108,12 @@ export class AccountLoginService {
       const creds = session.login.credentials({ output: session.output, configDir: session.configDir });
       if (creds) this.finish(session, creds);
       else {
+        // Include the output tail: the difference between "claude not found",
+        // a CLI error, and a died pty is invisible without it. Anything
+        // credential-shaped would have been captured above, not echoed here.
+        const tail = session.output.trim().slice(-300);
         session.state.status = "error";
-        session.state.error = "login flow ended without producing credentials";
+        session.state.error = `login flow ended without producing credentials${tail ? ` — output tail: ${tail}` : ""}`;
         this.cleanup(session);
       }
     });
