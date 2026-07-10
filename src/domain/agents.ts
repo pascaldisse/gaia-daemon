@@ -126,12 +126,16 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
   const rolesDir = agentPaths.rolesDir(agentDir);
 
   await ensureDir(rolesDir);
-  await writeText(configPath, jsonText(agentConfigTemplate(id, displayName, icon, tools)));
   await writeText(
     soulPath,
     `# ${displayName}\n\nDescribe who this agent is.\n\nVoice:\n- clear\n- useful\n- distinct\n\nBoundaries:\n- say when unsure\n- ask before risky changes\n`,
   );
   await new MemoryStore().init(memoryDir, displayName);
+  // Written last: loadAgentDefinitions treats configPath's existence as "this
+  // agent is ready" and hard-throws (breaking every workspace load, not just
+  // this agent) if soulPath isn't there yet. Commit config only once the rest
+  // of the scaffold is durable.
+  await writeText(configPath, jsonText(agentConfigTemplate(id, displayName, icon, tools)));
 
   // Roles are user-added only; the scaffold leaves the roles directory empty.
   return { agentDir, configPath, soulPath, memoryDir, rolesDir };
@@ -179,10 +183,12 @@ async function ensureDefaultAgent(
 
   await migrateLegacyPersonaFiles(dir, ["SOUL.md", "MEMORY.md"]);
   await migrateLegacyMemoryFile(personaDir);
-  await writeIfMissing(agentPaths.config(dir), jsonText({ ...agentConfigTemplate(id, displayName, icon, tools), ...configOverrides }));
   await writeIfMissing(agentPaths.soul(dir), soul);
   await new MemoryStore().init(agentPaths.memoryDir(dir), displayName);
   await ensureDir(agentPaths.rolesDir(dir));
+  // Written last: see scaffoldGlobalAgent — config's existence is what makes
+  // loadAgentDefinitions treat this agent as ready.
+  await writeIfMissing(agentPaths.config(dir), jsonText({ ...agentConfigTemplate(id, displayName, icon, tools), ...configOverrides }));
 }
 
 export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void> {
