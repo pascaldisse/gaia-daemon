@@ -194,6 +194,46 @@ export async function setAgentDefaultRole(agentId, role) {
   }
 }
 
+/** Set (or clear) the named account an agent's harness subprocess runs under.
+ * Global (not per-room/workspace), so unlike setAgentRole this has no snapshot
+ * in its response — the daemon's own applySettingsChange("global") reload
+ * broadcasts a fresh snapshot over the already-open SSE stream, same as any
+ * other global settings edit.
+ * @param {string} agentId @param {string | null} account */
+export async function setAgentAccount(agentId, account) {
+  try {
+    await api(`/api/agents/${encodeURIComponent(agentId)}/account`, {
+      method: "POST",
+      body: JSON.stringify({ account: account || null }),
+    });
+    state.error = "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** @typedef {{ id: string, harness: string, label?: string }} AccountRecordSummary */
+/** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
+/** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
+
+/** Cached GET /api/accounts — every caller (Settings' Accounts tab, the
+ * agents panel's per-agent account picker) awaits the SAME in-flight/settled
+ * request instead of each firing its own. @type {Promise<AccountsCatalog> | null} */
+let accountsCatalogPromise = null;
+
+/** @returns {Promise<AccountsCatalog>} */
+export function accountsCatalog() {
+  if (!accountsCatalogPromise) accountsCatalogPromise = api("/api/accounts");
+  return accountsCatalogPromise;
+}
+
+/** Drop the cache so the next accountsCatalog() call refetches — call after
+ * an account is added, removed, or logged in. */
+export function refreshAccountsCatalog() {
+  accountsCatalogPromise = null;
+}
+
 /** Toggle room agent-dialogue (agents responding to each other's @mentions).
  * @param {boolean} on */
 export async function setRoomAgentDialogue(on) {

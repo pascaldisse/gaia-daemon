@@ -1078,6 +1078,13 @@ body.resizing { cursor: col-resize; user-select: none; }
    the name line (strong) has no such padding, so it keeps the full width. */
 .agent-cell.with-role .agent-main small { padding-right: 62px; }
 
+/* Same clearance for the account-select when an agent has no roles (it then
+   sits where the role-select normally would); when BOTH are present the
+   account-select is pushed further left (see .account-select rules below),
+   so the model line needs the wider reservation. */
+.agent-cell.with-account .agent-main small { padding-right: 62px; }
+.agent-cell.with-role.with-account .agent-main small { padding-right: 150px; }
+
 .agent-main small { grid-column: 2; }
 
 /* Keep name + model to one line each so a row's height never depends on how
@@ -1101,6 +1108,26 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 .role-select.active { color: var(--warn); border-color: var(--warn); text-shadow: 0 0 6px color-mix(in srgb, var(--warn) 40%, transparent); }
+
+/* Account picker — same pinned bottom-right anchoring/metrics as role-select.
+   Sits in role-select's own slot when the agent has no roles; when both are
+   present it's pushed further left (past where the pin-to-global button may
+   also land) so the two selects never overlap. */
+.account-select {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 54px;
+  padding: 2px 4px;
+  font-size: 0.82em;
+  color: var(--muted);
+  background: var(--ink);
+  border: 1px solid var(--border);
+}
+
+.agent-cell.with-role .account-select { right: 96px; }
+
+.account-select.active { color: var(--warn); border-color: var(--warn); text-shadow: 0 0 6px color-mix(in srgb, var(--warn) 40%, transparent); }
 
 /* Pin-to-global button — sits just left of the role-select, same pinned
    bottom-right anchoring, same size/color language, only shown while a room
