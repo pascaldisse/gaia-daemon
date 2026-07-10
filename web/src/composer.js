@@ -8,6 +8,7 @@
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, selectRoom, sendMessage, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
+import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
@@ -247,8 +248,10 @@ function renderComposer() {
 
   editBannerEl.hidden = !state.editingEventId;
 
-  // Pending pasted files (uploaded on send).
-  attachmentsEl.hidden = state.pendingAttachments.length === 0;
+  // While editing, the strip shows the ORIGINAL message's attachments
+  // (removable, not addable); otherwise the pending pasted files (uploaded
+  // on send).
+  attachmentsEl.hidden = state.editingEventId ? state.editingAttachments.length === 0 : state.pendingAttachments.length === 0;
   attachmentsEl.replaceChildren(...AttachmentChips());
 
   // The live panel (recording/transcribing/failed) and recovered-draft chips
@@ -296,9 +299,11 @@ async function submitComposer(options = {}) {
 
   const text = state.composerText;
   const editing = state.editingEventId;
+  const editingAttachments = state.editingAttachments;
   const pending = state.pendingAttachments;
   state.composerText = "";
   state.editingEventId = null;
+  state.editingAttachments = [];
   state.pendingAttachments = [];
   state.completionIndex = 0;
   state.completionHidden = false;
@@ -316,7 +321,10 @@ async function submitComposer(options = {}) {
       }
       if (!state.composerText.trim()) {
         state.composerText = text;
-        if (editing) state.editingEventId = editing;
+        if (editing) {
+          state.editingEventId = editing;
+          state.editingAttachments = editingAttachments;
+        }
         persistDraft(text);
         markDirty("composer");
       }
@@ -325,7 +333,7 @@ async function submitComposer(options = {}) {
 
   if (editing && text.trim()) {
     releasePreviews(pending);
-    restoreOnFailure(editMessage(editing, text));
+    restoreOnFailure(editMessage(editing, text, editingAttachments.map((a) => a.path)));
   } else if (pending.length > 0) {
     restoreOnFailure(sendWithAttachments(text, pending, { queue: options.queue }));
   } else {
@@ -365,7 +373,7 @@ export function capturePastedFiles(event) {
   if (files.length === 0) return false;
   event.preventDefault();
   if (state.editingEventId) {
-    setError(new Error("Finish (or cancel) editing before attaching files — an edit keeps the original attachments."));
+    setError(new Error("Finish (or cancel) editing before attaching files — an edit can remove the original attachments (× on each chip) but not add new ones."));
     return true;
   }
   for (const file of files) {
@@ -397,6 +405,12 @@ function releasePreviews(pending) {
 
 /** @returns {HTMLElement[]} */
 function AttachmentChips() {
+  return state.editingEventId ? EditingAttachmentChips() : PendingAttachmentChips();
+}
+
+/** Chips for files pasted into the composer, not yet uploaded — removable
+ * before send. @returns {HTMLElement[]} */
+function PendingAttachmentChips() {
   return state.pendingAttachments.map((item, index) => {
     const remove = h("button", {
       type: "button",
@@ -428,6 +442,40 @@ function AttachmentChips() {
   });
 }
 
+/** Chips for the message-under-edit's own (already-uploaded) attachments —
+ * removable, but nothing new can be added here (pasting during an edit is
+ * blocked; see capturePastedFiles). @returns {HTMLElement[]} */
+function EditingAttachmentChips() {
+  return state.editingAttachments.map((item, index) => {
+    const remove = h("button", {
+      type: "button",
+      class: "attach-remove",
+      title: `remove ${item.name}`,
+      text: "×",
+      onclick: () => {
+        state.editingAttachments.splice(index, 1);
+        markDirty("composer");
+      },
+    });
+    if (item.mime.startsWith("image/")) {
+      return h(
+        "div",
+        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        h("img", { class: "attach-thumb", src: attachmentUrl(item), alt: item.name }),
+        remove,
+      );
+    }
+    return h(
+      "div",
+      { class: "attach-chip", title: item.name },
+      h("span", { class: "attach-icon", text: "📎" }),
+      h("span", { class: "attach-name", text: item.name }),
+      h("small", { text: humanSize(item.size) }),
+      remove,
+    );
+  });
+}
+
 /** @param {number} bytes */
 export function humanSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -438,12 +486,18 @@ export function humanSize(bytes) {
 /**
  * Enter claude.ai-style edit mode for a user message: the composer takes the
  * message text and submit forks the room at that message (transcript.js's ✎).
+ * The message's own attachments come along too, each removable (but not
+ * addable — pasting new files during an edit is blocked) via the same
+ * attachment strip; whatever's left in state.editingAttachments at submit
+ * time is what the edited message keeps.
  * @param {string} eventId
  * @param {string} text
+ * @param {import("./types.js").MessageAttachment[]} [attachments]
  */
-export function beginEditMessage(eventId, text) {
+export function beginEditMessage(eventId, text, attachments) {
   state.editingEventId = eventId;
   state.composerText = text;
+  state.editingAttachments = attachments ? [...attachments] : [];
   state.completionHidden = true;
   markDirty("composer");
   focusComposer();
@@ -451,6 +505,7 @@ export function beginEditMessage(eventId, text) {
 
 function cancelEditing() {
   state.editingEventId = null;
+  state.editingAttachments = [];
   state.composerText = "";
   markDirty("composer");
 }

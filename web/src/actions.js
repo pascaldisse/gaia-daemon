@@ -470,15 +470,19 @@ export async function retryMessage(eventId) {
 
 /**
  * Edit: fork the room at the user message `eventId` and re-send it as `text`.
+ * `keepAttachmentPaths`, when given, narrows the original message's own
+ * attachments down to that set (an empty array drops them all) — omit it to
+ * keep every original attachment unchanged.
  * @param {string} eventId
  * @param {string} text
+ * @param {string[]} [keepAttachmentPaths]
  */
-export async function editMessage(eventId, text) {
-  return forkMessage("edit", { eventId, text });
+export async function editMessage(eventId, text, keepAttachmentPaths) {
+  return forkMessage("edit", { eventId, text, ...(keepAttachmentPaths ? { keepAttachments: keepAttachmentPaths } : {}) });
 }
 
 /**
- * @param {"retry"|"edit"} action @param {{ eventId: string, text?: string }} payload
+ * @param {"retry"|"edit"} action @param {{ eventId: string, text?: string, keepAttachments?: string[] }} payload
  * @returns {Promise<boolean>}
  */
 async function forkMessage(action, payload) {

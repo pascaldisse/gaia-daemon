@@ -1411,6 +1411,62 @@ test("attachments: stored on the user event, handed to the runtime, kept across 
   await assert.rejects(() => service.resolveAttachments([{ id: "nope.png" }]), /Unknown attachment/);
 });
 
+test("editMessage(keepAttachmentPaths): can drop a message's own attachments, and only its own", async () => {
+  const inputs: Array<{ attachments?: unknown }> = [];
+  const { service } = await makeService({
+    runtimeFactory: (agent) => {
+      const runtime = {
+        agent,
+        modelLabel: "test/model",
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsMcp: false, supportsSteer: false },
+        async *send(input: { attachments?: unknown }) {
+          inputs.push(input);
+          yield { type: "text-delta", delta: "seen" } as AgentEvent;
+        },
+        async abort() {},
+        dispose() {},
+        resetRoom() {},
+      };
+      return runtime as unknown as AgentRuntime;
+    },
+  });
+
+  const keepMe = await service.storeAttachment("keep.png", Buffer.from("keep-bytes"), "image/png");
+  const dropMe = await service.storeAttachment("drop.png", Buffer.from("drop-bytes"), "image/png");
+  const both = await service.resolveAttachments([
+    { id: keepMe.id, name: keepMe.name, mime: keepMe.mime },
+    { id: dropMe.id, name: dropMe.name, mime: dropMe.mime },
+  ]);
+
+  await service.sendMessage("two attachments", { attachments: both });
+  await service.waitForIdle();
+  const [userEvent] = (await service.room.eventsFrom(0)).events;
+
+  // Omitting keepAttachmentPaths keeps default (unchanged) behavior: both ride along.
+  await service.editMessage(userEvent.id, "still two", undefined);
+  await service.waitForIdle();
+  assert.deepEqual(inputs.at(-1)?.attachments, both);
+  const [afterUnchanged] = (await service.room.eventsFrom(0)).events;
+
+  // Passing only the kept path drops the other one.
+  await service.editMessage(afterUnchanged.id, "now one", [keepMe.path]);
+  await service.waitForIdle();
+  assert.deepEqual(inputs.at(-1)?.attachments, [both[0]]);
+
+  // An explicit empty array drops them all.
+  const [afterOne] = (await service.room.eventsFrom(0)).events;
+  await service.editMessage(afterOne.id, "now none", []);
+  await service.waitForIdle();
+  assert.equal(inputs.at(-1)?.attachments, undefined);
+
+  // A path the message never had is silently ignored (never adds an attachment
+  // the edit didn't already carry) — it can only narrow, not widen.
+  const [afterNone] = (await service.room.eventsFrom(0)).events;
+  await service.editMessage(afterNone.id, "still none", ["/etc/passwd"]);
+  await service.waitForIdle();
+  assert.equal(inputs.at(-1)?.attachments, undefined);
+});
+
 test("/model rewrites agent.json AND fires the settings reload that reaches live runners", async () => {
   const reloads: string[] = [];
   const { service, workspace, root } = await makeService({

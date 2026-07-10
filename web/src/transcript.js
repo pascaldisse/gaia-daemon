@@ -9,6 +9,7 @@
 // dropped and the keyed node swaps to the committed version in place.
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { api } from "./api.js";
+import { attachmentUrl } from "./attachments.js";
 import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";
@@ -483,7 +484,7 @@ function Message(view) {
           class: "msg-action",
           title: "edit & re-send from here — later replies are rewound",
           text: "✎",
-          onclick: () => beginEditMessage(view.id, view.text),
+          onclick: () => beginEditMessage(view.id, view.text, view.attachments),
         })
       : null,
     canFork && !isUser
@@ -728,18 +729,6 @@ function AttachmentGallery(attachments) {
       );
     }),
   );
-}
-
-/**
- * Serve URL for a committed attachment: the on-disk id (path basename) under
- * the current room's files route.
- * @param {MessageAttachment} file
- */
-function attachmentUrl(file) {
-  const snapshot = state.snapshot;
-  if (!snapshot) return "#";
-  const id = file.path.split("/").pop() ?? "";
-  return `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files/${encodeURIComponent(id)}`;
 }
 
 /**

@@ -1850,14 +1850,19 @@ export class RoomService {
 
   /** Edit a user message: fork the room at that message and re-run with the
    * new text. An explicit @mention in the edited text wins; otherwise the
-   * original routing is kept. Original attachments ride along (claude.ai
-   * edit semantics: the text changes, the files stay). */
-  async editMessage(eventId: string, text: string): Promise<Task> {
+   * original routing is kept. Original attachments ride along by default
+   * (claude.ai edit semantics: the text changes, the files stay) — UNLESS
+   * `keepAttachmentPaths` is given, in which case only origin attachments
+   * whose path is in that list survive (an empty array drops them all). This
+   * only ever narrows the origin's own trusted attachment list — it can
+   * never attach a path the message didn't already have. */
+  async editMessage(eventId: string, text: string, keepAttachmentPaths?: string[]): Promise<Task> {
     const origin = await this.forkAtUserMessage(eventId);
     const mentioned = hasExplicitMention(text, new Set(Object.keys(this.workspace.agents)));
+    const attachments = keepAttachmentPaths ? origin.attachments?.filter((a) => keepAttachmentPaths.includes(a.path)) : origin.attachments;
     return this.sendMessage(text, {
       ...(!mentioned && origin.targets.length ? { targets: origin.targets } : {}),
-      ...(origin.attachments?.length ? { attachments: origin.attachments } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     });
   }
 

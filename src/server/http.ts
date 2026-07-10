@@ -102,6 +102,15 @@ function boolField(body: unknown, field: string): boolean {
   return (body as Record<string, unknown>)[field] === true;
 }
 
+/** An array-of-strings field, present (even empty) vs. absent distinguished —
+ * callers use `undefined` as "field wasn't sent" and `[]` as "sent empty". */
+function stringArrayField(body: unknown, field: string): string[] | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const raw = (body as Record<string, unknown>)[field];
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((item): item is string => typeof item === "string");
+}
+
 /** Attachment references on a message body: `[{ id, name?, mime? }]`. Only the
  * server-issued id matters for path resolution; name/mime are display echoes. */
 function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined {
@@ -723,11 +732,18 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const eventId = stringField(body, "eventId");
       const text = stringField(body, "text");
+      // Which of the original message's own attachments (by path) survive the
+      // edit. Absent => keep all (unchanged behavior); present (even []) =>
+      // narrow to that set. Never lets the client attach a NEW path — see
+      // editMessage's doc comment.
+      const keepAttachmentPaths = stringArrayField(body, "keepAttachments");
       if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
       if (params[2] === "edit" && !text?.trim()) return json(response, 400, { error: "Missing message text" });
       try {
         const task =
-          params[2] === "edit" ? await service.editMessage(eventId.trim(), text!) : await service.retryMessage(eventId.trim());
+          params[2] === "edit"
+            ? await service.editMessage(eventId.trim(), text!, keepAttachmentPaths)
+            : await service.retryMessage(eventId.trim());
         json(response, 202, { task });
       } catch (error) {
         json(response, 409, { error: error instanceof Error ? error.message : String(error) });

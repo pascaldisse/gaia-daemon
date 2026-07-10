@@ -29,6 +29,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   composerText: string,
  *   pendingAttachments: PendingAttachment[],
  *   editingEventId: string|null,
+ *   editingAttachments: import("./types.js").MessageAttachment[],
  *   completionIndex: number,
  *   completionHidden: boolean,
  *   expandedActivities: Set<string>,
@@ -96,6 +97,10 @@ export const state = {
   // Set while the composer is editing an existing user message (claude.ai
   // style): submit forks the room at that message instead of appending.
   editingEventId: null,
+  // The edited message's own attachments, editable (removable, not
+  // addable — pasting new files is blocked during edit) while editingEventId
+  // is set. Whatever remains here at submit time is what survives the edit.
+  editingAttachments: [],
   completionIndex: 0,
   completionHidden: false,
   expandedActivities: new Set(),
