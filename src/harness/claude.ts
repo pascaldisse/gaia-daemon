@@ -1260,6 +1260,24 @@ registerHarness({
     env: { ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_AUTH_TOKEN: token },
     denyRead: [realClaudeCredentials()],
   }),
+  // Named accounts: one field, the long-lived subscription token from `claude
+  // setup-token`. The CLI honors CLAUDE_CODE_OAUTH_TOKEN over its keychain
+  // login, so a bound agent's own `claude -p` subprocess runs on that account's
+  // subscription (its own rate-limit bucket) while unbound agents keep the
+  // ambient keychain login — true parallel multi-account.
+  accounts: {
+    label: "Claude account",
+    fields: [
+      {
+        key: "oauthToken",
+        label: "OAuth token",
+        secret: true,
+        placeholder: "sk-ant-oat01-...",
+        hint: "In a terminal: CLAUDE_CONFIG_DIR=~/.claude-<name> claude setup-token — sign in as the OTHER account in the browser it opens, then paste the printed sk-ant-oat... token. The isolated config dir keeps the main keychain login untouched.",
+      },
+    ],
+    env: (credentials) => ({ CLAUDE_CODE_OAUTH_TOKEN: credentials.oauthToken ?? "" }),
+  },
   // Claude Code persists its sessions + state under ~/.claude (a sandboxed
   // turn must write there to stay resumable); its stored credential file is
   // carved back to read-only inside that tree.

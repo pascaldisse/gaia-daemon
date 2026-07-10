@@ -22,6 +22,7 @@ import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from ".
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { discoverSkills } from "../domain/skills.js";
+import { listAccounts } from "../domain/accounts.js";
 import { findTtsEngine, ttsEngineIds, type TtsEngineSpec } from "./read-aloud.js";
 import { sttEngineIds } from "./transcribe.js";
 
@@ -46,6 +47,7 @@ function hiddenFieldsFor(harnessId: string): string[] {
   if (!caps.granularTools) hidden.push("tools");
   if (!caps.supportsPermissionMode) hidden.push("permissionMode");
   if (!caps.supportsMcp) hidden.push("mcpServers");
+  if (!findHarness(harnessId)?.accounts) hidden.push("account");
   return hidden;
 }
 
@@ -261,6 +263,23 @@ function harnessSelectOptions(): FieldHintOption[] {
   }));
 }
 
+/** Select options for a harness's stored accounts (the agent `account` field).
+ * Read fresh per request; degrade to [] on a torn store — hints must render
+ * even when the spawn path would (correctly) fail loudly. No harness id given
+ * = every account, labeled with its owning harness. */
+function accountSelectOptions(harnessId?: string): FieldHintOption[] {
+  try {
+    return listAccounts()
+      .filter((account) => !harnessId || account.harness === harnessId)
+      .map((account) => ({
+        value: account.id,
+        label: harnessId ? (account.label ?? account.id) : `${account.label ?? account.id} (${account.harness})`,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 function harnessHintsMeta(): HarnessHintsMeta {
   const configs: HarnessHintsMeta["configs"] = {};
   for (const spec of harnessSpecs()) {
@@ -270,6 +289,8 @@ function harnessHintsMeta(): HarnessHintsMeta {
       modelNameOptions: spec.ui.modelNameOptions,
       permissionModes: spec.ui.permissionModes,
       hiddenFields: hiddenFieldsFor(spec.id),
+      accountsLabel: spec.accounts?.label,
+      accountOptions: spec.accounts ? accountSelectOptions(spec.id) : undefined,
     };
   }
   return { configs };
@@ -451,6 +472,12 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
       description: "default role loaded for this agent (roles are markdown files in the roles dir)",
     }),
     permissionMode: select(values(permissionModeOptions(rawHarness)), { optional: true, hidden: hiddenByHarness.has("permissionMode") }),
+    account: select(accountSelectOptions(rawHarness), {
+      optional: true,
+      label: "Account",
+      description: "named provider account this agent runs under (add accounts in the global accounts.json settings file); unset = the shared login",
+      hidden: hiddenByHarness.has("account"),
+    }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
     "model.name": select(modelNameOptions, { optional: true, groupBy: providerLocked ? undefined : "model.provider" }),
@@ -540,6 +567,31 @@ function voiceJsonHints(): FileHints {
   };
 }
 
+// accounts.json (~/.gaia): named provider accounts. The credential-field
+// vocabulary is the UNION of every registered harness's declared account
+// fields — data on the specs, never a harness-id branch (RULE #0).
+function accountsJsonHints(): FileHints {
+  const withAccounts = harnessSpecs().filter((spec) => spec.accounts);
+  const hints: FileHints = {
+    "accounts.[].id": { input: "text", description: "unique account id — what an agent's `account` setting references" },
+    "accounts.[].harness": select(values(withAccounts.map((spec) => spec.id)), {
+      description: "owning harness; only that harness's agents can bind to this account",
+    }),
+    "accounts.[].label": { input: "text", optional: true, description: "display name for pickers" },
+  };
+  for (const spec of withAccounts) {
+    for (const field of spec.accounts?.fields ?? []) {
+      hints[`accounts.[].credentials.${field.key}`] = {
+        input: "text",
+        label: field.label,
+        optional: true,
+        description: [field.hint, `(${spec.ui.label} accounts)`].filter(Boolean).join(" "),
+      };
+    }
+  }
+  return hints;
+}
+
 export function buildFileHints(file: { label: string; kind: string; content?: string }, sources: HintSources): FileHints | undefined {
   if (file.kind !== "json") return undefined;
   const basename = file.label.split("/").pop() ?? file.label;
@@ -555,6 +607,7 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
   if (basename === "agent.json") return agentJsonHints(sources, parsed, agentIdFromAgentJsonLabel(file.label));
   if (basename === "voice.json") return voiceJsonHints();
   if (basename === "schedules.json") return schedulesJsonHints(sources);
+  if (basename === "accounts.json") return accountsJsonHints();
   return undefined;
 }
 
@@ -627,7 +680,7 @@ export class EditableFileRegistry {
 
   async listGlobal(): Promise<EditableFileDescriptor[]> {
     const home = gaiaHome();
-    const files = [globalPaths.appSettings(), globalPaths.voiceSettings(), ...(await walkEditable(globalPaths.agentsDir()))];
+    const files = [globalPaths.appSettings(), globalPaths.voiceSettings(), globalPaths.accounts(), ...(await walkEditable(globalPaths.agentsDir()))];
     const descriptors = await Promise.all(files.map((path) => descriptor("global", path, home)));
     return descriptors.filter((item): item is EditableFileDescriptor => Boolean(item)).sort((a, b) => a.label.localeCompare(b.label));
   }

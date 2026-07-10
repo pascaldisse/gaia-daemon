@@ -205,6 +205,39 @@ export interface CredentialProxyWiring {
   denyRead?: string[];
 }
 
+// --- named accounts (data, applied uniformly by RunnerHost) ---------------------
+
+/** One add-account form field a harness declares; collected VERBATIM into the
+ * stored record's credential bag (~/.gaia/accounts.json) — the shared layer
+ * never interprets it. */
+export interface AccountFieldDef {
+  key: string;
+  label: string;
+  /** Mask in UIs / never echo back. */
+  secret?: boolean;
+  placeholder?: string;
+  /** How the user obtains the value (rendered as help text). */
+  hint?: string;
+}
+
+/** Multi-account support, declared as DATA on the spec (same law as
+ * credentialProxy): the daemon stores NAMED accounts as opaque credential bags
+ * and RunnerHost merges `env(credentials)` into the subprocess env of any agent
+ * bound to one (AgentDef.account) — read uniformly, so the shared layer never
+ * learns which harness an account belongs to or what its fields mean. Agents
+ * may only bind to accounts of their own harness (enforced at spawn, loudly).
+ * Absent ⇒ this harness has no account concept: its agents always run on the
+ * ambient login (keychain / config dir / env of the daemon). */
+export interface HarnessAccountsSpec {
+  /** UI noun for one of this harness's accounts, e.g. "Claude account". */
+  label: string;
+  /** The fields the add-account form collects. */
+  fields: AccountFieldDef[];
+  /** Env merged into a bound agent's subprocess — e.g. claude's
+   * CLAUDE_CODE_OAUTH_TOKEN, which its CLI honors over the keychain login. */
+  env(credentials: Record<string, string>): Record<string, string>;
+}
+
 // --- the spec + registry ----------------------------------------------------------
 
 export interface HarnessSpec {
@@ -213,6 +246,9 @@ export interface HarnessSpec {
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
+  /** Named multi-account wiring (see HarnessAccountsSpec). Absent ⇒ this
+   * harness has no account concept. */
+  accounts?: HarnessAccountsSpec;
   /** Home-dir carves this harness's CLI needs inside the sandbox, declared as
    * DATA on the spec (same pattern as credentialProxy): `writable` is the
    * regenerable state the CLI must write to stay alive/resumable (session +

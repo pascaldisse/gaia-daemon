@@ -20,6 +20,7 @@ import { MemoryStore } from "./domain/memory.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
+import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
@@ -157,7 +158,9 @@ export class Daemon {
   // (claude-voice); torn down on hang-up.
   private ttsBridge: TtsCallBridge | undefined;
 
-  constructor(private readonly options: DaemonOptions) {}
+  constructor(private readonly options: DaemonOptions) {
+    ensureAccountsFile(); // seed ~/.gaia/accounts.json so it lists as an editable settings file
+  }
 
   get cwd(): string {
     return this.options.cwd;

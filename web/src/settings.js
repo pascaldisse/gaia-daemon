@@ -444,6 +444,18 @@ function harnessHiddenKeys(harnessMeta, draft) {
   return new Set(config?.hiddenFields ?? []);
 }
 
+/** Account select options for the draft's CURRENT harness (falls back to the
+ * server-computed hint options when the meta has none).
+ * @param {HarnessHintsMeta|undefined} harnessMeta @param {any} draft @param {FieldHintOption[]|undefined} fallback @returns {FieldHintOption[]}
+ */
+function accountOptionsFor(harnessMeta, draft, fallback) {
+  if (!harnessMeta) return fallback ?? [];
+  const harnessValue = getJsonPathValue(draft, ["harness"]);
+  if (harnessValue === undefined || harnessValue === null || harnessValue === "") return fallback ?? [];
+  const config = harnessMeta.configs?.[String(harnessValue)];
+  return /** @type {any} */ (config)?.accountOptions ?? fallback ?? [];
+}
+
 /** Parent keys of every "[]" (array-item) hint, in first-appearance order —
  * e.g. "jobs.[].id" / "jobs.[].schedule" both yield "jobs". @param {Record<string, FieldHint>} hints @returns {string[]} */
 function arrayParentKeysOf(hints) {
@@ -782,7 +794,11 @@ function AddSettingPicker(hints, harnessHidden, draft, ctx) {
 function FormBody(ctx) {
   const harnessHidden = harnessHiddenKeys(ctx.harnessMeta, ctx.draft);
   const { requiredRows, optionalRows, arrayRows } = computeRows(ctx.hints, harnessHidden, ctx.draft);
-  const rows = [...requiredRows, ...optionalRows, ...arrayRows];
+  const rows = [...requiredRows, ...optionalRows, ...arrayRows].map((entry) =>
+    entry.key === "account"
+      ? { ...entry, hint: { ...entry.hint, options: accountOptionsFor(ctx.harnessMeta, ctx.draft, entry.hint.options) } }
+      : entry,
+  );
   return h(
     "div",
     { class: "settings2-form" },
