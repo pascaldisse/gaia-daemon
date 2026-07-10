@@ -142,7 +142,8 @@ export async function runAgentRunner(): Promise<void> {
         runtime.resetRoom(command.roomId);
         return;
       case "dispose":
-        runtime.dispose();
+        // Runner-side runtimes are sync in practice; the daemon-side host owns async child shutdown.
+        void runtime.dispose();
         rl.close();
         process.exit(0);
     }
@@ -150,7 +151,8 @@ export async function runAgentRunner(): Promise<void> {
 
   // Daemon closed our stdin (killed us / shut down): dispose and exit.
   rl.on("close", () => {
-    runtime.dispose();
+    // Runner-side runtimes are sync in practice; the daemon-side host owns async child shutdown.
+    void runtime.dispose();
     process.exit(0);
   });
 }

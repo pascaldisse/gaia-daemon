@@ -477,7 +477,7 @@ async function startServeEndpoint(host: string, port: number, run: (messages: Ch
 /** What the serve host needs from a per-room service (RoomService satisfies it). */
 interface ServeRoomService extends SummonRoomAccess {
   init(): Promise<void>;
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 /** Dispatches `gaia serve …`. Returns a process exit code (long-running on success). */
@@ -554,8 +554,9 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
     const stop = (): void => {
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
-      for (const service of services.values()) service.dispose();
-      void handle.stop().finally(resolveStop);
+      void Promise.all([...services.values()].map((service) => service.dispose()))
+        .then(() => handle.stop())
+        .finally(resolveStop);
     };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);

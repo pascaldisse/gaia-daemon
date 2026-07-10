@@ -458,8 +458,8 @@ export class RoomService {
     return this.bus.on(listener);
   }
 
-  dispose(): void {
-    for (const runtime of Object.values(this.runtimes)) runtime.dispose();
+  async dispose(): Promise<void> {
+    await Promise.all(Object.values(this.runtimes).map((runtime) => runtime.dispose()));
   }
 
   // --- messaging -------------------------------------------------------------

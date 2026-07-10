@@ -254,14 +254,15 @@ export class Daemon {
     this.usageService.scheduleRefresh();
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.usageService.dispose();
     this.scheduler?.dispose();
     this.ttsBridge?.stop();
     this.voiceStack.stop();
     this.keepAwakeManager.dispose();
     this.embedSidecar.dispose();
-    for (const service of this.services.values()) service.dispose();
+    const serviceDisposals = [...this.services.values()].map((service) => service.dispose());
+    await Promise.all(serviceDisposals);
     this.services.clear();
     for (const { service: memory } of this.memoryServices.values()) memory.dispose();
     this.memoryServices.clear();
@@ -335,7 +336,8 @@ export class Daemon {
     for (const [key, service] of this.services) {
       if (this.services.size <= MAX_LIVE_SERVICES) break;
       if (service.isBusy) continue;
-      service.dispose();
+      // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
+      void service.dispose();
       this.services.delete(key);
       this.log(`evicted idle room service ${key} (soft cap ${MAX_LIVE_SERVICES})`);
     }
@@ -506,7 +508,7 @@ export class Daemon {
     const service = this.services.get(key);
     if (service) {
       if (service.isBusy) await service.cancelActiveTask();
-      service.dispose();
+      await service.dispose();
       this.services.delete(key);
     }
 
@@ -553,7 +555,7 @@ export class Daemon {
       const service = this.services.get(key);
       if (!service) continue;
       if (service.isBusy) await service.cancelActiveTask();
-      service.dispose();
+      await service.dispose();
       this.services.delete(key);
     }
     const memory = this.memoryServices.get(workspaceId);
@@ -676,7 +678,8 @@ export class Daemon {
     }
 
     const { workspaceId, roomId } = service;
-    service.dispose();
+    // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
+    void service.dispose();
     this.services.delete(key);
     const fresh = await this.serviceFor(workspaceId, roomId);
     this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
