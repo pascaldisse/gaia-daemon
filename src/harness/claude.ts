@@ -620,6 +620,27 @@ export class ClaudeRuntime implements AgentRuntime {
         }
 
         case "assistant": {
+          // A hard API failure (rate limit, overload, auth) arrives as a
+          // synthetic assistant message — model "<synthetic>", no usage, a
+          // human-readable text block — and the CLI then exits without ever
+          // sending `result`. Catch it here and fail with the CLI's own
+          // explanation now; otherwise the reason is lost the moment the
+          // process exits and the turn surfaces only a bare "exit 1".
+          if ((raw as { isApiErrorMessage?: boolean }).isApiErrorMessage === true) {
+            const errContent = (raw as { message?: { content?: unknown } }).message?.content;
+            const text = Array.isArray(errContent)
+              ? (errContent as Array<{ type?: string; text?: string }>)
+                  .filter((block) => block.type === "text" && typeof block.text === "string")
+                  .map((block) => block.text)
+                  .join("\n")
+                  .trim()
+              : "";
+            channel.fail(new Error(text || `Claude API error (${(raw as { error?: string }).error ?? "unknown"}).`));
+            endThinking();
+            clearGrace();
+            channel.close();
+            break;
+          }
           const usage = (raw as { message?: { usage?: ClaudeUsage } }).message?.usage;
           if (usage) {
             lastUsage = usage;

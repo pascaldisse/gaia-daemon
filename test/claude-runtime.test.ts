@@ -561,6 +561,39 @@ test("ClaudeRuntime rejects on an error result", async () => {
   }
 });
 
+test("ClaudeRuntime surfaces a synthetic API-error assistant message (rate limit) instead of waiting for exit", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // The CLI reports a hard API failure (rate limit, overload, auth) as an
+    // assistant message with isApiErrorMessage/error/apiErrorStatus instead of
+    // a `result` — then exits without ever sending one. Model the exact wire
+    // shape observed from the live CLI (no result, exit code 1).
+    fake.script(
+      [
+        initMsg(),
+        {
+          type: "assistant",
+          message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "You've hit your session limit · resets 6pm (Europe/Berlin)" }] },
+          error: "rate_limit",
+          isApiErrorMessage: true,
+          apiErrorStatus: 429,
+        },
+      ],
+      { code: 1, signal: null },
+    );
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    await assert.rejects(
+      () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
+      /You've hit your session limit · resets 6pm \(Europe\/Berlin\)/,
+    );
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("ClaudeRuntime reports a clear error when the claude CLI is missing", async () => {
   const fx = await fixture();
   try {

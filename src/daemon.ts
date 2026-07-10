@@ -108,6 +108,16 @@ export class WorkspaceRegistry {
  * evicted (transcripts persist on disk); busy ones are always kept. */
 const MAX_LIVE_SERVICES = 32;
 
+/** Grace window protecting a just-handed-out service from eviction. `serviceFor`
+ * returns an idle service to a caller that then `await`s several times (init +
+ * routing) before `sendMessage` sets `activeTask` — until then `isBusy` is
+ * false, so a concurrent `serviceFor` (constant under heavy summon fan-out) can
+ * `evictIdleServices()` and dispose the runtimes out from under the in-flight
+ * turn: the message persists but no turn ever runs, and it takes a SECOND
+ * message (which re-creates the room) to get a reply. Any service handed out
+ * within this window is treated as busy so the hand-off can complete. */
+const HANDOFF_GRACE_MS = 30_000;
+
 function serviceKey(workspaceId: string, roomId: string): string {
   return `${workspaceId}::${roomId}`;
 }
@@ -130,6 +140,10 @@ export class Daemon {
   /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
   private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });
   private readonly services = new Map<string, RoomService>();
+  /** serviceKey -> epoch ms of the most recent `serviceFor` hand-out. Guards the
+   * eviction race: a service is protected while a caller's in-flight operation
+   * (e.g. sendMessage's init+routing, before activeTask is set) completes. */
+  private readonly handedOutAt = new Map<string, number>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
   private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
@@ -269,6 +283,7 @@ export class Daemon {
     const serviceDisposals = [...this.services.values()].map((service) => service.dispose());
     await Promise.all(serviceDisposals);
     this.services.clear();
+    this.handedOutAt.clear();
     for (const { service: memory } of this.memoryServices.values()) memory.dispose();
     this.memoryServices.clear();
   }
@@ -286,6 +301,7 @@ export class Daemon {
     if (existing) {
       this.services.delete(key);
       this.services.set(key, existing);
+      this.handedOutAt.set(key, Date.now());
       return existing;
     }
 
@@ -323,6 +339,7 @@ export class Daemon {
     });
     await service.init();
     this.services.set(key, service);
+    this.handedOutAt.set(key, Date.now());
     this.evictIdleServices();
     return service;
   }
@@ -338,12 +355,18 @@ export class Daemon {
   }
 
   private evictIdleServices(): void {
+    const now = Date.now();
     for (const [key, service] of this.services) {
       if (this.services.size <= MAX_LIVE_SERVICES) break;
       if (service.isBusy) continue;
+      // A just-handed-out service is idle only because its caller hasn't reached
+      // startTask yet; disposing it here loses the in-flight turn (see
+      // HANDOFF_GRACE_MS). Treat the hand-off window as busy.
+      if (now - (this.handedOutAt.get(key) ?? 0) < HANDOFF_GRACE_MS) continue;
       // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
       void service.dispose();
       this.services.delete(key);
+      this.handedOutAt.delete(key);
       this.log(`evicted idle room service ${key} (soft cap ${MAX_LIVE_SERVICES})`);
     }
   }

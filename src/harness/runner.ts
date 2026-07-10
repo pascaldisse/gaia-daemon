@@ -30,6 +30,30 @@ export async function runAgentRunner(): Promise<void> {
   console.info = console.log;
   console.warn = (...args: unknown[]) => process.stderr.write(`${args.join(" ")}\n`);
 
+  // Single-flight turn state, tracked here (not just inside runTurn below) so
+  // the crash net can tell "died mid-turn" (report it) from "died idle" (the
+  // daemon just respawns us for the next turn — see host.ts's activeChannel
+  // check). Without this net, ANY uncaught exception or unhandled rejection
+  // anywhere in a harness during a turn — not just a caught error — silently
+  // kills this process; the daemon then has nothing but the bare exit code to
+  // show ("agent runner exited (code 1)"), losing the real reason entirely.
+  let turnActive = false;
+  const crashDuringTurn = (error: unknown): void => {
+    process.stderr.write(`runner: fatal error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+    if (turnActive) {
+      turnActive = false;
+      send({ type: "turn-error", message: error instanceof Error ? error.message : String(error) });
+    }
+    // The exception may have left in-process state (the harness runtime,
+    // stray timers) inconsistent — exit deliberately rather than limp on; the
+    // daemon respawns the runner on the next turn. setImmediate defers the
+    // exit past this tick so the turn-error frame above actually reaches the
+    // pipe before the process goes down.
+    setImmediate(() => process.exit(1));
+  };
+  process.on("uncaughtException", crashDuringTurn);
+  process.on("unhandledRejection", crashDuringTurn);
+
   const workspacePath = env(RUNNER_ENV.workspacePath);
   const agentId = env(RUNNER_ENV.agentId);
   if (!workspacePath || !agentId) {
@@ -73,8 +97,6 @@ export async function runAgentRunner(): Promise<void> {
   });
 
   send({ type: "ready", modelLabel: runtime.modelLabel });
-
-  let turnActive = false;
 
   const runTurn = async (input: Parameters<AgentRuntime["send"]>[0]): Promise<void> => {
     turnActive = true;
