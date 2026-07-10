@@ -18,13 +18,14 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").EditableFile} EditableFile */
 /** @typedef {import("./types.js").FileHints} FileHints */
 /** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
+/** @typedef {import("./eventchannel.js").EventChannel} EventChannel */
 
 /**
  * @type {{
  *   workspaces: WorkspaceRecord[],
  *   snapshot: Snapshot|null,
  *   streams: Map<string, StreamEntry>,
- *   eventSource: EventSource|null,
+ *   eventSource: EventSource|EventChannel|null,
  *   error: string,
  *   composerText: string,
  *   pendingAttachments: PendingAttachment[],

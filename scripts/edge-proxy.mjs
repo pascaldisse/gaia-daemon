@@ -120,6 +120,184 @@ function handleAuthRoute(req, res, url) {
   send403(res);
 }
 
+function writeWsFrame(socket, opcode, payload = Buffer.alloc(0)) {
+  if (socket.destroyed) return;
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  let header;
+  if (body.length < 126) {
+    header = Buffer.from([0x80 | opcode, body.length]);
+  } else if (body.length <= 0xffff) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(body.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(body.length), 2);
+  }
+  socket.write(Buffer.concat([header, body]));
+}
+
+function parseSseField(line) {
+  const idx = line.indexOf(':');
+  if (idx === -1) return [line, ''];
+  const field = line.slice(0, idx);
+  const value = line.slice(idx + 1).startsWith(' ')
+    ? line.slice(idx + 2)
+    : line.slice(idx + 1);
+  return [field, value];
+}
+
+function handleEventsWebSocketUpgrade(req, socket) {
+  if (!isAuthorized(req)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const key = req.headers['sec-websocket-key'];
+  if (!key || Array.isArray(key)) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const accept = crypto
+    .createHash('sha1')
+    .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+    .digest('base64');
+  socket.write([
+    'HTTP/1.1 101 Switching Protocols',
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Accept: ${accept}`,
+    '',
+    '',
+  ].join('\r\n'));
+
+  let closed = false;
+  let clientBuffer = Buffer.alloc(0);
+  let sseBuffer = '';
+  let eventName = '';
+  /** @type {string[]} */
+  let dataLines = [];
+  /** @type {http.ClientRequest | undefined} */
+  let sseReq;
+
+  const closeBoth = (sendClose = false) => {
+    if (closed) return;
+    closed = true;
+    clearInterval(pingTimer);
+    if (sendClose && !socket.destroyed) writeWsFrame(socket, 0x8);
+    if (sseReq) sseReq.destroy();
+    if (!socket.destroyed) socket.end();
+  };
+
+  const dispatchSse = () => {
+    if (dataLines.length === 0) {
+      eventName = '';
+      return;
+    }
+    writeWsFrame(socket, 0x1, JSON.stringify({
+      event: eventName || 'message',
+      data: dataLines.join('\n'),
+    }));
+    eventName = '';
+    dataLines = [];
+  };
+
+  const processSseLine = (rawLine) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line === '') {
+      dispatchSse();
+      return;
+    }
+    if (line.startsWith(':')) return;
+    const [field, value] = parseSseField(line);
+    if (field === 'event') eventName = value;
+    else if (field === 'data') dataLines.push(value);
+  };
+
+  const processClientFrames = () => {
+    while (clientBuffer.length >= 2) {
+      const first = clientBuffer[0];
+      const second = clientBuffer[1];
+      const opcode = first & 0x0f;
+      const masked = (second & 0x80) !== 0;
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (clientBuffer.length < offset + 2) return;
+        length = clientBuffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (clientBuffer.length < offset + 8) return;
+        const bigLength = clientBuffer.readBigUInt64BE(offset);
+        if (bigLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+          closeBoth(true);
+          return;
+        }
+        length = Number(bigLength);
+        offset += 8;
+      }
+      if (masked) {
+        if (clientBuffer.length < offset + 4) return;
+      }
+      const maskOffset = offset;
+      offset += masked ? 4 : 0;
+      if (clientBuffer.length < offset + length) return;
+      const mask = masked ? clientBuffer.subarray(maskOffset, maskOffset + 4) : undefined;
+      const payload = Buffer.from(clientBuffer.subarray(offset, offset + length));
+      clientBuffer = clientBuffer.subarray(offset + length);
+      if (mask) {
+        for (let i = 0; i < payload.length; i += 1) payload[i] ^= mask[i % 4];
+      }
+      if (opcode === 0x8) {
+        writeWsFrame(socket, 0x8, payload);
+        closeBoth(false);
+        return;
+      }
+      if (opcode === 0x9) writeWsFrame(socket, 0xA, payload);
+    }
+  };
+
+  const pingTimer = setInterval(() => writeWsFrame(socket, 0x9), 20_000);
+
+  sseReq = http.get(
+    {
+      host: UPSTREAM_HOST,
+      port: UPSTREAM_PORT,
+      path: req.url,
+      headers: { Accept: 'text/event-stream' },
+    },
+    (sseRes) => {
+      sseRes.setEncoding('utf8');
+      sseRes.on('data', (chunk) => {
+        sseBuffer += chunk;
+        for (;;) {
+          const idx = sseBuffer.indexOf('\n');
+          if (idx === -1) break;
+          const line = sseBuffer.slice(0, idx);
+          sseBuffer = sseBuffer.slice(idx + 1);
+          processSseLine(line);
+        }
+      });
+      sseRes.on('close', () => closeBoth(true));
+      sseRes.on('error', () => closeBoth(true));
+    },
+  );
+
+  sseReq.on('error', () => closeBoth(true));
+  socket.on('data', (chunk) => {
+    clientBuffer = Buffer.concat([clientBuffer, chunk]);
+    processClientFrames();
+  });
+  socket.on('close', () => closeBoth(false));
+  socket.on('error', () => closeBoth(false));
+}
+
 const server = http.createServer((req, res) => {
   let url;
   try {
@@ -180,6 +358,20 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+  } catch {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/events')) {
+    handleEventsWebSocketUpgrade(req, socket);
+    return;
+  }
+
   if (!isAuthorized(req)) {
     socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     socket.destroy();

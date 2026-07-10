@@ -4,6 +4,7 @@
 // the final room-event with the same id simply replaces the stream entry.
 import { api } from "./api.js";
 import { refreshAttention } from "./attention.js";
+import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
 import { state, syncReadMarks } from "./state.js";
@@ -32,7 +33,7 @@ export function connectEvents() {
   if (!snapshot) return;
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
-  const source = new EventSource(`/api/events?${params}`);
+  const source = openEventChannel(`/api/events?${params}`);
   state.eventSource = source;
 
   // The server greets every (re)connection with "ready". EventSource
