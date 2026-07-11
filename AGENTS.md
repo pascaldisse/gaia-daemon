@@ -59,3 +59,20 @@ applies it with ZERO harness-id branches.
 - **Zero duplication.** Shared plumbing lives once. Don't re-implement it per harness.
 - **Trust is data, not a hardcoded id.** `trust: false` → forced real sandbox, never
   config-weakenable. Never hardcode a provider/model string as a security gate.
+
+## ⚠️ UI claims require app-tools eyes — no blind 'it works'
+
+Pascal (2026-07-11): smoke tests that never look at the real UI are banned.
+The native app has a CDP debug server (port 9333) and a ready skill:
+~/.gaia/skills/app-tools/ — app-eval.js, app-screenshot.js, app-console.js,
+app-nav.js, app-info.js (bun, zero deps; server exists while the app runs).
+
+- ANY claim that a web-UI or app feature 'works' MUST be backed by driving
+  the running app through app-tools (eval/click/console/screenshot) — not
+  curl-only, not unit-tests-only, not 'the code looks right'.
+- After a UI-touching change: reproduce the user action via app-eval.js,
+  read app-console.js for exceptions, and screenshot if visual.
+- Never restart/quit the app to do this (see rule above); the debug server
+  is on the RUNNING app.
+- Spec authors: any worker spec for UI work must include this verification
+  step explicitly.
