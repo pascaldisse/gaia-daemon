@@ -645,6 +645,53 @@ test("CodexRuntime maps tool lifecycle: commandExecution start, update, end", as
   }
 });
 
+test("CodexRuntime preserves a failed command's diagnostic when app-server has no output", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence(
+      { method: "item/started", params: { item: { id: "cmd-fail", type: "commandExecution", command: "gaia mem batch" } } },
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "cmd-fail",
+            type: "commandExecution",
+            command: "gaia mem batch",
+            aggregatedOutput: "",
+            exitCode: 1,
+            error: { message: "replacement target was not found" },
+          },
+        },
+      },
+      { method: "turn/completed", params: { turn: { status: "completed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "update memory", transcript: [] }));
+    const failed = events.find((event) => event.type === "tool-end");
+
+    assert.deepEqual(failed, {
+      type: "tool-end",
+      toolName: "gaia mem batch",
+      toolCallId: "cmd-fail",
+      result: "replacement target was not found\nCommand exited with status 1.",
+      isError: true,
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("CodexRuntime maps tool lifecycle: mcpToolCall start, progress, end", async () => {
   const fx = await fixture();
   try {
