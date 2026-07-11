@@ -9,20 +9,20 @@
   "scripts": {
     "build": "bun scripts/build-daemon.mjs",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json",
-    "test": "tsx --test test/**/*.test.ts",
-    "start": "tsx src/cli.ts",
+    "test": "bun test test/",
+    "start": "bun src/cli.ts",
     "stop": "pids=$(lsof -ti tcp:8787); if [ -n \"$pids\" ]; then kill $pids && echo \"stopped gaia (pid $pids) on :8787\"; else echo \"gaia not running on :8787\"; fi",
     "restart": "bun run stop; bun run start",
-    "tauri:dev": "node scripts/gaia-engine.mjs dev",
-    "tauri:build": "node scripts/gaia-engine.mjs build",
-    "tauri:bundle:scratch": "node scripts/gaia-engine.mjs bundle",
+    "tauri:dev": "bun scripts/gaia-engine.mjs dev",
+    "tauri:build": "bun scripts/gaia-engine.mjs build",
+    "tauri:bundle:scratch": "bun scripts/gaia-engine.mjs bundle",
     "mobile:ios:init": "bunx tauri ios init --ci",
-    "mobile:ios:dev": "node scripts/gaia-mobile.mjs ios-dev",
-    "mobile:ios:open": "node scripts/gaia-mobile.mjs ios-open",
-    "mobile:url": "node scripts/gaia-mobile.mjs url",
+    "mobile:ios:dev": "bun scripts/gaia-mobile.mjs ios-dev",
+    "mobile:ios:open": "bun scripts/gaia-mobile.mjs ios-open",
+    "mobile:url": "bun scripts/gaia-mobile.mjs url",
     "tauri": "tauri",
-    "mobile:ios:sim": "node scripts/gaia-mobile.mjs ios-dev --simulator --device \"iPhone 17 Pro\"",
-    "mobile:ios:device": "node scripts/gaia-mobile.mjs device"
+    "mobile:ios:sim": "bun scripts/gaia-mobile.mjs ios-dev --simulator --device \"iPhone 17 Pro\"",
+    "mobile:ios:device": "bun scripts/gaia-mobile.mjs device"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.80.3",
@@ -34,11 +34,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.3.0",
-    "tsx": "^4.20.6",
     "typescript": "^5.7.3"
-  },
-  "engines": {
-    "node": ">=20.6.0"
   },
   "license": "MIT"
 }

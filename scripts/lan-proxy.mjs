@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Non-destructive LAN bridge: forwards <bind>:<listen> → 127.0.0.1:<target>.
 // Raw TCP (protocol-agnostic: HTTP, SSE, and WebSocket all pass through), so a
 // phone on the LAN can reach a loopback-only GAIA daemon without restarting it.
-//   node scripts/lan-proxy.mjs [listenPort=8788] [targetPort=8787] [bind=0.0.0.0]
+//   bun scripts/lan-proxy.mjs [listenPort=8788] [targetPort=8787] [bind=0.0.0.0]
 import net from 'node:net';
 
 const listenPort = Number(process.argv[2] || 8788);

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { spawn } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import { globSync, statSync } from 'node:fs';
@@ -7,7 +7,7 @@ const DEFAULT_PORT = Number(process.env.GAIA_PORT || 8787);
 const BUNDLE_ID = 'com.gaia.daemon';
 
 function usage() {
-  console.log(`Usage:\n  node scripts/gaia-mobile.mjs url [--host IP] [--simulator]\n  node scripts/gaia-mobile.mjs ios-dev [--simulator] [--host IP] [--device DEVICE] [-- RUNNER_ARGS...]\n  node scripts/gaia-mobile.mjs ios-open [--host IP]\n  node scripts/gaia-mobile.mjs device --udid UDID --url URL [--debug] [--no-launch]\n\nStarts or reuses a GAIA daemon reachable from iOS, then runs Tauri iOS.\nSimulator mode uses http://127.0.0.1:${DEFAULT_PORT}/ so it can attach to the existing Mac-local daemon.\nPhone mode uses http://<mac-lan-ip>:${DEFAULT_PORT}/ and requires GAIA_HOST=0.0.0.0.\n\n'device' bypasses 'tauri ios dev' (which waits forever for a phantom dev\nserver on physical devices) by doing 'tauri ios build' -> 'devicectl device\ninstall app' -> 'devicectl device process launch'. --url is baked in as\nGAIA_MOBILE_DAEMON_URL at build time (compile-time env, never hardcoded in\nsource) — point it at an auth-bootstrap URL like\nhttps://<tunnel-host>/auth?token=<token> to land the app already\nauthenticated against an edge-proxy-fronted daemon.`);
+  console.log(`Usage:\n  bun scripts/gaia-mobile.mjs url [--host IP] [--simulator]\n  bun scripts/gaia-mobile.mjs ios-dev [--simulator] [--host IP] [--device DEVICE] [-- RUNNER_ARGS...]\n  bun scripts/gaia-mobile.mjs ios-open [--host IP]\n  bun scripts/gaia-mobile.mjs device --udid UDID --url URL [--debug] [--no-launch]\n\nStarts or reuses a GAIA daemon reachable from iOS, then runs Tauri iOS.\nSimulator mode uses http://127.0.0.1:${DEFAULT_PORT}/ so it can attach to the existing Mac-local daemon.\nPhone mode uses http://<mac-lan-ip>:${DEFAULT_PORT}/ and requires GAIA_HOST=0.0.0.0.\n\n'device' bypasses 'tauri ios dev' (which waits forever for a phantom dev\nserver on physical devices) by doing 'tauri ios build' -> 'devicectl device\ninstall app' -> 'devicectl device process launch'. --url is baked in as\nGAIA_MOBILE_DAEMON_URL at build time (compile-time env, never hardcoded in\nsource) — point it at an auth-bootstrap URL like\nhttps://<tunnel-host>/auth?token=<token> to land the app already\nauthenticated against an edge-proxy-fronted daemon.`);
 }
 
 function parse(argv) {
@@ -94,7 +94,7 @@ async function ensureDaemon(host, port) {
 
   const loopback = `http://127.0.0.1:${port}/api/app`;
   if (await canFetch(loopback)) {
-    throw new Error(`GAIA is already running on :${port}, but not reachable at ${lan}.\nStop it and restart with LAN binding:\n  npm run stop\n  GAIA_HOST=0.0.0.0 npm run dev`);
+    throw new Error(`GAIA is already running on :${port}, but not reachable at ${lan}.\nStop it and restart with LAN binding:\n  bun run stop\n  GAIA_HOST=0.0.0.0 bun run start`);
   }
 
   const child = spawnLogged('npm', ['run', 'dev'], {

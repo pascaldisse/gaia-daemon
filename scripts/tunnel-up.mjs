@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Durable cloudflared quick-tunnel runner for GAIA.
 //
 // Spawns `cloudflared tunnel --url http://127.0.0.1:8789`, tees its output to

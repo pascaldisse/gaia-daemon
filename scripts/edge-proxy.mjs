@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // edge-proxy.mjs — token-authenticated reverse proxy in front of the
 // loopback GAIA daemon (127.0.0.1:8787). Node stdlib only, no npm deps.
 //

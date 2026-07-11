@@ -47,13 +47,23 @@ applies it with ZERO harness-id branches.
   human-in-the-loop approval/command-gating for summons — the sandbox IS the boundary.
 - **Compiled bun app (Pascal, 2026-07-11).** Dev mode is DELETED — never reintroduce
   `--dev`, dev watchers, or auto-refresh; nothing reloads the app except Pascal
-  (Cmd-R or /reload). Production daemon = a standalone `bun build --compile` binary
+  (Cmd-R or /rebuild). Production daemon = a standalone `bun build --compile` binary
   built by `scripts/build-daemon.mjs` (binary + `web/` + `setups/` snapshots +
-  `gaia-source.json` next to it). `/reload` rebuilds from source, then re-execs the
+  `gaia-source.json` next to it). `/rebuild` rebuilds from source, then re-execs the
   fresh binary. `web/src` is JSDoc-typed plain `.js`, snapshotted into the build and
   **typechecked** (`tsc -p web/tsconfig.json`, strict checkJs). Daemon types reach the
   client only as JSDoc comment imports — never runtime imports of `src/`.
   `bun run check` gates both worlds. npm is retired: use `bun run <script>` for everything.
+- **Bun only. Never invoke `node` or `npx`, ever (Pascal, 2026-07-11).** No script,
+  shebang, launchd agent, or test command may shell out to the `node` binary or
+  `npx`/`npm exec` — not "for now," not "just this once." Every executable script
+  in `scripts/` is `#!/usr/bin/env bun`; every `package.json` script that runs a
+  file runs it via `bun <file>` or `bun run <script>`; tests run via `bun test`
+  (bun's runner is `node:test`-compatible — the existing `node:test` imports in
+  `test/*.test.ts` do not need to change). `bunx` (bun's own tool-runner) is fine;
+  `npx`/`npm` are not. If you find a `node` invocation anywhere in this repo or in
+  a machine-local launchd plist that serves it (e.g. `~/Library/LaunchAgents/`),
+  that is a bug — replace it with `bun`, don't leave it "since it still works."
 - **Layering points down.** `server → daemon → services → harness → domain → core`.
   No module imports upward. Wire contracts (runner protocol, proxy mount) live in
   `src/harness/protocol.ts`.
@@ -87,7 +97,12 @@ app-nav.js, app-info.js (bun, zero deps; server exists while the app runs).
 Pascal (2026-07-11): no claim ships untested. 'Tested' means the REAL path ran:
 - agent/account/summon changes → a real `gaia summon` of a cheap agent (luna or ghoul-sonnet) through the real daemon, output pasted;
 - UI changes → app-tools (rule above);
-- daemon code → `bun run check` AND `npx tsx --test test/<touched>.test.ts`;
+- daemon code → `bun run check` AND `bun test test/<touched>.test.ts` (bun only —
+  never `npx`/`tsx`/`node`; run the touched file directly, not the whole `test/`
+  glob — bun's `node:test` compat leaks state across files in one process, a
+  known bun limitation, not a code regression; `--isolate` helps but the full
+  suite still isn't clean under it as of 2026-07-11, so don't trust a full-suite
+  bun-test run as a gate yet);
 - GAIA-World changes → rain perception, not screenshots.
 Self-invented smoke scripts that bypass the daemon prove nothing and are banned.
 If the live path cannot run yet (e.g. the fix needs a daemon restart), say so and mark the claim UNVERIFIED — never imply it was tested.
