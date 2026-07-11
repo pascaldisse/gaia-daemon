@@ -12,7 +12,7 @@
 import { join } from "node:path";
 import type { AgentDef, MemoryConfig } from "../core/types.js";
 import { newId } from "../core/ids.js";
-import { resolveMemoryConfig } from "../core/config.js";
+import { DEFAULTS, resolveMemoryConfig } from "../core/config.js";
 import type { SqliteDatabase as DatabaseSync } from "../core/sqlite.js";
 import type { Episode, EpisodeOutcome } from "../domain/episodes.js";
 import { appendEpisode, purgeRoomEpisodes } from "../domain/episodes.js";
@@ -33,6 +33,7 @@ import {
   syncWorkspaceIndex,
 } from "../domain/workspace-index.js";
 import type { MemoryStore } from "../domain/memory.js";
+import { findHarness } from "../harness/spec.js";
 import type { ApplyDreamProposalResult, ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { applyDreamProposal, runConsolidation } from "./consolidate.js";
 import type { EmbedderDeps, ResolvedEmbedder, ResolvedReranker } from "./embeddings.js";
@@ -627,6 +628,21 @@ export class MemoryService {
     this.consolidateTimers.set(agentId, timer);
   }
 
+  /** The consolidation LLM call talks to a model DIRECTLY through pi-ai,
+   * bypassing the agent's own harness subprocess entirely -- so when no
+   * explicit `consolidate.model` override is configured and we fall back to
+   * the agent's own model, that name may be a harness-native alias (e.g.
+   * claude's "fable"/"opus"/"sonnet"/"haiku") that pi-ai's registry doesn't
+   * know. Resolve it through the agent's OWN harness spec uniformly (data on
+   * the spec, never an id-branch here) before handing it to the LLM caller. */
+  private apiModelFor(agent: AgentDef): { provider?: string; name?: string } | undefined {
+    if (!agent.model) return undefined;
+    const harnessId = agent.harness ?? DEFAULTS.harness;
+    const resolveApiModelId = findHarness(harnessId)?.resolveApiModelId;
+    if (!resolveApiModelId || !agent.model.name) return agent.model;
+    return { ...agent.model, name: resolveApiModelId(agent.model.name) };
+  }
+
   async consolidate(agentId: string, options: { force?: boolean; propose?: boolean } = {}): Promise<ConsolidateResult> {
     const agent = this.agentOrThrow(agentId);
     const config = this.configFor(agentId);
@@ -648,7 +664,7 @@ export class MemoryService {
         agentId,
         memoryStore: this.options.memoryStore,
         llm: this.options.llm,
-        model: config.consolidate.model ?? agent.model,
+        model: config.consolidate.model ?? this.apiModelFor(agent),
         maxPerDay: config.consolidate.maxPerDay,
         sharedFactsDir: sharedMemorySource(this.options.workspaceRoot).memoryDir,
         force: options.force,

@@ -351,6 +351,25 @@ export function claudeContextWindow(name: string | undefined): number {
   return 1_000_000;
 }
 
+// Claude Code's own model aliases (see `modelNameOptions` below) mean "latest
+// of this tier" and are understood only by the `claude` CLI itself -- passed
+// verbatim as `--model`. A caller that talks to a model DIRECTLY through
+// pi-ai (bypassing the CLI, e.g. the daemon's consolidation/dream LLM reusing
+// an agent's configured model) needs a real pi-ai registry id instead. This
+// table is that one translation, declared as data on the spec
+// (HarnessSpec.resolveApiModelId) -- kept current by hand as pi-ai's bundled
+// registry adds newer dated snapshots under each tier.
+const API_MODEL_ID_ALIASES: Record<string, string> = {
+  fable: "claude-fable-5",
+  opus: "claude-opus-4-8",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+};
+
+export function claudeApiModelId(name: string): string {
+  return API_MODEL_ID_ALIASES[name] ?? name;
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeRuntime
 // ---------------------------------------------------------------------------
@@ -1337,6 +1356,7 @@ registerHarness({
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
+  resolveApiModelId: (name) => claudeApiModelId(name),
   nativeCommands: () => discoverClaudeCommands(),
   // A deep transcript cursor is only honest while this handle survives: the
   // session must have been ESTABLISHED (started) — a generated-but-never-run

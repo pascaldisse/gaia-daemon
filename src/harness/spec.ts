@@ -299,6 +299,17 @@ export interface HarnessSpec {
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
    * Undefined when the harness can't say, so the UI shows tokens without a %. */
   contextWindow?(model: string | undefined): number | undefined;
+  /** Resolve one of this harness's own model names/aliases (e.g. claude's
+   * "fable"/"opus"/"sonnet"/"haiku", passed verbatim to its CLI) to a real
+   * pi-ai model registry id. Needed ONLY by callers that talk to a model
+   * DIRECTLY through pi-ai instead of through this harness's own subprocess
+   * (e.g. the daemon-side consolidation/dream LLM, which reuses an agent's
+   * configured model but bypasses its harness entirely) -- every such caller
+   * must resolve through here uniformly rather than assuming the name is
+   * already a registry id. Data on the spec, read uniformly -- never
+   * id-branched. Absent => the harness's model names ARE registry ids already
+   * (pass through unchanged). */
+  resolveApiModelId?(name: string): string;
   /** Native passthrough commands this harness advertises for `/`-autocomplete
    * (claude: its builtins + discoverable skills). Data on the spec, read
    * uniformly: surfaced as pickable Skills options, and a checked FILELESS one
