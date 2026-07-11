@@ -182,6 +182,17 @@ function pathInside(path: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Walk up from a path to the nearest ancestor directory named "*.app" (a macOS bundle root), if any. */
+function findAppBundleRoot(path: string): string | undefined {
+  let dir = resolve(path);
+  while (true) {
+    if (dir.endsWith(".app")) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 async function openWithSystem(target: string): Promise<void> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", target] : [target];
@@ -409,6 +420,44 @@ export class GaiaWebServer {
           rebuildOk = true;
         } else {
           writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+        }
+      }
+
+      // build-daemon.mjs (above) overwrites gaia-daemon/web/setups IN PLACE
+      // inside whatever directory it's pointed at. When that directory is a
+      // macOS .app's Contents/MacOS (the installed-app case: plan.out came
+      // from gaia-source.json, not the fromSource dev-repo case), those files
+      // sit inside the bundle's sealed code-signature — overwriting them
+      // without re-signing breaks the seal (`codesign --verify` then reports
+      // "invalid Info.plist (plist or signature have been modified)"), and a
+      // broken seal makes macOS's TCC privacy daemon silently refuse the
+      // NSMicrophoneUsageDescription prompt on next mic use — no dialog, just
+      // "microphone permission denied or unavailable" forever, until someone
+      // re-signs by hand. Observed live 2026-07-12: every /rebuild since
+      // 2026-07-10's mic fix re-broke it. Re-seal here, every time, so the
+      // installed app is never left signature-invalid after a rebuild.
+      if (rebuildOk && plan && !fromSource && process.platform === "darwin") {
+        const appRoot = findAppBundleRoot(plan.out);
+        if (appRoot) {
+          const parsed = (() => {
+            try {
+              return JSON.parse(readFileSync(join(dirname(process.execPath), "gaia-source.json"), "utf8")) as { root: string };
+            } catch {
+              return undefined;
+            }
+          })();
+          const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
+          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
+          codesignArgs.push(appRoot);
+          const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });
+          if (sign.status === 0) {
+            writeSync(reloadLog, `[gaia] reload: re-signed ${appRoot} after rebuild\n`);
+          } else {
+            writeSync(reloadLog, `[gaia] reload: codesign FAILED (status ${sign.status}) — mic/camera permission will likely break until fixed\n`);
+          }
+        } else {
+          writeSync(reloadLog, `[gaia] reload: installed binary not inside a .app bundle — skipping re-sign\n`);
         }
       }
 
