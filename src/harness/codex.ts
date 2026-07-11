@@ -433,6 +433,9 @@ export class CodexRuntime implements AgentRuntime {
     // Per-turn tracking
     const toolNames = new Map<string, string>();
     const reasoningStarted = new Set<string>();
+    // Last transient CLI notice ("Reconnecting... 2/5") — swallowed, not fatal;
+    // used as the failure headline if turn/completed later reports failed.
+    let lastTransientError: string | undefined;
 
     client.setNotificationHandler((msg) => {
       const { method, params } = msg;
@@ -611,7 +614,7 @@ export class CodexRuntime implements AgentRuntime {
         case "turn/completed": {
           const t = (params as { turn: { status: string; error?: { message?: string } } }).turn;
           if (t.status === "failed") {
-            channel.fail(new Error(this.failMessage(t.error?.message ?? "Turn failed.")));
+            channel.fail(new Error(this.failMessage(t.error?.message ?? lastTransientError ?? "Turn failed.")));
           }
           channel.close();
           break;
@@ -619,6 +622,18 @@ export class CodexRuntime implements AgentRuntime {
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
+          // A reconnect notice with attempts remaining ("Reconnecting... 2/5")
+          // arrives as an error notification while the CLI is still retrying
+          // and the turn usually recovers — failing here kills a turn the CLI
+          // goes on to complete (live-caught 2026-07-11: daemon failed the
+          // turn at reconnect 2/5; the rollout shows it completing 21s later).
+          // Stash it and let turn/completed stay the authoritative terminal
+          // event. Every other error still fails immediately.
+          const reconnect = /^Reconnecting\W*\s*(\d+)\s*\/\s*(\d+)/.exec(e.message);
+          if (reconnect && Number(reconnect[1]) < Number(reconnect[2])) {
+            lastTransientError = e.message;
+            break;
+          }
           channel.fail(new Error(this.failMessage(e.message)));
           channel.close();
           break;
