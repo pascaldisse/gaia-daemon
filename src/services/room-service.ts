@@ -175,13 +175,16 @@ const STALL_NOTICE_THROTTLE_MS = 60_000;
  * the review turn (a big reasoning stream has wedged the reviewer before). */
 const PERSONA_CONTEXT_CAP = 16_000;
 
-/** Where the ambient watchdog toggle file lives. Generic and plugin-driven on
- * purpose — this file's PATH is the only thing core knows; its content and
- * whoever writes it (e.g. a `/ultrawhip` command-plugin) are none of core's
- * business. Presence + valid shape = active for every running turn, any
- * agent; missing/invalid = a no-op. */
-function ambientWatchdogPath(): string {
-  return join(homedir(), ".gaia", "ambient-watchdog.json");
+/** Where a ROOM's ambient watchdog toggle file lives — one file per room, so
+ * turning it on in one room (e.g. `/ultrawhip`) never leaks into every other
+ * room/agent's turns. Generic and plugin-driven on purpose: this file's PATH
+ * is the only thing core knows; its content and whoever writes it (e.g. a
+ * `/ultrawhip` command-plugin, using the `roomId` its run() ctx carries) are
+ * none of core's business. Presence + valid shape = active for THIS room's
+ * running turns; missing/invalid = a no-op. Room ids are already
+ * filesystem-safe (see newRoomId/room dir naming), so no extra sanitizing. */
+function ambientWatchdogPath(roomId: string): string {
+  return join(homedir(), ".gaia", "ambient-watchdog", `${roomId}.json`);
 }
 
 interface AmbientWatchdog {
@@ -191,8 +194,8 @@ interface AmbientWatchdog {
 
 /** Best-effort read, never throws: a missing file, a plugin mid-write, or a
  * hand-edited typo all just mean "ambient watchdog off right now." */
-function readAmbientWatchdog(): AmbientWatchdog | undefined {
-  const path = ambientWatchdogPath();
+function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
+  const path = ambientWatchdogPath(roomId);
   if (!existsSync(path)) return undefined;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -1229,7 +1232,7 @@ export class RoomService {
                 void this.fireWatchdogSteer(target, runtime, pick);
               }
               ambientToolCalls += 1;
-              const ambient = readAmbientWatchdog();
+              const ambient = readAmbientWatchdog(this.roomId);
               if (ambient && ambientToolCalls - ambientFiredAt >= ambient.toolCalls) {
                 ambientFiredAt = ambientToolCalls;
                 const ambientPick = ambient.messages[Math.floor(Math.random() * ambient.messages.length)];
@@ -1760,7 +1763,7 @@ export class RoomService {
    * never crashes the caller. See services/plugins.ts for the contract. */
   private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
     try {
-      return (await plugin.run(args, { homedir: homedir() })) ?? {};
+      return (await plugin.run(args, { homedir: homedir(), roomId: this.roomId })) ?? {};
     } catch (error) {
       return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -2839,7 +2842,7 @@ export class RoomService {
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
         ...(() => {
-          const ambient = readAmbientWatchdog();
+          const ambient = readAmbientWatchdog(this.roomId);
           return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls } } : {};
         })(),
       },
