@@ -417,6 +417,15 @@ export class GaiaWebServer {
       return this.respond(response, async () => ({ keepAwake: await this.daemon.setKeepAwake(enabled) }));
     }
 
+    // "Your name" (Global Settings ▸ General): the label the shared transcript
+    // renderer uses for the human's own messages, in place of the anonymous
+    // "user" token (services/user-name.ts). "" clears it back to that default.
+    if (method === "POST" && path === "/api/app/user-name") {
+      const body = await parseBody(request);
+      const name = stringField(body, "name") ?? "";
+      return this.respond(response, async () => ({ userName: await this.daemon.setUserName(name) }));
+    }
+
     if (
       method === "POST" &&
       (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall" || path === "/api/harness/dream")

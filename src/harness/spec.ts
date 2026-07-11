@@ -38,6 +38,10 @@ export interface AgentInput {
    * sets this for harnesses that declare `supportsNativeCommands`; any other
    * harness ignores it and runs `message` as an ordinary turn. */
   nativeCommand?: boolean;
+  /** Settings ▸ General ▸ "Your name" (services/user-name.ts): the label the
+   * shared transcript renderer uses for the human's own messages, in place of
+   * the anonymous "user" token. "" / absent keeps that default. */
+  userName?: string;
 }
 
 export interface AgentRuntime {

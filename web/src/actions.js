@@ -33,6 +33,7 @@ async function applyAppPayload(body) {
   state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
   state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
   state.keepAwake = body.keepAwake ?? state.keepAwake;
+  state.userName = body.userName ?? state.userName;
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
@@ -626,6 +627,20 @@ export async function setKeepAwake(enabled) {
   try {
     const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });
     state.keepAwake = body.keepAwake ?? state.keepAwake;
+    markDirty("settings");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** "Your name" (Settings ▸ General): persists the label agents use for the
+ * human's own transcript lines in place of the anonymous "user" token
+ * (services/user-name.ts). Empty string clears it back to that default.
+ * @param {string} name */
+export async function setUserName(name) {
+  try {
+    const body = await api("/api/app/user-name", { method: "POST", body: JSON.stringify({ name }) });
+    state.userName = body.userName ?? state.userName;
     markDirty("settings");
   } catch (error) {
     setError(error);

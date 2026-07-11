@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { loadSettingsFile, saveSettingsFile, setKeepAwake } from "./actions.js";
+import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -242,20 +242,40 @@ function SettingsModal() {
 }
 
 // ---------------------------------------------------------------------------
-// General tab: just the keep-awake toggle (only where the daemon supports it).
+// General tab: "your name" (always) + the keep-awake toggle (only where the
+// daemon supports it).
 
 function GeneralTab() {
-  if (!state.keepAwake.supported) return h("div", { class: "empty", text: "no general settings on this host" });
-  return h(
-    "label",
-    { class: "settings2-row" },
-    h("span", { text: "Keep laptop awake while GAIA runs" }),
-    h("input", {
-      type: "checkbox",
-      checked: state.keepAwake.enabled,
-      onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
-    }),
-  );
+  const rows = [
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Your name" }),
+      h("input", {
+        type: "text",
+        placeholder: "user",
+        value: state.userName,
+        // Fires on blur/Enter, not per keystroke — matches the checkbox
+        // row's onchange below, and avoids a request per typed character.
+        onchange: (event) => void setUserName(/** @type {HTMLInputElement} */ (event.target).value),
+      }),
+    ),
+  ];
+  if (state.keepAwake.supported) {
+    rows.push(
+      h(
+        "label",
+        { class: "settings2-row" },
+        h("span", { text: "Keep laptop awake while GAIA runs" }),
+        h("input", {
+          type: "checkbox",
+          checked: state.keepAwake.enabled,
+          onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
+        }),
+      ),
+    );
+  }
+  return h("div", {}, rows);
 }
 
 // ---------------------------------------------------------------------------

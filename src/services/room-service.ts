@@ -54,6 +54,7 @@ import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from ".
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
+import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
@@ -1080,6 +1081,8 @@ export class RoomService {
       let watchdogToolCalls = 0;
       let watchdogFired = false;
 
+      const userName = await readUserNameSetting();
+
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         turn = await runAgentTurn({
@@ -1094,6 +1097,7 @@ export class RoomService {
             thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
+            ...(userName ? { userName } : {}),
           },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
@@ -1349,7 +1353,7 @@ export class RoomService {
    * session compaction, so it shares the status but not the compact() call.) */
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
     const { events } = await this.room.eventsFrom(0);
-    const rendered = renderRoomTranscript(events.slice(0, uptoEvents));
+    const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting());
     // Cap the summarizer input, biased to the TAIL, so a huge room can't
     // overflow the model's context window (→ throw → garbage fallback). A
     // joining agent most needs recent context, and every fallback below now

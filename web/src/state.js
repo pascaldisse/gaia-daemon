@@ -81,6 +81,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsView: "form"|"raw",
  *   settingsError: string,
  *   keepAwake: KeepAwakeCapability,
+ *   userName: string,
  * }}
  */
 export const state = {
@@ -221,6 +222,9 @@ export const state = {
   // "Keep laptop awake while GAIA runs" — daemon-managed, macOS-only capability
   // served in /api/app; `supported` false elsewhere hides the control entirely.
   keepAwake: { supported: false, enabled: false },
+  // "Your name" (Settings ▸ General) — replaces the anonymous "user" token in
+  // what agents see of the human's own messages. "" = unset.
+  userName: "",
 };
 
 /** @param {string} workspaceId @param {string} roomId */

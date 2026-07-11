@@ -47,6 +47,7 @@ import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type Re
 import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
+import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -707,6 +708,22 @@ export class Daemon {
     return this.keepAwake();
   }
 
+  // --- your name (Global Settings ▸ General) ---------------------------------------
+
+  /** Configured label for the human's own transcript lines ("" = unset,
+   * meaning the "user" default — see services/user-name.ts). Served in
+   * /api/app so the client can show it in the settings field. */
+  async userName(): Promise<string> {
+    return readUserNameSetting();
+  }
+
+  /** Persist the name; every subsequent turn's prompt picks it up (read fresh
+   * per turn in room-service.ts — no session reload needed). */
+  async setUserName(name: string): Promise<string> {
+    await writeUserNameSetting(name);
+    return this.userName();
+  }
+
   // --- settings hot-reload ----------------------------------------------------------
 
   /** Settings files feed workspace/agent definitions cached at service
@@ -1149,6 +1166,7 @@ export class Daemon {
     voice: VoiceCallInfo | null;
     workspaceRooms: Record<string, Snapshot["rooms"]>;
     keepAwake: KeepAwakeCapability;
+    userName: string;
   }> {
     const workspaces = await this.registry.list();
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
@@ -1177,6 +1195,7 @@ export class Daemon {
       voice: this.voiceFor(current),
       workspaceRooms,
       keepAwake: await this.keepAwake(),
+      userName: await this.userName(),
     };
   }
 }
