@@ -20,6 +20,9 @@ export const globalPaths = {
   accounts: () => join(gaiaHome(), "accounts.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   agentDir: (agentId: string) => join(gaiaHome(), "agents", agentId),
+  /** Shared role definitions available to every agent. Agent-local and project
+   * role files may layer on top of these defaults. */
+  rolesDir: () => join(gaiaHome(), "roles"),
   skillsDir: () => join(gaiaHome(), "skills"),
   setupsDir: () => join(gaiaHome(), "setups"),
   voiceSettings: () => join(gaiaHome(), "voice.json"),

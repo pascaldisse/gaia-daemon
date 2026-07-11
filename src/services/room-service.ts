@@ -47,7 +47,7 @@ import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
-import { effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
+import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
@@ -1090,6 +1090,8 @@ export class RoomService {
             ...(attachments ? { attachments } : {}),
             transcript: events,
             activeRole,
+            tools: effectiveAgentTools(agent, activeRole),
+            skills: effectiveAgentSkills(agent, activeRole),
             channel: options.channel,
             thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
@@ -2185,8 +2187,8 @@ export class RoomService {
    * merged into the native-command check so a role can enable a builtin too. */
   private async activeRoleSkills(agentId: string, agent: AgentDef): Promise<string[]> {
     const roleName = effectiveRoleName((await this.room.state()).activeRoles, agent);
-    if (!roleName) return [];
-    return (await resolveAgentRole(agent, roleName))?.skills ?? [];
+    const role = roleName ? await resolveAgentRole(agent, roleName) : undefined;
+    return effectiveAgentSkills(agent, role);
   }
 
   private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>, extraSkills: string[] = []): Set<string> {

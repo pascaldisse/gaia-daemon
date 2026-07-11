@@ -24,6 +24,10 @@ export interface AgentInput {
   attachments?: MessageAttachment[];
   transcript: RoomEvent[];
   activeRole?: ResolvedRole;
+  /** Resolved by RoomService from the active role plus the agent's explicit
+   * Settings override. The runner rebuilds uniformly if this changes. */
+  tools?: string[];
+  skills?: string[];
   /** "voice" turns come from a live call: the reply is spoken aloud by TTS. */
   channel?: "text" | "voice";
   /** Per-turn thinking override (e.g. voice forcing it off). */

@@ -161,6 +161,7 @@ test("summonAndWait creates a linked child room and returns the worker's reply",
   assert.ok(childId, "child room dir exists");
   const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childId!)));
   assert.equal(state.parentRoomId, "default");
+  assert.equal(state.incognito, true, "summon children never enter recall or episodic memory");
   assert.equal(state.summon, undefined); // no delivery record without a deliver mode
 });
 

@@ -309,7 +309,10 @@ export class SummonCoordinator implements SummonHost {
     const untrusted = summonUntrustedTier(caller, this.running.get(parentRoomId)?.untrusted === true);
 
     const childRoomId = `${agentId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 64);
-    await ensureWorkspaceRoom(this.workspacePath, childRoomId);
+    // Every summon runs in a dedicated, incognito child room. It remains
+    // watchable and delivers its result normally, but its transcript cannot be
+    // recalled and no worker turn can capture episodic memory.
+    await ensureWorkspaceRoom(this.workspacePath, childRoomId, { incognito: true });
 
     // Stamp the parent link — and the pending delivery — BEFORE the child
     // service reads state at init, so both survive the service's own state
