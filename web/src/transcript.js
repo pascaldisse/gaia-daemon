@@ -470,6 +470,14 @@ function Message(view) {
   // buckets for events committed before `blocks` existed, and for redacted
   // events (whose sanitized text lives only in `view.text`, not the blocks).
   const orderedBlocks = isAgent && !view.redacted && details.blocks?.length ? details.blocks : null;
+  // A turn that's streaming but has produced nothing visible yet (e.g. right
+  // after a daemon /rebuild resumes it, before the first delta arrives) would
+  // otherwise render a completely empty bubble — looks dead. Show a pulsing
+  // placeholder instead whenever every other body branch below is empty.
+  const hasVisibleBody = Boolean(
+    summon || orderedBlocks || showThinking || details.tools?.length || view.attachments?.length || text.trim(),
+  );
+  const showTypingIndicator = Boolean(view.streaming) && !hasVisibleBody;
   // Claude.ai-style fork actions: ✎ edits a user message, ⟳ regenerates a
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
@@ -541,6 +549,7 @@ function Message(view) {
     summon || orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
     summon || orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
+    showTypingIndicator ? h("span", { class: "stream-pending", text: "…" }) : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
 }

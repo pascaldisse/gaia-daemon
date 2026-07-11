@@ -568,6 +568,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .steer-inline-icon { font-weight: 700; }
 .steer-inline pre { grid-column: auto; margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 
+/* Placeholder for a streaming turn that hasn't produced any visible content
+   yet (e.g. right after a daemon /rebuild resumes it) — replaces what would
+   otherwise be a completely empty, dead-looking bubble. */
+.stream-pending { opacity: .6; animation: stream-pulse 1.2s ease-in-out infinite; }
+@keyframes stream-pulse { 0%, 100% { opacity: .25; } 50% { opacity: .85; } }
+
 .message-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
