@@ -394,13 +394,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .room-twisty:hover { color: var(--accent); text-shadow: 0 0 8px var(--accent); }
 .room-twisty.leaf { cursor: default; visibility: hidden; }
 .room-item { flex: 1 1 auto; min-width: 0; }
-/* Rolled-up activity of a COLLAPSED room's subrooms — in the right gutter (a
-   different position from the room's own left dot) so a running/unread summon
-   sub-room shows without expanding. Same colours as .room-dot; slightly smaller
-   and hollow-feeling so "down inside" reads differently from "here". */
+/* Rolled-up RUNNING status of a COLLAPSED room's subrooms — in the right
+   gutter (a different position from the room's own left dot) so a live summon
+   sub-room shows without expanding. No .unread variant: a summon's unread
+   state stays on its own row (visible once expanded) rather than bubbling up,
+   see descendantActivity in sidebar.js. */
 .room-subdot { flex: 0 0 auto; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
 .room-subdot.running { box-shadow: 0 0 6px var(--good); animation: dot-pulse 1.2s ease-in-out infinite; }
-.room-subdot.unread { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
 
 /* The sidebar's delete target: the last workspace/room you clicked (or the
    current room by default). The OS delete chord — ⌘⌫ on macOS, Del elsewhere —
