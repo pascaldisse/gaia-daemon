@@ -63,6 +63,8 @@ let thinkingWrapEl = null;
 let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
+/** @type {HTMLElement|null} */
+let ultrawhipWrapEl = null;
 
 // Draft persistence (composer durability — "nothing is ever lost"): the
 // in-progress text survives a reload/crash and is restored per-room.
@@ -159,6 +161,12 @@ export function initComposer() {
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
   modelWrapEl = h("div", { class: "model-wrap" });
   voiceWrapEl = h("div", { class: "voice-wrap" });
+  ultrawhipWrapEl = h("span", {
+    class: "ultrawhip-chip",
+    hidden: true,
+    title: "UltraWhip is on — an auto-repeating steer lands every N tool calls, in whatever turn is running. /ultrawhip to toggle off.",
+    text: "🖤 UltraWhip",
+  });
 
   form.replaceChildren(
     autocompleteEl,
@@ -171,12 +179,36 @@ export function initComposer() {
     attachmentsEl,
     dictationStatusEl,
     h("div", { class: "input-shell" }, textarea, sendButton),
-    h("div", { class: "composer-row" }, targetStatusEl, thinkingWrapEl, modelWrapEl, h("div", { class: "composer-spacer" }), voiceWrapEl),
+    h(
+      "div",
+      { class: "composer-row" },
+      targetStatusEl,
+      thinkingWrapEl,
+      modelWrapEl,
+      ultrawhipWrapEl,
+      h("div", { class: "composer-spacer" }),
+      voiceWrapEl,
+    ),
   );
 }
 
 function renderComposer() {
-  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !editBannerEl || !attachmentsEl || !dictationStatusEl || !targetStatusEl || !thinkingWrapEl || !modelWrapEl || !voiceWrapEl) return;
+  if (
+    !textarea ||
+    !sendButton ||
+    !autocompleteEl ||
+    !bannerEl ||
+    !bannerLabelEl ||
+    !editBannerEl ||
+    !attachmentsEl ||
+    !dictationStatusEl ||
+    !targetStatusEl ||
+    !thinkingWrapEl ||
+    !modelWrapEl ||
+    !voiceWrapEl ||
+    !ultrawhipWrapEl
+  )
+    return;
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
 
@@ -275,6 +307,12 @@ function renderComposer() {
   }
 
   targetStatusEl.textContent = composerTargetStatus(snapshot, state.composerText);
+
+  // Pinned, always visible (not gated on `busy`) — /ultrawhip stays live
+  // across turns until toggled off, so the indicator has to too.
+  const ambientWatchdog = snapshot?.room?.ambientWatchdog;
+  ultrawhipWrapEl.hidden = !ambientWatchdog;
+  if (ambientWatchdog) ultrawhipWrapEl.textContent = `🖤 UltraWhip ·${ambientWatchdog.toolCalls}`;
 
   const thinking = ThinkingControl(snapshot, state.composerText);
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
