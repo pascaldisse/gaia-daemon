@@ -48,8 +48,14 @@ const binaryTmp = join(outDir, "gaia-daemon.new");
 const binaryFinal = join(outDir, "gaia-daemon");
 
 timeStep("bun-build-compile", () => {
+  // process.execPath, never a bare "bun" — this script is itself run BY bun,
+  // so execPath is always correct and needs no PATH lookup. A GUI-launched
+  // app (Finder/Dock, no login-shell PATH) does not have ~/.bun/bin on PATH,
+  // so a bare "bun" spawn here fails silently (ENOENT) the moment /rebuild
+  // runs from the compiled app instead of a terminal — observed live
+  // 2026-07-11: /rebuild died instantly with no bundle/compile output at all.
   const res = spawnSync(
-    "bun",
+    process.execPath,
     ["build", "--compile", join(repoRoot, "src/cli.ts"), "--outfile", binaryTmp],
     { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
   );
