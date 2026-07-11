@@ -19,9 +19,17 @@ import { newId } from "../core/ids.js";
 import { addAccount, newAccountId } from "../domain/accounts.js";
 import { harnessSpecFor, type AccountLoginSpec } from "../harness/spec.js";
 
-/** Strip ANSI CSI + OSC sequences so the extractors see plain text. */
-function stripAnsi(text: string): string {
-  return text.replace(/\[[0-9;?]*[A-Za-z]/g, "").replace(/\][^]*(?:|\\)/g, "");
+/** Strip ANSI CSI + OSC sequences so the extractors see plain text. Previously
+ * missing the leading ESC (`\x1b`) byte on both patterns — harmless for
+ * claude's login output, but codex's FIRST line ("Welcome to Codex [v0.144.1]")
+ * has a bare `]` that made the (ESC-less) OSC pattern's `[^]*` swallow
+ * everything after it, greedily, for the rest of the session — the sign-in
+ * URL and device code never survived stripping, so the flow silently hung at
+ * `starting` forever. */
+export function stripAnsi(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "") // OSC ... (BEL | ST)
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""); // CSI ... letter (SGR/colors/etc)
 }
 
 export type AccountLoginStatus = "starting" | "awaiting-signin" | "awaiting-code" | "done" | "error" | "cancelled";

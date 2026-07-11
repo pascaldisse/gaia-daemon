@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findHarness } from "../src/harness/spec.js";
+import { stripAnsi } from "../src/services/account-login.js";
 import "../src/harness/claude.js"; // side-effect: registers the claude spec
 import "../src/harness/codex.js"; // side-effect: registers the codex spec
 
@@ -17,6 +18,22 @@ function withGaiaHome(fn: (home: string) => void): void {
     else process.env.GAIA_HOME = previous;
   }
 }
+
+test("stripAnsi: strips CSI color codes without eating adjacent literal `]` text", () => {
+  // Regression: codex's own first output line is "Welcome to Codex [v0.144.1]"
+  // — a bare `]` with no preceding ESC byte. The old (ESC-less) OSC pattern's
+  // `[^]*` treated that `]` as an OSC opener and greedily ate everything after
+  // it for the rest of the session, so the sign-in URL + device code never
+  // survived stripping and the login flow hung at "starting" forever.
+  const raw = "Welcome to Codex [v\x1b[90m0.144.1\x1b[0m]\r\n\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\r\n   \x1b[94m08R6-8O59Y\x1b[0m\r\n";
+  const out = stripAnsi(raw);
+  assert.equal(out, "Welcome to Codex [v0.144.1]\r\nhttps://auth.openai.com/codex/device\r\n   08R6-8O59Y\r\n");
+});
+
+test("stripAnsi: strips an OSC hyperlink sequence (ESC ] ... BEL)", () => {
+  const raw = "before \x1b]8;;https://example.com\x07link text\x1b]8;;\x07 after";
+  assert.equal(stripAnsi(raw), "before link text after");
+});
 
 const login = findHarness("claude")?.accounts?.login;
 
@@ -62,6 +79,22 @@ test("codex login: code lifts the one-time device code", () => {
   assert.ok(codexLogin.code);
   const out = "Enter this one-time code (expires in 15 minutes)\n   05Z1-FEOPR\n";
   assert.equal(codexLogin.code(out), "05Z1-FEOPR");
+});
+
+test("codex login: real raw codex output survives stripAnsi + extractors end-to-end", () => {
+  // The actual bytes `codex login --device-auth` writes to its pty (captured
+  // live) — pins the full pipeline stripAnsi() -> signInUrl()/code() together,
+  // not just the extractors against already-clean text.
+  assert.ok(codexLogin);
+  const raw =
+    "\r\nWelcome to Codex [v\x1b[90m0.144.1\x1b[0m]\r\n\x1b[90mOpenAI's command-line coding agent\x1b[0m\r\n\r\n" +
+    "Follow these steps to sign in with ChatGPT using device code authorization:\r\n\r\n" +
+    "1. Open this link in your browser and sign in to your account\r\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\r\n\r\n" +
+    "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\r\n   \x1b[94m08R6-8O59Y\x1b[0m\r\n\r\n" +
+    "\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\r\n";
+  const clean = stripAnsi(raw);
+  assert.equal(codexLogin.signInUrl(clean), "https://auth.openai.com/codex/device");
+  assert.equal(codexLogin.code?.(clean), "08R6-8O59Y");
 });
 
 test("codex login: awaitingInput is always false — nothing is ever pasted back", () => {
