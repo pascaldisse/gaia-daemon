@@ -12,11 +12,12 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
+import { normalizeRoomState } from "./domain/rooms.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
@@ -213,6 +214,14 @@ export class Daemon {
     // WAL resumes its turn; the coordinator re-delivers the result to the
     // parent room) — a summon result is never silently lost.
     void this.recoverSummons();
+    // Turn recovery: a prior process may have died (or been reload()ed) with a
+    // room mid-turn or holding a queued-but-undrained message. Nothing else
+    // wakes that room — RoomService.initOnce() resumes/drains, but only runs
+    // when something calls serviceFor() for that exact room, which otherwise
+    // waits for a client to reopen it. Silent and unbounded for a room nobody
+    // happens to look at; see room-service.ts's own "/reload ... in-flight
+    // turns resume after restart" promise, which this keeps.
+    void this.recoverPendingTurns();
     await ensureVoiceSettingsFile();
     // A crash mid-call must never leave a "temporary" thinking override applied
     // forever: restore any persisted override from a dead call.
@@ -461,6 +470,41 @@ export class Daemon {
         await (await this.coordinatorFor(record.id)).recoverUndelivered();
       } catch (error) {
         this.log(`summon recovery skipped for workspace ${record.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  /** Boot sweep: wake every room whose persisted state carries unfinished work
+   * (a pendingTurn or a non-empty queue) — the counterpart to recoverSummons
+   * for plain agent turns, which otherwise only resume/drain lazily inside
+   * RoomService.initOnce(), on-demand, the next time something calls
+   * serviceFor() for that specific room. Scan is cheap (one JSON read per
+   * room, no service/workspace load); only rooms that actually need it get a
+   * real serviceFor(), which does the rest via initOnce(). Sequential, not
+   * fanned out — a restart can strand many rooms at once, and each wake may
+   * spawn a runner subprocess; waking them one at a time avoids a subprocess
+   * thundering herd (servicePending already makes this race-safe against a
+   * concurrent client reconnect for the same room). Failures are logged,
+   * never thrown — recovery must not take the daemon down. */
+  private async recoverPendingTurns(): Promise<void> {
+    for (const record of await this.registry.list()) {
+      if (!record.isInitialized) continue;
+      for (const roomId of this.roomIdsOnDisk(record.path)) {
+        let state: RoomState;
+        try {
+          state = normalizeRoomState(await readJson(workspacePaths.roomState(record.path, roomId)));
+        } catch {
+          continue; // Unreadable/corrupt state — leave it for the room's own on-open recovery.
+        }
+        if (!state.pendingTurn && !state.queue?.length) continue;
+        this.log(
+          `turn recovery: waking ${record.id}::${roomId} (pending=${Boolean(state.pendingTurn)}, queued=${state.queue?.length ?? 0})`,
+        );
+        try {
+          await this.serviceFor(record.id, roomId);
+        } catch (error) {
+          this.log(`turn recovery failed for ${record.id}::${roomId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }

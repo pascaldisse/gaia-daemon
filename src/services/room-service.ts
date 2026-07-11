@@ -373,10 +373,19 @@ export class RoomService {
     return Boolean(this.activeTask);
   }
 
-  /** Busy = running a turn OR has a live background summon. Guards a service
-   * from LRU eviction while its background work would be killed with it. */
+  /** Busy = running a turn, holding queued-but-undrained work, or has a live
+   * background summon. Guards a service from LRU eviction while its
+   * background work would be killed with it. The queue check matters even
+   * when activeTask is momentarily unset: settleTask clears activeTask
+   * synchronously but drain() (which claims the next queued item) only runs
+   * after an async emitSnapshot — evicting in that window would strand a
+   * queued message with a persisted entry but no live driver to pick it up. */
   get isBusy(): boolean {
-    return Boolean(this.activeTask) || Boolean(this.options.summonHost?.runningChildren(this.roomId).length);
+    return (
+      Boolean(this.activeTask) ||
+      this.queuedTasks.length > 0 ||
+      Boolean(this.options.summonHost?.runningChildren(this.roomId).length)
+    );
   }
 
   get activeTaskId(): string | undefined {
