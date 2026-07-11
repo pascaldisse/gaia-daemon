@@ -1713,7 +1713,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .settings2-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
 .settings2-editor { display: flex; flex-direction: column; gap: 8px; }
-.settings2-raw { min-height: 380px; resize: vertical; white-space: pre; overflow-wrap: normal; }
+.settings2-raw { min-height: 380px; resize: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings2-dirty { color: var(--warn); }
 .settings2-error-line { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); padding: 6px 8px; font-size: 13px; }
 .settings2-notice { color: var(--muted); font-size: 12px; margin: -2px 0 2px; }
