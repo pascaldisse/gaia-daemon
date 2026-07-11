@@ -266,6 +266,20 @@ export class RoomService {
    * paths). cancelActiveTask awaits it so a stop settles AFTER the streamed
    * partial is committed — never blanking progress from the UI. */
   private activeTurnUnwind: Promise<void> | undefined;
+  /** Set by settleTask to the in-flight settle→drain continuation (the settle
+   * snapshot emit, then drain()'s decision of what — if anything — runs
+   * next). settleTask clears activeTask SYNCHRONOUSLY but only calls drain()
+   * after that async emit; sendMessage awaits this before evaluating
+   * busy/idle so a message can never land in that gap, see activeTask===
+   * undefined, and run immediately — jumping ahead of a message that's
+   * already been durably queued far longer. (The jumped message would then
+   * never drain: drain() sees the interloper's activeTask and bails, so it
+   * sits showing "queued" until the interloper's own turn eventually settles
+   * and drains it — very late, and out of send order.) Resolves fast: it
+   * covers only drain()'s OWN decision, not a queued command's execution
+   * (drain sets activeTask before awaiting a command turn, so a concurrent
+   * sendMessage sees that instead of blocking on the command). */
+  private draining: Promise<void> | undefined;
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
@@ -613,6 +627,15 @@ export class RoomService {
       }
     }
 
+    // Close the settle->drain gap (see `draining`'s doc comment) before
+    // reading activeTask below — without this, a message sent in that window
+    // would see activeTask already cleared and jump the durable queue ahead
+    // of a message that's been waiting far longer. Resolves fast (drain()'s
+    // own decision, not a queued command's execution) — never a meaningful
+    // stall for the idle, nothing-was-settling case (already-resolved awaits
+    // cost a microtask).
+    if (this.draining) await this.draining;
+
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
     if (this.activeTask) {
@@ -679,47 +702,64 @@ export class RoomService {
    * state.json.queue until a successor durable record replaces it (the turn's
    * pendingTurn marker, or a command's persisted reply), so a crash anywhere
    * in between re-drains the message instead of losing it. */
-  private async drain(): Promise<void> {
-    if (this.activeTask) return;
-    const next = await this.room.peekQueue();
-    if (!next) return;
-    const chip = this.queuedTasks.find((task) => task.id === next.taskId);
-    this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
-    const task = chip ?? this.createTask(next.text, next.targets);
+  /** `onDecided`, if given, is invoked the instant the busy/idle question is
+   * settled — either a queued item claims `activeTask` or the queue is
+   * confirmed empty — so a caller tracking `this.draining` (settleTask) can
+   * resolve without waiting for a queued COMMAND's full execution below. */
+  private async drain(onDecided?: () => void): Promise<void> {
     try {
-      // Agent-dialogue hand-offs are agent-authored text, never slash commands —
-      // skip command parsing (a reply opening with "/" is prose, not /clear). A
-      // native command already decided it's a command turn to a pinned target;
-      // re-parsing would just "unknown"-error it, so run it as a message too.
-      const command =
-        next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
-      if (command.type !== "message") {
-        task.status = "running";
-        task.startedAt = new Date().toISOString();
-        this.activeTask = task;
-        this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
-        await this.runCommand(task, command);
-        // The reply is durable (runCommand persists it) — only now consume the
-        // entry. A crash before this line re-runs the command on boot
-        // (at-least-once; commands are idempotent-enough, loss is not).
-        await this.room.spliceQueued(next.taskId);
-        return;
+      if (this.activeTask) return;
+      const next = await this.room.peekQueue();
+      if (!next) return;
+      const chip = this.queuedTasks.find((task) => task.id === next.taskId);
+      this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
+      const task = chip ?? this.createTask(next.text, next.targets);
+      // From this point on, activeTask is set SYNCHRONOUSLY (no intervening
+      // await) by both branches below — safe to resolve now, so a
+      // sendMessage() that was awaiting `draining` sees the correct busy
+      // state the moment it resumes, without blocking on this queued turn's
+      // full run (a queued /compact can take a while).
+      onDecided?.();
+      onDecided = undefined;
+      try {
+        // Agent-dialogue hand-offs are agent-authored text, never slash commands —
+        // skip command parsing (a reply opening with "/" is prose, not /clear). A
+        // native command already decided it's a command turn to a pinned target;
+        // re-parsing would just "unknown"-error it, so run it as a message too.
+        const command =
+          next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
+        if (command.type !== "message") {
+          task.status = "running";
+          task.startedAt = new Date().toISOString();
+          this.activeTask = task;
+          this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+          await this.runCommand(task, command);
+          // The reply is durable (runCommand persists it) — only now consume the
+          // entry. A crash before this line re-runs the command on boot
+          // (at-least-once; commands are idempotent-enough, loss is not).
+          await this.room.spliceQueued(next.taskId);
+          return;
+        }
+        this.startTask(task, next.text, {
+          targets: next.targets,
+          queued: next,
+          ...(next.channel ? { channel: next.channel } : {}),
+          ...(next.attachments?.length ? { attachments: next.attachments } : {}),
+          ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
+          ...(next.recorded ? { recordUserMessage: false } : {}),
+          ...(next.nativeCommand ? { nativeCommand: true } : {}),
+          // The stall-retried prompt is already on the transcript from the
+          // original (aborted) run — never re-record it. `queued: next` above
+          // already carries `stallRetried` through to runAgentTask's options.
+          ...(next.stallRetried ? { recordUserMessage: false } : {}),
+        });
+      } catch (error) {
+        this.settleTask(task, "error", error);
       }
-      this.startTask(task, next.text, {
-        targets: next.targets,
-        queued: next,
-        ...(next.channel ? { channel: next.channel } : {}),
-        ...(next.attachments?.length ? { attachments: next.attachments } : {}),
-        ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
-        ...(next.recorded ? { recordUserMessage: false } : {}),
-        ...(next.nativeCommand ? { nativeCommand: true } : {}),
-        // The stall-retried prompt is already on the transcript from the
-        // original (aborted) run — never re-record it. `queued: next` above
-        // already carries `stallRetried` through to runAgentTask's options.
-        ...(next.stallRetried ? { recordUserMessage: false } : {}),
-      });
-    } catch (error) {
-      this.settleTask(task, "error", error);
+    } finally {
+      // Covers the early returns above (activeTask already set, queue empty)
+      // — a no-op if the mid-function call already fired.
+      onDecided?.();
     }
   }
 
@@ -2935,6 +2975,13 @@ export class RoomService {
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     if (this.activeTask?.id === task.id) this.activeTask = undefined;
     if (this.activeAgentTurn?.id === task.id) this.activeAgentTurn = undefined;
+    // Close the settle->drain gap now, synchronously, in the SAME tick as the
+    // activeTask clear above — see `draining`'s doc comment. `resolveDraining`
+    // fires from inside drain() the instant it has decided (see onDecided).
+    let resolveDraining: () => void = () => {};
+    this.draining = new Promise<void>((resolve) => {
+      resolveDraining = resolve;
+    });
     if (status === "error") {
       this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });
@@ -2953,7 +3000,13 @@ export class RoomService {
     void this.emitSnapshot()
       .catch(() => {})
       .finally(() => {
-        void this.drain();
+        void this.drain(resolveDraining).finally(() => {
+          // Defensive: drain() always calls onDecided via its own try/finally,
+          // but a second resolve() is a no-op, so this just guarantees the
+          // promise can never dangle unresolved if drain() were ever changed.
+          resolveDraining();
+          if (this.draining) this.draining = undefined;
+        });
       });
   }
 
