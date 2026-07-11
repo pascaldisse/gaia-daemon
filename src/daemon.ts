@@ -180,6 +180,14 @@ export class Daemon {
   // Live only while a call routes its TTS through a read-aloud engine
   // (claude-voice); torn down on hang-up.
   private ttsBridge: TtsCallBridge | undefined;
+  // Resolves once boot()'s orphan sweep has finished. serviceFor() awaits this
+  // so an HTTP request landing in the window between "server listening" and
+  // "orphan sweep done" (the server accepts connections before boot() settles
+  // — see http.ts's listen()) can't spawn/resume a room's turn while a stale
+  // runner from the previous daemon generation for that same room might still
+  // be alive: the two would race the same transcript/runner slot. Defaults to
+  // an already-resolved promise so tests/callers that skip boot() aren't stuck.
+  private orphanSweepDone: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: DaemonOptions) {
     ensureAccountsFile(); // seed ~/.gaia/accounts.json so it lists as an editable settings file
@@ -199,7 +207,8 @@ export class Daemon {
     // turn (scheduler tick, summon recovery, serviceFor from HTTP). Otherwise a
     // surviving runner from the previous daemon and the freshly resumed runner
     // can execute the same turn in parallel.
-    await reapOrphans({ log: (message) => this.log(message) });
+    this.orphanSweepDone = reapOrphans({ log: (message) => this.log(message) }).then(() => {});
+    await this.orphanSweepDone;
     this.bridge = new HarnessBridge(baseUrl);
     // Proactive runs: one tick across every initialized workspace. The first
     // tick also recovers runs a prior process left marked "running".
@@ -309,6 +318,13 @@ export class Daemon {
    * = the workspace's current room. LRU-bumped; creating past the soft cap
    * evicts the least-recently-used idle room. */
   async serviceFor(workspaceId: string, roomId?: string): Promise<RoomService> {
+    // Enforce the invariant boot() documents at its reapOrphans() call: nothing
+    // resumes/starts a turn until the stale-runner sweep has settled. Without
+    // this, a message landing right after a restart (the HTTP server accepts
+    // connections before boot() finishes — see http.ts) could start a fresh
+    // turn/runner for a room while a surviving orphan runner for that same
+    // room+agent is still being identified/killed.
+    await this.orphanSweepDone;
     const resolvedRoom = roomId ?? (await this.resolveCurrentRoom(workspaceId));
     const key = serviceKey(workspaceId, resolvedRoom);
 
