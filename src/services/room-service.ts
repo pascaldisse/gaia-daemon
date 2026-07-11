@@ -13,7 +13,7 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -174,6 +174,45 @@ const STALL_NOTICE_THROTTLE_MS = 60_000;
  * reviewer — enough for a SOUL + role, bounded so a huge persona can't bloat
  * the review turn (a big reasoning stream has wedged the reviewer before). */
 const PERSONA_CONTEXT_CAP = 16_000;
+
+/** Where the ambient watchdog toggle file lives. Generic and plugin-driven on
+ * purpose — this file's PATH is the only thing core knows; its content and
+ * whoever writes it (e.g. a `/ultrawhip` command-plugin) are none of core's
+ * business. Presence + valid shape = active for every running turn, any
+ * agent; missing/invalid = a no-op. */
+function ambientWatchdogPath(): string {
+  return join(homedir(), ".gaia", "ambient-watchdog.json");
+}
+
+interface AmbientWatchdog {
+  toolCalls: number;
+  messages: string[];
+}
+
+/** Best-effort read, never throws: a missing file, a plugin mid-write, or a
+ * hand-edited typo all just mean "ambient watchdog off right now." */
+function readAmbientWatchdog(): AmbientWatchdog | undefined {
+  const path = ambientWatchdogPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    const toolCalls = parsed?.toolCalls;
+    const messages = parsed?.messages;
+    if (
+      typeof toolCalls === "number" &&
+      Number.isFinite(toolCalls) &&
+      Math.floor(toolCalls) > 0 &&
+      Array.isArray(messages) &&
+      messages.length > 0 &&
+      messages.every((m: unknown) => typeof m === "string" && m.trim().length > 0)
+    ) {
+      return { toolCalls: Math.floor(toolCalls), messages };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Default "load last N messages" when the human doesn't specify N. */
 const CONTEXT_GATE_LAST_N = 20;
@@ -1142,11 +1181,20 @@ export class RoomService {
       // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers a
       // corrective message into the running turn when it crosses. Plain
       // watchdog fires once; `repeat: true` re-fires every `toolCalls` calls
-      // for the rest of the turn (e.g. ultrawhip: keep landing while the
-      // agent works, no manual /whip needed). Zero cost when the agent behaves.
+      // for the rest of the turn. Zero cost when the agent behaves.
       let watchdogToolCalls = 0;
       let watchdogFired = false;
       let watchdogFiredAt = 0;
+
+      // Ambient watchdog — a generic, plugin-driven sibling of the role one:
+      // ANY local command-plugin (e.g. /ultrawhip) can drop a small JSON file
+      // at ambientWatchdogPath() to make every running turn, for every agent,
+      // get an auto-repeating steer every N tool calls — no role assignment,
+      // no per-agent config, just a command toggling a file. Re-read per
+      // tool-start (cheap: one existsSync + a small readFileSync) so toggling
+      // it takes effect on the very next tool call, mid-turn.
+      let ambientToolCalls = 0;
+      let ambientFiredAt = 0;
 
       const userName = await readUserNameSetting();
 
@@ -1179,6 +1227,13 @@ export class RoomService {
                   ? watchdog.messages[Math.floor(Math.random() * watchdog.messages.length)]
                   : watchdog.message;
                 void runtime.steer?.(this.roomId, pick).catch(() => {});
+              }
+              ambientToolCalls += 1;
+              const ambient = readAmbientWatchdog();
+              if (ambient && ambientToolCalls - ambientFiredAt >= ambient.toolCalls) {
+                ambientFiredAt = ambientToolCalls;
+                const ambientPick = ambient.messages[Math.floor(Math.random() * ambient.messages.length)];
+                void runtime.steer?.(this.roomId, ambientPick).catch(() => {});
               }
             }
             if (event.type === "model-fallback") {
