@@ -2170,6 +2170,9 @@ export class RoomService {
   async runReloadCommand(): Promise<string> {
     const reload = reloadDaemon;
     if (!reload) return "Reload is unavailable in this process.";
+    // Room-level provenance for the restart-attribution trail (see
+    // requestReload in server/http.ts): which room's /reload ordered it.
+    console.log(`[gaia] ${new Date().toISOString()} /reload command issued in room ${this.roomId} (workspace ${this.workspaceId})`);
     setTimeout(() => {
       void reload();
     }, 0);

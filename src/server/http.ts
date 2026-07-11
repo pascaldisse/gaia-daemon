@@ -269,6 +269,12 @@ export class GaiaWebServer {
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;
     this.boundUrl = `http://${host}:${boundPort}`;
+    // Boot provenance: pid + ppid + timestamp on every start, so reload.log
+    // (and any log this lands in) can attribute each daemon generation — a
+    // /reload re-exec child logs a "reload requested" line from its parent
+    // right above; a boot without one was spawned by something else (shell,
+    // launchd, manual) and can be traced via ppid.
+    console.log(`[gaia] ${new Date().toISOString()} daemon up pid=${process.pid} ppid=${process.ppid} at ${this.boundUrl}`);
     await this.daemon.boot(this.boundUrl);
 
     return {
@@ -354,6 +360,11 @@ export class GaiaWebServer {
   private requestReload(): void {
     if (this.reloadStarted) return;
     this.reloadStarted = true;
+    // Restart provenance (standing rule: ONLY /reload — the user — restarts the
+    // daemon; nothing self-triggers). Every re-exec logs a timestamped line so
+    // any boot in reload.log without a matching "reload requested" line above
+    // it is immediately visible as an external kill/spawn, not ours.
+    console.log(`[gaia] ${new Date().toISOString()} reload requested via /reload — re-exec in ${RELOAD_DELAY_MS}ms (pid ${process.pid})`);
     setTimeout(() => {
       void this.reloadNow();
     }, RELOAD_DELAY_MS);
