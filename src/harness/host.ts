@@ -111,7 +111,7 @@ const COMPACT_TIMEOUT_MS = 900_000;
  * Generous on purpose: a long in-harness tool run (a big build) streams
  * nothing between tool start and result, and killing a healthy slow turn is
  * worse than reporting a wedged one late. Uniform for every harness. */
-const TURN_IDLE_TIMEOUT_MS = 1_800_000;
+const TURN_IDLE_TIMEOUT_MS = 900_000;
 
 /** How long abort() waits for the runner to confirm the turn ended before
  * escalating to SIGKILL. A cooperative abort (harness kills its child, stream

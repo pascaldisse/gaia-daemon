@@ -87,7 +87,9 @@ function failLoud(cRes: import("node:http").ServerResponse, status: number, mess
     cRes.end(body);
     return;
   }
-  cRes.end();
+  // Headers already sent mid-stream: ending cleanly would mask the failure
+  // as EOF. Break the socket so the client knows the stream died.
+  cRes.destroy(new Error(message));
 }
 
 /**
@@ -145,7 +147,12 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
           uRes.on("error", (error) => {
             clearStall();
             process.stderr.write(`thinking-proxy: upstream ${upstream} body failed mid-stream: ${error.message}\n`);
-            cRes.end();
+            // Propagate the break: a clean end() here reads as a normal EOF to the
+            // CLI, which then waits forever for the SSE message_stop that will
+            // never come (the wedged-turn incidents of 2026-07-11 — turns froze
+            // silently until the 30-min idle backstop). Destroying the socket
+            // surfaces a connection error so the CLI's own retry logic engages.
+            cRes.destroy(error instanceof Error ? error : new Error(String(error)));
           });
           armStall(() => uRes.destroy(new Error("upstream body stalled")));
           uRes.pipe(cRes);
