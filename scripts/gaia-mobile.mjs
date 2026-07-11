@@ -97,7 +97,7 @@ async function ensureDaemon(host, port) {
     throw new Error(`GAIA is already running on :${port}, but not reachable at ${lan}.\nStop it and restart with LAN binding:\n  bun run stop\n  GAIA_HOST=0.0.0.0 bun run start`);
   }
 
-  const child = spawnLogged('npm', ['run', 'dev'], {
+  const child = spawnLogged('bun', ['src/cli.ts', '--dev'], {
     env: { GAIA_HOST: '0.0.0.0', GAIA_PORT: String(port) },
   });
   await waitFor(lan, 'GAIA daemon');
