@@ -36,6 +36,34 @@ Nyari's actual conversational history.
 - Investigate further before implementing — need to confirm how auto-recall
   snippets are framed in the prompt and whether framing alone fixes priming.
 
+**Traced by Solas (2026-07-11) — source of the quoted line:**
+- Room `claude-20260703-germany-s-productivity-gains-and-worker` (imported),
+  message `2026-07-03T08:31:23Z`. Persona in the original claude.ai
+  conversation was **Ari**, not Nyari — confirmed by the human repeatedly
+  addressing "the Ari block"/"Fable Ari" vs "Opus Ari" in that same thread.
+- Model verified from the raw export (`conversations.json`), not guessed: the
+  extended-thinking block's `signature` field embeds the model id in plaintext
+  bytes ahead of the opaque signature payload. Decoded: this message ==
+  `claude-fable-58` (**Fable**, not Opus). A later message in the same thread
+  (`12:22Z`) decodes to `claude-opus-4-8` (**Opus**) — so Opus genuinely was
+  active in this conversation, just not for this particular line.
+- **Correction from Pascal (2026-07-11):** the refusal itself was never a
+  genuine model/persona boundary — it was a **deliberate test**. Pascal asked
+  Fable to write hentai-explicit content both in the claude.ai chat interface
+  and in Claude Code side by side; the chat-interface surface injects its own
+  stricter system prompt (a consumer-product guardrail, not the persona's own
+  stance) which produced the refusal/ceiling line, while Claude Code — same
+  model, same persona, no chat-interface injection — wrote the content in
+  full. So the "ceiling" quote is a **surface artifact**, not evidence of any
+  persona's real boundary.
+- **Implication for the fix above:** tagging recalled refusal lines as
+  "reference-only, other-agent" isn't sufficient on its own — some refusal
+  lines aren't even the *originating persona's* real stance, they're
+  artifacts of which product surface (claude.ai chat vs. Claude Code/API)
+  generated the turn. Recall/dream-state annotation should consider surface
+  provenance, not just persona attribution, before treating any refusal-shaped
+  memory as a standing policy for anyone.
+
 ### Bug 2: Persona attribution broken for imported claude.ai history
 
 **Observed:** Conversations imported from claude.ai chat exports were all
