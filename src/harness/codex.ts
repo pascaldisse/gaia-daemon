@@ -356,6 +356,7 @@ export class CodexRuntime implements AgentRuntime {
   private activeTurn: { threadId: string; turnId: string } | null = null;
   private readonly clientFactory: CodexClientFactory;
   private readonly label: ModelLabel;
+  private lastRateLimits: { usedPercent?: number; planType?: string; resetsAt?: number; windowMinutes?: number } | null = null;
 
   constructor(options: CodexRuntimeOptions) {
     this.workspace = options.workspace;
@@ -435,6 +436,16 @@ export class CodexRuntime implements AgentRuntime {
 
     client.setNotificationHandler((msg) => {
       const { method, params } = msg;
+      const rl = (params as { rate_limits?: any; rateLimits?: any } | undefined);
+      const limits = rl?.rate_limits ?? rl?.rateLimits;
+      if (limits?.primary) {
+        this.lastRateLimits = {
+          usedPercent: limits.primary.used_percent ?? limits.primary.usedPercent,
+          planType: limits.plan_type ?? limits.planType,
+          resetsAt: limits.primary.resets_at ?? limits.primary.resetsAt,
+          windowMinutes: limits.primary.window_minutes ?? limits.primary.windowMinutes,
+        };
+      }
       switch (method) {
         case "model/rerouted": {
           const p = params as { fromModel?: string; toModel: string; reason?: string; threadId: string; turnId: string };
@@ -600,7 +611,7 @@ export class CodexRuntime implements AgentRuntime {
         case "turn/completed": {
           const t = (params as { turn: { status: string; error?: { message?: string } } }).turn;
           if (t.status === "failed") {
-            channel.fail(new Error(t.error?.message ?? "Turn failed."));
+            channel.fail(new Error(this.failMessage(t.error?.message ?? "Turn failed.")));
           }
           channel.close();
           break;
@@ -608,7 +619,7 @@ export class CodexRuntime implements AgentRuntime {
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
-          channel.fail(new Error(e.message));
+          channel.fail(new Error(this.failMessage(e.message)));
           channel.close();
           break;
         }
@@ -620,6 +631,16 @@ export class CodexRuntime implements AgentRuntime {
     } finally {
       this.activeTurn = null;
     }
+  }
+
+  // The CLI's last words on a dead stream are noise ("Reconnecting... 2/5");
+  // the rate-limit snapshot is the diagnosis — attach it.
+  private failMessage(base: string): string {
+    const rl = this.lastRateLimits;
+    if (!rl || (rl.usedPercent ?? 0) < 100) return base;
+    const resets = rl.resetsAt ? new Date(rl.resetsAt * 1000).toISOString() : "";
+    const win = rl.windowMinutes ? `${Math.round(rl.windowMinutes / 1440)}-day window` : "window";
+    return `${base} — ChatGPT plan usage exhausted: ${rl.usedPercent}% of the ${win} used (plan: ${rl.planType ?? "unknown"}${resets ? `, resets ${resets}` : ""})`;
   }
 
   // -----------------------------------------------------------------------

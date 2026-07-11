@@ -175,24 +175,31 @@ export function awaitTask(room: { subscribe(listener: (event: SummonTaskEvent) =
  * empty final reply (`active`: false means it never got going); and the
  * harness's own last words, passed through verbatim, preferred as a failure
  * headline over the generic fallback when the worker said something before
- * going quiet (`lastText`). */
-async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string }> {
+ * going quiet (`lastText`). Also surfaces the last recorded system
+ * turn-failure line (failure) so a summon failure message can always show
+ * the real error even when the worker itself wrote nothing. */
+async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string; failure: string }> {
   let raw: string;
   try {
     raw = await readFile(workspacePaths.transcript(rootDir, roomId), "utf8");
   } catch {
-    return { digest: "", active: false, lastText: "" };
+    return { digest: "", active: false, lastText: "", failure: "" };
   }
   let firstTs = "";
   let lastTs = "";
   const texts: string[] = [];
   let active = false;
+  let failure = "";
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let event: { author?: unknown; text?: unknown; timestamp?: unknown; details?: { tools?: unknown[] } };
     try {
       event = JSON.parse(line);
     } catch {
+      continue;
+    }
+    if (event.author === "system" && typeof event.text === "string" && event.text.startsWith("⚠ turn failed")) {
+      failure = event.text;
       continue;
     }
     if (event.author !== agentId) continue;
@@ -210,7 +217,7 @@ async function inspectWorker(rootDir: string, roomId: string, agentId: string): 
           .slice(-3)
           .map((text) => (text.length > 600 ? `${text.slice(0, 600)}…` : text))
           .join("\n---\n")}`.slice(0, 2400);
-  return { digest, active, lastText: texts.at(-1) ?? "" };
+  return { digest, active, lastText: texts.at(-1) ?? "", failure };
 }
 
 export interface SummonOptions {
@@ -393,7 +400,7 @@ export class SummonCoordinator implements SummonHost {
       throw new Error(["summon timed out after 30 minutes", digest].filter(Boolean).join("\n\n"));
     }
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
-    if (turn.status === "error") throw new Error([turn.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "error") throw new Error([turn.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
     if (turn.status === "cancelled") throw new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n"));
     const reply = (await child.latestReplyFrom(agentId)).trim();
     if (reply) return reply;
@@ -404,7 +411,7 @@ export class SummonCoordinator implements SummonHost {
     // start) — an explicit failure, not a silent "(no final reply)" success.
     if (worker.active) return `(no final reply)\n\n${worker.digest}`;
     throw new Error(
-      [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n"),
+      [worker.lastText || worker.failure || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n"),
     );
   }
 
@@ -466,7 +473,7 @@ export class SummonCoordinator implements SummonHost {
     let reply: string;
     let failed: boolean;
     if (lastTask?.status === "error") {
-      reply = [lastTask.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
+      reply = [lastTask.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
     } else if (lastTask?.status === "cancelled") {
       reply = ["cancelled before completion", worker.digest].filter(Boolean).join("\n\n");
@@ -483,7 +490,7 @@ export class SummonCoordinator implements SummonHost {
       } else {
         // Never got going at all — same empty-completion failure bar as
         // runFirstTurn.
-        reply = [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n");
+        reply = [worker.lastText || worker.failure || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n");
         failed = true;
       }
     }
