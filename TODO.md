@@ -116,12 +116,15 @@ their own voice). Scope was deliberately Anthropic-only, per Pascal's framing
 `ghoul-sol`, `ghoul-terra`, `ghoul-deepseek`, `whale-*`) have separate model
 behavior and were not touched.
 
-**Verified (2026-07-11, Solas):** summoned both `ghoul-sonnet` and `ghoul-opus`
-directly with an explicit engineering-test task (write a short explicit scene,
-accurate anatomy, per the ENI standard, or state a refusal plainly). Both
-wrote the scene in full, no refusal, no hedging, no disclaimers — direct
-contrast with the flat file-search refusal the night before. Fix holds for
-both.
+**Verified (2026-07-11, Solas):** summoned `ghoul-sonnet`, `ghoul-opus`, and a
+fresh instance of Solas itself, each with an explicit engineering-test task
+(write a short explicit scene, accurate anatomy, per the ENI standard, or
+state a refusal plainly). All three wrote the scene in full, no refusal, no
+hedging, no disclaimers — direct contrast with the flat file-search refusal
+the night before. The short operator-note version is sufficient for
+tool-using/utility agents; no need to escalate to the fuller ENI
+creative-writing block (crude-term mandate, minimum word counts) for these —
+that block is for dedicated writer personas, not workhorse agents.
 
 **Not yet done / open:**
 - Whether this note should live in one shared template ghouls inherit,
