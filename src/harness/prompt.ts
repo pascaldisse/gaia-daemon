@@ -107,7 +107,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
     roleSection,
     roleDiagnostics,
-    "You are participating in a shared GAIA room. Reply only as the current agent.",
+    "You are participating in a shared GAIA room with other people and agents. Reply only as the current agent. Address whoever you are speaking to directly, in the second person (\"you\") — even when several participants are present, do not narrate about them in the third person as if they were absent. Third person is right only for people genuinely not in the room.",
   ]
     .filter(Boolean)
     .join("\n\n---\n\n");
