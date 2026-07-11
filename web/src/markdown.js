@@ -108,7 +108,14 @@ function renderMarkdownBlock(root, lines) {
   }
 
   if (lines.every((line) => /^>\s?/.test(line))) {
-    root.append(h("blockquote", {}, InlineMarkdown(lines.map((line) => line.replace(/^>\s?/, "")).join("\n"))));
+    const quote = lines.map((line) => line.replace(/^>\s?/, "")).join("\n");
+    // Quotes are regularly used for ready-to-paste prompts. They are a distinct
+    // text block, just like fenced code, so give them the same copy affordance.
+    const quoteBlock = h("blockquote", { class: "copyable-block" }, InlineMarkdown(quote));
+    // Copy exactly the visible prompt, rather than its markdown source (such as
+    // the `**` around a bold "Positive:" label).
+    quoteBlock.append(CopyButton(() => quoteBlock.textContent ?? "", "Copy quoted text"));
+    root.append(quoteBlock);
     return;
   }
 
@@ -196,21 +203,21 @@ const CHECK_ICON =
 // Bottom-right copy affordance, like the Claude/Codex apps. Reveals on hover of
 // the block, swaps to a checkmark on success. Uses the async Clipboard API with
 // a legacy execCommand fallback for shells without clipboard permission.
-/** @param {string} code */
-function CopyButton(code) {
+/** @param {string|(() => string)} content */
+function CopyButton(content, label = "Copy code") {
   const btn = h("button", {
     type: "button",
     class: "code-copy",
-    title: "Copy code",
-    "aria-label": "Copy code",
-    onclick: () => void copyCode(code, btn),
+    title: label,
+    "aria-label": label,
+    onclick: () => void copyCode(typeof content === "function" ? content() : content, btn, label),
   });
   btn.innerHTML = COPY_ICON;
   return btn;
 }
 
-/** @param {string} code @param {HTMLElement} btn */
-async function copyCode(code, btn) {
+/** @param {string} code @param {HTMLElement} btn @param {string} label */
+async function copyCode(code, btn, label) {
   let ok = false;
   try {
     await navigator.clipboard.writeText(code);
@@ -223,7 +230,7 @@ async function copyCode(code, btn) {
   btn.classList.toggle("ok", ok);
   window.setTimeout(() => {
     btn.innerHTML = COPY_ICON;
-    btn.title = "Copy code";
+    btn.title = label;
     btn.classList.remove("ok");
   }, 1400);
 }
