@@ -81,6 +81,14 @@ test("codex login: code lifts the one-time device code", () => {
   assert.equal(codexLogin.code(out), "05Z1-FEOPR");
 });
 
+test("codex login: browser-flow output — URL lifted, no false code from the URL itself", () => {
+  assert.ok(codexLogin);
+  assert.ok(codexLogin.code);
+  const out = "Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to authenticate:\nhttps://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&state=ABCD-EFGH123\n";
+  assert.equal(codexLogin.signInUrl(out), "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&state=ABCD-EFGH123");
+  assert.equal(codexLogin.code(out), undefined);
+});
+
 test("codex login: real raw codex output survives stripAnsi + extractors end-to-end", () => {
   // The actual bytes `codex login --device-auth` writes to its pty (captured
   // live) — pins the full pipeline stripAnsi() -> signInUrl()/code() together,

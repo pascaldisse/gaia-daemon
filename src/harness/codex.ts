@@ -1136,15 +1136,17 @@ registerHarness({
       { key: "accountId", label: "Account ID", hint: "Same file → tokens.account_id" },
     ],
     env: (credentials) => ({ CODEX_HOME: materializeCodexHome(credentials) }),
-    // In-app login: `codex login --device-auth` needs no local callback port
-    // (works from any device, unlike the default browser-redirect flow) — it
-    // prints a URL + one-time code and polls openai until the code is approved
-    // ON THE SITE, so nothing is ever pasted back into this process. Once
-    // approved it writes CODEX_HOME/auth.json itself and exits.
+    // In-app login: plain `codex login` (browser-redirect flow) — the daemon
+    // runs on the user's own machine, so codex opens the auth window in the
+    // local browser itself (localhost callback); the printed URL is also
+    // surfaced in Settings as a fallback link. The device-auth flow
+    // (--device-auth) was tried first but OpenAI's device-code endpoint
+    // rate-limits aggressively (429), and it never auto-opens a browser.
+    // Once signed in codex writes CODEX_HOME/auth.json itself and exits.
     login: {
-      command: ({ configDir }) => ({ argv: ["codex", "login", "--device-auth"], env: { CODEX_HOME: configDir } }),
-      signInUrl: (output) => /https:\/\/auth\.openai\.com\/codex\/device\S*/.exec(output)?.[0],
-      code: (output) => /\b[A-Z0-9]{4}-[A-Z0-9]{4,8}\b/.exec(output)?.[0],
+      command: ({ configDir }) => ({ argv: ["codex", "login"], env: { CODEX_HOME: configDir } }),
+      signInUrl: (output) => /https:\/\/auth\.openai\.com\/\S+/.exec(output)?.[0],
+      code: (output) => /^\s*([A-Z0-9]{4}-[A-Z0-9]{4,8})\s*$/m.exec(output)?.[1],
       awaitingInput: () => false,
       credentials: ({ configDir }) => readCodexLoginCredentials(configDir),
     },
