@@ -263,6 +263,61 @@ test("messages sent while busy queue DURABLY and drain in order", async () => {
   assert.equal((await room.state()).queue, undefined);
 });
 
+test("a message sent the instant a busy turn settles cannot jump ahead of an earlier durably-queued message", async () => {
+  // settleTask clears activeTask SYNCHRONOUSLY, then emits task-end/task-error
+  // (also synchronous — see Bus.emit) BEFORE it ever calls drain() (deferred
+  // behind an async emitSnapshot). A listener on that very event is therefore
+  // the one place a test can land a new sendMessage() call deterministically
+  // inside that gap — exactly where a live message send raced a settling
+  // /compact and got lost behind a later one (see room-service settleTask's
+  // `draining` field).
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let turn = 0;
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    async *send() {
+      turn += 1;
+      if (turn === 1) await gate;
+      yield { type: "text-delta", delta: `reply ${turn}` } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("first"); // running, gated open
+  const queuedBehindFirst = await service.sendMessage("queued behind first");
+  assert.equal(queuedBehindFirst.status, "queued");
+
+  let interloper: ReturnType<typeof service.sendMessage> | undefined;
+  const unsubscribe = service.subscribe((event) => {
+    if (event.type !== "task-end" && event.type !== "task-error") return;
+    unsubscribe();
+    interloper = service.sendMessage("interloper"); // fired synchronously, inside the gap
+  });
+
+  release();
+  await service.waitForIdle(); // resolves on "first"'s settle — the same event that fired the listener above
+  const interloperTask = await interloper!;
+  assert.equal(interloperTask.status, "queued", "a message sent in the settle→drain gap must still queue behind the earlier message");
+
+  // Drain until everything ran, then check strict FIFO order.
+  for (let i = 0; i < 10 && (await RoomHandle.open(root, "default").then((r) => r.state().then((s) => s.queue?.length ?? 0))) > 0; i++) {
+    await service.waitForIdle();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const userTexts = transcript.filter((event) => event.author === "user").map((event) => event.text);
+  assert.deepEqual(userTexts, ["first", "queued behind first", "interloper"]);
+});
+
 test("a queued message survives a daemon restart (drains on boot)", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-restart-"));
   await mkdir(join(root, ".gaia", "rooms", "default"), { recursive: true });
