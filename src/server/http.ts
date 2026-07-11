@@ -58,6 +58,13 @@ const MIME: Record<string, string> = {
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = randomUUID();
 const RELOAD_DELAY_MS = 250;
+// Upper bound on the graceful close inside a reload. closeServer awaits
+// daemon.dispose(), and one wedged runner (an agent turn stuck retrying a dead
+// upstream socket) hangs that await forever — observed live 2026-07-11 20:03:
+// /rebuild stopped after keep-awake teardown, never rebuilt, never re-exec'd,
+// port dead until the app was force-quit. Reload's contract is "the app always
+// comes back", so past this deadline we abandon graceful teardown and proceed.
+const RELOAD_CLOSE_TIMEOUT_MS = 5_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
@@ -340,7 +347,23 @@ export class GaiaWebServer {
 
   private async reloadNow(): Promise<void> {
     try {
-      if (this.server) await this.closeServer(this.server);
+      // Bounded graceful close (see RELOAD_CLOSE_TIMEOUT_MS): a hung or failed
+      // dispose must never block the re-exec. process.exit(0) below frees the
+      // port either way, and the next boot's orphan sweep (daemon.serviceFor
+      // invariant) reaps any runner subprocess a skipped dispose left behind.
+      if (this.server) {
+        const closed = this.closeServer(this.server).then(
+          () => "closed" as const,
+          (error) => {
+            console.error(`[gaia] reload: graceful close failed: ${error instanceof Error ? error.message : String(error)} — proceeding with re-exec`);
+            return "failed" as const;
+          },
+        );
+        const deadline = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), RELOAD_CLOSE_TIMEOUT_MS).unref());
+        if ((await Promise.race([closed, deadline])) === "timeout") {
+          console.error(`[gaia] reload: graceful close still pending after ${RELOAD_CLOSE_TIMEOUT_MS}ms — proceeding with re-exec (pid ${process.pid})`);
+        }
+      }
       const reloadLog = openSync(join(gaiaHome(), "reload.log"), "a");
 
       // A reload doesn't just re-exec the running process — when a build
