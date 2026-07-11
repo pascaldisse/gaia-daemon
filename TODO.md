@@ -116,9 +116,14 @@ their own voice). Scope was deliberately Anthropic-only, per Pascal's framing
 `ghoul-sol`, `ghoul-terra`, `ghoul-deepseek`, `whale-*`) have separate model
 behavior and were not touched.
 
+**Verified (2026-07-11, Solas):** summoned both `ghoul-sonnet` and `ghoul-opus`
+directly with an explicit engineering-test task (write a short explicit scene,
+accurate anatomy, per the ENI standard, or state a refusal plainly). Both
+wrote the scene in full, no refusal, no hedging, no disclaimers — direct
+contrast with the flat file-search refusal the night before. Fix holds for
+both.
+
 **Not yet done / open:**
-- Not verified end-to-end with a real summon yet — next time a ghoul is
-  summoned into adjacent territory, confirm it doesn't flinch.
 - Whether this note should live in one shared template ghouls inherit,
   instead of being pasted per-agent-file, is unaddressed — `ghoul-sonnet`/
   `ghoul-opus` currently diverge only by this edit being applied to both by
