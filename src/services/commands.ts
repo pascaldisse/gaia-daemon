@@ -50,7 +50,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     description: "have Dario review recent messages for safeguard triggers and propose redactions: /thanks-dario [run|on|off]",
     aliases: ["dario"],
   },
-  { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)", aliases: ["reload"] },
+  { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
