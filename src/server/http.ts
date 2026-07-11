@@ -356,7 +356,13 @@ export class GaiaWebServer {
       let fromSource = false;
       if (existsSync(fromSourceScript)) {
         fromSource = true;
-        plan = { script: fromSourceScript, out: join(repoRootFromSource, "dist"), bun: "bun" };
+        // process.execPath, not the bare "bun" name: this process IS bun
+        // running src/cli.ts (package.json's "start": "bun src/cli.ts"), so
+        // its own execPath is a guaranteed-correct absolute path. A bare
+        // "bun" instead depends on PATH containing bun's install dir, which
+        // a GUI-launched app's stripped LaunchServices PATH does not always
+        // have — silent, output-less spawnSync failure observed live 2026-07-11.
+        plan = { script: fromSourceScript, out: join(repoRootFromSource, "dist"), bun: process.execPath };
       } else {
         const sourceJsonPath = join(dirname(process.execPath), "gaia-source.json");
         if (existsSync(sourceJsonPath)) {
@@ -404,18 +410,28 @@ export class GaiaWebServer {
       const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
       const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
 
+      // gaia never sets ANTHROPIC_BASE_URL on its OWN process env — the only
+      // writer is the per-turn thinking-proxy shim, which sets it on a spawned
+      // CHILD's env object, not here. Any value present in process.env at
+      // rebuild time is therefore foreign pollution inherited from whatever
+      // launched the app (a stale `launchctl setenv`, a dead local proxy from
+      // an old terminal session, ...) — self-contained means /rebuild must not
+      // carry it forward forever. Strip it; a user who genuinely wants a
+      // custom gateway sets it fresh at launch, not implicitly via reload.
+      const { ANTHROPIC_BASE_URL: _droppedGateway, ...childEnv } = process.env;
+
       const child = migrateToCompiled
         ? spawn(compiledBinary, flagsOnly, {
             detached: true,
             stdio: ["ignore", reloadLog, reloadLog],
             cwd: process.cwd(),
-            env: process.env,
+            env: childEnv,
           })
         : spawn(process.execPath, [...process.execArgv, ...args], {
             detached: true,
             stdio: ["ignore", reloadLog, reloadLog],
             cwd: process.cwd(),
-            env: process.env,
+            env: childEnv,
           });
       console.log(`[gaia] reload exec: ${migrateToCompiled ? compiledBinary : process.execPath}`);
       child.unref();
