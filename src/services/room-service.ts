@@ -1266,14 +1266,14 @@ export class RoomService {
                 const pick = watchdog.messages?.length
                   ? watchdog.messages[Math.floor(Math.random() * watchdog.messages.length)]
                   : watchdog.message;
-                void runtime.steer?.(this.roomId, pick).catch(() => {});
+                void this.fireWatchdogSteer(target, runtime, pick);
               }
               ambientToolCalls += 1;
               const ambient = readAmbientWatchdog();
               if (ambient && ambientToolCalls - ambientFiredAt >= ambient.toolCalls) {
                 ambientFiredAt = ambientToolCalls;
                 const ambientPick = ambient.messages[Math.floor(Math.random() * ambient.messages.length)];
-                void runtime.steer?.(this.roomId, ambientPick).catch(() => {});
+                void this.fireWatchdogSteer(target, runtime, ambientPick);
               }
             }
             if (event.type === "model-fallback") {
@@ -1751,6 +1751,22 @@ export class RoomService {
     this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task });
     void this.emitSnapshot();
     return true;
+  }
+
+  /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
+   * shape as runSteerCommand below, just without its command-reply return
+   * value — a watchdog fires from inside an onEvent callback, not a command.
+   * Without this it only ever reached the runtime directly (never committed,
+   * never emitted), so it worked for the agent but was invisible in the room. */
+  private async fireWatchdogSteer(target: string, runtime: AgentRuntime, message: string): Promise<void> {
+    try {
+      const event = await this.room.addUserMessage(message, [target]);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      const ok = (await runtime.steer?.(this.roomId, message)) ?? false;
+      if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
+    } catch {
+      // A watchdog nudge is best-effort — never take the turn down over it.
+    }
   }
 
   /** /steer: inject guidance into the RUNNING turn (capability-gated data —
