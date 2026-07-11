@@ -832,9 +832,9 @@ function ToolPayload(label, value) {
 /** @param {ToolDetail} tool */
 function toolSummaryText(tool) {
   const candidates = [
-    ...(tool.status === "error" ? toolSubjectCandidates(tool.result) : toolSubjectCandidates(tool.args)),
+    ...toolSubjectCandidates(tool.args),
     ...toolSubjectCandidates(tool.partialResult),
-    ...(tool.status === "error" ? toolSubjectCandidates(tool.args) : toolSubjectCandidates(tool.result)),
+    ...toolSubjectCandidates(tool.result),
   ];
   return candidates[0]?.summary ?? "";
 }
