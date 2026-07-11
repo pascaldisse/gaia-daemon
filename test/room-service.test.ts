@@ -2008,3 +2008,83 @@ test("agent-dialogue mutual @mentions terminate at the hop cap, and a human rese
   await sleep(150);
   assert.equal(totalSends(), 2 * (1 + AGENT_DIALOGUE_MAX_HOPS), "the human reset re-armed the dialogue");
 });
+
+test("an upstream-stall notice appends exactly one throttled system_stall room event, even with 3 in one turn", async () => {
+  const { service, root, events } = await makeService({
+    script: () => [
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "text-delta", delta: "done" } as AgentEvent,
+    ],
+  });
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const stallNotices = transcript.filter((event) => event.author === "system" && event.text.includes("harness retrying"));
+  assert.equal(stallNotices.length, 1, "three notices within the 60s throttle window collapse to one visible line");
+  assert.match(stallNotices[0].text, /upstream stall \(@gaia\): gateway 502 — harness retrying/);
+
+  // The notice never rides the reply text (wave 1 already excluded it from toUiEvent).
+  const reply = transcript.find((event) => event.author === "gaia");
+  assert.equal(reply?.text, "done");
+  assert.equal(
+    events.some((event) => (event as { type: string }).type === "notice"),
+    false,
+    "notice is never emitted as a UI transport event",
+  );
+});
+
+/** A runtime whose every send() fails the way RunnerHost's hard stall
+ * deadline fails an active channel: a named UpstreamStallError, no events
+ * streamed first — the same shape a real wedged-upstream turn produces. */
+function stallingRuntime(agent: AgentDef): AgentRuntime & { sends: number } {
+  const runtime = {
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    sends: 0,
+    async *send(): AsyncGenerator<AgentEvent> {
+      runtime.sends += 1;
+      const err = new Error("upstream stalled — no recovery within 1s; aborted the wedged turn (partial progress, if any, is kept)");
+      err.name = "UpstreamStallError";
+      throw err;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  };
+  return runtime as AgentRuntime & { sends: number };
+}
+
+test("a stalled turn with no partial reply requeues ONCE (stallRetried), then fails normally on a second stall", async () => {
+  const { service, root } = await makeService({
+    runtimeFactory: (agent) => stallingRuntime(agent),
+  });
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle(); // first attempt: stalls, requeues, settles "error"
+
+  // Let the requeued retry drain and run (also fails — this time for good).
+  await waitFor(async () => ((await RoomHandle.open(root, "default").then((r) => r.state())).queue?.length ?? 0) === 0);
+  await sleep(50);
+  await service.waitForIdle().catch(() => {});
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const userMessages = transcript.filter((event) => event.author === "user");
+  assert.equal(userMessages.length, 1, "the retry replays the ORIGINAL prompt without re-recording it");
+
+  const requeueNotices = transcript.filter((event) => event.text.includes("requeued, retrying once"));
+  assert.equal(requeueNotices.length, 1, "requeue happens exactly once");
+  assert.match(requeueNotices[0].text, /turn aborted after upstream stall \(@gaia\)/);
+
+  const genericFailures = transcript.filter((event) => event.text.startsWith("⚠ turn failed"));
+  assert.equal(genericFailures.length, 1, "the retry's second stall falls through to the normal failure path");
+
+  const finalState = await room.state();
+  assert.equal(finalState.queue ?? undefined, undefined, "no further requeue — the queue is empty again");
+  assert.equal(finalState.pendingTurn, undefined);
+});

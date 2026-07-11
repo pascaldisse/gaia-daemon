@@ -12,7 +12,7 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`,
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --help                  show help`,
   );
 }
 
@@ -27,7 +27,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const devMode = rawArgs.includes("--dev");
+  if (rawArgs.includes("--dev")) {
+    console.warn("[gaia] --dev is retired: dev mode was deleted 2026-07-11; running normally.");
+  }
   const args = rawArgs.filter((arg) => arg !== "--dev");
   if (args.includes("--help") || args.includes("-h")) {
     usage();
@@ -101,7 +103,7 @@ async function main(): Promise<void> {
     await import("./harness/index.js");
     await import("./services/policies/index.js");
     const { startWebServer } = await import("./server/http.js");
-    const server = await startWebServer({ cwd: process.cwd(), dev: devMode });
+    const server = await startWebServer({ cwd: process.cwd() });
     console.log(`GAIA web UI: ${server.url}`);
     console.log("Press Ctrl+C to stop.");
     await new Promise<void>((resolve) => {

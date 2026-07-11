@@ -189,6 +189,13 @@ export interface QueuedMessage {
    * must not append it again, and the client renders the committed bubble
    * instead of a queued ghost. */
   recorded?: boolean;
+  /** This entry is the ONE automatic retry of a turn RunnerHost's hard stall
+   * deadline aborted (UpstreamStallError — src/harness/host.ts) after the
+   * harness reported an upstream stall and never recovered. Drain must not
+   * re-record the user message (it's already on the transcript from the
+   * original run) and a SECOND stall on this retry must not requeue again —
+   * a dead upstream must not keep a retry loop alive forever. */
+  stallRetried?: boolean;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the
@@ -758,7 +765,11 @@ export type AgentEvent =
    * `details.blocks` — at the exact position the steer took effect. Uniform for
    * every harness by construction; no harness ever emits it. `eventId` is the
    * steer's user RoomEvent. */
-  | { type: "steered"; eventId: string };
+  | { type: "steered"; eventId: string }
+  /** Structured surfacing of an out-of-band condition worth telling the
+   * consumer about without treating it as reply text — e.g. an upstream
+   * stall the claude thinking-proxy detected. Never rendered as reply text. */
+  | { type: "notice"; kind: "upstream-stall"; text: string };
 
 // ---------------------------------------------------------------------------
 // Tasks + UI events (SSE payloads; the v1 wire shape exactly, plus `eventId`
