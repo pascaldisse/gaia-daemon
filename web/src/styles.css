@@ -633,6 +633,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .markdown-message ul, .markdown-message ol { padding-left: 22px; }
 .markdown-message li + li { margin-top: 2px; }
 .markdown-message blockquote { border-left: 1px solid var(--border); padding-left: 8px; color: var(--muted); }
+.markdown-message blockquote.copyable-block { position: relative; padding-right: 36px; padding-bottom: 30px; }
 
 .markdown-message code {
   color: var(--fg);
