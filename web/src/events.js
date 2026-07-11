@@ -222,10 +222,12 @@ export function connectEvents() {
     if (tool) {
       tool.status = payload.isError ? "error" : "complete";
       tool.result = payload.result;
+      if (payload.isError) state.expandedActivities.add(`tool:${tool.id}`);
     } else {
       const created = toolDetail(payload, payload.isError ? "error" : "complete");
       stream.details.tools = [...(stream.details.tools ?? []), created];
       pushRefBlock(stream.details, "tool", created.id);
+      if (payload.isError) state.expandedActivities.add(`tool:${created.id}`);
     }
     stream.version += 1;
     markDirty("transcript");

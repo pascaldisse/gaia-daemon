@@ -80,6 +80,21 @@ const DEFAULT_CAPABILITIES = {
   experimentalApi: true,
 };
 
+/** Convert an app-server tool diagnostic into displayable stream content. */
+function toolErrorText(error: { message?: unknown } | string | null | undefined): string | undefined {
+  if (typeof error === "string") return error || undefined;
+  if (!error || typeof error.message !== "string" || !error.message) return undefined;
+  return error.message;
+}
+
+/** Keep command output and its failure diagnostic together in the tool result. */
+function toolResult(output: string | null | undefined, error: string | undefined, exitCode: number | null | undefined): string | undefined {
+  const outputPart = output?.trim() ? output : undefined;
+  const parts = [outputPart, error, exitCode !== undefined && exitCode !== null && exitCode !== 0 ? `Command exited with status ${exitCode}.` : undefined]
+    .filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join("\n") : undefined;
+}
+
 function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let nextId = 1;
@@ -514,7 +529,7 @@ export class CodexRuntime implements AgentRuntime {
                 summary?: string[];
                 content?: string[];
                 result?: unknown;
-                error?: unknown;
+                error?: { message?: unknown } | string | null;
                 success?: boolean | null;
               };
             }
@@ -547,12 +562,17 @@ export class CodexRuntime implements AgentRuntime {
                 ? item.success === false
                 : !!item.error;
 
+          // The app-server leaves `aggregatedOutput` empty for some failed
+          // commands and puts the useful diagnostic on `error` instead.  Do
+          // not turn that into an empty tool row: every failure needs a result
+          // the uniform stream/UI can persist and render.
+          const error = toolErrorText(item.error);
           const res =
             item.type === "commandExecution"
-              ? item.aggregatedOutput
+              ? toolResult(item.aggregatedOutput, error, item.exitCode)
               : item.type === "dynamicToolCall"
-                ? item.result ?? item.arguments
-                : item.result;
+                ? item.result ?? error ?? item.arguments
+                : item.result ?? error;
 
           channel.push({ type: "tool-end", toolName: tn, toolCallId: item.id, result: res, isError: isErr });
           break;
