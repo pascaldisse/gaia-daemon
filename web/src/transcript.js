@@ -492,6 +492,10 @@ function Message(view) {
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
   const canFork = !view.streaming && !view.queued && view.author !== "system";
+  // Stall/abort notices (event ids minted with the system_stall* prefixes) are
+  // warnings about the harness's upstream connection, not conversation — render
+  // them as errors, visually distinct from ordinary system chatter.
+  const isSystemError = view.author === "system" && view.id.startsWith("system_stall");
   // The action row lives at the FOOT of the message (Claude-style), not the meta
   // header — on a long reply the buttons should sit where the reader ends up, not
   // scrolled far above. Built here, appended after the body below.
@@ -531,7 +535,7 @@ function Message(view) {
   ].filter(Boolean);
   return h(
     "article",
-    { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""} ${view.queued ? "queued" : ""}` },
+    { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""} ${isSystemError ? "error" : ""} ${view.queued ? "queued" : ""}` },
     h(
       "div",
       { class: "message-meta" },
