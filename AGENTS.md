@@ -45,10 +45,15 @@ applies it with ZERO harness-id branches.
   bridges (Telegram/Discord/…) are plugins, never core.
 - **Summons run autonomously** behind the sandbox + trust tier. NEVER propose
   human-in-the-loop approval/command-gating for summons — the sandbox IS the boundary.
-- **No build step.** Daemon runs via `tsx`; `web/src` is JSDoc-typed plain `.js` served
-  as-is and **typechecked** (`tsc -p web/tsconfig.json`, strict checkJs). Daemon types
-  reach the client only as JSDoc comment imports — never runtime imports of `src/`.
-  `npm run check` gates both worlds.
+- **Compiled bun app (Pascal, 2026-07-11).** Dev mode is DELETED — never reintroduce
+  `--dev`, dev watchers, or auto-refresh; nothing reloads the app except Pascal
+  (Cmd-R or /reload). Production daemon = a standalone `bun build --compile` binary
+  built by `scripts/build-daemon.mjs` (binary + `web/` + `setups/` snapshots +
+  `gaia-source.json` next to it). `/reload` rebuilds from source, then re-execs the
+  fresh binary. `web/src` is JSDoc-typed plain `.js`, snapshotted into the build and
+  **typechecked** (`tsc -p web/tsconfig.json`, strict checkJs). Daemon types reach the
+  client only as JSDoc comment imports — never runtime imports of `src/`.
+  `bun run check` gates both worlds. npm is retired: use `bun run <script>` for everything.
 - **Layering points down.** `server → daemon → services → harness → domain → core`.
   No module imports upward. Wire contracts (runner protocol, proxy mount) live in
   `src/harness/protocol.ts`.
@@ -82,7 +87,7 @@ app-nav.js, app-info.js (bun, zero deps; server exists while the app runs).
 Pascal (2026-07-11): no claim ships untested. 'Tested' means the REAL path ran:
 - agent/account/summon changes → a real `gaia summon` of a cheap agent (luna or ghoul-sonnet) through the real daemon, output pasted;
 - UI changes → app-tools (rule above);
-- daemon code → `npm run check` AND `npx tsx --test test/<touched>.test.ts`;
+- daemon code → `bun run check` AND `npx tsx --test test/<touched>.test.ts`;
 - GAIA-World changes → rain perception, not screenshots.
 Self-invented smoke scripts that bypass the daemon prove nothing and are banned.
 If the live path cannot run yet (e.g. the fix needs a daemon restart), say so and mark the claim UNVERIFIED — never imply it was tested.

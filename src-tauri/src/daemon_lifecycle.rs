@@ -171,9 +171,9 @@ pub fn spawn_owned(port: u16) -> Option<Child> {
     //      (.app: Contents/MacOS/gaia-daemon) — direct exec, no shell,
     //      no node/npm/tsx anywhere; assets resolve via ../Resources
     //      (see bundledDir in src/core/paths.ts).
-    //   3. Dev fallback: `npm run dev` through a LOGIN shell — a
-    //      Finder-launched .app inherits only the bare GUI PATH, so
-    //      `$SHELL -lc` sources the profile to find node/npm.
+    //   3. Dev fallback: `bun run start` through a LOGIN shell (source-run
+    //      via bun, no dev watchers) — a Finder-launched .app inherits only
+    //      the bare GUI PATH, so `$SHELL -lc` sources the profile to find bun.
     let override_cmd = std::env::var("GAIA_SHELL_SPAWN_CMD")
         .ok()
         .filter(|c| !c.trim().is_empty());
@@ -195,9 +195,9 @@ pub fn spawn_owned(port: u16) -> Option<Child> {
             bin.display()
         );
         command = Command::new(bin);
-        command.arg("--dev").current_dir(&home);
+        command.current_dir(&home);
     } else {
-        let cmd = override_cmd.unwrap_or_else(|| "npm run dev".to_string());
+        let cmd = override_cmd.unwrap_or_else(|| "bun run start".to_string());
         let dir = spawn_dir();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         eprintln!("[gaia-shell] spawning owned daemon on :{port}: `{cmd}` (cwd {dir})");
