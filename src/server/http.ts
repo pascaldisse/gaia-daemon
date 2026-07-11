@@ -19,7 +19,7 @@ import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
-import { findAccount, redactedAccounts, removeAccount } from "../domain/accounts.js";
+import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
@@ -579,6 +579,22 @@ export class GaiaWebServer {
 
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
+    }
+
+    // Display metadata only — credentials remain write-only to the harness
+    // login flow / accounts.json and never cross this HTTP boundary.
+    if (method === "PATCH" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
+      const body = await parseBody(request);
+      const value = (key: "label" | "email"): string | null | undefined => {
+        const raw = (body as Record<string, unknown> | undefined)?.[key];
+        if (raw === null) return null;
+        return typeof raw === "string" ? raw : undefined;
+      };
+      return this.respond(response, async () => {
+        const account = updateAccount(params![0], { label: value("label"), email: value("email") });
+        if (!account) throw new Error(`unknown account '${params![0]}'`);
+        return { account: { id: account.id, harness: account.harness, ...(account.label ? { label: account.label } : {}), ...(account.email ? { email: account.email } : {}) } };
+      });
     }
 
     // Per-agent account binding: which named account (if any) an agent's

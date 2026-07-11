@@ -37,7 +37,7 @@ import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { ANTHROPIC_USAGE_ACCOUNT, fetchAnthropicUsage, fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
+import { emailFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Subprocess-side egress redirect for the credential proxy (v1's
@@ -544,6 +544,11 @@ async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<Usa
     : fetchChatGptUsage(token, typeof cred.accountId === "string" ? cred.accountId : undefined);
 }
 
+async function probePiAccountUsage(credentials: Record<string, string>): Promise<UsageProbeResult> {
+  const token = credentials.accessToken;
+  return token ? fetchChatGptUsage(token, credentials.accountId) : { status: "none" };
+}
+
 // Named pi accounts: an isolated PI_CODING_AGENT_DIR materialized from the
 // stored credential bag — the exact twin of codex's materializeCodexHome.
 // Pi's AuthStorage reads auth.json from that dir and auto-refreshes tokens
@@ -609,6 +614,7 @@ registerHarness({
       { key: "accountId", label: "Account ID", hint: "~/.pi/agent/auth.json → openai-codex.accountId (codex: tokens.account_id)" },
     ],
     env: (credentials) => ({ PI_CODING_AGENT_DIR: materializePiAgentDir(credentials) }),
+    email: (credentials) => emailFromJwt(credentials.accessToken),
   },
   // Pi's proxy wiring (the in-process fetch redirect lives in applyCredentialProxy):
   // relocate its agent dir to an empty store so AuthStorage resolves no real key
@@ -623,8 +629,10 @@ registerHarness({
   // denied writes there); its credential store inside that tree is carved back
   // to read-only so a confined turn can't tamper with the key it can read.
   sandboxPaths: { writable: ["~/.pi", join(gaiaHome(), "pi-accounts")], readonly: ["~/.pi/agent/auth.json"] },
-  usageAccounts: () => [
-    { account: ANTHROPIC_USAGE_ACCOUNT, probe: () => probePiUsage("anthropic") },
-    { account: OPENAI_USAGE_ACCOUNT, probe: () => probePiUsage("openai-codex") },
+  usageAccounts: (accounts) => [
+    { account: "ambient:pi:anthropic", probe: () => probePiUsage("anthropic") },
+    { account: "ambient:pi", probe: () => probePiUsage("openai-codex") },
+    ...accounts.map((account) => ({ account: account.id, probe: () => probePiAccountUsage(account.credentials) })),
   ],
+  ambientUsageAccount: (agent) => (agent.model?.provider === "anthropic" ? "ambient:pi:anthropic" : "ambient:pi"),
 });

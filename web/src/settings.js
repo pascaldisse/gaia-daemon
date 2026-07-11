@@ -19,7 +19,7 @@ import { state } from "./state.js";
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
 /** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
-/** @typedef {{ id: string, harness: string, label?: string }} Account */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string }} Account */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarness */
 /** @typedef {{ accounts: Account[], harnesses: AccountHarness[] }} AccountsCatalog */
 /** @typedef {{
@@ -68,7 +68,7 @@ export function closeSettings() {
   markDirty("settings");
 }
 
-/** @param {"general"|"workspace"|"agents"} tab */
+/** @param {"general"|"workspace"|"agents"|"accounts"} tab */
 async function selectTab(tab) {
   state.settingsTab = tab;
   markDirty("settings");
@@ -82,6 +82,8 @@ async function selectTab(tab) {
     const group = selectedAgentGroup();
     if (group) await selectAgent(group.id);
     else clearFile();
+  } else if (tab === "accounts") {
+    clearFile();
   }
 }
 
@@ -202,6 +204,7 @@ function SettingsModal() {
     { id: "general", label: "General" },
     { id: "workspace", label: "Workspace" },
     { id: "agents", label: "Agents" },
+    { id: "accounts", label: "Accounts" },
   ]);
   return h(
     "div",
@@ -234,9 +237,8 @@ function SettingsModal() {
       h(
         "div",
         { class: "settings2-body" },
-        state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : AgentsTab(),
+        state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : state.settingsTab === "agents" ? AgentsTab() : AccountsSection(),
       ),
-      AccountsSection(),
     ),
   );
 }
@@ -364,6 +366,8 @@ let loginPollTimer;
 let loginLabelDrafts = {};
 /** @type {string} */
 let loginCodeDraft = "";
+/** @type {Record<string, { label: string, email: string }>} */
+let accountDrafts = {};
 
 /** @param {LoginSession["status"]} status @returns {boolean} */
 function isActiveLoginStatus(status) {
@@ -490,6 +494,29 @@ async function removeAccount(id) {
   }
 }
 
+/** @param {Account} account */
+function accountDraft(account) {
+  return (accountDrafts[account.id] ??= { label: account.label ?? "", email: account.email ?? "" });
+}
+
+/** @param {Account} account */
+async function saveAccount(account) {
+  accountsError = "";
+  accountsNotice = "";
+  const draft = accountDraft(account);
+  try {
+    await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label: draft.label.trim() || null, email: draft.email.trim() || null }),
+    });
+    accountsNotice = `account ${account.id} saved`;
+    await loadAccounts();
+  } catch (error) {
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
 async function loadAccounts() {
   try {
     /** @type {{ accounts?: Account[], harnesses?: AccountHarness[] }} */
@@ -504,11 +531,33 @@ async function loadAccounts() {
 
 /** @param {Account} account @returns {HTMLElement} */
 function AccountRow(account) {
+  const draft = accountDraft(account);
   return h(
     "div",
-    { class: "settings2-row" },
-    h("div", {}, h("span", { text: account.label ?? account.id }), h("small", { class: "muted", text: ` ${account.id}` })),
-    h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
+    { class: "account-row" },
+    h("div", { class: "account-row-head" }, h("strong", { text: account.id }), h("small", { class: "muted", text: account.email ? ` ${account.email}` : " email not recorded" })),
+    h(
+      "div",
+      { class: "settings2-field-control" },
+      h("input", {
+        type: "text",
+        placeholder: "account name",
+        value: draft.label,
+        oninput: (event) => {
+          draft.label = /** @type {HTMLInputElement} */ (event.target).value;
+        },
+      }),
+      h("input", {
+        type: "email",
+        placeholder: "email address",
+        value: draft.email,
+        oninput: (event) => {
+          draft.email = /** @type {HTMLInputElement} */ (event.target).value;
+        },
+      }),
+      h("button", { onclick: () => void saveAccount(account), text: "Save" }),
+      h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
+    ),
   );
 }
 
@@ -600,10 +649,13 @@ function HarnessAccountsGroup(harness) {
 }
 
 function AccountsSection() {
+  const managed = new Set((accountsCatalog?.accounts ?? []).map((account) => account.id));
+  const usage = Object.values(state.usage).filter((limits) => managed.has(limits.account));
   return h(
     "div",
     { class: "settings2-body" },
     h("h3", { text: "Accounts" }),
+    h("p", { class: "muted", text: "Manage the named logins GAIA can bind to agents. Room usage is scoped to that room; this page is the only all-account overview." }),
     accountsError ? h("div", { class: "settings2-error-line", text: accountsError }) : null,
     accountsNotice ? h("div", { class: "settings2-notice", text: accountsNotice }) : null,
     accountsCatalog === null
@@ -611,6 +663,18 @@ function AccountsSection() {
       : accountsCatalog.harnesses.length === 0
         ? h("div", { class: "empty", text: "no harnesses support accounts" })
         : accountsCatalog.harnesses.map((harness) => HarnessAccountsGroup(harness)),
+    h("h3", { text: "Usage · all managed accounts" }),
+    usage.length === 0
+      ? h("div", { class: "empty", text: "no usage snapshots for managed accounts yet" })
+      : usage.map((limits) => {
+          const account = accountsCatalog?.accounts.find((item) => item.id === limits.account);
+          return h(
+            "div",
+            { class: "settings2-row account-usage-row" },
+            h("span", { text: account?.label || account?.email || limits.account }),
+            h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") }),
+          );
+        }),
   );
 }
 

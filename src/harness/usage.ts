@@ -10,6 +10,18 @@
 
 import type { UsageLimits, UsageProbeResult, UsageWindow } from "../core/types.js";
 
+/** Best-effort display identity from an OAuth JWT. Account specs may call this
+ * without the shared account manager ever interpreting credential bags. */
+export function emailFromJwt(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { email?: unknown };
+    return typeof payload.email === "string" && payload.email.includes("@") ? payload.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Account id for Anthropic subscription usage (Claude session/weekly caps). */
 export const ANTHROPIC_USAGE_ACCOUNT = "anthropic";
 /** Account id for OpenAI/ChatGPT subscription usage (codex 5h/weekly caps). */

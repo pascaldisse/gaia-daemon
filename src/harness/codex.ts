@@ -35,7 +35,7 @@ import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 import { buildPiTools } from "./tools.js";
-import { fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
+import { emailFromJwt, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Internal JSON-RPC client abstraction (injectable for tests)
@@ -1054,10 +1054,10 @@ export class CodexRuntime implements AgentRuntime {
 // provider client is harness/usage.ts (RULE #0: shared code sees only the
 // declared usageAccounts data).
 
-async function probeCodexUsage(): Promise<UsageProbeResult> {
+async function probeCodexUsageAt(path: string): Promise<UsageProbeResult> {
   let raw: string;
   try {
-    raw = readFileSync(join(homedir(), ".codex", "auth.json"), "utf8");
+    raw = readFileSync(path, "utf8");
   } catch (err) {
     // No auth file = never signed in — authoritatively nothing to show. Any
     // other read failure is ambient (permissions, transient FS) — keep the
@@ -1075,6 +1075,10 @@ async function probeCodexUsage(): Promise<UsageProbeResult> {
     return { status: "none" }; // API-key mode — no subscription meter to show.
   }
   return fetchChatGptUsage(tokens.access_token, typeof tokens.account_id === "string" ? tokens.account_id : undefined);
+}
+
+async function probeCodexUsage(): Promise<UsageProbeResult> {
+  return probeCodexUsageAt(join(homedir(), ".codex", "auth.json"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,6 +1190,7 @@ registerHarness({
       { key: "accountId", label: "Account ID", hint: "Same file → tokens.account_id" },
     ],
     env: (credentials) => ({ CODEX_HOME: materializeCodexHome(credentials) }),
+    email: (credentials) => emailFromJwt(credentials.idToken),
     // In-app login: plain `codex login` (browser-redirect flow) — the daemon
     // runs on the user's own machine, so codex opens the auth window in the
     // local browser itself (localhost callback); the printed URL is also
@@ -1207,5 +1212,12 @@ registerHarness({
   // the SAME shape per bound account (see materializeCodexHome) — writable,
   // never read-only, since a turn legitimately owns its own bound account's file.
   sandboxPaths: { writable: ["~/.codex", join(gaiaHome(), "codex-accounts")], readonly: ["~/.codex/auth.json"] },
-  usageAccounts: () => [{ account: OPENAI_USAGE_ACCOUNT, probe: probeCodexUsage }],
+  usageAccounts: (accounts) => [
+    { account: "ambient:codex", probe: probeCodexUsage },
+    ...accounts.map((account) => ({
+      account: account.id,
+      probe: () => probeCodexUsageAt(join(materializeCodexHome(account.credentials), "auth.json")),
+    })),
+  ],
+  ambientUsageAccount: () => "ambient:codex",
 });

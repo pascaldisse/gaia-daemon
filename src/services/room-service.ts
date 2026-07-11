@@ -52,7 +52,7 @@ import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
-import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
+import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor, usageAccountFor } from "../harness/spec.js";
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
@@ -2558,6 +2558,22 @@ export class RoomService {
     const all = (await this.room.eventsFrom(0)).events;
     const events = all.slice(-this.workspace.config.transcriptWindow);
     const state = await this.room.state();
+    // The selected agent plus any agents actively executing this room's turn
+    // are the only identities that can spend here. This is deliberately not
+    // the workspace roster: an unrelated agent/account in another room must
+    // never leak into this room's usage meter.
+    const usageAgentIds = new Set([
+      state.activeAgent ?? this.workspace.config.defaultAgent,
+      ...(this.activeTask?.targets ?? []),
+      // A room can have a genuine multi-agent conversation even while idle.
+      // Its transcript is the durable membership evidence; workspace agents
+      // that never spoke here remain excluded.
+      ...all.flatMap((event) => (event.author !== "user" && this.workspace.agents[event.author] ? [event.author] : [])),
+    ]);
+    const usageAccounts = [...usageAgentIds]
+      .map((id) => this.workspace.agents[id])
+      .flatMap((agent) => (agent ? [usageAccountFor(agent, this.workspace)] : []))
+      .filter((account): account is string => Boolean(account));
     return {
       workspace: {
         id: this.workspaceId,
@@ -2572,6 +2588,7 @@ export class RoomService {
         eventTotal: all.length,
         ...(state.thanksDario ? { thanksDario: true } : {}),
         ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
+        ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
         ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
@@ -2596,6 +2613,7 @@ export class RoomService {
           defaultRole: agent.defaultRole,
           harness: harnessIdFor(agent, this.workspace),
           ...(agent.account ? { account: agent.account } : {}),
+          ...(usageAccountFor(agent, this.workspace) ? { usageAccount: usageAccountFor(agent, this.workspace) } : {}),
           roles: await listAgentRoles(agent),
           status: (this.compactingAgents.has(agent.id)
             ? "compacting"

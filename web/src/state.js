@@ -68,7 +68,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
  *   settingsOpen: boolean,
- *   settingsTab: "general"|"workspace"|"agents",
+ *   settingsTab: "general"|"workspace"|"agents"|"accounts",
  *   settingsAgentId: string|null,
  *   settingsAgentView: "config"|"persona"|"memory",
  *   settingsWorkspaceFiles: FileDescriptor[],

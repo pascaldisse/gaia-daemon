@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { gaiaHome } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { addAccount, newAccountId } from "../domain/accounts.js";
-import { harnessSpecFor, type AccountLoginSpec } from "../harness/spec.js";
+import { harnessSpecFor, type AccountLoginSpec, type HarnessSpec } from "../harness/spec.js";
 
 /** Strip ANSI CSI + OSC sequences so the extractors see plain text. Previously
  * missing the leading ESC (`\x1b`) byte on both patterns — harmless for
@@ -42,13 +42,14 @@ export interface AccountLoginState {
   /** Device-authorization code the user re-enters on the sign-in page (see
    * AccountLoginSpec.code) — shown alongside `url`, never sent anywhere by us. */
   code?: string;
-  account?: { id: string; harness: string; label?: string };
+  account?: { id: string; harness: string; label?: string; email?: string };
   error?: string;
 }
 
 interface LoginSession {
   state: AccountLoginState;
   login: AccountLoginSpec;
+  spec: HarnessSpec;
   child: ChildProcess;
   output: string;
   configDir: string;
@@ -94,6 +95,7 @@ export class AccountLoginService {
     const session: LoginSession = {
       state: { sessionId, harness: harnessId, status: "starting" },
       login,
+      spec,
       child,
       output: "",
       configDir,
@@ -163,13 +165,15 @@ export class AccountLoginService {
 
   private finish(session: LoginSession, creds: Record<string, string>): void {
     const id = newAccountId(session.state.harness, session.label);
+    const email = session.spec.accounts?.email?.(creds);
     addAccount({
       id,
       harness: session.state.harness,
       ...(session.label ? { label: session.label } : {}),
+      ...(email ? { email } : {}),
       credentials: creds,
     });
-    session.state.account = { id, harness: session.state.harness, ...(session.label ? { label: session.label } : {}) };
+    session.state.account = { id, harness: session.state.harness, ...(session.label ? { label: session.label } : {}), ...(email ? { email } : {}) };
     session.state.status = "done";
     this.cleanup(session);
   }

@@ -133,8 +133,18 @@ export class UsageService {
     this.lastProbeAt = Date.now();
     try {
       let changed = false;
+      const declared = this.probes();
+      // Accounts are editable at runtime. Drop a deleted/renamed binding from
+      // the durable cache immediately; otherwise a removed old login can sit
+      // in the global usage map forever and accidentally reappear in a room.
+      for (const account of [...this.accounts.keys()]) {
+        if (declared.has(account)) continue;
+        this.accounts.delete(account);
+        this.options.broadcast({ type: "usage-limits", account, usage: null });
+        changed = true;
+      }
       await Promise.all(
-        [...this.probes().entries()].map(async ([account, candidates]) => {
+        [...declared.entries()].map(async ([account, candidates]) => {
           // Respect a prior transient failure's backoff: leave the cached value
           // in place and skip the calls entirely until the cooldown elapses.
           if (!manual && Date.now() < (this.cooldown.get(account) ?? 0)) return;
@@ -151,11 +161,14 @@ export class UsageService {
           }
           const decision = reduceAccountProbes(this.accounts.get(account), results);
           if (decision.set) {
-            this.accounts.set(account, decision.set);
+            // Mapper results identify a provider; this service owns the stable
+            // GAIA account key used for persistence and room visibility.
+            const usage = { ...decision.set, account };
+            this.accounts.set(account, usage);
             changed = true;
             // ALWAYS broadcast an ok — fetchedAt moved even when the numbers
             // didn't, and the client's "pulled Xs ago" must stay honest.
-            this.options.broadcast({ type: "usage-limits", account, usage: decision.set });
+            this.options.broadcast({ type: "usage-limits", account, usage });
           }
           if (decision.clear) {
             this.accounts.delete(account);

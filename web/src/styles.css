@@ -1745,6 +1745,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   flex: 0 0 auto; width: auto; padding: 3px 7px; background: transparent; border: 1px solid transparent; color: var(--muted);
 }
 .settings2-row-remove:hover { color: var(--danger); border-color: var(--danger); }
+.account-row { display: flex; flex-direction: column; gap: 6px; padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
+.account-row-head { display: flex; gap: 8px; align-items: baseline; }
+.account-usage-row { border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
 
 /* Boolean toggle: no dedicated switch component exists elsewhere yet, so this
    is the "clean checkbox+label" fallback the spec allows, matching .room-toggle. */

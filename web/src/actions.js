@@ -213,7 +213,7 @@ export async function setAgentAccount(agentId, account) {
   }
 }
 
-/** @typedef {{ id: string, harness: string, label?: string }} AccountRecordSummary */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
 

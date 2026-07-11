@@ -191,21 +191,17 @@ export function initStatusbarPref() {
 // Account usage chip — subscription session/weekly caps per ACCOUNT
 // ("anthropic", "openai"), fed by whatever harness can currently read that
 // account's credentials and cached on disk by the daemon so it survives
-// restarts and provider outages. Compact in the bar (scoped to the open room's
-// provider when it can tell); a click opens the full breakdown with bars, each
-// account stamped with when it was last pulled, plus a manual refresh.
+// restarts and provider outages. The room snapshot carries the exact account
+// keys its selected/running agents can spend from; never guess from a provider
+// model token, and never fall back to another account's cache.
 
-/** The cached usage groups relevant to the open room: accounts whose id
- * prefixes one of the active model tokens ("anthropic/fable" → "anthropic",
- * "openai-codex/gpt-5" → "openai"). No match — no room open, unknown provider —
- * falls back to EVERY cached account: the chip must never blank while a cache
- * exists just because we couldn't tell whose meter you're spending.
+/** The cached usage groups relevant to this room's actual account bindings.
+ * A room with no usage-capable active agent intentionally displays nothing;
+ * showing a provider-wide fallback is how an old login escaped into the UI.
  * @returns {import("./types.js").UsageLimits[]} */
 function visibleUsageGroups() {
-  const groups = Object.values(state.usage);
-  const tokens = activeRoomModelTokens();
-  const matched = groups.filter((limits) => tokens.some((token) => token.startsWith(limits.account.toLowerCase())));
-  return matched.length > 0 ? matched : groups;
+  const accounts = state.snapshot?.room.usageAccounts ?? [];
+  return accounts.map((account) => state.usage[account]).filter(Boolean);
 }
 
 /** @returns {import("./types.js").UsageWindow[]} every window across the visible accounts */
@@ -222,10 +218,12 @@ function allUsageWindows() {
 function activeRoomModelTokens() {
   const snapshot = state.snapshot;
   if (!snapshot) return [];
-  const activeId = snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent;
-  const agent = (snapshot.agents ?? []).find((candidate) => candidate.id === activeId);
-  if (!agent) return [];
-  return [agent.configuredModel, agent.modelLabel].filter(Boolean).map((token) => token.toLowerCase());
+  const accounts = new Set(snapshot.room.usageAccounts ?? []);
+  return (snapshot.agents ?? [])
+    .filter((agent) => agent.usageAccount !== undefined && accounts.has(agent.usageAccount))
+    .flatMap((agent) => [agent.configuredModel, agent.modelLabel])
+    .filter(Boolean)
+    .map((token) => token.toLowerCase());
 }
 
 /** A window is shown when it's account-wide (session, all-models weekly) OR it's
@@ -434,7 +432,7 @@ let usagePopoverWasOpen = false;
 function renderUsagePopover() {
   const slot = $("#overlay-usage");
   if (!slot) return;
-  const shouldShow = state.usagePopoverOpen && Object.keys(state.usage).length > 0;
+  const shouldShow = state.usagePopoverOpen && visibleUsageGroups().length > 0;
   if (!shouldShow) {
     slot.replaceChildren();
     usagePopoverWasOpen = false;
@@ -457,7 +455,7 @@ registerRegion("usage", renderUsagePopover);
 /** @param {boolean} [animate] Play the entrance pop — only on first open, not on the 1s refresh tick. */
 function UsagePopover(animate = false) {
   const activeTokens = activeRoomModelTokens();
-  const groups = Object.values(state.usage).map((limits) => {
+  const groups = visibleUsageGroups().map((limits) => {
     const visible = limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens));
     return { limits, windows: visible.length > 0 ? visible : limits.windows };
   });

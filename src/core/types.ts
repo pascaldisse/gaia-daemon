@@ -713,8 +713,9 @@ export interface UsageWindow {
 }
 
 export interface UsageLimits {
-  /** The subscription account this meters ("anthropic", "openai") — display +
-   * client keying; never a branch. */
+  /** The GAIA account binding this meters (a named account id, or a stable
+   * harness-shared-login id). This is the client key and deliberately is NOT
+   * a provider name: two Anthropic logins must never overwrite each other. */
   account: string;
   /** Optional plan/account label, e.g. the subscription tier. */
   plan?: string;
@@ -814,6 +815,8 @@ export interface AgentStatus {
   /** Named provider account (a record id in ~/.gaia/accounts.json) this agent is
    * pinned to; absent = the harness's ambient/shared login. Mirrors AgentDef.account. */
   account?: string;
+  /** Resolved usage key for this agent's bound or ambient login. */
+  usageAccount?: string;
   roles: string[];
   status: "idle" | "running" | "error" | "compacting";
   /** Live compaction progress while status === "compacting"; absent otherwise.
@@ -955,6 +958,8 @@ export interface Snapshot {
     /** The agent this room is currently addressing — drives the composer's
      * default target. Absent → the workspace defaultAgent stands in. */
     activeAgent?: string;
+    /** Exact account-usage keys currently eligible to spend in this room. */
+    usageAccounts?: string[];
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,

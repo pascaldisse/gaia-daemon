@@ -149,6 +149,22 @@ test("a plain message routes to the default agent and commits a detailed reply",
   assert.equal(delta?.eventId, reply["id" as keyof typeof reply]);
 });
 
+test("snapshot usage scope contains only accounts of agents active in this room", async () => {
+  const { service, workspace } = await makeService({ agents: ["gaia", "terry", "elsewhere"] });
+  workspace.agents.gaia.account = "claude-current";
+  workspace.agents.terry.account = "openai-current";
+  workspace.agents.elsewhere.account = "old-account";
+
+  await service.sendMessage("@gaia first");
+  await service.waitForIdle();
+  await service.sendMessage("@terry second");
+  await service.waitForIdle();
+
+  const snapshot = await service.getSnapshot();
+  assert.deepEqual(new Set(snapshot.room.usageAccounts), new Set(["claude-current", "openai-current"]));
+  assert.equal(snapshot.room.usageAccounts?.includes("old-account"), false);
+});
+
 test("auto-created rooms get a fallback title and manual rename locks it", async () => {
   const { service, root } = await makeService({ roomId: "chat-test123" });
   await service.sendMessage("@gaia fix room naming and renames");

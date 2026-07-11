@@ -30,7 +30,7 @@ import { ModelLabel } from "./model-label.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
-import { ANTHROPIC_USAGE_ACCOUNT, fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
+import { fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Process abstraction (injectable for tests)
@@ -1302,6 +1302,11 @@ async function probeClaudeUsage(): Promise<UsageProbeResult> {
   return fetchAnthropicUsage(read.oauth.accessToken, read.oauth.subscriptionType);
 }
 
+async function probeClaudeAccountUsage(credentials: Record<string, string>): Promise<UsageProbeResult> {
+  const token = credentials.oauthToken;
+  return token ? fetchAnthropicUsage(token) : { status: "none" };
+}
+
 registerHarness({
   id: "claude",
   capabilities: CLAUDE_CAPABILITIES,
@@ -1376,5 +1381,9 @@ registerHarness({
   // turn must write there to stay resumable); its stored credential file is
   // carved back to read-only inside that tree.
   sandboxPaths: { writable: ["~/.claude"], readonly: ["~/.claude/.credentials.json"] },
-  usageAccounts: () => [{ account: ANTHROPIC_USAGE_ACCOUNT, probe: probeClaudeUsage }],
+  usageAccounts: (accounts) => [
+    { account: "ambient:claude", probe: probeClaudeUsage },
+    ...accounts.map((account) => ({ account: account.id, probe: () => probeClaudeAccountUsage(account.credentials) })),
+  ],
+  ambientUsageAccount: () => "ambient:claude",
 });

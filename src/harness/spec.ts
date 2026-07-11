@@ -7,6 +7,7 @@
 
 import { DEFAULTS } from "../core/config.js";
 import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -261,6 +262,8 @@ export interface HarnessAccountsSpec {
   /** Env merged into a bound agent's subprocess — e.g. claude's
    * CLAUDE_CODE_OAUTH_TOKEN, which its CLI honors over the keychain login. */
   env(credentials: Record<string, string>): Record<string, string>;
+  /** Best-effort identity extraction from an opaque credential bag. */
+  email?(credentials: Record<string, string>): string | undefined;
   /** Interactive in-app login; absent = accounts for this harness are created
    * by pasting credentials into accounts.json directly. */
   login?: AccountLoginSpec;
@@ -322,7 +325,11 @@ export interface HarnessSpec {
    * keychain, token mid-rotation) that must NOT blank a healthy meter. Absent
    * ⇒ reports no account usage. Account-level, so probes take no room/agent —
    * one call describes the whole subscription. */
-  usageAccounts?(): UsageAccountProbe[];
+  usageAccounts?(accounts: readonly AccountRecord[]): UsageAccountProbe[];
+  /** Usage key for an agent using this harness's ambient login. Named accounts
+   * use AgentDef.account directly; this is only needed where an ambient store
+   * can hold more than one provider identity. */
+  ambientUsageAccount?(agent: AgentDef): string | undefined;
 }
 
 /** One (account, probe) candidate a harness declares (see usageAccounts). */
@@ -337,14 +344,24 @@ export interface UsageAccountProbe {
  * branch — each harness declares its accounts as data on its spec. */
 export function usageAccountProbes(): Map<string, Array<() => Promise<UsageProbeResult>>> {
   const byAccount = new Map<string, Array<() => Promise<UsageProbeResult>>>();
+  const accounts = listAccounts();
   for (const spec of harnessSpecs()) {
-    for (const candidate of spec.usageAccounts?.() ?? []) {
+    const owned = accounts.filter((account) => account.harness === spec.id);
+    for (const candidate of spec.usageAccounts?.(owned) ?? []) {
       const list = byAccount.get(candidate.account) ?? [];
       list.push(candidate.probe);
       byAccount.set(candidate.account, list);
     }
   }
   return byAccount;
+}
+
+/** The exact persisted usage key an agent can spend from. This is a uniform
+ * account-resolution boundary: room snapshots never infer an account from a
+ * model/provider label. */
+export function usageAccountFor(agent: AgentDef, workspace: Workspace): string | undefined {
+  if (agent.account) return agent.account;
+  return findHarness(harnessIdFor(agent, workspace))?.ambientUsageAccount?.(agent);
 }
 
 const registry = new Map<string, HarnessSpec>();
