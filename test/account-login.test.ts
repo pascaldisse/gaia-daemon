@@ -7,6 +7,7 @@ import { findHarness } from "../src/harness/spec.js";
 import { stripAnsi } from "../src/services/account-login.js";
 import "../src/harness/claude.js"; // side-effect: registers the claude spec
 import "../src/harness/codex.js"; // side-effect: registers the codex spec
+import "../src/harness/pi.js"; // side-effect: registers the pi spec
 
 function withGaiaHome(fn: (home: string) => void): void {
   const previous = process.env.GAIA_HOME;
@@ -168,6 +169,47 @@ test("codex accounts.env: re-materializes once the stored refresh_token actually
     const written = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"));
     assert.equal(written.tokens.access_token, "at2");
     assert.equal(written.tokens.refresh_token, "rt2");
+  });
+});
+
+test("pi accounts: env materializes an isolated PI_CODING_AGENT_DIR", () => {
+  withGaiaHome(() => {
+    const env = findHarness("pi")?.accounts?.env;
+    assert.ok(env);
+    const result = env({ accessToken: "at1", refreshToken: "rt1", accountId: "acct1" });
+    assert.ok(result.PI_CODING_AGENT_DIR);
+    const written = JSON.parse(readFileSync(join(result.PI_CODING_AGENT_DIR, "auth.json"), "utf8"));
+    assert.deepEqual(written, {
+      "openai-codex": { type: "oauth", refresh: "rt1", access: "at1", expires: 0, accountId: "acct1" },
+    });
+  });
+});
+
+test("pi accounts: unchanged refresh token does not rewrite auth.json", () => {
+  withGaiaHome(() => {
+    const env = findHarness("pi")?.accounts?.env;
+    assert.ok(env);
+    const creds = { accessToken: "at1", refreshToken: "rt1", accountId: "acct1" };
+    const dir = env(creds).PI_CODING_AGENT_DIR!;
+    // Simulate pi's own in-place refresh of the access token, keeping the same refresh token.
+    writeFileSync(join(dir, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", refresh: "rt1", access: "REFRESHED", expires: 0, accountId: "acct1" } }));
+    const again = env(creds).PI_CODING_AGENT_DIR!;
+    assert.equal(again, dir);
+    const stillThere = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"));
+    assert.equal(stillThere["openai-codex"].access, "REFRESHED", "a later spawn must not overwrite pi's own refreshed token");
+  });
+});
+
+test("pi accounts: changed refresh token re-materializes auth.json", () => {
+  withGaiaHome(() => {
+    const env = findHarness("pi")?.accounts?.env;
+    assert.ok(env);
+    env({ accessToken: "at1", refreshToken: "rt1", accountId: "acct1" });
+    const dir = env({ accessToken: "at2", refreshToken: "rt2", accountId: "acct1" }).PI_CODING_AGENT_DIR!;
+    const written = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"));
+    assert.deepEqual(written, {
+      "openai-codex": { type: "oauth", refresh: "rt2", access: "at2", expires: 0, accountId: "acct1" },
+    });
   });
 });
 
