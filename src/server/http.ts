@@ -388,7 +388,12 @@ export class GaiaWebServer {
       // src/cli.ts`, which dies instantly and leaves the port dead (the
       // exact "/reload froze the app" failure). And never stdio:"ignore"
       // here: a crashing reload child must leave a corpse we can read.
-      const args = process.argv.slice(1).filter((arg) => arg !== "--dev");
+      // In a compiled bun binary argv[1] is the virtual "/$bunfs/..." entry
+      // script (verified 2026-07-11) — it must never be passed to the child,
+      // where the CLI would parse it as a command.
+      const args = process.argv
+        .slice(1)
+        .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
       const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
       const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
 
