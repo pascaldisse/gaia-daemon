@@ -698,7 +698,7 @@ function RedactedTag() {
 function ThinkingActivity(id, text, running) {
   return ActivityDetails(
     { id, className: "thinking", status: running ? "running" : "complete", icon: "💭", title: "thinking" },
-    h("pre", {}, text ? LinkedText(text) : ""),
+    text && text.trim() ? MarkdownMessage(text) : null,
   );
 }
 

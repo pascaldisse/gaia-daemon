@@ -33,9 +33,18 @@ export function MarkdownMessage(text) {
       }
       continue;
     }
-    if (code) code.lines.push(line);
-    else if (line.trim() === "") flushBlock();
-    else block.push(line);
+    if (code) {
+      code.lines.push(line);
+      continue;
+    }
+    // Some providers' reasoning summaries (e.g. Codex's) use a bare HTML
+    // comment as an invisible paragraph separator between summary parts —
+    // real markdown renderers swallow it silently; this one doesn't parse raw
+    // HTML at all, so without this it shows up as literal "<!-- -->" noise.
+    // Stripped only outside fenced code, so a comment shown *as code* survives.
+    const cleaned = line.replace(/<!--[\s\S]*?-->/g, "");
+    if (cleaned.trim() === "") flushBlock();
+    else block.push(cleaned);
   }
 
   if (code) root.append(CodeBlock(code.lang, code.lines.join("\n")));

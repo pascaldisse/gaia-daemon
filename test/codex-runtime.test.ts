@@ -371,6 +371,10 @@ test("CodexRuntime maps agent.thinking to turn/start.effort, honoring a per-turn
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const turnStart = fake.requests.find((request) => request.method === "turn/start");
     assert.equal((turnStart?.params as { effort?: string }).effort, "high");
+    // Sent on every turn/start, not just thread/start's config override — a
+    // live rollout showed the thread-level config alone doesn't stick (see
+    // send()'s comment): turn_context.summary resolved to "auto" without this.
+    assert.equal((turnStart?.params as { summary?: string }).summary, "detailed");
 
     // A per-turn override (e.g. voice forcing thinking off) wins over the
     // agent's configured level, exactly like claude.ts's thinkingOverride.
@@ -379,6 +383,7 @@ test("CodexRuntime maps agent.thinking to turn/start.effort, honoring a per-turn
     await collect(runtime.send({ roomId: "default", message: "hi again", transcript: [], thinking: "low" }));
     const turnStart2 = fake.requests.filter((request) => request.method === "turn/start")[1];
     assert.equal((turnStart2?.params as { effort?: string }).effort, "low");
+    assert.equal((turnStart2?.params as { summary?: string }).summary, "detailed");
     runtime.dispose();
   } finally {
     await fx.cleanup();

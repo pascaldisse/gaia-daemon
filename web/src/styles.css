@@ -714,7 +714,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tool-payload { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin-top: 6px; }
 .tool-payload span { color: var(--muted); }
 
-.tool-payload pre, .thinking pre {
+.tool-payload pre, .thinking > .markdown-message {
   grid-column: auto;
   max-height: 180px;
   overflow: auto;
@@ -722,6 +722,12 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 6px;
   background: color-mix(in srgb, black 28%, transparent);
 }
+
+/* Thinking text renders through the same markdown subset as regular prose
+   (Codex reasoning summaries come back as real markdown — bold headers,
+   invisible HTML-comment separators between parts) instead of a raw <pre>;
+   keep it slightly dimmer than a normal reply body, matching the old <pre>. */
+.thinking > .markdown-message { color: var(--muted); }
 
 @keyframes pulse-activity {
   0%, 45% { opacity: 1; }
