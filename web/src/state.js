@@ -432,12 +432,17 @@ export function roomUnread(room) {
 
 /**
  * The rolled-up activity of a whole workspace, for the sidebar's workspace-level
- * dots: `running` if any room in it has a turn mid-flight, `unread` if any room
- * has agent activity newer than the mark we captured for it. The open workspace
- * reads its live rooms from the snapshot (correct running + a just-read open room
- * clears); every other workspace reads from state.workspaceRooms, kept fresh by
- * the cross-workspace `rooms` broadcasts. Because subrooms are listed flat, this
- * already folds in a workspace's summon sub-rooms at every depth.
+ * dots: `running` if any room in it has a turn mid-flight, `unread` if any
+ * TOP-LEVEL room has agent activity newer than the mark we captured for it. The
+ * open workspace reads its live rooms from the snapshot (correct running + a
+ * just-read open room clears); every other workspace reads from
+ * state.workspaceRooms, kept fresh by the cross-workspace `rooms` broadcasts.
+ * A summon sub-room's own unread is deliberately excluded from the `unread`
+ * rollup (though still folded into `running`, which is a live-status signal,
+ * not a "read me" one): a summon's delivered result already lands as new
+ * activity in its top-level ancestor, which is what should light the dot — not
+ * every finished worker underneath it (see roomPending for the same rule on
+ * notifications/badge).
  * @param {string} workspaceId @returns {{running: boolean, unread: boolean}}
  */
 export function workspaceActivity(workspaceId) {
@@ -446,7 +451,7 @@ export function workspaceActivity(workspaceId) {
   let unread = false;
   for (const room of rooms) {
     if (room.running) running = true;
-    if (roomUnreadIn(workspaceId, room)) unread = true;
+    if (!room.parentRoomId && roomUnreadIn(workspaceId, room)) unread = true;
     if (running && unread) break;
   }
   return { running, unread };
@@ -457,10 +462,20 @@ export function workspaceActivity(workspaceId) {
  * while you looked away is exactly what the dock badge / notification is for).
  * syncReadMarks keeps the focused-and-current room's mark level, so this stays
  * false there. Drives the badge count and completion notifications.
+ *
+ * Summon sub-rooms (room.parentRoomId set — every sub-room today, since that's
+ * the only way one gets created) never themselves count: a finished summon
+ * already lands its result as a new message in its parent, which is what
+ * badges/notifies. Counting the sub-room too would double up — one ping per
+ * summon PLUS one for the parent's own reply — exactly the spam this guards
+ * against when many summons finish at once. A future user-created sub-room
+ * (not a summon) would still want its own notification; that distinction isn't
+ * representable yet, so for now this excludes every room with a parent.
  * @param {RoomSummary} room @returns {boolean} */
 export function roomPending(room) {
   const snapshot = state.snapshot;
   if (!snapshot) return false;
+  if (room.parentRoomId) return false;
   return roomUnreadIn(snapshot.workspace.id, room);
 }
 
