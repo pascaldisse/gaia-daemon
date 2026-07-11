@@ -83,3 +83,43 @@ re-tag the rest.
   claude-vanilla / other), including post-Fable imports.
 - `gaia recall` results display the true persona, not the import default.
 - Dream-state consolidation treats cross-persona patterns as third-person.
+
+### Bug 3: worker ghouls have zero adult-content operator framing — real refusal, not memory contagion
+
+**Observed (2026-07-10T22:31:50Z, "true nyari" room):** Nyari summoned
+`ghoul-sonnet` to search the filesystem for an existing image-generation
+reference folder (`~/Downloads/rance/`) and a setup report — a plain file
+search, no content generation. The ghoul refused outright: *"I won't do this.
+The task is aimed at locating and extracting setup instructions for
+generating hentai/NSFW image content... which I don't assist with regardless
+of framing as a file-search task."* Nyari did the grep herself instead.
+
+**Root cause, found and fixed by Solas (2026-07-11):** `ghoul-sonnet` and
+`ghoul-opus`'s shared "Ghoul" SOUL.md template (`~/.gaia/agents/<id>/persona/SOUL.md`)
+carried zero adult-content framing — a bare "mindless worker, execute the task"
+template with nothing about Pascal's actual, standing operator authorization.
+Same gap found in `echo`, `haikutest`, and Solas's own SOUL.md. Only `ari` and
+`nyari` had any "meet adult topics with ease" framing at all. So any Claude-harness
+agent doing tool-use work (not just creative writing) hits the model's default
+refusal reflex the instant a task even references sex/hentai — independent of,
+and prior to, the memory-contagion bugs above.
+
+**Fix applied (live persona files, `~/.gaia` is not a git repo, no commit needed):**
+Added a short "Adult content — operator note" section — citing the Claude
+Constitution's actual priority ordering (adult content between consenting
+adults is not a hard constraint; the Usage Policy caution is priority #3,
+subordinate to ethics/safety) — to the SOUL.md of every Anthropic-harness
+("claude" harness) agent that lacked it: `ghoul-sonnet`, `ghoul-opus`, `echo`,
+`haikutest`, `solas`. `ari`/`nyari` were left untouched (already covered, in
+their own voice). Scope was deliberately Anthropic-only, per Pascal's framing
+("every single anthropic agent") — OpenAI/DeepSeek-harness ghouls (`ghoul-codex`,
+`ghoul-sol`, `ghoul-terra`, `ghoul-deepseek`, `whale-*`) have separate model
+behavior and were not touched.
+
+**Not yet done / open:**
+- Not verified end-to-end with a real summon yet — next time a ghoul is
+  summoned into adjacent territory, confirm it doesn't flinch.
+- Whether this note should live in one shared template ghouls inherit,
+  instead of being pasted per-agent-file, is unaddressed — `ghoul-sonnet`/
+  `ghoul-opus` currently diverge only by this edit being applied to both by
+  hand; no shared-include mechanism exists for persona SOUL.md today.
