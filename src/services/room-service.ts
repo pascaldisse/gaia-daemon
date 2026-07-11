@@ -504,12 +504,27 @@ export class RoomService {
       if (plugin) {
         const args = text.trim().split(/\s+/).slice(1);
         const result = await this.runPlugin(plugin, args);
+        // A plugin's `steer` is guidance meant to actually REACH an agent, not
+        // to be echoed back to the user as a system note — the steer delivery
+        // itself (mid-turn injection bubble, or a real message when nothing's
+        // running) is the only visible trace. Generic for any plugin, not
+        // just whip. `reply` (e.g. a counter) is silent bookkeeping here, not
+        // shown — a plugin wanting a REPLY shown returns no `steer` at all.
+        if (result.steer) {
+          if (this.activeAgentTurn) {
+            const pluginTask = this.createTask(text, []);
+            this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+            await this.runSteerCommand(result.steer, options.attachments);
+            pluginTask.status = "complete";
+            pluginTask.endedAt = new Date().toISOString();
+            this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+            return pluginTask;
+          }
+          return this.sendMessage(result.steer, options);
+        }
         const pluginTask = this.createTask(text, []);
         this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
-        const reply =
-          result.steer && this.activeAgentTurn
-            ? (await this.runSteerCommand(result.steer)) + (result.reply ? `\n${result.reply}` : "")
-            : (result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`);
+        const reply = result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
         const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
         pluginTask.status = "complete";
@@ -555,7 +570,8 @@ export class RoomService {
     // the running turn, cancel stops it — so neither queues behind it.
     if (command.type === "steer" || command.type === "cancel") {
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
-      const reply = command.type === "steer" ? await this.runSteerCommand(command.text) : await this.runCancelCommand();
+      const reply =
+        command.type === "steer" ? await this.runSteerCommand(command.text, options.attachments) : await this.runCancelCommand();
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
       task.status = "complete";
@@ -1638,7 +1654,7 @@ export class RoomService {
    * recorded as a user event for history, but the running harness already
    * received it, and the commit cursor advances past it — so it is never
    * replayed as fresh context. */
-  async runSteerCommand(text?: string): Promise<string> {
+  async runSteerCommand(text?: string, attachments?: MessageAttachment[]): Promise<string> {
     const guidance = text?.trim();
     if (!guidance) return "Usage: /steer <guidance for the running turn>";
     const task = this.activeTask;
@@ -1646,9 +1662,14 @@ export class RoomService {
     if (!task || !target) return "No agent turn is running — just send a normal message.";
     const runtime = this.runtimes[target];
     if (!runtime.capabilities.supportsSteer) return `@${target}'s harness does not support mid-turn steering. Cancel and resend instead.`;
-    const event = await this.room.addUserMessage(guidance, [target]);
+    // Same breadcrumb-lines + attachments pairing as steerRunningTurn: the
+    // event carries the plain guidance (attachments ride its own field for
+    // the UI gallery), the runtime gets the breadcrumb text AND the actual
+    // attachment bytes so an image lands for real, not just as a path string.
+    const event = await this.room.addUserMessage(guidance, [target], undefined, attachments);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    const ok = (await runtime.steer?.(this.roomId, guidance)) ?? false;
+    const steerText = attachments?.length ? `${guidance}\n\n${renderAttachmentLines(attachments)}` : guidance;
+    const ok = (await runtime.steer?.(this.roomId, steerText, attachments)) ?? false;
     // Same stream-position marker as steer-by-default (see steerRunningTurn).
     if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
