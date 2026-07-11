@@ -53,6 +53,16 @@ export default {
     // passes through the Upgrade/Connection handshake when we just return
     // the fetch() response verbatim (no buffering) — same code path as SSE
     // and normal HTTP, so no special-casing is needed here.
+    //
+    // KNOWN LIMITATION (verified 2026-07-10): live/infinite SSE responses
+    // (/api/events) do not stream through a trycloudflare.com quick tunnel
+    // in real time — confirmed with an isolated test server bypassing the
+    // Worker, edge-proxy, and daemon entirely, so this is NOT a Worker-side
+    // buffering issue and a TransformStream passthrough here does not fix
+    // it. The Cloudflare edge fronting the quick tunnel appears to buffer
+    // in fixed ~384KiB (393216-byte) chunks before flushing to the client;
+    // small/infrequent SSE events sit in that buffer indefinitely. Regular
+    // (non-streaming) requests are unaffected. See docs/REMOTE-STACK.md.
     return fetch(outReq);
   },
 };

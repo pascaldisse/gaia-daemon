@@ -15,6 +15,7 @@
 
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
@@ -56,6 +57,7 @@ import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCom
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
+import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
@@ -242,7 +244,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
   cancel: (service) => service.runCancelCommand(),
   fork: (service) => service.runForkCommand(),
-  unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
+  unknown: (service, command) => (command.type === "unknown" ? service.runUnknownCommand(command) : Promise.resolve("")),
 };
 
 export class RoomService {
@@ -301,6 +303,9 @@ export class RoomService {
    * restart anyway). */
   private agentDialogueHops = 0;
   private initPromise: Promise<void> | undefined;
+  /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
+   * services/plugins.ts) — loaded once per RoomService and cached. */
+  private readonly pluginsPromise: Promise<Map<string, CommandPlugin>> = loadCommandPlugins();
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
@@ -485,6 +490,28 @@ export class RoomService {
     // the "unknown command" reply. Rewritten to a message turn here so it rides
     // the normal WAL/queue/streaming path — just flagged nativeCommand.
     if (command.type === "unknown") {
+      // Local command-plugin dispatch (see services/plugins.ts) — checked
+      // BEFORE the native-passthrough rewrite below so a plugin's command name
+      // always wins over any harness-native skill of the same name. Runs
+      // synchronously here (not queued) so it can steer a turn that's live
+      // RIGHT NOW; mirrors the /steer + /cancel gate's reply shape just below.
+      const plugin = (await this.pluginsPromise).get(command.command);
+      if (plugin) {
+        const args = text.trim().split(/\s+/).slice(1);
+        const result = await this.runPlugin(plugin, args);
+        const pluginTask = this.createTask(text, []);
+        this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+        const reply =
+          result.steer && this.activeAgentTurn
+            ? (await this.runSteerCommand(result.steer)) + (result.reply ? `\n${result.reply}` : "")
+            : (result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`);
+        const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+        pluginTask.status = "complete";
+        pluginTask.endedAt = new Date().toISOString();
+        this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+        return pluginTask;
+      }
       const target = await this.nativeCommandTarget();
       const agent = this.workspace.agents[target];
       const commandName = text.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
@@ -1545,6 +1572,30 @@ export class RoomService {
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
   }
 
+  /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
+   * the same way loadCommandPlugins tolerates a bad module at load time —
+   * never crashes the caller. See services/plugins.ts for the contract. */
+  private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
+    try {
+      return (await plugin.run(args, { homedir: homedir() })) ?? {};
+    } catch (error) {
+      return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  /** Idle-path fallback for an unrecognized /command: the sendMessage seam
+   * (see the `command.type === "unknown"` branch there) already handles the
+   * live case with full args and mid-turn steering; this one only runs when an
+   * unknown command reaches the COMMANDS registry directly (e.g. replayed off
+   * the durable queue), so no original arg text survives and no steer applies —
+   * just a bare run + reply. */
+  async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
+    const plugin = (await this.pluginsPromise).get(command.command);
+    if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
+    const result = await this.runPlugin(plugin, []);
+    return result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
+  }
+
   /** /compact: hand the agent's session to its HARNESS's own compaction
    * (pi session.compact, claude /compact, codex thread/compact/start) — gaia
    * never re-implements summarization. Uniform: capability-gated, never
@@ -2221,9 +2272,10 @@ export class RoomService {
   }
 
   /** The `/`-command palette: gaia commands + the harness-native commands each
-   * agent CHECKED as a skill (deduped, gaia names win). Native ones are hints —
-   * only a checked one passes through. */
-  private paletteCommands(): SlashCommandDefinition[] {
+   * agent CHECKED as a skill (deduped, gaia names win) + loaded command plugins
+   * (see ./plugins.js). Native ones are hints — only a checked one passes
+   * through; plugins always pass through (see sendMessage's plugin dispatch). */
+  private async paletteCommands(): Promise<SlashCommandDefinition[]> {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
     const native: SlashCommandDefinition[] = [];
     const onDisk = new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
@@ -2238,6 +2290,11 @@ export class RoomService {
         seen.add(command.name);
         native.push({ name: command.name, type: "native", description: command.description, native: true });
       }
+    }
+    for (const plugin of (await this.pluginsPromise).values()) {
+      if (seen.has(plugin.command)) continue;
+      seen.add(plugin.command);
+      native.push({ name: plugin.command, type: "native", description: plugin.description ?? "", native: true });
     }
     return native.length ? [...SLASH_COMMANDS, ...native] : SLASH_COMMANDS;
   }
@@ -2600,7 +2657,7 @@ export class RoomService {
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
       },
       rooms: await this.listRooms(),
-      commands: this.paletteCommands(),
+      commands: await this.paletteCommands(),
       agents: await Promise.all(
         Object.values(this.workspace.agents).map(async (agent) => ({
           id: agent.id,
