@@ -113,6 +113,14 @@ const COMPACT_TIMEOUT_MS = 900_000;
  * worse than reporting a wedged one late. Uniform for every harness. */
 const TURN_IDLE_TIMEOUT_MS = 900_000;
 
+/** Once the harness reports an upstream stall (an AgentEvent `notice` of kind
+ * `upstream-stall` — see claude-thinking-proxy.ts), this is how long we wait
+ * for real output before aborting the turn. Deliberately NOT extended by
+ * further stall notices: a retry loop against a dead upstream must not keep
+ * itself alive by continuing to report that it's stalled. Uniform for every
+ * harness — any harness may emit the notice, the deadline applies the same. */
+const STALL_ABORT_GRACE_MS = 180_000;
+
 /** How long abort() waits for the runner to confirm the turn ended before
  * escalating to SIGKILL. A cooperative abort (harness kills its child, stream
  * errors, runner reports turn-error) lands well under a second; a runner that
@@ -148,6 +156,8 @@ export interface RunnerHostOptions {
   breaker?: CircuitBreaker;
   /** Test seam: override the turn idle backstop (default TURN_IDLE_TIMEOUT_MS). */
   turnIdleTimeoutMs?: number;
+  /** Test seam: override the stall-abort grace (default STALL_ABORT_GRACE_MS). */
+  stallAbortGraceMs?: number;
 }
 
 export class RunnerHost implements AgentRuntime {
@@ -183,6 +193,11 @@ export class RunnerHost implements AgentRuntime {
   private turnIdleWaiters: Array<() => void> = [];
   /** The turn idle backstop (see TURN_IDLE_TIMEOUT_MS). */
   private turnIdleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The hard stall-abort deadline (see STALL_ABORT_GRACE_MS) — armed once on
+   * the first upstream-stall notice of a turn, left alone by further notices,
+   * and cleared entirely the moment real output (any non-notice event) proves
+   * the harness recovered. */
+  private stallDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
@@ -241,10 +256,36 @@ export class RunnerHost implements AgentRuntime {
     this.turnIdleTimer.unref?.();
   }
 
+  /** Arm the hard stall-abort deadline exactly once per stall episode: a no-op
+   * while already armed, so a stream of repeated notices from a retrying
+   * harness cannot keep pushing the deadline out. On fire: fail the active
+   * channel with a named UpstreamStallError (partials are kept) and abort
+   * authoritatively, mirroring armTurnIdle's own handler. */
+  private armStallDeadline(): void {
+    if (this.stallDeadlineTimer) return;
+    const grace = this.options.stallAbortGraceMs ?? STALL_ABORT_GRACE_MS;
+    this.stallDeadlineTimer = setTimeout(() => {
+      process.stderr.write(`[runner ${this.agent.id}] upstream stalled — no recovery within ${Math.round(grace / 1000)}s; aborting the wedged turn\n`);
+      const err = new Error(`upstream stalled — no recovery within ${Math.round(grace / 1000)}s; aborted the wedged turn (partial progress, if any, is kept)`);
+      err.name = "UpstreamStallError";
+      this.failActive(err);
+      void this.abort();
+    }, grace);
+    this.stallDeadlineTimer.unref?.();
+  }
+
+  /** Real output (any non-notice event) proves the harness recovered — drop
+   * the deadline so the turn can run to a normal conclusion. */
+  private clearStallDeadline(): void {
+    clearTimeout(this.stallDeadlineTimer);
+    this.stallDeadlineTimer = undefined;
+  }
+
   /** The runner confirmed the turn is over (turn-end/turn-error/child death):
    * release everyone waiting in abort(). */
   private settleTurn(): void {
     clearTimeout(this.turnIdleTimer);
+    this.clearStallDeadline();
     this.turnInFlight = false;
     for (const waiter of this.turnIdleWaiters.splice(0)) waiter();
   }
@@ -561,6 +602,10 @@ export class RunnerHost implements AgentRuntime {
         }
         // Sign of life from the harness stream — the idle backstop starts over.
         this.armTurnIdle();
+        // A stall notice arms the hard deadline (once); any other event is
+        // real output and proves recovery, so it clears the deadline.
+        if (message.event.type === "notice" && message.event.kind === "upstream-stall") this.armStallDeadline();
+        else this.clearStallDeadline();
         this.activeChannel?.push(message.event);
         return;
       case "turn-end":

@@ -189,6 +189,13 @@ export interface QueuedMessage {
    * must not append it again, and the client renders the committed bubble
    * instead of a queued ghost. */
   recorded?: boolean;
+  /** This entry is the ONE automatic retry of a turn RunnerHost's hard stall
+   * deadline aborted (UpstreamStallError — src/harness/host.ts) after the
+   * harness reported an upstream stall and never recovered. Drain must not
+   * re-record the user message (it's already on the transcript from the
+   * original run) and a SECOND stall on this retry must not requeue again —
+   * a dead upstream must not keep a retry loop alive forever. */
+  stallRetried?: boolean;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the

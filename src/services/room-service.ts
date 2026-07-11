@@ -162,6 +162,11 @@ export interface SendMessageOptions {
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
 
+/** Min gap between visible "upstream stall" system lines within one streaming
+ * turn — a harness retrying against a dead upstream can emit the notice
+ * repeatedly; the room should say it's stuck once, not spam the transcript. */
+const STALL_NOTICE_THROTTLE_MS = 60_000;
+
 /** Cap on the flagged agent's persona context handed to the Thanks-Dario
  * reviewer — enough for a SOUL + role, bounded so a huge persona can't bloat
  * the review turn (a big reasoning stream has wedged the reviewer before). */
@@ -664,6 +669,10 @@ export class RoomService {
         ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
         ...(next.recorded ? { recordUserMessage: false } : {}),
         ...(next.nativeCommand ? { nativeCommand: true } : {}),
+        // The stall-retried prompt is already on the transcript from the
+        // original (aborted) run — never re-record it. `queued: next` above
+        // already carries `stallRetried` through to runAgentTask's options.
+        ...(next.stallRetried ? { recordUserMessage: false } : {}),
       });
     } catch (error) {
       this.settleTask(task, "error", error);
@@ -1053,6 +1062,9 @@ export class RoomService {
       this.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
       let lastFlush = 0;
       let lastFlushedReply = "";
+      // Throttle for the visible "upstream stall" system line — local to THIS
+      // turn, so a fresh turn always gets to say it's stuck at least once.
+      let lastStallNoticeAt = 0;
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
       // miss and room-service treats "" as absent. A context-gate "compact"
@@ -1116,6 +1128,24 @@ export class RoomService {
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
             }
+            if (event.type === "notice") {
+              // Visible, throttled system line — never reply text (toUiEvent
+              // already drops `notice` as a no-op UI transport event above).
+              const now = Date.now();
+              if (now - lastStallNoticeAt > STALL_NOTICE_THROTTLE_MS) {
+                lastStallNoticeAt = now;
+                const noticeEvent: RoomEvent = {
+                  id: newId("system_stall"),
+                  timestamp: new Date().toISOString(),
+                  author: "system",
+                  text: `⚠ upstream stall (@${target}): ${event.text} — harness retrying`,
+                };
+                void this.room
+                  .appendEvent(noticeEvent)
+                  .then(() => this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: noticeEvent }))
+                  .catch(() => {});
+              }
+            }
             if (event.type === "context-usage") {
               // The window (maxTokens) only rides the turn-end event; keep the
               // last-known one, else fall back to the harness's a-priori window,
@@ -1165,7 +1195,9 @@ export class RoomService {
         this.liveTurn = undefined;
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
         else await this.room.clearPendingTurn();
-        await this.appendTurnFailure(target, error);
+        if (!(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options))) {
+          await this.appendTurnFailure(target, error);
+        }
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
@@ -1216,7 +1248,9 @@ export class RoomService {
       if (failed) {
         // Genuine mid-stream failure (not a user stop): the progress is now
         // durable; surface the error so the task settles as error.
-        await this.appendTurnFailure(target, turn.error);
+        if (!(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options))) {
+          await this.appendTurnFailure(target, turn.error);
+        }
         await this.captureEpisode(target, text, reply, "error", turn.details, channel);
         throw turn.error;
       }
@@ -1446,6 +1480,53 @@ export class RoomService {
     } catch {
       // The task-error path still surfaces the original error live.
     }
+  }
+
+  /** Requeue-once after RunnerHost's hard stall deadline aborted the turn
+   * (a named UpstreamStallError — src/harness/host.ts): a stalled turn that
+   * produced no reply text gets exactly ONE automatic retry, through the same
+   * durable queue every other queued message uses, marked `stallRetried` so a
+   * SECOND stall on the retry falls through to the normal failure path
+   * instead of keeping a dead upstream's retry loop alive forever. Returns
+   * true when it requeued — the caller then skips its generic
+   * appendTurnFailure in favor of the more specific system line this appends.
+   * No-op (false) for any other error, a non-empty partial (current commit +
+   * failure behavior is unchanged), or a turn that was itself a stall retry. */
+  private async maybeRequeueStall(
+    targets: string[],
+    agentId: string,
+    text: string,
+    error: unknown,
+    partialReply: string,
+    channel: "voice" | undefined,
+    attachments: MessageAttachment[] | undefined,
+    options: SendMessageOptions,
+  ): Promise<boolean> {
+    const isStall = error instanceof Error && error.name === "UpstreamStallError";
+    if (!isStall || partialReply.trim() || options.queued?.stallRetried) return false;
+    const event: RoomEvent = {
+      id: newId("system_stallretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⚠ turn aborted after upstream stall (@${agentId}) — message requeued, retrying once`,
+    };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const retryTask = this.createTask(text, targets);
+    retryTask.status = "queued";
+    await this.room.enqueue({
+      taskId: retryTask.id,
+      text,
+      targets,
+      ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      stallRetried: true,
+      queuedAt: retryTask.startedAt,
+    });
+    this.queuedTasks.push(retryTask);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
+    void this.emitSnapshot();
+    return true;
   }
 
   /** Episodic capture is best-effort derived data: a failure must never fail

@@ -84,6 +84,22 @@ rl.on("line", (line) => {
       send({ type: "event", event: { type: "text-delta", delta: "held:start" } });
       return;
     }
+    if (cmd.input.message === "stall") {
+      // Reports an upstream stall then goes fully silent forever — the hard
+      // stall deadline (STALL_ABORT_GRACE_MS) must fire, not the idle backstop.
+      send({ type: "event", event: { type: "notice", kind: "upstream-stall", text: "gateway 502" } });
+      return;
+    }
+    if (cmd.input.message === "stall-then-recover") {
+      // Reports an upstream stall, then real output shortly after — proves
+      // the deadline is cleared by recovery instead of firing regardless.
+      send({ type: "event", event: { type: "notice", kind: "upstream-stall", text: "gateway 502" } });
+      setTimeout(() => {
+        send({ type: "event", event: { type: "text-delta", delta: "recovered" } });
+        send({ type: "turn-end" });
+      }, 50);
+      return;
+    }
     send({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } });
     send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
     send({ type: "turn-end" });
@@ -496,6 +512,64 @@ test("RunnerHost aborts a turn that goes fully silent past the idle backstop (re
       events.some((e) => e.type === "text-delta" && e.delta === "held:start"),
       "progress streamed before the stall is preserved",
     );
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost's hard stall deadline aborts a turn that reports an upstream stall and never recovers", async () => {
+  const temp = await createTempDir();
+  try {
+    const stubPath = join(temp.path, "stub-runner.mjs");
+    await writeFile(stubPath, STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath],
+      stallAbortGraceMs: 100,
+    });
+    const events: AgentEvent[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of host.send({ roomId: "default", message: "stall", transcript: [] })) events.push(event);
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof Error, "the turn must fail once the grace period elapses with no recovery");
+    assert.equal((caught as Error).name, "UpstreamStallError");
+    assert.match((caught as Error).message, /upstream stalled — no recovery/);
+    assert.ok(events.some((e) => e.type === "notice" && e.kind === "upstream-stall"), "the notice itself still streamed before the deadline fired");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("a content frame after an upstream-stall notice clears the hard stall deadline — the turn completes normally", async () => {
+  const temp = await createTempDir();
+  try {
+    const stubPath = join(temp.path, "stub-runner.mjs");
+    await writeFile(stubPath, STUB, "utf8");
+    const host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      // Grace is well past the stub's 50ms recovery delay, so a pass here
+      // proves the content frame cleared the deadline — not that it merely
+      // hadn't fired yet.
+      stallAbortGraceMs: 400,
+      runnerArgv: [process.execPath, stubPath],
+    });
+    const events: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "stall-then-recover", transcript: [] })) events.push(event);
+    assert.ok(events.some((e) => e.type === "notice" && e.kind === "upstream-stall"));
+    assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "recovered"), "the turn ran to a normal, uninterrupted end");
     await host.dispose();
   } finally {
     await temp.cleanup();
