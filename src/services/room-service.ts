@@ -1134,7 +1134,8 @@ export class RoomService {
                 .catch(() => {});
             }
             this.applyLiveTurn(eventId, event);
-            this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
+            const uiEvent = this.toUiEvent(task.id, agent.id, eventId, event);
+            if (uiEvent) this.emit(uiEvent);
             if (event.type === "tool-end") {
               this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
             }
@@ -2822,7 +2823,7 @@ export class RoomService {
     applyEventToDetails(live.details, event);
   }
 
-  private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent {
+  private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent | undefined {
     const scope = { workspaceId: this.workspaceId, roomId: this.roomId, taskId, agentId, eventId };
     switch (event.type) {
       case "model-info":
@@ -2850,6 +2851,9 @@ export class RoomService {
         return { ...scope, type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError };
       case "steered":
         return { ...scope, type: "steered", steerEventId: event.eventId };
+      case "notice":
+        // Not a UI transport event — no-op. Never rendered as reply text.
+        return undefined;
     }
   }
 

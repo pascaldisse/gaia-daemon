@@ -72,7 +72,7 @@ function joinPath(basePath: string, reqPath: string): string {
  * bound; a healthy streaming response re-arms it on every chunk. Without it a
  * black-holed upstream parks the CLI's HTTP call forever and the turn wedges
  * with zero feedback. */
-const UPSTREAM_STALL_MS = 300_000;
+const UPSTREAM_STALL_MS = 120_000;
 
 /** Claude Code renders an error response's Anthropic-shaped body as the turn's
  * failure reason. An empty 502 surfaces as "502 (no body)" — undiagnosable
@@ -96,12 +96,21 @@ function failLoud(cRes: import("node:http").ServerResponse, status: number, mess
  * Start a loopback proxy in front of `upstream` that injects
  * thinking.display:"summarized" into Messages requests. Resolves once it is
  * listening. `upstream` is the base URL Claude Code would otherwise call
- * (default https://api.anthropic.com).
+ * (default https://api.anthropic.com). `options.stallMs` overrides the
+ * stall net's timeout (default UPSTREAM_STALL_MS); `options.onStall` fires
+ * with the same message text written to stderr at each of the three stall
+ * failure sites, so a caller can surface the condition structurally instead
+ * of only via the log.
  */
-export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandle> {
+export function startThinkingProxy(
+  upstream: string,
+  options?: { stallMs?: number; onStall?: (text: string) => void },
+): Promise<ThinkingProxyHandle> {
   const target = new URL(upstream);
   const forward = target.protocol === "http:" ? http : https;
   const upstreamPort = target.port ? Number(target.port) : target.protocol === "http:" ? 80 : 443;
+  const stallMs = options?.stallMs ?? UPSTREAM_STALL_MS;
+  const onStall = options?.onStall;
 
   const server = http.createServer((cReq, cRes) => {
     const chunks: Buffer[] = [];
@@ -124,11 +133,17 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
       // Stall net: armed until response headers arrive, re-armed per body chunk.
       let stallTimer: ReturnType<typeof setTimeout> | undefined;
       const clearStall = (): void => clearTimeout(stallTimer);
-      const armStall = (onStall: () => void): void => {
+      const armStall = (onFire: () => void): void => {
         clearTimeout(stallTimer);
-        stallTimer = setTimeout(onStall, UPSTREAM_STALL_MS);
+        stallTimer = setTimeout(onFire, stallMs);
         stallTimer.unref?.();
       };
+      const armBodyStall = (uRes: import("node:http").IncomingMessage): void =>
+        armStall(() => {
+          const message = "upstream body stalled";
+          onStall?.(message);
+          uRes.destroy(new Error(message));
+        });
 
       const uReq = forward.request(
         {
@@ -142,25 +157,32 @@ export function startThinkingProxy(upstream: string): Promise<ThinkingProxyHandl
         (uRes) => {
           // Pipe the response straight back — we never parse it; Claude Code does.
           cRes.writeHead(uRes.statusCode ?? 502, uRes.headers);
-          uRes.on("data", () => armStall(() => uRes.destroy(new Error("upstream body stalled"))));
+          uRes.on("data", () => armBodyStall(uRes));
           uRes.on("end", clearStall);
           uRes.on("error", (error) => {
             clearStall();
-            process.stderr.write(`thinking-proxy: upstream ${upstream} body failed mid-stream: ${error.message}\n`);
+            const message = `upstream ${upstream} body failed mid-stream: ${error.message}`;
+            process.stderr.write(`thinking-proxy: ${message}\n`);
+            onStall?.(message);
             // Propagate the break: a clean end() here reads as a normal EOF to the
             // CLI, which then waits forever for the SSE message_stop that will
             // never come (the wedged-turn incidents of 2026-07-11 — turns froze
-            // silently until the 30-min idle backstop). Destroying the socket
-            // surfaces a connection error so the CLI's own retry logic engages.
+            // silently until the 15-min idle backstop (TURN_IDLE_TIMEOUT_MS in
+            // host.ts)). Destroying the socket surfaces a connection error so the
+            // CLI's own retry logic engages.
             cRes.destroy(error instanceof Error ? error : new Error(String(error)));
           });
-          armStall(() => uRes.destroy(new Error("upstream body stalled")));
+          armBodyStall(uRes);
           uRes.pipe(cRes);
         },
       );
       // The header stall is superseded by the body stall the response callback
       // arms (armStall clears the previous timer first) — no explicit clear.
-      armStall(() => uReq.destroy(new Error(`no response headers within ${Math.round(UPSTREAM_STALL_MS / 1000)}s`)));
+      armStall(() => {
+        const message = `no response headers within ${Math.round(stallMs / 1000)}s`;
+        onStall?.(message);
+        uReq.destroy(new Error(message));
+      });
       uReq.on("error", (error) => {
         clearStall();
         failLoud(cRes, 502, `upstream ${upstream} unreachable: ${error.message}`);

@@ -758,7 +758,11 @@ export type AgentEvent =
    * `details.blocks` — at the exact position the steer took effect. Uniform for
    * every harness by construction; no harness ever emits it. `eventId` is the
    * steer's user RoomEvent. */
-  | { type: "steered"; eventId: string };
+  | { type: "steered"; eventId: string }
+  /** Structured surfacing of an out-of-band condition worth telling the
+   * consumer about without treating it as reply text — e.g. an upstream
+   * stall the claude thinking-proxy detected. Never rendered as reply text. */
+  | { type: "notice"; kind: "upstream-stall"; text: string };
 
 // ---------------------------------------------------------------------------
 // Tasks + UI events (SSE payloads; the v1 wire shape exactly, plus `eventId`

@@ -23,7 +23,7 @@ import {
   registerHarness,
   type RuntimeCreateContext,
 } from "./spec.js";
-import { createEventChannel } from "./events.js";
+import { createEventChannel, type EventChannel } from "./events.js";
 import { resolveMcpServers } from "../core/config.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { ModelLabel } from "./model-label.js";
@@ -431,6 +431,11 @@ export class ClaudeRuntime implements AgentRuntime {
    * (turns proceed without thinking text rather than breaking). */
   private thinkingProxy: ThinkingProxyHandle | undefined;
   private thinkingProxyPromise: Promise<ThinkingProxyHandle | undefined> | undefined;
+  /** The current turn's event channel, set for the lifetime of send()'s
+   * streaming loop — lets out-of-band callbacks (the thinking proxy's
+   * onStall) push an AgentEvent into the live turn without inventing a new
+   * channel. Null when no turn is active; such a callback then drops. */
+  private activeChannel: EventChannel | null = null;
 
   constructor(options: ClaudeRuntimeOptions) {
     this.workspace = options.workspace;
@@ -499,6 +504,7 @@ export class ClaudeRuntime implements AgentRuntime {
     const stdinPayload = native ? prompt : `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 
     const channel = createEventChannel();
+    this.activeChannel = channel;
 
     // Steer-continuation bookkeeping: a steer injected this turn defers the
     // close on the next `result` so the injected message's continuation turn is
@@ -786,6 +792,7 @@ export class ClaudeRuntime implements AgentRuntime {
       handle.endInput?.();
       this.active = null;
       this.activeRoomId = undefined;
+      if (this.activeChannel === channel) this.activeChannel = null;
     }
 
     // Clean finish also marks started — idempotent with the init-time persist,
@@ -1111,7 +1118,14 @@ export class ClaudeRuntime implements AgentRuntime {
     if (this.thinkingProxy) return this.thinkingProxy;
     if (!this.thinkingProxyPromise) {
       const upstream = process.env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com";
-      this.thinkingProxyPromise = startThinkingProxy(upstream).catch(() => undefined);
+      this.thinkingProxyPromise = startThinkingProxy(upstream, {
+        onStall: (text) => {
+          // Reuse the current turn's own event channel — no new channel. A
+          // stall detected between turns (no active channel) has nowhere to
+          // surface; drop it silently.
+          this.activeChannel?.push({ type: "notice", kind: "upstream-stall", text });
+        },
+      }).catch(() => undefined);
     }
     this.thinkingProxy = await this.thinkingProxyPromise;
     return this.thinkingProxy;
