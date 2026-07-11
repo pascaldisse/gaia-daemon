@@ -372,6 +372,7 @@ export class CodexRuntime implements AgentRuntime {
   private activeTurn: { threadId: string; turnId: string } | null = null;
   private readonly clientFactory: CodexClientFactory;
   private readonly label: ModelLabel;
+  private lastRateLimits: { usedPercent?: number; planType?: string; resetsAt?: number; windowMinutes?: number } | null = null;
 
   constructor(options: CodexRuntimeOptions) {
     this.workspace = options.workspace;
@@ -455,9 +456,22 @@ export class CodexRuntime implements AgentRuntime {
     // Per-turn tracking
     const toolNames = new Map<string, string>();
     const reasoningStarted = new Set<string>();
+    // Last transient CLI notice ("Reconnecting... 2/5") — swallowed, not fatal;
+    // used as the failure headline if turn/completed later reports failed.
+    let lastTransientError: string | undefined;
 
     client.setNotificationHandler((msg) => {
       const { method, params } = msg;
+      const rl = (params as { rate_limits?: any; rateLimits?: any } | undefined);
+      const limits = rl?.rate_limits ?? rl?.rateLimits;
+      if (limits?.primary) {
+        this.lastRateLimits = {
+          usedPercent: limits.primary.used_percent ?? limits.primary.usedPercent,
+          planType: limits.plan_type ?? limits.planType,
+          resetsAt: limits.primary.resets_at ?? limits.primary.resetsAt,
+          windowMinutes: limits.primary.window_minutes ?? limits.primary.windowMinutes,
+        };
+      }
       switch (method) {
         case "model/rerouted": {
           const p = params as { fromModel?: string; toModel: string; reason?: string; threadId: string; turnId: string };
@@ -628,7 +642,7 @@ export class CodexRuntime implements AgentRuntime {
         case "turn/completed": {
           const t = (params as { turn: { status: string; error?: { message?: string } } }).turn;
           if (t.status === "failed") {
-            channel.fail(new Error(t.error?.message ?? "Turn failed."));
+            channel.fail(new Error(this.failMessage(t.error?.message ?? lastTransientError ?? "Turn failed.")));
           }
           channel.close();
           break;
@@ -636,7 +650,19 @@ export class CodexRuntime implements AgentRuntime {
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
-          channel.fail(new Error(e.message));
+          // A reconnect notice with attempts remaining ("Reconnecting... 2/5")
+          // arrives as an error notification while the CLI is still retrying
+          // and the turn usually recovers — failing here kills a turn the CLI
+          // goes on to complete (live-caught 2026-07-11: daemon failed the
+          // turn at reconnect 2/5; the rollout shows it completing 21s later).
+          // Stash it and let turn/completed stay the authoritative terminal
+          // event. Every other error still fails immediately.
+          const reconnect = /^Reconnecting\W*\s*(\d+)\s*\/\s*(\d+)/.exec(e.message);
+          if (reconnect && Number(reconnect[1]) < Number(reconnect[2])) {
+            lastTransientError = e.message;
+            break;
+          }
+          channel.fail(new Error(this.failMessage(e.message)));
           channel.close();
           break;
         }
@@ -648,6 +674,16 @@ export class CodexRuntime implements AgentRuntime {
     } finally {
       this.activeTurn = null;
     }
+  }
+
+  // The CLI's last words on a dead stream are noise ("Reconnecting... 2/5");
+  // the rate-limit snapshot is the diagnosis — attach it.
+  private failMessage(base: string): string {
+    const rl = this.lastRateLimits;
+    if (!rl || (rl.usedPercent ?? 0) < 100) return base;
+    const resets = rl.resetsAt ? new Date(rl.resetsAt * 1000).toISOString() : "";
+    const win = rl.windowMinutes ? `${Math.round(rl.windowMinutes / 1440)}-day window` : "window";
+    return `${base} — ChatGPT plan usage exhausted: ${rl.usedPercent}% of the ${win} used (plan: ${rl.planType ?? "unknown"}${resets ? `, resets ${resets}` : ""})`;
   }
 
   // -----------------------------------------------------------------------

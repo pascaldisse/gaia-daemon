@@ -76,3 +76,13 @@ app-nav.js, app-info.js (bun, zero deps; server exists while the app runs).
   is on the RUNNING app.
 - Spec authors: any worker spec for UI work must include this verification
   step explicitly.
+
+## ⚠ Always test with the real kit — before every 'it works' and every answer
+
+Pascal (2026-07-11): no claim ships untested. 'Tested' means the REAL path ran:
+- agent/account/summon changes → a real `gaia summon` of a cheap agent (luna or ghoul-sonnet) through the real daemon, output pasted;
+- UI changes → app-tools (rule above);
+- daemon code → `npm run check` AND `npx tsx --test test/<touched>.test.ts`;
+- GAIA-World changes → rain perception, not screenshots.
+Self-invented smoke scripts that bypass the daemon prove nothing and are banned.
+If the live path cannot run yet (e.g. the fix needs a daemon restart), say so and mark the claim UNVERIFIED — never imply it was tested.
