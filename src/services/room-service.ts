@@ -2838,6 +2838,10 @@ export class RoomService {
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
+        ...(() => {
+          const ambient = readAmbientWatchdog();
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls } } : {};
+        })(),
       },
       rooms: await this.listRooms(),
       commands: await this.paletteCommands(),
