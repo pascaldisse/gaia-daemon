@@ -552,6 +552,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .message.queued::before { content: "⋯"; }
 .message.queued .channel-tag { color: var(--muted); font-style: italic; }
 
+/* system_stall* notices: harness-connection errors, not conversation. Render
+   as errors — danger-colored and unmistakable (see transcript.js Message()). */
+.message.system.error { color: var(--danger); }
+.message.system.error::before { content: "⚠"; color: var(--danger); }
+.message.system.error .message-meta,
+.message.system.error .message-meta time { color: var(--danger); opacity: 0.9; }
+
 /* Mid-turn steer, rendered inside the reply at the stream position where it
    landed (OrderedBlocks kind:"steer") — a user interjection, so it borrows the
    user-bubble voice (accent2) inset into the agent body. */
