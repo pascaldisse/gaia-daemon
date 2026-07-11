@@ -10,13 +10,14 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type McpServerConfig, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
-import { workspacePaths } from "../core/paths.js";
+import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import {
@@ -1026,6 +1027,79 @@ async function probeCodexUsage(): Promise<UsageProbeResult> {
   return fetchChatGptUsage(tokens.access_token, typeof tokens.account_id === "string" ? tokens.account_id : undefined);
 }
 
+// ---------------------------------------------------------------------------
+// Named accounts — codex has no CLAUDE_CODE_OAUTH_TOKEN-style env var the CLI
+// reads fresh on every invocation, so a bound account instead gets its OWN
+// durable $CODEX_HOME (mirrors ~/.codex's own auth.json shape) and the agent's
+// subprocess is pointed at it. codex itself refreshes access_token in place
+// there via refresh_token across a session — materializeCodexHome only WRITES
+// when the stored refresh_token actually changed (fresh login / replaced
+// account), so it never stomps a live-refreshed file on a later spawn.
+
+interface CodexAuthTokens {
+  id_token?: string;
+  access_token?: string;
+  refresh_token?: string;
+  account_id?: string;
+}
+
+function codexAccountDir(credentials: Record<string, string>): string {
+  // OpenAI's own account_id is the natural stable key; hash the access token
+  // as a fallback for a hand-pasted bag that omitted it.
+  const key = credentials.accountId || createHash("sha1").update(credentials.accessToken ?? credentials.refreshToken ?? "").digest("hex").slice(0, 16);
+  return join(gaiaHome(), "codex-accounts", key);
+}
+
+function materializeCodexHome(credentials: Record<string, string>): string {
+  const dir = codexAccountDir(credentials);
+  const authPath = join(dir, "auth.json");
+  const bag = {
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: credentials.idToken ?? "",
+      access_token: credentials.accessToken ?? "",
+      refresh_token: credentials.refreshToken ?? "",
+      account_id: credentials.accountId ?? "",
+    } satisfies CodexAuthTokens,
+    last_refresh: new Date().toISOString(),
+  };
+  let stale = true;
+  try {
+    const existing = JSON.parse(readFileSync(authPath, "utf8")) as { tokens?: CodexAuthTokens };
+    stale = existing?.tokens?.refresh_token !== bag.tokens.refresh_token;
+  } catch {
+    stale = true; // never materialized yet, or a torn/missing file
+  }
+  if (stale) {
+    mkdirSync(dir, { recursive: true });
+    // Same secrets as ~/.codex/auth.json (codex itself writes that 0600) — match it.
+    writeFileSync(authPath, JSON.stringify(bag, null, 2), { mode: 0o600 });
+  }
+  return dir;
+}
+
+/** Extract a finished device-auth credential bag from $configDir/auth.json —
+ * the same shape codex itself writes there once the user approves the code
+ * on openai's site (this process never receives anything on stdin). */
+function readCodexLoginCredentials(configDir: string): Record<string, string> | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(join(configDir, "auth.json"), "utf8");
+  } catch {
+    return undefined; // not written yet — still polling
+  }
+  let parsed: { tokens?: CodexAuthTokens };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return undefined; // torn mid-write
+  }
+  const t = parsed?.tokens;
+  if (!t?.access_token || !t?.refresh_token) return undefined;
+  return { idToken: t.id_token ?? "", accessToken: t.access_token, refreshToken: t.refresh_token, accountId: t.account_id ?? "" };
+}
+
 registerHarness({
   id: "codex",
   capabilities: CODEX_CAPABILITIES,
@@ -1048,9 +1122,38 @@ registerHarness({
   credentialProxy: ({ proxyUrl, token }) => ({
     env: { OPENAI_BASE_URL: proxyUrl, OPENAI_API_KEY: token },
   }),
+  // Named accounts: each bound agent's codex subprocess gets CODEX_HOME pointed
+  // at that account's own materialized auth.json (see materializeCodexHome),
+  // so it runs on that ChatGPT subscription's own rate-limit bucket while
+  // unbound agents keep the ambient ~/.codex login — true parallel multi-account,
+  // same shape as claude's CLAUDE_CODE_OAUTH_TOKEN wiring above.
+  accounts: {
+    label: "Codex account",
+    fields: [
+      { key: "accessToken", label: "Access token", secret: true, hint: "From that account's ~/.codex/auth.json → tokens.access_token" },
+      { key: "refreshToken", label: "Refresh token", secret: true, hint: "Same file → tokens.refresh_token" },
+      { key: "idToken", label: "ID token", secret: true, hint: "Same file → tokens.id_token" },
+      { key: "accountId", label: "Account ID", hint: "Same file → tokens.account_id" },
+    ],
+    env: (credentials) => ({ CODEX_HOME: materializeCodexHome(credentials) }),
+    // In-app login: `codex login --device-auth` needs no local callback port
+    // (works from any device, unlike the default browser-redirect flow) — it
+    // prints a URL + one-time code and polls openai until the code is approved
+    // ON THE SITE, so nothing is ever pasted back into this process. Once
+    // approved it writes CODEX_HOME/auth.json itself and exits.
+    login: {
+      command: ({ configDir }) => ({ argv: ["codex", "login", "--device-auth"], env: { CODEX_HOME: configDir } }),
+      signInUrl: (output) => /https:\/\/auth\.openai\.com\/codex\/device\S*/.exec(output)?.[0],
+      code: (output) => /\b[A-Z0-9]{4}-[A-Z0-9]{4,8}\b/.exec(output)?.[0],
+      awaitingInput: () => false,
+      credentials: ({ configDir }) => readCodexLoginCredentials(configDir),
+    },
+  },
   // Codex persists auth + session state under ~/.codex (a sandboxed turn must
   // write there); its credential store inside that tree is carved back to
-  // read-only so a confined turn can't tamper with it.
-  sandboxPaths: { writable: ["~/.codex"], readonly: ["~/.codex/auth.json"] },
+  // read-only so a confined turn can't tamper with it. codex-accounts holds
+  // the SAME shape per bound account (see materializeCodexHome) — writable,
+  // never read-only, since a turn legitimately owns its own bound account's file.
+  sandboxPaths: { writable: ["~/.codex", join(gaiaHome(), "codex-accounts")], readonly: ["~/.codex/auth.json"] },
   usageAccounts: () => [{ account: OPENAI_USAGE_ACCOUNT, probe: probeCodexUsage }],
 });

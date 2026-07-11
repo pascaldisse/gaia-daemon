@@ -27,6 +27,7 @@ import { state } from "./state.js";
  *   harness: string,
  *   status: "starting"|"awaiting-signin"|"awaiting-code"|"done"|"error"|"cancelled",
  *   url?: string,
+ *   code?: string,
  *   account?: Account,
  *   error?: string,
  * }} LoginSession */
@@ -555,6 +556,7 @@ function LoginSessionPanel(session) {
         session.url ? h("a", { href: session.url, target: "_blank", rel: "noreferrer", text: "Open sign-in page" }) : h("span", { class: "muted", text: "waiting for a sign-in link…" }),
         cancelButton,
       ),
+      session.code ? h("div", { class: "settings2-row" }, h("span", { text: "Enter this code on the page: " }), h("code", { text: session.code })) : null,
       h("small", { class: "muted", text: "a browser may also have opened on the machine running gaia — sign in there, then come back" }),
     );
   }

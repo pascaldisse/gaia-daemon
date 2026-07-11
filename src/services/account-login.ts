@@ -31,6 +31,9 @@ export interface AccountLoginState {
   harness: string;
   status: AccountLoginStatus;
   url?: string;
+  /** Device-authorization code the user re-enters on the sign-in page (see
+   * AccountLoginSpec.code) — shown alongside `url`, never sent anywhere by us. */
+  code?: string;
   account?: { id: string; harness: string; label?: string };
   error?: string;
 }
@@ -142,6 +145,11 @@ export class AccountLoginService {
         session.state.url = url;
         session.state.status = "awaiting-signin";
       }
+    }
+    // Independent of the url branch above: the code may land in a LATER
+    // output chunk than the url did, so keep checking each call until found.
+    if (session.state.url && session.state.code === undefined) {
+      session.state.code = session.login.code?.(session.output);
     }
   }
 

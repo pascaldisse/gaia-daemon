@@ -234,6 +234,12 @@ export interface AccountLoginSpec {
   signInUrl(output: string): string | undefined;
   /** True while the flow is waiting for a paste-back code from the user. */
   awaitingInput(output: string): boolean;
+  /** A short code the user must read and re-enter ON THE SIGN-IN PAGE itself
+   * (device-authorization flows: nothing is pasted back into this process —
+   * it polls the provider until the site marks the code approved). Shown
+   * next to the sign-in link. Absent ⇒ no such code (e.g. a plain OAuth
+   * redirect where approving the link is the whole flow). */
+  code?(output: string): string | undefined;
   /** Extract the finished credential bag; configDir may hold fallback state
    * the CLI wrote (checked again after the process exits). */
   credentials(ctx: { output: string; configDir: string }): Record<string, string> | undefined;
