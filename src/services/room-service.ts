@@ -1803,7 +1803,9 @@ export class RoomService {
    * never crashes the caller. See services/plugins.ts for the contract. */
   private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
     try {
-      return (await plugin.run(args, { homedir: homedir(), roomId: this.roomId })) ?? {};
+      return (
+        (await plugin.run(args, { homedir: homedir(), roomId: this.roomId, workspaceRoot: this.workspace.rootDir })) ?? {}
+      );
     } catch (error) {
       return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
     }

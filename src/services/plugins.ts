@@ -14,7 +14,7 @@ export interface CommandPlugin {
   description?: string;
   run(
     args: string[],
-    ctx: { homedir: string; roomId: string },
+    ctx: { homedir: string; roomId: string; workspaceRoot: string },
   ): { steer?: string; reply?: string } | Promise<{ steer?: string; reply?: string }>;
 }
 
