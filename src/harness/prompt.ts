@@ -43,6 +43,8 @@ export interface TurnPromptInput {
    * it — no line is emitted in that case either. */
   workDir?: string;
   rootDir?: string;
+  /** Settings ▸ General ▸ "Your name" — see renderRoomTranscript. */
+  userName?: string;
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -70,15 +72,19 @@ export function renderAttachmentLines(attachments: MessageAttachment[]): string 
   return attachments.map((file) => `[attached file: ${file.name} (${file.mime}, ${humanSize(file.size)}) at ${file.path}]`).join("\n");
 }
 
-/** Render room events for a turn prompt (v1's room.ts renderer, verbatim). */
-export function renderRoomTranscript(events: RoomEvent[]): string {
+/** Render room events for a turn prompt (v1's room.ts renderer, verbatim).
+ * `userName` labels the human's own messages (Settings ▸ General ▸ "Your
+ * name" — services/user-name.ts); "" or omitted falls back to the anonymous
+ * "user" token this always used before that setting existed. */
+export function renderRoomTranscript(events: RoomEvent[], userName?: string): string {
   if (events.length === 0) return "(empty room)";
+  const who = userName?.trim() || "user";
 
   return events
     .map((event) => {
       const header =
         "targets" in event
-          ? `user -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
+          ? `${who} -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
       const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
       return `[${event.timestamp}] ${header}:\n${event.text}${attachments}`;
@@ -212,6 +218,7 @@ export async function buildTurnPromptFor(
     attachments: input.attachments,
     workDir: paths?.workDir,
     rootDir: paths?.rootDir,
+    userName: input.userName,
   });
 }
 
@@ -228,7 +235,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
     input.recall?.trim() ?? "",
     "New room events since your last turn:",
-    renderRoomTranscript(input.events),
+    renderRoomTranscript(input.events, input.userName),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
   ]

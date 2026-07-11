@@ -59,6 +59,9 @@
  *   so activity in a workspace you're not viewing is still visible.
  * @property {KeepAwakeCapability} [keepAwake] "keep laptop awake" — daemon-managed,
  *   macOS-only (see services/keep-awake.ts). `supported` false elsewhere.
+ * @property {string} [userName] "Your name" (see services/user-name.ts) — the
+ *   label agents use for the human's own transcript lines. "" = unset (falls
+ *   back to the anonymous "user" token).
  */
 
 /**
