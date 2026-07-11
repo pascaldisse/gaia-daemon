@@ -1179,11 +1179,14 @@ export class RoomService {
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
       // Role watchdog — event-driven enforcement; a role may declare a
-      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers one
-      // corrective message into the running turn when it crosses. Zero cost
-      // when the agent behaves.
+      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers a
+      // corrective message into the running turn when it crosses. Plain
+      // watchdog fires once; `repeat: true` re-fires every `toolCalls` calls
+      // for the rest of the turn (e.g. ultrawhip: keep landing while the
+      // agent works, no manual /whip needed). Zero cost when the agent behaves.
       let watchdogToolCalls = 0;
       let watchdogFired = false;
+      let watchdogFiredAt = 0;
 
       const userName = await readUserNameSetting();
 
@@ -1207,9 +1210,15 @@ export class RoomService {
           onEvent: (event) => {
             if (event.type === "tool-start") {
               watchdogToolCalls += 1;
-              if (activeRole?.watchdog && !watchdogFired && watchdogToolCalls >= activeRole.watchdog.toolCalls) {
+              const watchdog = activeRole?.watchdog;
+              const dueAgain = watchdog?.repeat && watchdogToolCalls - watchdogFiredAt >= watchdog.toolCalls;
+              if (watchdog && ((!watchdogFired && watchdogToolCalls >= watchdog.toolCalls) || dueAgain)) {
                 watchdogFired = true;
-                void runtime.steer?.(this.roomId, activeRole.watchdog.message).catch(() => {});
+                watchdogFiredAt = watchdogToolCalls;
+                const pick = watchdog.messages?.length
+                  ? watchdog.messages[Math.floor(Math.random() * watchdog.messages.length)]
+                  : watchdog.message;
+                void runtime.steer?.(this.roomId, pick).catch(() => {});
               }
             }
             if (event.type === "model-fallback") {
