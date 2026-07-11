@@ -424,9 +424,15 @@ export class CodexRuntime implements AgentRuntime {
 
     // Start the turn. Pasted images ride as localImage input items (the same
     // shape `codex -i <file>` produces); the app-server reads the paths itself.
-    // Reasoning summary is ALWAYS "detailed" — forced thread-wide via
-    // configOverride() at thread/start/resume (see there for why); no need to
-    // repeat it per turn. Effort DOES need to travel per turn/start: it's the
+    // Reasoning summary is ALWAYS "detailed" — configOverride() also sets it
+    // thread-wide at thread/start/resume, but that alone doesn't stick: a live
+    // rollout (gpt-5.6-terra, thread/start config.model_reasoning_summary=
+    // "detailed") recorded turn_context.summary as "auto" regardless, while
+    // turn_context.effort correctly reflected the per-turn `effort` sent
+    // below. TurnStartParams has its own `summary` override field ("Override
+    // the reasoning summary for this turn and subsequent turns") — same shape
+    // as `effort` — so it has to travel per turn/start too, not just once at
+    // thread creation. Effort DOES need to travel per turn/start: it's the
     // one knob a per-turn override (e.g. voice forcing thinking off) can
     // change mid-thread, mirroring claude.ts's effortFor(thinkingOverride ??
     // this.agent.thinking).
@@ -438,6 +444,7 @@ export class CodexRuntime implements AgentRuntime {
         ...nativeImageAttachments(input.attachments).map((file) => ({ type: "localImage", path: file.path })),
       ],
       model: this.agent.model?.name ?? null,
+      summary: "detailed",
       ...(effort ? { effort } : {}),
     })) as { turn: { id: string; status: string } };
 
@@ -976,7 +983,14 @@ export class CodexRuntime implements AgentRuntime {
    * for every agent, across every harness, unconditionally (see MEMORY: reveal
    * thinking is always true for all agents across all harnesses) — codex was
    * simply never wired to request it. Returns {} only when nothing else
-   * applies; this field itself is never conditional. */
+   * applies; this field itself is never conditional.
+   *
+   * This thread-level value alone is NOT sufficient, though (see send()):
+   * a live rollout showed turn_context.summary resolving to "auto" despite
+   * this override, so `turn/start` also sends `summary: "detailed"` per turn
+   * — that's the copy that's actually verified to stick. Kept here too as the
+   * thread's own baseline (covers thread/resume and any turn/start call site
+   * that might omit it). */
   private configOverride(): { config?: Record<string, unknown> } {
     const config: Record<string, unknown> = { model_reasoning_summary: "detailed" };
     const servers = resolveMcpServers(this.workspace.config, this.agent);
