@@ -2,13 +2,13 @@
 // OpenAI-compatible voice endpoints. No business logic lives here — if a
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
-import { createReadStream, existsSync, openSync, watch, type FSWatcher } from "node:fs";
+import { createReadStream, existsSync, openSync, readFileSync, writeSync } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
@@ -33,7 +33,6 @@ export interface WebServerOptions {
   cwd: string;
   host?: string;
   port?: number;
-  dev?: boolean;
 }
 
 interface SseClient {
@@ -211,33 +210,9 @@ async function pickDirectoryWithSystem(): Promise<string | undefined> {
   });
 }
 
-function devReloadSnippet(): string {
-  return `<script>
-(() => {
-  if (window.__gaiaDevReload) return;
-  window.__gaiaDevReload = true;
-  let hadConnection = false;
-  let reconnectAfterDrop = false;
-  const source = new EventSource("/__dev/reload");
-  source.addEventListener("ready", () => {
-    if (hadConnection && reconnectAfterDrop) window.location.reload();
-    hadConnection = true;
-    reconnectAfterDrop = false;
-  });
-  source.addEventListener("reload", () => window.location.reload());
-  source.onerror = () => {
-    if (hadConnection) reconnectAfterDrop = true;
-  };
-})();
-</script>`;
-}
-
 export class GaiaWebServer {
   private readonly daemon: Daemon;
   private readonly clients = new Set<SseClient>();
-  private readonly devClients = new Set<ServerResponse>();
-  private readonly devWatchers: FSWatcher[] = [];
-  private devReloadTimer: NodeJS.Timeout | undefined;
   private boundUrl = "";
   private server: HttpServer | undefined;
   private reloadStarted = false;
@@ -249,8 +224,6 @@ export class GaiaWebServer {
   }
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
-    if (this.options.dev) await this.startDevWatchers();
-
     const server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -317,13 +290,8 @@ export class GaiaWebServer {
     if (this.server !== server) return;
     this.server = undefined;
     await this.daemon.dispose();
-    for (const watcher of this.devWatchers) watcher.close();
-    this.devWatchers.length = 0;
-    if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
     for (const client of this.clients) client.response.end();
     this.clients.clear();
-    for (const client of this.devClients) client.end();
-    this.devClients.clear();
     await new Promise<void>((resolveClose, reject) => {
       server.close((error) => (error ? reject(error) : resolveClose()));
       server.closeAllConnections?.();
@@ -373,18 +341,71 @@ export class GaiaWebServer {
   private async reloadNow(): Promise<void> {
     try {
       if (this.server) await this.closeServer(this.server);
-      // Re-exec with the SAME node loader flags: tsx's --require/--import live
-      // in process.execArgv, NOT process.argv — without them the child is plain
-      // `node src/cli.ts`, which dies instantly and leaves the port dead (the
-      // exact "/reload froze the app" failure). And never stdio:"ignore" here:
-      // a crashing reload child must leave a corpse we can read.
       const reloadLog = openSync(join(gaiaHome(), "reload.log"), "a");
-      const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
-        detached: true,
-        stdio: ["ignore", reloadLog, reloadLog],
-        cwd: process.cwd(),
-        env: process.env,
-      });
+
+      // A reload doesn't just re-exec the running process — when a build
+      // recipe is reachable it rebuilds first, so a source checkout picks up
+      // the code that triggered the reload, and a compiled install picks up
+      // a fresh binary. Two ways to find that recipe: running from source
+      // (this file's own repo has scripts/build-daemon.mjs), or running a
+      // compiled binary that was built alongside a gaia-source.json pointing
+      // back at the source repo that built it.
+      const repoRootFromSource = fileURLToPath(new URL("../..", import.meta.url));
+      const fromSourceScript = join(repoRootFromSource, "scripts/build-daemon.mjs");
+      let plan: { script: string; out: string; bun: string } | undefined;
+      let fromSource = false;
+      if (existsSync(fromSourceScript)) {
+        fromSource = true;
+        plan = { script: fromSourceScript, out: join(repoRootFromSource, "dist"), bun: "bun" };
+      } else {
+        const sourceJsonPath = join(dirname(process.execPath), "gaia-source.json");
+        if (existsSync(sourceJsonPath)) {
+          try {
+            const parsed = JSON.parse(readFileSync(sourceJsonPath, "utf8")) as { root: string; bun: string };
+            const script = join(parsed.root, "scripts/build-daemon.mjs");
+            if (existsSync(script)) plan = { script, out: dirname(process.execPath), bun: parsed.bun };
+          } catch (error) {
+            console.error(`gaia: failed to read gaia-source.json: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+
+      let rebuildOk = false;
+      if (plan) {
+        const build = spawnSync(plan.bun, [plan.script, "--out", plan.out], {
+          stdio: ["ignore", reloadLog, reloadLog],
+          timeout: 120_000,
+        });
+        if (build.status === 0) {
+          rebuildOk = true;
+        } else {
+          writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+        }
+      }
+
+      // Re-exec. tsx's --require/--import live in process.execArgv, NOT
+      // process.argv — without them a source re-exec is plain `node
+      // src/cli.ts`, which dies instantly and leaves the port dead (the
+      // exact "/reload froze the app" failure). And never stdio:"ignore"
+      // here: a crashing reload child must leave a corpse we can read.
+      const args = process.argv.slice(1).filter((arg) => arg !== "--dev");
+      const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
+      const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
+
+      const child = migrateToCompiled
+        ? spawn(compiledBinary, args, {
+            detached: true,
+            stdio: ["ignore", reloadLog, reloadLog],
+            cwd: process.cwd(),
+            env: process.env,
+          })
+        : spawn(process.execPath, [...process.execArgv, ...args], {
+            detached: true,
+            stdio: ["ignore", reloadLog, reloadLog],
+            cwd: process.cwd(),
+            env: process.env,
+          });
+      console.log(`[gaia] reload exec: ${migrateToCompiled ? compiledBinary : process.execPath}`);
       child.unref();
       process.exit(0);
     } catch (error) {
@@ -395,13 +416,6 @@ export class GaiaWebServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://gaia.local");
-    if (this.options.dev && request.method === "GET" && url.pathname === "/__dev/reload") {
-      beginSse(response);
-      response.write(encodeSse("ready", { bootId }));
-      this.devClients.add(response);
-      response.on("close", () => this.devClients.delete(response));
-      return;
-    }
     if (url.pathname.startsWith("/api/")) return this.handleApi(request, response, url);
     if (url.pathname.startsWith("/v1/")) return this.handleOpenAi(request, response, url);
     await this.serveStatic(response, url.pathname);
@@ -1410,13 +1424,6 @@ export class GaiaWebServer {
     // WKWebView, which caches aggressively. Always require a fresh fetch.
     headers["cache-control"] = "no-store";
 
-    if (this.options.dev && path === join(root, "index.html")) {
-      const html = await readFile(path, "utf8");
-      response.writeHead(200, headers);
-      response.end(html.includes("</body>") ? html.replace("</body>", `${devReloadSnippet()}\n  </body>`) : `${html}\n${devReloadSnippet()}`);
-      return;
-    }
-
     response.writeHead(200, headers);
     createReadStream(path).pipe(response);
   }
@@ -1464,24 +1471,6 @@ export class GaiaWebServer {
         if (client.roomId && scoped.roomId && client.roomId !== scoped.roomId) continue;
       }
       client.response.write(payload);
-    }
-  }
-
-  private async startDevWatchers(): Promise<void> {
-    const root = bundledDir("web");
-    const entries = await readdir(root, { recursive: true, withFileTypes: true });
-    const dirs = [root, ...entries.filter((entry) => entry.isDirectory()).map((entry) => join(entry.parentPath, entry.name))];
-    for (const dir of dirs) {
-      const watcher = watch(dir, (_eventType, filename) => {
-        const name = String(filename ?? "").trim();
-        if (!name || name === ".DS_Store") return;
-        if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
-        this.devReloadTimer = setTimeout(() => {
-          this.devReloadTimer = undefined;
-          for (const client of this.devClients) client.write(encodeSse("reload", { path: name }));
-        }, 60);
-      });
-      this.devWatchers.push(watcher);
     }
   }
 }
