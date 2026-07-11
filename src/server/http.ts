@@ -394,11 +394,18 @@ export class GaiaWebServer {
       const args = process.argv
         .slice(1)
         .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
+      // When the child is the COMPILED binary, argv[1] of a source run
+      // ("src/cli.ts") must be dropped too — the binary would parse the
+      // script path as a CLI command and print --help instead of booting
+      // (observed live 2026-07-11 14:01: reload went dark). Flags only.
+      const flagsOnly = process.argv
+        .slice(2)
+        .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
       const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
       const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
 
       const child = migrateToCompiled
-        ? spawn(compiledBinary, args, {
+        ? spawn(compiledBinary, flagsOnly, {
             detached: true,
             stdio: ["ignore", reloadLog, reloadLog],
             cwd: process.cwd(),
