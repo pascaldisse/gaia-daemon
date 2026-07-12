@@ -64,6 +64,14 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
       '- `gaia summon <agent> "<task>"` — spin up a background worker agent in its own sub-room (nested under this room in the sidebar); returns immediately, and when the worker finishes its result is posted back to this room and you are invoked to continue — never wait or poll for it',
     makePiTool: async (ctx) => (ctx.summonCreate ? (await import("./tools-pi.js")).createSummonTool(ctx.summonCreate, ctx.roomId) : null),
   },
+  {
+    id: "resume",
+    cliVerbs: ["resume"],
+    grant: "Bash(gaia resume:*)",
+    pointer:
+      '- `gaia resume <roomId> "<message>"` — send a follow-up message into an existing sub-room to resume/steer its worker: steers if it is mid-turn, starts a fresh turn if idle',
+    makePiTool: async () => null,
+  },
 ];
 
 /** The GaiaTool ids denied to an agent in an incognito room: `memory` (its

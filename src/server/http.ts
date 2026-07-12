@@ -553,7 +553,11 @@ export class GaiaWebServer {
 
     if (
       method === "POST" &&
-      (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall" || path === "/api/harness/dream")
+      (path === "/api/harness/memory" ||
+        path === "/api/harness/summon" ||
+        path === "/api/harness/recall" ||
+        path === "/api/harness/dream" ||
+        path === "/api/harness/resume")
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1286,7 +1290,7 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream";
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
     if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
     }
@@ -1381,6 +1385,28 @@ export class GaiaWebServer {
       try {
         const result = apply ? await this.daemon.harnessDreamApply(claims, agentId) : await this.daemon.harnessDreamPropose(claims, agentId);
         json(response, 200, { ok: true, result });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/resume — send a follow-up message into an EXISTING
+    // room/sub-room to resume or steer its worker (steers a running turn,
+    // starts a fresh one if idle), instead of firing a brand-new summon.
+    // ALWAYS fire-and-forget, mirroring summon below: sendMessage kicks the
+    // turn off and returns immediately, it never blocks on the turn settling.
+    // `room` is scoped strictly to claims.workspaceId — serviceFor resolves it
+    // against the CALLER's own workspace registry, so a caller can never reach
+    // a room living in another workspace even by guessing its id.
+    if (pathname === "/api/harness/resume") {
+      const room = stringField(body, "room")?.trim();
+      const message = stringField(body, "message")?.trim();
+      if (!room || !message) return json(response, 400, { error: "Missing room or message" });
+      try {
+        const service = await this.daemon.serviceFor(claims.workspaceId, room);
+        await service.sendMessage(message, { recordUserMessage: true });
+        json(response, 200, { roomId: room, result: `Resumed room '${room}' with a follow-up message.` });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
