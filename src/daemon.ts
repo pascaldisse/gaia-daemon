@@ -28,7 +28,8 @@ import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { AccountLoginService } from "./services/account-login.js";
-import type { ConsolidateLlm, ConsolidateOp, ConsolidateResult } from "./services/consolidate.js";
+import { formatDreamProposal } from "./services/consolidate.js";
+import type { ConsolidateLlm, ConsolidateResult } from "./services/consolidate.js";
 import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
@@ -953,7 +954,7 @@ export class Daemon {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
     const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
     const result = await memory.consolidate(agentId, { propose: true, force: true });
-    return formatDreamProposal(result);
+    return formatDreamProposal(result, "run: gaia dream [agent] --apply to accept, or dream again to regenerate.");
   }
 
   /** Dream v2 apply: commits the proposal `harnessDreamPropose` wrote, through
@@ -1258,31 +1259,6 @@ export class Daemon {
       userName: await this.userName(),
     };
   }
-}
-
-// --- dream v2 proposal rendering (harnessDreamPropose's preformatted text) -----
-
-function truncate(text: string, max: number): string {
-  const trimmed = text.trim();
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
-}
-
-function dreamOpLine(op: ConsolidateOp): string {
-  switch (op.kind) {
-    case "fact-add":
-      return `fact-add: ${truncate(op.text, 120)}`;
-    case "fact-invalidate":
-      return `fact-invalidate: ${op.id}`;
-    case "memory-edit":
-      return `memory-edit (${op.action}): ${truncate(op.file, 120)}`;
-  }
-}
-
-function formatDreamProposal(result: ConsolidateResult): string {
-  if (!result.ran) return `dream: ${result.reason ?? "did not run"}`;
-  const ops = result.proposedOps ?? [];
-  if (!ops.length) return "dream: no ops proposed — memory is already tidy.";
-  return [...ops.map(dreamOpLine), "", "run: gaia dream [agent] --apply to accept, or dream again to regenerate."].join("\n");
 }
 
 // --- consolidation LLM (daemon-side, same credential store as the proxy) ---------

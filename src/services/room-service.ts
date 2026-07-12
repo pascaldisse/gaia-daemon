@@ -61,6 +61,7 @@ import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
+import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, effectiveTrust, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
@@ -117,7 +118,11 @@ export interface RoomMemoryHooks {
    * are self-matches and excluded (MEMORY-DESIGN.md §7). */
   autoRecallBlock(agentId: string, query: string, context?: ActiveContextRef): Promise<string>;
   capture(agentId: string, capture: EpisodeCapture): Promise<void>;
-  consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
+  consolidate(agentId: string, options?: { force?: boolean; propose?: boolean }): Promise<ConsolidateResult>;
+  /** Dream v2 apply: commits a standing dream-proposal.json (backs `/dream
+   * [agent] --apply`, mirrors the CLI/harness route). null = no proposal
+   * pending. */
+  applyDreamProposal?(agentId: string): Promise<{ applied: number; skipped: number } | null>;
   /** Ranked search over facts, episodes, and room history — backs /recall.
    * `degraded` notes are rendered, never dropped (§10). */
   search(agentId: string, query: string, request?: { limit?: number; context?: ActiveContextRef }): Promise<{ hits: MemorySearchHit[]; degraded: string[] }>;
@@ -238,6 +243,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
+  dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
@@ -1652,6 +1658,26 @@ export class RoomService {
     const result = await this.options.memory.consolidate(target, { force: true });
     if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
+  }
+
+  /** Dream v2, reachable from the chat composer (was CLI-only via `gaia
+   * dream` — the command existed but no room recognized it as a slash
+   * command, so autocomplete showed "no matches"). `/dream [agent]` proposes
+   * (never applies); `/dream [agent] --apply` commits the standing proposal.
+   * Same underlying MemoryService calls the CLI/harness route uses, so the
+   * two surfaces can never drift. */
+  async runDreamCommand(agentId?: string, apply?: boolean): Promise<string> {
+    const target = agentId ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;
+    if (!this.options.memory) return "Memory consolidation is not available in this workspace.";
+    if (apply) {
+      if (!this.options.memory.applyDreamProposal) return "Dream apply is not available in this workspace.";
+      const result = await this.options.memory.applyDreamProposal(target);
+      if (!result) return `No pending dream proposal for @${target} — run \`/dream ${target}\` first.`;
+      return `Applied ${result.applied} ops (${result.skipped} skipped) for @${target}.`;
+    }
+    const result = await this.options.memory.consolidate(target, { propose: true, force: true });
+    return formatDreamProposal(result, `run: /dream ${target} --apply to accept, or /dream ${target} again to regenerate.`);
   }
 
   /** Steer-by-default core: inject a plain message into @target's running turn.
