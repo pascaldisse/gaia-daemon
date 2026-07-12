@@ -64,6 +64,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   summonListOpen: boolean,
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   roomContextMenu: {roomId: string, x: number, y: number}|null,
+ *   workspaceContextMenu: {workspaceId: string, x: number, y: number}|null,
  *   readMarks: Record<string, number>,
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
@@ -181,11 +182,13 @@ export const state = {
   bgTasksOpen: false,
   summonListOpen: false,
   // The sidebar's delete target: the last workspace/room the user clicked. The
-  // OS delete chord (⌘⌫ on macOS, Del elsewhere) removes whatever this points
-  // at — the only way to delete a workspace or room. null falls back to the
-  // current room (see effectiveSidebarFocus).
+  // OS delete chord (⌘⌫ on macOS, Del elsewhere) removes the focused ROOM only
+  // (workspace removal is right-click -> "Remove workspace", never this chord —
+  // see keys.js and sidebar.js's workspace context menu). null falls back to
+  // the current room (see effectiveSidebarFocus).
   sidebarFocus: null,
   roomContextMenu: null,
+  workspaceContextMenu: null,
   readMarks: loadReadMarks(),
   manualUnread: loadManualUnread(),
   // Per-workspace room activity (running + last-activity), keyed by workspace id,
