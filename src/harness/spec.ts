@@ -280,6 +280,11 @@ export interface HarnessSpec {
   capabilities: HarnessCapabilities;
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
+  /** Error-message signatures of a TRANSIENT auth/session reset (login expired, token revoked).
+   * Matching turn errors are marked TransientAuthError by the shared layer and requeued with
+   * backoff instead of failing the turn. Differences live as DATA here — never as harness-id
+   * branches (RULE #0). */
+  transientAuthPatterns?: RegExp[];
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
   /** Named multi-account wiring (see HarnessAccountsSpec). Absent ⇒ this
    * harness has no account concept. */

@@ -9,7 +9,7 @@ import { MemoryStore } from "../src/domain/memory.js";
 import { DEFAULTS } from "../src/core/config.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, QueuedMessage, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
 import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
@@ -71,6 +71,8 @@ async function makeService(options: {
   incognito?: boolean;
   /** Tool ids granted to every test agent (default none). */
   tools?: string[];
+  /** Durable queue entries to seed before RoomService.open() runs boot drain. */
+  queued?: QueuedMessage[];
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   const roomId = options.roomId ?? "default";
@@ -93,6 +95,11 @@ async function makeService(options: {
     contextFiles: [],
     agents,
   };
+
+  if (options.queued?.length) {
+    const room = await RoomHandle.open(root, roomId);
+    for (const entry of options.queued) await room.enqueue(entry);
+  }
 
   const script = options.script ?? (() => [{ type: "text-delta", delta: "hello from agent" } as AgentEvent]);
   const runtimes = new Map<string, ReturnType<typeof scriptedRuntime>>();
@@ -2161,6 +2168,72 @@ test("a stalled turn with no partial reply requeues ONCE (stallRetried), then fa
   const finalState = await room.state();
   assert.equal(finalState.queue ?? undefined, undefined, "no further requeue — the queue is empty again");
   assert.equal(finalState.pendingTurn, undefined);
+});
+
+function transientAuthRuntime(agent: AgentDef): AgentRuntime & { sends: number } {
+  const runtime = {
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    sends: 0,
+    async *send(): AsyncGenerator<AgentEvent> {
+      runtime.sends += 1;
+      const error = new Error("Not logged in · Please run /login");
+      error.name = "TransientAuthError";
+      throw error;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  };
+  return runtime as AgentRuntime & { sends: number };
+}
+
+test("a transient auth failure requeues with authRetries and notBefore instead of terminal failure", async () => {
+  const { service, root } = await makeService({ runtimeFactory: (agent) => transientAuthRuntime(agent) });
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const state = await room.state();
+  assert.equal(state.queue?.length, 1);
+  assert.equal(state.queue?.[0].authRetries, 1);
+  assert.ok(Date.parse(state.queue?.[0].notBefore ?? "") > Date.now(), "retry has a future notBefore");
+
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.some((event) => event.text.includes("transient auth")), true);
+  assert.equal(transcript.some((event) => event.text.startsWith("⚠ turn failed (")), false);
+  await service.dispose();
+});
+
+test("drain waits until a queued entry's notBefore before dispatching it", async () => {
+  const notBefore = new Date(Date.now() + 75).toISOString();
+  const { service, runtimes } = await makeService({
+    agents: ["gaia"],
+    queued: [{ taskId: "task_auth_wait", text: "retry me", targets: ["gaia"], authRetries: 1, notBefore, queuedAt: new Date().toISOString() }],
+  });
+
+  await service.init();
+  assert.equal(runtimes.get("gaia")?.sends ?? 0, 0, "future queue head is not dispatched immediately");
+  await waitFor(() => (runtimes.get("gaia")?.sends ?? 0) === 1);
+  await service.waitForSettled();
+  assert.ok(Date.now() >= Date.parse(notBefore), "dispatch happened only once the entry was due");
+});
+
+test("a sixth transient auth failure falls through to the normal terminal failure", async () => {
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    queued: [{ taskId: "task_auth_sixth", text: "retry me", targets: ["gaia"], authRetries: 5, queuedAt: new Date().toISOString() }],
+    runtimeFactory: (agent) => transientAuthRuntime(agent),
+  });
+
+  await service.waitForSettled();
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.some((event) => event.text.startsWith("⚠ turn failed (@gaia)")), true);
+  assert.equal(transcript.some((event) => event.text.includes("transient auth") && event.text.includes("requeued")), false);
+  assert.equal((await room.state()).queue, undefined);
 });
 
 // `gaia resume <roomId> "<message>"` (server/http.ts's /api/harness/resume

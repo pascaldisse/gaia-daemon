@@ -589,6 +589,7 @@ function materializePiAgentDir(credentials: Record<string, string>): string {
 registerHarness({
   id: "pi",
   capabilities: PI_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /token .*expired/i, /re-?authenticat/i, /\bunauthorized\b/i],
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
   create: (ctx) => new PiRuntime(ctx),
   // Pi self-persists sessions as files under the room's pi-sessions/<agent>/
