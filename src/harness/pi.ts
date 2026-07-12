@@ -37,7 +37,7 @@ import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { emailFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
+import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Subprocess-side egress redirect for the credential proxy (v1's
@@ -551,11 +551,15 @@ async function probePiAccountUsage(credentials: Record<string, string>): Promise
 
 // Named pi accounts: an isolated PI_CODING_AGENT_DIR materialized from the
 // stored credential bag — the exact twin of codex's materializeCodexHome.
-// Pi's AuthStorage reads auth.json from that dir and auto-refreshes tokens
-// itself (expires: 0 forces a refresh on first use), writing refreshed
-// tokens back into the materialized file. The file is only rewritten when
-// the STORED refresh token changed, so pi's own refresh cycle is never
-// stomped mid-flight. models.json is copied in from the real agent dir
+// Pi's AuthStorage reads auth.json from that dir, refreshes tokens when the
+// stored expiry passes, and writes rotated tokens back into the file. The
+// materialized entry carries the access token's REAL expiry (a hardcoded 0
+// meant "already expired" — a forced refresh on every run, whose rotated
+// refresh token the next materialization then stomped with the store's
+// stale one, server-invalidating the whole credential chain). The file is
+// only rewritten when the store's credential is FRESHER than what is
+// already on disk, so pi's own rotation stays authoritative.
+// models.json is copied in from the real agent dir
 // (when present) so custom model definitions still resolve. v1 scope: the
 // openai-codex (ChatGPT OAuth) provider — pi's own provider vocabulary,
 // declared as data on this spec (RULE #0 intact).
@@ -571,16 +575,17 @@ function materializePiAgentDir(credentials: Record<string, string>): string {
     type: "oauth",
     refresh: credentials.refreshToken ?? "",
     access: credentials.accessToken ?? "",
-    expires: 0,
+    expires: expiryMsFromJwt(credentials.accessToken),
     ...(credentials.accountId ? { accountId: credentials.accountId } : {}),
   };
-  let existing: { ["openai-codex"]?: { refresh?: string } } | undefined;
+  let existing: { ["openai-codex"]?: { refresh?: string; access?: string } } | undefined;
   try {
     existing = JSON.parse(readFileSync(authPath, "utf8")) as typeof existing;
   } catch {
     // missing or torn — rewrite below
   }
-  if (existing?.["openai-codex"]?.refresh !== entry.refresh) {
+  const materialized = existing?.["openai-codex"];
+  if (!materialized?.refresh || entry.expires > expiryMsFromJwt(materialized.access)) {
     writeFileSync(authPath, JSON.stringify({ "openai-codex": entry }, null, 2) + "\n", { mode: 0o600 });
   }
   return dir;
@@ -589,6 +594,7 @@ function materializePiAgentDir(credentials: Record<string, string>): string {
 registerHarness({
   id: "pi",
   capabilities: PI_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /token .*expired/i, /re-?authenticat/i, /\bunauthorized\b/i],
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
   create: (ctx) => new PiRuntime(ctx),
   // Pi self-persists sessions as files under the room's pi-sessions/<agent>/

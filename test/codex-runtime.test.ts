@@ -787,6 +787,69 @@ test("CodexRuntime handles error notification", async () => {
   }
 });
 
+test("CodexRuntime swallows reconnect notices, including the final N/N attempt, and waits for turn/completed", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    // "5/5" is the CLI starting its LAST retry attempt, not a report that it
+    // already exhausted them — a strict "attempts remaining" check here
+    // previously treated N/N as already-fatal, prematurely failing turns the
+    // CLI went on to complete (live-caught 2026-07-11 twice: 2/5, then again
+    // at 5/5 after the first fix landed). Every reconnect notice is noise
+    // until turn/completed says otherwise.
+    fake.addNotificationSequence(
+      { method: "error", params: { error: { message: "Reconnecting... 2/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "error", params: { error: { message: "Reconnecting... 5/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "turn/completed", params: { turn: { status: "completed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.ok(Array.isArray(events));
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime falls back to the last reconnect notice as the failure headline when turn/completed reports failed without its own error", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence(
+      { method: "error", params: { error: { message: "Reconnecting... 5/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "turn/completed", params: { turn: { status: "failed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+
+    await assert.rejects(
+      () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
+      /Reconnecting\.\.\. 5\/5/,
+    );
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("CodexRuntime abort sends turn/interrupt", async () => {
   const fx = await fixture();
   try {

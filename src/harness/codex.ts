@@ -650,15 +650,26 @@ export class CodexRuntime implements AgentRuntime {
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
-          // A reconnect notice with attempts remaining ("Reconnecting... 2/5")
-          // arrives as an error notification while the CLI is still retrying
-          // and the turn usually recovers — failing here kills a turn the CLI
-          // goes on to complete (live-caught 2026-07-11: daemon failed the
-          // turn at reconnect 2/5; the rollout shows it completing 21s later).
-          // Stash it and let turn/completed stay the authoritative terminal
-          // event. Every other error still fails immediately.
+          // A reconnect notice ("Reconnecting... 2/5") arrives as an error
+          // notification while the CLI is still retrying and the turn usually
+          // recovers — failing here kills a turn the CLI goes on to complete
+          // (live-caught 2026-07-11: daemon failed the turn at reconnect 2/5;
+          // the rollout shows it completing 21s later). Stash it and let
+          // turn/completed stay the authoritative terminal event.
+          //
+          // This applies to EVERY reconnect notice, including the last one
+          // ("N/N"): "N/N" means the CLI is starting attempt N of N, not that
+          // it has exhausted them — a strict `<` comparison here originally
+          // treated the final attempt as already-fatal and re-introduced the
+          // exact premature-fail bug this fix exists for, just shifted to the
+          // boundary (live-caught again 2026-07-11: two fresh turns both died
+          // at "Reconnecting... 5/5" from a daemon build that postdates the
+          // `<` fix). If the CLI truly gives up, it reports that itself via a
+          // distinct terminal error (not this "Reconnecting" phrasing) or via
+          // turn/completed(status:"failed") — both still fail immediately
+          // below/above. Every other error still fails immediately.
           const reconnect = /^Reconnecting\W*\s*(\d+)\s*\/\s*(\d+)/.exec(e.message);
-          if (reconnect && Number(reconnect[1]) < Number(reconnect[2])) {
+          if (reconnect) {
             lastTransientError = e.message;
             break;
           }
@@ -1157,6 +1168,7 @@ function readCodexLoginCredentials(configDir: string): Record<string, string> | 
 registerHarness({
   id: "codex",
   capabilities: CODEX_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /session.* expired/i, /run codex login/i],
   ui: {
     label: "codex",
     description: "OpenAI Codex app-server",

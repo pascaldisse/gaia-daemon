@@ -386,3 +386,33 @@ export async function applyDreamProposal(options: ApplyDreamProposalOptions): Pr
   await rm(path, { force: true });
   return { applied: counts.factsAdded + counts.factsInvalidated + counts.memoryEdits, skipped: counts.opsSkipped };
 }
+
+// --- dream v2 proposal rendering (shared by the CLI/harness route AND the
+// in-room /dream slash command — one formatting, everywhere it's read) ------
+
+function truncateForDream(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+function dreamOpLine(op: ConsolidateOp): string {
+  switch (op.kind) {
+    case "fact-add":
+      return `fact-add: ${truncateForDream(op.text, 120)}`;
+    case "fact-invalidate":
+      return `fact-invalidate: ${op.id}`;
+    case "memory-edit":
+      return `memory-edit (${op.action}): ${truncateForDream(op.file, 120)}`;
+  }
+}
+
+/** Render a dream propose result as the human-readable listing both `gaia
+ * dream` and the room's `/dream` command print verbatim. `applyHint` is the
+ * caller's own "how to accept this" line (CLI vs. slash-command phrasing
+ * differ; the ops listing above it never does). */
+export function formatDreamProposal(result: ConsolidateResult, applyHint: string): string {
+  if (!result.ran) return `dream: ${result.reason ?? "did not run"}`;
+  const ops = result.proposedOps ?? [];
+  if (!ops.length) return "dream: no ops proposed — memory is already tidy.";
+  return [...ops.map(dreamOpLine), "", applyHint].join("\n");
+}

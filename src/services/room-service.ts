@@ -61,6 +61,7 @@ import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
+import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, effectiveTrust, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
@@ -117,7 +118,11 @@ export interface RoomMemoryHooks {
    * are self-matches and excluded (MEMORY-DESIGN.md §7). */
   autoRecallBlock(agentId: string, query: string, context?: ActiveContextRef): Promise<string>;
   capture(agentId: string, capture: EpisodeCapture): Promise<void>;
-  consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
+  consolidate(agentId: string, options?: { force?: boolean; propose?: boolean }): Promise<ConsolidateResult>;
+  /** Dream v2 apply: commits a standing dream-proposal.json (backs `/dream
+   * [agent] --apply`, mirrors the CLI/harness route). null = no proposal
+   * pending. */
+  applyDreamProposal?(agentId: string): Promise<{ applied: number; skipped: number } | null>;
   /** Ranked search over facts, episodes, and room history — backs /recall.
    * `degraded` notes are rendered, never dropped (§10). */
   search(agentId: string, query: string, request?: { limit?: number; context?: ActiveContextRef }): Promise<{ hits: MemorySearchHit[]; degraded: string[] }>;
@@ -190,6 +195,12 @@ function ambientWatchdogPath(roomId: string): string {
 interface AmbientWatchdog {
   toolCalls: number;
   messages: string[];
+  /** Optional display label (e.g. "🖤 UltraWhip", "❤️ UltraLove") the writing
+   * plugin can stamp on its own file so the client's indicator chip shows
+   * which watchdog is actually running instead of a name hardcoded for one
+   * specific plugin. Absent (older plugin, hand-edited file) → client falls
+   * back to a generic label. Core never interprets it, just passes it through. */
+  label?: string;
 }
 
 /** Best-effort read, never throws: a missing file, a plugin mid-write, or a
@@ -201,6 +212,7 @@ function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     const toolCalls = parsed?.toolCalls;
     const messages = parsed?.messages;
+    const label = parsed?.label;
     if (
       typeof toolCalls === "number" &&
       Number.isFinite(toolCalls) &&
@@ -209,7 +221,11 @@ function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
       messages.length > 0 &&
       messages.every((m: unknown) => typeof m === "string" && m.trim().length > 0)
     ) {
-      return { toolCalls: Math.floor(toolCalls), messages };
+      return {
+        toolCalls: Math.floor(toolCalls),
+        messages,
+        ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
+      };
     }
     return undefined;
   } catch {
@@ -280,6 +296,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
+  dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
@@ -322,6 +339,8 @@ export class RoomService {
    * (drain sets activeTask before awaiting a command turn, so a concurrent
    * sendMessage sees that instead of blocking on the command). */
   private draining: Promise<void> | undefined;
+  /** Single wake-up for the durable queue head's transient-auth backoff. */
+  private authRetryTimer: ReturnType<typeof setTimeout> | undefined;
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
@@ -535,6 +554,8 @@ export class RoomService {
   }
 
   async dispose(): Promise<void> {
+    clearTimeout(this.authRetryTimer);
+    this.authRetryTimer = undefined;
     await Promise.all(Object.values(this.runtimes).map((runtime) => runtime.dispose()));
   }
 
@@ -753,6 +774,18 @@ export class RoomService {
       if (this.activeTask) return;
       const next = await this.room.peekQueue();
       if (!next) return;
+      const due = next.notBefore ? Date.parse(next.notBefore) : Number.NaN;
+      if (Number.isFinite(due) && due > Date.now()) {
+        onDecided?.();
+        onDecided = undefined;
+        clearTimeout(this.authRetryTimer);
+        this.authRetryTimer = setTimeout(() => {
+          this.authRetryTimer = undefined;
+          void this.drain();
+        }, due - Date.now());
+        this.authRetryTimer.unref?.();
+        return;
+      }
       const chip = this.queuedTasks.find((task) => task.id === next.taskId);
       this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
       const task = chip ?? this.createTask(next.text, next.targets);
@@ -790,10 +823,10 @@ export class RoomService {
           ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
           ...(next.recorded ? { recordUserMessage: false } : {}),
           ...(next.nativeCommand ? { nativeCommand: true } : {}),
-          // The stall-retried prompt is already on the transcript from the
-          // original (aborted) run — never re-record it. `queued: next` above
-          // already carries `stallRetried` through to runAgentTask's options.
-          ...(next.stallRetried ? { recordUserMessage: false } : {}),
+          // Retried prompts are already on the transcript from the original
+          // run — never re-record them. `queued: next` above carries retry
+          // metadata through to runAgentTask's options.
+          ...(next.stallRetried || next.authRetries ? { recordUserMessage: false } : {}),
         });
       } catch (error) {
         this.settleTask(task, "error", error);
@@ -919,6 +952,13 @@ export class RoomService {
    * idle observation right after open can be a lie). Unlike waitForIdle
    * (one task), this covers everything the room is still going to run —
    * the summon-recovery wait. */
+  /** True while a queued message or durable pending-turn marker still exists — i.e. the room
+   * will run again without outside input (auth-retry requeue etc.). */
+  async hasPendingWork(): Promise<boolean> {
+    await this.init();
+    return Boolean(this.activeTask || this.queuedTasks.length > 0 || (await this.room.state()).pendingTurn != null);
+  }
+
   async waitForSettled(): Promise<void> {
     await this.init();
     let stable = 0;
@@ -1349,7 +1389,10 @@ export class RoomService {
         this.liveTurn = undefined;
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
         else await this.room.clearPendingTurn();
-        if (!(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options))) {
+        if (
+          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
+          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
+        ) {
           await this.appendTurnFailure(target, error);
         }
         await this.captureEpisode(target, text, partial, "error", {}, channel);
@@ -1402,7 +1445,10 @@ export class RoomService {
       if (failed) {
         // Genuine mid-stream failure (not a user stop): the progress is now
         // durable; surface the error so the task settles as error.
-        if (!(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options))) {
+        if (
+          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
+          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
+        ) {
           await this.appendTurnFailure(target, turn.error);
         }
         await this.captureEpisode(target, text, reply, "error", turn.details, channel);
@@ -1683,6 +1729,46 @@ export class RoomService {
     return true;
   }
 
+  private async maybeRequeueAuth(
+    targets: string[],
+    agentId: string,
+    text: string,
+    error: unknown,
+    _partialReply: string,
+    channel: "voice" | undefined,
+    attachments: MessageAttachment[] | undefined,
+    options: SendMessageOptions,
+  ): Promise<boolean> {
+    const isAuth = error instanceof Error && error.name === "TransientAuthError";
+    const attempt = (options.queued?.authRetries ?? 0) + 1;
+    if (!isAuth || attempt > 5) return false;
+    const backoff = [30_000, 60_000, 120_000, 300_000, 600_000][attempt - 1];
+    const event: RoomEvent = {
+      id: newId("system_authretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⚠ turn failed on transient auth (@${agentId}) — requeued, retry ${attempt}/5 in ${backoff / 1000}s`,
+    };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const retryTask = this.createTask(text, targets);
+    retryTask.status = "queued";
+    await this.room.enqueue({
+      taskId: retryTask.id,
+      text,
+      targets,
+      ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      authRetries: attempt,
+      notBefore: new Date(Date.now() + backoff).toISOString(),
+      queuedAt: retryTask.startedAt,
+    });
+    this.queuedTasks.push(retryTask);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
+    void this.emitSnapshot();
+    return true;
+  }
+
   /** Episodic capture is best-effort derived data: a failure must never fail
    * the turn that produced it. */
   private async captureEpisode(
@@ -1719,6 +1805,26 @@ export class RoomService {
     const result = await this.options.memory.consolidate(target, { force: true });
     if (!result.ran) return `Consolidation skipped for @${target}: ${result.reason ?? "nothing to do"}.`;
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
+  }
+
+  /** Dream v2, reachable from the chat composer (was CLI-only via `gaia
+   * dream` — the command existed but no room recognized it as a slash
+   * command, so autocomplete showed "no matches"). `/dream [agent]` proposes
+   * (never applies); `/dream [agent] --apply` commits the standing proposal.
+   * Same underlying MemoryService calls the CLI/harness route uses, so the
+   * two surfaces can never drift. */
+  async runDreamCommand(agentId?: string, apply?: boolean): Promise<string> {
+    const target = agentId ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;
+    if (!this.options.memory) return "Memory consolidation is not available in this workspace.";
+    if (apply) {
+      if (!this.options.memory.applyDreamProposal) return "Dream apply is not available in this workspace.";
+      const result = await this.options.memory.applyDreamProposal(target);
+      if (!result) return `No pending dream proposal for @${target} — run \`/dream ${target}\` first.`;
+      return `Applied ${result.applied} ops (${result.skipped} skipped) for @${target}.`;
+    }
+    const result = await this.options.memory.consolidate(target, { propose: true, force: true });
+    return formatDreamProposal(result, `run: /dream ${target} --apply to accept, or /dream ${target} again to regenerate.`);
   }
 
   /** Steer-by-default core: inject a plain message into @target's running turn.
@@ -2885,7 +2991,7 @@ export class RoomService {
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
         ...(() => {
           const ambient = readAmbientWatchdog(this.roomId);
-          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls } } : {};
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
         })(),
       },
       rooms: await this.listRooms(),

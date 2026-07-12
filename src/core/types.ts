@@ -202,6 +202,10 @@ export interface QueuedMessage {
    * original run) and a SECOND stall on this retry must not requeue again —
    * a dead upstream must not keep a retry loop alive forever. */
   stallRetried?: boolean;
+  /** Number of transient-auth retries already attempted for this message. */
+  authRetries?: number;
+  /** Earliest ISO timestamp at which drain may dispatch this entry. */
+  notBefore?: string;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the
@@ -986,7 +990,7 @@ export interface Snapshot {
      * toggle read fresh every tool call (see room-service.ts's
      * readAmbientWatchdog), global to whichever turn is running, in any room.
      * Surfaced here so the client can pin a live indicator while it's on. */
-    ambientWatchdog?: { toolCalls: number };
+    ambientWatchdog?: { toolCalls: number; label?: string };
     /** The running turn's accumulated view, so a client (re)subscribing mid-turn
      * (e.g. switching back to a busy room) renders it at once. Absent when idle. */
     liveTurn?: LiveTurn;
