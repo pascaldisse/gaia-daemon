@@ -1343,6 +1343,7 @@ async function probeClaudeAccountUsage(credentials: Record<string, string>): Pro
 registerHarness({
   id: "claude",
   capabilities: CLAUDE_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /please run \/login/i, /oauth token (?:has )?(?:expired|been revoked)/i, /authentication_error/i],
   ui: {
     // Claude Code picks the model itself; `--model` takes its own aliases, not
     // Pi catalog ids. Offer those aliases ("opus" = latest Opus) and hide the

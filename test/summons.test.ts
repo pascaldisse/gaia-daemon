@@ -130,6 +130,16 @@ function fakeRoom(reply: string): SummonRoomAccess & {
       return reply;
     },
     async waitForSettled() {},
+    async hasPendingWork() {
+      return false;
+    },
+    async getSnapshot() {
+      return { tasks: [task] };
+    },
+    async runCancelCommand() {
+      room.settle("cancelled");
+      return "cancelled";
+    },
     async deliverAgentResult(from: string, reply: string, delivery: SummonResultDelivery) {
       room.delivered.push({ from, reply, delivery });
     },

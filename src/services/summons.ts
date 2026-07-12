@@ -122,6 +122,8 @@ export interface SummonRoomAccess {
   /** Fully settled: no running task, no durable pending turn, empty queue
    * (covers turns that init() resumes asynchronously after a restart). */
   waitForSettled(): Promise<void>;
+  /** True while the room will run again without outside input. */
+  hasPendingWork(): Promise<boolean>;
   /** Recent + in-flight/queued tasks for this room, most-recent last. Summon
    * recovery reads the last entry's status/error to tell an errored or
    * cancelled resumed turn apart from a plain empty reply — no other channel
@@ -388,7 +390,7 @@ export class SummonCoordinator implements SummonHost {
   /** Summons run autonomously: the context gate (a human decision modal) must
    * never hold a worker's first turn. */
   private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string): Promise<string> {
-    const turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
+    let turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
     await awaitTask(child, turn, SUMMON_TIMEOUT_MS);
     if (turn.status === "running" || turn.status === "queued") {
       // Hard cap hit: the worker hung, is looping, or ran out of usage
@@ -399,6 +401,10 @@ export class SummonCoordinator implements SummonHost {
       await child.runCancelCommand();
       const { digest } = await inspectWorker(this.workspace.rootDir, roomId, agentId);
       throw new Error(["summon timed out after 30 minutes", digest].filter(Boolean).join("\n\n"));
+    }
+    if (turn.status === "error" && (await child.hasPendingWork())) {
+      await child.waitForSettled();
+      turn = (await child.getSnapshot()).tasks.at(-1) ?? turn;
     }
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
     if (turn.status === "error") throw new Error([turn.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
@@ -469,8 +475,12 @@ export class SummonCoordinator implements SummonHost {
   private async recoverOne(info: SummonChild, record: SummonDelivery): Promise<void> {
     const child = await this.serviceForRoom(info.roomId); // init() resumes the WAL turn / queue
     await child.waitForSettled();
+    let lastTask = (await child.getSnapshot()).tasks.at(-1);
+    while (lastTask?.status === "error" && (await child.hasPendingWork())) {
+      await child.waitForSettled();
+      lastTask = (await child.getSnapshot()).tasks.at(-1);
+    }
     const worker = await inspectWorker(this.workspace.rootDir, info.roomId, info.agentId);
-    const lastTask = (await child.getSnapshot()).tasks.at(-1);
     let reply: string;
     let failed: boolean;
     if (lastTask?.status === "error") {

@@ -264,6 +264,9 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(attachments ? { attachments } : {}),
       ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
       ...(raw.nativeCommand === true ? { nativeCommand: true } : {}),
+      ...(raw.stallRetried === true ? { stallRetried: true } : {}),
+      ...(typeof raw.authRetries === "number" ? { authRetries: raw.authRetries } : {}),
+      ...(typeof raw.notBefore === "string" ? { notBefore: raw.notBefore } : {}),
       queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
     });
   }

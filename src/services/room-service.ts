@@ -339,6 +339,8 @@ export class RoomService {
    * (drain sets activeTask before awaiting a command turn, so a concurrent
    * sendMessage sees that instead of blocking on the command). */
   private draining: Promise<void> | undefined;
+  /** Single wake-up for the durable queue head's transient-auth backoff. */
+  private authRetryTimer: ReturnType<typeof setTimeout> | undefined;
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
@@ -552,6 +554,8 @@ export class RoomService {
   }
 
   async dispose(): Promise<void> {
+    clearTimeout(this.authRetryTimer);
+    this.authRetryTimer = undefined;
     await Promise.all(Object.values(this.runtimes).map((runtime) => runtime.dispose()));
   }
 
@@ -770,6 +774,18 @@ export class RoomService {
       if (this.activeTask) return;
       const next = await this.room.peekQueue();
       if (!next) return;
+      const due = next.notBefore ? Date.parse(next.notBefore) : Number.NaN;
+      if (Number.isFinite(due) && due > Date.now()) {
+        onDecided?.();
+        onDecided = undefined;
+        clearTimeout(this.authRetryTimer);
+        this.authRetryTimer = setTimeout(() => {
+          this.authRetryTimer = undefined;
+          void this.drain();
+        }, due - Date.now());
+        this.authRetryTimer.unref?.();
+        return;
+      }
       const chip = this.queuedTasks.find((task) => task.id === next.taskId);
       this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
       const task = chip ?? this.createTask(next.text, next.targets);
@@ -807,10 +823,10 @@ export class RoomService {
           ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
           ...(next.recorded ? { recordUserMessage: false } : {}),
           ...(next.nativeCommand ? { nativeCommand: true } : {}),
-          // The stall-retried prompt is already on the transcript from the
-          // original (aborted) run — never re-record it. `queued: next` above
-          // already carries `stallRetried` through to runAgentTask's options.
-          ...(next.stallRetried ? { recordUserMessage: false } : {}),
+          // Retried prompts are already on the transcript from the original
+          // run — never re-record them. `queued: next` above carries retry
+          // metadata through to runAgentTask's options.
+          ...(next.stallRetried || next.authRetries ? { recordUserMessage: false } : {}),
         });
       } catch (error) {
         this.settleTask(task, "error", error);
@@ -936,6 +952,13 @@ export class RoomService {
    * idle observation right after open can be a lie). Unlike waitForIdle
    * (one task), this covers everything the room is still going to run —
    * the summon-recovery wait. */
+  /** True while a queued message or durable pending-turn marker still exists — i.e. the room
+   * will run again without outside input (auth-retry requeue etc.). */
+  async hasPendingWork(): Promise<boolean> {
+    await this.init();
+    return Boolean(this.activeTask || this.queuedTasks.length > 0 || (await this.room.state()).pendingTurn != null);
+  }
+
   async waitForSettled(): Promise<void> {
     await this.init();
     let stable = 0;
@@ -1366,7 +1389,10 @@ export class RoomService {
         this.liveTurn = undefined;
         if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
         else await this.room.clearPendingTurn();
-        if (!(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options))) {
+        if (
+          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
+          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
+        ) {
           await this.appendTurnFailure(target, error);
         }
         await this.captureEpisode(target, text, partial, "error", {}, channel);
@@ -1419,7 +1445,10 @@ export class RoomService {
       if (failed) {
         // Genuine mid-stream failure (not a user stop): the progress is now
         // durable; surface the error so the task settles as error.
-        if (!(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options))) {
+        if (
+          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
+          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
+        ) {
           await this.appendTurnFailure(target, turn.error);
         }
         await this.captureEpisode(target, text, reply, "error", turn.details, channel);
@@ -1692,6 +1721,46 @@ export class RoomService {
       ...(channel ? { channel } : {}),
       ...(attachments?.length ? { attachments } : {}),
       stallRetried: true,
+      queuedAt: retryTask.startedAt,
+    });
+    this.queuedTasks.push(retryTask);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
+    void this.emitSnapshot();
+    return true;
+  }
+
+  private async maybeRequeueAuth(
+    targets: string[],
+    agentId: string,
+    text: string,
+    error: unknown,
+    _partialReply: string,
+    channel: "voice" | undefined,
+    attachments: MessageAttachment[] | undefined,
+    options: SendMessageOptions,
+  ): Promise<boolean> {
+    const isAuth = error instanceof Error && error.name === "TransientAuthError";
+    const attempt = (options.queued?.authRetries ?? 0) + 1;
+    if (!isAuth || attempt > 5) return false;
+    const backoff = [30_000, 60_000, 120_000, 300_000, 600_000][attempt - 1];
+    const event: RoomEvent = {
+      id: newId("system_authretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⚠ turn failed on transient auth (@${agentId}) — requeued, retry ${attempt}/5 in ${backoff / 1000}s`,
+    };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const retryTask = this.createTask(text, targets);
+    retryTask.status = "queued";
+    await this.room.enqueue({
+      taskId: retryTask.id,
+      text,
+      targets,
+      ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      authRetries: attempt,
+      notBefore: new Date(Date.now() + backoff).toISOString(),
       queuedAt: retryTask.startedAt,
     });
     this.queuedTasks.push(retryTask);
