@@ -190,6 +190,12 @@ function ambientWatchdogPath(roomId: string): string {
 interface AmbientWatchdog {
   toolCalls: number;
   messages: string[];
+  /** Optional display label (e.g. "🖤 UltraWhip", "❤️ UltraLove") the writing
+   * plugin can stamp on its own file so the client's indicator chip shows
+   * which watchdog is actually running instead of a name hardcoded for one
+   * specific plugin. Absent (older plugin, hand-edited file) → client falls
+   * back to a generic label. Core never interprets it, just passes it through. */
+  label?: string;
 }
 
 /** Best-effort read, never throws: a missing file, a plugin mid-write, or a
@@ -201,6 +207,7 @@ function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     const toolCalls = parsed?.toolCalls;
     const messages = parsed?.messages;
+    const label = parsed?.label;
     if (
       typeof toolCalls === "number" &&
       Number.isFinite(toolCalls) &&
@@ -209,7 +216,11 @@ function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
       messages.length > 0 &&
       messages.every((m: unknown) => typeof m === "string" && m.trim().length > 0)
     ) {
-      return { toolCalls: Math.floor(toolCalls), messages };
+      return {
+        toolCalls: Math.floor(toolCalls),
+        messages,
+        ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
+      };
     }
     return undefined;
   } catch {
@@ -2885,7 +2896,7 @@ export class RoomService {
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
         ...(() => {
           const ambient = readAmbientWatchdog(this.roomId);
-          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls } } : {};
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
         })(),
       },
       rooms: await this.listRooms(),

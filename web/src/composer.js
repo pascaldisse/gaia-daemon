@@ -312,7 +312,15 @@ function renderComposer() {
   // across turns until toggled off, so the indicator has to too.
   const ambientWatchdog = snapshot?.room?.ambientWatchdog;
   ultrawhipWrapEl.hidden = !ambientWatchdog;
-  if (ambientWatchdog) ultrawhipWrapEl.textContent = `🖤 UltraWhip ·${ambientWatchdog.toolCalls}`;
+  // The writing plugin (e.g. /ultrawhip, /ultralove) stamps its own display
+  // label on the file it drops — generic and plugin-agnostic, same as the
+  // watchdog mechanism itself. No label (older plugin, hand-edited file) ->
+  // fall back to the original generic wording rather than assume a specific
+  // plugin is the one running.
+  if (ambientWatchdog) {
+    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? "🖤 UltraWhip"} ·${ambientWatchdog.toolCalls}`;
+    ultrawhipWrapEl.title = `An auto-repeating steer lands every ${ambientWatchdog.toolCalls} tool calls, in whatever turn is running. Toggle off with the command that turned it on (e.g. /ultrawhip, /ultralove).`;
+  }
 
   const thinking = ThinkingControl(snapshot, state.composerText);
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
@@ -551,7 +559,12 @@ function cancelEditing() {
 /** @param {KeyboardEvent} event */
 function onComposerKeydown(event) {
   const completion = state.completionHidden ? null : completionFor(state.composerText);
-  if (completion && ["ArrowDown", "ArrowUp", "Tab", "Escape", "Enter"].includes(event.key)) {
+  // A no-match completion is informational only. In particular, absolute
+  // paths begin with `/`; swallowing Enter here made a pasted path impossible
+  // to send until the user manually dismissed the "no matches" row.
+  const navigatesCompletion = ["ArrowDown", "ArrowUp", "Escape"].includes(event.key);
+  const acceptsCompletion = (completion?.options.length ?? 0) > 0 && ["Tab", "Enter"].includes(event.key);
+  if (completion && (navigatesCompletion || acceptsCompletion)) {
     event.preventDefault();
     const count = Math.max(1, completion.options.length);
     if (event.key === "ArrowDown") state.completionIndex = (state.completionIndex + 1) % count;
