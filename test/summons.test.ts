@@ -427,5 +427,6 @@ test("end-to-end: a background summon posts its result into the parent room and 
 
   // The child's durable record is closed out.
   const childState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(childState.incognito, true, "summon child rooms stay out of workspace recall and memory capture");
   assert.equal(childState.summon?.status, "delivered");
 });
