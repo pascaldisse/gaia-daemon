@@ -106,3 +106,25 @@ Pascal (2026-07-11): no claim ships untested. 'Tested' means the REAL path ran:
 - GAIA-World changes → rain perception, not screenshots.
 Self-invented smoke scripts that bypass the daemon prove nothing and are banned.
 If the live path cannot run yet (e.g. the fix needs a daemon restart), say so and mark the claim UNVERIFIED — never imply it was tested.
+
+## ⚠ ROOT CHECKOUT IS MERGE-ONLY — never work there (Pascal, 2026-07-12)
+
+Work was destroyed TWICE (2026-07-11/12) because an agent edited/committed in
+the main checkout (`/Users/pascaldisse/projects/gaia-daemon`) while other
+agents' merges and `git reset --hard` traffic ran through it. The reflog is a
+merge highway. Standing law for EVERY agent and every summoned worker:
+
+- The root checkout is a shared **merge target only**. ALL editing, committing,
+  and git surgery happens in YOUR room worktree
+  (`.gaia/worktrees/<room-id>`) on your room branch — no exceptions.
+- Never trust your shell's cwd: it can start in (or reset to) a different
+  directory between calls. Always address git explicitly with
+  `git -C <absolute-path>` and edit files by absolute worktree path.
+- **`git reset --hard`, `git checkout -f`, and `git clean` in the root checkout
+  are FORBIDDEN**, full stop — they vaporize whatever anyone else left there.
+- Landing on main, the only sanctioned way:
+  1. merge `main` INTO your worktree branch, resolve conflicts THERE,
+  2. run the gate THERE (`bun run check` + touched `bun test` files),
+  3. verify root has no tracked changes: `git -C <root> status --porcelain`,
+  4. `git -C <root> merge --ff-only <your-branch>` — fast-forward only.
+  If it can't fast-forward, your branch isn't ready; go back to step 1.
