@@ -218,6 +218,25 @@ test("@mentions route to multiple agents in order; unknown mentions fail at send
   );
 });
 
+test("@system is a reserved author, not an agent mention: routes as the room default instead of erroring", async () => {
+  const { service } = await makeService();
+  const task = await service.sendMessage("@system hello");
+  await service.waitForIdle();
+  assert.deepEqual(task.targets, ["gaia"]);
+});
+
+test("@user is a reserved author, not an agent mention: routes as the room default instead of erroring", async () => {
+  const { service } = await makeService();
+  const task = await service.sendMessage("@user hi");
+  await service.waitForIdle();
+  assert.deepEqual(task.targets, ["gaia"]);
+});
+
+test("@nosuchagent still errors Unknown agent — reserved-mention stripping doesn't touch real unknowns", async () => {
+  const { service } = await makeService();
+  await assert.rejects(() => service.sendMessage("@nosuchagent hi"), /Unknown agent/);
+});
+
 test("messages sent while busy queue DURABLY and drain in order", async () => {
   let releaseFirst: () => void = () => {};
   const gate = new Promise<void>((resolve) => {

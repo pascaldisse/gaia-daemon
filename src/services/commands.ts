@@ -149,14 +149,21 @@ export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${com
 
 const LEADING_MENTION = /^@([a-z0-9_-]+)[,:]?(?=\s|$)/i;
 
-/** The @id tokens heading the message, lowercased ([] when it opens with prose). */
+/** "system" and "user" are reserved transcript AUTHORS (not agents) and must
+ * never be treated as @mentions: stripped here, at the shared extraction
+ * layer, before any agent resolution runs. */
+export const RESERVED_AUTHORS = new Set(["system", "user"]);
+
+/** The @id tokens heading the message, lowercased, with reserved authors
+ * stripped ([] when it opens with prose or with only reserved mentions). */
 function leadingMentions(message: string): string[] {
   const ids: string[] = [];
   let rest = message.trimStart();
   for (;;) {
     const match = LEADING_MENTION.exec(rest);
     if (!match) return ids;
-    ids.push(match[1].toLowerCase());
+    const id = match[1].toLowerCase();
+    if (!RESERVED_AUTHORS.has(id)) ids.push(id);
     rest = rest.slice(match[0].length).trimStart();
   }
 }
