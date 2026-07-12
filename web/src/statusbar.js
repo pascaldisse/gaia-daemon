@@ -84,9 +84,13 @@ function renderStatusbar() {
   /** @type {Seg[]} */
   const segs = [];
   if (snapshot) {
-    const runningAgents = (snapshot.agents ?? []).filter((agent) => agent.status === "running" || agent.status === "compacting").length;
-    const runningRooms = (snapshot.rooms ?? []).filter((room) => room.running).length;
-    const running = runningAgents + runningRooms;
+    // One live turn = one running room, however many agents it targets — an
+    // agent's own status is derived from the SAME active task as its room's
+    // `running` flag (see room-service.ts's snapshot builder), so summing
+    // "running agents" with "running rooms" double-counts every turn. Count
+    // rooms only; that's the true number of concurrent turns (this room's own
+    // plus any live summon sub-rooms).
+    const running = (snapshot.rooms ?? []).filter((room) => room.running).length;
     const activeRoom = snapshot.rooms?.find((room) => room.id === snapshot.room.id);
     const activeRoomLabel = activeRoom?.title ?? snapshot.room.id;
     segs.push({ text: snapshot.workspace.rootDir.split("/").filter(Boolean).pop() ?? snapshot.workspace.id, cls: "seg-head", title: snapshot.workspace.rootDir });
@@ -95,7 +99,7 @@ function renderStatusbar() {
     segs.push({
       text: running ? `● ${running} running` : "○ idle",
       cls: running ? "seg-run on" : "seg-run",
-      title: "running agents + summons",
+      title: "rooms with a live turn (this room + any running summons)",
     });
     if (state.voice) segs.push({ text: `🎙 @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
   } else {
@@ -358,7 +362,14 @@ function elapsed(ms) {
 function BgTasksPopover() {
   const snapshot = state.snapshot;
   if (!snapshot) return null;
-  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running");
+  // `snapshot.tasks` is this room's OWN task history/queue/active-task — the
+  // room you're currently looking at, whose turn is already streaming right
+  // there in the transcript. That's foreground, not background; only a task
+  // belonging to some OTHER room would actually be a background process (and
+  // today the true source for those is `runningSummonRooms` below). Filtering
+  // on roomId keeps this correct even if a future snapshot ever merges other
+  // rooms' tasks in here.
+  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running" && task.roomId !== snapshot.room.id);
   const summons = runningSummonRooms(snapshot);
   const now = Date.now();
   return h(
