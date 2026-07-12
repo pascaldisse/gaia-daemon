@@ -165,7 +165,7 @@ function skillPathsKey(paths: string[]): string {
 }
 
 const PI_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon"],
+  gaiaTools: ["memory", "recall", "summon", "resume"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,

@@ -393,7 +393,7 @@ interface ClaudeUsage {
 }
 
 const CLAUDE_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon"],
+  gaiaTools: ["memory", "recall", "summon", "resume"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: true,
