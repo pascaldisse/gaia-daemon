@@ -178,3 +178,12 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
     agents,
   };
 }
+
+/** Live read of maxSummonsPerRoom straight off config.json — so the cap is
+ * hot-reloadable per launch, no daemon restart. Deliberately bypasses the
+ * cached `Workspace.config` that `loadWorkspace` returns once at boot. */
+export async function liveMaxSummonsPerRoom(cwd: string): Promise<number> {
+  const configPath = workspacePaths.config(cwd);
+  const config = parseWorkspaceConfig(await readJson(configPath), () => true);
+  return config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom;
+}

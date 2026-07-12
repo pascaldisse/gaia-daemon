@@ -18,7 +18,7 @@ import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { normalizeRoomState } from "./domain/rooms.js";
-import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
@@ -470,7 +470,7 @@ export class Daemon {
         workspace,
         path,
         (roomId) => this.serviceFor(workspaceId, roomId),
-        workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom,
+        () => liveMaxSummonsPerRoom(path),
         (message) => this.log(message),
       );
       this.summonCoordinators.set(workspaceId, coordinator);

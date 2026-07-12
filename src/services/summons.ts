@@ -279,7 +279,7 @@ export class SummonCoordinator implements SummonHost {
     private readonly workspace: Workspace,
     private readonly workspacePath: string,
     private readonly serviceForRoom: (roomId: string) => Promise<SummonRoomAccess>,
-    private readonly maxPerRoom: number,
+    private readonly maxPerRoom: () => Promise<number>,
     private readonly log: (message: string) => void = (message) => console.warn(`[gaia] ${message}`),
   ) {}
 
@@ -303,7 +303,8 @@ export class SummonCoordinator implements SummonHost {
    * scheduler's crash-recovery mark) use this. */
   async launch(parentRoomId: string, agentId: string, task: string, options: SummonOptions = {}): Promise<{ roomId: string; done: Promise<string> }> {
     if (!this.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
-    if (this.runningChildren(parentRoomId).length >= this.maxPerRoom) {
+    const cap = await this.maxPerRoom();
+    if (this.runningChildren(parentRoomId).length >= cap) {
       throw new Error(`Too many running summons in room ${parentRoomId}; wait for one to finish or cancel it first.`);
     }
 
