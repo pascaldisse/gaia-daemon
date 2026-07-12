@@ -6,5 +6,6 @@
 import "./pi.js";
 import "./claude.js";
 import "./codex.js";
+import "./antigravity.js";
 import "./sandbox/seatbelt.js";
 import "./sandbox/none.js";
