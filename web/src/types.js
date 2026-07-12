@@ -105,6 +105,9 @@
  * @property {string} text
  * @property {EventDetails} details
  * @property {number} version bumped on every mutation; drives keyed patching
+ * @property {boolean} [stalled] the upstream socket dropped mid-reply and the
+ *   harness is reconnecting; set from a live `system_stall` notice, cleared on
+ *   the next delta (see events.js). Paints a "reconnecting…" bubble state.
  */
 
 export {};

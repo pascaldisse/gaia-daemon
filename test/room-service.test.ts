@@ -2092,6 +2092,43 @@ test("an upstream-stall notice appends exactly one throttled system_stall room e
   );
 });
 
+test("liveTurn.stalled mirrors an upstream stall on the snapshot and clears on recovery", async () => {
+  let serviceRef: RoomService | undefined;
+  let stalledDuringStall: boolean | undefined;
+  let stalledAfterRecovery: boolean | undefined;
+  const factory = (agent: AgentDef): AgentRuntime => {
+    const runtime = {
+      agent,
+      modelLabel: "test/model",
+      capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+      async *send(): AsyncGenerator<AgentEvent> {
+        yield { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent;
+        // runAgentTurn ran onEvent → applyLiveTurn for the notice BEFORE pulling
+        // the next event (turns.ts for-await), so the mirror must now read as
+        // reconnecting — this is exactly what a mid-stall (re)subscribe sees.
+        stalledDuringStall = (await serviceRef!.getSnapshot()).room.liveTurn?.stalled;
+        yield { type: "text-delta", delta: "back" } as AgentEvent;
+        // Real output proved recovery — the flag must be cleared again.
+        stalledAfterRecovery = (await serviceRef!.getSnapshot()).room.liveTurn?.stalled;
+      },
+      async abort() {},
+      dispose() {},
+      resetRoom() {},
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ runtimeFactory: factory });
+  serviceRef = service;
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  assert.equal(stalledDuringStall, true, "an upstream-stall notice marks the live turn reconnecting on the snapshot");
+  assert.equal(stalledAfterRecovery, false, "the next real output clears the reconnecting flag");
+  // Ephemeral: nothing survives the commit (the committed reply is never "stalled").
+  assert.equal((await service.getSnapshot()).room.liveTurn, undefined, "the live mirror is gone once the turn commits");
+});
+
 /** A runtime whose every send() fails the way RunnerHost's hard stall
  * deadline fails an active channel: a named UpstreamStallError, no events
  * streamed first — the same shape a real wedged-upstream turn produces. */

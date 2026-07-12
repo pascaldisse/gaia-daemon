@@ -100,6 +100,12 @@ export interface LiveTurn {
   startedAt: string;
   text: string;
   details: EventDetails;
+  /** True while the harness is mid upstream-stall retry — a socket dropped
+   * mid-stream and it's reconnecting. Set on an `upstream-stall` notice, cleared
+   * the moment any real output resumes (see applyLiveTurn). Rides the snapshot so
+   * a client (re)subscribing mid-stall renders the "reconnecting…" bubble state
+   * instead of a frozen one; ephemeral in-memory only, like the rest of this. */
+  stalled?: boolean;
 }
 
 export interface UserRoomEvent {

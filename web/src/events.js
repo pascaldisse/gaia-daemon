@@ -93,8 +93,13 @@ export function connectEvents() {
     if (index === -1) events.push(payload.event);
     else events[index] = payload.event;
     // Stall notices never render in the transcript (messageViews filters them);
-    // surface live ones through the app's existing dismissible error banner.
-    if (isStallNotice(payload.event)) setError(payload.event.text);
+    // surface live ones through the app's existing dismissible error banner AND
+    // paint the running turn's own bubble as "reconnecting", so a frozen-looking
+    // stream reads as a retry-in-progress instead of a dead turn.
+    if (isStallNotice(payload.event)) {
+      setError(payload.event.text);
+      markStreamsStalled(payload.event.text);
+    }
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
@@ -339,8 +344,35 @@ function streamFor(scope) {
       version: 0,
     };
     state.streams.set(scope.eventId, entry);
+  } else if (entry.stalled) {
+    // Real output resumed → the upstream stall is over. The delta handler that
+    // called us bumps version + markDirty("transcript"), so clearing the flag
+    // here drops the "reconnecting…" pill in the very same repaint.
+    entry.stalled = false;
   }
   return entry;
+}
+
+/**
+ * A live upstream-stall notice arrived: mark the running turn's stream as
+ * reconnecting so its bubble shows the retry state instead of freezing. The
+ * notice names the stalled agent ("… (@agent) …"); mark that agent's live
+ * stream, or every live stream when the name can't be parsed (a room runs one
+ * turn at a time). Cleared automatically on the next delta (see streamFor).
+ * @param {string} text
+ */
+function markStreamsStalled(text) {
+  const match = /upstream stall \(@([a-z0-9_-]+)\)/i.exec(text);
+  const agent = match?.[1];
+  let touched = false;
+  for (const stream of state.streams.values()) {
+    if (agent && stream.author !== agent) continue;
+    if (stream.stalled) continue;
+    stream.stalled = true;
+    stream.version += 1;
+    touched = true;
+  }
+  if (touched) markDirty("transcript");
 }
 
 /**
@@ -454,6 +486,9 @@ export function seedLiveTurn() {
     text: live.text,
     details: live.details ?? {},
     version: (existing?.version ?? 0) + 1,
+    // The server mirrors mid-stall state, so a client (re)subscribing during a
+    // retry gap renders "reconnecting…" instead of a frozen bubble.
+    ...(live.stalled ? { stalled: true } : {}),
   });
   markDirty("transcript");
 }

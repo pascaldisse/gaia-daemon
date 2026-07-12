@@ -574,6 +574,20 @@ body.resizing { cursor: col-resize; user-select: none; }
 .stream-pending { opacity: .6; animation: stream-pulse 1.2s ease-in-out infinite; }
 @keyframes stream-pulse { 0%, 100% { opacity: .25; } 50% { opacity: .85; } }
 
+/* A streaming turn whose upstream socket dropped mid-reply: the harness is
+   retrying and will resume. Shown ON the live bubble (even one that already
+   holds partial text) so a multi-minute retry gap reads as "reconnecting" and
+   not a dead, frozen turn. Amber to match the fallback/warn convention. */
+.stream-stalled {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: .85em;
+  color: var(--warn);
+  animation: stream-pulse 1.2s ease-in-out infinite;
+}
+
 .message-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }

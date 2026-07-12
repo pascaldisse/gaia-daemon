@@ -41,6 +41,10 @@ import { state } from "./state.js";
  * @property {MessageAttachment[]} [attachments]
  * @property {boolean} [redacted]
  * @property {boolean} streaming
+ * @property {boolean} [stalled] A streaming reply whose upstream socket dropped
+ *   mid-stream — the harness is reconnecting. Paints a "reconnecting…" pill on
+ *   the live bubble (even one that already has partial text) so a retry gap
+ *   doesn't read as a dead turn.
  * @property {boolean} [queued] A not-yet-run queued message (ghost bubble).
  * @property {string} [queuedTaskId] The durable queue task id behind a `queued`
  *   ghost — the ✕ delete action removes exactly this entry from the queue.
@@ -279,6 +283,7 @@ function messageViews() {
       text: stream.text,
       details: stream.details,
       streaming: true,
+      ...(stream.stalled ? { stalled: true } : {}),
     });
   }
   // Queued messages: durable tasks waiting behind the running turn. Show them as
@@ -487,7 +492,10 @@ function Message(view) {
   const hasVisibleBody = Boolean(
     summon || orderedBlocks || showThinking || details.tools?.length || view.attachments?.length || text.trim(),
   );
-  const showTypingIndicator = Boolean(view.streaming) && !hasVisibleBody;
+  // The reconnecting pill takes over from the plain typing dots while a stall is
+  // in flight — a socket drop mid-reply must read as "retrying", not idle "…".
+  const showTypingIndicator = Boolean(view.streaming) && !hasVisibleBody && !view.stalled;
+  const showReconnecting = Boolean(view.streaming) && Boolean(view.stalled);
   // Claude.ai-style fork actions: ✎ edits a user message, ⟳ regenerates a
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
@@ -560,6 +568,13 @@ function Message(view) {
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
     summon || orderedBlocks ? null : text.trim() ? (isAgent || view.author === "system" ? MarkdownMessage(text) : h("pre", {}, LinkedText(text))) : null,
     showTypingIndicator ? h("span", { class: "stream-pending", text: "…" }) : null,
+    showReconnecting
+      ? h("span", {
+          class: "stream-stalled",
+          title: "upstream connection dropped mid-reply — the harness is reconnecting and will resume where it left off",
+          text: "⚠ reconnecting…",
+        })
+      : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
 }

@@ -3124,6 +3124,17 @@ export class RoomService {
   private applyLiveTurn(eventId: string, event: AgentEvent): void {
     const live = this.liveTurn;
     if (!live || live.eventId !== eventId) return;
+    // Mirror the harness's own stall bookkeeping (RunnerHost.arm/clearStallDeadline):
+    // an upstream-stall notice marks the turn as reconnecting so a client that
+    // (re)subscribes mid-stall renders the retry state from the snapshot rather
+    // than a frozen bubble; ANY real output (a non-notice event) proves the
+    // harness recovered and clears it. Uniform for every harness — the notice is
+    // harness-agnostic (no `=== "claude"` branch).
+    if (event.type === "notice") {
+      if (event.kind === "upstream-stall") live.stalled = true;
+    } else if (live.stalled) {
+      live.stalled = false;
+    }
     if (event.type === "text-delta") live.text += event.delta;
     applyEventToDetails(live.details, event);
   }
