@@ -102,6 +102,31 @@ export function parseConsolidateOps(reply: string): ConsolidateOp[] {
   return ops;
 }
 
+/** Bloat guard: drop fact-adds past the count budget or over the char budget.
+ * Invalidates and memory-edits (curation — the anti-bloat ops) always pass. */
+export function enforceFactBudget(
+  ops: ConsolidateOp[],
+  maxFactAdds: number,
+  maxFactChars: number,
+): { ops: ConsolidateOp[]; dropped: number } {
+  const kept: ConsolidateOp[] = [];
+  let adds = 0;
+  let dropped = 0;
+  for (const op of ops) {
+    if (op.kind !== "fact-add") {
+      kept.push(op);
+      continue;
+    }
+    if (adds >= maxFactAdds || op.text.length > maxFactChars) {
+      dropped += 1;
+      continue;
+    }
+    adds += 1;
+    kept.push(op);
+  }
+  return { ops: kept, dropped };
+}
+
 export interface ConsolidateLlmInput {
   system: string;
   user: string;
@@ -150,10 +175,22 @@ export interface ConsolidateRunOptions {
    * write the validated ops to dream-proposal.json for later review/apply, and
    * leave the episodeCursor and runs ledger untouched. */
   propose?: boolean;
+  /** Bloat guard: max NEW fact-adds proposed per run (default DEFAULT_MAX_FACT_ADDS). */
+  maxFactAdds?: number;
+  /** Bloat guard: max chars per fact-add text (default DEFAULT_MAX_FACT_CHARS). */
+  maxFactChars?: number;
   now?: Date;
 }
 
-const SYSTEM_PROMPT = `You are the memory consolidator for a GAIA agent. This run is USER-TRIGGERED: the user asked the agent to dream. Your output is NOT applied directly — it is shown to the user as a reviewable proposal, and the user decides whether to apply it. Make every op worth reviewing.
+/** Defaults for the fact-bloat budget — overridable per run via options. */
+export const DEFAULT_MAX_FACT_ADDS = 6;
+export const DEFAULT_MAX_FACT_CHARS = 220;
+
+const systemPrompt = (maxFactAdds: number, maxFactChars: number) => `You are the memory consolidator for a GAIA agent. This run is USER-TRIGGERED: the user asked the agent to dream. Your output is NOT applied directly — it is shown to the user as a reviewable proposal, and the user decides whether to apply it. Make every op worth reviewing.
+
+HARD FACT BUDGET (enforced in code — over-budget ops are DROPPED, so obey it yourself):
+- At most ${maxFactAdds} fact-add ops per run. More candidates → merge them or drop the weakest; a dream that adds less is better than one that adds noise.
+- Each fact-add text ≤ ${maxFactChars} chars. A fact that cannot fit is either two facts or too wordy — telegraph it.
 
 You receive NEW EPISODES (recent task outcomes), ACTIVE FACTS (the current long-term fact store, each with an id), and the CORE MEMORY FILES (MEMORY.md, USER.md, and any topic *.md files, each with its char count).
 
@@ -238,8 +275,10 @@ export async function runConsolidation(options: ConsolidateRunOptions): Promise<
     ...core,
   ].join("\n\n");
 
-  const reply = await options.llm({ system: SYSTEM_PROMPT, user, model: options.model });
-  const ops = parseConsolidateOps(reply);
+  const maxFactAdds = options.maxFactAdds ?? DEFAULT_MAX_FACT_ADDS;
+  const maxFactChars = options.maxFactChars ?? DEFAULT_MAX_FACT_CHARS;
+  const reply = await options.llm({ system: systemPrompt(maxFactAdds, maxFactChars), user, model: options.model });
+  const { ops, dropped } = enforceFactBudget(parseConsolidateOps(reply), maxFactAdds, maxFactChars);
 
   // Propose mode (Dream v2): run the LLM + validation exactly as normal, apply
   // NOTHING, and leave the cursor/ledger untouched. The validated ops are
@@ -249,7 +288,7 @@ export async function runConsolidation(options: ConsolidateRunOptions): Promise<
   if (options.propose) {
     const proposal: DreamProposal = { ts: now.toISOString(), episodeCursorAtPropose: page.nextCursor, ops };
     await writeJsonAtomic(join(options.memoryDir, DREAM_PROPOSAL_FILE), proposal);
-    return { ran: true, episodesSeen: episodes.length, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: 0, proposedOps: ops };
+    return { ran: true, episodesSeen: episodes.length, factsAdded: 0, factsInvalidated: 0, memoryEdits: 0, opsSkipped: dropped, proposedOps: ops };
   }
 
   const counts = await applyConsolidateOps(options, ops, now);
@@ -258,7 +297,7 @@ export async function runConsolidation(options: ConsolidateRunOptions): Promise<
     episodeCursor: page.nextCursor,
     runs: [...state.runs, now.toISOString()].slice(-RUN_LEDGER_LIMIT),
   });
-  return { ran: true, episodesSeen: episodes.length, ...counts };
+  return { ran: true, episodesSeen: episodes.length, ...counts, opsSkipped: counts.opsSkipped + dropped };
 }
 
 /** Where an op is applied: the agent's own store plus (when wired) the

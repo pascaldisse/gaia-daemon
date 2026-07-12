@@ -4,7 +4,7 @@
 // guarded writers the agent uses (dup drop, caps, secret filter), plus the
 // cursor/ledger durability and MemoryService's concurrency guard.
 
-import test from "node:test";
+import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import { CORE_MEMORY_FILE, MemoryStore } from "../src/domain/memory.js";
 import {
   applyDreamProposal,
   DREAM_PROPOSAL_FILE,
+  enforceFactBudget,
   parseConsolidateOps,
   readConsolidateState,
   runConsolidation,
@@ -120,6 +121,34 @@ test("parseConsolidateOps: garbage → []", () => {
   assert.deepEqual(parseConsolidateOps('{"kind":"fact-add","text":"not an array"}'), []);
   assert.deepEqual(parseConsolidateOps("[1, 2, 3]"), []);
   assert.deepEqual(parseConsolidateOps(""), []);
+});
+
+describe("enforceFactBudget", () => {
+  test("more fact-adds than maxFactAdds: keeps the first N, drops the rest", () => {
+    const ops = Array.from({ length: 8 }, (_, index) => ({ kind: "fact-add" as const, text: `f${index + 1}` }));
+    const { ops: kept, dropped } = enforceFactBudget(ops, 6, 220);
+    assert.deepEqual(kept, ops.slice(0, 6));
+    assert.equal(dropped, 2);
+  });
+
+  test("a fact-add over maxFactChars is dropped", () => {
+    const ops = [{ kind: "fact-add" as const, text: "x".repeat(300) }];
+    const { ops: kept, dropped } = enforceFactBudget(ops, 6, 220);
+    assert.deepEqual(kept, []);
+    assert.equal(dropped, 1);
+  });
+
+  test("invalidates and memory-edits always pass; only fact-adds count against the budget", () => {
+    const ops = [
+      { kind: "fact-add" as const, text: "keep me" },
+      { kind: "fact-invalidate" as const, id: "f_1" },
+      { kind: "memory-edit" as const, file: "MEMORY.md", action: "add" as const, content: "c" },
+      { kind: "fact-add" as const, text: "drop me" },
+    ];
+    const { ops: kept, dropped } = enforceFactBudget(ops, 1, 220);
+    assert.deepEqual(kept, [ops[0], ops[1], ops[2]]);
+    assert.equal(dropped, 1);
+  });
 });
 
 // --- runConsolidation --------------------------------------------------------
