@@ -252,9 +252,19 @@ function creationOrder(id, timestamp) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** Stall/abort notices (event ids minted with the system_stall* prefixes) are
+ * harness-connection errors, not conversation. They surface through the app's
+ * existing dismissible error banner (events.js routes live ones to setError)
+ * and are excluded from the transcript entirely — including historical ones
+ * already persisted, since detection is by event id.
+ * @param {{ id: string, author: string }} event @returns {boolean} */
+export function isStallNotice(event) {
+  return event.author === "system" && event.id.startsWith("system_stall");
+}
+
 /** @returns {MessageView[]} */
 function messageViews() {
-  const events = committedEvents();
+  const events = committedEvents().filter((event) => !isStallNotice(event));
   const views = events.map(viewOfEvent);
   const committed = new Set(events.map((event) => event.id));
   for (const stream of state.streams.values()) {

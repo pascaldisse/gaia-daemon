@@ -8,7 +8,7 @@ import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { markDirty, setError } from "./render.js";
 import { state, syncReadMarks } from "./state.js";
-import { syncOlderFromSnapshot } from "./transcript.js";
+import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
@@ -92,6 +92,9 @@ export function connectEvents() {
     const index = events.findIndex((candidate) => candidate.id === payload.event.id);
     if (index === -1) events.push(payload.event);
     else events[index] = payload.event;
+    // Stall notices never render in the transcript (messageViews filters them);
+    // surface live ones through the app's existing dismissible error banner.
+    if (isStallNotice(payload.event)) setError(payload.event.text);
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");

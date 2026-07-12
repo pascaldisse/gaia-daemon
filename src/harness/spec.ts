@@ -87,7 +87,7 @@ export interface AgentRuntime {
 
 // --- capabilities + ui (data on the spec) --------------------------------------
 
-export type GaiaTool = "memory" | "recall" | "summon";
+export type GaiaTool = "memory" | "recall" | "summon" | "resume";
 
 export interface HarnessCapabilities {
   /** Which gaia tools this harness can wire into a session; the agent's
@@ -304,10 +304,10 @@ export interface HarnessSpec {
    * pi-ai model registry id. Needed ONLY by callers that talk to a model
    * DIRECTLY through pi-ai instead of through this harness's own subprocess
    * (e.g. the daemon-side consolidation/dream LLM, which reuses an agent's
-   * configured model but bypasses its harness entirely) -- every such caller
+   * configured model but bypasses its harness entirely) — every such caller
    * must resolve through here uniformly rather than assuming the name is
-   * already a registry id. Data on the spec, read uniformly -- never
-   * id-branched. Absent => the harness's model names ARE registry ids already
+   * already a registry id. Data on the spec, read uniformly — never
+   * id-branched. Absent ⇒ the harness's model names ARE registry ids already
    * (pass through unchanged). */
   resolveApiModelId?(name: string): string;
   /** Native passthrough commands this harness advertises for `/`-autocomplete

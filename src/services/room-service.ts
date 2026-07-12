@@ -13,7 +13,7 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -179,6 +179,59 @@ const STALL_NOTICE_THROTTLE_MS = 60_000;
  * reviewer — enough for a SOUL + role, bounded so a huge persona can't bloat
  * the review turn (a big reasoning stream has wedged the reviewer before). */
 const PERSONA_CONTEXT_CAP = 16_000;
+
+/** Where a ROOM's ambient watchdog toggle file lives — one file per room, so
+ * turning it on in one room (e.g. `/ultrawhip`) never leaks into every other
+ * room/agent's turns. Generic and plugin-driven on purpose: this file's PATH
+ * is the only thing core knows; its content and whoever writes it (e.g. a
+ * `/ultrawhip` command-plugin, using the `roomId` its run() ctx carries) are
+ * none of core's business. Presence + valid shape = active for THIS room's
+ * running turns; missing/invalid = a no-op. Room ids are already
+ * filesystem-safe (see newRoomId/room dir naming), so no extra sanitizing. */
+function ambientWatchdogPath(roomId: string): string {
+  return join(homedir(), ".gaia", "ambient-watchdog", `${roomId}.json`);
+}
+
+interface AmbientWatchdog {
+  toolCalls: number;
+  messages: string[];
+  /** Optional display label (e.g. "🖤 UltraWhip", "❤️ UltraLove") the writing
+   * plugin can stamp on its own file so the client's indicator chip shows
+   * which watchdog is actually running instead of a name hardcoded for one
+   * specific plugin. Absent (older plugin, hand-edited file) → client falls
+   * back to a generic label. Core never interprets it, just passes it through. */
+  label?: string;
+}
+
+/** Best-effort read, never throws: a missing file, a plugin mid-write, or a
+ * hand-edited typo all just mean "ambient watchdog off right now." */
+function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
+  const path = ambientWatchdogPath(roomId);
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    const toolCalls = parsed?.toolCalls;
+    const messages = parsed?.messages;
+    const label = parsed?.label;
+    if (
+      typeof toolCalls === "number" &&
+      Number.isFinite(toolCalls) &&
+      Math.floor(toolCalls) > 0 &&
+      Array.isArray(messages) &&
+      messages.length > 0 &&
+      messages.every((m: unknown) => typeof m === "string" && m.trim().length > 0)
+    ) {
+      return {
+        toolCalls: Math.floor(toolCalls),
+        messages,
+        ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
+      };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Default "load last N messages" when the human doesn't specify N. */
 const CONTEXT_GATE_LAST_N = 20;
@@ -1185,11 +1238,23 @@ export class RoomService {
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
       // Role watchdog — event-driven enforcement; a role may declare a
-      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers one
-      // corrective message into the running turn when it crosses. Zero cost
-      // when the agent behaves.
+      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers a
+      // corrective message into the running turn when it crosses. Plain
+      // watchdog fires once; `repeat: true` re-fires every `toolCalls` calls
+      // for the rest of the turn. Zero cost when the agent behaves.
       let watchdogToolCalls = 0;
       let watchdogFired = false;
+      let watchdogFiredAt = 0;
+
+      // Ambient watchdog — a generic, plugin-driven sibling of the role one:
+      // ANY local command-plugin (e.g. /ultrawhip) can drop a small JSON file
+      // at ambientWatchdogPath() to make every running turn, for every agent,
+      // get an auto-repeating steer every N tool calls — no role assignment,
+      // no per-agent config, just a command toggling a file. Re-read per
+      // tool-start (cheap: one existsSync + a small readFileSync) so toggling
+      // it takes effect on the very next tool call, mid-turn.
+      let ambientToolCalls = 0;
+      let ambientFiredAt = 0;
 
       const userName = await readUserNameSetting();
 
@@ -1213,9 +1278,22 @@ export class RoomService {
           onEvent: (event) => {
             if (event.type === "tool-start") {
               watchdogToolCalls += 1;
-              if (activeRole?.watchdog && !watchdogFired && watchdogToolCalls >= activeRole.watchdog.toolCalls) {
+              const watchdog = activeRole?.watchdog;
+              const dueAgain = watchdog?.repeat && watchdogToolCalls - watchdogFiredAt >= watchdog.toolCalls;
+              if (watchdog && ((!watchdogFired && watchdogToolCalls >= watchdog.toolCalls) || dueAgain)) {
                 watchdogFired = true;
-                void runtime.steer?.(this.roomId, activeRole.watchdog.message).catch(() => {});
+                watchdogFiredAt = watchdogToolCalls;
+                const pick = watchdog.messages?.length
+                  ? watchdog.messages[Math.floor(Math.random() * watchdog.messages.length)]
+                  : watchdog.message;
+                void this.fireWatchdogSteer(target, runtime, pick);
+              }
+              ambientToolCalls += 1;
+              const ambient = readAmbientWatchdog(this.roomId);
+              if (ambient && ambientToolCalls - ambientFiredAt >= ambient.toolCalls) {
+                ambientFiredAt = ambientToolCalls;
+                const ambientPick = ambient.messages[Math.floor(Math.random() * ambient.messages.length)];
+                void this.fireWatchdogSteer(target, runtime, ambientPick);
               }
             }
             if (event.type === "model-fallback") {
@@ -1715,6 +1793,22 @@ export class RoomService {
     return true;
   }
 
+  /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
+   * shape as runSteerCommand below, just without its command-reply return
+   * value — a watchdog fires from inside an onEvent callback, not a command.
+   * Without this it only ever reached the runtime directly (never committed,
+   * never emitted), so it worked for the agent but was invisible in the room. */
+  private async fireWatchdogSteer(target: string, runtime: AgentRuntime, message: string): Promise<void> {
+    try {
+      const event = await this.room.addUserMessage(message, [target]);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      const ok = (await runtime.steer?.(this.roomId, message)) ?? false;
+      if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
+    } catch {
+      // A watchdog nudge is best-effort — never take the turn down over it.
+    }
+  }
+
   /** /steer: inject guidance into the RUNNING turn (capability-gated data —
    * pi session.steer, codex turn/steer, claude stdin stream-json). The guidance is
    * recorded as a user event for history, but the running harness already
@@ -1746,7 +1840,9 @@ export class RoomService {
    * never crashes the caller. See services/plugins.ts for the contract. */
   private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
     try {
-      return (await plugin.run(args, { homedir: homedir() })) ?? {};
+      return (
+        (await plugin.run(args, { homedir: homedir(), roomId: this.roomId, workspaceRoot: this.workspace.rootDir })) ?? {}
+      );
     } catch (error) {
       return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -2824,6 +2920,10 @@ export class RoomService {
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
+        ...(() => {
+          const ambient = readAmbientWatchdog(this.roomId);
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
+        })(),
       },
       rooms: await this.listRooms(),
       commands: await this.paletteCommands(),

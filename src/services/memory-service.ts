@@ -629,7 +629,7 @@ export class MemoryService {
   }
 
   /** The consolidation LLM call talks to a model DIRECTLY through pi-ai,
-   * bypassing the agent's own harness subprocess entirely -- so when no
+   * bypassing the agent's own harness subprocess entirely — so when no
    * explicit `consolidate.model` override is configured and we fall back to
    * the agent's own model, that name may be a harness-native alias (e.g.
    * claude's "fable"/"opus"/"sonnet"/"haiku") that pi-ai's registry doesn't

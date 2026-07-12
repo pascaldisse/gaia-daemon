@@ -976,6 +976,11 @@ export interface Snapshot {
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;
+    /** Ambient watchdog (e.g. /ultrawhip) is active — a generic, plugin-driven
+     * toggle read fresh every tool call (see room-service.ts's
+     * readAmbientWatchdog), global to whichever turn is running, in any room.
+     * Surfaced here so the client can pin a live indicator while it's on. */
+    ambientWatchdog?: { toolCalls: number; label?: string };
     /** The running turn's accumulated view, so a client (re)subscribing mid-turn
      * (e.g. switching back to a busy room) renders it at once. Absent when idle. */
     liveTurn?: LiveTurn;

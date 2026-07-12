@@ -2143,3 +2143,125 @@ test("a stalled turn with no partial reply requeues ONCE (stallRetried), then fa
   assert.equal(finalState.queue ?? undefined, undefined, "no further requeue — the queue is empty again");
   assert.equal(finalState.pendingTurn, undefined);
 });
+
+// `gaia resume <roomId> "<message>"` (server/http.ts's /api/harness/resume
+// branch) is a thin, inlined call: validate room+message, resolve the target
+// room's service via daemon.serviceFor(claims.workspaceId, room), then
+// service.sendMessage(message, { recordUserMessage: true }). `resumeDispatch`
+// below mirrors that exact control flow (same validation, same lookup-or-fail,
+// same sendMessage call) against two REAL RoomService instances so the
+// invariant that matters — the message reaches the TARGET room's service and
+// no other — is exercised against the real steer/queue/commit machinery, not
+// a mock.
+async function resumeDispatch(
+  services: Map<string, RoomService>,
+  room: string | undefined,
+  message: string | undefined,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!room?.trim() || !message?.trim()) return { status: 400, body: { error: "Missing room or message" } };
+  const service = services.get(room);
+  if (!service) return { status: 400, body: { error: `Unknown workspace: room '${room}' not found` } };
+  await service.sendMessage(message, { recordUserMessage: true });
+  return { status: 200, body: { roomId: room, result: `Resumed room '${room}' with a follow-up message.` } };
+}
+
+test("resume: rejects a missing room or message without touching any service", async () => {
+  const a = await makeService({ roomId: "room-a" });
+  const services = new Map([["room-a", a.service]]);
+
+  assert.deepEqual(await resumeDispatch(services, undefined, "keep going"), { status: 400, body: { error: "Missing room or message" } });
+  assert.deepEqual(await resumeDispatch(services, "room-a", ""), { status: 400, body: { error: "Missing room or message" } });
+  assert.deepEqual(await resumeDispatch(services, "room-a", "   "), { status: 400, body: { error: "Missing room or message" } });
+  assert.equal((await resumeDispatch(services, "no-such-room", "hi")).status, 400);
+
+  await a.service.waitForIdle();
+  const room = await RoomHandle.open(a.root, "room-a");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.length, 0, "none of the rejected calls reached sendMessage");
+});
+
+test("resume: routes the message to sendMessage on the TARGET room's service, never a different room's", async () => {
+  const a = await makeService({ roomId: "room-a" });
+  const b = await makeService({ roomId: "room-b" });
+  const services = new Map([
+    ["room-a", a.service],
+    ["room-b", b.service],
+  ]);
+
+  const result = await resumeDispatch(services, "room-b", "keep going, worker");
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { roomId: "room-b", result: "Resumed room 'room-b' with a follow-up message." });
+
+  await b.service.waitForIdle();
+  await a.service.waitForIdle();
+
+  const roomB = await RoomHandle.open(b.root, "room-b");
+  const { events: bTranscript } = await roomB.eventsFrom(0);
+  assert.equal(bTranscript[0]?.author, "user");
+  assert.equal(bTranscript[0]?.text, "keep going, worker");
+  assert.equal(bTranscript[1]?.author, "gaia", "the target room's own agent actually ran the resumed turn");
+
+  const roomA = await RoomHandle.open(a.root, "room-a");
+  const { events: aTranscript } = await roomA.eventsFrom(0);
+  assert.equal(aTranscript.length, 0, "resume must never leak the message into a different room");
+});
+
+test("resume: a message that arrives while the target room is mid-turn STEERS it instead of queuing (steer-by-default)", async () => {
+  let releaseFirst: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let first = true;
+  const { service, root } = await makeService({
+    roomId: "worker-room",
+    runtimeFactory: (agent) => {
+      const runtime = {
+        agent,
+        modelLabel: "test/model",
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsSteer: true },
+        async *send(): AsyncIterable<AgentEvent> {
+          if (first) {
+            first = false;
+            await gate;
+          }
+          yield { type: "text-delta", delta: "done" };
+        },
+        async abort() {},
+        dispose() {},
+        async steer(_roomId: string, text: string): Promise<boolean> {
+          steeredWith.push(text);
+          return true;
+        },
+      };
+      return runtime as unknown as AgentRuntime;
+    },
+  });
+  const steeredWith: string[] = [];
+  const services = new Map([["worker-room", service]]);
+
+  const first_ = service.sendMessage("start the task");
+  await sleep(20); // let the turn become active before resuming
+
+  const resumeResult = await resumeDispatch(services, "worker-room", "also check the edge case");
+  assert.equal(resumeResult.status, 200);
+  assert.deepEqual(steeredWith, ["also check the edge case"]);
+
+  releaseFirst();
+  await first_;
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "worker-room");
+  const { events: transcript } = await room.eventsFrom(0);
+  // The steered guidance is recorded for history (runSteerCommand/
+  // steerRunningTurn's documented contract) but never queued as its OWN
+  // pending task — it rode straight into the ALREADY-RUNNING turn, so there
+  // is exactly one such user event, and only one agent reply total (the
+  // resumed turn never forked into a second run).
+  assert.equal(
+    transcript.filter((event) => event.author === "user" && event.text === "also check the edge case").length,
+    1,
+  );
+  assert.equal(transcript.filter((event) => event.author === "gaia").length, 1, "the steer rode into the single running turn, not a second one");
+  const finalState = await room.state();
+  assert.equal(finalState.queue ?? undefined, undefined, "resume-as-steer never lands in the durable queue");
+});

@@ -12,7 +12,10 @@ import { pathToFileURL } from "node:url";
 export interface CommandPlugin {
   command: string;
   description?: string;
-  run(args: string[], ctx: { homedir: string }): { steer?: string; reply?: string } | Promise<{ steer?: string; reply?: string }>;
+  run(
+    args: string[],
+    ctx: { homedir: string; roomId: string; workspaceRoot: string },
+  ): { steer?: string; reply?: string } | Promise<{ steer?: string; reply?: string }>;
 }
 
 /** Scans ~/.gaia/plugins/*.mjs and dynamic-imports each one's default export as

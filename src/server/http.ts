@@ -58,6 +58,13 @@ const MIME: Record<string, string> = {
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = randomUUID();
 const RELOAD_DELAY_MS = 250;
+// Upper bound on the graceful close inside a reload. closeServer awaits
+// daemon.dispose(), and one wedged runner (an agent turn stuck retrying a dead
+// upstream socket) hangs that await forever — observed live 2026-07-11 20:03:
+// /rebuild stopped after keep-awake teardown, never rebuilt, never re-exec'd,
+// port dead until the app was force-quit. Reload's contract is "the app always
+// comes back", so past this deadline we abandon graceful teardown and proceed.
+const RELOAD_CLOSE_TIMEOUT_MS = 5_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
@@ -173,6 +180,17 @@ function beginSse(response: ServerResponse): void {
 function pathInside(path: string, root: string): boolean {
   const rel = relative(resolve(root), resolve(path));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** Walk up from a path to the nearest ancestor directory named "*.app" (a macOS bundle root), if any. */
+function findAppBundleRoot(path: string): string | undefined {
+  let dir = resolve(path);
+  while (true) {
+    if (dir.endsWith(".app")) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
 }
 
 async function openWithSystem(target: string): Promise<void> {
@@ -340,7 +358,23 @@ export class GaiaWebServer {
 
   private async reloadNow(): Promise<void> {
     try {
-      if (this.server) await this.closeServer(this.server);
+      // Bounded graceful close (see RELOAD_CLOSE_TIMEOUT_MS): a hung or failed
+      // dispose must never block the re-exec. process.exit(0) below frees the
+      // port either way, and the next boot's orphan sweep (daemon.serviceFor
+      // invariant) reaps any runner subprocess a skipped dispose left behind.
+      if (this.server) {
+        const closed = this.closeServer(this.server).then(
+          () => "closed" as const,
+          (error) => {
+            console.error(`[gaia] reload: graceful close failed: ${error instanceof Error ? error.message : String(error)} — proceeding with re-exec`);
+            return "failed" as const;
+          },
+        );
+        const deadline = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), RELOAD_CLOSE_TIMEOUT_MS).unref());
+        if ((await Promise.race([closed, deadline])) === "timeout") {
+          console.error(`[gaia] reload: graceful close still pending after ${RELOAD_CLOSE_TIMEOUT_MS}ms — proceeding with re-exec (pid ${process.pid})`);
+        }
+      }
       const reloadLog = openSync(join(gaiaHome(), "reload.log"), "a");
 
       // A reload doesn't just re-exec the running process — when a build
@@ -386,6 +420,44 @@ export class GaiaWebServer {
           rebuildOk = true;
         } else {
           writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+        }
+      }
+
+      // build-daemon.mjs (above) overwrites gaia-daemon/web/setups IN PLACE
+      // inside whatever directory it's pointed at. When that directory is a
+      // macOS .app's Contents/MacOS (the installed-app case: plan.out came
+      // from gaia-source.json, not the fromSource dev-repo case), those files
+      // sit inside the bundle's sealed code-signature — overwriting them
+      // without re-signing breaks the seal (`codesign --verify` then reports
+      // "invalid Info.plist (plist or signature have been modified)"), and a
+      // broken seal makes macOS's TCC privacy daemon silently refuse the
+      // NSMicrophoneUsageDescription prompt on next mic use — no dialog, just
+      // "microphone permission denied or unavailable" forever, until someone
+      // re-signs by hand. Observed live 2026-07-12: every /rebuild since
+      // 2026-07-10's mic fix re-broke it. Re-seal here, every time, so the
+      // installed app is never left signature-invalid after a rebuild.
+      if (rebuildOk && plan && !fromSource && process.platform === "darwin") {
+        const appRoot = findAppBundleRoot(plan.out);
+        if (appRoot) {
+          const parsed = (() => {
+            try {
+              return JSON.parse(readFileSync(join(dirname(process.execPath), "gaia-source.json"), "utf8")) as { root: string };
+            } catch {
+              return undefined;
+            }
+          })();
+          const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
+          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
+          codesignArgs.push(appRoot);
+          const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });
+          if (sign.status === 0) {
+            writeSync(reloadLog, `[gaia] reload: re-signed ${appRoot} after rebuild\n`);
+          } else {
+            writeSync(reloadLog, `[gaia] reload: codesign FAILED (status ${sign.status}) — mic/camera permission will likely break until fixed\n`);
+          }
+        } else {
+          writeSync(reloadLog, `[gaia] reload: installed binary not inside a .app bundle — skipping re-sign\n`);
         }
       }
 
@@ -481,7 +553,11 @@ export class GaiaWebServer {
 
     if (
       method === "POST" &&
-      (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall" || path === "/api/harness/dream")
+      (path === "/api/harness/memory" ||
+        path === "/api/harness/summon" ||
+        path === "/api/harness/recall" ||
+        path === "/api/harness/dream" ||
+        path === "/api/harness/resume")
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1214,7 +1290,7 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream";
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
     if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
     }
@@ -1309,6 +1385,28 @@ export class GaiaWebServer {
       try {
         const result = apply ? await this.daemon.harnessDreamApply(claims, agentId) : await this.daemon.harnessDreamPropose(claims, agentId);
         json(response, 200, { ok: true, result });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/resume — send a follow-up message into an EXISTING
+    // room/sub-room to resume or steer its worker (steers a running turn,
+    // starts a fresh one if idle), instead of firing a brand-new summon.
+    // ALWAYS fire-and-forget, mirroring summon below: sendMessage kicks the
+    // turn off and returns immediately, it never blocks on the turn settling.
+    // `room` is scoped strictly to claims.workspaceId — serviceFor resolves it
+    // against the CALLER's own workspace registry, so a caller can never reach
+    // a room living in another workspace even by guessing its id.
+    if (pathname === "/api/harness/resume") {
+      const room = stringField(body, "room")?.trim();
+      const message = stringField(body, "message")?.trim();
+      if (!room || !message) return json(response, 400, { error: "Missing room or message" });
+      try {
+        const service = await this.daemon.serviceFor(claims.workspaceId, room);
+        await service.sendMessage(message, { recordUserMessage: true });
+        json(response, 200, { roomId: room, result: `Resumed room '${room}' with a follow-up message.` });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

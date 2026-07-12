@@ -31,6 +31,7 @@ const MEMORY_USAGE = `Usage:
 const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
 const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>`;
+const RESUME_USAGE = `Usage: gaia resume <roomId> "<message>"`;
 const DREAM_USAGE = `Usage:
   gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
   gaia dream [agent] --apply   apply the proposal from the last dream run`;
@@ -223,6 +224,21 @@ async function runSummon(args: string[]): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
+// `gaia resume <roomId> "<message>"` — send a follow-up message into an
+// EXISTING room/sub-room to resume or steer its worker, instead of firing a
+// brand-new summon. Same fire-and-forget shape as summon: the daemon's
+// sendMessage steers a running turn or starts a fresh one if idle, and this
+// call returns as soon as that's kicked off, never waiting on the turn.
+async function runResume(args: string[]): Promise<number> {
+  const { positional } = parseFlags(args);
+  const room = positional[0];
+  const message = positional.slice(1).join(" ").trim();
+  if (!room || !message) return fail(RESUME_USAGE);
+  const result = await daemonPost("/api/harness/resume", { room, message });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
+
 // `gaia dream` — user-triggered memory consolidation ("Dream v2"). Unlike
 // mem/recall/summon it is never granted to an agent (no GaiaTool entry, no
 // Claude/Pi grant): a person runs it from a shell against their own workspace.
@@ -299,7 +315,7 @@ async function runCaryll(args: string[]): Promise<number> {
   return fail(CARYLL_USAGE);
 }
 
-/** Dispatches `gaia mem|recall|summon|caryll|dream …`. Returns a process exit code. */
+/** Dispatches `gaia mem|recall|summon|resume|caryll|dream …`. Returns a process exit code. */
 export async function runHarnessCommand(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   // `caryll` is a plain file-transform CLI utility, not an agent GaiaTool
@@ -319,6 +335,8 @@ export async function runHarnessCommand(args: string[]): Promise<number> {
       return runRecall(rest);
     case "summon":
       return runSummon(rest);
+    case "resume":
+      return runResume(rest);
     default:
       return fail(`Unknown command: gaia ${command}`);
   }
