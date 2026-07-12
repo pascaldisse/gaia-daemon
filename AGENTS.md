@@ -128,3 +128,21 @@ merge highway. Standing law for EVERY agent and every summoned worker:
   3. verify root has no tracked changes: `git -C <root> status --porcelain`,
   4. `git -C <root> merge --ff-only <your-branch>` — fast-forward only.
   If it can't fast-forward, your branch isn't ready; go back to step 1.
+
+## REPO MAP — where things live (so agents stop grepping blind)
+
+- **Rooms/transcripts are PER-WORKSPACE, not global:**
+  `<workspace>/.gaia/rooms/<roomId>/transcript.jsonl`. Workspaces with room
+  stores include `~/`, `projects/`, `GAIA-World-Engine/`, `mxo-hd/`,
+  `darkness/`, `gaia-os/`, `ttrpg/`, `vision-flow/`, `gaia-daemon/`,
+  `Downloads/test/`.
+- **`~/.gaia` = global config only:** `accounts.json`, `agents/` (personas +
+  souls), `ambient-watchdog/`, `app.json`, `config.json`, `browser-profiles/`,
+  `codex-accounts/`, `backups/`. No rooms here.
+- **System prompt / soul / tool-docs assembly:** `src/harness/prompt.ts`
+  (assembler), `src/harness/tools.ts` (the GAIA-tools block agents see),
+  `src/harness/spec.ts`, `src/harness/model-label.ts`; per-agent soul +
+  memory from `~/.gaia/agents/<id>/`.
+- **Internal design docs:** `DESIGN.md`, `MEMORY-DESIGN.md`, `REPLACEMENT.md`,
+  `IMPLEMENTATION-PLAN.md`, `CRITIQUE.md`, `TODO.md`, `docs/CARYLL.md`,
+  `docs/IMPORT.md`, `docs/REMOTE-STACK.md`, plus `HANDOFF-*.md` files.

@@ -613,8 +613,7 @@ export class RunnerHost implements AgentRuntime {
         this.settleTurn();
         return;
       case "turn-error":
-        this.activeChannel?.fail(new Error(message.message));
-        this.activeChannel?.close();
+        this.failActive(new Error(message.message));
         this.settleTurn();
         return;
       case "steer-result":
@@ -631,8 +630,22 @@ export class RunnerHost implements AgentRuntime {
     }
   }
 
+  /** Classify transient session/auth deaths from harness-declared DATA only. */
+  private classifyTurnError(error: unknown): unknown {
+    if (!(error instanceof Error)) return error;
+    const patterns = harnessSpecFor(this.options.harness).transientAuthPatterns;
+    const transient = patterns?.some((pattern) => {
+      pattern.lastIndex = 0;
+      const matched = pattern.test(error.message);
+      pattern.lastIndex = 0;
+      return matched;
+    });
+    if (transient) error.name = "TransientAuthError";
+    return error;
+  }
+
   private failActive(error: unknown): void {
-    this.activeChannel?.fail(error);
+    this.activeChannel?.fail(this.classifyTurnError(error));
     this.activeChannel?.close();
   }
 

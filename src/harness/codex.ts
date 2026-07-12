@@ -1168,6 +1168,7 @@ function readCodexLoginCredentials(configDir: string): Record<string, string> | 
 registerHarness({
   id: "codex",
   capabilities: CODEX_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /session.* expired/i, /run codex login/i],
   ui: {
     label: "codex",
     description: "OpenAI Codex app-server",

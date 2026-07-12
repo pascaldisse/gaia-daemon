@@ -22,7 +22,7 @@ import { json, parseBody } from "../core/http.js";
 import type { ChatMessage, MonadConfig, MonadSlot, Workspace } from "../core/types.js";
 import { normalizeRoomState } from "../domain/rooms.js";
 import { parseRoleMarkdown, resolveAgentRole } from "../domain/roles.js";
-import { ensureWorkspaceRoom, loadWorkspace } from "../domain/workspace.js";
+import { ensureWorkspaceRoom, liveMaxSummonsPerRoom, loadWorkspace } from "../domain/workspace.js";
 import { MemoryStore } from "../domain/memory.js";
 import { MonadEngine } from "./monad.js";
 import { SummonCoordinator, type SummonRoomAccess } from "./summons.js";
@@ -525,7 +525,7 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
     services.set(roomId, service);
     return service;
   };
-  coordinator = new SummonCoordinator(workspace, cwd, serviceForRoom, workspace.config.maxSummonsPerRoom ?? 8);
+  coordinator = new SummonCoordinator(workspace, cwd, serviceForRoom, () => liveMaxSummonsPerRoom(cwd));
 
   await ensureWorkspaceRoom(cwd, room);
 

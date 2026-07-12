@@ -196,6 +196,10 @@ export interface QueuedMessage {
    * original run) and a SECOND stall on this retry must not requeue again —
    * a dead upstream must not keep a retry loop alive forever. */
   stallRetried?: boolean;
+  /** Number of transient-auth retries already attempted for this message. */
+  authRetries?: number;
+  /** Earliest ISO timestamp at which drain may dispatch this entry. */
+  notBefore?: string;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the
