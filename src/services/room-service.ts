@@ -50,7 +50,7 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
-import { listWorkspacePetBindings, loadPet } from "../domain/pets.js";
+import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
@@ -944,8 +944,9 @@ export class RoomService {
         : `No pet is bound to @${target} in this room.`;
     }
 
-    const packageName = command.package?.trim();
-    if (!packageName) return "Usage: /pet <package> — binds the agent you're talking to (no @mention needed). Use /pet @agent <package> only to target a different one.";
+    // Bare /pet (no package) just spawns the default pet for whoever you're
+    // talking to — a package name is an override, never a requirement.
+    const packageName = command.package?.trim() || DEFAULT_PET_NAME;
     try {
       await (this.options.petLoader ?? loadPet)(packageName);
     } catch (error) {
