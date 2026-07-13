@@ -15,6 +15,10 @@ export function gaiaHome(): string {
 // --- global layout ---------------------------------------------------------
 
 export const globalPaths = {
+  /** Global fallback for workspace `env` (machine-level skill credentials
+   * etc.) — merged as the base under every workspace's own env, see
+   * domain/workspace.ts loadWorkspace. */
+  config: () => join(gaiaHome(), "config.json"),
   /** Daemon-global app state (workspace registry, current workspace). */
   appSettings: () => join(gaiaHome(), "app.json"),
   accounts: () => join(gaiaHome(), "accounts.json"),

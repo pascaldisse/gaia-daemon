@@ -4,7 +4,8 @@
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
@@ -131,6 +132,17 @@ export async function discoverContextFiles(cwd: string): Promise<ContextFile[]> 
   return existsSync(path) ? [{ path, content: await readFile(path, "utf8") }] : [];
 }
 
+/** Global (~/.gaia/config.json) `env` fallback so machine-level skill
+ * credentials don't need duplicating into every workspace config. Global env
+ * is the base, workspace env overrides same-key; only `env` merges, nothing
+ * else from global config leaks into the workspace. Skipped when the
+ * workspace root IS the home dir — same config.json, nothing to merge. */
+async function mergeGlobalEnv(cwd: string, config: WorkspaceConfig): Promise<void> {
+  if (resolve(cwd) === resolve(homedir())) return;
+  const globalConfig = parseWorkspaceConfig(await readJson(globalPaths.config()), () => true);
+  if (globalConfig.env) config.env = { ...globalConfig.env, ...config.env };
+}
+
 export async function loadWorkspace(cwd: string): Promise<Workspace> {
   const dir = workspacePath(cwd);
   if (!existsSync(dir)) throw new Error(`Missing ${WORKSPACE_DIRNAME} workspace. Run \`gaia init\` first.`);
@@ -147,6 +159,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   const config = parseWorkspaceConfig(await readJson(configPath), () => true);
   // maxSummonsPerRoom falls back through the default rather than staying unset.
   config.maxSummonsPerRoom ??= DEFAULTS.maxSummonsPerRoom;
+  await mergeGlobalEnv(cwd, config);
   const contextFiles = await discoverContextFiles(cwd);
   const agents = await loadAgentDefinitions(globalAgentsDir, workspacePaths.agentsOverrideDir(cwd));
 

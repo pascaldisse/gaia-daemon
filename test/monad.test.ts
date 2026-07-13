@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MonadEngine } from "../src/services/monad.js";
@@ -230,6 +230,60 @@ test("setup: activating with an unknown policy or missing agents fails clearly",
     await initWorkspace(proj);
     const workspace = await loadWorkspace(proj);
     await assert.rejects(() => activateSetup(workspace, "no-such-setup", "default"), /Unknown setup/);
+  } finally {
+    if (prevHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = prevHome;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------- loadWorkspace: global ~/.gaia/config.json env fallback ----------
+
+test("loadWorkspace: global config.json env is a base, workspace env overrides same key", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gaia-env-"));
+  const home = join(tmp, "home");
+  const proj = join(tmp, "proj");
+  const prevHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = home;
+  try {
+    await mkdir(proj, { recursive: true });
+    await initWorkspace(proj);
+    await mkdir(home, { recursive: true });
+    await writeFile(join(home, "config.json"), JSON.stringify({ env: { BRAVE_API_KEY: "global-key", SHARED: "global" } }));
+
+    const configPath = join(proj, ".gaia", "config.json");
+    const raw = JSON.parse(await readFile(configPath, "utf8"));
+    raw.env = { SHARED: "workspace" };
+    await writeFile(configPath, JSON.stringify(raw));
+
+    const workspace = await loadWorkspace(proj);
+    assert.equal(workspace.config.env?.BRAVE_API_KEY, "global-key", "global-only key must be visible");
+    assert.equal(workspace.config.env?.SHARED, "workspace", "workspace key must win over global same-key");
+  } finally {
+    if (prevHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = prevHome;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkspace: missing global config.json leaves workspace env untouched", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gaia-env-"));
+  const home = join(tmp, "home");
+  const proj = join(tmp, "proj");
+  const prevHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = home;
+  try {
+    await mkdir(proj, { recursive: true });
+    await initWorkspace(proj);
+    // No ~/.gaia/config.json written at all.
+
+    const configPath = join(proj, ".gaia", "config.json");
+    const raw = JSON.parse(await readFile(configPath, "utf8"));
+    raw.env = { ONLY_WORKSPACE: "1" };
+    await writeFile(configPath, JSON.stringify(raw));
+
+    const workspace = await loadWorkspace(proj);
+    assert.deepEqual(workspace.config.env, { ONLY_WORKSPACE: "1" });
   } finally {
     if (prevHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = prevHome;
