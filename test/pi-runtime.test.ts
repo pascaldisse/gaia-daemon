@@ -339,6 +339,67 @@ test("PiRuntime.compact surfaces the SDK's summary for durable compaction", asyn
   }
 });
 
+test("PiRuntime.compact lazily restores a persisted session after a daemon restart (fresh runtime, no prior turn in this process)", async () => {
+  const fx = await harnessFixture();
+  try {
+    // Simulate what's on disk after a prior process ran a turn: a non-empty
+    // pi session dir (hasDurableSession's own on-disk truth) with nothing yet
+    // in THIS process's in-memory SessionMap — the daemon-restart / cold-runner
+    // shape host.ts's hasDurableSession gate already lets through to compact().
+    const dir = piRoomSessionDir(fx.workspace, "default", fx.agent.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "session-1.jsonl"), "{}\n", "utf8");
+
+    const sessions: FakeSession[] = [];
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession(`restored${sessions.length + 1}`);
+      session.compact = async () => ({ summary: "resumed history", tokensBefore: 500, estimatedTokensAfter: 50 });
+      sessions.push(session);
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    // No send() ever ran on this runtime instance — compact() alone must
+    // restore the session (the bug: it used to see the empty live SessionMap
+    // and report "nothing to compact" despite the resumable file above).
+    const result = await runtime.compact("default");
+    assert.equal(result.compacted, true);
+    assert.match(result.message, /500 tokens before → ~50/);
+    assert.equal(result.summary, "resumed history");
+    assert.equal(sessions.length, 1, "exactly one session restored, not recreated per compact call");
+
+    // The restored session stays live for a following turn — no second create.
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.equal(sessions.length, 1);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compact stays a clean no-op when the session dir is truly empty (nothing to restore)", async () => {
+  const fx = await harnessFixture();
+  try {
+    // Dir exists but holds no session file — hasDurableSession's own "empty ⇒
+    // nothing to resume" case; compact must not fabricate a session for it.
+    const dir = piRoomSessionDir(fx.workspace, "default", fx.agent.id);
+    await mkdir(dir, { recursive: true });
+
+    let factoryCalls = 0;
+    const factory: PiRuntimeSessionFactory = async () => {
+      factoryCalls += 1;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    assert.deepEqual(await runtime.compact("default"), { compacted: false, message: "nothing to compact — no active session for this room." });
+    assert.equal(factoryCalls, 0, "no session should be created for a no-op compact");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime feeds pasted images to the SDK's native channel and breadcrumbs every file", async () => {
   const fx = await harnessFixture();
   try {

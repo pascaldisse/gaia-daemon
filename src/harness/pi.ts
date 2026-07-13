@@ -21,6 +21,7 @@ import { loadNativeImages } from "../core/attachments.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
+import type { ResolvedRole } from "../domain/roles.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
 import { buildPiTools } from "./tools.js";
 import {
@@ -142,6 +143,19 @@ export function piRoomSessionDir(workspace: Pick<Workspace, "rootDir">, roomId: 
   return join(workspacePaths.piSessionsDir(workspace.rootDir, roomId), agentId);
 }
 
+// Any file under the room/agent's session dir means SessionManager.continueRecent
+// has something to resume; an empty or missing dir means there is genuinely no
+// session (fresh room or a room that never sent this agent a turn). Shared by
+// the harness spec's hasDurableSession (host.ts's pre-spawn gate) and compact()'s
+// own lazy-restore decision below — one on-disk truth, read twice.
+function hasPersistedPiSession(rootDir: string, roomId: string, agentId: string): boolean {
+  try {
+    return readdirSync(piRoomSessionDir({ rootDir }, roomId, agentId)).length > 0;
+  } catch {
+    return false; // no dir ⇒ nothing to resume
+  }
+}
+
 // Pi sessions persist "last used" model and thinking level back into the
 // user's pi settings (~/.pi/agent/settings.json). GAIA controls both per
 // agent.json - and voice calls toggle thinking every call - so its sessions
@@ -244,7 +258,7 @@ export class PiRuntime implements AgentRuntime {
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
-    const meta = await this.ensureSession(input);
+    const meta = await this.ensureSession(input.roomId, input.activeRole);
     const session = meta.session;
     this.applyThinkingLevel(meta, input.thinking);
 
@@ -373,10 +387,27 @@ export class PiRuntime implements AgentRuntime {
    * prompt first and emits compaction_start/end on the session stream. The
    * SDK's own summary of the evicted history rides back on CompactResult so
    * the daemon persists it (durable compaction — a later session loss reloads
-   * [summary + tail] instead of raw history). */
+   * [summary + tail] instead of raw history).
+   *
+   * A cold daemon restart (or a fresh runner spawned solely to compact — see
+   * host.ts's hasDurableSession pre-spawn gate) starts this process's
+   * SessionMap empty even though a resumable session sits on disk: this
+   * process never ran a turn for the room, so ensureSession was never called.
+   * Lazily restore it here via the SAME session-creation core a turn uses,
+   * just without a turn's activeRole (this command carries only roomId — no
+   * room state crosses the runner boundary for /compact) — a role-less
+   * system prompt is fine because compact never sends a prompt, and the next
+   * real turn's own roleKey mismatch already forces the correct rebuild
+   * (SessionMap.systemPrompt + skillPathsKey diff in ensureSession). Only when
+   * there is truly nothing on disk do we return the clean no-op. */
   async compact(roomId: string): Promise<CompactResult> {
-    const session = this.sessions.get(roomId)?.session;
-    if (!session?.compact) return NO_SESSION_TO_COMPACT;
+    let meta = this.sessions.get(roomId);
+    if (!meta) {
+      if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return NO_SESSION_TO_COMPACT;
+      meta = await this.ensureSession(roomId, undefined);
+    }
+    const session = meta.session;
+    if (!session.compact) return NO_SESSION_TO_COMPACT;
     const result = await session.compact();
     const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
     return {
@@ -386,16 +417,16 @@ export class PiRuntime implements AgentRuntime {
     };
   }
 
-  private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {
-    const roleKey = input.activeRole?.name ?? "";
-    const systemPrompt = await this.sessions.systemPrompt(input.roomId, roleKey, () =>
+  private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined): Promise<PiSessionMeta> {
+    const roleKey = activeRole?.name ?? "";
+    const systemPrompt = await this.sessions.systemPrompt(roomId, roleKey, () =>
       buildBaseSystemPrompt({
         agent: this.agent,
-        role: input.activeRole,
+        role: activeRole,
         workspaceRoot: this.workspace.rootDir,
       }),
     );
-    const skillNames = agentSkillNames(this.agent, input.activeRole);
+    const skillNames = agentSkillNames(this.agent, activeRole);
     // Pi's translation of the harness-agnostic `web` tool: claude/codex expose a
     // native web tool, pi shells out to the brave-search skill (its search.js —
     // so a `web` pi agent also needs `bash` + a BRAVE_API_KEY). Local mapping,
@@ -405,7 +436,7 @@ export class PiRuntime implements AgentRuntime {
     for (const diagnostic of skillResolution.diagnostics) console.warn(diagnostic);
 
     const key = skillPathsKey(skillResolution.paths);
-    const existing = this.sessions.get(input.roomId);
+    const existing = this.sessions.get(roomId);
 
     if (existing && existing.skillPathsKey === key) {
       if (existing.systemPromptRef.current !== systemPrompt) {
@@ -414,9 +445,9 @@ export class PiRuntime implements AgentRuntime {
           if (!this.sessionFactory) await existing.loader.reload();
           await existing.session.reload();
         } catch {
-          this.sessions.reset(input.roomId);
-          const recreated = await this.createSessionMeta(input.roomId, systemPrompt, skillResolution.paths, key);
-          this.sessions.set(input.roomId, recreated);
+          this.sessions.reset(roomId);
+          const recreated = await this.createSessionMeta(roomId, systemPrompt, skillResolution.paths, key);
+          this.sessions.set(roomId, recreated);
           return recreated;
         }
       }
@@ -425,9 +456,9 @@ export class PiRuntime implements AgentRuntime {
 
     // Skill paths changed (or no session yet): reset drops the old session AND
     // its memory diff, so the rebuilt session re-receives memory.
-    if (existing) this.sessions.reset(input.roomId);
-    const meta = await this.createSessionMeta(input.roomId, systemPrompt, skillResolution.paths, key);
-    this.sessions.set(input.roomId, meta);
+    if (existing) this.sessions.reset(roomId);
+    const meta = await this.createSessionMeta(roomId, systemPrompt, skillResolution.paths, key);
+    this.sessions.set(roomId, meta);
     return meta;
   }
 
@@ -608,13 +639,7 @@ registerHarness({
   // dir (SessionManager.continueRecent resumes the most recent one). Any file
   // there means the conversation behind the cursor is resumable; an empty or
   // missing dir means a fresh session — its history must be replayed.
-  hasDurableSession: (rootDir, roomId, agentId) => {
-    try {
-      return readdirSync(piRoomSessionDir({ rootDir }, roomId, agentId)).length > 0;
-    } catch {
-      return false; // no dir ⇒ nothing to resume
-    }
-  },
+  hasDurableSession: (rootDir, roomId, agentId) => hasPersistedPiSession(rootDir, roomId, agentId),
   // Named accounts (ChatGPT OAuth): same field vocabulary as codex accounts,
   // so credentials from a codex login can be reused for a pi binding. Applied
   // by RunnerHost BEFORE the credential-proxy block — a proxied (sandboxed)
