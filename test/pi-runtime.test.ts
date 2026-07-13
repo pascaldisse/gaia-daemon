@@ -538,7 +538,7 @@ test("PiRuntime.compact stays a clean no-op when the session dir is truly empty 
   }
 });
 
-test("PiRuntime.forkAtMessage maps the gaia origin to pi's matching entry and branches the persisted session at its parent", async () => {
+test("PiRuntime.forkAtMessage maps the gaia origin to pi's Kth user entry BY ORDINAL (never text) and branches at its parent", async () => {
   const fx = await harnessFixture();
   try {
     const sessions: FakeSession[] = [];
@@ -551,18 +551,18 @@ test("PiRuntime.forkAtMessage maps the gaia origin to pi's matching entry and br
 
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const session = sessions[0];
-    // buildTurnPrompt always renders the raw origin text verbatim after its
-    // "Newest user message:" header — a stand-in for what pi actually
-    // recorded as this prompt's user-entry text (see forkAtMessage's doc
-    // comment in pi.ts).
+    // pi records the buildTurnPrompt-WRAPPED prompt (room header, agent line,
+    // mention prefix stripped, …), NEVER gaia's raw event text — so these
+    // texts deliberately share NO substring with any gaia origin text. The
+    // mapping is purely positional: userOrdinal=2 → entries[1] (entry-2).
     session.userMessagesForForking = [
-      { entryId: "entry-1", text: "Room: default\n\nNewest user message:\n\nfirst question" },
-      { entryId: "entry-2", text: "Room: default\n\nNewest user message:\n\nsecond question" },
+      { entryId: "entry-1", text: "Room: default\nCurrent agent: @echo\n\nNewest user message:\nfirst" },
+      { entryId: "entry-2", text: "Room: default\nCurrent agent: @echo\n\nNewest user message:\nsecond" },
     ];
     session.entryParents.set("entry-1", null);
     session.entryParents.set("entry-2", "entry-1");
 
-    const result = await runtime.forkAtMessage("default", "evt_2", "second question");
+    const result = await runtime.forkAtMessage("default", "evt_2", 2);
     assert.deepEqual(result, { ok: true, message: "forked pi session to a new branch before entry entry-2" });
     // "before" position: branches at the TARGET's PARENT, dropping the
     // target (and everything after) from the new branch.
@@ -580,7 +580,7 @@ test("PiRuntime.forkAtMessage maps the gaia origin to pi's matching entry and br
   }
 });
 
-test("PiRuntime.forkAtMessage forks 'before' the very first message via newSession (no parent entry to branch to)", async () => {
+test("PiRuntime.forkAtMessage K=1 (first user message) forks via newSession (parentId null, no entry to branch to)", async () => {
   const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
@@ -589,11 +589,17 @@ test("PiRuntime.forkAtMessage forks 'before' the very first message via newSessi
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
     const session = meta!.session;
-    session.userMessagesForForking = [{ entryId: "entry-1", text: "Newest user message:\n\nonly question" }];
+    // Two user entries; forking at ordinal 1 (the FIRST) whose parentId is
+    // null must use pi's newSession fallback, NOT createBranchedSession.
+    session.userMessagesForForking = [
+      { entryId: "entry-1", text: "wrapped prompt A" },
+      { entryId: "entry-2", text: "wrapped prompt B" },
+    ];
     session.entryParents.set("entry-1", null);
+    session.entryParents.set("entry-2", "entry-1");
     session.sessionFile = "fake-session/original.jsonl";
 
-    const result = await runtime.forkAtMessage("default", "evt_1", "only question");
+    const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.equal(result.ok, true);
     assert.deepEqual(session.createBranchedSessionCalls, []);
     assert.deepEqual(session.newSessionCalls, [{ parentSession: "fake-session/original.jsonl" }]);
@@ -603,7 +609,7 @@ test("PiRuntime.forkAtMessage forks 'before' the very first message via newSessi
   }
 });
 
-test("PiRuntime.forkAtMessage disambiguates duplicate-text entries by picking the most recent occurrence", async () => {
+test("PiRuntime.forkAtMessage picks strictly by position even when entry texts are identical", async () => {
   const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
@@ -612,32 +618,46 @@ test("PiRuntime.forkAtMessage disambiguates duplicate-text entries by picking th
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
     const session = meta!.session;
+    // Identical text: text matching couldn't tell these apart, ordinal can.
     session.userMessagesForForking = [
-      { entryId: "entry-1", text: "Newest user message:\n\nsame text" },
-      { entryId: "entry-2", text: "Newest user message:\n\nsame text" },
+      { entryId: "entry-1", text: "same text" },
+      { entryId: "entry-2", text: "same text" },
+      { entryId: "entry-3", text: "same text" },
     ];
     session.entryParents.set("entry-1", null);
     session.entryParents.set("entry-2", "entry-1");
+    session.entryParents.set("entry-3", "entry-2");
 
-    const result = await runtime.forkAtMessage("default", "evt_x", "same text");
+    const result = await runtime.forkAtMessage("default", "evt_x", 3);
     assert.equal(result.ok, true);
-    assert.deepEqual(session.createBranchedSessionCalls, ["entry-1"], "the most recent match (entry-2) forks at ITS parent (entry-1)");
+    assert.deepEqual(session.createBranchedSessionCalls, ["entry-2"], "ordinal 3 → entries[2] (entry-3) → branch at its parent (entry-2)");
     runtime.dispose();
   } finally {
     await fx.cleanup();
   }
 });
 
-test("PiRuntime.forkAtMessage fails cleanly (ok:false) when no pi entry matches the origin text", async () => {
+test("PiRuntime.forkAtMessage fails cleanly (ok:false) when the ordinal is out of range", async () => {
   const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
     const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-    const result = await runtime.forkAtMessage("default", "evt_missing", "never sent this");
-    assert.equal(result.ok, false);
-    assert.match(result.message, /no pi session entry matches/);
+    const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
+    const session = meta!.session;
+    session.userMessagesForForking = [{ entryId: "entry-1", text: "only one" }];
+    session.entryParents.set("entry-1", null);
+
+    // Beyond the end (session has 1 user entry, asking for the 2nd).
+    const tooHigh = await runtime.forkAtMessage("default", "evt_missing", 2);
+    assert.equal(tooHigh.ok, false);
+    assert.match(tooHigh.message, /out of range/);
+    // Below the start.
+    const tooLow = await runtime.forkAtMessage("default", "evt_missing", 0);
+    assert.equal(tooLow.ok, false);
+    assert.match(tooLow.message, /out of range/);
+    assert.deepEqual(session.createBranchedSessionCalls, [], "no fork attempted on an out-of-range ordinal");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -658,7 +678,7 @@ test("PiRuntime.forkAtMessage fails cleanly when the session isn't persisted (fo
     session.entryParents.set("entry-0", null);
     session.forkedSessionFile = undefined;
 
-    const result = await runtime.forkAtMessage("default", "evt_1", "hello");
+    const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.deepEqual(result, { ok: false, message: "pi session is not persisted to disk — cannot fork" });
     runtime.dispose();
   } finally {
@@ -676,7 +696,7 @@ test("PiRuntime.forkAtMessage lazily restores a persisted session after a daemon
     const sessions: FakeSession[] = [];
     const factory: PiRuntimeSessionFactory = async () => {
       const session = new FakeSession(`restored${sessions.length + 1}`);
-      session.userMessagesForForking = [{ entryId: "entry-1", text: "resumed question" }];
+      session.userMessagesForForking = [{ entryId: "entry-1", text: "wrapped resumed prompt" }];
       session.entryParents.set("entry-1", null);
       sessions.push(session);
       return { session };
@@ -684,7 +704,7 @@ test("PiRuntime.forkAtMessage lazily restores a persisted session after a daemon
     const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
     // No send() ever ran on this runtime instance.
-    const result = await runtime.forkAtMessage("default", "evt_1", "resumed question");
+    const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.equal(result.ok, true);
     // One session restored to read/branch from, one more rebuilt around the
     // fresh branch — never recreated beyond that.
@@ -701,7 +721,7 @@ test("PiRuntime.forkAtMessage stays a clean no-op when there is no session to re
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
     const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
-    const result = await runtime.forkAtMessage("default", "evt_1", "anything");
+    const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.deepEqual(result, { ok: false, message: "no active pi session for this room" });
     runtime.dispose();
   } finally {

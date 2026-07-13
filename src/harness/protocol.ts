@@ -11,7 +11,7 @@ export type RunnerCommand =
   | { type: "abort" }
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
-  | { type: "fork"; roomId: string; originEventId: string; originText: string }
+  | { type: "fork"; roomId: string; originEventId: string; userOrdinal: number }
   | { type: "reset"; roomId: string }
   | { type: "refresh"; roomId: string }
   | { type: "dispose" };
