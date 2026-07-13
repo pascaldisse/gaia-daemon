@@ -945,7 +945,7 @@ export class RoomService {
     }
 
     const packageName = command.package?.trim();
-    if (!packageName) return "Usage: /pet [@agent] <package>";
+    if (!packageName) return "Usage: /pet <package> — binds the agent you're talking to (no @mention needed). Use /pet @agent <package> only to target a different one.";
     try {
       await (this.options.petLoader ?? loadPet)(packageName);
     } catch (error) {
