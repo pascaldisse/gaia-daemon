@@ -4,11 +4,10 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
-import { DEFAULT_PET_NAME, petEnabled, petName, setPetEnabled, setPetName } from "./pet.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
@@ -278,29 +277,6 @@ function GeneralTab() {
       ),
     );
   }
-  rows.push(
-    h(
-      "label",
-      { class: "settings2-row" },
-      h("span", { text: "Show animated pet" }),
-      h("input", {
-        type: "checkbox",
-        checked: petEnabled(),
-        onchange: (event) => setPetEnabled(/** @type {HTMLInputElement} */ (event.target).checked),
-      }),
-    ),
-    h(
-      "label",
-      { class: "settings2-row" },
-      h("span", { text: "Pet package name" }),
-      h("input", {
-        type: "text",
-        value: petName(),
-        placeholder: DEFAULT_PET_NAME,
-        onchange: (event) => setPetName(/** @type {HTMLInputElement} */ (event.target).value),
-      }),
-    ),
-  );
   return h("div", {}, rows);
 }
 
@@ -345,10 +321,23 @@ function AgentsTab() {
           ? h("span", { class: "empty", text: "no agents" })
           : groups.map((group) =>
               h(
-                "button",
-                { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
-                h("span", { text: group.id }),
-                h("small", { text: `${group.files.length} files` }),
+                "div",
+                { class: "agent-row-wrapper" },
+                h(
+                  "button",
+                  { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
+                  h("span", { text: group.id }),
+                  h("small", { text: `${group.files.length} files` }),
+                ),
+                h("button", {
+                  class: "settings2-row-remove",
+                  title: `delete @${group.id}`,
+                  onclick: (event) => {
+                    event.stopPropagation();
+                    void deleteAgent(group.id);
+                  },
+                  text: "Delete",
+                }),
               ),
             ),
       ),
@@ -1023,18 +1012,57 @@ function SelectWidget(entry, ctx) {
   return select;
 }
 
+/** Whether a skill group currently has a checked option. @param {HTMLDetailsElement} group */
+function multiselectGroupHasChecked(group) {
+  return [...group.querySelectorAll('input[type="checkbox"]')].some((box) => /** @type {HTMLInputElement} */ (box).checked);
+}
+
+/** Rewrite every grouped multiselect header with its live checked/total count. @param {HTMLElement} container */
+function updateMultiselectGroupCounts(container) {
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    const boxes = [...group.querySelectorAll('input[type="checkbox"]')];
+    const count = group.querySelector(".settings2-skill-group-count");
+    if (count) count.textContent = `${boxes.filter((box) => /** @type {HTMLInputElement} */ (box).checked).length}/${boxes.length}`;
+  }
+}
+
+/** Filter only the rendered skills, retaining hidden checked boxes for saving.
+ * @param {HTMLElement} container @param {string} query */
+function filterMultiselectGroups(container, query) {
+  const needle = query.trim().toLowerCase();
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    let anyVisible = false;
+    for (const option of group.querySelectorAll(".settings2-multi-option")) {
+      const visible = !needle || (option.getAttribute("data-skill-name") ?? "").includes(needle);
+      /** @type {HTMLElement} */ (option).style.display = visible ? "" : "none";
+      if (visible) anyVisible = true;
+    }
+    /** @type {HTMLElement} */ (group).style.display = anyVisible ? "" : "none";
+    /** @type {HTMLDetailsElement} */ (group).open = needle ? anyVisible : multiselectGroupHasChecked(/** @type {HTMLDetailsElement} */ (group));
+  }
+}
+
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
 function MultiselectWidget(entry, ctx) {
   const rawValue = getJsonPathValue(ctx.draft, entry.path);
-  const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
-  const container = /** @type {HTMLDivElement} */ (h("div", { class: "settings2-multiselect" }));
-  for (const option of entry.hint.options ?? []) {
+  const inherited = inheritedFieldValue(entry, ctx);
+  const values = Array.isArray(rawValue) ? rawValue.map(String) : Array.isArray(inherited) ? inherited.map(String) : [];
+  const options = /** @type {FieldHintOption[]} */ (entry.hint.options ?? []);
+  const known = new Set(options.map((option) => option.value));
+  // Preserve stale configured values instead of silently dropping them on save.
+  const allOptions = [...options, ...values.filter((value) => !known.has(value)).map((value) => ({ value, group: "other" }))];
+  const grouped = allOptions.some((option) => option.group);
+  const container = /** @type {HTMLDivElement} */ (h("div", { class: grouped ? "settings2-multi-grouped" : "settings2-multiselect" }));
+
+  /** @param {FieldHintOption} option */
+  const optionRow = (option) => {
     const box = /** @type {HTMLInputElement} */ (
       h("input", {
         type: "checkbox",
         checked: values.includes(option.value),
         onchange: () => {
-          const current = Array.isArray(getJsonPathValue(ctx.draft, entry.path)) ? [...getJsonPathValue(ctx.draft, entry.path)] : [];
+          const rawCurrent = getJsonPathValue(ctx.draft, entry.path);
+          const current = Array.isArray(rawCurrent) ? [...rawCurrent] : [...values];
           const at = current.indexOf(option.value);
           if (box.checked && at === -1) current.push(option.value);
           else if (!box.checked && at !== -1) current.splice(at, 1);
@@ -1045,9 +1073,60 @@ function MultiselectWidget(entry, ctx) {
     );
     const name = option.label ?? option.value;
     const title = option.description ? `${name} — ${option.description}` : name;
-    container.append(h("label", { class: "settings2-multi-option", title }, box, h("span", { text: name })));
+    return h(
+      "label",
+      { class: "settings2-multi-option", title, "data-skill-name": name.toLowerCase() },
+      box,
+      h("span", { text: name }),
+      option.badge ? h("small", { class: "settings2-multi-badge", text: option.badge }) : null,
+    );
+  };
+
+  if (!grouped) {
+    for (const option of allOptions) container.append(optionRow(option));
+    return container;
   }
+
+  container.append(
+    h("input", {
+      type: "search",
+      class: "settings2-skill-filter",
+      placeholder: "filter skills…",
+      oninput: (/** @type {Event} */ event) => filterMultiselectGroups(container, /** @type {HTMLInputElement} */ (event.target).value),
+    }),
+  );
+  /** @type {Map<string, FieldHintOption[]>} */
+  const groups = new Map();
+  for (const option of allOptions) {
+    const group = option.group ?? "other";
+    const bucket = groups.get(group);
+    if (bucket) bucket.push(option);
+    else groups.set(group, [option]);
+  }
+  for (const [group, groupOptions] of groups) {
+    const details = /** @type {HTMLDetailsElement} */ (
+      h(
+        "details",
+        { class: "settings2-skill-group" },
+        h("summary", {}, h("span", { class: "settings2-skill-group-name", text: group }), h("span", { class: "settings2-skill-group-count" })),
+        h("div", { class: "settings2-multiselect" }, groupOptions.map(optionRow)),
+      )
+    );
+    details.open = groupOptions.some((option) => values.includes(option.value));
+    container.append(details);
+  }
+  updateMultiselectGroupCounts(container);
   return container;
+}
+
+/** The Settings form shows role-provided defaults before an agent has chosen
+ * an explicit value. The first checkbox change writes the ordinary field, so
+ * settings always remain the per-agent override surface.
+ * @param {FieldEntry} entry @param {FormCtx} ctx @returns {unknown} */
+function inheritedFieldValue(entry, ctx) {
+  const role = typeof ctx.draft?.role === "string" ? ctx.draft.role : undefined;
+  if (role && entry.hint.roleDefaults && role in entry.hint.roleDefaults) return entry.hint.roleDefaults[role];
+  return entry.hint.defaultValue;
 }
 
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */

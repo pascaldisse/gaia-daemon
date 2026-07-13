@@ -212,6 +212,31 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
   }
 });
 
+test("ClaudeRuntime treats process exit 0 without a result as abnormal after draining streamed text", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // Smoking incident shape: the answer streamed, but a background task kept
+    // Claude alive and it later exited 0 without ever writing a result record.
+    fake.script([initMsg(), textDelta("full answer before exit")], { code: 0, signal: null });
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events: AgentEvent[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of runtime.send({ roomId: "default", message: "hi", transcript: [] })) events.push(event);
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.ok(events.some((event) => event.type === "text-delta" && event.delta === "full answer before exit"));
+    assert.match(caught instanceof Error ? caught.message : String(caught), /claude exited without a result \(exit 0\)/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // A claude agent that granted the web tool, for native-command turns.
 const webFixture = () =>
   harnessFixture({ tools: ["read", "web"], harness: "claude", model: { provider: "anthropic", name: "claude-opus-4-8" } });
@@ -377,12 +402,78 @@ test("ClaudeRuntime reports context usage live per assistant round-trip + result
     const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
-    // input + both cache fields, output excluded — the CLI's own formula.
+    // usedTokens = input + both cache fields + output — the CLI's own "%
+    // context used" formula (verified against the installed 2.1.207 bundle).
     const contextEvents = events.filter((e) => e.type === "context-usage");
     // Live: the assistant round-trip emits ctx immediately (window not yet known)…
-    assert.deepEqual(contextEvents[0], { type: "context-usage", usedTokens: 6_200 });
-    // …and the turn-end event carries the window so the chip can show a %.
-    assert.deepEqual(contextEvents.at(-1), { type: "context-usage", usedTokens: 6_200, maxTokens: 200_000 });
+    assert.deepEqual(contextEvents[0], { type: "context-usage", usedTokens: 6_250 });
+    // …and the turn-end event carries the window: rawWindow (200_000) minus the
+    // output-token reserve (min(maxOutputTokens ?? 20_000, 20_000) — no
+    // maxOutputTokens reported here, so the 20_000 cap applies) = 180_000.
+    assert.deepEqual(contextEvents.at(-1), { type: "context-usage", usedTokens: 6_250, maxTokens: 180_000 });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime context-usage: usedTokens sums all four usage fields (input + both cache + output)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg("claude-fable-5"),
+      {
+        type: "assistant",
+        message: {
+          usage: { input_tokens: 111, cache_creation_input_tokens: 222, cache_read_input_tokens: 333, output_tokens: 444 },
+          content: [],
+        },
+      },
+      textDelta("hi"),
+      resultSuccess(),
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const contextEvents = events.filter((e) => e.type === "context-usage");
+    // 111 + 222 + 333 + 444 = 1_110 — output_tokens IS included (unlike a plain
+    // input+cache footprint), matching Claude Code's own indicator math.
+    assert.equal(contextEvents[0].usedTokens, 1_110);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("ClaudeRuntime context-usage: emitted window = rawWindow - min(maxOutputTokens, 20_000)", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    fake.script([
+      initMsg("claude-sonnet-5"),
+      {
+        type: "assistant",
+        message: {
+          usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+          content: [],
+        },
+      },
+      textDelta("hi"),
+      // Live modelUsage shape (verified: claude 2.1.207, -p --output-format
+      // stream-json) but with maxOutputTokens BELOW the 20_000 cap, so min()
+      // must pick the model's own figure, not the cap — proves this is a real
+      // min(), not a constant 20_000 subtraction.
+      { ...resultSuccess(), modelUsage: { "claude-sonnet-5": { contextWindow: 200_000, maxOutputTokens: 6_000 } } },
+    ]);
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const contextEvents = events.filter((e) => e.type === "context-usage");
+    // 200_000 - min(6_000, 20_000) = 200_000 - 6_000 = 194_000.
+    assert.equal(contextEvents.at(-1)?.maxTokens, 194_000);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -542,6 +633,27 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
   } finally {
     await fx.cleanup();
   }
+});
+
+test("claude background-task descriptor parses the real Bash result shape", () => {
+  const parse = findHarness("claude")?.backgroundTasks?.fromToolCall;
+  assert.ok(parse);
+  const result =
+    "Command running in background with ID: bmuru0sip. Output is being written to: /private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output. You will be notified when it completes. To check interim output, use Read on that file path.";
+  const args = { command: "sleep 30", description: "run the drill", run_in_background: true };
+  const expected = {
+    taskId: "bmuru0sip",
+    command: "sleep 30",
+    description: "run the drill",
+    outputPath:
+      "/private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output",
+  };
+  assert.deepEqual(parse("Bash", args, result), expected);
+  assert.deepEqual(parse("Bash", args, { type: "text", text: result }), expected, "a content block is accepted");
+  assert.deepEqual(parse("Bash", args, [{ type: "text", text: result }]), expected, "content-block arrays are flattened");
+  assert.equal(parse("Bash", { ...args, run_in_background: false }, result), undefined);
+  assert.equal(parse("Read", args, result), undefined);
+  assert.equal(parse("Bash", args, "ordinary command output"), undefined);
 });
 
 test("ClaudeRuntime rejects on an error result", async () => {
@@ -856,19 +968,24 @@ test("ClaudeRuntime always routes egress through the thinking shim (reveal is un
   }
 });
 
-test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
+test("ClaudeRuntime appends exact gaia CLI syntax and the live summon roster to the system prompt", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const agent = { ...fx.agent, tools: [...fx.agent.tools, "summon"] };
+    const worker = { ...fx.agent, id: "ghoul-sol", displayName: "Ghoul Sol" };
+    const workspace = { ...fx.workspace, agents: { gaia: agent, "ghoul-sol": worker } };
 
-    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace, agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
     const systemPrompt = args[args.indexOf("--system-prompt") + 1];
     assert.match(systemPrompt, /gaia mem/);
     assert.match(systemPrompt, /gaia recall/);
+    assert.match(systemPrompt, /`gaia summon \[--worktree\] <agent> "<task>"`/);
+    assert.match(systemPrompt, /Available agents: gaia, ghoul-sol/);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -908,9 +1025,10 @@ test("ClaudeRuntime abort kills the active process", async () => {
     await runtime.abort();
     assert.equal(fake.killCount, 1);
 
-    // Unwind the iterator by completing the process.
+    // Unwind the iterator by completing the process. Exit without a result is
+    // abnormal even when it follows an explicit abort and carries exit code 0.
     fake.lastOptions?.onExit({ code: 0, signal: null, stderr: "" });
-    await sendPromise;
+    await assert.rejects(sendPromise, /claude exited without a result \(exit 0\)/);
     runtime.dispose();
   } finally {
     await fx.cleanup();

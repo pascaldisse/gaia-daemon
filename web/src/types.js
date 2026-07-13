@@ -26,6 +26,8 @@
 /** @typedef {import("../../src/core/types.js").UsageWindow} UsageWindow */
 /** @typedef {import("../../src/core/types.js").WorkspaceRecord} WorkspaceRecord */
 /** @typedef {import("../../src/core/types.js").KeepAwakeCapability} KeepAwakeCapability */
+/** @typedef {import("../../src/core/types.js").PetBinding} PetBinding */
+/** @typedef {import("../../src/core/types.js").PetProgress} PetProgress */
 /** @typedef {import("../../src/core/types.js").EditableFileDescriptor} FileDescriptor */
 /** @typedef {import("../../src/core/types.js").FieldHintOption} FieldHintOption */
 /** @typedef {import("../../src/core/types.js").FieldHint} FieldHint */
@@ -102,6 +104,8 @@
  * @property {string} taskId
  * @property {string} author
  * @property {string} startedAt
+ * @property {number} lastDeltaAt epoch milliseconds of the last turn-scoped
+ *   SSE payload; drives the live heartbeat's activity age.
  * @property {string} text
  * @property {EventDetails} details
  * @property {number} version bumped on every mutation; drives keyed patching

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentDef, Workspace } from "../core/types.js";
 import { globalPaths, workspacePaths } from "../core/paths.js";
-import type { ResolvedRole } from "./roles.js";
+import { effectiveAgentSkills, type ResolvedRole } from "./roles.js";
 
 // The install location a skill was detected in. Known ecosystems are spelled
 // out for autocomplete; the `(string & {})` arm keeps it open for new roots.
@@ -172,10 +172,10 @@ export function resolveSkillRefs(
   };
 }
 
-/** The skills an agent loads this turn: its own plus the active role's, deduped.
- * Role and agent both opt in; detection alone never loads anything. */
-export function agentSkillNames(agent: Pick<AgentDef, "skills">, role: ResolvedRole | undefined): string[] {
-  return [...new Set([...(role?.skills ?? []), ...(agent.skills ?? [])])];
+/** The skills an agent loads this turn. An active role supplies defaults; an
+ * explicit agent Settings selection replaces those defaults. */
+export function agentSkillNames(agent: Pick<AgentDef, "skills" | "skillOverride">, role: ResolvedRole | undefined): string[] {
+  return [...new Set(effectiveAgentSkills(agent, role))];
 }
 
 /**

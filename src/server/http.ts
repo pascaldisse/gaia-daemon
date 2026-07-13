@@ -2,7 +2,7 @@
 // OpenAI-compatible voice endpoints. No business logic lives here — if a
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
-import { createReadStream, existsSync, openSync, readFileSync, writeSync } from "node:fs";
+import { createReadStream, existsSync, openSync, readFileSync, writeSync, rmSync } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
+import { DEFAULTS, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
@@ -19,8 +19,10 @@ import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
+import { installGitGuard } from "../domain/git-guard.js";
 import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
+import { agentRoster } from "../harness/tools.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
@@ -65,7 +67,13 @@ const RELOAD_DELAY_MS = 250;
 // /rebuild stopped after keep-awake teardown, never rebuilt, never re-exec'd,
 // port dead until the app was force-quit. Reload's contract is "the app always
 // comes back", so past this deadline we abandon graceful teardown and proceed.
-const RELOAD_CLOSE_TIMEOUT_MS = 5_000;
+// Kept short (Pascal 2026-07-13): a wedged runner is common (mid-turn agent,
+// dead upstream socket retry loop) and this is a pure wait with no durability
+// payoff — pending turns persist to state.json and resume on next boot
+// regardless, and the orphan sweep on boot reaps any child a skipped dispose
+// left behind. 5s here was measured making /rebuild take ~7s end-to-end on a
+// busy daemon vs ~2.5s idle; 1s caps that same worst case near the idle time.
+const RELOAD_CLOSE_TIMEOUT_MS = 1_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
@@ -243,6 +251,9 @@ export class GaiaWebServer {
   }
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
+    // Daemon boot self-heal: (re)install the git-guard hook into the serving
+    // workspace's shared hooks dir. Best-effort — a non-repo cwd just warns.
+    installGitGuard(this.options.cwd);
     const server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -412,31 +423,48 @@ export class GaiaWebServer {
       }
 
       let rebuildOk = false;
-      if (plan) {
-        const build = spawnSync(plan.bun, [plan.script, "--out", plan.out], {
-          stdio: ["ignore", reloadLog, reloadLog],
-          timeout: 120_000,
-        });
-        if (build.status === 0) {
-          rebuildOk = true;
-        } else {
-          writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+      const stagingDir = plan ? `${plan.out}.staging-${Date.now()}` : undefined;
+      if (plan && stagingDir) {
+        try {
+          // Build into a staging directory, OUTSIDE the .app bundle (if bundled).
+          // This keeps the app's code signature intact during the build.
+          await mkdir(stagingDir, { recursive: true });
+          const build = spawnSync(plan.bun, [plan.script, "--out", stagingDir], {
+            stdio: ["ignore", reloadLog, reloadLog],
+            timeout: 120_000,
+          });
+          if (build.status === 0) {
+            // Build succeeded. Atomically swap web/ and setups/ from staging
+            // into plan.out. This is atomic from TCC's perspective — it never
+            // sees the bundle in an inconsistent state.
+            for (const name of ["web", "setups"]) {
+              const src = join(stagingDir, name);
+              const dst = join(plan.out, name);
+              const tmp = `${dst}.old-${Date.now()}`;
+              try {
+                // Move current (if exists) to .old, then move staging into place.
+                // This is as atomic as POSIX rename gets.
+                if (existsSync(dst)) await rename(dst, tmp);
+                await rename(src, dst);
+                // Clean up the .old backup.
+                if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+              } catch (error) {
+                writeSync(reloadLog, `[gaia] reload: atomic swap FAILED for ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+                throw error;
+              }
+            }
+            rebuildOk = true;
+          } else {
+            writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+          }
+        } finally {
+          // Clean up staging directory.
+          if (existsSync(stagingDir)) rmSync(stagingDir, { recursive: true, force: true });
         }
       }
 
-      // build-daemon.mjs (above) overwrites gaia-daemon/web/setups IN PLACE
-      // inside whatever directory it's pointed at. When that directory is a
-      // macOS .app's Contents/MacOS (the installed-app case: plan.out came
-      // from gaia-source.json, not the fromSource dev-repo case), those files
-      // sit inside the bundle's sealed code-signature — overwriting them
-      // without re-signing breaks the seal (`codesign --verify` then reports
-      // "invalid Info.plist (plist or signature have been modified)"), and a
-      // broken seal makes macOS's TCC privacy daemon silently refuse the
-      // NSMicrophoneUsageDescription prompt on next mic use — no dialog, just
-      // "microphone permission denied or unavailable" forever, until someone
-      // re-signs by hand. Observed live 2026-07-12: every /rebuild since
-      // 2026-07-10's mic fix re-broke it. Re-seal here, every time, so the
-      // installed app is never left signature-invalid after a rebuild.
+      // After atomic swap, re-sign the bundle (macOS only). Code signature is
+      // only broken momentarily if a rename fails; normal case is fully safe.
       if (rebuildOk && plan && !fromSource && process.platform === "darwin") {
         const appRoot = findAppBundleRoot(plan.out);
         if (appRoot) {
@@ -448,7 +476,19 @@ export class GaiaWebServer {
             }
           })();
           const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
-          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          // Prefer a stable named identity over ad-hoc ("-") signing: ad-hoc
+          // keys the TCC designated requirement to the binary's cdhash, which
+          // changes on every rebuild and orphans every mic/camera grant. A
+          // named identity keys it to the certificate leaf instead, which
+          // stays stable across rebuilds. Fall back to ad-hoc only when the
+          // configured identity isn't actually present in the keychain.
+          const wantIdentity = gaiaCodesignIdentity();
+          const probe = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+          const identity = probe.status === 0 && probe.stdout.includes(`"${wantIdentity}"`) ? wantIdentity : "-";
+          if (identity === "-" && wantIdentity !== "-") {
+            writeSync(reloadLog, `[gaia] reload: codesign identity "${wantIdentity}" not found in keychain — falling back to ad-hoc (TCC grants will be orphaned)\n`);
+          }
+          const codesignArgs = ["--force", "--deep", "--sign", identity];
           if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
           codesignArgs.push(appRoot);
           const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });
@@ -587,12 +627,13 @@ export class GaiaWebServer {
     }
 
     if (
-      method === "POST" &&
-      (path === "/api/harness/memory" ||
-        path === "/api/harness/summon" ||
-        path === "/api/harness/recall" ||
-        path === "/api/harness/dream" ||
-        path === "/api/harness/resume")
+      (method === "GET" && path === "/api/harness/agents") ||
+      (method === "POST" &&
+        (path === "/api/harness/memory" ||
+          path === "/api/harness/summon" ||
+          path === "/api/harness/recall" ||
+          path === "/api/harness/dream" ||
+          path === "/api/harness/resume"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -665,12 +706,26 @@ export class GaiaWebServer {
       };
       beginSse(response);
       response.write(encodeSse("ready", { bootId }));
-      // Seed the account-usage chip: the SSE fan-out only carries events emitted
-      // while this client is subscribed, so replay the cached usage now instead
-      // of leaving the chip blank until the next daemon poll.
+      // Seed account usage and the COMPLETE workspace pet binding set. Pet
+      // windows are shell-global and may belong to unselected rooms, so this is
+      // deliberately not derived from the selected-room snapshot below.
       for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
+      if (client.workspaceId) {
+        const bindings: UiEvent = {
+          type: "pet-bindings",
+          workspaceId: client.workspaceId,
+          bindings: await this.daemon.petBindings(client.workspaceId),
+        };
+        response.write(encodeSse(bindings.type, bindings));
+      }
       this.clients.add(client);
-      response.on("close", () => this.clients.delete(client));
+      // EventSource ignores comment-only heartbeats, so keep every SSE socket
+      // visibly alive with a named event the client can observe.
+      const keepalive = setInterval(() => response.write("event: ping\ndata: {}\n\n"), 15_000);
+      response.on("close", () => {
+        clearInterval(keepalive);
+        this.clients.delete(client);
+      });
       return;
     }
 
@@ -756,6 +811,17 @@ export class GaiaWebServer {
         const account = updateAccount(params![0], { label: value("label"), email: value("email") });
         if (!account) throw new Error(`unknown account '${params![0]}'`);
         return { account: { id: account.id, harness: account.harness, ...(account.label ? { label: account.label } : {}), ...(account.email ? { email: account.email } : {}) } };
+      });
+    }
+
+    // Reversible agent delete: move the agent dir to trash (recoverable), then
+    // reload global settings so the agents list refreshes. Placed here — with
+    // the other /api/agents routes, AFTER match/params are declared.
+    if (method === "DELETE" && (params = match(/^\/api\/agents\/([^/]+)$/))) {
+      return this.respond(response, async () => {
+        await this.daemon.deleteAgent(params![0]);
+        await this.daemon.applySettingsChange("global");
+        return {};
       });
     }
 
@@ -887,6 +953,25 @@ export class GaiaWebServer {
       // Ids are unique per upload, so the bytes are immutable — cache hard.
       response.writeHead(200, { "content-type": attachmentMime(params[2]), "cache-control": "max-age=31536000, immutable" });
       createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)\/output$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const output = await service.backgroundTaskOutput(params[2]);
+      if (output === undefined) return json(response, 404, { error: "Background task output not found" });
+      json(response, 200, { text: output.text, running: output.running });
+      return;
+    }
+
+    // Stop (SIGTERM its live writers) or dismiss a tracked background task —
+    // the tray's ■ stop / ✕ dismiss action. Harness-agnostic: liveness/stop
+    // live entirely in the shared room layer, no runtime is touched.
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const stopped = await service.stopBackgroundTask(params[2]);
+      if (!stopped) return json(response, 404, { error: "Background task not found" });
+      json(response, 200, { ok: true });
       return;
     }
 
@@ -1325,6 +1410,10 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
+    if (pathname === "/api/harness/agents") {
+      return json(response, 200, { agents: agentRoster(workspace) });
+    }
+
     const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
     if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
@@ -1626,14 +1715,11 @@ export class GaiaWebServer {
 
   private broadcast(event: UiEvent): void {
     const payload = encodeSse(event.type, event);
-    // `rooms` is workspace-TAGGED but globally DELIVERED: it carries a
-    // workspaceId only so the client knows which workspace it describes, and
-    // must reach EVERY client (not just those viewing that workspace) so the
-    // sidebar's workspace-level running/unread dots stay live for workspaces
-    // you're not currently in. Every other workspace-scoped event targets a
-    // specific room — room ids are unique only WITHIN a workspace, so those stay
-    // scoped by both ids.
-    const ambient = event.type === "rooms";
+    // `rooms` and native-pet control events are workspace-TAGGED but globally
+    // DELIVERED. Room chrome keeps every sidebar live; pets must keep tracking a
+    // bound agent even when that room is not selected. Every other workspace
+    // event stays scoped by workspace+room (room ids are only locally unique).
+    const ambient = event.type === "rooms" || event.type === "pet-bindings" || event.type === "pet-progress";
     for (const client of this.clients) {
       const scoped = event as { workspaceId?: string; roomId?: string };
       if (!ambient) {

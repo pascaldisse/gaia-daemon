@@ -13,8 +13,9 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -28,6 +29,7 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
+  BackgroundTask,
   CompactProgress,
   ContextGatePending,
   EventDetails,
@@ -35,6 +37,7 @@ import type {
   MessageAttachment,
   ModelFallback,
   PendingTurn,
+  PetProgressStatus,
   QueuedMessage,
   RoomEvent,
   RoomEventKind,
@@ -47,8 +50,9 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
+import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
-import { effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
+import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
@@ -103,6 +107,8 @@ export interface RoomServiceOptions {
    * config — runners snapshot agent.json at spawn, so an in-place mutation
    * alone never reaches a live subprocess. */
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
+  /** Test seam around the real safe Codex package loader. Production omits it. */
+  petLoader?: (name: string) => Promise<unknown>;
 }
 
 /** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
@@ -169,6 +175,34 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+const BACKGROUND_TASK_MAX = 20;
+const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+/** `lsof` binary used to probe whether a tracked background process still has
+ * a live writer on its output file (see backgroundTaskPids). Env-overridable —
+ * never hardcode a bare path as the only option. */
+const LSOF_BIN = process.env.GAIA_LSOF_BIN || "/usr/sbin/lsof";
+/** How long backgroundTaskPids waits for `lsof` before giving up and reporting
+ * no live writers (a hung/missing lsof must never wedge a snapshot). */
+const BACKGROUND_TASK_LSOF_TIMEOUT_MS = 2000;
+
+/** Render the reason carried by the uniform runtime/channel failure contract. */
+function turnEndReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return reason.trim() || "unknown reason";
+}
+
+/** The visible tail every abnormal turn with output commits on its reserved id. */
+function preservePartialReply(reply: string, error: unknown): string {
+  const notice = `⚠ turn ended without completion (${turnEndReason(error)}) — partial output preserved`;
+  const partial = reply.trim();
+  return partial ? `${partial}\n\n${notice}` : notice;
+}
+
+/** The durable system failure used when an abnormal turn emitted no output. */
+function diedWithoutOutput(error: unknown): Error {
+  return new Error(`turn died without output (${turnEndReason(error)})`);
+}
 
 /** Min gap between visible "upstream stall" system lines within one streaming
  * turn — a harness retrying against a dead upstream can emit the notice
@@ -292,6 +326,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   role: (service, command) => (command.type === "role" ? service.setRole(command.agent, command.role) : Promise.resolve("")),
   thinking: (service, command) => (command.type === "thinking" ? service.runThinkingCommand(command.agent, command.level) : Promise.resolve("")),
   model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
+  pet: (service, command) => (command.type === "pet" ? service.runPetCommand(command) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
@@ -383,6 +418,10 @@ export class RoomService {
    * whenever a human speaks. In-memory (a runaway chain shouldn't outlive a
    * restart anyway). */
   private agentDialogueHops = 0;
+  /** Per-target terminal pet states already emitted for a multi-agent task, so
+   * a later target failure cannot repaint an earlier successful pet as failed. */
+  private readonly settledPetTargets = new Set<string>();
+  private readonly startedPetTargets = new Set<string>();
   private initPromise: Promise<void> | undefined;
   /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
    * services/plugins.ts) — loaded once per RoomService and cached. */
@@ -703,20 +742,7 @@ export class RoomService {
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
     if (this.activeTask) {
-      task.status = "queued";
-      if (recordedSteerEventId) task.recorded = true;
-      if (options.attachments?.length) task.attachments = options.attachments;
-      await this.room.enqueue({
-        taskId: task.id,
-        text,
-        targets,
-        ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
-        ...(options.attachments?.length ? { attachments: options.attachments } : {}),
-        ...(options.nativeCommand ? { nativeCommand: true } : {}),
-        ...(recordedSteerEventId ? { eventId: recordedSteerEventId, recorded: true } : {}),
-        queuedAt: task.startedAt,
-      });
-      this.queuedTasks.push(task);
+      await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
       void this.emitSnapshot();
       return task;
@@ -733,11 +759,40 @@ export class RoomService {
       return task;
     }
 
-    // A failed steer's guidance is already committed — the direct run (the
-    // turn ended AND settled before we reached the queue check) must not
-    // record it a second time; the prompt text still drives the turn.
-    this.startTask(task, text, recordedSteerEventId ? { ...options, recordUserMessage: false } : options);
+    // Durable-first even while idle: the 2026-07-13 append→pendingTurn incident
+    // proved a direct start could strand a transcript-only user message.
+    await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
+    await this.drain();
+    if (task.status === "queued") {
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      void this.emitSnapshot();
+    }
     return task;
+  }
+
+  private async enqueueTask(
+    task: Task,
+    text: string,
+    targets: string[],
+    options: SendMessageOptions,
+    recordedEventId?: string,
+  ): Promise<void> {
+    const recorded = Boolean(recordedEventId) || options.recordUserMessage === false;
+    task.status = "queued";
+    if (recorded) task.recorded = true;
+    if (options.attachments?.length) task.attachments = options.attachments;
+    await this.room.enqueue({
+      taskId: task.id,
+      text,
+      targets,
+      ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+      ...(options.attachments?.length ? { attachments: options.attachments } : {}),
+      ...(options.nativeCommand ? { nativeCommand: true } : {}),
+      ...(recordedEventId ? { eventId: recordedEventId } : {}),
+      ...(recorded ? { recorded: true } : {}),
+      queuedAt: task.startedAt,
+    });
+    this.queuedTasks.push(task);
   }
 
   private startTask(task: Task, text: string, options: SendMessageOptions): void {
@@ -860,6 +915,59 @@ export class RoomService {
     return active && this.workspace.agents[active] ? active : this.workspace.config.defaultAgent;
   }
 
+  /** /pet persists one room+agent package binding. Native windows are a shell
+   * concern: the daemon emits a complete workspace snapshot after every change,
+   * and browsers/iOS deliberately render no fake in-chat or cross-app pet. */
+  async runPetCommand(command: Extract<RoomCommand, { type: "pet" }>): Promise<string> {
+    if (command.action === "list") {
+      const bindings = (await this.room.state()).petBindings ?? {};
+      const rows = Object.entries(bindings).sort(([a], [b]) => a.localeCompare(b));
+      return rows.length > 0
+        ? `Pet bindings in this room:\n${rows.map(([agentId, packageName]) => `  @${agentId} → ${packageName}`).join("\n")}`
+        : "No pet bindings in this room. Pets are off by default.";
+    }
+
+    const target = command.agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+
+    if (command.action === "off") {
+      let removed = false;
+      await this.room.updateState((state) => {
+        if (!state.petBindings?.[target]) return;
+        removed = true;
+        delete state.petBindings[target];
+        if (Object.keys(state.petBindings).length === 0) delete state.petBindings;
+      });
+      await this.emitPetBindings();
+      return removed
+        ? `Pet removed for @${target}.`
+        : `No pet is bound to @${target} in this room.`;
+    }
+
+    // Bare /pet (no package) just spawns the default pet for whoever you're
+    // talking to — a package name is an override, never a requirement.
+    const packageName = command.package?.trim() || DEFAULT_PET_NAME;
+    try {
+      await (this.options.petLoader ?? loadPet)(packageName);
+    } catch (error) {
+      return `Invalid pet package '${packageName}': ${error instanceof Error ? error.message : String(error)}`;
+    }
+    await this.room.updateState((state) => {
+      state.petBindings = { ...(state.petBindings ?? {}), [target]: packageName };
+    });
+    await this.emitPetBindings();
+    return `Pet '${packageName}' bound to @${target} in this room. The transparent always-on-top pet window is available in the desktop app only.`;
+  }
+
+  private async emitPetBindings(): Promise<void> {
+    this.emit({
+      type: "pet-bindings",
+      workspaceId: this.workspaceId,
+      bindings: await listWorkspacePetBindings(this.workspaceId, this.workspace.rootDir),
+    });
+    await this.emitSnapshot();
+  }
+
   /** Remember the agent a turn addressed as this room's active agent (persisted,
    * best-effort). The last target of a broadcast wins — that's who a bare next
    * message goes to. Skips unknown ids so a stale write can't wedge routing. */
@@ -922,6 +1030,15 @@ export class RoomService {
     });
     const target = delivery.triggerTarget;
     if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
+  }
+
+  /** Public rooms rebroadcast for the summon coordinator: a summon child
+   * leaving the coordinator's running set changes the PARENT room's
+   * banner/sidebar truth, but the child's own task-end broadcast raced
+   * ahead of that cleanup — the coordinator calls this after dropping the
+   * child so clients stop counting a dead summon. */
+  async broadcastRoomsChanged(): Promise<void> {
+    await this.emitRoomsChanged();
   }
 
   /** Re-invoke a caller agent after its summon returned — steer its live turn if
@@ -1150,6 +1267,8 @@ export class RoomService {
       }
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
+      this.startedPetTargets.add(this.petTargetKey(task.id, target));
+      this.emitPetProgress(task, target, "working");
       const state = await this.room.state();
       // A NEW agent (never spoke here → no cursor) loads the whole back-transcript.
       // An EXISTING agent normally loads only events since its cursor — everything
@@ -1292,6 +1411,8 @@ export class RoomService {
             ...(attachments ? { attachments } : {}),
             transcript: events,
             activeRole,
+            tools: effectiveAgentTools(agent, activeRole),
+            skills: effectiveAgentSkills(agent, activeRole),
             channel: options.channel,
             thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
@@ -1322,6 +1443,9 @@ export class RoomService {
             }
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
+            }
+            if (event.type === "background-task") {
+              void this.recordBackgroundTask(target, event).catch(() => {});
             }
             if (event.type === "notice") {
               // Visible, throttled system line — never reply text (toUiEvent
@@ -1359,6 +1483,24 @@ export class RoomService {
                 .catch(() => {});
             }
             this.applyLiveTurn(eventId, event);
+            // Native-pet progress comes exclusively from the uniform AgentEvent
+            // stream. No harness id is inspected: every present/future harness
+            // gets Thinking/tool/Working with the same mapping.
+            switch (event.type) {
+              case "thinking-start":
+              case "thinking-delta":
+                this.emitPetProgress(task, target, "thinking");
+                break;
+              case "tool-start":
+              case "tool-update":
+                this.emitPetProgress(task, target, "tool", event.toolName);
+                break;
+              case "thinking-end":
+              case "tool-end":
+              case "text-delta":
+                this.emitPetProgress(task, target, "working");
+                break;
+            }
             const uiEvent = this.toUiEvent(task.id, agent.id, eventId, event);
             if (uiEvent) this.emit(uiEvent);
             if (event.type === "tool-end") {
@@ -1382,21 +1524,21 @@ export class RoomService {
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
-        // the failure fired before any event streamed. Preserve whatever the
-        // flush recorded and clear the marker (never replay a terminally-failed
-        // turn — poison pill).
+        // setup/progress persistence failed around the stream. Preserve any
+        // WAL-flushed text through the SAME reserved-id commit path and make
+        // the abnormal end visible; a blank turn gets a loud durable failure.
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
-        else await this.room.clearPendingTurn();
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, error);
+        if (partial.trim()) await this.commitReply(target, eventId, preservePartialReply(partial, error), {}, channel);
+        else {
+          await this.room.clearPendingTurn();
+          await this.appendTurnFailure(target, diedWithoutOutput(error));
         }
+        await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
+        this.settlePetTarget(task, target, "failed");
         throw error;
       }
 
@@ -1407,17 +1549,23 @@ export class RoomService {
       // Cancelled, failed, or completed: ALL commit what was produced. A user
       // stop lands as a stream death (abort → turn-error → the runtime stream
       // throws), so `turn.error` with the cancel flag set IS the normal stop
-      // shape — never a reason to drop the accumulator. A stop is a deliberate
-      // end, not an eraser: the reply text, the tool calls, and the thinking
-      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      // shape — never a reason to drop the accumulator. Every abnormal teardown
+      // gets an explicit visible outcome: output commits under the reserved id
+      // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
-      const reply = turn.reply.trim();
+      // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
+      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
+      if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
+      const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
-      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const interruptedProgress = abnormalReason !== undefined && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const producedOutput = Boolean(partialReply || interruptedProgress);
+      const committedReply = abnormalReason !== undefined && producedOutput
+        ? preservePartialReply(partialReply, abnormalReason)
+        : partialReply;
       // Multi-target hand-off: this target's commit (or clear) must not open a
       // window where the remaining targets' owed turns exist in memory only —
       // the SAME atomic state write that retires this target's marker installs
@@ -1439,35 +1587,41 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
+      if (abnormalReason !== undefined && !producedOutput) {
+        if (cancelled) await this.appendTurnStopped(target);
+        else await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+      }
 
       if (failed) {
-        // Genuine mid-stream failure (not a user stop): the progress is now
-        // durable; surface the error so the task settles as error.
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, turn.error);
-        }
-        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        // Genuine mid-stream failure (not a user stop): the preservation notice
+        // or no-output failure is durable; surface the original error so the
+        // task settles as error, retaining the existing retry policy.
+        await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
+        await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
+        this.settlePetTarget(task, target, "failed");
         throw turn.error;
       }
 
-      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
-        reply: reply.slice(0, HOOK_TEXT_CAP),
+        reply: partialReply.slice(0, HOOK_TEXT_CAP),
         outcome: cancelled ? "cancelled" : "complete",
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
 
-      if (cancelled) return;
+      if (cancelled) {
+        this.settlePetTarget(task, target, "failed");
+        return;
+      }
+      this.settlePetTarget(task, target, "done");
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
-      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
+      if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -1675,6 +1829,23 @@ export class RoomService {
         timestamp: new Date().toISOString(),
         author: "system",
         text: `⚠ turn failed (@${agentId}): ${message}`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
+  }
+
+  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
+   * first token: a stop is not a failure. */
+  private async appendTurnStopped(agentId: string): Promise<void> {
+    try {
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `■ turn stopped (@${agentId}) — no output yet`,
       };
       await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
@@ -2587,8 +2758,8 @@ export class RoomService {
    * merged into the native-command check so a role can enable a builtin too. */
   private async activeRoleSkills(agentId: string, agent: AgentDef): Promise<string[]> {
     const roleName = effectiveRoleName((await this.room.state()).activeRoles, agent);
-    if (!roleName) return [];
-    return (await resolveAgentRole(agent, roleName))?.skills ?? [];
+    const role = roleName ? await resolveAgentRole(agent, roleName) : undefined;
+    return effectiveAgentSkills(agent, role);
   }
 
   private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>, extraSkills: string[] = []): Set<string> {
@@ -2942,6 +3113,119 @@ export class RoomService {
     return events.find((event) => event.id === eventId);
   }
 
+  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+    const now = Date.now();
+    const startedAt = new Date(now).toISOString();
+    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
+    await this.room.updateState((state) => {
+      const recent = (state.backgroundTasks ?? []).filter(
+        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
+      );
+      recent.push({
+        taskId: event.taskId,
+        toolName: event.toolName,
+        ...(event.command !== undefined ? { command: event.command } : {}),
+        ...(event.description !== undefined ? { description: event.description } : {}),
+        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
+        startedAt,
+        agentId,
+        roomId: this.roomId,
+      });
+      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
+    });
+    await this.emitSnapshot();
+  }
+
+  /** PIDs still holding `task.outputPath` open for writing, per `lsof -t`
+   * (a live writer means the shell/process is still running). Best-effort:
+   * no output path, a missing/erroring lsof, or a timeout all report "no live
+   * writers" rather than fail the caller — liveness is advisory, never a hard
+   * dependency for the tray to render. */
+  private async backgroundTaskPids(task: BackgroundTask): Promise<number[]> {
+    if (!task.outputPath) return [];
+    try {
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = spawn(LSOF_BIN, ["-t", task.outputPath as string], { stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGKILL");
+          reject(new Error("lsof timed out"));
+        }, BACKGROUND_TASK_LSOF_TIMEOUT_MS);
+        child.stdout?.on("data", (chunk: Buffer) => {
+          out += chunk.toString("utf8");
+        });
+        child.once("error", (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(out);
+        });
+      });
+      return stdout
+        .split(/\s+/)
+        .map((line) => Number(line.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The tail of a tracked background process's output, plus whether it still
+   * has a live writer (see backgroundTaskPids). The path comes only from
+   * durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<{ text: string; running: boolean } | undefined> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task?.outputPath) return undefined;
+    const running = (await this.backgroundTaskPids(task)).length > 0;
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(task.outputPath, "r");
+      const { size } = await file.stat();
+      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
+      if (length === 0) return { text: "", running };
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
+      return { text: buffer.subarray(0, bytesRead).toString("utf8"), running };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    } finally {
+      await file?.close();
+    }
+  }
+
+  /** Stop a tracked background process (SIGTERM every live writer PID) and
+   * drop its tray entry, or just drop the entry when nothing is still
+   * running — either way this is the tray's stop/dismiss action. Returns
+   * false when the task id is unknown (already expired/removed). */
+  async stopBackgroundTask(taskId: string): Promise<boolean> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task) return false;
+    for (const pid of await this.backgroundTaskPids(task)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await this.room.updateState((state) => {
+      state.backgroundTasks = (state.backgroundTasks ?? []).filter((candidate) => candidate.taskId !== taskId);
+    });
+    await this.emitSnapshot();
+    return true;
+  }
+
   /** Page backwards through committed history: the `limit` events immediately
    * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
    * the transcript's "load older" — the snapshot only carries the tail window. */
@@ -2991,6 +3275,7 @@ export class RoomService {
         ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
         ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
+        ...(state.petBindings ? { petBindings: { ...state.petBindings } } : {}),
         ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
@@ -3030,6 +3315,7 @@ export class RoomService {
         })),
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
+      backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.
@@ -3165,6 +3451,31 @@ export class RoomService {
 
   // --- internals ---------------------------------------------------------------
 
+  private petTargetKey(taskId: string, agentId: string): string {
+    return `${taskId}\u0000${agentId}`;
+  }
+
+  /** Emit one workspace-wide, room+agent-scoped pet update. The status is
+   * derived only from the shared AgentEvent vocabulary in the caller below. */
+  private emitPetProgress(task: Task, agentId: string, status: PetProgressStatus, toolName?: string): void {
+    this.emit({
+      type: "pet-progress",
+      workspaceId: this.workspaceId,
+      roomId: this.roomId,
+      agentId,
+      taskId: task.id,
+      status,
+      ...(status === "tool" && toolName ? { toolName } : {}),
+    });
+  }
+
+  private settlePetTarget(task: Task, agentId: string, status: "done" | "failed"): void {
+    const key = this.petTargetKey(task.id, agentId);
+    if (this.settledPetTargets.has(key)) return;
+    this.settledPetTargets.add(key);
+    this.emitPetProgress(task, agentId, status);
+  }
+
   private createTask(text: string, targets: string[]): Task {
     return { id: newId("task"), roomId: this.roomId, text, targets, status: "running", startedAt: new Date().toISOString() };
   }
@@ -3183,6 +3494,15 @@ export class RoomService {
     this.draining = new Promise<void>((resolve) => {
       resolveDraining = resolve;
     });
+    for (const agentId of task.targets) {
+      if (this.startedPetTargets.has(this.petTargetKey(task.id, agentId))) {
+        this.settlePetTarget(task, agentId, status === "complete" ? "done" : "failed");
+      }
+    }
+    for (const agentId of task.targets) {
+      this.settledPetTargets.delete(this.petTargetKey(task.id, agentId));
+      this.startedPetTargets.delete(this.petTargetKey(task.id, agentId));
+    }
     if (status === "error") {
       this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });

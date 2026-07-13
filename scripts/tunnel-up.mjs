@@ -20,11 +20,21 @@ import path from "node:path";
 
 const REPO_ROOT = path.dirname(fileURLToPath(import.meta.url)).replace(/\/scripts$/, "");
 const LOG_PATH = "/tmp/gaia-cloudflared.log";
-const NAMESPACE_ID = "1ed521327e914a49a905ed8aeb320bf9";
+const NAMESPACE_ID = process.env.GAIA_EDGE_KV_NAMESPACE || "1ed521327e914a49a905ed8aeb320bf9";
 const TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
-const NPX_BIN = "/Users/pascaldisse/.nvm/versions/node/v24.11.1/bin/npx";
+const BUNX_BIN = process.env.GAIA_BUNX_BIN || "/Users/pascaldisse/.bun/bin/bunx";
+const KV_RETRY_MS = Number(process.env.GAIA_KV_RETRY_MS || "30000");
+const TUNNEL_PROBE_MS = Number(process.env.GAIA_TUNNEL_PROBE_MS || "60000");
+const TUNNEL_GRACE_MS = Number(process.env.GAIA_TUNNEL_GRACE_MS || "120000");
+const TUNNEL_PROBE_TIMEOUT_MS = Number(process.env.GAIA_TUNNEL_PROBE_TIMEOUT_MS || "10000");
+const TUNNEL_MAX_FAILS = Number(process.env.GAIA_TUNNEL_MAX_FAILS || "3");
+const TUNNEL_EXIT_DELAY_MS = Number(process.env.GAIA_TUNNEL_EXIT_DELAY_MS || "5000");
 
 let pushed = null; // last hostname we successfully pushed to KV
+let lastSeenHostname = null;
+let consecutiveProbeFails = 0;
+let restartScheduled = false;
+const startedAt = Date.now();
 
 function log(line) {
   appendFileSync(LOG_PATH, line.endsWith("\n") ? line : line + "\n");
@@ -36,9 +46,9 @@ async function pushOrigin(hostname) {
   const { execFile } = await import("node:child_process");
   await new Promise((resolve) => {
     execFile(
-      NPX_BIN,
+      BUNX_BIN,
       ["wrangler", "kv", "key", "put", "--namespace-id", NAMESPACE_ID, "--remote", "origin", hostname],
-      { cwd: REPO_ROOT, env: { ...process.env, PATH: `/Users/pascaldisse/.nvm/versions/node/v24.11.1/bin:${process.env.PATH || ""}` } },
+      { cwd: REPO_ROOT, env: process.env },
       (err, stdout, stderr) => {
         if (err) {
           log(`[tunnel-up] KV push FAILED: ${err.message}`);
@@ -57,13 +67,20 @@ function handleChunk(chunk) {
   log(text);
   const m = text.match(TUNNEL_URL_RE);
   if (m) {
-    pushOrigin(m[0]).catch((e) => log(`[tunnel-up] pushOrigin error: ${e.message}`));
+    lastSeenHostname = m[0];
+    pushOrigin(lastSeenHostname).catch((e) => log(`[tunnel-up] pushOrigin error: ${e.message}`));
   }
 }
 
+setInterval(() => {
+  if (lastSeenHostname && lastSeenHostname !== pushed) {
+    pushOrigin(lastSeenHostname).catch((e) => log(`[tunnel-up] pushOrigin error: ${e.message}`));
+  }
+}, KV_RETRY_MS);
+
 log(`[tunnel-up] starting cloudflared at ${new Date().toISOString()}`);
 
-const CLOUDFLARED_BIN = "/opt/homebrew/bin/cloudflared";
+const CLOUDFLARED_BIN = process.env.GAIA_CLOUDFLARED_BIN || "/opt/homebrew/bin/cloudflared";
 
 const child = spawn(CLOUDFLARED_BIN, ["tunnel", "--url", "http://127.0.0.1:8789"], {
   stdio: ["ignore", "pipe", "pipe"],
@@ -71,6 +88,27 @@ const child = spawn(CLOUDFLARED_BIN, ["tunnel", "--url", "http://127.0.0.1:8789"
 
 child.stdout.on("data", handleChunk);
 child.stderr.on("data", handleChunk);
+
+setInterval(async () => {
+  if (Date.now() - startedAt < TUNNEL_GRACE_MS || !lastSeenHostname || restartScheduled) return;
+
+  try {
+    const response = await fetch(lastSeenHostname, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(TUNNEL_PROBE_TIMEOUT_MS),
+    });
+    if (response.status === 530) throw new Error("status 530");
+    consecutiveProbeFails = 0;
+  } catch {
+    consecutiveProbeFails += 1;
+    if (consecutiveProbeFails >= TUNNEL_MAX_FAILS) {
+      restartScheduled = true;
+      log(`[tunnel-up] tunnel hostname dead (${consecutiveProbeFails} consecutive probe fails), killing cloudflared for launchd restart`);
+      child.kill("SIGTERM");
+      setTimeout(() => process.exit(1), TUNNEL_EXIT_DELAY_MS);
+    }
+  }
+}, TUNNEL_PROBE_MS);
 
 child.on("exit", (code, signal) => {
   log(`[tunnel-up] cloudflared exited code=${code} signal=${signal}`);

@@ -26,6 +26,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   snapshot: Snapshot|null,
  *   streams: Map<string, StreamEntry>,
  *   eventSource: EventSource|EventChannel|null,
+ *   eventConnectionStale: boolean,
  *   error: string,
  *   composerText: string,
  *   pendingAttachments: PendingAttachment[],
@@ -65,6 +66,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   roomContextMenu: {roomId: string, x: number, y: number}|null,
  *   workspaceContextMenu: {workspaceId: string, x: number, y: number}|null,
+ *   agentContextMenu: {agentId: string, x: number, y: number}|null,
  *   readMarks: Record<string, number>,
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
@@ -92,6 +94,7 @@ export const state = {
   // v2 SSE `eventId`). v1's author+text snapshot-merge heuristic is gone.
   streams: new Map(),
   eventSource: null,
+  eventConnectionStale: false,
   error: "",
   composerText: "",
   // Files pasted into the composer (system paste, no button), shown as a
@@ -189,6 +192,7 @@ export const state = {
   sidebarFocus: null,
   roomContextMenu: null,
   workspaceContextMenu: null,
+  agentContextMenu: null,
   readMarks: loadReadMarks(),
   manualUnread: loadManualUnread(),
   // Per-workspace room activity (running + last-activity), keyed by workspace id,

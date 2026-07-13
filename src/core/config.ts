@@ -15,6 +15,14 @@ export const DEFAULTS = {
   maxSummonsPerRoom: 8,
   host: "127.0.0.1",
   port: 8787,
+  // Stable self-signed identity for macOS re-signing on /rebuild. Ad-hoc
+  // ("-") signing keys the TCC designated requirement to the binary's
+  // cdhash, which changes every build — orphaning every mic/camera grant.
+  // A named identity keys the DR to the certificate leaf instead, which
+  // stays constant across rebuilds as long as this identity persists in
+  // the keychain (created once by scripts/setup-codesign or the ghoul fix
+  // in .gaia/codesign/).
+  codesignIdentity: "gaia-daemon-signing",
 } as const;
 
 // Memory v4 defaults (MEMORY-DESIGN.md): everything on. `auto` embeddings =
@@ -41,6 +49,17 @@ export function gaiaPort(): number {
   if (!raw) return DEFAULTS.port;
   const parsed = Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.port;
+}
+
+/**
+ * The codesign identity name to re-sign the .app bundle with on macOS
+ * rebuild. GAIA_CODESIGN_IDENTITY overrides; otherwise DEFAULTS.codesignIdentity.
+ * Callers MUST still probe the keychain (`security find-identity`) before
+ * using this — an identity name with no matching keychain entry falls back
+ * to ad-hoc ("-") signing at the call site, never here.
+ */
+export function gaiaCodesignIdentity(): string {
+  return env("GAIA_CODESIGN_IDENTITY") ?? DEFAULTS.codesignIdentity;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

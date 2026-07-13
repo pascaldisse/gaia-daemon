@@ -23,7 +23,7 @@ import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
-import { buildPiTools } from "./tools.js";
+import { agentRoster, buildPiTools } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,
@@ -37,6 +37,7 @@ import { createEventChannel } from "./events.js";
 import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
+import { findModelWithAlias } from "./model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 
@@ -247,7 +248,7 @@ export class PiRuntime implements AgentRuntime {
     const name = this.agent.model?.name;
     if (!proxyUrl || !token || !provider || !name) return;
     this.modelRegistry.registerProvider(provider, { apiKey: token, authHeader: true });
-    const realBaseUrl = this.modelRegistry.find(provider, name)?.baseUrl;
+    const realBaseUrl = findModelWithAlias(this.modelRegistry, provider, name)?.baseUrl;
     if (realBaseUrl) redirectProviderFetch(realBaseUrl, proxyUrl);
   }
 
@@ -470,6 +471,7 @@ export class PiRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir,
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     });
@@ -543,14 +545,15 @@ export class PiRuntime implements AgentRuntime {
     const provider = this.agent.model?.provider;
     const name = this.agent.model?.name;
     if (!provider || !name) return undefined;
-    return this.modelRegistry.find(provider, name);
+    return findModelWithAlias(this.modelRegistry, provider, name);
   }
 
   private resolveModelLabel(): string {
     const provider = this.agent.model?.provider;
     const name = this.agent.model?.name;
     if (!provider || !name) return "Pi default";
-    return this.modelRegistry.find(provider, name) ? `${provider}/${name}` : "Pi default";
+    const resolved = findModelWithAlias(this.modelRegistry, provider, name);
+    return resolved ? `${provider}/${name}` : "Pi default";
   }
 }
 

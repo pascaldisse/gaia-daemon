@@ -8,6 +8,7 @@ import { markDirty, setError } from "./render.js";
 import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
+import { pinTranscriptToBottom } from "./transcript.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
@@ -208,6 +209,29 @@ export async function setAgentAccount(agentId, account) {
       body: JSON.stringify({ account: account || null }),
     });
     state.error = "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** Reversible agent delete: moves agent dir to trash (recoverable).
+ * @param {string} agentId
+ */
+export async function deleteAgent(agentId) {
+  const ok = await confirmDialog(`Delete agent @${agentId}?`, {
+    detail: "The agent moves to trash (recoverable). It won't appear in the agents list anymore.",
+    okLabel: "Delete agent",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    state.error = "";
+    // Global settings changed; SSE will broadcast snapshot update
     markDirty();
   } catch (error) {
     setError(error);
@@ -438,6 +462,9 @@ export async function uploadAttachment(file, name) {
 export async function sendMessage(text, attachments = [], options = {}) {
   const snapshot = state.snapshot;
   if (!snapshot || (!text.trim() && attachments.length === 0)) return false;
+  // Sending is a "follow along" intent: snap back to the bottom so the reader
+  // sees their own message and the incoming reply even if they'd scrolled up.
+  pinTranscriptToBottom();
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/messages`, {
       method: "POST",
@@ -546,26 +573,51 @@ export async function cancelActiveTask() {
 }
 
 /**
- * Panic stop: abort the running room turn AND every running summon sub-room.
- * A summon is a child room, so each one is cancelled through the ordinary
- * room-cancel endpoint. Bound to Esc, Ctrl+C, and the stop button.
+ * Stop the ACTIVE ROOM's running turn only — bound to Esc and the stop button.
+ * Deliberately CANNOT reach summons: UI/stream delay made any escalating
+ * behavior kill summons by accident; only Ctrl+C (stopAll) stops those.
  */
-export async function stopAll() {
+export async function stopActiveRoom() {
   const snapshot = state.snapshot;
-  if (!snapshot) return;
-  const workspaceId = snapshot.workspace.id;
-  const summonRooms = runningSummonRooms(snapshot);
+  if (!snapshot || !activeTask(snapshot)) return;
   try {
-    await Promise.allSettled([
-      ...(activeTask(snapshot) ? [cancelActiveTask()] : []),
-      ...summonRooms.map((room) =>
-        api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(room.id)}/cancel`, { method: "POST", body: "{}" }),
-      ),
-    ]);
+    await cancelActiveTask();
     setError("");
   } catch (error) {
     setError(error);
   }
+}
+
+/**
+ * Stop every running summon descended from the active room. Summons nest;
+ * runningSummonRooms walks the whole parent chain, so sub-sub-rooms are
+ * included — one call clears the entire subtree.
+ * Only reachable via stopAll (Ctrl+C) — never bound to Esc or the button directly.
+ */
+export async function stopSummons() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const workspaceId = snapshot.workspace.id;
+  const summonRooms = runningSummonRooms(snapshot);
+  if (summonRooms.length === 0) return;
+  try {
+    await Promise.allSettled(
+      summonRooms.map((room) =>
+        api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(room.id)}/cancel`, { method: "POST", body: "{}" }),
+      ),
+    );
+    setError("");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Kill the whole tree at once, bound to Ctrl+C: the active room's running
+ * turn AND every summon descended from it.
+ */
+export async function stopAll() {
+  await Promise.allSettled([stopActiveRoom(), stopSummons()]);
 }
 
 // ---------------------------------------------------------------------------

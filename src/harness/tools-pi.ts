@@ -9,6 +9,7 @@ import type { AgentDef } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
 import { bareWorkspaceRecall, formatMemoryHits, scrollTranscriptWindow, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { RecallSearch, SummonCreate } from "../harness/spec.js";
+import type { AgentRosterEntry } from "./tools.js";
 
 const MEMORY_DESCRIPTION = [
   "Persist long-term notes for the current agent across sessions.",
@@ -143,19 +144,31 @@ const SUMMON_DESCRIPTION = [
   "Use this to decompose a goal and swarm it: cheap workers for reading/search/triage, heavy workers for reasoning, a codegen worker for large edits; end your turn after summoning (tell the user what you launched) and synthesize when the results come back.",
 ].join(" ");
 
-export function createSummonTool(summonCreate: SummonCreate, roomId: string) {
+export function createSummonTool(summonCreate: SummonCreate, roomId: string, availableAgents: readonly AgentRosterEntry[] = []) {
+  const availableAgentIds = availableAgents.map((agent) => agent.id);
+  const rosterLine = availableAgentIds.length ? `Available agents: ${availableAgentIds.join(", ")}` : "";
+  const agentParameter = () => {
+    const description = ["Worker agent id to summon.", rosterLine].filter(Boolean).join(" ");
+    return availableAgentIds.length ? Type.Enum(availableAgentIds, { description }) : Type.String({ description });
+  };
+
   return defineTool({
     name: "summon",
     label: "Summon",
-    description: SUMMON_DESCRIPTION,
-    promptSnippet: `summon: fan out background worker agents (whales) — one { agent, task } or a parallel \`whales\` list; returns immediately, and each worker's result is posted back to this room when it finishes (you'll be invoked again — never block on workers).`,
+    description: [SUMMON_DESCRIPTION, rosterLine].filter(Boolean).join(" "),
+    promptSnippet: [
+      `summon: fan out background worker agents (whales) — one { agent, task } or a parallel \`whales\` list; returns immediately, and each worker's result is posted back to this room when it finishes (you'll be invoked again — never block on workers).`,
+      rosterLine,
+    ]
+      .filter(Boolean)
+      .join(" "),
     parameters: Type.Object({
-      agent: Type.Optional(Type.String({ description: "Single worker agent id to summon (e.g. whale-flash, whale-deep, whale-codex)." })),
+      agent: Type.Optional(agentParameter()),
       task: Type.Optional(Type.String({ description: "Task for the single summoned agent to complete." })),
       whales: Type.Optional(
         Type.Array(
           Type.Object({
-            agent: Type.String({ description: "Worker agent id (e.g. whale-flash, whale-deep, whale-codex)." }),
+            agent: agentParameter(),
             task: Type.String({ description: "Self-contained task with explicit acceptance criteria and exactly what to return." }),
           }),
           { description: "Fan out multiple workers in parallel. Each runs concurrently and returns its own result." },

@@ -1,4 +1,11 @@
-const APP_COMMANDS: &[&str] = &["open_window", "redock", "set_badge", "notify"];
+const APP_COMMANDS: &[&str] = &[
+    "open_window",
+    "redock",
+    "set_badge",
+    "notify",
+    "sync_pets",
+    "pet_progress",
+];
 
 fn bake_mobile_daemon_url() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());

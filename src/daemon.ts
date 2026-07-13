@@ -12,14 +12,16 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, PetBinding, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
+import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { normalizeRoomState } from "./domain/rooms.js";
+import { listWorkspacePetBindings } from "./domain/pets.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
-import { setAgentDefaultRole } from "./domain/agents.js";
+import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
@@ -274,6 +276,14 @@ export class Daemon {
   }
 
   // --- account usage limits (account-keyed; see services/usage-service.ts) ------
+
+  /** Complete durable native-pet seed for one workspace. It scans RoomState on
+   * disk, so background/non-resident rooms are included and the shell never
+   * depends on the currently selected room's snapshot. */
+  async petBindings(workspaceId: string): Promise<PetBinding[]> {
+    const record = await this.registry.find(workspaceId);
+    return record ? listWorkspacePetBindings(workspaceId, record.path) : [];
+  }
 
   /** Current cached usage as replayable events — used to seed a client the
    * moment it connects (SSE fan-out only carries events broadcast while it's
@@ -656,6 +666,7 @@ export class Daemon {
     const nextService = await this.serviceFor(workspaceId, next);
     const snapshot = await nextService.getSnapshot();
     this.broadcast({ type: "rooms", workspaceId, rooms: await nextService.listRooms() });
+    this.broadcast({ type: "pet-bindings", workspaceId, bindings: await this.petBindings(workspaceId) });
     this.broadcast({ type: "snapshot", workspaceId, roomId: nextService.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
@@ -693,6 +704,9 @@ export class Daemon {
     this.currentRoom.delete(workspaceId);
 
     await this.registry.remove(workspaceId);
+    // The workspace's files remain on disk, but it no longer belongs to this
+    // shell process: close its native pet windows immediately.
+    this.broadcast({ type: "pet-bindings", workspaceId, bindings: [] });
     this.log(`removed workspace ${record.name} (${workspaceId}) from the registry; files left on disk`);
 
     // Select a remaining initialized workspace (if any) for the returned payload.
@@ -751,6 +765,24 @@ export class Daemon {
     const snapshot = await rebuilt.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  /** Delete a global agent: move its directory to the global trash (reversible —
+   * never rm -rf). Refuses if the agent doesn't exist (checked against the disk,
+   * not just in-memory loaded workspaces — trashGlobalAgent's own existsSync
+   * catches an agent no workspace has loaded yet this session), or is any
+   * currently-loaded workspace's default agent. */
+  async deleteAgent(agentId: string): Promise<void> {
+    for (const service of this.services.values()) {
+      if (service.workspace.config.defaultAgent === agentId) {
+        throw new Error(`Cannot delete @${agentId}: it's the default agent for workspace "${service.workspace.rootDir}"`);
+      }
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = await trashGlobalAgent(agentId, stamp);
+    if (!trash) throw new Error(`Unknown agent: @${agentId}`);
+    this.log(`deleted agent ${agentId} → trash ${trash}`);
   }
 
   // --- keep-awake (Global Settings ▸ General) ---------------------------------------
@@ -1276,7 +1308,11 @@ function consolidateLlm(): ConsolidateLlm {
       import("@earendil-works/pi-coding-agent"),
     ]);
     const authStorage = AuthStorage.create();
-    const resolved = ModelRegistry.create(authStorage).find(provider, name);
+    // Alias fallback (RULE #0): short tier names (fable/opus/sonnet/haiku) in an
+    // agent's config resolve here too — this direct pi-ai path bypasses the
+    // harness CLI, so an un-aliased `find` was silently killing consolidation
+    // for any agent configured with a short name (e.g. anthropic/fable).
+    const resolved = findModelWithAlias(ModelRegistry.create(authStorage), provider, name);
     if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
     const apiKey = await authStorage.getApiKey(provider);
     const message = await completeSimple(

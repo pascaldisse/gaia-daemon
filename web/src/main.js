@@ -9,7 +9,6 @@ import { installKeybindings } from "./keys.js";
 import { installOpenModifierTracking } from "./links.js";
 import { launchIntent, onNativeEvent } from "./native.js";
 import { markDirty, mountApp } from "./render.js";
-import { installPet } from "./pet.js";
 import { recallLocation, state } from "./state.js";
 import { clockText, initStatusbarPref } from "./statusbar.js";
 import { initTheme } from "./themes.js";
@@ -32,7 +31,6 @@ initStatusbarPref();
 restoreColumnWidths();
 
 mountApp();
-installPet();
 initComposer();
 
 installOpenModifierTracking();

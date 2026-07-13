@@ -366,6 +366,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .segmented-tabs button { width: auto; display: flex; align-items: center; gap: 6px; }
 
+/* Agent row in settings: flex layout so delete button sits inline with the agent name. */
+.agent-row-wrapper { display: flex; gap: 4px; align-items: stretch; }
+.agent-row-wrapper > button:first-child { flex: 1; min-width: 0; }
+
 /* The sidebar is a tmux session tree: names matter, absolute paths are noise.
    Keep just the names; the full path lives on the button's hover title. */
 .sidebar .nav-item small { display: none; }
@@ -585,6 +589,19 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 4px;
   margin-top: 4px;
   font-size: .85em;
+  color: var(--warn);
+  animation: stream-pulse 1.2s ease-in-out infinite;
+}
+
+/* One line of turn liveness beneath every streaming reply. */
+.live-heartbeat {
+  grid-column: 2;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: .8em;
+  font-variant-numeric: tabular-nums;
+}
+.live-heartbeat.stale {
   color: var(--warn);
   animation: stream-pulse 1.2s ease-in-out infinite;
 }
@@ -824,6 +841,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .running-banner .running-label { flex: 1; min-width: 0; color: var(--good); }
 .running-banner .running-label.has-summons { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .running-banner .stop-btn { padding: 2px 10px; color: var(--danger); border: 1px solid var(--danger); background: transparent; }
+.running-banner .stop-btn:disabled { color: var(--muted); border-color: var(--muted); opacity: 0.5; cursor: default; }
 .running-banner .compact-bar-wrap { flex: 1; min-width: 80px; max-width: 260px; display: flex; }
 
 /* Expandable list of this room's running summons, anchored above the banner. */
@@ -1794,6 +1812,22 @@ body.resizing { cursor: col-resize; user-select: none; }
 .settings2-multi-option input[type="checkbox"] { width: auto; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
 .settings2-multi-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Skills carry a server-provided ecosystem group. Keep those long lists
+   navigable without changing the ordinary flat tool grid. */
+.settings2-multi-grouped { display: flex; flex-direction: column; gap: 6px; }
+.settings2-skill-filter { width: 100%; }
+.settings2-skill-group { border: 1px solid var(--border); }
+.settings2-skill-group > summary { cursor: pointer; padding: 5px 8px; display: flex; align-items: center; gap: 8px; list-style: none; user-select: none; }
+.settings2-skill-group > summary::-webkit-details-marker { display: none; }
+.settings2-skill-group > summary::marker { content: ""; }
+.settings2-skill-group > summary::before { content: "▸"; color: var(--muted); font-size: 0.8em; }
+.settings2-skill-group[open] > summary::before { content: "▾"; }
+.settings2-skill-group > summary:hover { color: var(--accent); }
+.settings2-skill-group-name { font-weight: 500; }
+.settings2-skill-group-count { color: var(--muted); font-size: 0.85em; }
+.settings2-skill-group > .settings2-multiselect { border: 0; border-top: 1px solid var(--border); }
+.settings2-multi-badge { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); border: 1px solid var(--border); padding: 0 4px; }
+
 /* JSON sub-editor: monospace, red border while what's typed doesn't parse. */
 .settings2-json-field { font-family: var(--font); font-size: 12px; resize: vertical; }
 .settings2-json-field.settings2-invalid { border-color: var(--danger); }
@@ -1835,39 +1869,3 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
-
-/* Codex-compatible animated pet: frame selection is driven imperatively by
-   pet.js's unequal-duration setTimeout chain (never CSS steps()). */
-.gaia-pet-overlay {
-  position: fixed;
-  z-index: 1200;
-  width: var(--gaia-pet-width, 7.04rem);
-  aspect-ratio: 192 / 208;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  filter: drop-shadow(0 4px 8px rgb(0 0 0 / 32%));
-}
-
-.gaia-pet-overlay[hidden] {
-  display: none;
-}
-
-.gaia-pet-overlay.dragging {
-  cursor: grabbing;
-}
-
-.gaia-pet-overlay[data-error]:not([data-error=""]) {
-  outline: 1px dashed var(--danger);
-  border-radius: 0.5rem;
-}
-
-.gaia-pet-sprite {
-  width: 100%;
-  aspect-ratio: 192 / 208;
-  background-repeat: no-repeat;
-  background-size: 800% 900%;
-  image-rendering: pixelated;
-  pointer-events: none;
-}

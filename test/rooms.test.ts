@@ -321,6 +321,17 @@ test("normalizeRoomState: thanksDario flag survives the whitelist", () => {
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).thanksDario, undefined);
 });
 
+test("normalizeRoomState: pet bindings are per-agent, optional, and safely validated", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    petBindings: { gaia: "gaia", terry: "nari", escape: "../bad", "bad/agent": "gaia", blank: "" },
+  });
+  assert.deepEqual(state.petBindings, { gaia: "gaia", terry: "nari" });
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, petBindings: {} }).petBindings, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, petBindings: "gaia" }).petBindings, undefined);
+});
+
 test("normalizeRoomState: incognito flag survives the whitelist (only literal true)", () => {
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, incognito: true }).incognito, true);
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, incognito: "yes" }).incognito, undefined);

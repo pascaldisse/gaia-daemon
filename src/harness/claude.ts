@@ -27,9 +27,11 @@ import { createEventChannel, type EventChannel } from "./events.js";
 import { resolveMcpServers } from "../core/config.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { ModelLabel } from "./model-label.js";
+import { resolveApiModelAlias } from "./model-aliases.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
+import { agentRoster } from "./tools.js";
 import { fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -182,6 +184,9 @@ interface ClaudeRoomMeta {
 // session while leaving subscription auth, the model, built-in tools, and
 // permissions intact (confirmed in `claude --help`).
 const SAFE_MODE = "--safe-mode";
+// gaia owns compaction: the daemon's /compact drives harness compaction
+// explicitly; the CLI must NEVER auto-compact on its own (Pascal, 2026-07-13).
+const NO_AUTOCOMPACT_SETTINGS = JSON.stringify({ autoCompactEnabled: false });
 
 // A steer (an extra user message injected on the open stdin) that lands after
 // the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
@@ -354,21 +359,8 @@ export function claudeContextWindow(name: string | undefined): number {
 // Claude Code's own model aliases (see `modelNameOptions` below) mean "latest
 // of this tier" and are understood only by the `claude` CLI itself — passed
 // verbatim as `--model`. A caller that talks to a model DIRECTLY through
-// pi-ai (bypassing the CLI, e.g. the daemon's consolidation/dream LLM reusing
-// an agent's configured model) needs a real pi-ai registry id instead. This
-// table is that one translation, declared as data on the spec
-// (HarnessSpec.resolveApiModelId) — kept current by hand as pi-ai's bundled
-// registry adds newer dated snapshots under each tier.
-const API_MODEL_ID_ALIASES: Record<string, string> = {
-  fable: "claude-fable-5",
-  opus: "claude-opus-4-8",
-  sonnet: "claude-sonnet-5",
-  haiku: "claude-haiku-4-5",
-};
-
-export function claudeApiModelId(name: string): string {
-  return API_MODEL_ID_ALIASES[name] ?? name;
-}
+// pi-ai (bypassing the CLI) needs a real registry id: shared alias table →
+// ./model-aliases.ts (data on the spec via HarnessSpec.resolveApiModelId).
 
 // ---------------------------------------------------------------------------
 // ClaudeRuntime
@@ -384,12 +376,64 @@ export interface ClaudeRuntimeOptions extends RuntimeCreateContext {
 }
 
 /** The API usage block on assistant messages (snake_case wire). Context
- * footprint = input + both cache fields; output_tokens is excluded. */
+ * footprint = all four fields summed — matches Claude Code's own "{N}%
+ * context used" indicator (verified against the installed 2.1.207 bundle,
+ * see usedTokensFrom below). */
 interface ClaudeUsage {
   input_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
   output_tokens?: number;
+}
+
+/** Sum of the four usage fields Claude Code counts as "context used" for its
+ * own indicator, taken from the LATEST turn's usage message. Verbatim port of
+ * the installed claude 2.1.207 bundle's formula. */
+function usedTokensFrom(usage: ClaudeUsage): number {
+  return (
+    (usage.input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.output_tokens ?? 0)
+  );
+}
+
+/** Per-model block on the CLI's `result` message (camelCase — a distinct wire
+ * shape from the per-turn `usage` block above). Verified live (claude 2.1.207,
+ * `-p --output-format stream-json`): `modelUsage["claude-sonnet-5"]` carries
+ * both `contextWindow` (200000) and `maxOutputTokens` (64000). */
+interface ClaudeModelUsage {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+/** Claude Code's context window default when the CLI's result carries no
+ * `modelUsage[model].contextWindow` at all (e.g. no model-tagged usage ever
+ * landed) — the 200k tier every model falls back to absent a reported window. */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/** Claude Code's own output-token reserve — the CLI subtracts
+ * min(model's maxOutputTokens, this cap) from the raw context window before
+ * computing "{N}% context used" (the `uMd` constant in the installed 2.1.207
+ * bundle). NOT the auto-compact clamp: gaia forces autoCompactEnabled=false
+ * (commit ac6be4f), so CLAUDE_CODE_AUTO_COMPACT_WINDOW never enters this math. */
+const OUTPUT_RESERVE_CAP = 20_000;
+
+/** Claude Code's own "{N}% context used" denominator: the raw context window
+ * minus the output-token reserve. Picks the model entry with the largest
+ * reported window (a mid-turn model-fallback, see `model_fallback` handling
+ * below, can report more than one model in the same result). */
+function effectiveContextWindow(modelUsage: Record<string, ClaudeModelUsage> | undefined): number {
+  let rawWindow: number | undefined;
+  let maxOutputTokens: number | undefined;
+  for (const entry of Object.values(modelUsage ?? {})) {
+    if (typeof entry.contextWindow === "number" && (rawWindow === undefined || entry.contextWindow > rawWindow)) {
+      rawWindow = entry.contextWindow;
+      maxOutputTokens = entry.maxOutputTokens;
+    }
+  }
+  const outputReserve = Math.min(maxOutputTokens ?? OUTPUT_RESERVE_CAP, OUTPUT_RESERVE_CAP);
+  return (rawWindow ?? DEFAULT_CONTEXT_WINDOW) - outputReserve;
 }
 
 const CLAUDE_CAPABILITIES: HarnessCapabilities = {
@@ -585,14 +629,14 @@ export class ClaudeRuntime implements AgentRuntime {
       channel.push(note ? { type: "thinking-end", content: note } : { type: "thinking-end" });
     };
 
-    // Context footprint = input + both cache fields (output excluded — the CLI's
-    // own statusline formula). Emitted per assistant round-trip so the ctx chip
-    // grows DURING the turn, not only at result. The window size (maxTokens) only
-    // arrives on result.modelUsage; the shared layer keeps the last-known window
-    // so the % stays live on the mid-turn events that can't carry it.
+    // usedTokens = usedTokensFrom (the CLI's own "% context used" formula).
+    // Emitted per assistant round-trip so the ctx chip grows DURING the turn,
+    // not only at result. The effective window (maxTokens) only arrives on
+    // result.modelUsage (needs contextWindow + maxOutputTokens); the shared
+    // layer keeps the last-known window so the % stays live on the mid-turn
+    // events that can't carry it.
     const pushContextUsage = (usage: ClaudeUsage, maxTokens?: number): void => {
-      const used = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-      channel.push({ type: "context-usage", usedTokens: used, ...(maxTokens ? { maxTokens } : {}) });
+      channel.push({ type: "context-usage", usedTokens: usedTokensFrom(usage), ...(maxTokens !== undefined ? { maxTokens } : {}) });
     };
 
     const onMessage = (raw: unknown): void => {
@@ -727,13 +771,10 @@ export class ClaudeRuntime implements AgentRuntime {
             subtype?: string;
             is_error?: boolean;
             result?: string;
-            modelUsage?: Record<string, { contextWindow?: number }>;
+            modelUsage?: Record<string, ClaudeModelUsage>;
           };
           if (lastUsage) {
-            const windows = Object.values(res.modelUsage ?? {})
-              .map((m) => m.contextWindow)
-              .filter((n): n is number => typeof n === "number");
-            pushContextUsage(lastUsage, windows.length ? Math.max(...windows) : undefined);
+            pushContextUsage(lastUsage, effectiveContextWindow(res.modelUsage));
           }
           // Close any thinking indicator that never saw a content_block_stop.
           endThinking();
@@ -771,10 +812,17 @@ export class ClaudeRuntime implements AgentRuntime {
       env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
-        if (!channel.closed && code !== 0 && !channel.hasError) {
+        // A `result` message closes the channel before the process exits. If
+        // the process gets here with the channel still open, no result ever
+        // arrived — even exit 0 is an abnormal turn end (Claude can keep a
+        // background task alive, stream the full answer, then exit cleanly
+        // without a result record). Fail the uniform AgentRuntime stream so
+        // runner.ts emits turn-error rather than the false turn-end that used
+        // to make room-service discard the accumulated reply.
+        if (!channel.closed && !channel.hasError) {
           channel.fail(
             claudeStartupError(
-              new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
+              new Error(`claude exited without a result (${signal ? `signal ${signal}` : `exit ${code}`}).`),
               stderr,
             ),
           );
@@ -832,7 +880,7 @@ export class ClaudeRuntime implements AgentRuntime {
     if (!room?.started) return NO_SESSION_TO_COMPACT;
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--settings", NO_AUTOCOMPACT_SETTINGS, "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
@@ -1072,6 +1120,8 @@ export class ClaudeRuntime implements AgentRuntime {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
+      "--settings",
+      NO_AUTOCOMPACT_SETTINGS,
       // Isolation: normal turns use --safe-mode (no user CLAUDE.md/skills/hooks/
       // commands). A native command NEEDS the skill/slash-command surface that
       // --safe-mode kills, so it isolates a different way — no user setting
@@ -1127,7 +1177,7 @@ export class ClaudeRuntime implements AgentRuntime {
         workspace: this.workspace,
         agent: this.agent,
         role: input.activeRole,
-        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
+        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools, { availableAgents: agentRoster(this.workspace) }),
       }),
     );
   }
@@ -1362,9 +1412,40 @@ registerHarness({
     // Claude Code's own --permission-mode vocabulary, passed verbatim.
     permissionModes: ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
   },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      if (toolName !== "Bash" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+      const call = args as Record<string, unknown>;
+      if (call.run_in_background !== true) return undefined;
+      const text =
+        typeof result === "string"
+          ? result
+          : Array.isArray(result)
+            ? result
+                .map((block) =>
+                  block && typeof block === "object" && typeof (block as { text?: unknown }).text === "string"
+                    ? (block as { text: string }).text
+                    : "",
+                )
+                .filter(Boolean)
+                .join("\n")
+            : result && typeof result === "object" && typeof (result as { text?: unknown }).text === "string"
+              ? (result as { text: string }).text
+              : "";
+      const taskId = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/.exec(text)?.[1];
+      if (!taskId) return undefined;
+      const outputPath = /written to:\s*([^\r\n]+?)(?=\.\s|$)/i.exec(text)?.[1]?.trim();
+      return {
+        taskId,
+        ...(typeof call.command === "string" ? { command: call.command } : {}),
+        ...(typeof call.description === "string" ? { description: call.description } : {}),
+        ...(outputPath ? { outputPath } : {}),
+      };
+    },
+  },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
-  resolveApiModelId: (name) => claudeApiModelId(name),
+  resolveApiModelId: (name) => resolveApiModelAlias(name),
   nativeCommands: () => discoverClaudeCommands(),
   // A deep transcript cursor is only honest while this handle survives: the
   // session must have been ESTABLISHED (started) — a generated-but-never-run

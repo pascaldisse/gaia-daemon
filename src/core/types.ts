@@ -226,6 +226,10 @@ export interface SummonDelivery {
 
 export interface RoomState {
   activeRoles: Record<string, string>;
+  /** Room-scoped Codex-pet bindings, keyed by agent id. Absence means pets are
+   * off. Each entry binds exactly this room + that agent to one validated pet
+   * package; several agents may be bound at once. */
+  petBindings?: Record<string, string>;
   /** Per-agent room-scoped thinking-level override (mirrors activeRoles):
    * room entry wins; absent inherits the agent.json global default
    * (agent.thinking). Never written to agent.json. */
@@ -284,6 +288,10 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+  /** Harness-native shells that detached into the background during a turn.
+   * These are start records only: the harness exposes no reliable exit marker,
+   * so consumers must not infer liveness from their presence. */
+  backgroundTasks?: BackgroundTask[];
   /** A held first turn for a newly-addressed agent whose transcript load would
    * exceed the warn threshold; the human picks how much context to give it
    * before it runs. Durable so the choice survives a restart. */
@@ -530,10 +538,15 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Present only when agent.json explicitly sets `tools`. An unset tools key
+   * inherits the active role's tool defaults (or the normal agent defaults). */
+  toolOverride?: string[];
   /** Skills to load for this agent, by name — resolved against every
    * auto-detected skill dir (gaia/pi/claude/codex/hermes). Merged with the
    * active role's skills. Detected ≠ loaded: this is where you opt in. */
   skills?: string[];
+  /** Present only when agent.json explicitly sets `skills`; see toolOverride. */
+  skillOverride?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: string;
@@ -651,6 +664,11 @@ export interface FieldHint {
   /** Optional fields render an explicit "(not set)" choice; empty omits the key on save. */
   optional?: boolean;
   options?: FieldHintOption[];
+  /** Value shown by the settings form when this field is absent from the raw
+   * file. The first edit writes an ordinary per-agent override. */
+  defaultValue?: unknown;
+  /** Per-role defaults for an inheritable field (currently tools and skills). */
+  roleDefaults?: Record<string, unknown>;
   /** JSON path of another field whose current value filters options by their `group`. */
   groupBy?: string;
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
@@ -765,6 +783,24 @@ export type UsageProbeResult =
 // ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)
 
+export interface BackgroundTaskInfo {
+  taskId: string;
+  command?: string;
+  description?: string;
+  outputPath?: string;
+}
+
+export interface BackgroundTask extends BackgroundTaskInfo {
+  toolName: string;
+  startedAt: string;
+  agentId: string;
+  /** The room this process was launched from. Snapshots today only carry the
+   * viewing room's own tasks, but the tray labels and jumps by this id
+   * regardless — the one durable place a background task remembers its
+   * origin, ready the moment a future snapshot ever merges other rooms' in. */
+  roomId: string;
+}
+
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
@@ -776,6 +812,7 @@ export type AgentEvent =
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
+  | { type: "background-task"; taskId: string; toolName: string; command?: string; description?: string; outputPath?: string }
   /** Synthesized DAEMON-side (RunnerHost.injectEvent) the moment a mid-turn
    * steer is accepted, so the marker lands in the stream — and therefore in
    * `details.blocks` — at the exact position the steer took effect. Uniform for
@@ -949,6 +986,29 @@ export interface ChatSearchResult {
   degraded: string[];
 }
 
+/** One native desktop pet window. Bindings are durable in each room's
+ * RoomState; workspaceId/roomId are added when the daemon snapshots them for
+ * the shell. */
+export interface PetBinding {
+  workspaceId: string;
+  roomId: string;
+  agentId: string;
+  package: string;
+}
+
+export type PetProgressStatus = "thinking" | "tool" | "working" | "done" | "failed";
+
+export interface PetProgress {
+  workspaceId: string;
+  roomId: string;
+  agentId: string;
+  taskId: string;
+  status: PetProgressStatus;
+  /** Present only while status === "tool"; this is the shared AgentEvent's
+   * toolName, never a harness-specific label. */
+  toolName?: string;
+}
+
 export interface SlashCommandDefinition {
   name: string;
   type: string;
@@ -989,6 +1049,9 @@ export interface Snapshot {
     usageAccounts?: string[];
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
+    /** Native desktop pet bindings for this room, keyed by agent. Empty/absent
+     * means pets are off. Browser/iOS clients do not render an in-chat stand-in. */
+    petBindings?: Record<string, string>;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;
@@ -1005,6 +1068,7 @@ export interface Snapshot {
   commands: SlashCommandDefinition[];
   agents: AgentStatus[];
   tasks: Task[];
+  backgroundTasks: BackgroundTask[];
   thinkingLevels: string[];
   /** Memory-subsystem degradation chips ("embedder dead", "index degraded") —
    * absent/empty when healthy. Degradation is loud (MEMORY-DESIGN.md §10):
@@ -1060,6 +1124,11 @@ export type UiEvent =
   // workspace) so a sidebar can update both the open workspace's room tree AND
   // the running/unread dots rolled up onto every OTHER workspace in the list.
   | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] }
+  // Workspace-wide native-pet control plane. Both are globally DELIVERED by
+  // the SSE server (not selected-room scoped): the shell must keep windows for
+  // bindings in background rooms alive and track their agents' live progress.
+  | { type: "pet-bindings"; workspaceId: string; bindings: PetBinding[] }
+  | ({ type: "pet-progress" } & PetProgress)
   // Daemon-global (NO workspaceId → fans out to EVERY connected client): one
   // subscription account's usage limits refreshed. Usage is account-level, not
   // per-workspace/room. `usage: null` clears that account's meter (every

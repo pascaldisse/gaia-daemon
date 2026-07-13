@@ -1,6 +1,6 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
-import { accountsCatalog, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -63,6 +63,7 @@ function renderPanel() {
   // or the workspace default when it has none yet. Marks the "active" row and
   // is who a bare next message goes to.
   const activeAgent = snapshot ? (snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent) : undefined;
+  const agentMenu = AgentContextMenu();
   panel.replaceChildren(
     h(
       "div",
@@ -104,7 +105,14 @@ function renderPanel() {
         const agentAccounts = (accountsCatalogValue?.accounts ?? []).filter((account) => account.harness === agent.harness);
         return h(
           "div",
-          { class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}` },
+          {
+            class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
+            oncontextmenu: (/** @type {MouseEvent} */ event) => {
+              event.preventDefault();
+              state.agentContextMenu = { agentId: agent.id, x: event.clientX, y: event.clientY };
+              markDirty("panel");
+            },
+          },
           h(
             "div",
             // The role-select is pinned to this cell's bottom-right (the model
@@ -197,9 +205,44 @@ function renderPanel() {
         ? h("div", { class: "empty", text: "no tasks" })
         : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
     ),
+    ...(agentMenu ? [agentMenu] : []),
   );
   // Keep the elapsed advancing between server snapshots while any pass runs.
   armCompactTick(agents.some((agent) => agent.status === "compacting"));
 }
+
+/** Right-click menu on an agent row: delete (moves to trash, recoverable).
+ * @returns {HTMLElement|null} */
+function AgentContextMenu() {
+  const open = state.agentContextMenu;
+  if (!open) return null;
+  const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === open.agentId);
+  if (!agent) return null;
+  const close = () => {
+    state.agentContextMenu = null;
+    markDirty("panel");
+  };
+  return h(
+    "div",
+    { class: "room-menu", style: `left:${open.x}px;top:${open.y}px`, oncontextmenu: (/** @type {MouseEvent} */ event) => event.preventDefault() },
+    h("div", { class: "room-menu-title", text: `@${agent.id}` }),
+    h("button", {
+      type: "button",
+      class: "danger",
+      onclick: () => {
+        close();
+        void deleteAgent(agent.id);
+      },
+      text: "Delete agent",
+    }),
+  );
+}
+
+window.addEventListener("click", (event) => {
+  if (!state.agentContextMenu) return;
+  if (event.target instanceof HTMLElement && event.target.closest(".room-menu")) return;
+  state.agentContextMenu = null;
+  markDirty("panel");
+});
 
 registerRegion("panel", renderPanel);
