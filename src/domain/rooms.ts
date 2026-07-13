@@ -114,6 +114,7 @@ function backgroundTasksFrom(value: unknown): BackgroundTask[] | undefined {
     if (typeof raw.taskId !== "string" || !raw.taskId.trim()) continue;
     if (typeof raw.toolName !== "string" || !raw.toolName.trim()) continue;
     if (typeof raw.agentId !== "string" || !raw.agentId.trim()) continue;
+    if (typeof raw.roomId !== "string" || !raw.roomId.trim()) continue;
     if (typeof raw.startedAt !== "string" || !Number.isFinite(Date.parse(raw.startedAt))) continue;
     tasks.push({
       taskId: raw.taskId,
@@ -123,6 +124,7 @@ function backgroundTasksFrom(value: unknown): BackgroundTask[] | undefined {
       ...(typeof raw.outputPath === "string" && raw.outputPath ? { outputPath: raw.outputPath } : {}),
       startedAt: raw.startedAt,
       agentId: raw.agentId,
+      roomId: raw.roomId,
     });
   }
   const capped = tasks.slice(-20);

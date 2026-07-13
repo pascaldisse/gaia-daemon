@@ -13,6 +13,7 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -28,6 +29,7 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
+  BackgroundTask,
   CompactProgress,
   ContextGatePending,
   EventDetails,
@@ -172,6 +174,13 @@ const PARTIAL_FLUSH_MS = 1000;
 const BACKGROUND_TASK_MAX = 20;
 const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+/** `lsof` binary used to probe whether a tracked background process still has
+ * a live writer on its output file (see backgroundTaskPids). Env-overridable —
+ * never hardcode a bare path as the only option. */
+const LSOF_BIN = process.env.GAIA_LSOF_BIN || "/usr/sbin/lsof";
+/** How long backgroundTaskPids waits for `lsof` before giving up and reporting
+ * no live writers (a hung/missing lsof must never wedge a snapshot). */
+const BACKGROUND_TASK_LSOF_TIMEOUT_MS = 2000;
 
 /** Render the reason carried by the uniform runtime/channel failure contract. */
 function turnEndReason(error: unknown): string {
@@ -961,6 +970,15 @@ export class RoomService {
     if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
   }
 
+  /** Public rooms rebroadcast for the summon coordinator: a summon child
+   * leaving the coordinator's running set changes the PARENT room's
+   * banner/sidebar truth, but the child's own task-end broadcast raced
+   * ahead of that cleanup — the coordinator calls this after dropping the
+   * child so clients stop counting a dead summon. */
+  async broadcastRoomsChanged(): Promise<void> {
+    await this.emitRoomsChanged();
+  }
+
   /** Re-invoke a caller agent after its summon returned — steer its live turn if
    * it has one (the harness picks up the nudge at the next tool boundary), else
    * a fresh turn. Never records a "user →" bubble. Two paths, two shapes:
@@ -1451,7 +1469,8 @@ export class RoomService {
       // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      const abnormalReason = turn.error ?? (cancelled ? new Error("aborted") : undefined);
+      // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
+      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
       if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
       const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
@@ -1487,7 +1506,8 @@ export class RoomService {
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
       if (abnormalReason !== undefined && !producedOutput) {
-        await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+        if (cancelled) await this.appendTurnStopped(target);
+        else await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
       }
 
       if (failed) {
@@ -1719,6 +1739,23 @@ export class RoomService {
         timestamp: new Date().toISOString(),
         author: "system",
         text: `⚠ turn failed (@${agentId}): ${message}`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
+  }
+
+  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
+   * first token: a stop is not a failure. */
+  private async appendTurnStopped(agentId: string): Promise<void> {
+    try {
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `■ turn stopped (@${agentId}) — no output yet`,
       };
       await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
@@ -3002,33 +3039,101 @@ export class RoomService {
         ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
         startedAt,
         agentId,
+        roomId: this.roomId,
       });
       state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
     });
     await this.emitSnapshot();
   }
 
-  /** The tail of a tracked background process's output. The path comes only
-   * from durable room state; callers supply a task id, never a filesystem path. */
-  async backgroundTaskOutput(taskId: string): Promise<string | undefined> {
+  /** PIDs still holding `task.outputPath` open for writing, per `lsof -t`
+   * (a live writer means the shell/process is still running). Best-effort:
+   * no output path, a missing/erroring lsof, or a timeout all report "no live
+   * writers" rather than fail the caller — liveness is advisory, never a hard
+   * dependency for the tray to render. */
+  private async backgroundTaskPids(task: BackgroundTask): Promise<number[]> {
+    if (!task.outputPath) return [];
+    try {
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = spawn(LSOF_BIN, ["-t", task.outputPath as string], { stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGKILL");
+          reject(new Error("lsof timed out"));
+        }, BACKGROUND_TASK_LSOF_TIMEOUT_MS);
+        child.stdout?.on("data", (chunk: Buffer) => {
+          out += chunk.toString("utf8");
+        });
+        child.once("error", (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(out);
+        });
+      });
+      return stdout
+        .split(/\s+/)
+        .map((line) => Number(line.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The tail of a tracked background process's output, plus whether it still
+   * has a live writer (see backgroundTaskPids). The path comes only from
+   * durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<{ text: string; running: boolean } | undefined> {
     await this.init();
     const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
     if (!task?.outputPath) return undefined;
+    const running = (await this.backgroundTaskPids(task)).length > 0;
     let file: Awaited<ReturnType<typeof open>> | undefined;
     try {
       file = await open(task.outputPath, "r");
       const { size } = await file.stat();
       const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
-      if (length === 0) return "";
+      if (length === 0) return { text: "", running };
       const buffer = Buffer.alloc(length);
       const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
-      return buffer.subarray(0, bytesRead).toString("utf8");
+      return { text: buffer.subarray(0, bytesRead).toString("utf8"), running };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     } finally {
       await file?.close();
     }
+  }
+
+  /** Stop a tracked background process (SIGTERM every live writer PID) and
+   * drop its tray entry, or just drop the entry when nothing is still
+   * running — either way this is the tray's stop/dismiss action. Returns
+   * false when the task id is unknown (already expired/removed). */
+  async stopBackgroundTask(taskId: string): Promise<boolean> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task) return false;
+    for (const pid of await this.backgroundTaskPids(task)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await this.room.updateState((state) => {
+      state.backgroundTasks = (state.backgroundTasks ?? []).filter((candidate) => candidate.taskId !== taskId);
+    });
+    await this.emitSnapshot();
+    return true;
   }
 
   /** Page backwards through committed history: the `limit` events immediately

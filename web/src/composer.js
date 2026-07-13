@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, selectRoom, sendMessage, stopAll, uploadAttachment } from "./actions.js";
+import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -14,7 +14,7 @@ import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
-import { isBusy, runningSummonRooms, state } from "./state.js";
+import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
   abortActiveTranscription,
@@ -47,6 +47,8 @@ let bannerEl = null;
 let bannerLabelEl = null;
 /** @type {HTMLElement|null} */
 let bannerBarEl = null;
+/** @type {HTMLButtonElement|null} */
+let stopBtnEl = null;
 /** @type {HTMLElement|null} */
 let summonListEl = null;
 /** @type {HTMLElement|null} */
@@ -140,13 +142,16 @@ export function initComposer() {
   // Expandable list of this room's running summons; each row jumps to its
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
+  stopBtnEl = /** @type {HTMLButtonElement} */ (
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopActiveRoom() })
+  );
   bannerEl = h(
     "div",
     { class: "running-banner", hidden: true },
     h("span", { class: "running-dot" }),
     bannerLabelEl,
     bannerBarEl,
-    h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
+    stopBtnEl,
     summonListEl,
   );
   editBannerEl = h(
@@ -261,6 +266,18 @@ function renderComposer() {
   // the bar between it and ■ stop shows the estimated fraction.
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
+  // The stop button (and Esc) targets ONLY this room's own running turn —
+  // never summons. Any escalating/second-press behavior was removed on
+  // purpose: UI or stream delay made a second press land on the summons by
+  // accident. Ctrl+C (stopAll) is the one deliberate kill-everything path.
+  if (stopBtnEl) {
+    const roomBusy = Boolean(activeTask(snapshot));
+    stopBtnEl.disabled = !roomBusy;
+    stopBtnEl.textContent = "■ stop";
+    stopBtnEl.title = roomBusy
+      ? "stop this room's turn (Esc) — summons unaffected; Ctrl+C stops everything"
+      : "nothing running in this room — Ctrl+C stops summons too";
+  }
   const compactingAgent = busy ? (snapshot?.agents ?? []).find((agent) => agent.status === "compacting" && agent.compact) : undefined;
   if (bannerBarEl) {
     bannerBarEl.hidden = !compactingAgent;
@@ -1138,8 +1155,10 @@ export function installComposerRouting() {
         cancelDictation();
         return;
       }
-      // Panic stop: Ctrl+C or Esc aborts the running turn AND all summoned
-      // workers, from anywhere in the app, for every agent/harness.
+      // Stop keys, from anywhere in the app, for every agent/harness:
+      // Ctrl+C is the ONLY summon-killer — whole tree (active turn + all
+      // summons) in one press. Esc stops just the active room's turn and can
+      // never reach summons (delay made escalation misfire — removed).
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {
         event.preventDefault();
         void stopAll();
@@ -1147,9 +1166,9 @@ export function installComposerRouting() {
       }
       // With the Dario popup open, Escape means "close the popup" (keys.js),
       // not panic-stop — his own review summon would be collateral otherwise.
-      if (event.key === "Escape" && isBusy() && !state.dario.open) {
+      if (event.key === "Escape" && Boolean(activeTask(state.snapshot)) && !state.dario.open) {
         event.preventDefault();
-        void stopAll();
+        void stopActiveRoom();
         return;
       }
 
