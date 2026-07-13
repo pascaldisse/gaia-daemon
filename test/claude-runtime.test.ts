@@ -856,19 +856,24 @@ test("ClaudeRuntime always routes egress through the thinking shim (reveal is un
   }
 });
 
-test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
+test("ClaudeRuntime appends exact gaia CLI syntax and the live summon roster to the system prompt", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const agent = { ...fx.agent, tools: [...fx.agent.tools, "summon"] };
+    const worker = { ...fx.agent, id: "ghoul-sol", displayName: "Ghoul Sol" };
+    const workspace = { ...fx.workspace, agents: { gaia: agent, "ghoul-sol": worker } };
 
-    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace, agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
     const systemPrompt = args[args.indexOf("--system-prompt") + 1];
     assert.match(systemPrompt, /gaia mem/);
     assert.match(systemPrompt, /gaia recall/);
+    assert.match(systemPrompt, /`gaia summon \[--worktree\] <agent> "<task>"`/);
+    assert.match(systemPrompt, /Available agents: gaia, ghoul-sol/);
     runtime.dispose();
   } finally {
     await fx.cleanup();

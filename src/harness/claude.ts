@@ -30,6 +30,7 @@ import { ModelLabel } from "./model-label.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
+import { agentRoster } from "./tools.js";
 import { fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -1127,7 +1128,7 @@ export class ClaudeRuntime implements AgentRuntime {
         workspace: this.workspace,
         agent: this.agent,
         role: input.activeRole,
-        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
+        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools, { availableAgents: agentRoster(this.workspace) }),
       }),
     );
   }

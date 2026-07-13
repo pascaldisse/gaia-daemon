@@ -21,6 +21,7 @@ import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
+import { agentRoster } from "../harness/tools.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
@@ -587,12 +588,13 @@ export class GaiaWebServer {
     }
 
     if (
-      method === "POST" &&
-      (path === "/api/harness/memory" ||
-        path === "/api/harness/summon" ||
-        path === "/api/harness/recall" ||
-        path === "/api/harness/dream" ||
-        path === "/api/harness/resume")
+      (method === "GET" && path === "/api/harness/agents") ||
+      (method === "POST" &&
+        (path === "/api/harness/memory" ||
+          path === "/api/harness/summon" ||
+          path === "/api/harness/recall" ||
+          path === "/api/harness/dream" ||
+          path === "/api/harness/resume"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1329,6 +1331,10 @@ export class GaiaWebServer {
       workspace = (await this.daemon.serviceFor(claims.workspaceId, claims.roomId)).workspace;
     } catch (error) {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    if (pathname === "/api/harness/agents") {
+      return json(response, 200, { agents: agentRoster(workspace) });
     }
 
     const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
