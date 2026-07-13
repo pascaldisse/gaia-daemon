@@ -30,6 +30,7 @@ import { ModelLabel } from "./model-label.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
+import { agentRoster } from "./tools.js";
 import { fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -771,10 +772,17 @@ export class ClaudeRuntime implements AgentRuntime {
       env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
-        if (!channel.closed && code !== 0 && !channel.hasError) {
+        // A `result` message closes the channel before the process exits. If
+        // the process gets here with the channel still open, no result ever
+        // arrived — even exit 0 is an abnormal turn end (Claude can keep a
+        // background task alive, stream the full answer, then exit cleanly
+        // without a result record). Fail the uniform AgentRuntime stream so
+        // runner.ts emits turn-error rather than the false turn-end that used
+        // to make room-service discard the accumulated reply.
+        if (!channel.closed && !channel.hasError) {
           channel.fail(
             claudeStartupError(
-              new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
+              new Error(`claude exited without a result (${signal ? `signal ${signal}` : `exit ${code}`}).`),
               stderr,
             ),
           );
@@ -1127,7 +1135,7 @@ export class ClaudeRuntime implements AgentRuntime {
         workspace: this.workspace,
         agent: this.agent,
         role: input.activeRole,
-        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
+        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools, { availableAgents: agentRoster(this.workspace) }),
       }),
     );
   }
@@ -1361,6 +1369,37 @@ registerHarness({
     modelNameOptions: ["fable", "opus", "sonnet", "haiku"],
     // Claude Code's own --permission-mode vocabulary, passed verbatim.
     permissionModes: ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
+  },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      if (toolName !== "Bash" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+      const call = args as Record<string, unknown>;
+      if (call.run_in_background !== true) return undefined;
+      const text =
+        typeof result === "string"
+          ? result
+          : Array.isArray(result)
+            ? result
+                .map((block) =>
+                  block && typeof block === "object" && typeof (block as { text?: unknown }).text === "string"
+                    ? (block as { text: string }).text
+                    : "",
+                )
+                .filter(Boolean)
+                .join("\n")
+            : result && typeof result === "object" && typeof (result as { text?: unknown }).text === "string"
+              ? (result as { text: string }).text
+              : "";
+      const taskId = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/.exec(text)?.[1];
+      if (!taskId) return undefined;
+      const outputPath = /written to:\s*([^\r\n]+?)(?=\.\s|$)/i.exec(text)?.[1]?.trim();
+      return {
+        taskId,
+        ...(typeof call.command === "string" ? { command: call.command } : {}),
+        ...(typeof call.description === "string" ? { description: call.description } : {}),
+        ...(outputPath ? { outputPath } : {}),
+      };
+    },
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),

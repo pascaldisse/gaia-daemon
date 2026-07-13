@@ -41,6 +41,10 @@ import { state } from "./state.js";
  * @property {MessageAttachment[]} [attachments]
  * @property {boolean} [redacted]
  * @property {boolean} streaming
+ * @property {number} [lastDeltaAt] epoch milliseconds of the last turn-scoped
+ *   SSE payload for a live stream.
+ * @property {boolean} [connectionStale] the client has not received an SSE
+ *   event for over 45 seconds and is reconnecting.
  * @property {boolean} [stalled] A streaming reply whose upstream socket dropped
  *   mid-stream — the harness is reconnecting. Paints a "reconnecting…" pill on
  *   the live bubble (even one that already has partial text) so a retry gap
@@ -283,6 +287,8 @@ function messageViews() {
       text: stream.text,
       details: stream.details,
       streaming: true,
+      lastDeltaAt: stream.lastDeltaAt,
+      ...(state.eventConnectionStale ? { connectionStale: true } : {}),
       ...(stream.stalled ? { stalled: true } : {}),
     });
   }
@@ -664,8 +670,30 @@ function Message(view) {
           text: "⚠ reconnecting…",
         })
       : null,
+    view.streaming ? LiveHeartbeat(view) : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
+}
+
+/** @param {MessageView} view @returns {HTMLElement} */
+function LiveHeartbeat(view) {
+  if (view.connectionStale) {
+    return h("div", { class: "live-heartbeat stale", text: "⚠ connection stale — reconnecting…" });
+  }
+  const elapsed = Math.max(0, Date.now() - Date.parse(view.timestamp));
+  const activity = Math.max(0, Date.now() - (view.lastDeltaAt ?? Date.now()));
+  const blockTools = view.details?.blocks?.filter((block) => block.kind === "tool").length;
+  const toolCalls = blockTools ?? view.details?.tools?.length ?? 0;
+  return h("div", {
+    class: "live-heartbeat",
+    text: `⚙ working · ${formatElapsed(elapsed)} · ${toolCalls} tool calls · last activity ${Math.floor(activity / 1000)}s ago`,
+  });
+}
+
+/** @param {number} milliseconds @returns {string} */
+function formatElapsed(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 /** @param {MessageView} view @returns {HTMLElement} */

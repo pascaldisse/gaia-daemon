@@ -21,6 +21,16 @@ registerHarness({
   id: "stub",
   capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true },
   ui: { label: "Stub", description: "protocol test double" },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      const call = args as { detached?: unknown; command?: unknown } | undefined;
+      if (call?.detached !== true || typeof result !== "string") return undefined;
+      const match = /^detached:([^:]+):(.+)$/.exec(result);
+      return match
+        ? { taskId: match[1], command: typeof call.command === "string" ? call.command : undefined, outputPath: match[2] }
+        : undefined;
+    },
+  },
   // No durable session on disk → a cold /compact has nothing to resume.
   hasDurableSession: () => false,
   create: () => {
@@ -77,6 +87,12 @@ rl.on("line", (line) => {
   if (cmd.type === "turn") {
     if (cmd.input.message === "boom") {
       send({ type: "turn-error", message: "stub failure" });
+      return;
+    }
+    if (cmd.input.message === "background") {
+      send({ type: "event", event: { type: "tool-start", toolName: "Shell", toolCallId: "call-bg", args: { detached: true, command: "work" } } });
+      send({ type: "event", event: { type: "tool-end", toolName: "Shell", toolCallId: "call-bg", result: "detached:bg-42:/tmp/bg-42.out", isError: false } });
+      send({ type: "turn-end" });
       return;
     }
     if (cmd.input.message === "hold") {
@@ -158,6 +174,24 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost emits background-task from a fake spec descriptor after tool-end", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    const events: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "background", transcript: [] })) events.push(event);
+
+    assert.deepEqual(events, [
+      { type: "tool-start", toolName: "Shell", toolCallId: "call-bg", args: { detached: true, command: "work" } },
+      { type: "tool-end", toolName: "Shell", toolCallId: "call-bg", result: "detached:bg-42:/tmp/bg-42.out", isError: false },
+      { type: "background-task", toolName: "Shell", taskId: "bg-42", command: "work", outputPath: "/tmp/bg-42.out" },
+    ]);
     await host.dispose();
   } finally {
     await temp.cleanup();
