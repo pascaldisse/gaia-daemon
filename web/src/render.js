@@ -4,6 +4,7 @@
 // no features, so there are no import cycles.
 
 import { $, h } from "./dom.js";
+import { setPetActivity } from "./pet.js";
 import { state } from "./state.js";
 
 /** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
@@ -44,6 +45,7 @@ function flushRegions() {
 /** @param {unknown} error */
 export function setError(error) {
   state.error = error instanceof Error ? error.message : String(error ?? "");
+  if (state.error) setPetActivity({ level: "danger" });
   markDirty("status");
 }
 
@@ -102,6 +104,7 @@ export function mountApp() {
       h("div", { id: "overlay-bgtasks" }),
       h("div", { id: "overlay-search" }),
       h("div", { id: "overlay-settings" }),
+      h("div", { id: "overlay-pet" }),
     ),
   );
 }

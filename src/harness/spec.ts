@@ -1,12 +1,14 @@
 // One descriptor per harness. Adding a harness = one `harness/<x>.ts` module
 // calling `registerHarness(...)` at its bottom + one import line in the barrel
 // (harness/index.ts). Nothing else learns the harness id: differences live as
-// DATA on the spec (capabilities, ui, credentialProxy, sandboxPaths), read
+// DATA on the spec (capabilities, ui, credentialProxy, backgroundTasks,
+// sandboxPaths), read
 // uniformly — never as `=== "claude"` branches. This rule is absolute
 // (AGENTS.md §RULE #0).
 
 import { DEFAULTS } from "../core/config.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -42,12 +44,21 @@ export interface AgentInput {
    * sets this for harnesses that declare `supportsNativeCommands`; any other
    * harness ignores it and runs `message` as an ordinary turn. */
   nativeCommand?: boolean;
+  /** Settings ▸ General ▸ "Your name" (services/user-name.ts): the label the
+   * shared transcript renderer uses for the human's own messages, in place of
+   * the anonymous "user" token. "" / absent keeps that default. */
+  userName?: string;
 }
 
 export interface AgentRuntime {
   readonly agent: AgentDef;
   readonly modelLabel: string;
   readonly capabilities: HarnessCapabilities;
+  /** Stream one turn. Clean iterable exhaustion means the harness delivered a
+   * proper completion record. Every other teardown — process exit without a
+   * result, channel error, abort, or stall-abort — MUST throw after yielding
+   * any queued events, so the uniform runner sends `turn-error` and the room
+   * can commit the accumulated partial instead of mistaking it for success. */
   send(input: AgentInput): AsyncIterable<AgentEvent>;
   abort(): Promise<void>;
   /** Inject guidance into the room's RUNNING turn (backs /steer). Resolves
@@ -75,6 +86,9 @@ export interface AgentRuntime {
   dispose(): void | Promise<void>;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
+  /** Drop the session-scoped system-prompt snapshot; the next assembly
+   * re-reads soul/AGENTS.md/skills from disk. */
+  refreshContext?(roomId: string): void;
   /** Does a durable, resumable session for this room still exist? An agent's
    * transcript cursor promises "everything before me lives in the harness
    * session" — when the session is gone (crash, dropped handle, pruned store)
@@ -86,7 +100,7 @@ export interface AgentRuntime {
 
 // --- capabilities + ui (data on the spec) --------------------------------------
 
-export type GaiaTool = "memory" | "recall" | "summon";
+export type GaiaTool = "memory" | "recall" | "summon" | "resume";
 
 export interface HarnessCapabilities {
   /** Which gaia tools this harness can wire into a session; the agent's
@@ -238,6 +252,12 @@ export interface AccountLoginSpec {
   signInUrl(output: string): string | undefined;
   /** True while the flow is waiting for a paste-back code from the user. */
   awaitingInput(output: string): boolean;
+  /** A short code the user must read and re-enter ON THE SIGN-IN PAGE itself
+   * (device-authorization flows: nothing is pasted back into this process —
+   * it polls the provider until the site marks the code approved). Shown
+   * next to the sign-in link. Absent ⇒ no such code (e.g. a plain OAuth
+   * redirect where approving the link is the whole flow). */
+  code?(output: string): string | undefined;
   /** Extract the finished credential bag; configDir may hold fallback state
    * the CLI wrote (checked again after the process exits). */
   credentials(ctx: { output: string; configDir: string }): Record<string, string> | undefined;
@@ -259,6 +279,8 @@ export interface HarnessAccountsSpec {
   /** Env merged into a bound agent's subprocess — e.g. claude's
    * CLAUDE_CODE_OAUTH_TOKEN, which its CLI honors over the keychain login. */
   env(credentials: Record<string, string>): Record<string, string>;
+  /** Best-effort identity extraction from an opaque credential bag. */
+  email?(credentials: Record<string, string>): string | undefined;
   /** Interactive in-app login; absent = accounts for this harness are created
    * by pasting credentials into accounts.json directly. */
   login?: AccountLoginSpec;
@@ -271,6 +293,17 @@ export interface HarnessSpec {
   capabilities: HarnessCapabilities;
   ui: HarnessUi;
   create(ctx: RuntimeCreateContext): AgentRuntime;
+  /** Error-message signatures of a TRANSIENT auth/session reset (login expired, token revoked).
+   * Matching turn errors are marked TransientAuthError by the shared layer and requeued with
+   * backoff instead of failing the turn. Differences live as DATA here — never as harness-id
+   * branches (RULE #0). */
+  transientAuthPatterns?: RegExp[];
+  /** Parse a harness-native detached process from a completed tool call. The
+   * shared host invokes this descriptor uniformly after every tool-end; absent
+   * means this harness does not expose background-process starts. */
+  backgroundTasks?: {
+    fromToolCall(toolName: string, args: unknown, result: unknown): BackgroundTaskInfo | undefined;
+  };
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
   /** Named multi-account wiring (see HarnessAccountsSpec). Absent ⇒ this
    * harness has no account concept. */
@@ -290,6 +323,17 @@ export interface HarnessSpec {
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
    * Undefined when the harness can't say, so the UI shows tokens without a %. */
   contextWindow?(model: string | undefined): number | undefined;
+  /** Resolve one of this harness's own model names/aliases (e.g. claude's
+   * "fable"/"opus"/"sonnet"/"haiku", passed verbatim to its CLI) to a real
+   * pi-ai model registry id. Needed ONLY by callers that talk to a model
+   * DIRECTLY through pi-ai instead of through this harness's own subprocess
+   * (e.g. the daemon-side consolidation/dream LLM, which reuses an agent's
+   * configured model but bypasses its harness entirely) — every such caller
+   * must resolve through here uniformly rather than assuming the name is
+   * already a registry id. Data on the spec, read uniformly — never
+   * id-branched. Absent ⇒ the harness's model names ARE registry ids already
+   * (pass through unchanged). */
+  resolveApiModelId?(name: string): string;
   /** Native passthrough commands this harness advertises for `/`-autocomplete
    * (claude: its builtins + discoverable skills). Data on the spec, read
    * uniformly: surfaced as pickable Skills options, and a checked FILELESS one
@@ -320,7 +364,11 @@ export interface HarnessSpec {
    * keychain, token mid-rotation) that must NOT blank a healthy meter. Absent
    * ⇒ reports no account usage. Account-level, so probes take no room/agent —
    * one call describes the whole subscription. */
-  usageAccounts?(): UsageAccountProbe[];
+  usageAccounts?(accounts: readonly AccountRecord[]): UsageAccountProbe[];
+  /** Usage key for an agent using this harness's ambient login. Named accounts
+   * use AgentDef.account directly; this is only needed where an ambient store
+   * can hold more than one provider identity. */
+  ambientUsageAccount?(agent: AgentDef): string | undefined;
 }
 
 /** One (account, probe) candidate a harness declares (see usageAccounts). */
@@ -335,14 +383,24 @@ export interface UsageAccountProbe {
  * branch — each harness declares its accounts as data on its spec. */
 export function usageAccountProbes(): Map<string, Array<() => Promise<UsageProbeResult>>> {
   const byAccount = new Map<string, Array<() => Promise<UsageProbeResult>>>();
+  const accounts = listAccounts();
   for (const spec of harnessSpecs()) {
-    for (const candidate of spec.usageAccounts?.() ?? []) {
+    const owned = accounts.filter((account) => account.harness === spec.id);
+    for (const candidate of spec.usageAccounts?.(owned) ?? []) {
       const list = byAccount.get(candidate.account) ?? [];
       list.push(candidate.probe);
       byAccount.set(candidate.account, list);
     }
   }
   return byAccount;
+}
+
+/** The exact persisted usage key an agent can spend from. This is a uniform
+ * account-resolution boundary: room snapshots never infer an account from a
+ * model/provider label. */
+export function usageAccountFor(agent: AgentDef, workspace: Workspace): string | undefined {
+  if (agent.account) return agent.account;
+  return findHarness(harnessIdFor(agent, workspace))?.ambientUsageAccount?.(agent);
 }
 
 const registry = new Map<string, HarnessSpec>();

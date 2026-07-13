@@ -790,7 +790,13 @@ async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<st
     context.log(`voice: starting claude-voice daemon from ${dir}...`);
     mkdirSync(globalPaths.voiceLogsDir(), { recursive: true });
     const log = openSync(join(globalPaths.voiceLogsDir(), "claude-voice.log"), "a");
-    const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", log, log], detached: true });
+    // Exec the script directly (it is chmod +x with a `#!/usr/bin/env node`
+    // shebang), not via `process.execPath [script]`: in the compiled build
+    // process.execPath IS the gaia-daemon binary itself, not a generic JS
+    // runtime, so passing voiced.js as its argv[0] just ran gaia's own CLI
+    // (it printed --help and exited) instead of starting the daemon. Same
+    // pattern voice.ts already uses for the unmute service scripts.
+    const child = spawn(script, [], { cwd: dir, stdio: ["ignore", log, log], detached: true });
     child.unref();
     claudeVoiceChild = child;
     claudeVoiceOwned = true;

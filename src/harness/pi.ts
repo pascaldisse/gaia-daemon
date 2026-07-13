@@ -3,7 +3,8 @@
 // Everything harness-specific lives HERE; shared code sees only the
 // HarnessSpec registered at the bottom (AGENTS.md §RULE #0).
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
@@ -18,10 +19,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type UsageProbeResult, type Workspace } from "../core/types.js";
-import { workspacePaths } from "../core/paths.js";
+import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
-import { buildPiTools } from "./tools.js";
+import { agentRoster, buildPiTools } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,
@@ -36,7 +37,7 @@ import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { ANTHROPIC_USAGE_ACCOUNT, fetchAnthropicUsage, fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
+import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Subprocess-side egress redirect for the credential proxy (v1's
@@ -164,7 +165,7 @@ function skillPathsKey(paths: string[]): string {
 }
 
 const PI_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon"],
+  gaiaTools: ["memory", "recall", "summon", "resume"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
@@ -332,6 +333,10 @@ export class PiRuntime implements AgentRuntime {
     this.sessions.reset(roomId);
   }
 
+  refreshContext(roomId: string): void {
+    this.sessions.refreshPrompt(roomId);
+  }
+
   // Applies a per-turn thinking override (voice mode forces "off") and
   // restores the agent's own level on turns without one. Reading
   // agent.thinking live means a settings change hot-applies on the next
@@ -382,11 +387,14 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {
-    const systemPrompt = await buildBaseSystemPrompt({
-      agent: this.agent,
-      role: input.activeRole,
-      contextFiles: this.workspace.contextFiles,
-    });
+    const roleKey = input.activeRole?.name ?? "";
+    const systemPrompt = await this.sessions.systemPrompt(input.roomId, roleKey, () =>
+      buildBaseSystemPrompt({
+        agent: this.agent,
+        role: input.activeRole,
+        workspaceRoot: this.workspace.rootDir,
+      }),
+    );
     const skillNames = agentSkillNames(this.agent, input.activeRole);
     // Pi's translation of the harness-agnostic `web` tool: claude/codex expose a
     // native web tool, pi shells out to the brave-search skill (its search.js —
@@ -431,6 +439,7 @@ export class PiRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir,
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     });
@@ -543,9 +552,57 @@ async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<Usa
     : fetchChatGptUsage(token, typeof cred.accountId === "string" ? cred.accountId : undefined);
 }
 
+async function probePiAccountUsage(credentials: Record<string, string>): Promise<UsageProbeResult> {
+  const token = credentials.accessToken;
+  return token ? fetchChatGptUsage(token, credentials.accountId) : { status: "none" };
+}
+
+// Named pi accounts: an isolated PI_CODING_AGENT_DIR materialized from the
+// stored credential bag — the exact twin of codex's materializeCodexHome.
+// Pi's AuthStorage reads auth.json from that dir, refreshes tokens when the
+// stored expiry passes, and writes rotated tokens back into the file. The
+// materialized entry carries the access token's REAL expiry (a hardcoded 0
+// meant "already expired" — a forced refresh on every run, whose rotated
+// refresh token the next materialization then stomped with the store's
+// stale one, server-invalidating the whole credential chain). The file is
+// only rewritten when the store's credential is FRESHER than what is
+// already on disk, so pi's own rotation stays authoritative.
+// models.json is copied in from the real agent dir
+// (when present) so custom model definitions still resolve. v1 scope: the
+// openai-codex (ChatGPT OAuth) provider — pi's own provider vocabulary,
+// declared as data on this spec (RULE #0 intact).
+function materializePiAgentDir(credentials: Record<string, string>): string {
+  const key = credentials.accountId?.trim() || createHash("sha256").update(credentials.refreshToken ?? "").digest("hex").slice(0, 16);
+  const dir = join(gaiaHome(), "pi-accounts", key);
+  mkdirSync(dir, { recursive: true });
+  const modelsSrc = join(homedir(), ".pi", "agent", "models.json");
+  const modelsDst = join(dir, "models.json");
+  if (existsSync(modelsSrc) && !existsSync(modelsDst)) copyFileSync(modelsSrc, modelsDst);
+  const authPath = join(dir, "auth.json");
+  const entry = {
+    type: "oauth",
+    refresh: credentials.refreshToken ?? "",
+    access: credentials.accessToken ?? "",
+    expires: expiryMsFromJwt(credentials.accessToken),
+    ...(credentials.accountId ? { accountId: credentials.accountId } : {}),
+  };
+  let existing: { ["openai-codex"]?: { refresh?: string; access?: string } } | undefined;
+  try {
+    existing = JSON.parse(readFileSync(authPath, "utf8")) as typeof existing;
+  } catch {
+    // missing or torn — rewrite below
+  }
+  const materialized = existing?.["openai-codex"];
+  if (!materialized?.refresh || entry.expires > expiryMsFromJwt(materialized.access)) {
+    writeFileSync(authPath, JSON.stringify({ "openai-codex": entry }, null, 2) + "\n", { mode: 0o600 });
+  }
+  return dir;
+}
+
 registerHarness({
   id: "pi",
   capabilities: PI_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /token .*expired/i, /re-?authenticat/i, /\bunauthorized\b/i],
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
   create: (ctx) => new PiRuntime(ctx),
   // Pi self-persists sessions as files under the room's pi-sessions/<agent>/
@@ -559,6 +616,20 @@ registerHarness({
       return false; // no dir ⇒ nothing to resume
     }
   },
+  // Named accounts (ChatGPT OAuth): same field vocabulary as codex accounts,
+  // so credentials from a codex login can be reused for a pi binding. Applied
+  // by RunnerHost BEFORE the credential-proxy block — a proxied (sandboxed)
+  // turn strips it with every other provider key.
+  accounts: {
+    label: "Pi account (ChatGPT OAuth)",
+    fields: [
+      { key: "accessToken", label: "Access token", secret: true, hint: "~/.pi/agent/auth.json → openai-codex.access (or a codex account's tokens.access_token)" },
+      { key: "refreshToken", label: "Refresh token", secret: true, hint: "~/.pi/agent/auth.json → openai-codex.refresh (codex: tokens.refresh_token)" },
+      { key: "accountId", label: "Account ID", hint: "~/.pi/agent/auth.json → openai-codex.accountId (codex: tokens.account_id)" },
+    ],
+    env: (credentials) => ({ PI_CODING_AGENT_DIR: materializePiAgentDir(credentials) }),
+    email: (credentials) => emailFromJwt(credentials.accessToken),
+  },
   // Pi's proxy wiring (the in-process fetch redirect lives in applyCredentialProxy):
   // relocate its agent dir to an empty store so AuthStorage resolves no real key
   // (the token registered against the proxy is then what reaches the wire), and
@@ -571,9 +642,11 @@ registerHarness({
   // Pi keeps session + model state under ~/.pi (a sandboxed turn deadlocks if
   // denied writes there); its credential store inside that tree is carved back
   // to read-only so a confined turn can't tamper with the key it can read.
-  sandboxPaths: { writable: ["~/.pi"], readonly: ["~/.pi/agent/auth.json"] },
-  usageAccounts: () => [
-    { account: ANTHROPIC_USAGE_ACCOUNT, probe: () => probePiUsage("anthropic") },
-    { account: OPENAI_USAGE_ACCOUNT, probe: () => probePiUsage("openai-codex") },
+  sandboxPaths: { writable: ["~/.pi", join(gaiaHome(), "pi-accounts")], readonly: ["~/.pi/agent/auth.json"] },
+  usageAccounts: (accounts) => [
+    { account: "ambient:pi:anthropic", probe: () => probePiUsage("anthropic") },
+    { account: "ambient:pi", probe: () => probePiUsage("openai-codex") },
+    ...accounts.map((account) => ({ account: account.id, probe: () => probePiAccountUsage(account.credentials) })),
   ],
+  ambientUsageAccount: (agent) => (agent.model?.provider === "anthropic" ? "ambient:pi:anthropic" : "ambient:pi"),
 });

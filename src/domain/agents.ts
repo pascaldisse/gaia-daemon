@@ -4,12 +4,12 @@
 // every other code path knows exactly one layout.
 
 import { existsSync } from "node:fs";
-import { rename } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
-import { agentPaths } from "../core/paths.js";
+import { agentPaths, globalPaths } from "../core/paths.js";
 import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import { MemoryStore } from "./memory.js";
 
@@ -416,4 +416,18 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
   }
 
   return agents;
+}
+
+/** Reversible agent delete: move the agent dir from globalPaths.agentDir()
+ * into the global trash instead of destroying it. The `stamp` lands in the
+ * trashed leaf so re-creating and re-deleting the same agent never collides.
+ * Returns the trash path, or "" if the agent dir was already gone. */
+export async function trashGlobalAgent(agentId: string, stamp: string): Promise<string> {
+  const source = globalPaths.agentDir(agentId);
+  if (!existsSync(source)) return "";
+  const trashRoot = globalPaths.agentTrashDir();
+  await mkdir(trashRoot, { recursive: true });
+  const dest = join(trashRoot, `${agentId}__${stamp}`);
+  await rename(source, dest);
+  return dest;
 }

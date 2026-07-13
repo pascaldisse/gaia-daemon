@@ -2,7 +2,7 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, loadWorkspace, renameRoom, selectRoom, setRoomFavorite } from "./actions.js";
+import { addRoom, addWorkspace, deleteWorkspace, loadWorkspace, renameRoom, selectRoom, setRoomFavorite } from "./actions.js";
 import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -29,7 +29,19 @@ function renderSidebar() {
       onclick: () => openSearch("chatwide"),
       text: "🔍 search chats",
     }),
-    h("div", { class: "nav-title", text: "workspaces" }),
+    h(
+      "div",
+      { class: "nav-title nav-title-row" },
+      h("span", { text: "workspaces" }),
+      // Inline + next to the header, same UI element as "rooms"'s new-room +
+      // — one click from the top, no separate full-width button buried under
+      // the workspace list.
+      h(
+        "span",
+        { class: "nav-title-actions" },
+        h("button", { class: "nav-title-add", title: "add workspace", onclick: () => void addWorkspace(), text: "+" }),
+      ),
+    ),
     h(
       "div",
       { class: "workspace-list" },
@@ -43,12 +55,19 @@ function renderSidebar() {
           {
             class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
             title: workspace.path,
-            // Clicking makes this the delete target (the ⌘⌫ / Del chord acts on
-            // it) and opens it. The muted state means its .gaia is missing.
+            // Clicking selects/opens it. The muted state means its .gaia is
+            // missing. Removing a workspace is right-click -> "Remove
+            // workspace" ONLY — never the ⌘⌫/Del chord (that's rooms only,
+            // see keys.js), so an accidental keypress can't nuke a workspace.
             onclick: () => {
               state.sidebarFocus = { kind: "workspace", id: workspace.id };
               if (workspace.isInitialized) void loadWorkspace(workspace.id);
               else setError(`Missing .gaia workspace: ${workspace.path}`);
+              markDirty("sidebar");
+            },
+            oncontextmenu: (/** @type {MouseEvent} */ event) => {
+              event.preventDefault();
+              state.workspaceContextMenu = { workspaceId: workspace.id, x: event.clientX, y: event.clientY };
               markDirty("sidebar");
             },
           },
@@ -66,7 +85,7 @@ function renderSidebar() {
         );
       }),
     ),
-    h("button", { class: "nav-action", onclick: () => void addWorkspace(), text: "+ add workspace" }),
+    WorkspaceContextMenu(),
     h(
       "div",
       { class: "nav-title nav-title-row" },
@@ -169,17 +188,25 @@ function favoriteVisible(room, childrenOf) {
 }
 
 /**
- * Rolled-up activity of a room's descendants (children, grandchildren, …) so a
- * COLLAPSED parent still surfaces a summon sub-room that's running or has unread
- * replies. Rendered in the row's right gutter — a different position from the
- * room's own left dot — to say the activity is down inside a subroom, not here.
+ * Rolled-up LIVE-STATUS activity of a room's descendants (children,
+ * grandchildren, …) so a COLLAPSED parent still surfaces a summon sub-room
+ * that's currently running. Rendered in the row's right gutter — a different
+ * position from the room's own left dot — to say the activity is down inside a
+ * subroom, not here.
+ *
+ * Deliberately running-only, no unread rollup: every descendant here is a
+ * summon sub-room (today, the only way a room gets a parent), and a summon's
+ * unread state is meant to stay local to its own row (still visible once you
+ * expand) rather than bubble up — the parent already gets its own single
+ * unread mark from the summon's delivered result landing as new activity in
+ * it. Rolling child unread up here too used to mean clicking into every one of
+ * (possibly hundreds of) finished summons just to clear a redundant dot.
  * @param {RoomSummary} room
  * @param {Map<string|null, RoomSummary[]>} childrenOf
- * @returns {{running: boolean, unread: boolean}}
+ * @returns {{running: boolean}}
  */
 function descendantActivity(room, childrenOf) {
   let running = false;
-  let unread = false;
   const stack = [...(childrenOf.get(room.id) ?? [])];
   const seen = new Set();
   while (stack.length > 0) {
@@ -187,10 +214,9 @@ function descendantActivity(room, childrenOf) {
     if (!kid || seen.has(kid.id)) continue;
     seen.add(kid.id);
     if (kid.running) running = true;
-    if (roomUnread(kid)) unread = true;
     for (const grand of childrenOf.get(kid.id) ?? []) stack.push(grand);
   }
-  return { running, unread };
+  return { running };
 }
 
 /**
@@ -202,10 +228,9 @@ function descendantActivity(room, childrenOf) {
 function RoomNode(room, childrenOf, depth) {
   const kids = (childrenOf.get(room.id) ?? []).filter((kid) => favoriteVisible(kid, childrenOf));
   const expanded = state.expandedRooms.has(room.id);
-  // A collapsed parent hides its subrooms, so bubble their activity up here;
-  // expanded, the children show their own dots (and bubble their own deeper
-  // ones), so the signal always reaches the deepest visible ancestor.
-  const sub = kids.length > 0 && !expanded ? descendantActivity(room, childrenOf) : { running: false, unread: false };
+  // A collapsed parent hides its subrooms, so bubble their RUNNING status up
+  // here (unread deliberately does not bubble — see descendantActivity).
+  const sub = kids.length > 0 && !expanded ? descendantActivity(room, childrenOf) : { running: false };
   /** @param {MouseEvent} event */
   const toggle = (event) => {
     event.stopPropagation();
@@ -274,14 +299,12 @@ function RoomNode(room, childrenOf, depth) {
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
-      // Collapsed-subtree activity rolls up into the right gutter (distinct from
-      // the room's own left dot) so a running/unread summon sub-room is visible
-      // without expanding.
-      sub.running
-        ? h("span", { class: "room-subdot running", title: "a subroom has an agent running" })
-        : sub.unread
-          ? h("span", { class: "room-subdot unread", title: "a subroom has unread messages" })
-          : null,
+      // Collapsed-subtree RUNNING status rolls up into the right gutter (distinct
+      // from the room's own left dot) so a live summon sub-room is visible
+      // without expanding. Unread does not roll up here (see descendantActivity):
+      // a finished summon's own row still shows its dot once expanded, but the
+      // parent's single unread mark comes only from its own new activity.
+      sub.running ? h("span", { class: "room-subdot running", title: "a subroom has an agent running" }) : null,
       // No per-row delete button: deletion is the OS delete chord (⌘⌫ on macOS,
       // Del elsewhere) acting on the focused room — see keys.js.
       kids.length > 0
@@ -339,7 +362,37 @@ function RoomContextMenu() {
   );
 }
 
+/** @returns {HTMLElement|null} */
+function WorkspaceContextMenu() {
+  const open = state.workspaceContextMenu;
+  if (!open) return null;
+  const workspace = state.workspaces.find((candidate) => candidate.id === open.workspaceId);
+  if (!workspace) return null;
+  const close = () => {
+    state.workspaceContextMenu = null;
+    markDirty("sidebar");
+  };
+  return h(
+    "div",
+    { class: "room-menu", style: `left:${open.x}px;top:${open.y}px`, oncontextmenu: (/** @type {MouseEvent} */ event) => event.preventDefault() },
+    h("div", { class: "room-menu-title", text: workspace.name }),
+    h("button", {
+      type: "button",
+      class: "danger",
+      onclick: () => {
+        close();
+        void deleteWorkspace(workspace.id);
+      },
+      text: "Remove workspace",
+    }),
+  );
+}
+
 window.addEventListener("click", (event) => {
+  if (state.workspaceContextMenu && !(event.target instanceof HTMLElement && event.target.closest(".room-menu"))) {
+    state.workspaceContextMenu = null;
+    markDirty("sidebar");
+  }
   if (!state.roomContextMenu) return;
   if (event.target instanceof HTMLElement && event.target.closest(".room-menu")) return;
   state.roomContextMenu = null;

@@ -59,6 +59,9 @@
  *   so activity in a workspace you're not viewing is still visible.
  * @property {KeepAwakeCapability} [keepAwake] "keep laptop awake" — daemon-managed,
  *   macOS-only (see services/keep-awake.ts). `supported` false elsewhere.
+ * @property {string} [userName] "Your name" (see services/user-name.ts) — the
+ *   label agents use for the human's own transcript lines. "" = unset (falls
+ *   back to the anonymous "user" token).
  */
 
 /**
@@ -99,9 +102,14 @@
  * @property {string} taskId
  * @property {string} author
  * @property {string} startedAt
+ * @property {number} lastDeltaAt epoch milliseconds of the last turn-scoped
+ *   SSE payload; drives the live heartbeat's activity age.
  * @property {string} text
  * @property {EventDetails} details
  * @property {number} version bumped on every mutation; drives keyed patching
+ * @property {boolean} [stalled] the upstream socket dropped mid-reply and the
+ *   harness is reconnecting; set from a live `system_stall` notice, cleared on
+ *   the next delta (see events.js). Paints a "reconnecting…" bubble state.
  */
 
 export {};

@@ -135,13 +135,22 @@ export function resolveCliEntry(): string {
   return existsSync(jsPath) ? jsPath : fileURLToPath(new URL("../cli.ts", import.meta.url));
 }
 
+// `bun build --compile` runs the daemon from a virtual filesystem baked into
+// the binary — the binary itself IS the entry, there is no separate cli.js/
+// cli.ts to resolve or re-append.
+const STANDALONE = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN");
+
 /**
- * The argv prefix that re-launches THIS daemon exactly how it was launched:
- * execPath plus the node flags in execArgv (which under tsx carry the TS loader,
- * e.g. `--import …/tsx/loader.mjs`), followed by the resolved CLI entry. So a
+ * The argv prefix that re-launches THIS daemon exactly how it was launched.
+ * In a compiled standalone binary (`bun build --compile`), execPath alone IS
+ * the whole program — re-appending an entry path would try to load a file
+ * that doesn't exist outside the virtual FS. Otherwise: execPath plus the
+ * node flags in execArgv (which under tsx carry the TS loader, e.g.
+ * `--import …/tsx/loader.mjs`), followed by the resolved CLI entry, so a
  * plain re-launch works in both built mode (`node cli.js`) and dev/tsx mode
  * (`node --import tsx … cli.ts`).
  */
 export function selfRelaunchArgv(): string[] {
+  if (STANDALONE) return [process.execPath];
   return [process.execPath, ...process.execArgv, resolveCliEntry()];
 }

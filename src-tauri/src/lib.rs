@@ -436,6 +436,10 @@ mod webkit {
                     eprintln!("[gaia-shell] menu setup failed: {e}");
                 }
 
+                // Self-contained CLI: repair `gaia` on the user's PATH every
+                // launch, best-effort, regardless of autostart mode.
+                crate::daemon_lifecycle::ensure_cli_on_path();
+
                 // Own our daemon unless explicitly disabled for a dev-only pure attach.
                 match std::env::var("GAIA_SHELL_AUTOSTART").as_deref() {
                     Ok("0") | Ok("false") | Ok("off") => {}

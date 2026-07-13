@@ -130,12 +130,23 @@ function fakeRoom(reply: string): SummonRoomAccess & {
       return reply;
     },
     async waitForSettled() {},
+    async hasPendingWork() {
+      return false;
+    },
+    async getSnapshot() {
+      return { tasks: [task] };
+    },
+    async runCancelCommand() {
+      room.settle("cancelled");
+      return "cancelled";
+    },
     async deliverAgentResult(from: string, reply: string, delivery: SummonResultDelivery) {
       room.delivered.push({ from, reply, delivery });
     },
     async markSummonDelivered() {
       room.markedDelivered += 1;
     },
+    async broadcastRoomsChanged() {},
   };
   return room;
 }
@@ -143,7 +154,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
 test("summonAndWait creates a linked child room and returns the worker's reply", async () => {
   const { workspace, path } = await makeWorkspace();
   const room = fakeRoom("worker says done");
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 8, () => {});
 
   const pending = coordinator.summonAndWait("default", "terry", "do a thing");
   // Let launch reach the turn, then settle it.
@@ -170,7 +181,7 @@ test("background summon never blocks: launch resolves first, then the result is 
   const child = fakeRoom("scouting report: all clear");
   const parent = fakeRoom("");
   const services = new Map<string, SummonRoomAccess>([["default", parent]]);
-  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, 8, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, async () => 8, () => {});
 
   const { roomId, done } = await coordinator.launch("default", "terry", "scout ahead", { deliver: "turn", callerAgentId: "gaia" });
   // Launch resolved while the worker is still running — the caller's turn is free.
@@ -201,7 +212,7 @@ test("a failed worker turn is delivered loudly, never swallowed", async () => {
   const child = fakeRoom("");
   const parent = fakeRoom("");
   const services = new Map<string, SummonRoomAccess>([["default", parent]]);
-  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, 8, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId) ?? child, async () => 8, () => {});
 
   const { done } = await coordinator.launch("default", "terry", "doomed task", { deliver: "note" });
   child.settle("error", "sandbox exploded");
@@ -213,12 +224,31 @@ test("a failed worker turn is delivered loudly, never swallowed", async () => {
   assert.equal(child.markedDelivered, 1); // delivered (the failure IS the result)
 });
 
+test("summon suggests substring and near-match agent ids in the unknown-agent error", async () => {
+  const ghoulSol = agent({ id: "ghoul-sol" });
+  const solas = agent({ id: "solas" });
+  const { workspace, path } = await makeWorkspace({ "ghoul-sol": ghoulSol, solas });
+  const room = fakeRoom("ok");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 1, () => {});
+
+  await assert.rejects(
+    () => coordinator.summon("default", "sol", "task"),
+    (error: Error) => {
+      assert.equal(
+        error.message,
+        "Unknown agent 'sol'. Did you mean: ghoul-sol, solas? Available: gaia, terry, ghoul-sol, solas",
+      );
+      return true;
+    },
+  );
+});
+
 test("summon refuses unknown agents and enforces the per-room cap", async () => {
   const { workspace, path } = await makeWorkspace();
   const room = fakeRoom("ok");
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 1, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 1, () => {});
 
-  await assert.rejects(() => coordinator.summon("default", "nobody", "task"), /Unknown agent/);
+  await assert.rejects(() => coordinator.summon("default", "nobody", "task"), /Unknown agent 'nobody'/);
 
   await coordinator.summon("default", "terry", "long task");
   assert.equal(coordinator.runningChildren("default").length, 1);
@@ -233,7 +263,7 @@ test("an untrusted caller's summon runs under the untrusted tier — forced sand
   const naked = agent({ id: "naked", sandbox: { enabled: false, backend: "none" } });
   const { workspace, path } = await makeWorkspace({ shady, naked });
   const room = fakeRoom("ok");
-  const coordinator = new SummonCoordinator(workspace, path, async () => room, 8, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 8, () => {});
 
   // The summon is NOT denied (no gating) — the caller's untrust follows it.
   const { roomId } = await coordinator.launch("default", "naked", "delegated task", { deliver: "turn", callerAgentId: "shady" });
@@ -297,7 +327,7 @@ test("recoverUndelivered re-arms a stranded summon and delivers its surviving re
     const service = services.get(roomId);
     if (!service) throw new Error(`unexpected room: ${roomId}`);
     return service;
-  }, 8, () => {});
+  }, async () => 8, () => {});
 
   await coordinator.recoverUndelivered();
   // Recovery runs in the background — wait for the delivery to land.
@@ -323,7 +353,7 @@ test("recoverUndelivered skips delivered records and non-summon rooms", async ()
 
   const coordinator = new SummonCoordinator(workspace, path, async () => {
     throw new Error("recovery must not open settled rooms");
-  }, 8, () => {});
+  }, async () => 8, () => {});
   await coordinator.recoverUndelivered();
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(coordinator.runningChildren().length, 0);
@@ -387,7 +417,7 @@ test("end-to-end: a background summon posts its result into the parent room and 
     return service;
   };
 
-  const coordinator = new SummonCoordinator(workspace, path, serviceFor, 8, () => {});
+  const coordinator = new SummonCoordinator(workspace, path, serviceFor, async () => 8, () => {});
   const { roomId: childRoomId, done } = await coordinator.launch("default", "terry", "check the tides", {
     deliver: "turn",
     callerAgentId: "gaia",
@@ -418,5 +448,6 @@ test("end-to-end: a background summon posts its result into the parent room and 
 
   // The child's durable record is closed out.
   const childState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(childState.incognito, true, "summon child rooms stay out of workspace recall and memory capture");
   assert.equal(childState.summon?.status, "delivered");
 });

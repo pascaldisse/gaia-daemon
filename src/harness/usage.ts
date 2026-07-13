@@ -10,6 +10,32 @@
 
 import type { UsageLimits, UsageProbeResult, UsageWindow } from "../core/types.js";
 
+/** Best-effort display identity from an OAuth JWT. Account specs may call this
+ * without the shared account manager ever interpreting credential bags. */
+export function emailFromJwt(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { email?: unknown };
+    return typeof payload.email === "string" && payload.email.includes("@") ? payload.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Best-effort epoch-ms expiry from an OAuth JWT's `exp` claim, 0 if unreadable.
+ * Account specs use this to materialize truthful token expiries — a hardcoded
+ * 0 ("already expired") forces a refresh on every run, and OpenAI rotates
+ * refresh tokens on use, which strands the rotation outside the daemon store. */
+export function expiryMsFromJwt(token: string | undefined): number {
+  if (!token) return 0;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
+    return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Account id for Anthropic subscription usage (Claude session/weekly caps). */
 export const ANTHROPIC_USAGE_ACCOUNT = "anthropic";
 /** Account id for OpenAI/ChatGPT subscription usage (codex 5h/weekly caps). */

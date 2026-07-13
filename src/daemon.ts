@@ -12,13 +12,14 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
-import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
-import { setAgentDefaultRole } from "./domain/agents.js";
+import { normalizeRoomState } from "./domain/rooms.js";
+import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
@@ -27,7 +28,8 @@ import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { AccountLoginService } from "./services/account-login.js";
-import type { ConsolidateLlm, ConsolidateOp, ConsolidateResult } from "./services/consolidate.js";
+import { formatDreamProposal } from "./services/consolidate.js";
+import type { ConsolidateLlm, ConsolidateResult } from "./services/consolidate.js";
 import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
@@ -47,6 +49,7 @@ import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type Re
 import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
+import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -178,6 +181,14 @@ export class Daemon {
   // Live only while a call routes its TTS through a read-aloud engine
   // (claude-voice); torn down on hang-up.
   private ttsBridge: TtsCallBridge | undefined;
+  // Resolves once boot()'s orphan sweep has finished. serviceFor() awaits this
+  // so an HTTP request landing in the window between "server listening" and
+  // "orphan sweep done" (the server accepts connections before boot() settles
+  // — see http.ts's listen()) can't spawn/resume a room's turn while a stale
+  // runner from the previous daemon generation for that same room might still
+  // be alive: the two would race the same transcript/runner slot. Defaults to
+  // an already-resolved promise so tests/callers that skip boot() aren't stuck.
+  private orphanSweepDone: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: DaemonOptions) {
     ensureAccountsFile(); // seed ~/.gaia/accounts.json so it lists as an editable settings file
@@ -197,7 +208,8 @@ export class Daemon {
     // turn (scheduler tick, summon recovery, serviceFor from HTTP). Otherwise a
     // surviving runner from the previous daemon and the freshly resumed runner
     // can execute the same turn in parallel.
-    await reapOrphans({ log: (message) => this.log(message) });
+    this.orphanSweepDone = reapOrphans({ log: (message) => this.log(message) }).then(() => {});
+    await this.orphanSweepDone;
     this.bridge = new HarnessBridge(baseUrl);
     // Proactive runs: one tick across every initialized workspace. The first
     // tick also recovers runs a prior process left marked "running".
@@ -213,6 +225,14 @@ export class Daemon {
     // WAL resumes its turn; the coordinator re-delivers the result to the
     // parent room) — a summon result is never silently lost.
     void this.recoverSummons();
+    // Turn recovery: a prior process may have died (or been reload()ed) with a
+    // room mid-turn or holding a queued-but-undrained message. Nothing else
+    // wakes that room — RoomService.initOnce() resumes/drains, but only runs
+    // when something calls serviceFor() for that exact room, which otherwise
+    // waits for a client to reopen it. Silent and unbounded for a room nobody
+    // happens to look at; see room-service.ts's own "/reload ... in-flight
+    // turns resume after restart" promise, which this keeps.
+    void this.recoverPendingTurns();
     await ensureVoiceSettingsFile();
     // A crash mid-call must never leave a "temporary" thinking override applied
     // forever: restore any persisted override from a dead call.
@@ -299,6 +319,13 @@ export class Daemon {
    * = the workspace's current room. LRU-bumped; creating past the soft cap
    * evicts the least-recently-used idle room. */
   async serviceFor(workspaceId: string, roomId?: string): Promise<RoomService> {
+    // Enforce the invariant boot() documents at its reapOrphans() call: nothing
+    // resumes/starts a turn until the stale-runner sweep has settled. Without
+    // this, a message landing right after a restart (the HTTP server accepts
+    // connections before boot() finishes — see http.ts) could start a fresh
+    // turn/runner for a room while a surviving orphan runner for that same
+    // room+agent is still being identified/killed.
+    await this.orphanSweepDone;
     const resolvedRoom = roomId ?? (await this.resolveCurrentRoom(workspaceId));
     const key = serviceKey(workspaceId, resolvedRoom);
 
@@ -443,7 +470,7 @@ export class Daemon {
         workspace,
         path,
         (roomId) => this.serviceFor(workspaceId, roomId),
-        workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom,
+        () => liveMaxSummonsPerRoom(path),
         (message) => this.log(message),
       );
       this.summonCoordinators.set(workspaceId, coordinator);
@@ -461,6 +488,41 @@ export class Daemon {
         await (await this.coordinatorFor(record.id)).recoverUndelivered();
       } catch (error) {
         this.log(`summon recovery skipped for workspace ${record.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  /** Boot sweep: wake every room whose persisted state carries unfinished work
+   * (a pendingTurn or a non-empty queue) — the counterpart to recoverSummons
+   * for plain agent turns, which otherwise only resume/drain lazily inside
+   * RoomService.initOnce(), on-demand, the next time something calls
+   * serviceFor() for that specific room. Scan is cheap (one JSON read per
+   * room, no service/workspace load); only rooms that actually need it get a
+   * real serviceFor(), which does the rest via initOnce(). Sequential, not
+   * fanned out — a restart can strand many rooms at once, and each wake may
+   * spawn a runner subprocess; waking them one at a time avoids a subprocess
+   * thundering herd (servicePending already makes this race-safe against a
+   * concurrent client reconnect for the same room). Failures are logged,
+   * never thrown — recovery must not take the daemon down. */
+  private async recoverPendingTurns(): Promise<void> {
+    for (const record of await this.registry.list()) {
+      if (!record.isInitialized) continue;
+      for (const roomId of this.roomIdsOnDisk(record.path)) {
+        let state: RoomState;
+        try {
+          state = normalizeRoomState(await readJson(workspacePaths.roomState(record.path, roomId)));
+        } catch {
+          continue; // Unreadable/corrupt state — leave it for the room's own on-open recovery.
+        }
+        if (!state.pendingTurn && !state.queue?.length) continue;
+        this.log(
+          `turn recovery: waking ${record.id}::${roomId} (pending=${Boolean(state.pendingTurn)}, queued=${state.queue?.length ?? 0})`,
+        );
+        try {
+          await this.serviceFor(record.id, roomId);
+        } catch (error) {
+          this.log(`turn recovery failed for ${record.id}::${roomId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }
@@ -691,6 +753,27 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
+  /** Delete a global agent: move its directory to the global trash (reversible — never rm -rf). Refuses if the agent doesn't exist or if it's the workspace's default agent. Returns payload with reloaded agents list. */
+  async deleteAgent(agentId: string, workspaceId: string): Promise<{ agents: Record<string, AgentDef> }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    const service = await this.serviceFor(workspaceId);
+    const agent = service.workspace.agents[agentId];
+    if (!agent) throw new Error(`Unknown agent: @${agentId}`);
+    if (service.workspace.config.defaultAgent === agentId) {
+      throw new Error(`Cannot delete the default agent for this workspace: @${agentId}`);
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = await trashGlobalAgent(agentId, stamp);
+    this.log(`deleted agent ${agentId} → trash ${trash || "(already gone)"}`);
+
+    // Reload the workspace to pick up the updated agents list.
+    const workspace = await loadWorkspace(record.path);
+    return { agents: workspace.agents };
+  }
+
   // --- keep-awake (Global Settings ▸ General) ---------------------------------------
 
   /** Current keep-awake capability/state — served in /api/app. */
@@ -705,6 +788,22 @@ export class Daemon {
     await writeKeepAwakeSetting(enabled);
     await this.keepAwakeManager.ensure(enabled);
     return this.keepAwake();
+  }
+
+  // --- your name (Global Settings ▸ General) ---------------------------------------
+
+  /** Configured label for the human's own transcript lines ("" = unset,
+   * meaning the "user" default — see services/user-name.ts). Served in
+   * /api/app so the client can show it in the settings field. */
+  async userName(): Promise<string> {
+    return readUserNameSetting();
+  }
+
+  /** Persist the name; every subsequent turn's prompt picks it up (read fresh
+   * per turn in room-service.ts — no session reload needed). */
+  async setUserName(name: string): Promise<string> {
+    await writeUserNameSetting(name);
+    return this.userName();
   }
 
   // --- settings hot-reload ----------------------------------------------------------
@@ -876,7 +975,7 @@ export class Daemon {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
     const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
     const result = await memory.consolidate(agentId, { propose: true, force: true });
-    return formatDreamProposal(result);
+    return formatDreamProposal(result, "run: gaia dream [agent] --apply to accept, or dream again to regenerate.");
   }
 
   /** Dream v2 apply: commits the proposal `harnessDreamPropose` wrote, through
@@ -1149,6 +1248,7 @@ export class Daemon {
     voice: VoiceCallInfo | null;
     workspaceRooms: Record<string, Snapshot["rooms"]>;
     keepAwake: KeepAwakeCapability;
+    userName: string;
   }> {
     const workspaces = await this.registry.list();
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
@@ -1177,33 +1277,9 @@ export class Daemon {
       voice: this.voiceFor(current),
       workspaceRooms,
       keepAwake: await this.keepAwake(),
+      userName: await this.userName(),
     };
   }
-}
-
-// --- dream v2 proposal rendering (harnessDreamPropose's preformatted text) -----
-
-function truncate(text: string, max: number): string {
-  const trimmed = text.trim();
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
-}
-
-function dreamOpLine(op: ConsolidateOp): string {
-  switch (op.kind) {
-    case "fact-add":
-      return `fact-add: ${truncate(op.text, 120)}`;
-    case "fact-invalidate":
-      return `fact-invalidate: ${op.id}`;
-    case "memory-edit":
-      return `memory-edit (${op.action}): ${truncate(op.file, 120)}`;
-  }
-}
-
-function formatDreamProposal(result: ConsolidateResult): string {
-  if (!result.ran) return `dream: ${result.reason ?? "did not run"}`;
-  const ops = result.proposedOps ?? [];
-  if (!ops.length) return "dream: no ops proposed — memory is already tidy.";
-  return [...ops.map(dreamOpLine), "", "run: gaia dream [agent] --apply to accept, or dream again to regenerate."].join("\n");
 }
 
 // --- consolidation LLM (daemon-side, same credential store as the proxy) ---------

@@ -6,9 +6,10 @@ import { api } from "./api.js";
 import { refreshAttention } from "./attention.js";
 import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
+import { setPetActivity } from "./pet.js";
 import { markDirty, setError } from "./render.js";
 import { state, syncReadMarks } from "./state.js";
-import { syncOlderFromSnapshot } from "./transcript.js";
+import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
@@ -23,25 +24,51 @@ import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
 /** @type {string | undefined} */
 let knownBootId;
+let lastEventAt = Date.now();
+let lastWatchdogReconnectAt = 0;
+let connectionStale = false;
+/** @type {number | undefined} */
+let heartbeatTimer;
+/** @type {number | undefined} */
+let livenessWatchdog;
 
-export function connectEvents() {
+/**
+ * Open the room event channel. A watchdog-triggered replacement asks the
+ * ready handler to reseed from a fresh snapshot, because its missed events
+ * cannot be replayed.
+ * @param {boolean} [resyncOnReady]
+ */
+export function connectEvents(resyncOnReady = false) {
   const snapshot = state.snapshot;
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
   }
   if (!snapshot) return;
+  syncLiveTimers();
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
   const source = openEventChannel(`/api/events?${params}`);
   state.eventSource = source;
+
+  /** @param {string} type @param {(event: { data: string }) => void} handler */
+  const listen = (type, handler) =>
+    source.addEventListener(type, (event) => {
+      lastEventAt = Date.now();
+      if (connectionStale) {
+        connectionStale = false;
+        state.eventConnectionStale = false;
+        markDirty("transcript");
+      }
+      handler(event);
+    });
 
   // The server greets every (re)connection with "ready". EventSource
   // reconnects on its own after a drop, but events broadcast while we were
   // gone are lost — so a ready that isn't the first one resyncs with a
   // fresh snapshot.
   let connectedBefore = false;
-  source.addEventListener("ready", (event) => {
+  listen("ready", (event) => {
     const payload = JSON.parse(event.data);
     const bootId = payload && typeof payload === "object" && typeof payload.bootId === "string" ? payload.bootId : undefined;
     if (bootId) {
@@ -51,11 +78,14 @@ export function connectEvents() {
       }
       knownBootId = bootId;
     }
-    if (connectedBefore) void resyncSnapshot(snapshot.workspace.id);
+    if (connectedBefore || resyncOnReady) void resyncSnapshot(snapshot.workspace.id);
     connectedBefore = true;
   });
 
-  source.addEventListener("snapshot", (event) => {
+  // Named server keepalive: EventSource does not expose comment-only pings.
+  listen("ping", () => {});
+
+  listen("snapshot", (event) => {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
     void (async () => {
       await adoptSnapshotKeepingRoom(payload.snapshot);
@@ -68,7 +98,7 @@ export function connectEvents() {
   // it per workspace to keep the sidebar's workspace-level running/unread dots
   // live even for workspaces we're not viewing. When it's the open workspace,
   // also refresh the room list that drives the rooms tree + tab strip.
-  source.addEventListener("rooms", (event) => {
+  listen("rooms", (event) => {
     const payload = /** @type {Ev<"rooms">} */ (JSON.parse(event.data));
     state.workspaceRooms[payload.workspaceId] = payload.rooms;
     if (state.snapshot && state.snapshot.workspace.id === payload.workspaceId) {
@@ -79,29 +109,42 @@ export function connectEvents() {
     }
     syncReadMarks();
     refreshAttention();
-    markDirty("sidebar", "tabs");
+    // "composer" too: the running banner counts THIS room's live summons from
+    // snapshot.rooms — without it the banner kept showing dead summons until
+    // some unrelated event happened to repaint the composer.
+    markDirty("sidebar", "tabs", "composer");
   });
 
-  source.addEventListener("room-event", (event) => {
+  listen("room-event", (event) => {
     const payload = /** @type {Ev<"room-event">} */ (JSON.parse(event.data));
     if (!state.snapshot) return;
     // The commit carries its runtime details on the event itself; the stream
     // entry for the same id (if any) is now redundant.
     state.streams.delete(payload.event.id);
+    syncLiveTimers();
     const events = state.snapshot.room.events;
     const index = events.findIndex((candidate) => candidate.id === payload.event.id);
     if (index === -1) events.push(payload.event);
     else events[index] = payload.event;
+    // Stall notices never render in the transcript (messageViews filters them);
+    // surface live ones through the app's existing dismissible error banner AND
+    // paint the running turn's own bubble as "reconnecting", so a frozen-looking
+    // stream reads as a retry-in-progress instead of a dead turn.
+    if (isStallNotice(payload.event)) {
+      setError(payload.event.text);
+      setPetActivity({ level: "warning" });
+      markStreamsStalled(payload.event.text);
+    }
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
 
-  source.addEventListener("voice-status", (event) => {
+  listen("voice-status", (event) => {
     applyVoiceStatus(/** @type {Ev<"voice-status">} */ (JSON.parse(event.data)));
   });
 
-  source.addEventListener("model-info", (event) => {
+  listen("model-info", (event) => {
     const payload = /** @type {Ev<"model-info">} */ (JSON.parse(event.data));
     // Keep the composer's model chip live: the label the snapshot carried may
     // predate this turn's actual model (e.g. a fallback mid-turn).
@@ -117,7 +160,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("context-usage", (event) => {
+  listen("context-usage", (event) => {
     const payload = /** @type {Ev<"context-usage">} */ (JSON.parse(event.data));
     const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
     if (!agent) return;
@@ -130,14 +173,14 @@ export function connectEvents() {
 
   // Daemon-global: one subscription account's usage limits refreshed (or
   // cleared). Not tied to the open room, so it's applied regardless of workspace.
-  source.addEventListener("usage-limits", (event) => {
+  listen("usage-limits", (event) => {
     const payload = /** @type {Ev<"usage-limits">} */ (JSON.parse(event.data));
     if (payload.usage) state.usage[payload.account] = payload.usage;
     else delete state.usage[payload.account];
     markDirty("status", "usage");
   });
 
-  source.addEventListener("model-fallback", (event) => {
+  listen("model-fallback", (event) => {
     const payload = /** @type {Ev<"model-fallback">} */ (JSON.parse(event.data));
     const fallback = { from: payload.fromModel, to: payload.toModel, reason: payload.reason };
     const agent = (state.snapshot?.agents ?? []).find((candidate) => candidate.id === payload.agentId);
@@ -152,7 +195,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("text-delta", (event) => {
+  listen("text-delta", (event) => {
     const payload = /** @type {Ev<"text-delta">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -162,7 +205,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("thinking-start", (event) => {
+  listen("thinking-start", (event) => {
     const payload = /** @type {Ev<"thinking-start">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -171,7 +214,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("thinking-delta", (event) => {
+  listen("thinking-delta", (event) => {
     const payload = /** @type {Ev<"thinking-delta">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -182,7 +225,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("thinking-end", (event) => {
+  listen("thinking-end", (event) => {
     const payload = /** @type {Ev<"thinking-end">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -193,7 +236,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("tool-start", (event) => {
+  listen("tool-start", (event) => {
     const payload = /** @type {Ev<"tool-start">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -204,7 +247,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("tool-update", (event) => {
+  listen("tool-update", (event) => {
     const payload = /** @type {Ev<"tool-update">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -214,7 +257,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("tool-end", (event) => {
+  listen("tool-end", (event) => {
     const payload = /** @type {Ev<"tool-end">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -231,7 +274,7 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("steered", (event) => {
+  listen("steered", (event) => {
     const payload = /** @type {Ev<"steered">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);
     if (!stream) return;
@@ -240,31 +283,77 @@ export function connectEvents() {
     markDirty("transcript");
   });
 
-  source.addEventListener("task-start", (event) => {
+  listen("task-start", (event) => {
     const payload = /** @type {Ev<"task-start">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
+    setPetActivity({ isLoading: true });
     markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
-  source.addEventListener("task-end", (event) => {
+  listen("task-end", (event) => {
     const payload = /** @type {Ev<"task-end">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
+    setPetActivity(payload.task.status === "complete" ? { level: "success" } : { level: "warning" });
     markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
-  source.addEventListener("task-error", (event) => {
+  listen("task-error", (event) => {
     const payload = /** @type {Ev<"task-error">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
+    setPetActivity({ level: "danger" });
     // Drop the empty streaming placeholder the failed turn left behind;
     // partial replies stay visible (frozen) until the next snapshot.
     for (const [id, stream] of state.streams) {
       if (stream.taskId === payload.task?.id && !stream.text) state.streams.delete(id);
     }
+    syncLiveTimers();
     const who = payload.task?.targets?.length ? ` (@${payload.task.targets.join(", @")})` : "";
     setError(`Turn failed${who}: ${payload.error || "unknown error"}`);
     markDirty("transcript", "panel", "composer", "tabs", "sidebar");
   });
 
+}
+
+/** @returns {StreamEntry[]} */
+function liveStreams() {
+  const tasks = state.snapshot?.tasks ?? [];
+  return [...state.streams.values()].filter((stream) => {
+    const task = tasks.find((candidate) => candidate.id === stream.taskId);
+    // A delta can race the task list update; absent means conservatively live.
+    return !task || task.status === "running";
+  });
+}
+
+/** Start liveness timers only while an in-flight reply is rendered. */
+function syncLiveTimers() {
+  if (liveStreams().length) {
+    heartbeatTimer ??= window.setInterval(() => {
+      const streams = liveStreams();
+      if (!streams.length) return syncLiveTimers();
+      for (const stream of streams) stream.version += 1;
+      markDirty("transcript");
+    }, 1000);
+    livenessWatchdog ??= window.setInterval(() => {
+      if (!liveStreams().length || Date.now() - lastEventAt <= 45_000) return;
+      // Keep the warning visible until a real event lands, and rate-limit
+      // replacement attempts while the daemon itself remains unreachable.
+      connectionStale = true;
+      state.eventConnectionStale = true;
+      markDirty("transcript");
+      if (Date.now() - lastWatchdogReconnectAt < 45_000) return;
+      lastWatchdogReconnectAt = Date.now();
+      connectEvents(true);
+    }, 10_000);
+    return;
+  }
+  if (heartbeatTimer !== undefined) {
+    window.clearInterval(heartbeatTimer);
+    heartbeatTimer = undefined;
+  }
+  if (livenessWatchdog !== undefined) {
+    window.clearInterval(livenessWatchdog);
+    livenessWatchdog = undefined;
+  }
 }
 
 /**
@@ -331,13 +420,45 @@ function streamFor(scope) {
       taskId: scope.taskId,
       author: scope.agentId,
       startedAt: new Date().toISOString(),
+      lastDeltaAt: Date.now(),
       text: "",
       details: {},
       version: 0,
     };
     state.streams.set(scope.eventId, entry);
+  } else if (entry.stalled) {
+    // Real output resumed → the upstream stall is over. The delta handler that
+    // called us bumps version + markDirty("transcript"), so clearing the flag
+    // here drops the "reconnecting…" pill in the very same repaint.
+    entry.stalled = false;
   }
+  // Every turn-scoped SSE payload is activity, including tool and thinking
+  // deltas that do not append visible prose.
+  entry.lastDeltaAt = Date.now();
+  syncLiveTimers();
   return entry;
+}
+
+/**
+ * A live upstream-stall notice arrived: mark the running turn's stream as
+ * reconnecting so its bubble shows the retry state instead of freezing. The
+ * notice names the stalled agent ("… (@agent) …"); mark that agent's live
+ * stream, or every live stream when the name can't be parsed (a room runs one
+ * turn at a time). Cleared automatically on the next delta (see streamFor).
+ * @param {string} text
+ */
+function markStreamsStalled(text) {
+  const match = /upstream stall \(@([a-z0-9_-]+)\)/i.exec(text);
+  const agent = match?.[1];
+  let touched = false;
+  for (const stream of state.streams.values()) {
+    if (agent && stream.author !== agent) continue;
+    if (stream.stalled) continue;
+    stream.stalled = true;
+    stream.version += 1;
+    touched = true;
+  }
+  if (touched) markDirty("transcript");
 }
 
 /**
@@ -438,20 +559,34 @@ function upsertTask(task) {
 export function seedLiveTurn() {
   const snapshot = state.snapshot;
   const live = snapshot?.room?.liveTurn;
-  if (!live) return;
+  if (!live) {
+    syncLiveTimers();
+    return;
+  }
   // Already committed → it's in the transcript; nothing to mirror.
-  if (snapshot.room.events.some((event) => event.id === live.eventId)) return;
+  if (snapshot.room.events.some((event) => event.id === live.eventId)) {
+    syncLiveTimers();
+    return;
+  }
   const existing = state.streams.get(live.eventId);
-  if (existing && existing.text.length > live.text.length) return;
+  if (existing && existing.text.length > live.text.length) {
+    syncLiveTimers();
+    return;
+  }
   state.streams.set(live.eventId, {
     id: live.eventId,
     taskId: live.taskId,
     author: live.agentId,
     startedAt: live.startedAt,
+    lastDeltaAt: existing?.lastDeltaAt ?? Date.now(),
     text: live.text,
     details: live.details ?? {},
     version: (existing?.version ?? 0) + 1,
+    // The server mirrors mid-stall state, so a client (re)subscribing during a
+    // retry gap renders "reconnecting…" instead of a frozen bubble.
+    ...(live.stalled ? { stalled: true } : {}),
   });
+  syncLiveTimers();
   markDirty("transcript");
 }
 
@@ -464,6 +599,7 @@ function pruneStreams() {
   const snapshot = state.snapshot;
   if (!snapshot) {
     state.streams.clear();
+    syncLiveTimers();
     return;
   }
   const committed = new Set(snapshot.room.events.map((event) => event.id));
@@ -475,4 +611,5 @@ function pruneStreams() {
     const task = snapshot.tasks.find((candidate) => candidate.id === stream.taskId);
     if (task && task.status !== "running" && task.status !== "queued") state.streams.delete(id);
   }
+  syncLiveTimers();
 }

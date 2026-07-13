@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accountsPath, ensureAccountsFile, findAccount, listAccounts } from "../src/domain/accounts.js";
+import { accountsPath, ensureAccountsFile, findAccount, listAccounts, redactedAccounts, updateAccount } from "../src/domain/accounts.js";
 
 function withGaiaHome(fn: (home: string) => void): void {
   const previous = process.env.GAIA_HOME;
@@ -58,5 +58,20 @@ test("malformed file throws", () => {
   withGaiaHome(() => {
     writeFileSync(accountsPath(), "not json");
     assert.throws(() => listAccounts());
+  });
+});
+
+test("display metadata can be updated without exposing credentials", () => {
+  withGaiaHome(() => {
+    writeFileSync(accountsPath(), JSON.stringify({ accounts: [{ id: "a1", harness: "claude", credentials: { oauthToken: "secret" } }] }));
+    assert.deepEqual(updateAccount("a1", { label: "Personal", email: "me@example.com" }), {
+      id: "a1",
+      harness: "claude",
+      label: "Personal",
+      email: "me@example.com",
+      credentials: { oauthToken: "secret" },
+    });
+    assert.deepEqual(redactedAccounts(), [{ id: "a1", harness: "claude", label: "Personal", email: "me@example.com" }]);
+    assert.equal(updateAccount("missing", { label: "Nope" }), undefined);
   });
 });

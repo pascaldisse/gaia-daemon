@@ -17,11 +17,19 @@ import { join } from "node:path";
 import { gaiaHome } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { addAccount, newAccountId } from "../domain/accounts.js";
-import { harnessSpecFor, type AccountLoginSpec } from "../harness/spec.js";
+import { harnessSpecFor, type AccountLoginSpec, type HarnessSpec } from "../harness/spec.js";
 
-/** Strip ANSI CSI + OSC sequences so the extractors see plain text. */
-function stripAnsi(text: string): string {
-  return text.replace(/\[[0-9;?]*[A-Za-z]/g, "").replace(/\][^]*(?:|\\)/g, "");
+/** Strip ANSI CSI + OSC sequences so the extractors see plain text. Previously
+ * missing the leading ESC (`\x1b`) byte on both patterns — harmless for
+ * claude's login output, but codex's FIRST line ("Welcome to Codex [v0.144.1]")
+ * has a bare `]` that made the (ESC-less) OSC pattern's `[^]*` swallow
+ * everything after it, greedily, for the rest of the session — the sign-in
+ * URL and device code never survived stripping, so the flow silently hung at
+ * `starting` forever. */
+export function stripAnsi(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "") // OSC ... (BEL | ST)
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""); // CSI ... letter (SGR/colors/etc)
 }
 
 export type AccountLoginStatus = "starting" | "awaiting-signin" | "awaiting-code" | "done" | "error" | "cancelled";
@@ -31,13 +39,17 @@ export interface AccountLoginState {
   harness: string;
   status: AccountLoginStatus;
   url?: string;
-  account?: { id: string; harness: string; label?: string };
+  /** Device-authorization code the user re-enters on the sign-in page (see
+   * AccountLoginSpec.code) — shown alongside `url`, never sent anywhere by us. */
+  code?: string;
+  account?: { id: string; harness: string; label?: string; email?: string };
   error?: string;
 }
 
 interface LoginSession {
   state: AccountLoginState;
   login: AccountLoginSpec;
+  spec: HarnessSpec;
   child: ChildProcess;
   output: string;
   configDir: string;
@@ -83,6 +95,7 @@ export class AccountLoginService {
     const session: LoginSession = {
       state: { sessionId, harness: harnessId, status: "starting" },
       login,
+      spec,
       child,
       output: "",
       configDir,
@@ -143,17 +156,24 @@ export class AccountLoginService {
         session.state.status = "awaiting-signin";
       }
     }
+    // Independent of the url branch above: the code may land in a LATER
+    // output chunk than the url did, so keep checking each call until found.
+    if (session.state.url && session.state.code === undefined) {
+      session.state.code = session.login.code?.(session.output);
+    }
   }
 
   private finish(session: LoginSession, creds: Record<string, string>): void {
     const id = newAccountId(session.state.harness, session.label);
+    const email = session.spec.accounts?.email?.(creds);
     addAccount({
       id,
       harness: session.state.harness,
       ...(session.label ? { label: session.label } : {}),
+      ...(email ? { email } : {}),
       credentials: creds,
     });
-    session.state.account = { id, harness: session.state.harness, ...(session.label ? { label: session.label } : {}) };
+    session.state.account = { id, harness: session.state.harness, ...(session.label ? { label: session.label } : {}), ...(email ? { email } : {}) };
     session.state.status = "done";
     this.cleanup(session);
   }

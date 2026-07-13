@@ -28,6 +28,11 @@ tungstenite = "0.24"
 # Raw objc message-send, shared by the macOS media-capture patch and the iOS
 # WKWebView scroll-inset fix below.
 objc2 = "0.6.4"
+# Completion-handler block for WKWebView.takeSnapshotWithConfiguration: — the
+# in-process webview snapshot the debug server uses instead of shelling out to
+# `screencapture` (which needs Screen Recording permission; a WKWebView self-
+# snapshot needs none).
+block2 = "0.6"
 
 [features]
 default = ["webkit"]

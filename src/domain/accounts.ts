@@ -15,6 +15,9 @@ export interface AccountRecord {
   /** Owning harness id — only that harness's agents may bind to this account. */
   harness: string;
   label?: string;
+  /** Email address shown in the account manager. It is inferred from a login
+   * when that harness exposes it, or supplied by the person managing it. */
+  email?: string;
   /** Opaque credential bag; field meaning is the owning spec's (accounts.fields). */
   credentials: Record<string, string>;
 }
@@ -48,6 +51,7 @@ export function listAccounts(): AccountRecord[] {
         id: record.id.trim(),
         harness: record.harness.trim(),
         ...(typeof record.label === "string" && record.label.trim() ? { label: record.label.trim() } : {}),
+        ...(typeof record.email === "string" && record.email.trim() ? { email: record.email.trim() } : {}),
         credentials,
       },
     ];
@@ -59,8 +63,30 @@ export function findAccount(id: string): AccountRecord | undefined {
 }
 
 /** Redacted view for clients — never includes the credential bag. */
-export function redactedAccounts(): Array<{ id: string; harness: string; label?: string }> {
-  return listAccounts().map(({ id, harness, label }) => ({ id, harness, ...(label ? { label } : {}) }));
+export function redactedAccounts(): Array<{ id: string; harness: string; label?: string; email?: string }> {
+  return listAccounts().map(({ id, harness, label, email }) => ({ id, harness, ...(label ? { label } : {}), ...(email ? { email } : {}) }));
+}
+
+/** Update display-only account metadata without ever exposing or rewriting its
+ * credential bag. `undefined` leaves a field alone; `null` clears it. */
+export function updateAccount(id: string, patch: { label?: string | null; email?: string | null }): AccountRecord | undefined {
+  const path = accountsPath();
+  if (!existsSync(path)) return undefined;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
+  const list = Array.isArray(raw.accounts) ? (raw.accounts as unknown[]) : [];
+  const index = list.findIndex((entry) => (entry as Partial<AccountRecord>)?.id === id);
+  if (index < 0) return undefined;
+  const current = list[index] as Record<string, unknown>;
+  const next = { ...current };
+  for (const field of ["label", "email"] as const) {
+    const value = patch[field];
+    if (value === undefined) continue;
+    if (value === null || !value.trim()) delete next[field];
+    else next[field] = value.trim();
+  }
+  list[index] = next;
+  writeFileSync(path, JSON.stringify({ ...raw, accounts: list }, null, 2) + "\n", { mode: 0o600 });
+  return listAccounts().find((account) => account.id === id);
 }
 
 /** First free id: slugified label ("Work Account" -> "work-account") when given

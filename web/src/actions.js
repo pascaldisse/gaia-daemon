@@ -8,6 +8,7 @@ import { markDirty, setError } from "./render.js";
 import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
+import { pinTranscriptToBottom } from "./transcript.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
@@ -33,6 +34,7 @@ async function applyAppPayload(body) {
   state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
   state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
   state.keepAwake = body.keepAwake ?? state.keepAwake;
+  state.userName = body.userName ?? state.userName;
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
@@ -213,7 +215,7 @@ export async function setAgentAccount(agentId, account) {
   }
 }
 
-/** @typedef {{ id: string, harness: string, label?: string }} AccountRecordSummary */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
 
@@ -437,6 +439,9 @@ export async function uploadAttachment(file, name) {
 export async function sendMessage(text, attachments = [], options = {}) {
   const snapshot = state.snapshot;
   if (!snapshot || (!text.trim() && attachments.length === 0)) return false;
+  // Sending is a "follow along" intent: snap back to the bottom so the reader
+  // sees their own message and the incoming reply even if they'd scrolled up.
+  pinTranscriptToBottom();
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/messages`, {
       method: "POST",
@@ -545,26 +550,51 @@ export async function cancelActiveTask() {
 }
 
 /**
- * Panic stop: abort the running room turn AND every running summon sub-room.
- * A summon is a child room, so each one is cancelled through the ordinary
- * room-cancel endpoint. Bound to Esc, Ctrl+C, and the stop button.
+ * Stop the ACTIVE ROOM's running turn only — bound to Esc and the stop button.
+ * Deliberately CANNOT reach summons: UI/stream delay made any escalating
+ * behavior kill summons by accident; only Ctrl+C (stopAll) stops those.
  */
-export async function stopAll() {
+export async function stopActiveRoom() {
   const snapshot = state.snapshot;
-  if (!snapshot) return;
-  const workspaceId = snapshot.workspace.id;
-  const summonRooms = runningSummonRooms(snapshot);
+  if (!snapshot || !activeTask(snapshot)) return;
   try {
-    await Promise.allSettled([
-      ...(activeTask(snapshot) ? [cancelActiveTask()] : []),
-      ...summonRooms.map((room) =>
-        api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(room.id)}/cancel`, { method: "POST", body: "{}" }),
-      ),
-    ]);
+    await cancelActiveTask();
     setError("");
   } catch (error) {
     setError(error);
   }
+}
+
+/**
+ * Stop every running summon descended from the active room. Summons nest;
+ * runningSummonRooms walks the whole parent chain, so sub-sub-rooms are
+ * included — one call clears the entire subtree.
+ * Only reachable via stopAll (Ctrl+C) — never bound to Esc or the button directly.
+ */
+export async function stopSummons() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const workspaceId = snapshot.workspace.id;
+  const summonRooms = runningSummonRooms(snapshot);
+  if (summonRooms.length === 0) return;
+  try {
+    await Promise.allSettled(
+      summonRooms.map((room) =>
+        api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(room.id)}/cancel`, { method: "POST", body: "{}" }),
+      ),
+    );
+    setError("");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Kill the whole tree at once, bound to Ctrl+C: the active room's running
+ * turn AND every summon descended from it.
+ */
+export async function stopAll() {
+  await Promise.allSettled([stopActiveRoom(), stopSummons()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +656,20 @@ export async function setKeepAwake(enabled) {
   try {
     const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });
     state.keepAwake = body.keepAwake ?? state.keepAwake;
+    markDirty("settings");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** "Your name" (Settings ▸ General): persists the label agents use for the
+ * human's own transcript lines in place of the anonymous "user" token
+ * (services/user-name.ts). Empty string clears it back to that default.
+ * @param {string} name */
+export async function setUserName(name) {
+  try {
+    const body = await api("/api/app/user-name", { method: "POST", body: JSON.stringify({ name }) });
+    state.userName = body.userName ?? state.userName;
     markDirty("settings");
   } catch (error) {
     setError(error);

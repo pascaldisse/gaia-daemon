@@ -166,21 +166,25 @@ export async function runAgentRunner(): Promise<void> {
           runtime.compact?.(command.roomId, (update) => send({ type: "compact-progress", ...update })) ??
           Promise.reject(new Error("compaction not supported"))
         )
-          .then((result) =>
+          .then((result) => {
+            if (result.compacted === true) runtime.refreshContext?.(command.roomId);
             send({
               type: "compact-result",
               ok: true,
               compacted: result.compacted,
               message: result.message,
               ...(result.summary ? { summary: result.summary } : {}),
-            }),
-          )
+            });
+          })
           .catch((error: unknown) =>
             send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );
         return;
       case "reset":
         runtime.resetRoom(command.roomId);
+        return;
+      case "refresh":
+        runtime.refreshContext?.(command.roomId);
         return;
       case "dispose":
         // Runner-side runtimes are sync in practice; the daemon-side host owns async child shutdown.

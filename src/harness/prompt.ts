@@ -10,10 +10,11 @@ import { readFile } from "node:fs/promises";
 import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
+import { discoverContextFiles } from "../domain/workspace.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import type { AgentInput } from "./spec.js";
 import { harnessIdFor, nativeCommandsFor } from "./spec.js";
-import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
+import { GAIA_TOOLS, gaiaToolIds, type GaiaToolSpec, type PointerContext } from "./tools.js";
 
 export interface SystemPromptInput {
   agent: AgentDef;
@@ -43,6 +44,8 @@ export interface TurnPromptInput {
    * it — no line is emitted in that case either. */
   workDir?: string;
   rootDir?: string;
+  /** Settings ▸ General ▸ "Your name" — see renderRoomTranscript. */
+  userName?: string;
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -70,15 +73,19 @@ export function renderAttachmentLines(attachments: MessageAttachment[]): string 
   return attachments.map((file) => `[attached file: ${file.name} (${file.mime}, ${humanSize(file.size)}) at ${file.path}]`).join("\n");
 }
 
-/** Render room events for a turn prompt (v1's room.ts renderer, verbatim). */
-export function renderRoomTranscript(events: RoomEvent[]): string {
+/** Render room events for a turn prompt (v1's room.ts renderer, verbatim).
+ * `userName` labels the human's own messages (Settings ▸ General ▸ "Your
+ * name" — services/user-name.ts); "" or omitted falls back to the anonymous
+ * "user" token this always used before that setting existed. */
+export function renderRoomTranscript(events: RoomEvent[], userName?: string): string {
   if (events.length === 0) return "(empty room)";
+  const who = userName?.trim() || "user";
 
   return events
     .map((event) => {
       const header =
         "targets" in event
-          ? `user -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
+          ? `${who} -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
       const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
       return `[${event.timestamp}] ${header}:\n${event.text}${attachments}`;
@@ -91,6 +98,12 @@ function renderProjectContext(contextFiles: ContextFile[]): string {
     ? contextFiles.map((file) => `## ${file.path}\n\n${file.content.trim()}`).join("\n\n")
     : "(no AGENTS.md files found)";
 }
+
+// Standing style law (Pascal, 2026-07-13): context artifacts live at
+// machine-recall density, not human-prose density (07-09 compression research
+// — "episodes born terse"). Rides in EVERY agent's system prompt, uniformly.
+const STYLE_LAW =
+  '# Style law (Pascal, 2026-07-13)\nEverything you WRITE INTO CONTEXT — memory files, skills, roles, docs, specs, summon tasks — uses telegraphic notation: fragments + arrows + § pointers, no filler sentences, no prose grammar. State once, point after; NEVER re-explain in different wording. Exemplar: your MEMORY.md format. Replies: dense, zero repetition, zero bloat.';
 
 export function buildSystemPrompt(input: SystemPromptInput): string {
   const roleSection = input.role ? [`# Active Role: ${input.role.name}`, input.role.prompt.trim()].filter(Boolean).join("\n\n") : "";
@@ -105,9 +118,10 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     `# Agent Soul\n\n${input.soulText.trim()}`,
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
+    STYLE_LAW,
     roleSection,
     roleDiagnostics,
-    "You are participating in a shared GAIA room. Reply only as the current agent.",
+    "You are participating in a shared GAIA room with other people and agents. Reply only as the current agent. Address whoever you are speaking to directly, in the second person (\"you\") — even when several participants are present, do not narrate about them in the third person as if they were absent. Third person is right only for people genuinely not in the room.",
   ]
     .filter(Boolean)
     .join("\n\n---\n\n");
@@ -123,23 +137,27 @@ export async function readOptional(path: string | undefined): Promise<string> {
   }
 }
 
-// Reads soul + optional project-intent off disk and composes the base system
-// prompt. Every harness needs this exact read-then-assemble step.
+// Reads soul + optional project-intent + the workspace's AGENTS.md off disk at
+// call time and composes the base system prompt. SessionMap-backed runtimes
+// serve this builder through SessionMap.systemPrompt, so disk reads happen only
+// at session birth, /compact, /clear, /refresh, or a role switch — never
+// mid-conversation otherwise.
 export async function buildBaseSystemPrompt(params: {
   agent: AgentDef;
   role: ResolvedRole | undefined;
-  contextFiles: ContextFile[];
+  workspaceRoot: string;
 }): Promise<string> {
-  const [soulText, intentText] = await Promise.all([
+  const [soulText, intentText, contextFiles] = await Promise.all([
     readFile(params.agent.soulPath, "utf8"),
     readOptional(params.agent.projectIntentPath),
+    discoverContextFiles(params.workspaceRoot),
   ]);
   return buildSystemPrompt({
     agent: params.agent,
     soulText,
     role: params.role,
     intentText,
-    contextFiles: params.contextFiles,
+    contextFiles,
   });
 }
 
@@ -155,7 +173,7 @@ export async function buildInlineSystemPrompt(params: {
   const base = await buildBaseSystemPrompt({
     agent: params.agent,
     role: params.role,
-    contextFiles: params.workspace.contextFiles,
+    workspaceRoot: params.workspace.rootDir,
   });
   // A harness's native commands (claude builtins like deep-research) have no
   // SKILL.md to inline — they reach the agent by passthrough. Pass their names as
@@ -168,11 +186,21 @@ export async function buildInlineSystemPrompt(params: {
   return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
 }
 
-// Progressive-disclosure pointer to the `gaia` CLI for whichever of
-// memory/recall/summon the agent has AND the harness can wire (`supported`).
-// Near-zero context until the agent runs `gaia <cmd> --help`.
-export function gaiaCliPointer(tools: string[], supported: readonly string[] = gaiaToolIds()): string {
-  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) => tool.pointer);
+// Self-contained `gaia` CLI documentation for whichever tools the agent has
+// AND the harness can wire (`supported`). Static and live-derived pointers flow
+// through the same resolver; agents never need a separate documentation lookup.
+export function resolvePointer(spec: GaiaToolSpec, context: PointerContext): string {
+  return typeof spec.pointer === "function" ? spec.pointer(context) : spec.pointer;
+}
+
+export function gaiaCliPointer(
+  tools: string[],
+  supported: readonly string[] = gaiaToolIds(),
+  context: PointerContext = { availableAgents: [] },
+): string {
+  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) =>
+    resolvePointer(tool, context),
+  );
   if (!lines.length) return "";
   return [
     "# GAIA tools (run via shell)",
@@ -212,6 +240,7 @@ export async function buildTurnPromptFor(
     attachments: input.attachments,
     workDir: paths?.workDir,
     rootDir: paths?.rootDir,
+    userName: input.userName,
   });
 }
 
@@ -228,7 +257,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
     input.recall?.trim() ?? "",
     "New room events since your last turn:",
-    renderRoomTranscript(input.events),
+    renderRoomTranscript(input.events, input.userName),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
   ]

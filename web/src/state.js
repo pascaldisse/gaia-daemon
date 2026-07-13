@@ -26,6 +26,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   snapshot: Snapshot|null,
  *   streams: Map<string, StreamEntry>,
  *   eventSource: EventSource|EventChannel|null,
+ *   eventConnectionStale: boolean,
  *   error: string,
  *   composerText: string,
  *   pendingAttachments: PendingAttachment[],
@@ -64,11 +65,12 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   summonListOpen: boolean,
  *   sidebarFocus: {kind: "workspace"|"room", id: string}|null,
  *   roomContextMenu: {roomId: string, x: number, y: number}|null,
+ *   workspaceContextMenu: {workspaceId: string, x: number, y: number}|null,
  *   readMarks: Record<string, number>,
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
  *   settingsOpen: boolean,
- *   settingsTab: "general"|"workspace"|"agents",
+ *   settingsTab: "general"|"workspace"|"agents"|"accounts",
  *   settingsAgentId: string|null,
  *   settingsAgentView: "config"|"persona"|"memory",
  *   settingsWorkspaceFiles: FileDescriptor[],
@@ -81,6 +83,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsView: "form"|"raw",
  *   settingsError: string,
  *   keepAwake: KeepAwakeCapability,
+ *   userName: string,
  * }}
  */
 export const state = {
@@ -90,6 +93,7 @@ export const state = {
   // v2 SSE `eventId`). v1's author+text snapshot-merge heuristic is gone.
   streams: new Map(),
   eventSource: null,
+  eventConnectionStale: false,
   error: "",
   composerText: "",
   // Files pasted into the composer (system paste, no button), shown as a
@@ -180,11 +184,13 @@ export const state = {
   bgTasksOpen: false,
   summonListOpen: false,
   // The sidebar's delete target: the last workspace/room the user clicked. The
-  // OS delete chord (⌘⌫ on macOS, Del elsewhere) removes whatever this points
-  // at — the only way to delete a workspace or room. null falls back to the
-  // current room (see effectiveSidebarFocus).
+  // OS delete chord (⌘⌫ on macOS, Del elsewhere) removes the focused ROOM only
+  // (workspace removal is right-click -> "Remove workspace", never this chord —
+  // see keys.js and sidebar.js's workspace context menu). null falls back to
+  // the current room (see effectiveSidebarFocus).
   sidebarFocus: null,
   roomContextMenu: null,
+  workspaceContextMenu: null,
   readMarks: loadReadMarks(),
   manualUnread: loadManualUnread(),
   // Per-workspace room activity (running + last-activity), keyed by workspace id,
@@ -221,6 +227,9 @@ export const state = {
   // "Keep laptop awake while GAIA runs" — daemon-managed, macOS-only capability
   // served in /api/app; `supported` false elsewhere hides the control entirely.
   keepAwake: { supported: false, enabled: false },
+  // "Your name" (Settings ▸ General) — replaces the anonymous "user" token in
+  // what agents see of the human's own messages. "" = unset.
+  userName: "",
 };
 
 /** @param {string} workspaceId @param {string} roomId */
@@ -432,12 +441,17 @@ export function roomUnread(room) {
 
 /**
  * The rolled-up activity of a whole workspace, for the sidebar's workspace-level
- * dots: `running` if any room in it has a turn mid-flight, `unread` if any room
- * has agent activity newer than the mark we captured for it. The open workspace
- * reads its live rooms from the snapshot (correct running + a just-read open room
- * clears); every other workspace reads from state.workspaceRooms, kept fresh by
- * the cross-workspace `rooms` broadcasts. Because subrooms are listed flat, this
- * already folds in a workspace's summon sub-rooms at every depth.
+ * dots: `running` if any room in it has a turn mid-flight, `unread` if any
+ * TOP-LEVEL room has agent activity newer than the mark we captured for it. The
+ * open workspace reads its live rooms from the snapshot (correct running + a
+ * just-read open room clears); every other workspace reads from
+ * state.workspaceRooms, kept fresh by the cross-workspace `rooms` broadcasts.
+ * A summon sub-room's own unread is deliberately excluded from the `unread`
+ * rollup (though still folded into `running`, which is a live-status signal,
+ * not a "read me" one): a summon's delivered result already lands as new
+ * activity in its top-level ancestor, which is what should light the dot — not
+ * every finished worker underneath it (see roomPending for the same rule on
+ * notifications/badge).
  * @param {string} workspaceId @returns {{running: boolean, unread: boolean}}
  */
 export function workspaceActivity(workspaceId) {
@@ -446,7 +460,7 @@ export function workspaceActivity(workspaceId) {
   let unread = false;
   for (const room of rooms) {
     if (room.running) running = true;
-    if (roomUnreadIn(workspaceId, room)) unread = true;
+    if (!room.parentRoomId && roomUnreadIn(workspaceId, room)) unread = true;
     if (running && unread) break;
   }
   return { running, unread };
@@ -457,10 +471,20 @@ export function workspaceActivity(workspaceId) {
  * while you looked away is exactly what the dock badge / notification is for).
  * syncReadMarks keeps the focused-and-current room's mark level, so this stays
  * false there. Drives the badge count and completion notifications.
+ *
+ * Summon sub-rooms (room.parentRoomId set — every sub-room today, since that's
+ * the only way one gets created) never themselves count: a finished summon
+ * already lands its result as a new message in its parent, which is what
+ * badges/notifies. Counting the sub-room too would double up — one ping per
+ * summon PLUS one for the parent's own reply — exactly the spam this guards
+ * against when many summons finish at once. A future user-created sub-room
+ * (not a summon) would still want its own notification; that distinction isn't
+ * representable yet, so for now this excludes every room with a parent.
  * @param {RoomSummary} room @returns {boolean} */
 export function roomPending(room) {
   const snapshot = state.snapshot;
   if (!snapshot) return false;
+  if (room.parentRoomId) return false;
   return roomUnreadIn(snapshot.workspace.id, room);
 }
 

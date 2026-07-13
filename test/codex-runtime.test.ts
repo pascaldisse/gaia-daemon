@@ -371,6 +371,10 @@ test("CodexRuntime maps agent.thinking to turn/start.effort, honoring a per-turn
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const turnStart = fake.requests.find((request) => request.method === "turn/start");
     assert.equal((turnStart?.params as { effort?: string }).effort, "high");
+    // Sent on every turn/start, not just thread/start's config override — a
+    // live rollout showed the thread-level config alone doesn't stick (see
+    // send()'s comment): turn_context.summary resolved to "auto" without this.
+    assert.equal((turnStart?.params as { summary?: string }).summary, "detailed");
 
     // A per-turn override (e.g. voice forcing thinking off) wins over the
     // agent's configured level, exactly like claude.ts's thinkingOverride.
@@ -379,6 +383,7 @@ test("CodexRuntime maps agent.thinking to turn/start.effort, honoring a per-turn
     await collect(runtime.send({ roomId: "default", message: "hi again", transcript: [], thinking: "low" }));
     const turnStart2 = fake.requests.filter((request) => request.method === "turn/start")[1];
     assert.equal((turnStart2?.params as { effort?: string }).effort, "low");
+    assert.equal((turnStart2?.params as { summary?: string }).summary, "detailed");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -645,6 +650,53 @@ test("CodexRuntime maps tool lifecycle: commandExecution start, update, end", as
   }
 });
 
+test("CodexRuntime preserves a failed command's diagnostic when app-server has no output", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence(
+      { method: "item/started", params: { item: { id: "cmd-fail", type: "commandExecution", command: "gaia mem batch" } } },
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "cmd-fail",
+            type: "commandExecution",
+            command: "gaia mem batch",
+            aggregatedOutput: "",
+            exitCode: 1,
+            error: { message: "replacement target was not found" },
+          },
+        },
+      },
+      { method: "turn/completed", params: { turn: { status: "completed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "update memory", transcript: [] }));
+    const failed = events.find((event) => event.type === "tool-end");
+
+    assert.deepEqual(failed, {
+      type: "tool-end",
+      toolName: "gaia mem batch",
+      toolCallId: "cmd-fail",
+      result: "replacement target was not found\nCommand exited with status 1.",
+      isError: true,
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("CodexRuntime maps tool lifecycle: mcpToolCall start, progress, end", async () => {
   const fx = await fixture();
   try {
@@ -728,6 +780,69 @@ test("CodexRuntime handles error notification", async () => {
     await assert.rejects(
       () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
       /connection lost/,
+    );
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime swallows reconnect notices, including the final N/N attempt, and waits for turn/completed", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    // "5/5" is the CLI starting its LAST retry attempt, not a report that it
+    // already exhausted them — a strict "attempts remaining" check here
+    // previously treated N/N as already-fatal, prematurely failing turns the
+    // CLI went on to complete (live-caught 2026-07-11 twice: 2/5, then again
+    // at 5/5 after the first fix landed). Every reconnect notice is noise
+    // until turn/completed says otherwise.
+    fake.addNotificationSequence(
+      { method: "error", params: { error: { message: "Reconnecting... 2/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "error", params: { error: { message: "Reconnecting... 5/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "turn/completed", params: { turn: { status: "completed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.ok(Array.isArray(events));
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("CodexRuntime falls back to the last reconnect notice as the failure headline when turn/completed reports failed without its own error", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeCodexClient();
+    fake.addResponse("initialize", {});
+    fake.addResponse("thread/start", {
+      thread: { id: "th-1" },
+      model: "gpt-5-codex",
+      modelProvider: "openai",
+    });
+    fake.addResponse("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    fake.addNotificationSequence(
+      { method: "error", params: { error: { message: "Reconnecting... 5/5" }, threadId: "th-1", turnId: "turn-1" } },
+      { method: "turn/completed", params: { turn: { status: "failed" } } },
+    );
+
+    const factory: CodexClientFactory = async () => fake;
+    const runtime = new CodexRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), clientFactory: factory });
+
+    await assert.rejects(
+      () => collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
+      /Reconnecting\.\.\. 5\/5/,
     );
     runtime.dispose();
   } finally {

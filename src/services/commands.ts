@@ -12,9 +12,11 @@ export type SlashCommand =
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "model"; agent?: string; spec?: string }
   | { type: "clear" }
+  | { type: "refresh" }
   | { type: "fork" }
   | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "consolidate"; agent?: string }
+  | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
@@ -35,9 +37,15 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
+  {
+    name: "refresh",
+    type: "refresh",
+    description: "re-read context files (soul, AGENTS.md, skills) into agents' system prompts — applies on each agent's next turn",
+  },
   { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
+  { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent]" },
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
   { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
@@ -50,7 +58,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     description: "have Dario review recent messages for safeguard triggers and propose redactions: /thanks-dario [run|on|off]",
     aliases: ["dario"],
   },
-  { name: "reload", type: "reload", description: "restart the daemon in place (re-exec, sessions and queue survive)" },
+  { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -92,6 +100,11 @@ export function parseCommand(input: string): SlashCommand {
       return stripped.length >= 2 ? { type: "model", agent: stripped[0], spec: stripped[1] } : { type: "model", spec: stripped[0] };
     case "consolidate":
       return { type: "consolidate", agent: stripped[0] || undefined };
+    case "dream": {
+      const apply = args.some((arg) => arg.toLowerCase() === "--apply");
+      const agent = stripped.find((arg) => arg.toLowerCase() !== "--apply");
+      return { type: "dream", agent: agent || undefined, apply };
+    }
     case "compact":
       return { type: "compact", agent: stripped[0] || undefined };
     case "schedule":
@@ -142,14 +155,21 @@ export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${com
 
 const LEADING_MENTION = /^@([a-z0-9_-]+)[,:]?(?=\s|$)/i;
 
-/** The @id tokens heading the message, lowercased ([] when it opens with prose). */
+/** "system" and "user" are reserved transcript AUTHORS (not agents) and must
+ * never be treated as @mentions: stripped here, at the shared extraction
+ * layer, before any agent resolution runs. */
+export const RESERVED_AUTHORS = new Set(["system", "user"]);
+
+/** The @id tokens heading the message, lowercased, with reserved authors
+ * stripped ([] when it opens with prose or with only reserved mentions). */
 function leadingMentions(message: string): string[] {
   const ids: string[] = [];
   let rest = message.trimStart();
   for (;;) {
     const match = LEADING_MENTION.exec(rest);
     if (!match) return ids;
-    ids.push(match[1].toLowerCase());
+    const id = match[1].toLowerCase();
+    if (!RESERVED_AUTHORS.has(id)) ids.push(id);
     rest = rest.slice(match[0].length).trimStart();
   }
 }

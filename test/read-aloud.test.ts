@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
 import {
@@ -575,7 +575,11 @@ test("claude readAloudStream kills pre-existing claude-voice daemon when claudeV
 
   try {
     await waitForHealthy(baseUrl);
-    await writeFile(join(daemonDir.path, "voiced.js"), `
+    const voicedPath = join(daemonDir.path, "voiced.js");
+    // The real voiced.js is spawned by exec'ing its own path (shebang-driven,
+    // like the unmute service scripts) rather than `process.execPath [script]`
+    // — see read-aloud.ts. Mirror that here: a real shebang + chmod +x.
+    await writeFile(voicedPath, `#!/usr/bin/env node
       const http = require("node:http");
       const server = http.createServer((req, res) => {
         if (req.url === "/health") {
@@ -598,6 +602,7 @@ test("claude readAloudStream kills pre-existing claude-voice daemon when claudeV
       });
       server.listen(${port}, "127.0.0.1");
     `);
+    await chmod(voicedPath, 0o755);
 
     const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: baseUrl, claudeVoiceDir: daemonDir.path, startTimeoutSec: 3 });
     const delivery = await readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path });

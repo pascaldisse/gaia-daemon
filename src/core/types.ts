@@ -100,6 +100,12 @@ export interface LiveTurn {
   startedAt: string;
   text: string;
   details: EventDetails;
+  /** True while the harness is mid upstream-stall retry — a socket dropped
+   * mid-stream and it's reconnecting. Set on an `upstream-stall` notice, cleared
+   * the moment any real output resumes (see applyLiveTurn). Rides the snapshot so
+   * a client (re)subscribing mid-stall renders the "reconnecting…" bubble state
+   * instead of a frozen one; ephemeral in-memory only, like the rest of this. */
+  stalled?: boolean;
 }
 
 export interface UserRoomEvent {
@@ -189,6 +195,17 @@ export interface QueuedMessage {
    * must not append it again, and the client renders the committed bubble
    * instead of a queued ghost. */
   recorded?: boolean;
+  /** This entry is the ONE automatic retry of a turn RunnerHost's hard stall
+   * deadline aborted (UpstreamStallError — src/harness/host.ts) after the
+   * harness reported an upstream stall and never recovered. Drain must not
+   * re-record the user message (it's already on the transcript from the
+   * original run) and a SECOND stall on this retry must not requeue again —
+   * a dead upstream must not keep a retry loop alive forever. */
+  stallRetried?: boolean;
+  /** Number of transient-auth retries already attempted for this message. */
+  authRetries?: number;
+  /** Earliest ISO timestamp at which drain may dispatch this entry. */
+  notBefore?: string;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the
@@ -267,6 +284,10 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+  /** Harness-native shells that detached into the background during a turn.
+   * These are start records only: the harness exposes no reliable exit marker,
+   * so consumers must not infer liveness from their presence. */
+  backgroundTasks?: BackgroundTask[];
   /** A held first turn for a newly-addressed agent whose transcript load would
    * exceed the warn threshold; the human picks how much context to give it
    * before it runs. Durable so the choice survives a restart. */
@@ -587,7 +608,7 @@ export interface Workspace {
   roomsDir: string;
   globalAgentsDir: string;
   config: WorkspaceConfig;
-  contextFiles: ContextFile[]; // AGENTS.md chain, parent-most first
+  contextFiles: ContextFile[]; // boot-time snapshot — NOT used for prompt assembly (prompts re-read via discoverContextFiles at session boundaries: birth, /compact, /clear, /refresh); kept for test fixtures
   agents: Record<string, AgentDef>;
 }
 
@@ -723,8 +744,9 @@ export interface UsageWindow {
 }
 
 export interface UsageLimits {
-  /** The subscription account this meters ("anthropic", "openai") — display +
-   * client keying; never a branch. */
+  /** The GAIA account binding this meters (a named account id, or a stable
+   * harness-shared-login id). This is the client key and deliberately is NOT
+   * a provider name: two Anthropic logins must never overwrite each other. */
   account: string;
   /** Optional plan/account label, e.g. the subscription tier. */
   plan?: string;
@@ -751,6 +773,24 @@ export type UsageProbeResult =
 // ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)
 
+export interface BackgroundTaskInfo {
+  taskId: string;
+  command?: string;
+  description?: string;
+  outputPath?: string;
+}
+
+export interface BackgroundTask extends BackgroundTaskInfo {
+  toolName: string;
+  startedAt: string;
+  agentId: string;
+  /** The room this process was launched from. Snapshots today only carry the
+   * viewing room's own tasks, but the tray labels and jumps by this id
+   * regardless — the one durable place a background task remembers its
+   * origin, ready the moment a future snapshot ever merges other rooms' in. */
+  roomId: string;
+}
+
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
@@ -762,12 +802,17 @@ export type AgentEvent =
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
+  | { type: "background-task"; taskId: string; toolName: string; command?: string; description?: string; outputPath?: string }
   /** Synthesized DAEMON-side (RunnerHost.injectEvent) the moment a mid-turn
    * steer is accepted, so the marker lands in the stream — and therefore in
    * `details.blocks` — at the exact position the steer took effect. Uniform for
    * every harness by construction; no harness ever emits it. `eventId` is the
    * steer's user RoomEvent. */
-  | { type: "steered"; eventId: string };
+  | { type: "steered"; eventId: string }
+  /** Structured surfacing of an out-of-band condition worth telling the
+   * consumer about without treating it as reply text — e.g. an upstream
+   * stall the claude thinking-proxy detected. Never rendered as reply text. */
+  | { type: "notice"; kind: "upstream-stall"; text: string };
 
 // ---------------------------------------------------------------------------
 // Tasks + UI events (SSE payloads; the v1 wire shape exactly, plus `eventId`
@@ -824,6 +869,8 @@ export interface AgentStatus {
   /** Named provider account (a record id in ~/.gaia/accounts.json) this agent is
    * pinned to; absent = the harness's ambient/shared login. Mirrors AgentDef.account. */
   account?: string;
+  /** Resolved usage key for this agent's bound or ambient login. */
+  usageAccount?: string;
   roles: string[];
   status: "idle" | "running" | "error" | "compacting";
   /** Live compaction progress while status === "compacting"; absent otherwise.
@@ -965,11 +1012,18 @@ export interface Snapshot {
     /** The agent this room is currently addressing — drives the composer's
      * default target. Absent → the workspace defaultAgent stands in. */
     activeAgent?: string;
+    /** Exact account-usage keys currently eligible to spend in this room. */
+    usageAccounts?: string[];
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;
+    /** Ambient watchdog (e.g. /ultrawhip) is active — a generic, plugin-driven
+     * toggle read fresh every tool call (see room-service.ts's
+     * readAmbientWatchdog), global to whichever turn is running, in any room.
+     * Surfaced here so the client can pin a live indicator while it's on. */
+    ambientWatchdog?: { toolCalls: number; label?: string };
     /** The running turn's accumulated view, so a client (re)subscribing mid-turn
      * (e.g. switching back to a busy room) renders it at once. Absent when idle. */
     liveTurn?: LiveTurn;
@@ -978,6 +1032,7 @@ export interface Snapshot {
   commands: SlashCommandDefinition[];
   agents: AgentStatus[];
   tasks: Task[];
+  backgroundTasks: BackgroundTask[];
   thinkingLevels: string[];
   /** Memory-subsystem degradation chips ("embedder dead", "index degraded") —
    * absent/empty when healthy. Degradation is loud (MEMORY-DESIGN.md §10):

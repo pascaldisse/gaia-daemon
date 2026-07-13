@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureWorkspaceRoom } from "../src/domain/workspace.js";
+import { discoverContextFiles, ensureWorkspaceRoom } from "../src/domain/workspace.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
+import type { AgentDef } from "../src/core/types.js";
+import { buildBaseSystemPrompt } from "../src/harness/prompt.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -36,4 +39,33 @@ test("incognito is immutable: re-ensuring never flips an existing room either wa
   await ensureWorkspaceRoom(root, "vault", { incognito: true });
   await ensureWorkspaceRoom(root, "vault");
   assert.equal((await readState(root, "vault")).incognito, true, "existing incognito room never loses the flag");
+});
+
+test("workspace context never inherits AGENTS.md from parent directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-ws-"));
+  const parent = join(root, "parent");
+  const workspace = join(parent, "project");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(parent, "AGENTS.md"), "parent instructions", "utf8");
+  await writeFile(join(workspace, "AGENTS.md"), "workspace instructions", "utf8");
+
+  assert.deepEqual(await discoverContextFiles(workspace), [
+    { path: join(workspace, "AGENTS.md"), content: "workspace instructions" },
+  ]);
+});
+
+test("buildBaseSystemPrompt reads AGENTS.md from disk at assembly time", async () => {
+  // Session freezing happens in SessionMap.systemPrompt; this test exercises
+  // the uncached builder directly.
+  const dir = mkdtempSync(join(tmpdir(), "gaia-prompt-live-"));
+  const soulPath = join(dir, "soul.md");
+  writeFileSync(soulPath, "test soul");
+  writeFileSync(join(dir, "AGENTS.md"), "CONTEXT-V1");
+  const agent = { soulPath } as AgentDef;
+  const first = await buildBaseSystemPrompt({ agent, role: undefined, workspaceRoot: dir });
+  assert.ok(first.includes("CONTEXT-V1"));
+  writeFileSync(join(dir, "AGENTS.md"), "CONTEXT-V2");
+  const second = await buildBaseSystemPrompt({ agent, role: undefined, workspaceRoot: dir });
+  assert.ok(second.includes("CONTEXT-V2"));
+  assert.ok(!second.includes("CONTEXT-V1"));
 });

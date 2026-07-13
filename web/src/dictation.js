@@ -28,10 +28,15 @@ const FINISH_WATCHDOG_MS = 1500;
 // has landed — otherwise the daemon reads a truncated file and the tail of
 // the recording is cut off.
 const UPLOAD_FLUSH_WATCHDOG_MS = 2000;
-// One transcription attempt (which may cover two sequential fetches — the
-// clip-transcribe try, then the upload fallback) gets this long before it's
-// treated as failed. Recording itself is never subject to this timeout.
-const TRANSCRIBE_TIMEOUT_MS = 45000;
+// A dictation result must appear promptly, but STT latency scales with clip
+// length: a real ~5min (MAX_RECORD_MS) clip measured 17s round-trip through
+// ElevenLabs Scribe directly (2026-07-13). 12_000 was too aggressive — it
+// aborted genuinely-in-flight (not hung) transcriptions of ordinary-length
+// recordings, surfacing as a spurious "Fetch is aborted" failure chip even
+// though the STT call would have succeeded a few seconds later. 45s keeps
+// comfortable headroom (~2.6x the measured worst case) while still failing
+// well before an actually-unhealthy STT provider would hang the composer.
+const TRANSCRIBE_TIMEOUT_MS = 45_000;
 
 /** @param {number} ms @returns {AbortSignal|undefined} */
 function fetchTimeout(ms) {
@@ -260,8 +265,12 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
   try {
     // Prefer the clip already streamed to the daemon during recording (no
     // second upload of the audio) — but ONLY when the upload chain confirmed
-    // the on-disk file is complete; fall back to a full upload on ANY failure
-    // of that call (non-ok response or thrown, including our own abort/timeout).
+    // the on-disk file is complete.  A missing clip means this route cannot
+    // work, so use the in-memory blob.  Any other HTTP failure came *from the
+    // daemon/STT path itself*: retrying the identical audio through the raw
+    // upload route only makes the user wait for a second transcription and
+    // was the source of the observed 30-second apparent freeze.  The parked
+    // clip stays available for the recovery/retry chip in that case.
     if (clipId && clipFileComplete) {
       const viaClip = await postClipTranscribe(clipId, blob?.type, signal);
       if (viaClip.ok) {
@@ -273,6 +282,13 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
         state.dictationBusy = false;
         markDirty("composer");
         return true;
+      }
+      if (viaClip.status !== 404 && viaClip.status !== 0) {
+        lastFailedClip = blob;
+        state.dictationError = viaClip.error;
+        state.dictationBusy = false;
+        markDirty("composer");
+        return false;
       }
     }
     const result = await postClip(blob, signal);
@@ -308,17 +324,19 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
  * @param {string} [mimeType] only sent for the just-recorded clip, whose MIME
  *   the daemon otherwise can't know; recovered clips are transcribed without it.
  * @param {AbortSignal} [signal]
- * @returns {Promise<{ok: boolean, text: string, engine: string, error: string}>}
+ * @returns {Promise<{ok: boolean, text: string, engine: string, error: string, status: number}>}
  */
 async function postClipTranscribe(clipId, mimeType, signal) {
   const query = mimeType ? `?mime=${encodeURIComponent(mimeType)}` : "";
   try {
     const response = await fetch(`/api/voice/clip/${clipId}/transcribe${query}`, { method: "POST", signal });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) return { ok: false, text: "", engine: "", error: String(data.error ?? `transcription failed: ${response.status}`) };
-    return { ok: true, text: String(data.text ?? ""), engine: String(data.engine ?? ""), error: "" };
+    if (!response.ok) return { ok: false, text: "", engine: "", error: String(data.error ?? `transcription failed: ${response.status}`), status: response.status };
+    return { ok: true, text: String(data.text ?? ""), engine: String(data.engine ?? ""), error: "", status: response.status };
   } catch (error) {
-    return { ok: false, text: "", engine: "", error: error instanceof Error ? error.message : String(error) };
+    // There is no trustworthy HTTP result (offline/old daemon/aborted fetch),
+    // so preserve the original compatibility fallback to the raw upload.
+    return { ok: false, text: "", engine: "", error: error instanceof Error ? error.message : String(error), status: 0 };
   }
 }
 

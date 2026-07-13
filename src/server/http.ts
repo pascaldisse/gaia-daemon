@@ -2,13 +2,13 @@
 // OpenAI-compatible voice endpoints. No business logic lives here — if a
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
-import { createReadStream, existsSync, openSync, watch, type FSWatcher } from "node:fs";
+import { createReadStream, existsSync, openSync, readFileSync, writeSync } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
@@ -19,13 +19,16 @@ import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
-import { findAccount, redactedAccounts, removeAccount } from "../domain/accounts.js";
+import { installGitGuard } from "../domain/git-guard.js";
+import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
+import { agentRoster } from "../harness/tools.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
 import { configureRoomServiceReload } from "../services/room-service.js";
 import { summonAck } from "../services/summons.js";
+import { DEFAULT_PET_NAME, loadPet } from "./pet.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
 
@@ -33,7 +36,6 @@ export interface WebServerOptions {
   cwd: string;
   host?: string;
   port?: number;
-  dev?: boolean;
 }
 
 interface SseClient {
@@ -59,6 +61,19 @@ const MIME: Record<string, string> = {
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = randomUUID();
 const RELOAD_DELAY_MS = 250;
+// Upper bound on the graceful close inside a reload. closeServer awaits
+// daemon.dispose(), and one wedged runner (an agent turn stuck retrying a dead
+// upstream socket) hangs that await forever — observed live 2026-07-11 20:03:
+// /rebuild stopped after keep-awake teardown, never rebuilt, never re-exec'd,
+// port dead until the app was force-quit. Reload's contract is "the app always
+// comes back", so past this deadline we abandon graceful teardown and proceed.
+// Kept short (Pascal 2026-07-13): a wedged runner is common (mid-turn agent,
+// dead upstream socket retry loop) and this is a pure wait with no durability
+// payoff — pending turns persist to state.json and resume on next boot
+// regardless, and the orphan sweep on boot reaps any child a skipped dispose
+// left behind. 5s here was measured making /rebuild take ~7s end-to-end on a
+// busy daemon vs ~2.5s idle; 1s caps that same worst case near the idle time.
+const RELOAD_CLOSE_TIMEOUT_MS = 1_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
@@ -176,6 +191,17 @@ function pathInside(path: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Walk up from a path to the nearest ancestor directory named "*.app" (a macOS bundle root), if any. */
+function findAppBundleRoot(path: string): string | undefined {
+  let dir = resolve(path);
+  while (true) {
+    if (dir.endsWith(".app")) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 async function openWithSystem(target: string): Promise<void> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", target] : [target];
@@ -211,33 +237,9 @@ async function pickDirectoryWithSystem(): Promise<string | undefined> {
   });
 }
 
-function devReloadSnippet(): string {
-  return `<script>
-(() => {
-  if (window.__gaiaDevReload) return;
-  window.__gaiaDevReload = true;
-  let hadConnection = false;
-  let reconnectAfterDrop = false;
-  const source = new EventSource("/__dev/reload");
-  source.addEventListener("ready", () => {
-    if (hadConnection && reconnectAfterDrop) window.location.reload();
-    hadConnection = true;
-    reconnectAfterDrop = false;
-  });
-  source.addEventListener("reload", () => window.location.reload());
-  source.onerror = () => {
-    if (hadConnection) reconnectAfterDrop = true;
-  };
-})();
-</script>`;
-}
-
 export class GaiaWebServer {
   private readonly daemon: Daemon;
   private readonly clients = new Set<SseClient>();
-  private readonly devClients = new Set<ServerResponse>();
-  private readonly devWatchers: FSWatcher[] = [];
-  private devReloadTimer: NodeJS.Timeout | undefined;
   private boundUrl = "";
   private server: HttpServer | undefined;
   private reloadStarted = false;
@@ -249,8 +251,9 @@ export class GaiaWebServer {
   }
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
-    if (this.options.dev) await this.startDevWatchers();
-
+    // Daemon boot self-heal: (re)install the git-guard hook into the serving
+    // workspace's shared hooks dir. Best-effort — a non-repo cwd just warns.
+    installGitGuard(this.options.cwd);
     const server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -269,6 +272,12 @@ export class GaiaWebServer {
     const address = server.address();
     const boundPort = address && typeof address === "object" ? address.port : port;
     this.boundUrl = `http://${host}:${boundPort}`;
+    // Boot provenance: pid + ppid + timestamp on every start, so reload.log
+    // (and any log this lands in) can attribute each daemon generation — a
+    // /reload re-exec child logs a "reload requested" line from its parent
+    // right above; a boot without one was spawned by something else (shell,
+    // launchd, manual) and can be traced via ppid.
+    console.log(`[gaia] ${new Date().toISOString()} daemon up pid=${process.pid} ppid=${process.ppid} at ${this.boundUrl}`);
     await this.daemon.boot(this.boundUrl);
 
     return {
@@ -311,13 +320,8 @@ export class GaiaWebServer {
     if (this.server !== server) return;
     this.server = undefined;
     await this.daemon.dispose();
-    for (const watcher of this.devWatchers) watcher.close();
-    this.devWatchers.length = 0;
-    if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
     for (const client of this.clients) client.response.end();
     this.clients.clear();
-    for (const client of this.devClients) client.end();
-    this.devClients.clear();
     await new Promise<void>((resolveClose, reject) => {
       server.close((error) => (error ? reject(error) : resolveClose()));
       server.closeAllConnections?.();
@@ -354,6 +358,11 @@ export class GaiaWebServer {
   private requestReload(): void {
     if (this.reloadStarted) return;
     this.reloadStarted = true;
+    // Restart provenance (standing rule: ONLY /reload — the user — restarts the
+    // daemon; nothing self-triggers). Every re-exec logs a timestamped line so
+    // any boot in reload.log without a matching "reload requested" line above
+    // it is immediately visible as an external kill/spawn, not ours.
+    console.log(`[gaia] ${new Date().toISOString()} reload requested via /reload — re-exec in ${RELOAD_DELAY_MS}ms (pid ${process.pid})`);
     setTimeout(() => {
       void this.reloadNow();
     }, RELOAD_DELAY_MS);
@@ -361,19 +370,154 @@ export class GaiaWebServer {
 
   private async reloadNow(): Promise<void> {
     try {
-      if (this.server) await this.closeServer(this.server);
-      // Re-exec with the SAME node loader flags: tsx's --require/--import live
-      // in process.execArgv, NOT process.argv — without them the child is plain
-      // `node src/cli.ts`, which dies instantly and leaves the port dead (the
-      // exact "/reload froze the app" failure). And never stdio:"ignore" here:
-      // a crashing reload child must leave a corpse we can read.
+      // Bounded graceful close (see RELOAD_CLOSE_TIMEOUT_MS): a hung or failed
+      // dispose must never block the re-exec. process.exit(0) below frees the
+      // port either way, and the next boot's orphan sweep (daemon.serviceFor
+      // invariant) reaps any runner subprocess a skipped dispose left behind.
+      if (this.server) {
+        const closed = this.closeServer(this.server).then(
+          () => "closed" as const,
+          (error) => {
+            console.error(`[gaia] reload: graceful close failed: ${error instanceof Error ? error.message : String(error)} — proceeding with re-exec`);
+            return "failed" as const;
+          },
+        );
+        const deadline = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), RELOAD_CLOSE_TIMEOUT_MS).unref());
+        if ((await Promise.race([closed, deadline])) === "timeout") {
+          console.error(`[gaia] reload: graceful close still pending after ${RELOAD_CLOSE_TIMEOUT_MS}ms — proceeding with re-exec (pid ${process.pid})`);
+        }
+      }
       const reloadLog = openSync(join(gaiaHome(), "reload.log"), "a");
-      const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
-        detached: true,
-        stdio: ["ignore", reloadLog, reloadLog],
-        cwd: process.cwd(),
-        env: process.env,
-      });
+
+      // A reload doesn't just re-exec the running process — when a build
+      // recipe is reachable it rebuilds first, so a source checkout picks up
+      // the code that triggered the reload, and a compiled install picks up
+      // a fresh binary. Two ways to find that recipe: running from source
+      // (this file's own repo has scripts/build-daemon.mjs), or running a
+      // compiled binary that was built alongside a gaia-source.json pointing
+      // back at the source repo that built it.
+      const repoRootFromSource = fileURLToPath(new URL("../..", import.meta.url));
+      const fromSourceScript = join(repoRootFromSource, "scripts/build-daemon.mjs");
+      let plan: { script: string; out: string; bun: string } | undefined;
+      let fromSource = false;
+      if (existsSync(fromSourceScript)) {
+        fromSource = true;
+        // process.execPath, not the bare "bun" name: this process IS bun
+        // running src/cli.ts (package.json's "start": "bun src/cli.ts"), so
+        // its own execPath is a guaranteed-correct absolute path. A bare
+        // "bun" instead depends on PATH containing bun's install dir, which
+        // a GUI-launched app's stripped LaunchServices PATH does not always
+        // have — silent, output-less spawnSync failure observed live 2026-07-11.
+        plan = { script: fromSourceScript, out: join(repoRootFromSource, "dist"), bun: process.execPath };
+      } else {
+        const sourceJsonPath = join(dirname(process.execPath), "gaia-source.json");
+        if (existsSync(sourceJsonPath)) {
+          try {
+            const parsed = JSON.parse(readFileSync(sourceJsonPath, "utf8")) as { root: string; bun: string };
+            const script = join(parsed.root, "scripts/build-daemon.mjs");
+            if (existsSync(script)) plan = { script, out: dirname(process.execPath), bun: parsed.bun };
+          } catch (error) {
+            console.error(`gaia: failed to read gaia-source.json: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+
+      let rebuildOk = false;
+      if (plan) {
+        const build = spawnSync(plan.bun, [plan.script, "--out", plan.out], {
+          stdio: ["ignore", reloadLog, reloadLog],
+          timeout: 120_000,
+        });
+        if (build.status === 0) {
+          rebuildOk = true;
+        } else {
+          writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+        }
+      }
+
+      // build-daemon.mjs (above) overwrites gaia-daemon/web/setups IN PLACE
+      // inside whatever directory it's pointed at. When that directory is a
+      // macOS .app's Contents/MacOS (the installed-app case: plan.out came
+      // from gaia-source.json, not the fromSource dev-repo case), those files
+      // sit inside the bundle's sealed code-signature — overwriting them
+      // without re-signing breaks the seal (`codesign --verify` then reports
+      // "invalid Info.plist (plist or signature have been modified)"), and a
+      // broken seal makes macOS's TCC privacy daemon silently refuse the
+      // NSMicrophoneUsageDescription prompt on next mic use — no dialog, just
+      // "microphone permission denied or unavailable" forever, until someone
+      // re-signs by hand. Observed live 2026-07-12: every /rebuild since
+      // 2026-07-10's mic fix re-broke it. Re-seal here, every time, so the
+      // installed app is never left signature-invalid after a rebuild.
+      if (rebuildOk && plan && !fromSource && process.platform === "darwin") {
+        const appRoot = findAppBundleRoot(plan.out);
+        if (appRoot) {
+          const parsed = (() => {
+            try {
+              return JSON.parse(readFileSync(join(dirname(process.execPath), "gaia-source.json"), "utf8")) as { root: string };
+            } catch {
+              return undefined;
+            }
+          })();
+          const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
+          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
+          codesignArgs.push(appRoot);
+          const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });
+          if (sign.status === 0) {
+            writeSync(reloadLog, `[gaia] reload: re-signed ${appRoot} after rebuild\n`);
+          } else {
+            writeSync(reloadLog, `[gaia] reload: codesign FAILED (status ${sign.status}) — mic/camera permission will likely break until fixed\n`);
+          }
+        } else {
+          writeSync(reloadLog, `[gaia] reload: installed binary not inside a .app bundle — skipping re-sign\n`);
+        }
+      }
+
+      // Re-exec. tsx's --require/--import live in process.execArgv, NOT
+      // process.argv — without them a source re-exec is plain `node
+      // src/cli.ts`, which dies instantly and leaves the port dead (the
+      // exact "/reload froze the app" failure). And never stdio:"ignore"
+      // here: a crashing reload child must leave a corpse we can read.
+      // In a compiled bun binary argv[1] is the virtual "/$bunfs/..." entry
+      // script (verified 2026-07-11) — it must never be passed to the child,
+      // where the CLI would parse it as a command.
+      const args = process.argv
+        .slice(1)
+        .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
+      // When the child is the COMPILED binary, argv[1] of a source run
+      // ("src/cli.ts") must be dropped too — the binary would parse the
+      // script path as a CLI command and print --help instead of booting
+      // (observed live 2026-07-11 14:01: reload went dark). Flags only.
+      const flagsOnly = process.argv
+        .slice(2)
+        .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
+      const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
+      const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
+
+      // gaia never sets ANTHROPIC_BASE_URL on its OWN process env — the only
+      // writer is the per-turn thinking-proxy shim, which sets it on a spawned
+      // CHILD's env object, not here. Any value present in process.env at
+      // rebuild time is therefore foreign pollution inherited from whatever
+      // launched the app (a stale `launchctl setenv`, a dead local proxy from
+      // an old terminal session, ...) — self-contained means /rebuild must not
+      // carry it forward forever. Strip it; a user who genuinely wants a
+      // custom gateway sets it fresh at launch, not implicitly via reload.
+      const { ANTHROPIC_BASE_URL: _droppedGateway, ...childEnv } = process.env;
+
+      const child = migrateToCompiled
+        ? spawn(compiledBinary, flagsOnly, {
+            detached: true,
+            stdio: ["ignore", reloadLog, reloadLog],
+            cwd: process.cwd(),
+            env: childEnv,
+          })
+        : spawn(process.execPath, [...process.execArgv, ...args], {
+            detached: true,
+            stdio: ["ignore", reloadLog, reloadLog],
+            cwd: process.cwd(),
+            env: childEnv,
+          });
+      console.log(`[gaia] reload exec: ${migrateToCompiled ? compiledBinary : process.execPath}`);
       child.unref();
       process.exit(0);
     } catch (error) {
@@ -384,13 +528,6 @@ export class GaiaWebServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://gaia.local");
-    if (this.options.dev && request.method === "GET" && url.pathname === "/__dev/reload") {
-      beginSse(response);
-      response.write(encodeSse("ready", { bootId }));
-      this.devClients.add(response);
-      response.on("close", () => this.devClients.delete(response));
-      return;
-    }
     if (url.pathname.startsWith("/api/")) return this.handleApi(request, response, url);
     if (url.pathname.startsWith("/v1/")) return this.handleOpenAi(request, response, url);
     await this.serveStatic(response, url.pathname);
@@ -407,6 +544,40 @@ export class GaiaWebServer {
       return;
     }
 
+    // Codex-compatible pet packages live outside the web root. Resolve and
+    // validate the requested package here; the browser receives only manifest
+    // data and this scoped spritesheet URL, never a local filesystem path.
+    if (method === "GET" && path === "/api/pet") {
+      try {
+        const name = url.searchParams.get("name")?.trim() || DEFAULT_PET_NAME;
+        const { manifest } = await loadPet(name);
+        json(response, 200, {
+          pet: {
+            ...manifest,
+            spritesheetUrl: `/api/pet/spritesheet?name=${encodeURIComponent(name)}`,
+          },
+        });
+      } catch (error) {
+        json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (method === "GET" && path === "/api/pet/spritesheet") {
+      try {
+        const name = url.searchParams.get("name")?.trim() || DEFAULT_PET_NAME;
+        const { spritesheetFile } = await loadPet(name);
+        response.writeHead(200, {
+          "content-type": MIME[extname(spritesheetFile)] ?? "application/octet-stream",
+          "cache-control": "no-store",
+        });
+        createReadStream(spritesheetFile).pipe(response);
+      } catch (error) {
+        json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     // "Keep laptop awake" (Global Settings ▸ General): persist + apply
     // immediately. `enabled` off-macOS still persists the preference (inert
     // there — services/keep-awake.ts) so it takes effect if this daemon later
@@ -417,9 +588,23 @@ export class GaiaWebServer {
       return this.respond(response, async () => ({ keepAwake: await this.daemon.setKeepAwake(enabled) }));
     }
 
+    // "Your name" (Global Settings ▸ General): the label the shared transcript
+    // renderer uses for the human's own messages, in place of the anonymous
+    // "user" token (services/user-name.ts). "" clears it back to that default.
+    if (method === "POST" && path === "/api/app/user-name") {
+      const body = await parseBody(request);
+      const name = stringField(body, "name") ?? "";
+      return this.respond(response, async () => ({ userName: await this.daemon.setUserName(name) }));
+    }
+
     if (
-      method === "POST" &&
-      (path === "/api/harness/memory" || path === "/api/harness/summon" || path === "/api/harness/recall" || path === "/api/harness/dream")
+      (method === "GET" && path === "/api/harness/agents") ||
+      (method === "POST" &&
+        (path === "/api/harness/memory" ||
+          path === "/api/harness/summon" ||
+          path === "/api/harness/recall" ||
+          path === "/api/harness/dream" ||
+          path === "/api/harness/resume"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -497,7 +682,13 @@ export class GaiaWebServer {
       // of leaving the chip blank until the next daemon poll.
       for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
       this.clients.add(client);
-      response.on("close", () => this.clients.delete(client));
+      // EventSource ignores comment-only heartbeats, so keep every SSE socket
+      // visibly alive with a named event the client can observe.
+      const keepalive = setInterval(() => response.write("event: ping\ndata: {}\n\n"), 15_000);
+      response.on("close", () => {
+        clearInterval(keepalive);
+        this.clients.delete(client);
+      });
       return;
     }
 
@@ -568,6 +759,22 @@ export class GaiaWebServer {
 
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
+    }
+
+    // Display metadata only — credentials remain write-only to the harness
+    // login flow / accounts.json and never cross this HTTP boundary.
+    if (method === "PATCH" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
+      const body = await parseBody(request);
+      const value = (key: "label" | "email"): string | null | undefined => {
+        const raw = (body as Record<string, unknown> | undefined)?.[key];
+        if (raw === null) return null;
+        return typeof raw === "string" ? raw : undefined;
+      };
+      return this.respond(response, async () => {
+        const account = updateAccount(params![0], { label: value("label"), email: value("email") });
+        if (!account) throw new Error(`unknown account '${params![0]}'`);
+        return { account: { id: account.id, harness: account.harness, ...(account.label ? { label: account.label } : {}), ...(account.email ? { email: account.email } : {}) } };
+      });
     }
 
     // Per-agent account binding: which named account (if any) an agent's
@@ -698,6 +905,25 @@ export class GaiaWebServer {
       // Ids are unique per upload, so the bytes are immutable — cache hard.
       response.writeHead(200, { "content-type": attachmentMime(params[2]), "cache-control": "max-age=31536000, immutable" });
       createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)\/output$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const output = await service.backgroundTaskOutput(params[2]);
+      if (output === undefined) return json(response, 404, { error: "Background task output not found" });
+      json(response, 200, { text: output.text, running: output.running });
+      return;
+    }
+
+    // Stop (SIGTERM its live writers) or dismiss a tracked background task —
+    // the tray's ■ stop / ✕ dismiss action. Harness-agnostic: liveness/stop
+    // live entirely in the shared room layer, no runtime is touched.
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const stopped = await service.stopBackgroundTask(params[2]);
+      if (!stopped) return json(response, 404, { error: "Background task not found" });
+      json(response, 200, { ok: true });
       return;
     }
 
@@ -1136,7 +1362,11 @@ export class GaiaWebServer {
       return json(response, 404, { error: error instanceof Error ? error.message : String(error) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream";
+    if (pathname === "/api/harness/agents") {
+      return json(response, 200, { agents: agentRoster(workspace) });
+    }
+
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
     if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
       return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
     }
@@ -1231,6 +1461,28 @@ export class GaiaWebServer {
       try {
         const result = apply ? await this.daemon.harnessDreamApply(claims, agentId) : await this.daemon.harnessDreamPropose(claims, agentId);
         json(response, 200, { ok: true, result });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/resume — send a follow-up message into an EXISTING
+    // room/sub-room to resume or steer its worker (steers a running turn,
+    // starts a fresh one if idle), instead of firing a brand-new summon.
+    // ALWAYS fire-and-forget, mirroring summon below: sendMessage kicks the
+    // turn off and returns immediately, it never blocks on the turn settling.
+    // `room` is scoped strictly to claims.workspaceId — serviceFor resolves it
+    // against the CALLER's own workspace registry, so a caller can never reach
+    // a room living in another workspace even by guessing its id.
+    if (pathname === "/api/harness/resume") {
+      const room = stringField(body, "room")?.trim();
+      const message = stringField(body, "message")?.trim();
+      if (!room || !message) return json(response, 400, { error: "Missing room or message" });
+      try {
+        const service = await this.daemon.serviceFor(claims.workspaceId, room);
+        await service.sendMessage(message, { recordUserMessage: true });
+        json(response, 200, { roomId: room, result: `Resumed room '${room}' with a follow-up message.` });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
@@ -1383,13 +1635,6 @@ export class GaiaWebServer {
     // WKWebView, which caches aggressively. Always require a fresh fetch.
     headers["cache-control"] = "no-store";
 
-    if (this.options.dev && path === join(root, "index.html")) {
-      const html = await readFile(path, "utf8");
-      response.writeHead(200, headers);
-      response.end(html.includes("</body>") ? html.replace("</body>", `${devReloadSnippet()}\n  </body>`) : `${html}\n${devReloadSnippet()}`);
-      return;
-    }
-
     response.writeHead(200, headers);
     createReadStream(path).pipe(response);
   }
@@ -1437,24 +1682,6 @@ export class GaiaWebServer {
         if (client.roomId && scoped.roomId && client.roomId !== scoped.roomId) continue;
       }
       client.response.write(payload);
-    }
-  }
-
-  private async startDevWatchers(): Promise<void> {
-    const root = bundledDir("web");
-    const entries = await readdir(root, { recursive: true, withFileTypes: true });
-    const dirs = [root, ...entries.filter((entry) => entry.isDirectory()).map((entry) => join(entry.parentPath, entry.name))];
-    for (const dir of dirs) {
-      const watcher = watch(dir, (_eventType, filename) => {
-        const name = String(filename ?? "").trim();
-        if (!name || name === ".DS_Store") return;
-        if (this.devReloadTimer) clearTimeout(this.devReloadTimer);
-        this.devReloadTimer = setTimeout(() => {
-          this.devReloadTimer = undefined;
-          for (const client of this.devClients) client.write(encodeSse("reload", { path: name }));
-        }, 60);
-      });
-      this.devWatchers.push(watcher);
     }
   }
 }

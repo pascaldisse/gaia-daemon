@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UiEvent, UsageLimits, UsageProbeResult } from "../src/core/types.js";
-import { mapAnthropicUsage, mapChatGptUsage } from "../src/harness/usage.js";
+import { emailFromJwt, mapAnthropicUsage, mapChatGptUsage } from "../src/harness/usage.js";
 import { reduceAccountProbes, UsageService } from "../src/services/usage-service.js";
 
 const usage = (account: string, percent: number, fetchedAt = "2026-07-09T09:00:00.000Z"): UsageLimits => ({
@@ -17,6 +17,12 @@ const usage = (account: string, percent: number, fetchedAt = "2026-07-09T09:00:0
 test("reduceAccountProbes: ok sets", () => {
   const next = usage("anthropic", 28);
   assert.deepEqual(reduceAccountProbes(undefined, [{ status: "ok", usage: next }]), { set: next });
+});
+
+test("emailFromJwt extracts only a display email claim", () => {
+  const payload = Buffer.from(JSON.stringify({ email: "person@example.com" })).toString("base64url");
+  assert.equal(emailFromJwt(`header.${payload}.signature`), "person@example.com");
+  assert.equal(emailFromJwt("not-a-jwt"), undefined);
 });
 
 test("reduceAccountProbes: all-none clears when prev exists", () => {
@@ -75,6 +81,23 @@ test("UsageService persists account usage across restart and broadcasts every ok
   assert.deepEqual(serviceB.currentUsage(), [{ type: "usage-limits", account: "anthropic", usage: snapshots[1] }]);
   await serviceB.refresh({ force: true });
   assert.deepEqual(serviceB.currentUsage(), [{ type: "usage-limits", account: "anthropic", usage: snapshots[1] }]);
+});
+
+test("UsageService evicts a no-longer-declared account from its durable snapshot", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-usage-"));
+  const cachePath = join(dir, "usage.json");
+  const broadcasts: UiEvent[] = [];
+  const service = new UsageService({
+    cachePath,
+    broadcast: (event) => broadcasts.push(event),
+    probes: () => new Map([["current", [async () => ({ status: "ok" as const, usage: usage("provider-name", 12) })]]]),
+  });
+  await service.refresh({ force: true });
+  const stale = new UsageService({ cachePath, broadcast: (event) => broadcasts.push(event), probes: () => new Map() });
+  await stale.load();
+  await stale.refresh({ force: true });
+  assert.deepEqual(stale.snapshot(), {});
+  assert.ok(broadcasts.some((event) => event.type === "usage-limits" && event.account === "current" && event.usage === null));
 });
 
 test("mapAnthropicUsage maps windows in order, clamps percent, and derives severity", () => {

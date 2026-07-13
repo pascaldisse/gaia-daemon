@@ -11,12 +11,23 @@ import type { AgentDef } from "../core/types.js";
 import { globalPaths } from "../core/paths.js";
 import { readText } from "../core/store.js";
 
+/** `message` is used verbatim (once, or every crossing if `repeat`). `messages`
+ * — a non-empty list — overrides `message` and picks one at random each time,
+ * for variety on a repeating tripwire. `repeat: true` re-fires every
+ * `toolCalls` calls for the rest of the turn instead of stopping after one. */
+export interface RoleWatchdog {
+  toolCalls: number;
+  message: string;
+  messages?: string[];
+  repeat?: boolean;
+}
+
 export interface RoleFile {
   path: string;
   body: string;
   tools?: string[];
   skills?: string[];
-  watchdog?: { toolCalls: number; message: string };
+  watchdog?: RoleWatchdog;
   diagnostics: string[];
 }
 
@@ -25,7 +36,7 @@ export interface ResolvedRole {
   prompt: string;
   tools?: string[];
   skills?: string[];
-  watchdog?: { toolCalls: number; message: string };
+  watchdog?: RoleWatchdog;
   diagnostics: string[];
 }
 
@@ -61,17 +72,31 @@ export function parseRoleMarkdown(content: string, path = "<role>"): Omit<RoleFi
   const tools = optionalStringList(frontmatter.tools, "tools", path, diagnostics);
   const skills = optionalStringList(frontmatter.skills, "skills", path, diagnostics);
 
-  let watchdog: { toolCalls: number; message: string } | undefined;
+  let watchdog: RoleWatchdog | undefined;
   if (frontmatter.watchdog !== undefined) {
     const raw = frontmatter.watchdog;
-    const toolCalls = raw && typeof raw === "object" ? (raw as Record<string, unknown>).toolCalls : undefined;
-    const message = raw && typeof raw === "object" ? (raw as Record<string, unknown>).message : undefined;
+    const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
+    const toolCalls = obj?.toolCalls;
+    const message = obj?.message;
+    const messagesRaw = obj?.messages;
     const validToolCalls = typeof toolCalls === "number" && Number.isFinite(toolCalls) && Math.floor(toolCalls) > 0;
     const validMessage = typeof message === "string" && message.trim().length > 0;
-    if (raw && typeof raw === "object" && validToolCalls && validMessage) {
-      watchdog = { toolCalls: Math.floor(toolCalls as number), message: message as string };
+    const messages =
+      Array.isArray(messagesRaw) && messagesRaw.every((m) => typeof m === "string" && m.trim().length > 0)
+        ? (messagesRaw as string[])
+        : undefined;
+    const validMessages = messagesRaw === undefined || messages !== undefined;
+    if (obj && validToolCalls && validMessage && validMessages) {
+      watchdog = {
+        toolCalls: Math.floor(toolCalls as number),
+        message: message as string,
+        ...(messages ? { messages } : {}),
+        ...(obj.repeat === true ? { repeat: true } : {}),
+      };
     } else {
-      diagnostics.push(`Malformed watchdog declaration in ${path}: expected { toolCalls: positive integer, message: non-empty string }`);
+      diagnostics.push(
+        `Malformed watchdog declaration in ${path}: expected { toolCalls: positive integer, message: non-empty string, messages?: string[], repeat?: boolean }`,
+      );
     }
   }
 

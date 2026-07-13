@@ -1,10 +1,10 @@
-// Workspace loading: .gaia/config.json + global/project agents + AGENTS.md
-// context chain + room seeding. The single entry every surface (daemon,
+// Workspace loading: .gaia/config.json + global/project agents + workspace
+// AGENTS.md + room seeding. The single entry every surface (daemon,
 // runner subprocess, headless serve) uses to materialize a Workspace.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
@@ -124,23 +124,11 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
   return { workspaceDir, globalAgentsDir: agentsDir };
 }
 
-/** AGENTS.md files from the filesystem root down to cwd, parent-most first. */
+/** The workspace owns its instructions. Parent directories are unrelated
+ * projects (or a user's home) and must never leak their AGENTS.md into a room. */
 export async function discoverContextFiles(cwd: string): Promise<ContextFile[]> {
-  const dirs: string[] = [];
-  let current = resolve(cwd);
-  while (true) {
-    dirs.unshift(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  const files: ContextFile[] = [];
-  for (const dir of dirs) {
-    const path = join(dir, "AGENTS.md");
-    if (!existsSync(path)) continue;
-    files.push({ path, content: await readFile(path, "utf8") });
-  }
-  return files;
+  const path = join(cwd, "AGENTS.md");
+  return existsSync(path) ? [{ path, content: await readFile(path, "utf8") }] : [];
 }
 
 export async function loadWorkspace(cwd: string): Promise<Workspace> {
@@ -177,4 +165,13 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
     contextFiles,
     agents,
   };
+}
+
+/** Live read of maxSummonsPerRoom straight off config.json — so the cap is
+ * hot-reloadable per launch, no daemon restart. Deliberately bypasses the
+ * cached `Workspace.config` that `loadWorkspace` returns once at boot. */
+export async function liveMaxSummonsPerRoom(cwd: string): Promise<number> {
+  const configPath = workspacePaths.config(cwd);
+  const config = parseWorkspaceConfig(await readJson(configPath), () => true);
+  return config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom;
 }

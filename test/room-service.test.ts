@@ -9,12 +9,22 @@ import { MemoryStore } from "../src/domain/memory.js";
 import { DEFAULTS } from "../src/core/config.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
-import type { AgentInput, AgentRuntime } from "../src/harness/spec.js";
+import type { AgentDef, AgentEvent, QueuedMessage, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import { RunnerHost } from "../src/harness/host.js";
+import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
+
+registerHarness({
+  id: "durability-protocol-stub",
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+  ui: { label: "Durability stub", description: "room-service protocol integration test double" },
+  create: () => {
+    throw new Error("not used: RunnerHost launches the protocol stub directly");
+  },
+});
 
 function makeAgent(id: string, root: string): AgentDef {
   const dir = join(root, "agents", id);
@@ -33,7 +43,7 @@ function makeAgent(id: string, root: string): AgentDef {
 }
 
 /** Scripted runtime: replies with fixed events per send() call. */
-function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number; resets: number } {
+function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number; resets: number; refreshes: number } {
   const runtime = {
     agent,
     modelLabel: "test/model",
@@ -41,6 +51,7 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
     aborted: false,
     sends: 0,
     resets: 0,
+    refreshes: 0,
     async *send() {
       runtime.sends += 1;
       for (const event of script()) yield event;
@@ -52,14 +63,17 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
     resetRoom() {
       runtime.resets += 1;
     },
+    refreshContext() {
+      runtime.refreshes += 1;
+    },
   };
-  return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number };
+  return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number; refreshes: number };
 }
 
 async function makeService(options: {
   script?: () => AgentEvent[];
   agents?: string[];
-  runtimeFactory?: (agent: AgentDef) => AgentRuntime;
+  runtimeFactory?: (agent: AgentDef, workspace: Workspace) => AgentRuntime;
   memory?: RoomMemoryHooks;
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
   summonHost?: SummonHost;
@@ -71,6 +85,8 @@ async function makeService(options: {
   incognito?: boolean;
   /** Tool ids granted to every test agent (default none). */
   tools?: string[];
+  /** Durable queue entries to seed before RoomService.open() runs boot drain. */
+  queued?: QueuedMessage[];
 } = {}): Promise<{ service: RoomService; workspace: Workspace; root: string; events: UiEvent[]; runtimes: Map<string, ReturnType<typeof scriptedRuntime>> }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-svc-"));
   const roomId = options.roomId ?? "default";
@@ -94,6 +110,11 @@ async function makeService(options: {
     agents,
   };
 
+  if (options.queued?.length) {
+    const room = await RoomHandle.open(root, roomId);
+    for (const entry of options.queued) await room.enqueue(entry);
+  }
+
   const script = options.script ?? (() => [{ type: "text-delta", delta: "hello from agent" } as AgentEvent]);
   const runtimes = new Map<string, ReturnType<typeof scriptedRuntime>>();
   const service = await RoomService.open({
@@ -106,7 +127,7 @@ async function makeService(options: {
     ...(options.summonHost ? { summonHost: options.summonHost } : {}),
     ...(options.llm ? { llm: options.llm } : {}),
     runtimeFactory: (agent) => {
-      const runtime = options.runtimeFactory ? (options.runtimeFactory(agent) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
+      const runtime = options.runtimeFactory ? (options.runtimeFactory(agent, workspace) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
       return runtime;
     },
@@ -114,6 +135,58 @@ async function makeService(options: {
   const events: UiEvent[] = [];
   service.subscribe((event) => events.push(event));
   return { service, workspace, root, events, runtimes };
+}
+
+/** Real RunnerHost child used by the durability regressions below. It speaks
+ * the runner protocol but deliberately omits turn-end for the failure cases. */
+async function makeDurabilityRunner(markerPath?: string): Promise<{ dir: string; path: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-durability-runner-"));
+  const path = join(dir, "runner.mjs");
+  const source = `
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const marker = ${JSON.stringify(markerPath)};
+const send = (message, callback) => process.stdout.write(JSON.stringify(message) + "\\n", callback);
+send({ type: "ready", modelLabel: "stub/durability" });
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  const command = JSON.parse(line);
+  if (command.type === "turn") {
+    if (command.input.message === "partial then die") {
+      send({ type: "event", event: { type: "text-delta", delta: "answer survived" } }, () => process.exit(0));
+      return;
+    }
+    if (command.input.message === "die empty") {
+      process.exit(0);
+      return;
+    }
+    if (command.input.message === "idle forever") return;
+    send({ type: "event", event: { type: "text-delta", delta: "queued reply" } });
+    send({ type: "turn-end" });
+    return;
+  }
+  if (command.type === "abort") {
+    if (marker) appendFileSync(marker, "abort\\n");
+    send({ type: "turn-error", message: "runtime acknowledged abort" });
+    return;
+  }
+  if (command.type === "dispose") process.exit(0);
+});
+`;
+  await writeFile(path, source, "utf8");
+  return { dir, path };
+}
+
+function durabilityHost(agent: AgentDef, workspace: Workspace, runnerPath: string, turnIdleTimeoutMs = 1_000): AgentRuntime {
+  return new RunnerHost({
+    workspace,
+    agent,
+    harness: "durability-protocol-stub",
+    allowSummon: () => false,
+    sandbox: () => ({ enabled: false, backend: "none" }),
+    runnerArgv: [process.execPath, runnerPath],
+    turnIdleTimeoutMs,
+  });
 }
 
 test("a plain message routes to the default agent and commits a detailed reply", async () => {
@@ -147,6 +220,88 @@ test("a plain message routes to the default agent and commits a detailed reply",
   // Streaming deltas carried the reserved eventId that the commit used.
   const delta = events.find((event) => event.type === "text-delta") as { eventId?: string } | undefined;
   assert.equal(delta?.eventId, reply["id" as keyof typeof reply]);
+});
+
+test("background-task events persist, surface in snapshots, and cap at 20", async () => {
+  const { service, root } = await makeService({
+    script: () => [
+      ...Array.from({ length: 22 }, (_, index): AgentEvent => ({
+        type: "background-task",
+        taskId: `bg-${index}`,
+        toolName: "Shell",
+        command: `work ${index}`,
+        description: `background work ${index}`,
+        outputPath: `/tmp/bg-${index}.out`,
+      })),
+      { type: "text-delta", delta: "started them" },
+    ],
+  });
+
+  await service.sendMessage("start background work");
+  await service.waitForIdle();
+
+  const state = await readJson(workspacePaths.roomState(root, "default")) as { backgroundTasks?: Array<{ taskId: string; agentId: string }> };
+  assert.equal(state.backgroundTasks?.length, 20);
+  assert.deepEqual(state.backgroundTasks?.map((task) => task.taskId), Array.from({ length: 20 }, (_, index) => `bg-${index + 2}`));
+  assert.ok(state.backgroundTasks?.every((task) => task.agentId === "gaia"));
+
+  const snapshot = await service.getSnapshot();
+  assert.deepEqual(snapshot.backgroundTasks.map((task) => task.taskId), state.backgroundTasks?.map((task) => task.taskId));
+  assert.equal(snapshot.backgroundTasks[0]?.description, "background work 2");
+});
+
+test("recording a background task drops entries older than 24 hours", async () => {
+  const { service } = await makeService({
+    script: () => [
+      { type: "background-task", taskId: "fresh", toolName: "Shell", outputPath: "/tmp/fresh.out" },
+      { type: "text-delta", delta: "started" },
+    ],
+  });
+  await service.room.updateState((state) => {
+    state.backgroundTasks = [
+      {
+        taskId: "stale",
+        toolName: "Shell",
+        startedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+        agentId: "gaia",
+        roomId: "default",
+      },
+    ];
+  });
+
+  await service.sendMessage("start another");
+  await service.waitForIdle();
+  assert.deepEqual((await service.getSnapshot()).backgroundTasks.map((task) => task.taskId), ["fresh"]);
+});
+
+test("stopBackgroundTask reports false for an unknown id and removes a known one", async () => {
+  const { service } = await makeService({});
+  assert.equal(await service.stopBackgroundTask("nope"), false);
+
+  await service.room.updateState((state) => {
+    state.backgroundTasks = [
+      { taskId: "bg-1", toolName: "Shell", startedAt: new Date().toISOString(), agentId: "gaia", roomId: "default" },
+    ];
+  });
+
+  assert.equal(await service.stopBackgroundTask("bg-1"), true);
+  assert.deepEqual((await service.getSnapshot()).backgroundTasks, []);
+});
+
+test("snapshot usage scope contains only accounts of agents active in this room", async () => {
+  const { service, workspace } = await makeService({ agents: ["gaia", "terry", "elsewhere"] });
+  workspace.agents.gaia.account = "claude-current";
+  workspace.agents.terry.account = "openai-current";
+  workspace.agents.elsewhere.account = "old-account";
+
+  await service.sendMessage("@gaia first");
+  await service.waitForIdle();
+  await service.sendMessage("@terry second");
+  await service.waitForIdle();
+
+  const snapshot = await service.getSnapshot();
+  assert.deepEqual(new Set(snapshot.room.usageAccounts), new Set(["claude-current", "openai-current"]));
+  assert.equal(snapshot.room.usageAccounts?.includes("old-account"), false);
 });
 
 test("auto-created rooms get a fallback title and manual rename locks it", async () => {
@@ -202,6 +357,25 @@ test("@mentions route to multiple agents in order; unknown mentions fail at send
   );
 });
 
+test("@system is a reserved author, not an agent mention: routes as the room default instead of erroring", async () => {
+  const { service } = await makeService();
+  const task = await service.sendMessage("@system hello");
+  await service.waitForIdle();
+  assert.deepEqual(task.targets, ["gaia"]);
+});
+
+test("@user is a reserved author, not an agent mention: routes as the room default instead of erroring", async () => {
+  const { service } = await makeService();
+  const task = await service.sendMessage("@user hi");
+  await service.waitForIdle();
+  assert.deepEqual(task.targets, ["gaia"]);
+});
+
+test("@nosuchagent still errors Unknown agent — reserved-mention stripping doesn't touch real unknowns", async () => {
+  const { service } = await makeService();
+  await assert.rejects(() => service.sendMessage("@nosuchagent hi"), /Unknown agent/);
+});
+
 test("messages sent while busy queue DURABLY and drain in order", async () => {
   let releaseFirst: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
@@ -245,6 +419,185 @@ test("messages sent while busy queue DURABLY and drain in order", async () => {
   const userTexts = transcript.filter((event) => event.author === "user").map((event) => event.text);
   assert.deepEqual(userTexts, ["one", "two", "three"]);
   assert.equal((await room.state()).queue, undefined);
+});
+
+test("idle dispatch keeps durable custody across the append→pendingTurn gap and replays exactly once", async () => {
+  const { service, root, runtimes } = await makeService({ agents: ["gaia"] });
+  const originalMarkPendingTurn = service.room.markPendingTurn.bind(service.room);
+  let markCalls = 0;
+  let reachedGap!: () => void;
+  let releaseFailure!: () => void;
+  const atGap = new Promise<void>((resolve) => (reachedGap = resolve));
+  const holdFailure = new Promise<void>((resolve) => (releaseFailure = resolve));
+
+  service.room.markPendingTurn = async (...args: Parameters<RoomHandle["markPendingTurn"]>) => {
+    markCalls += 1;
+    if (markCalls === 1) {
+      reachedGap();
+      await holdFailure;
+      throw new Error("injected failure after user append, before pendingTurn persistence");
+    }
+    await originalMarkPendingTurn(...args);
+  };
+
+  const task = await service.sendMessage("survive the custody gap");
+  await atGap;
+
+  const room = await RoomHandle.open(root, "default");
+  const failedState = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(failedState.queue?.length, 1, "the idle message remains durably queued in the loss gap");
+  assert.equal(failedState.queue?.[0].taskId, task.id);
+  assert.ok(failedState.queue?.[0].eventId, "the queued entry reserved the appended user event id");
+  const { events: beforeReplay } = await room.eventsFrom(0);
+  assert.equal(beforeReplay.filter((event) => event.author === "user").length, 1, "the first append reached the transcript");
+  assert.equal(beforeReplay.find((event) => event.author === "user")?.id, failedState.queue?.[0].eventId);
+
+  releaseFailure();
+  await waitFor(async () => {
+    room.invalidate();
+    const state = await room.state();
+    return markCalls === 2 && runtimes.get("gaia")?.sends === 1 && state.queue === undefined && state.pendingTurn === undefined;
+  });
+
+  const { events: afterReplay } = await room.eventsFrom(0);
+  assert.equal(afterReplay.filter((event) => event.author === "user" && event.text === "survive the custody gap").length, 1);
+  assert.equal(afterReplay.filter((event) => event.author === "gaia").length, 1, "the drained turn ran exactly once");
+});
+
+test("a runtime that streams text then exits without turn-end commits the partial notice and drains the queued next message", async () => {
+  const runner = await makeDurabilityRunner();
+  const { service, root, events } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent, workspace) => durabilityHost(agent, workspace, runner.path),
+  });
+
+  const first = await service.sendMessage("partial then die");
+  const queued = await service.sendMessage("queued next");
+  assert.equal(queued.status, "queued", "the second message is durably queued behind the dying turn");
+
+  await waitFor(() => first.status === "error");
+  await waitFor(() => queued.status === "complete");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const partial = transcript.find((event) => event.author === "gaia" && event.text.startsWith("answer survived"));
+  assert.ok(partial, "the streamed answer commits instead of disappearing");
+  assert.equal(
+    partial.text,
+    "answer survived\n\n⚠ turn ended without completion (agent runner exited (code 0).) — partial output preserved",
+  );
+  const streamed = events.find((event) => event.type === "text-delta") as { eventId?: string } | undefined;
+  assert.equal(partial.id, streamed?.eventId, "the partial commits under the pre-stream reserved event id");
+  assert.ok(transcript.some((event) => event.author === "gaia" && event.text === "queued reply"), "the queued next turn drained and completed");
+  const state = await room.state();
+  assert.equal(state.pendingTurn, undefined);
+  assert.equal(state.queue, undefined);
+  assert.equal((await service.getSnapshot()).agents.find((agent) => agent.id === "gaia")?.status, "idle", "activeTask cleared after settle/drain");
+  await service.dispose();
+});
+
+test("a runtime that dies with zero output commits a loud durable failure", async () => {
+  const runner = await makeDurabilityRunner();
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent, workspace) => durabilityHost(agent, workspace, runner.path),
+  });
+
+  const task = await service.sendMessage("die empty");
+  await waitFor(() => task.status === "error");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.ok(
+    transcript.some((event) => event.author === "system" && event.text.includes("turn died without output (agent runner exited (code 0).)")),
+    "the failure survives reload in the transcript instead of existing only as task stderr",
+  );
+  assert.equal(transcript.some((event) => event.author === "gaia"), false, "a blank agent event is not fabricated");
+  assert.equal((await room.state()).pendingTurn, undefined);
+  await service.dispose();
+});
+
+test("the turn idle backstop aborts the runner and persists a no-output failure", async () => {
+  const marker = join(await mkdtemp(join(tmpdir(), "gaia-idle-abort-")), "abort.log");
+  const runner = await makeDurabilityRunner(marker);
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent, workspace) => durabilityHost(agent, workspace, runner.path, 75),
+  });
+
+  const task = await service.sendMessage("idle forever");
+  await waitFor(() => task.status === "error");
+  await waitFor(async () => (await readFileText(marker, "utf8").catch(() => "")).includes("abort"));
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.ok(
+    transcript.some(
+      (event) => event.author === "system" && event.text.includes("turn died without output (turn stalled — no output from the harness"),
+    ),
+    "the idle timeout leaves a durable transcript failure, not only a stderr line",
+  );
+  assert.match(await readFileText(marker, "utf8"), /abort/, "RunnerHost sent the authoritative abort frame");
+  assert.equal((await room.state()).pendingTurn, undefined);
+  await service.dispose();
+});
+
+test("a message sent the instant a busy turn settles cannot jump ahead of an earlier durably-queued message", async () => {
+  // settleTask clears activeTask SYNCHRONOUSLY, then emits task-end/task-error
+  // (also synchronous — see Bus.emit) BEFORE it ever calls drain() (deferred
+  // behind an async emitSnapshot). A listener on that very event is therefore
+  // the one place a test can land a new sendMessage() call deterministically
+  // inside that gap — exactly where a live message send raced a settling
+  // /compact and got lost behind a later one (see room-service settleTask's
+  // `draining` field).
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let turn = 0;
+  const factory = (agent: AgentDef): AgentRuntime => ({
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    async *send() {
+      turn += 1;
+      if (turn === 1) await gate;
+      yield { type: "text-delta", delta: `reply ${turn}` } as AgentEvent;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  });
+  const { service, root } = await makeService({ runtimeFactory: factory });
+
+  await service.sendMessage("first"); // running, gated open
+  const queuedBehindFirst = await service.sendMessage("queued behind first");
+  assert.equal(queuedBehindFirst.status, "queued");
+
+  let interloper: ReturnType<typeof service.sendMessage> | undefined;
+  const unsubscribe = service.subscribe((event) => {
+    if (event.type !== "task-end" && event.type !== "task-error") return;
+    unsubscribe();
+    interloper = service.sendMessage("interloper"); // fired synchronously, inside the gap
+  });
+
+  release();
+  await service.waitForIdle(); // resolves on "first"'s settle — the same event that fired the listener above
+  const interloperTask = await interloper!;
+  assert.equal(interloperTask.status, "queued", "a message sent in the settle→drain gap must still queue behind the earlier message");
+
+  // Drain until everything ran, then check strict FIFO order.
+  for (let i = 0; i < 10 && (await RoomHandle.open(root, "default").then((r) => r.state().then((s) => s.queue?.length ?? 0))) > 0; i++) {
+    await service.waitForIdle();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const userTexts = transcript.filter((event) => event.author === "user").map((event) => event.text);
+  assert.deepEqual(userTexts, ["first", "queued behind first", "interloper"]);
 });
 
 test("a queued message survives a daemon restart (drains on boot)", async () => {
@@ -468,8 +821,9 @@ test("cancel aborts the runtime, preserves partial output, and keeps the durable
   // Cancel is a deliberate stop — but progress is never discarded: the text
   // AND the in-flight tool call both commit, with the tool settled (no
   // eternal spinner on a committed event).
-  const committed = transcript.find((event) => event.author === "gaia" && event.text === "partial before cancel");
+  const committed = transcript.find((event) => event.author === "gaia" && event.text.startsWith("partial before cancel"));
   assert.ok(committed, "stopped turn's streamed text committed");
+  assert.match(committed?.text ?? "", /turn ended without completion .*partial output preserved/);
   assert.equal(committed?.details?.tools?.length, 1, "stopped turn's tool call committed");
   assert.equal(committed?.details?.tools?.[0].status, "error", "interrupted tool settled, not left running");
   // The queued message ran after the stop instead of being dropped.
@@ -481,7 +835,7 @@ test("stop during the tool/thinking phase (no prose yet) still commits the progr
   // The exact shape that vanished: the agent had streamed thinking + tool
   // calls but no reply text, the user hit stop, and the WHOLE turn evaporated
   // (nothing flushed — the partial flush only carried text). The accumulator
-  // must commit as a details-only event instead.
+  // must commit with its details plus the visible abnormal-end notice.
   let sawTool: () => void = () => {};
   const firstTool = new Promise<void>((resolve) => {
     sawTool = resolve;
@@ -544,6 +898,7 @@ test("stop during the tool/thinking phase (no prose yet) still commits the progr
   assert.equal(committed?.details?.tools?.length, 1);
   assert.equal(committed?.details?.tools?.[0].status, "error");
   assert.equal(committed?.details?.thinking, "planning the image run");
+  assert.match(committed?.text ?? "", /turn ended without completion .*partial output preserved/);
   // No pendingTurn left behind — the stop settled the turn durably.
   assert.equal((await room.state()).pendingTurn, undefined);
 });
@@ -567,6 +922,28 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   const { events: forkEvents } = await forkRoom.eventsFrom(0);
   assert.ok(forkEvents.length >= 2, "transcript copied");
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
+});
+
+test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {
+  const { service, root, runtimes } = await makeService();
+  await service.sendMessage("keep this history");
+  await service.waitForIdle();
+
+  const task = await service.sendMessage("/refresh");
+  assert.equal(task.status, "complete");
+  assert.deepEqual(
+    [...runtimes.values()].map((runtime) => runtime.refreshes),
+    [1, 1],
+  );
+  assert.deepEqual(
+    [...runtimes.values()].map((runtime) => runtime.resets),
+    [0, 0],
+  );
+
+  const room = await RoomHandle.open(root, "default");
+  const { events } = await room.eventsFrom(0);
+  assert.equal(events[0].text, "keep this history");
+  assert.equal(events.at(-1)?.text, "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn");
 });
 
 test("slash commands emit a system room-event and settle synchronously", async () => {
@@ -879,9 +1256,10 @@ test("/steer injects into the RUNNING turn without queueing behind it", async ()
   const reply = events.find((event) => event.type === "room-event" && event.event.author === "system");
   assert.match((reply as { event: { text: string } }).event.text, /Steering @gaia/);
 
-  // Not queued: the durable queue stays empty.
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue, undefined);
+  // The steer itself is not queued. The active message may still occupy its
+  // queue→WAL custody slot until its pendingTurn write completes.
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(state.queue?.some((entry) => entry.text === "/steer focus only on the tests") ?? false, false);
 
   release();
   await service.waitForIdle();
@@ -930,8 +1308,12 @@ test("steer-by-default: a plain message to the busy agent injects; @other and qu
   const forcedQueue = await service.sendMessage("do this afterwards", { queue: true });
   assert.equal(forcedQueue.status, "queued");
 
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue?.length, 2, "only @other and the queue:true message persisted to the queue");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.deepEqual(
+    state.queue?.filter((entry) => entry.text !== "start a long task").map((entry) => entry.text),
+    ["@terry take a look", "do this afterwards"],
+    "only @other and the queue:true message joined the active message's custody entry",
+  );
 
   release();
   await service.waitForIdle();
@@ -974,8 +1356,8 @@ test("steer-by-default: a message WITH attachments steers too — breadcrumb lin
   assert.equal(steerCalls.length, 1);
   assert.match(steerCalls[0], /^look at this\n\n\[attached file: shot\.png \(image\/png, 2 kB\) at \/tmp\/shot\.png\]$/, "breadcrumb line rides the steer text");
 
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue?.length ?? 0, 0, "nothing fell to the durable queue");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(state.queue?.some((entry) => entry.text === "look at this") ?? false, false, "the steered message did not join the queue");
 
   release();
   await service.waitForIdle();
@@ -1991,4 +2373,313 @@ test("agent-dialogue mutual @mentions terminate at the hop cap, and a human rese
   await waitFor(() => totalSends() >= 2 * (1 + AGENT_DIALOGUE_MAX_HOPS));
   await sleep(150);
   assert.equal(totalSends(), 2 * (1 + AGENT_DIALOGUE_MAX_HOPS), "the human reset re-armed the dialogue");
+});
+
+test("an upstream-stall notice appends exactly one throttled system_stall room event, even with 3 in one turn", async () => {
+  const { service, root, events } = await makeService({
+    script: () => [
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent,
+      { type: "text-delta", delta: "done" } as AgentEvent,
+    ],
+  });
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const stallNotices = transcript.filter((event) => event.author === "system" && event.text.includes("harness retrying"));
+  assert.equal(stallNotices.length, 1, "three notices within the 60s throttle window collapse to one visible line");
+  assert.match(stallNotices[0].text, /upstream stall \(@gaia\): gateway 502 — harness retrying/);
+
+  // The notice never rides the reply text (wave 1 already excluded it from toUiEvent).
+  const reply = transcript.find((event) => event.author === "gaia");
+  assert.equal(reply?.text, "done");
+  assert.equal(
+    events.some((event) => (event as { type: string }).type === "notice"),
+    false,
+    "notice is never emitted as a UI transport event",
+  );
+});
+
+test("liveTurn.stalled mirrors an upstream stall on the snapshot and clears on recovery", async () => {
+  let serviceRef: RoomService | undefined;
+  let stalledDuringStall: boolean | undefined;
+  let stalledAfterRecovery: boolean | undefined;
+  const factory = (agent: AgentDef): AgentRuntime => {
+    const runtime = {
+      agent,
+      modelLabel: "test/model",
+      capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+      async *send(): AsyncGenerator<AgentEvent> {
+        yield { type: "notice", kind: "upstream-stall", text: "gateway 502" } as AgentEvent;
+        // runAgentTurn ran onEvent → applyLiveTurn for the notice BEFORE pulling
+        // the next event (turns.ts for-await), so the mirror must now read as
+        // reconnecting — this is exactly what a mid-stall (re)subscribe sees.
+        stalledDuringStall = (await serviceRef!.getSnapshot()).room.liveTurn?.stalled;
+        yield { type: "text-delta", delta: "back" } as AgentEvent;
+        // Real output proved recovery — the flag must be cleared again.
+        stalledAfterRecovery = (await serviceRef!.getSnapshot()).room.liveTurn?.stalled;
+      },
+      async abort() {},
+      dispose() {},
+      resetRoom() {},
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ runtimeFactory: factory });
+  serviceRef = service;
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  assert.equal(stalledDuringStall, true, "an upstream-stall notice marks the live turn reconnecting on the snapshot");
+  assert.equal(stalledAfterRecovery, false, "the next real output clears the reconnecting flag");
+  // Ephemeral: nothing survives the commit (the committed reply is never "stalled").
+  assert.equal((await service.getSnapshot()).room.liveTurn, undefined, "the live mirror is gone once the turn commits");
+});
+
+/** A runtime whose every send() fails the way RunnerHost's hard stall
+ * deadline fails an active channel: a named UpstreamStallError, no events
+ * streamed first — the same shape a real wedged-upstream turn produces. */
+function stallingRuntime(agent: AgentDef): AgentRuntime & { sends: number } {
+  const runtime = {
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    sends: 0,
+    async *send(): AsyncGenerator<AgentEvent> {
+      runtime.sends += 1;
+      const err = new Error("upstream stalled — no recovery within 1s; aborted the wedged turn (partial progress, if any, is kept)");
+      err.name = "UpstreamStallError";
+      throw err;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  };
+  return runtime as AgentRuntime & { sends: number };
+}
+
+test("a stalled turn with no partial reply requeues ONCE (stallRetried), then fails normally on a second stall", async () => {
+  const { service, root } = await makeService({
+    runtimeFactory: (agent) => stallingRuntime(agent),
+  });
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle(); // first attempt: stalls, requeues, settles "error"
+
+  // Let the requeued retry drain and run (also fails — this time for good).
+  await waitFor(async () => ((await RoomHandle.open(root, "default").then((r) => r.state())).queue?.length ?? 0) === 0);
+  await sleep(50);
+  await service.waitForIdle().catch(() => {});
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  const userMessages = transcript.filter((event) => event.author === "user");
+  assert.equal(userMessages.length, 1, "the retry replays the ORIGINAL prompt without re-recording it");
+
+  const requeueNotices = transcript.filter((event) => event.text.includes("requeued, retrying once"));
+  assert.equal(requeueNotices.length, 1, "requeue happens exactly once");
+  assert.match(requeueNotices[0].text, /turn aborted after upstream stall \(@gaia\)/);
+
+  const noOutputFailures = transcript.filter((event) => event.text.includes("turn died without output"));
+  assert.equal(noOutputFailures.length, 2, "both abnormal no-output attempts leave a durable failure; only the first requeues");
+
+  const finalState = await room.state();
+  assert.equal(finalState.queue ?? undefined, undefined, "no further requeue — the queue is empty again");
+  assert.equal(finalState.pendingTurn, undefined);
+});
+
+function transientAuthRuntime(agent: AgentDef): AgentRuntime & { sends: number } {
+  const runtime = {
+    agent,
+    modelLabel: "test/model",
+    capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
+    sends: 0,
+    async *send(): AsyncGenerator<AgentEvent> {
+      runtime.sends += 1;
+      const error = new Error("Not logged in · Please run /login");
+      error.name = "TransientAuthError";
+      throw error;
+    },
+    async abort() {},
+    dispose() {},
+    resetRoom() {},
+  };
+  return runtime as AgentRuntime & { sends: number };
+}
+
+test("a transient auth failure requeues with authRetries and notBefore instead of terminal failure", async () => {
+  const { service, root } = await makeService({ runtimeFactory: (agent) => transientAuthRuntime(agent) });
+
+  await service.sendMessage("hi @gaia");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const state = await room.state();
+  assert.equal(state.queue?.length, 1);
+  assert.equal(state.queue?.[0].authRetries, 1);
+  assert.ok(Date.parse(state.queue?.[0].notBefore ?? "") > Date.now(), "retry has a future notBefore");
+
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.some((event) => event.text.includes("transient auth")), true);
+  assert.equal(
+    transcript.some((event) => event.text.includes("turn died without output (Not logged in · Please run /login)")),
+    true,
+    "the retry policy does not erase the failed no-output attempt's durable trace",
+  );
+  await service.dispose();
+});
+
+test("drain waits until a queued entry's notBefore before dispatching it", async () => {
+  const notBefore = new Date(Date.now() + 75).toISOString();
+  const { service, runtimes } = await makeService({
+    agents: ["gaia"],
+    queued: [{ taskId: "task_auth_wait", text: "retry me", targets: ["gaia"], authRetries: 1, notBefore, queuedAt: new Date().toISOString() }],
+  });
+
+  await service.init();
+  assert.equal(runtimes.get("gaia")?.sends ?? 0, 0, "future queue head is not dispatched immediately");
+  await waitFor(() => (runtimes.get("gaia")?.sends ?? 0) === 1);
+  await service.waitForSettled();
+  assert.ok(Date.now() >= Date.parse(notBefore), "dispatch happened only once the entry was due");
+});
+
+test("a sixth transient auth failure falls through to the normal terminal failure", async () => {
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    queued: [{ taskId: "task_auth_sixth", text: "retry me", targets: ["gaia"], authRetries: 5, queuedAt: new Date().toISOString() }],
+    runtimeFactory: (agent) => transientAuthRuntime(agent),
+  });
+
+  await service.waitForSettled();
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.some((event) => event.text.startsWith("⚠ turn failed (@gaia)")), true);
+  assert.equal(transcript.some((event) => event.text.includes("transient auth") && event.text.includes("requeued")), false);
+  assert.equal((await room.state()).queue, undefined);
+});
+
+// `gaia resume <roomId> "<message>"` (server/http.ts's /api/harness/resume
+// branch) is a thin, inlined call: validate room+message, resolve the target
+// room's service via daemon.serviceFor(claims.workspaceId, room), then
+// service.sendMessage(message, { recordUserMessage: true }). `resumeDispatch`
+// below mirrors that exact control flow (same validation, same lookup-or-fail,
+// same sendMessage call) against two REAL RoomService instances so the
+// invariant that matters — the message reaches the TARGET room's service and
+// no other — is exercised against the real steer/queue/commit machinery, not
+// a mock.
+async function resumeDispatch(
+  services: Map<string, RoomService>,
+  room: string | undefined,
+  message: string | undefined,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (!room?.trim() || !message?.trim()) return { status: 400, body: { error: "Missing room or message" } };
+  const service = services.get(room);
+  if (!service) return { status: 400, body: { error: `Unknown workspace: room '${room}' not found` } };
+  await service.sendMessage(message, { recordUserMessage: true });
+  return { status: 200, body: { roomId: room, result: `Resumed room '${room}' with a follow-up message.` } };
+}
+
+test("resume: rejects a missing room or message without touching any service", async () => {
+  const a = await makeService({ roomId: "room-a" });
+  const services = new Map([["room-a", a.service]]);
+
+  assert.deepEqual(await resumeDispatch(services, undefined, "keep going"), { status: 400, body: { error: "Missing room or message" } });
+  assert.deepEqual(await resumeDispatch(services, "room-a", ""), { status: 400, body: { error: "Missing room or message" } });
+  assert.deepEqual(await resumeDispatch(services, "room-a", "   "), { status: 400, body: { error: "Missing room or message" } });
+  assert.equal((await resumeDispatch(services, "no-such-room", "hi")).status, 400);
+
+  await a.service.waitForIdle();
+  const room = await RoomHandle.open(a.root, "room-a");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(transcript.length, 0, "none of the rejected calls reached sendMessage");
+});
+
+test("resume: routes the message to sendMessage on the TARGET room's service, never a different room's", async () => {
+  const a = await makeService({ roomId: "room-a" });
+  const b = await makeService({ roomId: "room-b" });
+  const services = new Map([
+    ["room-a", a.service],
+    ["room-b", b.service],
+  ]);
+
+  const result = await resumeDispatch(services, "room-b", "keep going, worker");
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { roomId: "room-b", result: "Resumed room 'room-b' with a follow-up message." });
+
+  await b.service.waitForIdle();
+  await a.service.waitForIdle();
+
+  const roomB = await RoomHandle.open(b.root, "room-b");
+  const { events: bTranscript } = await roomB.eventsFrom(0);
+  assert.equal(bTranscript[0]?.author, "user");
+  assert.equal(bTranscript[0]?.text, "keep going, worker");
+  assert.equal(bTranscript[1]?.author, "gaia", "the target room's own agent actually ran the resumed turn");
+
+  const roomA = await RoomHandle.open(a.root, "room-a");
+  const { events: aTranscript } = await roomA.eventsFrom(0);
+  assert.equal(aTranscript.length, 0, "resume must never leak the message into a different room");
+});
+
+test("resume: a message that arrives while the target room is mid-turn STEERS it instead of queuing (steer-by-default)", async () => {
+  let releaseFirst: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let first = true;
+  const { service, root } = await makeService({
+    roomId: "worker-room",
+    runtimeFactory: (agent) => {
+      const runtime = {
+        agent,
+        modelLabel: "test/model",
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsSteer: true },
+        async *send(): AsyncIterable<AgentEvent> {
+          if (first) {
+            first = false;
+            await gate;
+          }
+          yield { type: "text-delta", delta: "done" };
+        },
+        async abort() {},
+        dispose() {},
+        async steer(_roomId: string, text: string): Promise<boolean> {
+          steeredWith.push(text);
+          return true;
+        },
+      };
+      return runtime as unknown as AgentRuntime;
+    },
+  });
+  const steeredWith: string[] = [];
+  const services = new Map([["worker-room", service]]);
+
+  const first_ = service.sendMessage("start the task");
+  await sleep(20); // let the turn become active before resuming
+
+  const resumeResult = await resumeDispatch(services, "worker-room", "also check the edge case");
+  assert.equal(resumeResult.status, 200);
+  assert.deepEqual(steeredWith, ["also check the edge case"]);
+
+  releaseFirst();
+  await first_;
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "worker-room");
+  const { events: transcript } = await room.eventsFrom(0);
+  // The steered guidance is recorded for history (runSteerCommand/
+  // steerRunningTurn's documented contract) but never queued as its OWN
+  // pending task — it rode straight into the ALREADY-RUNNING turn, so there
+  // is exactly one such user event, and only one agent reply total (the
+  // resumed turn never forked into a second run).
+  assert.equal(
+    transcript.filter((event) => event.author === "user" && event.text === "also check the edge case").length,
+    1,
+  );
+  assert.equal(transcript.filter((event) => event.author === "gaia").length, 1, "the steer rode into the single running turn, not a second one");
+  const finalState = await room.state();
+  assert.equal(finalState.queue ?? undefined, undefined, "resume-as-steer never lands in the durable queue");
 });

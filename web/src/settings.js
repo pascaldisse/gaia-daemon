@@ -4,10 +4,11 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { loadSettingsFile, saveSettingsFile, setKeepAwake } from "./actions.js";
+import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
+import { DEFAULT_PET_NAME, petEnabled, petName, setPetEnabled, setPetName } from "./pet.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
@@ -19,7 +20,7 @@ import { state } from "./state.js";
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
 /** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
-/** @typedef {{ id: string, harness: string, label?: string }} Account */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string }} Account */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarness */
 /** @typedef {{ accounts: Account[], harnesses: AccountHarness[] }} AccountsCatalog */
 /** @typedef {{
@@ -27,6 +28,7 @@ import { state } from "./state.js";
  *   harness: string,
  *   status: "starting"|"awaiting-signin"|"awaiting-code"|"done"|"error"|"cancelled",
  *   url?: string,
+ *   code?: string,
  *   account?: Account,
  *   error?: string,
  * }} LoginSession */
@@ -67,7 +69,7 @@ export function closeSettings() {
   markDirty("settings");
 }
 
-/** @param {"general"|"workspace"|"agents"} tab */
+/** @param {"general"|"workspace"|"agents"|"accounts"} tab */
 async function selectTab(tab) {
   state.settingsTab = tab;
   markDirty("settings");
@@ -81,6 +83,8 @@ async function selectTab(tab) {
     const group = selectedAgentGroup();
     if (group) await selectAgent(group.id);
     else clearFile();
+  } else if (tab === "accounts") {
+    clearFile();
   }
 }
 
@@ -201,6 +205,7 @@ function SettingsModal() {
     { id: "general", label: "General" },
     { id: "workspace", label: "Workspace" },
     { id: "agents", label: "Agents" },
+    { id: "accounts", label: "Accounts" },
   ]);
   return h(
     "div",
@@ -233,28 +238,70 @@ function SettingsModal() {
       h(
         "div",
         { class: "settings2-body" },
-        state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : AgentsTab(),
+        state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : state.settingsTab === "agents" ? AgentsTab() : AccountsSection(),
       ),
-      AccountsSection(),
     ),
   );
 }
 
 // ---------------------------------------------------------------------------
-// General tab: just the keep-awake toggle (only where the daemon supports it).
+// General tab: "your name" (always) + the keep-awake toggle (only where the
+// daemon supports it).
 
 function GeneralTab() {
-  if (!state.keepAwake.supported) return h("div", { class: "empty", text: "no general settings on this host" });
-  return h(
-    "label",
-    { class: "settings2-row" },
-    h("span", { text: "Keep laptop awake while GAIA runs" }),
-    h("input", {
-      type: "checkbox",
-      checked: state.keepAwake.enabled,
-      onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
-    }),
+  const rows = [
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Your name" }),
+      h("input", {
+        type: "text",
+        placeholder: "user",
+        value: state.userName,
+        // Fires on blur/Enter, not per keystroke — matches the checkbox
+        // row's onchange below, and avoids a request per typed character.
+        onchange: (event) => void setUserName(/** @type {HTMLInputElement} */ (event.target).value),
+      }),
+    ),
+  ];
+  if (state.keepAwake.supported) {
+    rows.push(
+      h(
+        "label",
+        { class: "settings2-row" },
+        h("span", { text: "Keep laptop awake while GAIA runs" }),
+        h("input", {
+          type: "checkbox",
+          checked: state.keepAwake.enabled,
+          onchange: (event) => void setKeepAwake(/** @type {HTMLInputElement} */ (event.target).checked),
+        }),
+      ),
+    );
+  }
+  rows.push(
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Show animated pet" }),
+      h("input", {
+        type: "checkbox",
+        checked: petEnabled(),
+        onchange: (event) => setPetEnabled(/** @type {HTMLInputElement} */ (event.target).checked),
+      }),
+    ),
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Pet package name" }),
+      h("input", {
+        type: "text",
+        value: petName(),
+        placeholder: DEFAULT_PET_NAME,
+        onchange: (event) => setPetName(/** @type {HTMLInputElement} */ (event.target).value),
+      }),
+    ),
   );
+  return h("div", {}, rows);
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +410,8 @@ let loginPollTimer;
 let loginLabelDrafts = {};
 /** @type {string} */
 let loginCodeDraft = "";
+/** @type {Record<string, { label: string, email: string }>} */
+let accountDrafts = {};
 
 /** @param {LoginSession["status"]} status @returns {boolean} */
 function isActiveLoginStatus(status) {
@@ -489,6 +538,29 @@ async function removeAccount(id) {
   }
 }
 
+/** @param {Account} account */
+function accountDraft(account) {
+  return (accountDrafts[account.id] ??= { label: account.label ?? "", email: account.email ?? "" });
+}
+
+/** @param {Account} account */
+async function saveAccount(account) {
+  accountsError = "";
+  accountsNotice = "";
+  const draft = accountDraft(account);
+  try {
+    await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label: draft.label.trim() || null, email: draft.email.trim() || null }),
+    });
+    accountsNotice = `account ${account.id} saved`;
+    await loadAccounts();
+  } catch (error) {
+    accountsError = error instanceof Error ? error.message : String(error);
+    markDirty("settings");
+  }
+}
+
 async function loadAccounts() {
   try {
     /** @type {{ accounts?: Account[], harnesses?: AccountHarness[] }} */
@@ -503,11 +575,33 @@ async function loadAccounts() {
 
 /** @param {Account} account @returns {HTMLElement} */
 function AccountRow(account) {
+  const draft = accountDraft(account);
   return h(
     "div",
-    { class: "settings2-row" },
-    h("div", {}, h("span", { text: account.label ?? account.id }), h("small", { class: "muted", text: ` ${account.id}` })),
-    h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
+    { class: "account-row" },
+    h("div", { class: "account-row-head" }, h("strong", { text: account.id }), h("small", { class: "muted", text: account.email ? ` ${account.email}` : " email not recorded" })),
+    h(
+      "div",
+      { class: "settings2-field-control" },
+      h("input", {
+        type: "text",
+        placeholder: "account name",
+        value: draft.label,
+        oninput: (event) => {
+          draft.label = /** @type {HTMLInputElement} */ (event.target).value;
+        },
+      }),
+      h("input", {
+        type: "email",
+        placeholder: "email address",
+        value: draft.email,
+        oninput: (event) => {
+          draft.email = /** @type {HTMLInputElement} */ (event.target).value;
+        },
+      }),
+      h("button", { onclick: () => void saveAccount(account), text: "Save" }),
+      h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
+    ),
   );
 }
 
@@ -555,6 +649,7 @@ function LoginSessionPanel(session) {
         session.url ? h("a", { href: session.url, target: "_blank", rel: "noreferrer", text: "Open sign-in page" }) : h("span", { class: "muted", text: "waiting for a sign-in link…" }),
         cancelButton,
       ),
+      session.code ? h("div", { class: "settings2-row" }, h("span", { text: "Enter this code on the page: " }), h("code", { text: session.code })) : null,
       h("small", { class: "muted", text: "a browser may also have opened on the machine running gaia — sign in there, then come back" }),
     );
   }
@@ -598,10 +693,13 @@ function HarnessAccountsGroup(harness) {
 }
 
 function AccountsSection() {
+  const managed = new Set((accountsCatalog?.accounts ?? []).map((account) => account.id));
+  const usage = Object.values(state.usage).filter((limits) => managed.has(limits.account));
   return h(
     "div",
     { class: "settings2-body" },
     h("h3", { text: "Accounts" }),
+    h("p", { class: "muted", text: "Manage the named logins GAIA can bind to agents. Room usage is scoped to that room; this page is the only all-account overview." }),
     accountsError ? h("div", { class: "settings2-error-line", text: accountsError }) : null,
     accountsNotice ? h("div", { class: "settings2-notice", text: accountsNotice }) : null,
     accountsCatalog === null
@@ -609,6 +707,18 @@ function AccountsSection() {
       : accountsCatalog.harnesses.length === 0
         ? h("div", { class: "empty", text: "no harnesses support accounts" })
         : accountsCatalog.harnesses.map((harness) => HarnessAccountsGroup(harness)),
+    h("h3", { text: "Usage · all managed accounts" }),
+    usage.length === 0
+      ? h("div", { class: "empty", text: "no usage snapshots for managed accounts yet" })
+      : usage.map((limits) => {
+          const account = accountsCatalog?.accounts.find((item) => item.id === limits.account);
+          return h(
+            "div",
+            { class: "settings2-row account-usage-row" },
+            h("span", { text: account?.label || account?.email || limits.account }),
+            h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") }),
+          );
+        }),
   );
 }
 
@@ -913,13 +1023,50 @@ function SelectWidget(entry, ctx) {
   return select;
 }
 
+/** Whether a skill group currently has a checked option. @param {HTMLDetailsElement} group */
+function multiselectGroupHasChecked(group) {
+  return [...group.querySelectorAll('input[type="checkbox"]')].some((box) => /** @type {HTMLInputElement} */ (box).checked);
+}
+
+/** Rewrite every grouped multiselect header with its live checked/total count. @param {HTMLElement} container */
+function updateMultiselectGroupCounts(container) {
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    const boxes = [...group.querySelectorAll('input[type="checkbox"]')];
+    const count = group.querySelector(".settings2-skill-group-count");
+    if (count) count.textContent = `${boxes.filter((box) => /** @type {HTMLInputElement} */ (box).checked).length}/${boxes.length}`;
+  }
+}
+
+/** Filter only the rendered skills, retaining hidden checked boxes for saving.
+ * @param {HTMLElement} container @param {string} query */
+function filterMultiselectGroups(container, query) {
+  const needle = query.trim().toLowerCase();
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    let anyVisible = false;
+    for (const option of group.querySelectorAll(".settings2-multi-option")) {
+      const visible = !needle || (option.getAttribute("data-skill-name") ?? "").includes(needle);
+      /** @type {HTMLElement} */ (option).style.display = visible ? "" : "none";
+      if (visible) anyVisible = true;
+    }
+    /** @type {HTMLElement} */ (group).style.display = anyVisible ? "" : "none";
+    /** @type {HTMLDetailsElement} */ (group).open = needle ? anyVisible : multiselectGroupHasChecked(/** @type {HTMLDetailsElement} */ (group));
+  }
+}
+
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
 function MultiselectWidget(entry, ctx) {
   const rawValue = getJsonPathValue(ctx.draft, entry.path);
   const inherited = inheritedFieldValue(entry, ctx);
   const values = Array.isArray(rawValue) ? rawValue.map(String) : Array.isArray(inherited) ? inherited.map(String) : [];
-  const container = /** @type {HTMLDivElement} */ (h("div", { class: "settings2-multiselect" }));
-  for (const option of entry.hint.options ?? []) {
+  const options = /** @type {FieldHintOption[]} */ (entry.hint.options ?? []);
+  const known = new Set(options.map((option) => option.value));
+  // Preserve stale configured values instead of silently dropping them on save.
+  const allOptions = [...options, ...values.filter((value) => !known.has(value)).map((value) => ({ value, group: "other" }))];
+  const grouped = allOptions.some((option) => option.group);
+  const container = /** @type {HTMLDivElement} */ (h("div", { class: grouped ? "settings2-multi-grouped" : "settings2-multiselect" }));
+
+  /** @param {FieldHintOption} option */
+  const optionRow = (option) => {
     const box = /** @type {HTMLInputElement} */ (
       h("input", {
         type: "checkbox",
@@ -937,8 +1084,49 @@ function MultiselectWidget(entry, ctx) {
     );
     const name = option.label ?? option.value;
     const title = option.description ? `${name} — ${option.description}` : name;
-    container.append(h("label", { class: "settings2-multi-option", title }, box, h("span", { text: name })));
+    return h(
+      "label",
+      { class: "settings2-multi-option", title, "data-skill-name": name.toLowerCase() },
+      box,
+      h("span", { text: name }),
+      option.badge ? h("small", { class: "settings2-multi-badge", text: option.badge }) : null,
+    );
+  };
+
+  if (!grouped) {
+    for (const option of allOptions) container.append(optionRow(option));
+    return container;
   }
+
+  container.append(
+    h("input", {
+      type: "search",
+      class: "settings2-skill-filter",
+      placeholder: "filter skills…",
+      oninput: (/** @type {Event} */ event) => filterMultiselectGroups(container, /** @type {HTMLInputElement} */ (event.target).value),
+    }),
+  );
+  /** @type {Map<string, FieldHintOption[]>} */
+  const groups = new Map();
+  for (const option of allOptions) {
+    const group = option.group ?? "other";
+    const bucket = groups.get(group);
+    if (bucket) bucket.push(option);
+    else groups.set(group, [option]);
+  }
+  for (const [group, groupOptions] of groups) {
+    const details = /** @type {HTMLDetailsElement} */ (
+      h(
+        "details",
+        { class: "settings2-skill-group" },
+        h("summary", {}, h("span", { class: "settings2-skill-group-name", text: group }), h("span", { class: "settings2-skill-group-count" })),
+        h("div", { class: "settings2-multiselect" }, groupOptions.map(optionRow)),
+      )
+    );
+    details.open = groupOptions.some((option) => values.includes(option.value));
+    container.append(details);
+  }
+  updateMultiselectGroupCounts(container);
   return container;
 }
 

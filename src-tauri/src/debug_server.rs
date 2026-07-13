@@ -4,7 +4,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -555,31 +554,139 @@ fn broadcast_cdp_console(state: &Arc<DebugState>, value: &Value) {
     clients.retain(|_, sender| sender.send(event.clone()).is_ok());
 }
 
+/// Capture the webview's own rendered content as PNG bytes.
+///
+/// This snapshots the WKWebView **in-process** (`takeSnapshotWithConfiguration:`)
+/// rather than shelling out to macOS `screencapture -R<rect>`. The old path
+/// captured a *screen region*, which requires the Screen Recording (TCC)
+/// permission — and because the app is ad-hoc signed, every rebuild's cdhash is
+/// a "new" identity to TCC, so the grant never stuck and macOS re-prompted
+/// forever. A webview self-snapshot needs no Screen Recording permission at all
+/// and also captures exactly the page content regardless of overlapping windows.
 fn screenshot_bytes(app: tauri::AppHandle, label: &str) -> Result<Vec<u8>, String> {
     let window = app
         .get_webview_window(label)
         .ok_or_else(|| format!("no {label} window"))?;
-    let pos = window.outer_position().map_err(|e| e.to_string())?;
-    let size = window.outer_size().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let x = (f64::from(pos.x) / scale).round() as i32;
-    let y = (f64::from(pos.y) / scale).round() as i32;
-    let w = (f64::from(size.width) / scale).round() as i32;
-    let h = (f64::from(size.height) / scale).round() as i32;
-    let rect = format!("{x},{y},{w},{h}");
-    let path = "/tmp/gaia-shell-debug-shot.png";
-    let output = Command::new("screencapture")
-        .args(["-x", &format!("-R{rect}"), path])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "screencapture failed for rect {rect}: {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    // `with_webview` dispatches its closure onto the main thread (WebKit is
+    // main-thread-only) and returns without blocking. `takeSnapshot` is async:
+    // its completion handler — also on the main thread — sends the PNG back over
+    // the channel. We block only *this* (debug-server) thread on the receiver,
+    // so the main runloop stays free to run the snapshot and fire the handler.
+    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>();
+    window
+        .with_webview(move |webview| {
+            capture_webview_png(webview.inner(), tx);
+        })
+        .map_err(|e| format!("with_webview failed: {e}"))?;
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(result) => result,
+        Err(e) => Err(format!("webview snapshot did not complete: {e}")),
     }
-    std::fs::read(path).map_err(|e| e.to_string())
+}
+
+/// macOS: run `WKWebView.takeSnapshotWithConfiguration:completionHandler:` and
+/// send the resulting PNG bytes over `tx`. Called on the main thread.
+#[cfg(target_os = "macos")]
+fn capture_webview_png(
+    wk_webview: *mut std::ffi::c_void,
+    tx: mpsc::Sender<Result<Vec<u8>, String>>,
+) {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    if wk_webview.is_null() {
+        let _ = tx.send(Err("null WKWebView handle".into()));
+        return;
+    }
+    let webview = wk_webview.cast::<AnyObject>();
+
+    // Retained by the ObjC runtime (completion handlers are Block_copy'd) until
+    // it fires, so it safely outlives this function.
+    let handler = RcBlock::new(move |image: *mut AnyObject, error: *mut AnyObject| {
+        let result = unsafe { nsimage_to_png(image, error) };
+        let _ = tx.send(result);
+    });
+
+    unsafe {
+        // nil configuration → snapshot the visible viewport at native scale.
+        let config: *mut AnyObject = std::ptr::null_mut();
+        let _: () = msg_send![
+            &*webview,
+            takeSnapshotWithConfiguration: config,
+            completionHandler: &*handler,
+        ];
+    }
+}
+
+/// Convert the `NSImage*` from `takeSnapshot` into PNG bytes:
+/// NSImage → TIFF NSData → NSBitmapImageRep → PNG NSData → copied Vec.
+#[cfg(target_os = "macos")]
+unsafe fn nsimage_to_png(
+    image: *mut objc2::runtime::AnyObject,
+    error: *mut objc2::runtime::AnyObject,
+) -> Result<Vec<u8>, String> {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    if image.is_null() {
+        let detail = if error.is_null() {
+            "nil snapshot image".to_string()
+        } else {
+            ns_error_string(error)
+        };
+        return Err(format!("takeSnapshot failed: {detail}"));
+    }
+
+    let tiff: *mut AnyObject = msg_send![image, TIFFRepresentation];
+    if tiff.is_null() {
+        return Err("NSImage.TIFFRepresentation returned nil".into());
+    }
+    let rep: *mut AnyObject = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff];
+    if rep.is_null() {
+        return Err("NSBitmapImageRep imageRepWithData returned nil".into());
+    }
+    let props: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
+    // NSBitmapImageFileType::PNG == 4
+    let png: *mut AnyObject = msg_send![rep, representationUsingType: 4usize, properties: props];
+    if png.is_null() {
+        return Err("PNG representationUsingType returned nil".into());
+    }
+    let len: usize = msg_send![png, length];
+    let bytes: *const u8 = msg_send![png, bytes];
+    if bytes.is_null() || len == 0 {
+        return Err("PNG NSData was empty".into());
+    }
+    Ok(std::slice::from_raw_parts(bytes, len).to_vec())
+}
+
+/// Best-effort `NSError.localizedDescription` → String.
+#[cfg(target_os = "macos")]
+unsafe fn ns_error_string(error: *mut objc2::runtime::AnyObject) -> String {
+    use objc2::runtime::AnyObject;
+    use objc2::msg_send;
+
+    let desc: *mut AnyObject = msg_send![error, localizedDescription];
+    if desc.is_null() {
+        return "unknown error".into();
+    }
+    let utf8: *const std::ffi::c_char = msg_send![desc, UTF8String];
+    if utf8.is_null() {
+        return "unknown error".into();
+    }
+    std::ffi::CStr::from_ptr(utf8)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Non-macOS (iOS): the debug server compiles under the `webkit` feature there,
+/// but `screencapture`/AppKit never worked on iOS anyway. Fail cleanly.
+#[cfg(not(target_os = "macos"))]
+fn capture_webview_png(
+    _wk_webview: *mut std::ffi::c_void,
+    tx: mpsc::Sender<Result<Vec<u8>, String>>,
+) {
+    let _ = tx.send(Err("webview snapshot is only implemented on macOS".into()));
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

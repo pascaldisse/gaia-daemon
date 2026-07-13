@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, selectRoom, sendMessage, stopAll, uploadAttachment } from "./actions.js";
+import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -14,7 +14,7 @@ import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
-import { isBusy, runningSummonRooms, state } from "./state.js";
+import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
   abortActiveTranscription,
@@ -47,6 +47,8 @@ let bannerEl = null;
 let bannerLabelEl = null;
 /** @type {HTMLElement|null} */
 let bannerBarEl = null;
+/** @type {HTMLButtonElement|null} */
+let stopBtnEl = null;
 /** @type {HTMLElement|null} */
 let summonListEl = null;
 /** @type {HTMLElement|null} */
@@ -63,6 +65,8 @@ let thinkingWrapEl = null;
 let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
+/** @type {HTMLElement|null} */
+let ultrawhipWrapEl = null;
 
 // Draft persistence (composer durability — "nothing is ever lost"): the
 // in-progress text survives a reload/crash and is restored per-room.
@@ -138,13 +142,16 @@ export function initComposer() {
   // Expandable list of this room's running summons; each row jumps to its
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
+  stopBtnEl = /** @type {HTMLButtonElement} */ (
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopActiveRoom() })
+  );
   bannerEl = h(
     "div",
     { class: "running-banner", hidden: true },
     h("span", { class: "running-dot" }),
     bannerLabelEl,
     bannerBarEl,
-    h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
+    stopBtnEl,
     summonListEl,
   );
   editBannerEl = h(
@@ -159,6 +166,12 @@ export function initComposer() {
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
   modelWrapEl = h("div", { class: "model-wrap" });
   voiceWrapEl = h("div", { class: "voice-wrap" });
+  ultrawhipWrapEl = h("span", {
+    class: "ultrawhip-chip",
+    hidden: true,
+    title: "UltraWhip is on — an auto-repeating steer lands every N tool calls, in whatever turn is running. /ultrawhip to toggle off.",
+    text: "🖤 UltraWhip",
+  });
 
   form.replaceChildren(
     autocompleteEl,
@@ -171,12 +184,36 @@ export function initComposer() {
     attachmentsEl,
     dictationStatusEl,
     h("div", { class: "input-shell" }, textarea, sendButton),
-    h("div", { class: "composer-row" }, targetStatusEl, thinkingWrapEl, modelWrapEl, h("div", { class: "composer-spacer" }), voiceWrapEl),
+    h(
+      "div",
+      { class: "composer-row" },
+      targetStatusEl,
+      thinkingWrapEl,
+      modelWrapEl,
+      ultrawhipWrapEl,
+      h("div", { class: "composer-spacer" }),
+      voiceWrapEl,
+    ),
   );
 }
 
 function renderComposer() {
-  if (!textarea || !sendButton || !autocompleteEl || !bannerEl || !bannerLabelEl || !editBannerEl || !attachmentsEl || !dictationStatusEl || !targetStatusEl || !thinkingWrapEl || !modelWrapEl || !voiceWrapEl) return;
+  if (
+    !textarea ||
+    !sendButton ||
+    !autocompleteEl ||
+    !bannerEl ||
+    !bannerLabelEl ||
+    !editBannerEl ||
+    !attachmentsEl ||
+    !dictationStatusEl ||
+    !targetStatusEl ||
+    !thinkingWrapEl ||
+    !modelWrapEl ||
+    !voiceWrapEl ||
+    !ultrawhipWrapEl
+  )
+    return;
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
 
@@ -229,6 +266,18 @@ function renderComposer() {
   // the bar between it and ■ stop shows the estimated fraction.
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
+  // The stop button (and Esc) targets ONLY this room's own running turn —
+  // never summons. Any escalating/second-press behavior was removed on
+  // purpose: UI or stream delay made a second press land on the summons by
+  // accident. Ctrl+C (stopAll) is the one deliberate kill-everything path.
+  if (stopBtnEl) {
+    const roomBusy = Boolean(activeTask(snapshot));
+    stopBtnEl.disabled = !roomBusy;
+    stopBtnEl.textContent = "■ stop";
+    stopBtnEl.title = roomBusy
+      ? "stop this room's turn (Esc) — summons unaffected; Ctrl+C stops everything"
+      : "nothing running in this room — Ctrl+C stops summons too";
+  }
   const compactingAgent = busy ? (snapshot?.agents ?? []).find((agent) => agent.status === "compacting" && agent.compact) : undefined;
   if (bannerBarEl) {
     bannerBarEl.hidden = !compactingAgent;
@@ -275,6 +324,20 @@ function renderComposer() {
   }
 
   targetStatusEl.textContent = composerTargetStatus(snapshot, state.composerText);
+
+  // Pinned, always visible (not gated on `busy`) — /ultrawhip stays live
+  // across turns until toggled off, so the indicator has to too.
+  const ambientWatchdog = snapshot?.room?.ambientWatchdog;
+  ultrawhipWrapEl.hidden = !ambientWatchdog;
+  // The writing plugin (e.g. /ultrawhip, /ultralove) stamps its own display
+  // label on the file it drops — generic and plugin-agnostic, same as the
+  // watchdog mechanism itself. No label (older plugin, hand-edited file) ->
+  // fall back to the original generic wording rather than assume a specific
+  // plugin is the one running.
+  if (ambientWatchdog) {
+    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? "🖤 UltraWhip"} ·${ambientWatchdog.toolCalls}`;
+    ultrawhipWrapEl.title = `An auto-repeating steer lands every ${ambientWatchdog.toolCalls} tool calls, in whatever turn is running. Toggle off with the command that turned it on (e.g. /ultrawhip, /ultralove).`;
+  }
 
   const thinking = ThinkingControl(snapshot, state.composerText);
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
@@ -513,7 +576,12 @@ function cancelEditing() {
 /** @param {KeyboardEvent} event */
 function onComposerKeydown(event) {
   const completion = state.completionHidden ? null : completionFor(state.composerText);
-  if (completion && ["ArrowDown", "ArrowUp", "Tab", "Escape", "Enter"].includes(event.key)) {
+  // A no-match completion is informational only. In particular, absolute
+  // paths begin with `/`; swallowing Enter here made a pasted path impossible
+  // to send until the user manually dismissed the "no matches" row.
+  const navigatesCompletion = ["ArrowDown", "ArrowUp", "Escape"].includes(event.key);
+  const acceptsCompletion = (completion?.options.length ?? 0) > 0 && ["Tab", "Enter"].includes(event.key);
+  if (completion && (navigatesCompletion || acceptsCompletion)) {
     event.preventDefault();
     const count = Math.max(1, completion.options.length);
     if (event.key === "ArrowDown") state.completionIndex = (state.completionIndex + 1) % count;
@@ -1087,8 +1155,10 @@ export function installComposerRouting() {
         cancelDictation();
         return;
       }
-      // Panic stop: Ctrl+C or Esc aborts the running turn AND all summoned
-      // workers, from anywhere in the app, for every agent/harness.
+      // Stop keys, from anywhere in the app, for every agent/harness:
+      // Ctrl+C is the ONLY summon-killer — whole tree (active turn + all
+      // summons) in one press. Esc stops just the active room's turn and can
+      // never reach summons (delay made escalation misfire — removed).
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {
         event.preventDefault();
         void stopAll();
@@ -1096,9 +1166,9 @@ export function installComposerRouting() {
       }
       // With the Dario popup open, Escape means "close the popup" (keys.js),
       // not panic-stop — his own review summon would be collateral otherwise.
-      if (event.key === "Escape" && isBusy() && !state.dario.open) {
+      if (event.key === "Escape" && Boolean(activeTask(state.snapshot)) && !state.dario.open) {
         event.preventDefault();
-        void stopAll();
+        void stopActiveRoom();
         return;
       }
 

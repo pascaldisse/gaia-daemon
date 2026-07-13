@@ -10,13 +10,14 @@
 // item/tool/call. Threads persist across restarts via the uniform SessionMap
 // store + thread/resume; a failed resume falls back to a fresh thread.
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type McpServerConfig, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { nativeImageAttachments } from "../core/attachments.js";
 import { resolveMcpServers } from "../core/config.js";
-import { workspacePaths } from "../core/paths.js";
+import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import {
@@ -33,8 +34,8 @@ import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { buildPiTools } from "./tools.js";
-import { fetchChatGptUsage, OPENAI_USAGE_ACCOUNT } from "./usage.js";
+import { agentRoster, buildPiTools } from "./tools.js";
+import { emailFromJwt, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Internal JSON-RPC client abstraction (injectable for tests)
@@ -79,6 +80,21 @@ const DEFAULT_CLIENT_INFO = {
 const DEFAULT_CAPABILITIES = {
   experimentalApi: true,
 };
+
+/** Convert an app-server tool diagnostic into displayable stream content. */
+function toolErrorText(error: { message?: unknown } | string | null | undefined): string | undefined {
+  if (typeof error === "string") return error || undefined;
+  if (!error || typeof error.message !== "string" || !error.message) return undefined;
+  return error.message;
+}
+
+/** Keep command output and its failure diagnostic together in the tool result. */
+function toolResult(output: string | null | undefined, error: string | undefined, exitCode: number | null | undefined): string | undefined {
+  const outputPart = output?.trim() ? output : undefined;
+  const parts = [outputPart, error, exitCode !== undefined && exitCode !== null && exitCode !== 0 ? `Command exited with status ${exitCode}.` : undefined]
+    .filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join("\n") : undefined;
+}
 
 function spawnCodexClient(cwd: string, env: typeof process.env): CodexClient {
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -318,7 +334,7 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
 // (see CODEX_SANDBOX_MODE), so the tools field is a real control surface and
 // stays visible in settings (granularTools: true).
 const CODEX_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon"],
+  gaiaTools: ["memory", "recall", "summon", "resume"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
@@ -356,6 +372,7 @@ export class CodexRuntime implements AgentRuntime {
   private activeTurn: { threadId: string; turnId: string } | null = null;
   private readonly clientFactory: CodexClientFactory;
   private readonly label: ModelLabel;
+  private lastRateLimits: { usedPercent?: number; planType?: string; resetsAt?: number; windowMinutes?: number } | null = null;
 
   constructor(options: CodexRuntimeOptions) {
     this.workspace = options.workspace;
@@ -408,9 +425,15 @@ export class CodexRuntime implements AgentRuntime {
 
     // Start the turn. Pasted images ride as localImage input items (the same
     // shape `codex -i <file>` produces); the app-server reads the paths itself.
-    // Reasoning summary is ALWAYS "detailed" — forced thread-wide via
-    // configOverride() at thread/start/resume (see there for why); no need to
-    // repeat it per turn. Effort DOES need to travel per turn/start: it's the
+    // Reasoning summary is ALWAYS "detailed" — configOverride() also sets it
+    // thread-wide at thread/start/resume, but that alone doesn't stick: a live
+    // rollout (gpt-5.6-terra, thread/start config.model_reasoning_summary=
+    // "detailed") recorded turn_context.summary as "auto" regardless, while
+    // turn_context.effort correctly reflected the per-turn `effort` sent
+    // below. TurnStartParams has its own `summary` override field ("Override
+    // the reasoning summary for this turn and subsequent turns") — same shape
+    // as `effort` — so it has to travel per turn/start too, not just once at
+    // thread creation. Effort DOES need to travel per turn/start: it's the
     // one knob a per-turn override (e.g. voice forcing thinking off) can
     // change mid-thread, mirroring claude.ts's effortFor(thinkingOverride ??
     // this.agent.thinking).
@@ -422,6 +445,7 @@ export class CodexRuntime implements AgentRuntime {
         ...nativeImageAttachments(input.attachments).map((file) => ({ type: "localImage", path: file.path })),
       ],
       model: this.agent.model?.name ?? null,
+      summary: "detailed",
       ...(effort ? { effort } : {}),
     })) as { turn: { id: string; status: string } };
 
@@ -432,9 +456,22 @@ export class CodexRuntime implements AgentRuntime {
     // Per-turn tracking
     const toolNames = new Map<string, string>();
     const reasoningStarted = new Set<string>();
+    // Last transient CLI notice ("Reconnecting... 2/5") — swallowed, not fatal;
+    // used as the failure headline if turn/completed later reports failed.
+    let lastTransientError: string | undefined;
 
     client.setNotificationHandler((msg) => {
       const { method, params } = msg;
+      const rl = (params as { rate_limits?: any; rateLimits?: any } | undefined);
+      const limits = rl?.rate_limits ?? rl?.rateLimits;
+      if (limits?.primary) {
+        this.lastRateLimits = {
+          usedPercent: limits.primary.used_percent ?? limits.primary.usedPercent,
+          planType: limits.plan_type ?? limits.planType,
+          resetsAt: limits.primary.resets_at ?? limits.primary.resetsAt,
+          windowMinutes: limits.primary.window_minutes ?? limits.primary.windowMinutes,
+        };
+      }
       switch (method) {
         case "model/rerouted": {
           const p = params as { fromModel?: string; toModel: string; reason?: string; threadId: string; turnId: string };
@@ -514,7 +551,7 @@ export class CodexRuntime implements AgentRuntime {
                 summary?: string[];
                 content?: string[];
                 result?: unknown;
-                error?: unknown;
+                error?: { message?: unknown } | string | null;
                 success?: boolean | null;
               };
             }
@@ -547,12 +584,17 @@ export class CodexRuntime implements AgentRuntime {
                 ? item.success === false
                 : !!item.error;
 
+          // The app-server leaves `aggregatedOutput` empty for some failed
+          // commands and puts the useful diagnostic on `error` instead.  Do
+          // not turn that into an empty tool row: every failure needs a result
+          // the uniform stream/UI can persist and render.
+          const error = toolErrorText(item.error);
           const res =
             item.type === "commandExecution"
-              ? item.aggregatedOutput
+              ? toolResult(item.aggregatedOutput, error, item.exitCode)
               : item.type === "dynamicToolCall"
-                ? item.result ?? item.arguments
-                : item.result;
+                ? item.result ?? error ?? item.arguments
+                : item.result ?? error;
 
           channel.push({ type: "tool-end", toolName: tn, toolCallId: item.id, result: res, isError: isErr });
           break;
@@ -600,7 +642,7 @@ export class CodexRuntime implements AgentRuntime {
         case "turn/completed": {
           const t = (params as { turn: { status: string; error?: { message?: string } } }).turn;
           if (t.status === "failed") {
-            channel.fail(new Error(t.error?.message ?? "Turn failed."));
+            channel.fail(new Error(this.failMessage(t.error?.message ?? lastTransientError ?? "Turn failed.")));
           }
           channel.close();
           break;
@@ -608,7 +650,30 @@ export class CodexRuntime implements AgentRuntime {
 
         case "error": {
           const e = (params as { error: { message: string } }).error;
-          channel.fail(new Error(e.message));
+          // A reconnect notice ("Reconnecting... 2/5") arrives as an error
+          // notification while the CLI is still retrying and the turn usually
+          // recovers — failing here kills a turn the CLI goes on to complete
+          // (live-caught 2026-07-11: daemon failed the turn at reconnect 2/5;
+          // the rollout shows it completing 21s later). Stash it and let
+          // turn/completed stay the authoritative terminal event.
+          //
+          // This applies to EVERY reconnect notice, including the last one
+          // ("N/N"): "N/N" means the CLI is starting attempt N of N, not that
+          // it has exhausted them — a strict `<` comparison here originally
+          // treated the final attempt as already-fatal and re-introduced the
+          // exact premature-fail bug this fix exists for, just shifted to the
+          // boundary (live-caught again 2026-07-11: two fresh turns both died
+          // at "Reconnecting... 5/5" from a daemon build that postdates the
+          // `<` fix). If the CLI truly gives up, it reports that itself via a
+          // distinct terminal error (not this "Reconnecting" phrasing) or via
+          // turn/completed(status:"failed") — both still fail immediately
+          // below/above. Every other error still fails immediately.
+          const reconnect = /^Reconnecting\W*\s*(\d+)\s*\/\s*(\d+)/.exec(e.message);
+          if (reconnect) {
+            lastTransientError = e.message;
+            break;
+          }
+          channel.fail(new Error(this.failMessage(e.message)));
           channel.close();
           break;
         }
@@ -620,6 +685,16 @@ export class CodexRuntime implements AgentRuntime {
     } finally {
       this.activeTurn = null;
     }
+  }
+
+  // The CLI's last words on a dead stream are noise ("Reconnecting... 2/5");
+  // the rate-limit snapshot is the diagnosis — attach it.
+  private failMessage(base: string): string {
+    const rl = this.lastRateLimits;
+    if (!rl || (rl.usedPercent ?? 0) < 100) return base;
+    const resets = rl.resetsAt ? new Date(rl.resetsAt * 1000).toISOString() : "";
+    const win = rl.windowMinutes ? `${Math.round(rl.windowMinutes / 1440)}-day window` : "window";
+    return `${base} — ChatGPT plan usage exhausted: ${rl.usedPercent}% of the ${win} used (plan: ${rl.planType ?? "unknown"}${resets ? `, resets ${resets}` : ""})`;
   }
 
   // -----------------------------------------------------------------------
@@ -784,6 +859,10 @@ export class CodexRuntime implements AgentRuntime {
     this.roomTools.delete(roomId);
   }
 
+  refreshContext(roomId: string): void {
+    this.threads.refreshPrompt(roomId);
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -826,12 +905,15 @@ export class CodexRuntime implements AgentRuntime {
   private async startThread(client: CodexClient, input: AgentInput): Promise<ThreadState> {
     // Gaia tools are native dynamic tools here (self-describing, like Pi's
     // in-process tools), so the system prompt carries no CLI pointer.
-    const baseInstructions = await buildInlineSystemPrompt({
-      workspace: this.workspace,
-      agent: this.agent,
-      role: input.activeRole,
-      toolPointer: "",
-    });
+    const roleKey = input.activeRole?.name ?? "";
+    const baseInstructions = await this.threads.systemPrompt(input.roomId, roleKey, () =>
+      buildInlineSystemPrompt({
+        workspace: this.workspace,
+        agent: this.agent,
+        role: input.activeRole,
+        toolPointer: "",
+      }),
+    );
     const tools = await this.buildRoomTools(input.roomId);
 
     const response = (await client.request("thread/start", {
@@ -867,12 +949,15 @@ export class CodexRuntime implements AgentRuntime {
     activeRole?: ResolvedRole,
   ): Promise<ThreadState | undefined> {
     try {
-      const baseInstructions = await buildInlineSystemPrompt({
-        workspace: this.workspace,
-        agent: this.agent,
-        role: activeRole,
-        toolPointer: "",
-      });
+      const roleKey = activeRole?.name ?? "";
+      const baseInstructions = await this.threads.systemPrompt(roomId, roleKey, () =>
+        buildInlineSystemPrompt({
+          workspace: this.workspace,
+          agent: this.agent,
+          role: activeRole,
+          toolPointer: "",
+        }),
+      );
       await this.buildRoomTools(roomId);
       const response = (await client.request("thread/resume", {
         threadId: state.threadId,
@@ -907,6 +992,7 @@ export class CodexRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir: workspacePaths.roomDir(this.cwd, roomId),
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     })) as PiToolLike[];
@@ -955,7 +1041,14 @@ export class CodexRuntime implements AgentRuntime {
    * for every agent, across every harness, unconditionally (see MEMORY: reveal
    * thinking is always true for all agents across all harnesses) — codex was
    * simply never wired to request it. Returns {} only when nothing else
-   * applies; this field itself is never conditional. */
+   * applies; this field itself is never conditional.
+   *
+   * This thread-level value alone is NOT sufficient, though (see send()):
+   * a live rollout showed turn_context.summary resolving to "auto" despite
+   * this override, so `turn/start` also sends `summary: "detailed"` per turn
+   * — that's the copy that's actually verified to stick. Kept here too as the
+   * thread's own baseline (covers thread/resume and any turn/start call site
+   * that might omit it). */
   private configOverride(): { config?: Record<string, unknown> } {
     const config: Record<string, unknown> = { model_reasoning_summary: "detailed" };
     const servers = resolveMcpServers(this.workspace.config, this.agent);
@@ -983,10 +1076,10 @@ export class CodexRuntime implements AgentRuntime {
 // provider client is harness/usage.ts (RULE #0: shared code sees only the
 // declared usageAccounts data).
 
-async function probeCodexUsage(): Promise<UsageProbeResult> {
+async function probeCodexUsageAt(path: string): Promise<UsageProbeResult> {
   let raw: string;
   try {
-    raw = readFileSync(join(homedir(), ".codex", "auth.json"), "utf8");
+    raw = readFileSync(path, "utf8");
   } catch (err) {
     // No auth file = never signed in — authoritatively nothing to show. Any
     // other read failure is ambient (permissions, transient FS) — keep the
@@ -1006,9 +1099,87 @@ async function probeCodexUsage(): Promise<UsageProbeResult> {
   return fetchChatGptUsage(tokens.access_token, typeof tokens.account_id === "string" ? tokens.account_id : undefined);
 }
 
+async function probeCodexUsage(): Promise<UsageProbeResult> {
+  return probeCodexUsageAt(join(homedir(), ".codex", "auth.json"));
+}
+
+// ---------------------------------------------------------------------------
+// Named accounts — codex has no CLAUDE_CODE_OAUTH_TOKEN-style env var the CLI
+// reads fresh on every invocation, so a bound account instead gets its OWN
+// durable $CODEX_HOME (mirrors ~/.codex's own auth.json shape) and the agent's
+// subprocess is pointed at it. codex itself refreshes access_token in place
+// there via refresh_token across a session — materializeCodexHome only WRITES
+// when the stored refresh_token actually changed (fresh login / replaced
+// account), so it never stomps a live-refreshed file on a later spawn.
+
+interface CodexAuthTokens {
+  id_token?: string;
+  access_token?: string;
+  refresh_token?: string;
+  account_id?: string;
+}
+
+function codexAccountDir(credentials: Record<string, string>): string {
+  // OpenAI's own account_id is the natural stable key; hash the access token
+  // as a fallback for a hand-pasted bag that omitted it.
+  const key = credentials.accountId || createHash("sha1").update(credentials.accessToken ?? credentials.refreshToken ?? "").digest("hex").slice(0, 16);
+  return join(gaiaHome(), "codex-accounts", key);
+}
+
+function materializeCodexHome(credentials: Record<string, string>): string {
+  const dir = codexAccountDir(credentials);
+  const authPath = join(dir, "auth.json");
+  const bag = {
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: credentials.idToken ?? "",
+      access_token: credentials.accessToken ?? "",
+      refresh_token: credentials.refreshToken ?? "",
+      account_id: credentials.accountId ?? "",
+    } satisfies CodexAuthTokens,
+    last_refresh: new Date().toISOString(),
+  };
+  let stale = true;
+  try {
+    const existing = JSON.parse(readFileSync(authPath, "utf8")) as { tokens?: CodexAuthTokens };
+    stale = existing?.tokens?.refresh_token !== bag.tokens.refresh_token;
+  } catch {
+    stale = true; // never materialized yet, or a torn/missing file
+  }
+  if (stale) {
+    mkdirSync(dir, { recursive: true });
+    // Same secrets as ~/.codex/auth.json (codex itself writes that 0600) — match it.
+    writeFileSync(authPath, JSON.stringify(bag, null, 2), { mode: 0o600 });
+  }
+  return dir;
+}
+
+/** Extract a finished device-auth credential bag from $configDir/auth.json —
+ * the same shape codex itself writes there once the user approves the code
+ * on openai's site (this process never receives anything on stdin). */
+function readCodexLoginCredentials(configDir: string): Record<string, string> | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(join(configDir, "auth.json"), "utf8");
+  } catch {
+    return undefined; // not written yet — still polling
+  }
+  let parsed: { tokens?: CodexAuthTokens };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return undefined; // torn mid-write
+  }
+  const t = parsed?.tokens;
+  if (!t?.access_token || !t?.refresh_token) return undefined;
+  return { idToken: t.id_token ?? "", accessToken: t.access_token, refreshToken: t.refresh_token, accountId: t.account_id ?? "" };
+}
+
 registerHarness({
   id: "codex",
   capabilities: CODEX_CAPABILITIES,
+  transientAuthPatterns: [/not logged in/i, /session.* expired/i, /run codex login/i],
   ui: {
     label: "codex",
     description: "OpenAI Codex app-server",
@@ -1028,9 +1199,48 @@ registerHarness({
   credentialProxy: ({ proxyUrl, token }) => ({
     env: { OPENAI_BASE_URL: proxyUrl, OPENAI_API_KEY: token },
   }),
+  // Named accounts: each bound agent's codex subprocess gets CODEX_HOME pointed
+  // at that account's own materialized auth.json (see materializeCodexHome),
+  // so it runs on that ChatGPT subscription's own rate-limit bucket while
+  // unbound agents keep the ambient ~/.codex login — true parallel multi-account,
+  // same shape as claude's CLAUDE_CODE_OAUTH_TOKEN wiring above.
+  accounts: {
+    label: "Codex account",
+    fields: [
+      { key: "accessToken", label: "Access token", secret: true, hint: "From that account's ~/.codex/auth.json → tokens.access_token" },
+      { key: "refreshToken", label: "Refresh token", secret: true, hint: "Same file → tokens.refresh_token" },
+      { key: "idToken", label: "ID token", secret: true, hint: "Same file → tokens.id_token" },
+      { key: "accountId", label: "Account ID", hint: "Same file → tokens.account_id" },
+    ],
+    env: (credentials) => ({ CODEX_HOME: materializeCodexHome(credentials) }),
+    email: (credentials) => emailFromJwt(credentials.idToken),
+    // In-app login: plain `codex login` (browser-redirect flow) — the daemon
+    // runs on the user's own machine, so codex opens the auth window in the
+    // local browser itself (localhost callback); the printed URL is also
+    // surfaced in Settings as a fallback link. The device-auth flow
+    // (--device-auth) was tried first but OpenAI's device-code endpoint
+    // rate-limits aggressively (429), and it never auto-opens a browser.
+    // Once signed in codex writes CODEX_HOME/auth.json itself and exits.
+    login: {
+      command: ({ configDir }) => ({ argv: ["codex", "login"], env: { CODEX_HOME: configDir } }),
+      signInUrl: (output) => /https:\/\/auth\.openai\.com\/\S+/.exec(output)?.[0],
+      code: (output) => /^\s*([A-Z0-9]{4}-[A-Z0-9]{4,8})\s*$/m.exec(output)?.[1],
+      awaitingInput: () => false,
+      credentials: ({ configDir }) => readCodexLoginCredentials(configDir),
+    },
+  },
   // Codex persists auth + session state under ~/.codex (a sandboxed turn must
   // write there); its credential store inside that tree is carved back to
-  // read-only so a confined turn can't tamper with it.
-  sandboxPaths: { writable: ["~/.codex"], readonly: ["~/.codex/auth.json"] },
-  usageAccounts: () => [{ account: OPENAI_USAGE_ACCOUNT, probe: probeCodexUsage }],
+  // read-only so a confined turn can't tamper with it. codex-accounts holds
+  // the SAME shape per bound account (see materializeCodexHome) — writable,
+  // never read-only, since a turn legitimately owns its own bound account's file.
+  sandboxPaths: { writable: ["~/.codex", join(gaiaHome(), "codex-accounts")], readonly: ["~/.codex/auth.json"] },
+  usageAccounts: (accounts) => [
+    { account: "ambient:codex", probe: probeCodexUsage },
+    ...accounts.map((account) => ({
+      account: account.id,
+      probe: () => probeCodexUsageAt(join(materializeCodexHome(account.credentials), "auth.json")),
+    })),
+  ],
+  ambientUsageAccount: () => "ambient:codex",
 });

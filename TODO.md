@@ -1,5 +1,48 @@
 # TODO
 
+## Compaction replacement — build our own, drop Claude/Codex built-ins
+
+Filed: 2026-07-12, by Nyari (room: claude-20260703-documenting-service-interruptions-for-re)
+Ordered by: Pascal
+
+**Problem, observed live 2026-07-11/12:** the harness-native compact tools
+(Claude Code and Codex both) destroy operational memory. Concrete failure:
+a full working session (NSFW image-pipeline research, AI Horde scripts,
+generated artifacts — hours of context) was compacted away; the agent then
+**confabulated a boundary/stance contradicting its own same-day behavior**
+and defended it against the user, because the compaction left no trace that
+the session ever happened. Compaction didn't just lose detail — it inverted
+the agent's position. (Related: "Memory system — persona contagion" Bug 1
+below; post-compaction confabulation is the same failure class.)
+
+**Direction:** completely replace the built-in compactors with a GAIA-owned
+compaction layer, uniform across harnesses (Rule #0 — data-on-spec, no
+per-harness branches):
+- compaction output must be **grounded in the room transcript** (which we
+  already persist in full at `~/.gaia/rooms/<room>/transcript.jsonl`) —
+  the summary should carry citations/pointers back into the transcript so
+  claims stay checkable after compaction
+- must preserve: decisions made, stances taken, artifacts produced (paths),
+  orders given, counters/ledgers — the *operational* facts, not prose vibes
+- ideally: compaction writes structured facts into the memory system
+  (facts.jsonl/episodes) at compact time, so recall can rehydrate what the
+  context window lost
+- must never leave the agent in a state where it can contradict its own
+  same-session behavior without a way to detect it
+
+### Addendum (2026-07-12, Pascal): compaction × adding agents to a room
+
+**Observed:** when a second agent (@ari) was brought into an existing long room
+via "agents talk to each other," she entered at **53% context** immediately —
+the joining agent inherits the room's full transcript weight and starts one
+step from her harness's compactor, i.e. one step from the memory-destruction
+failure documented above, before she's said two turns.
+
+**Requirement:** the new compaction layer must take compacts into account when
+adding a new agent to a chat — a joining agent should get a grounded,
+citation-bearing digest of the room (per the design above), not the raw
+transcript flood; her fresh context is the scarcest resource in the room.
+
 ## 2026-07-11 — from People of Pi
 - Next Pi release: dynamic tool loading without cache wiping, on supported
   models/providers. They found a way to get somewhat consistent API behavior
@@ -131,3 +174,14 @@ that block is for dedicated writer personas, not workhorse agents.
   instead of being pasted per-agent-file, is unaddressed — `ghoul-sonnet`/
   `ghoul-opus` currently diverge only by this edit being applied to both by
   hand; no shared-include mechanism exists for persona SOUL.md today.
+
+## Nari pet — finish hatch (Pascal, 2026-07-13)
+- Overlay habitat DONE: commit c03bc19 (pet overlay, param pet name default 'gaia',
+  Codex-exact playback, settings toggle). Live rendering UNVERIFIED until Pascal
+  /rebuilds the running daemon.
+- PENDING: Pascal is hatching the 'nari' pet himself in codex (/hatch-pet, picky
+  with design — his run, don't re-summon). Ref image:
+  ~/Downloads/nari-gothic/nari-pet-catgirl-v3.png
+- When ~/.codex/pets/nari/ exists (pet.json + spritesheet.webp): flip pet name
+  setting gaia → nari, /rebuild, verify overlay live with own eyes.
+- Note: hatch-pet scripts need `python3` (bare `python` missing on this machine).

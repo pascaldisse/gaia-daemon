@@ -122,6 +122,8 @@ export interface SummonRoomAccess {
   /** Fully settled: no running task, no durable pending turn, empty queue
    * (covers turns that init() resumes asynchronously after a restart). */
   waitForSettled(): Promise<void>;
+  /** True while the room will run again without outside input. */
+  hasPendingWork(): Promise<boolean>;
   /** Recent + in-flight/queued tasks for this room, most-recent last. Summon
    * recovery reads the last entry's status/error to tell an errored or
    * cancelled resumed turn apart from a plain empty reply — no other channel
@@ -134,6 +136,8 @@ export interface SummonRoomAccess {
   deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void>;
   /** Stamp this CHILD room's summon record delivered (idempotent). */
   markSummonDelivered(): Promise<void>;
+  /** Rebroadcast the workspace rooms list (see RoomService.broadcastRoomsChanged). */
+  broadcastRoomsChanged(): Promise<void>;
   /** Panic-stop this room's active turn — the EXACT plumbing the /cancel
    * slash command uses (cancelActiveTask under the hood): aborts the runner,
    * lets the partial commit (NO PROGRESS EVER LOST), settles the task
@@ -175,24 +179,31 @@ export function awaitTask(room: { subscribe(listener: (event: SummonTaskEvent) =
  * empty final reply (`active`: false means it never got going); and the
  * harness's own last words, passed through verbatim, preferred as a failure
  * headline over the generic fallback when the worker said something before
- * going quiet (`lastText`). */
-async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string }> {
+ * going quiet (`lastText`). Also surfaces the last recorded system
+ * turn-failure line (failure) so a summon failure message can always show
+ * the real error even when the worker itself wrote nothing. */
+async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string; failure: string }> {
   let raw: string;
   try {
     raw = await readFile(workspacePaths.transcript(rootDir, roomId), "utf8");
   } catch {
-    return { digest: "", active: false, lastText: "" };
+    return { digest: "", active: false, lastText: "", failure: "" };
   }
   let firstTs = "";
   let lastTs = "";
   const texts: string[] = [];
   let active = false;
+  let failure = "";
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let event: { author?: unknown; text?: unknown; timestamp?: unknown; details?: { tools?: unknown[] } };
     try {
       event = JSON.parse(line);
     } catch {
+      continue;
+    }
+    if (event.author === "system" && typeof event.text === "string" && event.text.startsWith("⚠ turn failed")) {
+      failure = event.text;
       continue;
     }
     if (event.author !== agentId) continue;
@@ -210,7 +221,7 @@ async function inspectWorker(rootDir: string, roomId: string, agentId: string): 
           .slice(-3)
           .map((text) => (text.length > 600 ? `${text.slice(0, 600)}…` : text))
           .join("\n---\n")}`.slice(0, 2400);
-  return { digest, active, lastText: texts.at(-1) ?? "" };
+  return { digest, active, lastText: texts.at(-1) ?? "", failure };
 }
 
 export interface SummonOptions {
@@ -253,6 +264,31 @@ export interface SummonHost {
  * of leaving an orphaned turn running. */
 export const SUMMON_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 
+function levenshteinDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function unknownAgentMessage(agentId: string, availableAgentIds: readonly string[]): string {
+  const needle = agentId.toLowerCase();
+  const suggestions = availableAgentIds.filter((id) => {
+    const candidate = id.toLowerCase();
+    return candidate.includes(needle) || levenshteinDistance(candidate, needle) <= 2;
+  });
+  return `Unknown agent '${agentId}'. Did you mean: ${suggestions.join(", ") || "(none)"}? Available: ${availableAgentIds.join(", ")}`;
+}
+
 /** The tool-facing acknowledgment for a background summon — the ONE place this
  * contract is worded, shared by the HTTP endpoint and the in-process tool. */
 export function summonAck(agentId: string, childRoomId: string): string {
@@ -272,7 +308,7 @@ export class SummonCoordinator implements SummonHost {
     private readonly workspace: Workspace,
     private readonly workspacePath: string,
     private readonly serviceForRoom: (roomId: string) => Promise<SummonRoomAccess>,
-    private readonly maxPerRoom: number,
+    private readonly maxPerRoom: () => Promise<number>,
     private readonly log: (message: string) => void = (message) => console.warn(`[gaia] ${message}`),
   ) {}
 
@@ -295,8 +331,9 @@ export class SummonCoordinator implements SummonHost {
    * promise — callers that must persist the room id before awaiting (the
    * scheduler's crash-recovery mark) use this. */
   async launch(parentRoomId: string, agentId: string, task: string, options: SummonOptions = {}): Promise<{ roomId: string; done: Promise<string> }> {
-    if (!this.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
-    if (this.runningChildren(parentRoomId).length >= this.maxPerRoom) {
+    if (!this.workspace.agents[agentId]) throw new Error(unknownAgentMessage(agentId, Object.keys(this.workspace.agents)));
+    const cap = await this.maxPerRoom();
+    if (this.runningChildren(parentRoomId).length >= cap) {
       throw new Error(`Too many running summons in room ${parentRoomId}; wait for one to finish or cancel it first.`);
     }
 
@@ -309,9 +346,9 @@ export class SummonCoordinator implements SummonHost {
     const untrusted = summonUntrustedTier(caller, this.running.get(parentRoomId)?.untrusted === true);
 
     const childRoomId = `${agentId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 64);
-    // Every summon runs in a dedicated, incognito child room. It remains
-    // watchable and delivers its result normally, but its transcript cannot be
-    // recalled and no worker turn can capture episodic memory.
+    // Summons are disposable worker rooms: preserve their delivery path while
+    // preventing their transcripts from entering the workspace's recall or
+    // episodic-memory stores.
     await ensureWorkspaceRoom(this.workspacePath, childRoomId, { incognito: true });
 
     // Stamp the parent link — and the pending delivery — BEFORE the child
@@ -350,10 +387,21 @@ export class SummonCoordinator implements SummonHost {
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
 
-    const done = this.runChild(child, info, task, options).finally(() => this.running.delete(childRoomId));
+    const done = this.runChild(child, info, task, options).finally(() => {
+      this.running.delete(childRoomId);
+      this.notifyParentRoomsChanged(parentRoomId);
+    });
     // Don't crash on background summons whose result no one awaits.
     done.catch(() => {});
     return { roomId: childRoomId, done };
+  }
+
+  /** After a child leaves the running set, push a fresh rooms list from the
+   * parent so no client keeps counting a dead summon. Chrome, best-effort. */
+  private notifyParentRoomsChanged(parentRoomId: string): void {
+    void this.serviceForRoom(parentRoomId)
+      .then((parent) => parent.broadcastRoomsChanged())
+      .catch(() => {});
   }
 
   /** Run the worker's first turn; with a delivery mode, land the result (or the
@@ -363,14 +411,16 @@ export class SummonCoordinator implements SummonHost {
 
     let reply: string;
     let failed = false;
+    let cancelled = false;
     try {
       reply = await this.runFirstTurn(child, info.agentId, task, info.roomId);
     } catch (error) {
       failed = true;
+      cancelled = error instanceof Error && (error as { summonCancelled?: boolean }).summonCancelled === true;
       reply = error instanceof Error ? error.message : String(error);
     }
     try {
-      await this.deliver(child, info, options, reply, failed);
+      await this.deliver(child, info, options, reply, failed, cancelled);
     } catch (error) {
       // Leave the child's summon record "running": the boot sweep retries the
       // delivery on the next daemon start instead of losing the result.
@@ -383,7 +433,7 @@ export class SummonCoordinator implements SummonHost {
   /** Summons run autonomously: the context gate (a human decision modal) must
    * never hold a worker's first turn. */
   private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string): Promise<string> {
-    const turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
+    let turn = await child.sendMessage(task, { targets: [agentId], bypassContextGate: true });
     await awaitTask(child, turn, SUMMON_TIMEOUT_MS);
     if (turn.status === "running" || turn.status === "queued") {
       // Hard cap hit: the worker hung, is looping, or ran out of usage
@@ -395,9 +445,14 @@ export class SummonCoordinator implements SummonHost {
       const { digest } = await inspectWorker(this.workspace.rootDir, roomId, agentId);
       throw new Error(["summon timed out after 30 minutes", digest].filter(Boolean).join("\n\n"));
     }
+    if (turn.status === "error" && (await child.hasPendingWork())) {
+      await child.waitForSettled();
+      turn = (await child.getSnapshot()).tasks.at(-1) ?? turn;
+    }
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
-    if (turn.status === "error") throw new Error([turn.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
-    if (turn.status === "cancelled") throw new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "error") throw new Error([turn.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "cancelled")
+      throw Object.assign(new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n")), { summonCancelled: true });
     const reply = (await child.latestReplyFrom(agentId)).trim();
     if (reply) return reply;
     // Empty completion: a worker that genuinely did something — produced
@@ -407,7 +462,7 @@ export class SummonCoordinator implements SummonHost {
     // start) — an explicit failure, not a silent "(no final reply)" success.
     if (worker.active) return `(no final reply)\n\n${worker.digest}`;
     throw new Error(
-      [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n"),
+      [worker.lastText || worker.failure || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n"),
     );
   }
 
@@ -416,13 +471,24 @@ export class SummonCoordinator implements SummonHost {
    * SummonResultMeta, not baked into the text), then — deliver:"turn" — nudge
    * the caller agent to continue. Marks the child's durable record delivered
    * ONLY after the parent write committed — a crash in between re-delivers
-   * rather than losing it. */
-  private async deliver(child: SummonRoomAccess, info: SummonChild, options: Pick<SummonOptions, "deliver" | "callerAgentId">, reply: string, failed: boolean): Promise<void> {
+   * rather than losing it.
+   *
+   * A CANCELLED summon delivers its note but never re-invokes the caller — the
+   * user just killed it (Ctrl+C kill-all); triggering a new parent turn
+   * resurrected the room and forced repeated presses. */
+  private async deliver(
+    child: SummonRoomAccess,
+    info: SummonChild,
+    options: Pick<SummonOptions, "deliver" | "callerAgentId">,
+    reply: string,
+    failed: boolean,
+    cancelled = false,
+  ): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
     await parent.deliverAgentResult(info.agentId, reply, {
       childRoomId: info.roomId,
       failed,
-      ...(options.deliver === "turn" && options.callerAgentId ? { triggerTarget: options.callerAgentId } : {}),
+      ...(options.deliver === "turn" && options.callerAgentId && !cancelled ? { triggerTarget: options.callerAgentId } : {}),
     });
     await child.markSummonDelivered();
   }
@@ -457,23 +523,32 @@ export class SummonCoordinator implements SummonHost {
       this.log(`summon recovery: re-arming '${roomId}' (@${record.agentId} → '${parentRoomId}')`);
       void this.recoverOne(info, record)
         .catch((error) => this.log(`summon recovery for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
-        .finally(() => this.running.delete(roomId));
+        .finally(() => {
+          this.running.delete(roomId);
+          this.notifyParentRoomsChanged(parentRoomId);
+        });
     }
   }
 
   private async recoverOne(info: SummonChild, record: SummonDelivery): Promise<void> {
     const child = await this.serviceForRoom(info.roomId); // init() resumes the WAL turn / queue
     await child.waitForSettled();
+    let lastTask = (await child.getSnapshot()).tasks.at(-1);
+    while (lastTask?.status === "error" && (await child.hasPendingWork())) {
+      await child.waitForSettled();
+      lastTask = (await child.getSnapshot()).tasks.at(-1);
+    }
     const worker = await inspectWorker(this.workspace.rootDir, info.roomId, info.agentId);
-    const lastTask = (await child.getSnapshot()).tasks.at(-1);
     let reply: string;
     let failed: boolean;
+    let cancelled = false;
     if (lastTask?.status === "error") {
-      reply = [lastTask.error || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
+      reply = [lastTask.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
     } else if (lastTask?.status === "cancelled") {
       reply = ["cancelled before completion", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
+      cancelled = true;
     } else {
       const raw = (await child.latestReplyFrom(info.agentId)).trim();
       if (raw) {
@@ -486,10 +561,10 @@ export class SummonCoordinator implements SummonHost {
       } else {
         // Never got going at all — same empty-completion failure bar as
         // runFirstTurn.
-        reply = [worker.lastText || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n");
+        reply = [worker.lastText || worker.failure || "worker produced no output — likely out of usage or failed to start", worker.digest].filter(Boolean).join("\n\n");
         failed = true;
       }
     }
-    await this.deliver(child, info, record, reply, failed);
+    await this.deliver(child, info, record, reply, failed, cancelled);
   }
 }

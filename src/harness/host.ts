@@ -111,7 +111,15 @@ const COMPACT_TIMEOUT_MS = 900_000;
  * Generous on purpose: a long in-harness tool run (a big build) streams
  * nothing between tool start and result, and killing a healthy slow turn is
  * worse than reporting a wedged one late. Uniform for every harness. */
-const TURN_IDLE_TIMEOUT_MS = 1_800_000;
+const TURN_IDLE_TIMEOUT_MS = 900_000;
+
+/** Once the harness reports an upstream stall (an AgentEvent `notice` of kind
+ * `upstream-stall` — see claude-thinking-proxy.ts), this is how long we wait
+ * for real output before aborting the turn. Deliberately NOT extended by
+ * further stall notices: a retry loop against a dead upstream must not keep
+ * itself alive by continuing to report that it's stalled. Uniform for every
+ * harness — any harness may emit the notice, the deadline applies the same. */
+const STALL_ABORT_GRACE_MS = 180_000;
 
 /** How long abort() waits for the runner to confirm the turn ended before
  * escalating to SIGKILL. A cooperative abort (harness kills its child, stream
@@ -148,6 +156,8 @@ export interface RunnerHostOptions {
   breaker?: CircuitBreaker;
   /** Test seam: override the turn idle backstop (default TURN_IDLE_TIMEOUT_MS). */
   turnIdleTimeoutMs?: number;
+  /** Test seam: override the stall-abort grace (default STALL_ABORT_GRACE_MS). */
+  stallAbortGraceMs?: number;
 }
 
 export class RunnerHost implements AgentRuntime {
@@ -164,6 +174,9 @@ export class RunnerHost implements AgentRuntime {
    * spawn, before the turn; reset is idempotent, so a redundant delivery no-ops. */
   private readonly pendingResets = new Set<string>();
   private activeChannel: EventChannel | null = null;
+  /** Set only by a protocol `turn-end` frame. A channel that drains without
+   * this acknowledgement is an abnormal teardown, never a successful turn. */
+  private activeTurnEndedNormally = false;
   private _modelLabel: string;
   private disposed = false;
   // Launch breaker, keyed by target so a down provider/harness fast-fails for
@@ -183,6 +196,11 @@ export class RunnerHost implements AgentRuntime {
   private turnIdleWaiters: Array<() => void> = [];
   /** The turn idle backstop (see TURN_IDLE_TIMEOUT_MS). */
   private turnIdleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The hard stall-abort deadline (see STALL_ABORT_GRACE_MS) — armed once on
+   * the first upstream-stall notice of a turn, left alone by further notices,
+   * and cleared entirely the moment real output (any non-notice event) proves
+   * the harness recovered. */
+  private stallDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
   /** Resolver for the single in-flight /compact round trip. */
@@ -206,6 +224,9 @@ export class RunnerHost implements AgentRuntime {
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     await this.ensureChild(input.roomId);
+    const backgroundTasks = harnessSpecFor(this.options.harness).backgroundTasks;
+    const toolArgsById = new Map<string, unknown>();
+    const toolArgsByName = new Map<string, unknown[]>();
     // Deliver any reset queued while the child was down (or racing a child death)
     // BEFORE the turn, so a fresh runtime forgets the persisted session and this
     // turn starts a genuinely new harness conversation instead of --resuming the
@@ -214,11 +235,42 @@ export class RunnerHost implements AgentRuntime {
     if (this.pendingResets.delete(input.roomId)) this.write({ type: "reset", roomId: input.roomId });
     const channel = createEventChannel();
     this.activeChannel = channel;
+    this.activeTurnEndedNormally = false;
     this.turnInFlight = true;
     this.write({ type: "turn", input });
     this.armTurnIdle();
     try {
-      for await (const event of channel.stream()) yield event;
+      for await (const event of channel.stream()) {
+        if (event.type === "tool-start") {
+          if (event.toolCallId) toolArgsById.set(event.toolCallId, event.args);
+          else {
+            const pending = toolArgsByName.get(event.toolName) ?? [];
+            pending.push(event.args);
+            toolArgsByName.set(event.toolName, pending);
+          }
+        }
+        yield event;
+        if (event.type === "tool-end" && backgroundTasks) {
+          let args: unknown;
+          if (event.toolCallId) {
+            args = toolArgsById.get(event.toolCallId);
+            toolArgsById.delete(event.toolCallId);
+          } else {
+            const pending = toolArgsByName.get(event.toolName);
+            args = pending?.shift();
+            if (pending?.length === 0) toolArgsByName.delete(event.toolName);
+          }
+          const task = backgroundTasks.fromToolCall(event.toolName, args, event.result);
+          if (task) yield { type: "background-task", toolName: event.toolName, ...task };
+        }
+      }
+      // `close()` is deliberately not enough to mean success. Only the
+      // runner's explicit turn-end frame proves the runtime completed. This
+      // last-resort guard makes any future unclassified channel-close path
+      // throw into room-service's normal partial-preservation plumbing.
+      if (!this.activeTurnEndedNormally) {
+        throw new Error("turn channel closed without a turn-end frame");
+      }
     } finally {
       this.activeChannel = null;
     }
@@ -241,10 +293,36 @@ export class RunnerHost implements AgentRuntime {
     this.turnIdleTimer.unref?.();
   }
 
+  /** Arm the hard stall-abort deadline exactly once per stall episode: a no-op
+   * while already armed, so a stream of repeated notices from a retrying
+   * harness cannot keep pushing the deadline out. On fire: fail the active
+   * channel with a named UpstreamStallError (partials are kept) and abort
+   * authoritatively, mirroring armTurnIdle's own handler. */
+  private armStallDeadline(): void {
+    if (this.stallDeadlineTimer) return;
+    const grace = this.options.stallAbortGraceMs ?? STALL_ABORT_GRACE_MS;
+    this.stallDeadlineTimer = setTimeout(() => {
+      process.stderr.write(`[runner ${this.agent.id}] upstream stalled — no recovery within ${Math.round(grace / 1000)}s; aborting the wedged turn\n`);
+      const err = new Error(`upstream stalled — no recovery within ${Math.round(grace / 1000)}s; aborted the wedged turn (partial progress, if any, is kept)`);
+      err.name = "UpstreamStallError";
+      this.failActive(err);
+      void this.abort();
+    }, grace);
+    this.stallDeadlineTimer.unref?.();
+  }
+
+  /** Real output (any non-notice event) proves the harness recovered — drop
+   * the deadline so the turn can run to a normal conclusion. */
+  private clearStallDeadline(): void {
+    clearTimeout(this.stallDeadlineTimer);
+    this.stallDeadlineTimer = undefined;
+  }
+
   /** The runner confirmed the turn is over (turn-end/turn-error/child death):
    * release everyone waiting in abort(). */
   private settleTurn(): void {
     clearTimeout(this.turnIdleTimer);
+    this.clearStallDeadline();
     this.turnInFlight = false;
     for (const waiter of this.turnIdleWaiters.splice(0)) waiter();
   }
@@ -374,6 +452,11 @@ export class RunnerHost implements AgentRuntime {
     // delivery is a harmless no-op (reset just clears an already-cleared session).
     this.pendingResets.add(roomId);
     if (this.child) this.write({ type: "reset", roomId });
+  }
+
+  refreshContext(roomId: string): void {
+    // A down runner has no in-memory snapshot; its next spawn reads fresh.
+    if (this.child) this.write({ type: "refresh", roomId });
   }
 
   /** Answered daemon-side from the spec's on-disk descriptor — the runner may
@@ -561,15 +644,19 @@ export class RunnerHost implements AgentRuntime {
         }
         // Sign of life from the harness stream — the idle backstop starts over.
         this.armTurnIdle();
+        // A stall notice arms the hard deadline (once); any other event is
+        // real output and proves recovery, so it clears the deadline.
+        if (message.event.type === "notice" && message.event.kind === "upstream-stall") this.armStallDeadline();
+        else this.clearStallDeadline();
         this.activeChannel?.push(message.event);
         return;
       case "turn-end":
+        this.activeTurnEndedNormally = true;
         this.activeChannel?.close();
         this.settleTurn();
         return;
       case "turn-error":
-        this.activeChannel?.fail(new Error(message.message));
-        this.activeChannel?.close();
+        this.failActive(new Error(message.message));
         this.settleTurn();
         return;
       case "steer-result":
@@ -586,8 +673,22 @@ export class RunnerHost implements AgentRuntime {
     }
   }
 
+  /** Classify transient session/auth deaths from harness-declared DATA only. */
+  private classifyTurnError(error: unknown): unknown {
+    if (!(error instanceof Error)) return error;
+    const patterns = harnessSpecFor(this.options.harness).transientAuthPatterns;
+    const transient = patterns?.some((pattern) => {
+      pattern.lastIndex = 0;
+      const matched = pattern.test(error.message);
+      pattern.lastIndex = 0;
+      return matched;
+    });
+    if (transient) error.name = "TransientAuthError";
+    return error;
+  }
+
   private failActive(error: unknown): void {
-    this.activeChannel?.fail(error);
+    this.activeChannel?.fail(this.classifyTurnError(error));
     this.activeChannel?.close();
   }
 

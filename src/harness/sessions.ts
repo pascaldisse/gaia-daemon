@@ -23,6 +23,7 @@ export interface SessionStore<M> {
 export class SessionMap<M> {
   private sessions = new Map<string, M>();
   private lastMemory = new Map<string, string>();
+  private promptCache = new Map<string, { roleKey: string; prompt: string }>();
 
   constructor(
     private readonly disposeMeta?: (meta: M) => void,
@@ -59,12 +60,29 @@ export class SessionMap<M> {
     return true;
   }
 
+  /** Session-scoped system-prompt snapshot. Re-assembled only after
+   * refreshPrompt()/reset() or a role switch — /compact, /clear and /refresh
+   * are the re-read boundaries (native-harness behavior: context files are
+   * captured per session). */
+  async systemPrompt(roomId: string, roleKey: string, assemble: () => Promise<string>): Promise<string> {
+    const existing = this.promptCache.get(roomId);
+    if (existing?.roleKey === roleKey) return existing.prompt;
+    const prompt = await assemble();
+    this.promptCache.set(roomId, { roleKey, prompt });
+    return prompt;
+  }
+
+  refreshPrompt(roomId: string): void {
+    this.promptCache.delete(roomId);
+  }
+
   /** Forget a room's session everywhere — memory AND store (/clear). */
   reset(roomId: string): void {
     const meta = this.sessions.get(roomId);
     if (meta !== undefined) this.disposeMeta?.(meta);
     this.sessions.delete(roomId);
     this.lastMemory.delete(roomId);
+    this.promptCache.delete(roomId);
     this.store?.clear(roomId);
   }
 
@@ -74,6 +92,7 @@ export class SessionMap<M> {
     for (const meta of this.sessions.values()) this.disposeMeta?.(meta);
     this.sessions.clear();
     this.lastMemory.clear();
+    this.promptCache.clear();
   }
 
   rooms(): string[] {

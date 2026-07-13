@@ -13,8 +13,10 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
-import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
@@ -27,6 +29,7 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
+  BackgroundTask,
   CompactProgress,
   ContextGatePending,
   EventDetails,
@@ -52,12 +55,15 @@ import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
-import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor } from "../harness/spec.js";
+import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor, usageAccountFor } from "../harness/spec.js";
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
+import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
+import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
+import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, effectiveTrust, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
@@ -114,7 +120,11 @@ export interface RoomMemoryHooks {
    * are self-matches and excluded (MEMORY-DESIGN.md §7). */
   autoRecallBlock(agentId: string, query: string, context?: ActiveContextRef): Promise<string>;
   capture(agentId: string, capture: EpisodeCapture): Promise<void>;
-  consolidate(agentId: string, options?: { force?: boolean }): Promise<ConsolidateResult>;
+  consolidate(agentId: string, options?: { force?: boolean; propose?: boolean }): Promise<ConsolidateResult>;
+  /** Dream v2 apply: commits a standing dream-proposal.json (backs `/dream
+   * [agent] --apply`, mirrors the CLI/harness route). null = no proposal
+   * pending. */
+  applyDreamProposal?(agentId: string): Promise<{ applied: number; skipped: number } | null>;
   /** Ranked search over facts, episodes, and room history — backs /recall.
    * `degraded` notes are rendered, never dropped (§10). */
   search(agentId: string, query: string, request?: { limit?: number; context?: ActiveContextRef }): Promise<{ hits: MemorySearchHit[]; degraded: string[] }>;
@@ -161,11 +171,97 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+const BACKGROUND_TASK_MAX = 20;
+const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+/** `lsof` binary used to probe whether a tracked background process still has
+ * a live writer on its output file (see backgroundTaskPids). Env-overridable —
+ * never hardcode a bare path as the only option. */
+const LSOF_BIN = process.env.GAIA_LSOF_BIN || "/usr/sbin/lsof";
+/** How long backgroundTaskPids waits for `lsof` before giving up and reporting
+ * no live writers (a hung/missing lsof must never wedge a snapshot). */
+const BACKGROUND_TASK_LSOF_TIMEOUT_MS = 2000;
+
+/** Render the reason carried by the uniform runtime/channel failure contract. */
+function turnEndReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return reason.trim() || "unknown reason";
+}
+
+/** The visible tail every abnormal turn with output commits on its reserved id. */
+function preservePartialReply(reply: string, error: unknown): string {
+  const notice = `⚠ turn ended without completion (${turnEndReason(error)}) — partial output preserved`;
+  const partial = reply.trim();
+  return partial ? `${partial}\n\n${notice}` : notice;
+}
+
+/** The durable system failure used when an abnormal turn emitted no output. */
+function diedWithoutOutput(error: unknown): Error {
+  return new Error(`turn died without output (${turnEndReason(error)})`);
+}
+
+/** Min gap between visible "upstream stall" system lines within one streaming
+ * turn — a harness retrying against a dead upstream can emit the notice
+ * repeatedly; the room should say it's stuck once, not spam the transcript. */
+const STALL_NOTICE_THROTTLE_MS = 60_000;
 
 /** Cap on the flagged agent's persona context handed to the Thanks-Dario
  * reviewer — enough for a SOUL + role, bounded so a huge persona can't bloat
  * the review turn (a big reasoning stream has wedged the reviewer before). */
 const PERSONA_CONTEXT_CAP = 16_000;
+
+/** Where a ROOM's ambient watchdog toggle file lives — one file per room, so
+ * turning it on in one room (e.g. `/ultrawhip`) never leaks into every other
+ * room/agent's turns. Generic and plugin-driven on purpose: this file's PATH
+ * is the only thing core knows; its content and whoever writes it (e.g. a
+ * `/ultrawhip` command-plugin, using the `roomId` its run() ctx carries) are
+ * none of core's business. Presence + valid shape = active for THIS room's
+ * running turns; missing/invalid = a no-op. Room ids are already
+ * filesystem-safe (see newRoomId/room dir naming), so no extra sanitizing. */
+function ambientWatchdogPath(roomId: string): string {
+  return join(homedir(), ".gaia", "ambient-watchdog", `${roomId}.json`);
+}
+
+interface AmbientWatchdog {
+  toolCalls: number;
+  messages: string[];
+  /** Optional display label (e.g. "🖤 UltraWhip", "❤️ UltraLove") the writing
+   * plugin can stamp on its own file so the client's indicator chip shows
+   * which watchdog is actually running instead of a name hardcoded for one
+   * specific plugin. Absent (older plugin, hand-edited file) → client falls
+   * back to a generic label. Core never interprets it, just passes it through. */
+  label?: string;
+}
+
+/** Best-effort read, never throws: a missing file, a plugin mid-write, or a
+ * hand-edited typo all just mean "ambient watchdog off right now." */
+function readAmbientWatchdog(roomId: string): AmbientWatchdog | undefined {
+  const path = ambientWatchdogPath(roomId);
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    const toolCalls = parsed?.toolCalls;
+    const messages = parsed?.messages;
+    const label = parsed?.label;
+    if (
+      typeof toolCalls === "number" &&
+      Number.isFinite(toolCalls) &&
+      Math.floor(toolCalls) > 0 &&
+      Array.isArray(messages) &&
+      messages.length > 0 &&
+      messages.every((m: unknown) => typeof m === "string" && m.trim().length > 0)
+    ) {
+      return {
+        toolCalls: Math.floor(toolCalls),
+        messages,
+        ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
+      };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Default "load last N messages" when the human doesn't specify N. */
 const CONTEXT_GATE_LAST_N = 20;
@@ -229,7 +325,9 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
+  dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
@@ -241,7 +339,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
   cancel: (service) => service.runCancelCommand(),
   fork: (service) => service.runForkCommand(),
-  unknown: async (_service, command) => `Unknown command: /${command.type === "unknown" ? command.command : "?"}. Try /help.`,
+  unknown: (service, command) => (command.type === "unknown" ? service.runUnknownCommand(command) : Promise.resolve("")),
 };
 
 export class RoomService {
@@ -258,6 +356,22 @@ export class RoomService {
    * paths). cancelActiveTask awaits it so a stop settles AFTER the streamed
    * partial is committed — never blanking progress from the UI. */
   private activeTurnUnwind: Promise<void> | undefined;
+  /** Set by settleTask to the in-flight settle→drain continuation (the settle
+   * snapshot emit, then drain()'s decision of what — if anything — runs
+   * next). settleTask clears activeTask SYNCHRONOUSLY but only calls drain()
+   * after that async emit; sendMessage awaits this before evaluating
+   * busy/idle so a message can never land in that gap, see activeTask===
+   * undefined, and run immediately — jumping ahead of a message that's
+   * already been durably queued far longer. (The jumped message would then
+   * never drain: drain() sees the interloper's activeTask and bails, so it
+   * sits showing "queued" until the interloper's own turn eventually settles
+   * and drains it — very late, and out of send order.) Resolves fast: it
+   * covers only drain()'s OWN decision, not a queued command's execution
+   * (drain sets activeTask before awaiting a command turn, so a concurrent
+   * sendMessage sees that instead of blocking on the command). */
+  private draining: Promise<void> | undefined;
+  /** Single wake-up for the durable queue head's transient-auth backoff. */
+  private authRetryTimer: ReturnType<typeof setTimeout> | undefined;
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
@@ -300,6 +414,9 @@ export class RoomService {
    * restart anyway). */
   private agentDialogueHops = 0;
   private initPromise: Promise<void> | undefined;
+  /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
+   * services/plugins.ts) — loaded once per RoomService and cached. */
+  private readonly pluginsPromise: Promise<Map<string, CommandPlugin>> = loadCommandPlugins();
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
@@ -373,10 +490,19 @@ export class RoomService {
     return Boolean(this.activeTask);
   }
 
-  /** Busy = running a turn OR has a live background summon. Guards a service
-   * from LRU eviction while its background work would be killed with it. */
+  /** Busy = running a turn, holding queued-but-undrained work, or has a live
+   * background summon. Guards a service from LRU eviction while its
+   * background work would be killed with it. The queue check matters even
+   * when activeTask is momentarily unset: settleTask clears activeTask
+   * synchronously but drain() (which claims the next queued item) only runs
+   * after an async emitSnapshot — evicting in that window would strand a
+   * queued message with a persisted entry but no live driver to pick it up. */
   get isBusy(): boolean {
-    return Boolean(this.activeTask) || Boolean(this.options.summonHost?.runningChildren(this.roomId).length);
+    return (
+      Boolean(this.activeTask) ||
+      this.queuedTasks.length > 0 ||
+      Boolean(this.options.summonHost?.runningChildren(this.roomId).length)
+    );
   }
 
   get activeTaskId(): string | undefined {
@@ -459,6 +585,8 @@ export class RoomService {
   }
 
   async dispose(): Promise<void> {
+    clearTimeout(this.authRetryTimer);
+    this.authRetryTimer = undefined;
     await Promise.all(Object.values(this.runtimes).map((runtime) => runtime.dispose()));
   }
 
@@ -475,6 +603,43 @@ export class RoomService {
     // the "unknown command" reply. Rewritten to a message turn here so it rides
     // the normal WAL/queue/streaming path — just flagged nativeCommand.
     if (command.type === "unknown") {
+      // Local command-plugin dispatch (see services/plugins.ts) — checked
+      // BEFORE the native-passthrough rewrite below so a plugin's command name
+      // always wins over any harness-native skill of the same name. Runs
+      // synchronously here (not queued) so it can steer a turn that's live
+      // RIGHT NOW; mirrors the /steer + /cancel gate's reply shape just below.
+      const plugin = (await this.pluginsPromise).get(command.command);
+      if (plugin) {
+        const args = text.trim().split(/\s+/).slice(1);
+        const result = await this.runPlugin(plugin, args);
+        // A plugin's `steer` is guidance meant to actually REACH an agent, not
+        // to be echoed back to the user as a system note — the steer delivery
+        // itself (mid-turn injection bubble, or a real message when nothing's
+        // running) is the only visible trace. Generic for any plugin, not
+        // just whip. `reply` (e.g. a counter) is silent bookkeeping here, not
+        // shown — a plugin wanting a REPLY shown returns no `steer` at all.
+        if (result.steer) {
+          if (this.activeAgentTurn) {
+            const pluginTask = this.createTask(text, []);
+            this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+            await this.runSteerCommand(result.steer, options.attachments);
+            pluginTask.status = "complete";
+            pluginTask.endedAt = new Date().toISOString();
+            this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+            return pluginTask;
+          }
+          return this.sendMessage(result.steer, options);
+        }
+        const pluginTask = this.createTask(text, []);
+        this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+        const reply = result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
+        const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+        pluginTask.status = "complete";
+        pluginTask.endedAt = new Date().toISOString();
+        this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+        return pluginTask;
+      }
       const target = await this.nativeCommandTarget();
       const agent = this.workspace.agents[target];
       const commandName = text.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
@@ -513,7 +678,8 @@ export class RoomService {
     // the running turn, cancel stops it — so neither queues behind it.
     if (command.type === "steer" || command.type === "cancel") {
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
-      const reply = command.type === "steer" ? await this.runSteerCommand(command.text) : await this.runCancelCommand();
+      const reply =
+        command.type === "steer" ? await this.runSteerCommand(command.text, options.attachments) : await this.runCancelCommand();
       const event: RoomEvent = { id: `system_${task.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
       task.status = "complete";
@@ -555,23 +721,19 @@ export class RoomService {
       }
     }
 
+    // Close the settle->drain gap (see `draining`'s doc comment) before
+    // reading activeTask below — without this, a message sent in that window
+    // would see activeTask already cleared and jump the durable queue ahead
+    // of a message that's been waiting far longer. Resolves fast (drain()'s
+    // own decision, not a queued command's execution) — never a meaningful
+    // stall for the idle, nothing-was-settling case (already-resolved awaits
+    // cost a microtask).
+    if (this.draining) await this.draining;
+
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
     if (this.activeTask) {
-      task.status = "queued";
-      if (recordedSteerEventId) task.recorded = true;
-      if (options.attachments?.length) task.attachments = options.attachments;
-      await this.room.enqueue({
-        taskId: task.id,
-        text,
-        targets,
-        ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
-        ...(options.attachments?.length ? { attachments: options.attachments } : {}),
-        ...(options.nativeCommand ? { nativeCommand: true } : {}),
-        ...(recordedSteerEventId ? { eventId: recordedSteerEventId, recorded: true } : {}),
-        queuedAt: task.startedAt,
-      });
-      this.queuedTasks.push(task);
+      await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
       void this.emitSnapshot();
       return task;
@@ -588,11 +750,40 @@ export class RoomService {
       return task;
     }
 
-    // A failed steer's guidance is already committed — the direct run (the
-    // turn ended AND settled before we reached the queue check) must not
-    // record it a second time; the prompt text still drives the turn.
-    this.startTask(task, text, recordedSteerEventId ? { ...options, recordUserMessage: false } : options);
+    // Durable-first even while idle: the 2026-07-13 append→pendingTurn incident
+    // proved a direct start could strand a transcript-only user message.
+    await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
+    await this.drain();
+    if (task.status === "queued") {
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      void this.emitSnapshot();
+    }
     return task;
+  }
+
+  private async enqueueTask(
+    task: Task,
+    text: string,
+    targets: string[],
+    options: SendMessageOptions,
+    recordedEventId?: string,
+  ): Promise<void> {
+    const recorded = Boolean(recordedEventId) || options.recordUserMessage === false;
+    task.status = "queued";
+    if (recorded) task.recorded = true;
+    if (options.attachments?.length) task.attachments = options.attachments;
+    await this.room.enqueue({
+      taskId: task.id,
+      text,
+      targets,
+      ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+      ...(options.attachments?.length ? { attachments: options.attachments } : {}),
+      ...(options.nativeCommand ? { nativeCommand: true } : {}),
+      ...(recordedEventId ? { eventId: recordedEventId } : {}),
+      ...(recorded ? { recorded: true } : {}),
+      queuedAt: task.startedAt,
+    });
+    this.queuedTasks.push(task);
   }
 
   private startTask(task: Task, text: string, options: SendMessageOptions): void {
@@ -621,43 +812,76 @@ export class RoomService {
    * state.json.queue until a successor durable record replaces it (the turn's
    * pendingTurn marker, or a command's persisted reply), so a crash anywhere
    * in between re-drains the message instead of losing it. */
-  private async drain(): Promise<void> {
-    if (this.activeTask) return;
-    const next = await this.room.peekQueue();
-    if (!next) return;
-    const chip = this.queuedTasks.find((task) => task.id === next.taskId);
-    this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
-    const task = chip ?? this.createTask(next.text, next.targets);
+  /** `onDecided`, if given, is invoked the instant the busy/idle question is
+   * settled — either a queued item claims `activeTask` or the queue is
+   * confirmed empty — so a caller tracking `this.draining` (settleTask) can
+   * resolve without waiting for a queued COMMAND's full execution below. */
+  private async drain(onDecided?: () => void): Promise<void> {
     try {
-      // Agent-dialogue hand-offs are agent-authored text, never slash commands —
-      // skip command parsing (a reply opening with "/" is prose, not /clear). A
-      // native command already decided it's a command turn to a pinned target;
-      // re-parsing would just "unknown"-error it, so run it as a message too.
-      const command =
-        next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
-      if (command.type !== "message") {
-        task.status = "running";
-        task.startedAt = new Date().toISOString();
-        this.activeTask = task;
-        this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
-        await this.runCommand(task, command);
-        // The reply is durable (runCommand persists it) — only now consume the
-        // entry. A crash before this line re-runs the command on boot
-        // (at-least-once; commands are idempotent-enough, loss is not).
-        await this.room.spliceQueued(next.taskId);
+      if (this.activeTask) return;
+      const next = await this.room.peekQueue();
+      if (!next) return;
+      const due = next.notBefore ? Date.parse(next.notBefore) : Number.NaN;
+      if (Number.isFinite(due) && due > Date.now()) {
+        onDecided?.();
+        onDecided = undefined;
+        clearTimeout(this.authRetryTimer);
+        this.authRetryTimer = setTimeout(() => {
+          this.authRetryTimer = undefined;
+          void this.drain();
+        }, due - Date.now());
+        this.authRetryTimer.unref?.();
         return;
       }
-      this.startTask(task, next.text, {
-        targets: next.targets,
-        queued: next,
-        ...(next.channel ? { channel: next.channel } : {}),
-        ...(next.attachments?.length ? { attachments: next.attachments } : {}),
-        ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
-        ...(next.recorded ? { recordUserMessage: false } : {}),
-        ...(next.nativeCommand ? { nativeCommand: true } : {}),
-      });
-    } catch (error) {
-      this.settleTask(task, "error", error);
+      const chip = this.queuedTasks.find((task) => task.id === next.taskId);
+      this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next.taskId);
+      const task = chip ?? this.createTask(next.text, next.targets);
+      // From this point on, activeTask is set SYNCHRONOUSLY (no intervening
+      // await) by both branches below — safe to resolve now, so a
+      // sendMessage() that was awaiting `draining` sees the correct busy
+      // state the moment it resumes, without blocking on this queued turn's
+      // full run (a queued /compact can take a while).
+      onDecided?.();
+      onDecided = undefined;
+      try {
+        // Agent-dialogue hand-offs are agent-authored text, never slash commands —
+        // skip command parsing (a reply opening with "/" is prose, not /clear). A
+        // native command already decided it's a command turn to a pinned target;
+        // re-parsing would just "unknown"-error it, so run it as a message too.
+        const command =
+          next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
+        if (command.type !== "message") {
+          task.status = "running";
+          task.startedAt = new Date().toISOString();
+          this.activeTask = task;
+          this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+          await this.runCommand(task, command);
+          // The reply is durable (runCommand persists it) — only now consume the
+          // entry. A crash before this line re-runs the command on boot
+          // (at-least-once; commands are idempotent-enough, loss is not).
+          await this.room.spliceQueued(next.taskId);
+          return;
+        }
+        this.startTask(task, next.text, {
+          targets: next.targets,
+          queued: next,
+          ...(next.channel ? { channel: next.channel } : {}),
+          ...(next.attachments?.length ? { attachments: next.attachments } : {}),
+          ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
+          ...(next.recorded ? { recordUserMessage: false } : {}),
+          ...(next.nativeCommand ? { nativeCommand: true } : {}),
+          // Retried prompts are already on the transcript from the original
+          // run — never re-record them. `queued: next` above carries retry
+          // metadata through to runAgentTask's options.
+          ...(next.stallRetried || next.authRetries ? { recordUserMessage: false } : {}),
+        });
+      } catch (error) {
+        this.settleTask(task, "error", error);
+      }
+    } finally {
+      // Covers the early returns above (activeTask already set, queue empty)
+      // — a no-op if the mid-function call already fired.
+      onDecided?.();
     }
   }
 
@@ -746,6 +970,15 @@ export class RoomService {
     if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
   }
 
+  /** Public rooms rebroadcast for the summon coordinator: a summon child
+   * leaving the coordinator's running set changes the PARENT room's
+   * banner/sidebar truth, but the child's own task-end broadcast raced
+   * ahead of that cleanup — the coordinator calls this after dropping the
+   * child so clients stop counting a dead summon. */
+  async broadcastRoomsChanged(): Promise<void> {
+    await this.emitRoomsChanged();
+  }
+
   /** Re-invoke a caller agent after its summon returned — steer its live turn if
    * it has one (the harness picks up the nudge at the next tool boundary), else
    * a fresh turn. Never records a "user →" bubble. Two paths, two shapes:
@@ -775,6 +1008,13 @@ export class RoomService {
    * idle observation right after open can be a lie). Unlike waitForIdle
    * (one task), this covers everything the room is still going to run —
    * the summon-recovery wait. */
+  /** True while a queued message or durable pending-turn marker still exists — i.e. the room
+   * will run again without outside input (auth-retry requeue etc.). */
+  async hasPendingWork(): Promise<boolean> {
+    await this.init();
+    return Boolean(this.activeTask || this.queuedTasks.length > 0 || (await this.room.state()).pendingTurn != null);
+  }
+
   async waitForSettled(): Promise<void> {
     await this.init();
     let stable = 0;
@@ -1044,6 +1284,9 @@ export class RoomService {
       this.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
       let lastFlush = 0;
       let lastFlushedReply = "";
+      // Throttle for the visible "upstream stall" system line — local to THIS
+      // turn, so a fresh turn always gets to say it's stuck at least once.
+      let lastStallNoticeAt = 0;
 
       // Auto-recall never blocks or fails a turn: the hook returns "" on any
       // miss and room-service treats "" as absent. A context-gate "compact"
@@ -1074,11 +1317,25 @@ export class RoomService {
       this.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
       // Role watchdog — event-driven enforcement; a role may declare a
-      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers one
-      // corrective message into the running turn when it crosses. Zero cost
-      // when the agent behaves.
+      // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers a
+      // corrective message into the running turn when it crosses. Plain
+      // watchdog fires once; `repeat: true` re-fires every `toolCalls` calls
+      // for the rest of the turn. Zero cost when the agent behaves.
       let watchdogToolCalls = 0;
       let watchdogFired = false;
+      let watchdogFiredAt = 0;
+
+      // Ambient watchdog — a generic, plugin-driven sibling of the role one:
+      // ANY local command-plugin (e.g. /ultrawhip) can drop a small JSON file
+      // at ambientWatchdogPath() to make every running turn, for every agent,
+      // get an auto-repeating steer every N tool calls — no role assignment,
+      // no per-agent config, just a command toggling a file. Re-read per
+      // tool-start (cheap: one existsSync + a small readFileSync) so toggling
+      // it takes effect on the very next tool call, mid-turn.
+      let ambientToolCalls = 0;
+      let ambientFiredAt = 0;
+
+      const userName = await readUserNameSetting();
 
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
@@ -1096,18 +1353,53 @@ export class RoomService {
             thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
+            ...(userName ? { userName } : {}),
           },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
             if (event.type === "tool-start") {
               watchdogToolCalls += 1;
-              if (activeRole?.watchdog && !watchdogFired && watchdogToolCalls >= activeRole.watchdog.toolCalls) {
+              const watchdog = activeRole?.watchdog;
+              const dueAgain = watchdog?.repeat && watchdogToolCalls - watchdogFiredAt >= watchdog.toolCalls;
+              if (watchdog && ((!watchdogFired && watchdogToolCalls >= watchdog.toolCalls) || dueAgain)) {
                 watchdogFired = true;
-                void runtime.steer?.(this.roomId, activeRole.watchdog.message).catch(() => {});
+                watchdogFiredAt = watchdogToolCalls;
+                const pick = watchdog.messages?.length
+                  ? watchdog.messages[Math.floor(Math.random() * watchdog.messages.length)]
+                  : watchdog.message;
+                void this.fireWatchdogSteer(target, runtime, pick);
+              }
+              ambientToolCalls += 1;
+              const ambient = readAmbientWatchdog(this.roomId);
+              if (ambient && ambientToolCalls - ambientFiredAt >= ambient.toolCalls) {
+                ambientFiredAt = ambientToolCalls;
+                const ambientPick = ambient.messages[Math.floor(Math.random() * ambient.messages.length)];
+                void this.fireWatchdogSteer(target, runtime, ambientPick);
               }
             }
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
+            }
+            if (event.type === "background-task") {
+              void this.recordBackgroundTask(target, event).catch(() => {});
+            }
+            if (event.type === "notice") {
+              // Visible, throttled system line — never reply text (toUiEvent
+              // already drops `notice` as a no-op UI transport event above).
+              const now = Date.now();
+              if (now - lastStallNoticeAt > STALL_NOTICE_THROTTLE_MS) {
+                lastStallNoticeAt = now;
+                const noticeEvent: RoomEvent = {
+                  id: newId("system_stall"),
+                  timestamp: new Date().toISOString(),
+                  author: "system",
+                  text: `⚠ upstream stall (@${target}): ${event.text} — harness retrying`,
+                };
+                void this.room
+                  .appendEvent(noticeEvent)
+                  .then(() => this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: noticeEvent }))
+                  .catch(() => {});
+              }
             }
             if (event.type === "context-usage") {
               // The window (maxTokens) only rides the turn-end event; keep the
@@ -1127,7 +1419,8 @@ export class RoomService {
                 .catch(() => {});
             }
             this.applyLiveTurn(eventId, event);
-            this.emit(this.toUiEvent(task.id, agent.id, eventId, event));
+            const uiEvent = this.toUiEvent(task.id, agent.id, eventId, event);
+            if (uiEvent) this.emit(uiEvent);
             if (event.type === "tool-end") {
               this.fireHooks("toolUse", { agentId: target, toolName: event.toolName, isError: event.isError });
             }
@@ -1149,15 +1442,19 @@ export class RoomService {
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
-        // the failure fired before any event streamed. Preserve whatever the
-        // flush recorded and clear the marker (never replay a terminally-failed
-        // turn — poison pill).
+        // setup/progress persistence failed around the stream. Preserve any
+        // WAL-flushed text through the SAME reserved-id commit path and make
+        // the abnormal end visible; a blank turn gets a loud durable failure.
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
-        else await this.room.clearPendingTurn();
-        await this.appendTurnFailure(target, error);
+        if (partial.trim()) await this.commitReply(target, eventId, preservePartialReply(partial, error), {}, channel);
+        else {
+          await this.room.clearPendingTurn();
+          await this.appendTurnFailure(target, diedWithoutOutput(error));
+        }
+        await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
@@ -1169,17 +1466,23 @@ export class RoomService {
       // Cancelled, failed, or completed: ALL commit what was produced. A user
       // stop lands as a stream death (abort → turn-error → the runtime stream
       // throws), so `turn.error` with the cancel flag set IS the normal stop
-      // shape — never a reason to drop the accumulator. A stop is a deliberate
-      // end, not an eraser: the reply text, the tool calls, and the thinking
-      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      // shape — never a reason to drop the accumulator. Every abnormal teardown
+      // gets an explicit visible outcome: output commits under the reserved id
+      // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
-      const reply = turn.reply.trim();
+      // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
+      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
+      if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
+      const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
-      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const interruptedProgress = abnormalReason !== undefined && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const producedOutput = Boolean(partialReply || interruptedProgress);
+      const committedReply = abnormalReason !== undefined && producedOutput
+        ? preservePartialReply(partialReply, abnormalReason)
+        : partialReply;
       // Multi-target hand-off: this target's commit (or clear) must not open a
       // window where the remaining targets' owed turns exist in memory only —
       // the SAME atomic state write that retires this target's marker installs
@@ -1201,22 +1504,28 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
+      if (abnormalReason !== undefined && !producedOutput) {
+        if (cancelled) await this.appendTurnStopped(target);
+        else await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+      }
 
       if (failed) {
-        // Genuine mid-stream failure (not a user stop): the progress is now
-        // durable; surface the error so the task settles as error.
-        await this.appendTurnFailure(target, turn.error);
-        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        // Genuine mid-stream failure (not a user stop): the preservation notice
+        // or no-output failure is durable; surface the original error so the
+        // task settles as error, retaining the existing retry policy.
+        await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
+        await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
         throw turn.error;
       }
 
-      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
-        reply: reply.slice(0, HOOK_TEXT_CAP),
+        reply: partialReply.slice(0, HOOK_TEXT_CAP),
         outcome: cancelled ? "cancelled" : "complete",
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
@@ -1224,7 +1533,7 @@ export class RoomService {
       if (cancelled) return;
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
-      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
+      if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -1351,7 +1660,7 @@ export class RoomService {
    * session compaction, so it shares the status but not the compact() call.) */
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
     const { events } = await this.room.eventsFrom(0);
-    const rendered = renderRoomTranscript(events.slice(0, uptoEvents));
+    const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting());
     // Cap the summarizer input, biased to the TAIL, so a huge room can't
     // overflow the model's context window (→ throw → garbage fallback). A
     // joining agent most needs recent context, and every fallback below now
@@ -1440,6 +1749,110 @@ export class RoomService {
     }
   }
 
+  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
+   * first token: a stop is not a failure. */
+  private async appendTurnStopped(agentId: string): Promise<void> {
+    try {
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `■ turn stopped (@${agentId}) — no output yet`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
+  }
+
+  /** Requeue-once after RunnerHost's hard stall deadline aborted the turn
+   * (a named UpstreamStallError — src/harness/host.ts): a stalled turn that
+   * produced no reply text gets exactly ONE automatic retry, through the same
+   * durable queue every other queued message uses, marked `stallRetried` so a
+   * SECOND stall on the retry falls through to the normal failure path
+   * instead of keeping a dead upstream's retry loop alive forever. Returns
+   * true when it requeued — the caller then skips its generic
+   * appendTurnFailure in favor of the more specific system line this appends.
+   * No-op (false) for any other error, a non-empty partial (current commit +
+   * failure behavior is unchanged), or a turn that was itself a stall retry. */
+  private async maybeRequeueStall(
+    targets: string[],
+    agentId: string,
+    text: string,
+    error: unknown,
+    partialReply: string,
+    channel: "voice" | undefined,
+    attachments: MessageAttachment[] | undefined,
+    options: SendMessageOptions,
+  ): Promise<boolean> {
+    const isStall = error instanceof Error && error.name === "UpstreamStallError";
+    if (!isStall || partialReply.trim() || options.queued?.stallRetried) return false;
+    const event: RoomEvent = {
+      id: newId("system_stallretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⚠ turn aborted after upstream stall (@${agentId}) — message requeued, retrying once`,
+    };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const retryTask = this.createTask(text, targets);
+    retryTask.status = "queued";
+    await this.room.enqueue({
+      taskId: retryTask.id,
+      text,
+      targets,
+      ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      stallRetried: true,
+      queuedAt: retryTask.startedAt,
+    });
+    this.queuedTasks.push(retryTask);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
+    void this.emitSnapshot();
+    return true;
+  }
+
+  private async maybeRequeueAuth(
+    targets: string[],
+    agentId: string,
+    text: string,
+    error: unknown,
+    _partialReply: string,
+    channel: "voice" | undefined,
+    attachments: MessageAttachment[] | undefined,
+    options: SendMessageOptions,
+  ): Promise<boolean> {
+    const isAuth = error instanceof Error && error.name === "TransientAuthError";
+    const attempt = (options.queued?.authRetries ?? 0) + 1;
+    if (!isAuth || attempt > 5) return false;
+    const backoff = [30_000, 60_000, 120_000, 300_000, 600_000][attempt - 1];
+    const event: RoomEvent = {
+      id: newId("system_authretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⚠ turn failed on transient auth (@${agentId}) — requeued, retry ${attempt}/5 in ${backoff / 1000}s`,
+    };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const retryTask = this.createTask(text, targets);
+    retryTask.status = "queued";
+    await this.room.enqueue({
+      taskId: retryTask.id,
+      text,
+      targets,
+      ...(channel ? { channel } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      authRetries: attempt,
+      notBefore: new Date(Date.now() + backoff).toISOString(),
+      queuedAt: retryTask.startedAt,
+    });
+    this.queuedTasks.push(retryTask);
+    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
+    void this.emitSnapshot();
+    return true;
+  }
+
   /** Episodic capture is best-effort derived data: a failure must never fail
    * the turn that produced it. */
   private async captureEpisode(
@@ -1478,6 +1891,26 @@ export class RoomService {
     return `Consolidated @${target}: ${result.episodesSeen} episodes reviewed → ${result.factsAdded} facts added, ${result.factsInvalidated} superseded, ${result.memoryEdits} core-memory edits${result.opsSkipped ? `, ${result.opsSkipped} ops skipped` : ""}.`;
   }
 
+  /** Dream v2, reachable from the chat composer (was CLI-only via `gaia
+   * dream` — the command existed but no room recognized it as a slash
+   * command, so autocomplete showed "no matches"). `/dream [agent]` proposes
+   * (never applies); `/dream [agent] --apply` commits the standing proposal.
+   * Same underlying MemoryService calls the CLI/harness route uses, so the
+   * two surfaces can never drift. */
+  async runDreamCommand(agentId?: string, apply?: boolean): Promise<string> {
+    const target = agentId ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;
+    if (!this.options.memory) return "Memory consolidation is not available in this workspace.";
+    if (apply) {
+      if (!this.options.memory.applyDreamProposal) return "Dream apply is not available in this workspace.";
+      const result = await this.options.memory.applyDreamProposal(target);
+      if (!result) return `No pending dream proposal for @${target} — run \`/dream ${target}\` first.`;
+      return `Applied ${result.applied} ops (${result.skipped} skipped) for @${target}.`;
+    }
+    const result = await this.options.memory.consolidate(target, { propose: true, force: true });
+    return formatDreamProposal(result, `run: /dream ${target} --apply to accept, or /dream ${target} again to regenerate.`);
+  }
+
   /** Steer-by-default core: inject a plain message into @target's running turn.
    * PERSISTS FIRST (NO PROGRESS EVER LOST): the guidance is committed to the
    * transcript before the harness sees it — a crash right after the harness
@@ -1513,12 +1946,28 @@ export class RoomService {
     return true;
   }
 
+  /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
+   * shape as runSteerCommand below, just without its command-reply return
+   * value — a watchdog fires from inside an onEvent callback, not a command.
+   * Without this it only ever reached the runtime directly (never committed,
+   * never emitted), so it worked for the agent but was invisible in the room. */
+  private async fireWatchdogSteer(target: string, runtime: AgentRuntime, message: string): Promise<void> {
+    try {
+      const event = await this.room.addUserMessage(message, [target]);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      const ok = (await runtime.steer?.(this.roomId, message)) ?? false;
+      if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
+    } catch {
+      // A watchdog nudge is best-effort — never take the turn down over it.
+    }
+  }
+
   /** /steer: inject guidance into the RUNNING turn (capability-gated data —
    * pi session.steer, codex turn/steer, claude stdin stream-json). The guidance is
    * recorded as a user event for history, but the running harness already
    * received it, and the commit cursor advances past it — so it is never
    * replayed as fresh context. */
-  async runSteerCommand(text?: string): Promise<string> {
+  async runSteerCommand(text?: string, attachments?: MessageAttachment[]): Promise<string> {
     const guidance = text?.trim();
     if (!guidance) return "Usage: /steer <guidance for the running turn>";
     const task = this.activeTask;
@@ -1526,12 +1975,43 @@ export class RoomService {
     if (!task || !target) return "No agent turn is running — just send a normal message.";
     const runtime = this.runtimes[target];
     if (!runtime.capabilities.supportsSteer) return `@${target}'s harness does not support mid-turn steering. Cancel and resend instead.`;
-    const event = await this.room.addUserMessage(guidance, [target]);
+    // Same breadcrumb-lines + attachments pairing as steerRunningTurn: the
+    // event carries the plain guidance (attachments ride its own field for
+    // the UI gallery), the runtime gets the breadcrumb text AND the actual
+    // attachment bytes so an image lands for real, not just as a path string.
+    const event = await this.room.addUserMessage(guidance, [target], undefined, attachments);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    const ok = (await runtime.steer?.(this.roomId, guidance)) ?? false;
+    const steerText = attachments?.length ? `${guidance}\n\n${renderAttachmentLines(attachments)}` : guidance;
+    const ok = (await runtime.steer?.(this.roomId, steerText, attachments)) ?? false;
     // Same stream-position marker as steer-by-default (see steerRunningTurn).
     if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
+  }
+
+  /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
+   * the same way loadCommandPlugins tolerates a bad module at load time —
+   * never crashes the caller. See services/plugins.ts for the contract. */
+  private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
+    try {
+      return (
+        (await plugin.run(args, { homedir: homedir(), roomId: this.roomId, workspaceRoot: this.workspace.rootDir })) ?? {}
+      );
+    } catch (error) {
+      return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  /** Idle-path fallback for an unrecognized /command: the sendMessage seam
+   * (see the `command.type === "unknown"` branch there) already handles the
+   * live case with full args and mid-turn steering; this one only runs when an
+   * unknown command reaches the COMMANDS registry directly (e.g. replayed off
+   * the durable queue), so no original arg text survives and no steer applies —
+   * just a bare run + reply. */
+  async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
+    const plugin = (await this.pluginsPromise).get(command.command);
+    if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
+    const result = await this.runPlugin(plugin, []);
+    return result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
   }
 
   /** /compact: hand the agent's session to its HARNESS's own compaction
@@ -2163,6 +2643,9 @@ export class RoomService {
   async runReloadCommand(): Promise<string> {
     const reload = reloadDaemon;
     if (!reload) return "Reload is unavailable in this process.";
+    // Room-level provenance for the restart-attribution trail (see
+    // requestReload in server/http.ts): which room's /reload ordered it.
+    console.log(`[gaia] ${new Date().toISOString()} /reload command issued in room ${this.roomId} (workspace ${this.workspaceId})`);
     setTimeout(() => {
       void reload();
     }, 0);
@@ -2207,9 +2690,10 @@ export class RoomService {
   }
 
   /** The `/`-command palette: gaia commands + the harness-native commands each
-   * agent CHECKED as a skill (deduped, gaia names win). Native ones are hints —
-   * only a checked one passes through. */
-  private paletteCommands(): SlashCommandDefinition[] {
+   * agent CHECKED as a skill (deduped, gaia names win) + loaded command plugins
+   * (see ./plugins.js). Native ones are hints — only a checked one passes
+   * through; plugins always pass through (see sendMessage's plugin dispatch). */
+  private async paletteCommands(): Promise<SlashCommandDefinition[]> {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
     const native: SlashCommandDefinition[] = [];
     const onDisk = new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
@@ -2224,6 +2708,11 @@ export class RoomService {
         seen.add(command.name);
         native.push({ name: command.name, type: "native", description: command.description, native: true });
       }
+    }
+    for (const plugin of (await this.pluginsPromise).values()) {
+      if (seen.has(plugin.command)) continue;
+      seen.add(plugin.command);
+      native.push({ name: plugin.command, type: "native", description: plugin.description ?? "", native: true });
     }
     return native.length ? [...SLASH_COMMANDS, ...native] : SLASH_COMMANDS;
   }
@@ -2492,6 +2981,11 @@ export class RoomService {
     return "Cleared room history and reset all agent sessions.";
   }
 
+  async runRefreshCommand(): Promise<string> {
+    for (const runtime of Object.values(this.runtimes)) runtime.refreshContext?.(this.roomId);
+    return "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn";
+  }
+
   /** /fork: branch into a sibling room. Transcript copies verbatim; cursors
    * RESET so the branch's first turn replays the whole transcript — the one
    * context-rebuild mechanism that works for every harness (sessions cannot
@@ -2531,6 +3025,119 @@ export class RoomService {
     return events.find((event) => event.id === eventId);
   }
 
+  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+    const now = Date.now();
+    const startedAt = new Date(now).toISOString();
+    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
+    await this.room.updateState((state) => {
+      const recent = (state.backgroundTasks ?? []).filter(
+        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
+      );
+      recent.push({
+        taskId: event.taskId,
+        toolName: event.toolName,
+        ...(event.command !== undefined ? { command: event.command } : {}),
+        ...(event.description !== undefined ? { description: event.description } : {}),
+        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
+        startedAt,
+        agentId,
+        roomId: this.roomId,
+      });
+      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
+    });
+    await this.emitSnapshot();
+  }
+
+  /** PIDs still holding `task.outputPath` open for writing, per `lsof -t`
+   * (a live writer means the shell/process is still running). Best-effort:
+   * no output path, a missing/erroring lsof, or a timeout all report "no live
+   * writers" rather than fail the caller — liveness is advisory, never a hard
+   * dependency for the tray to render. */
+  private async backgroundTaskPids(task: BackgroundTask): Promise<number[]> {
+    if (!task.outputPath) return [];
+    try {
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = spawn(LSOF_BIN, ["-t", task.outputPath as string], { stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGKILL");
+          reject(new Error("lsof timed out"));
+        }, BACKGROUND_TASK_LSOF_TIMEOUT_MS);
+        child.stdout?.on("data", (chunk: Buffer) => {
+          out += chunk.toString("utf8");
+        });
+        child.once("error", (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(out);
+        });
+      });
+      return stdout
+        .split(/\s+/)
+        .map((line) => Number(line.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The tail of a tracked background process's output, plus whether it still
+   * has a live writer (see backgroundTaskPids). The path comes only from
+   * durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<{ text: string; running: boolean } | undefined> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task?.outputPath) return undefined;
+    const running = (await this.backgroundTaskPids(task)).length > 0;
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(task.outputPath, "r");
+      const { size } = await file.stat();
+      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
+      if (length === 0) return { text: "", running };
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
+      return { text: buffer.subarray(0, bytesRead).toString("utf8"), running };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    } finally {
+      await file?.close();
+    }
+  }
+
+  /** Stop a tracked background process (SIGTERM every live writer PID) and
+   * drop its tray entry, or just drop the entry when nothing is still
+   * running — either way this is the tray's stop/dismiss action. Returns
+   * false when the task id is unknown (already expired/removed). */
+  async stopBackgroundTask(taskId: string): Promise<boolean> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task) return false;
+    for (const pid of await this.backgroundTaskPids(task)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await this.room.updateState((state) => {
+      state.backgroundTasks = (state.backgroundTasks ?? []).filter((candidate) => candidate.taskId !== taskId);
+    });
+    await this.emitSnapshot();
+    return true;
+  }
+
   /** Page backwards through committed history: the `limit` events immediately
    * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
    * the transcript's "load older" — the snapshot only carries the tail window. */
@@ -2548,6 +3155,22 @@ export class RoomService {
     const all = (await this.room.eventsFrom(0)).events;
     const events = all.slice(-this.workspace.config.transcriptWindow);
     const state = await this.room.state();
+    // The selected agent plus any agents actively executing this room's turn
+    // are the only identities that can spend here. This is deliberately not
+    // the workspace roster: an unrelated agent/account in another room must
+    // never leak into this room's usage meter.
+    const usageAgentIds = new Set([
+      state.activeAgent ?? this.workspace.config.defaultAgent,
+      ...(this.activeTask?.targets ?? []),
+      // A room can have a genuine multi-agent conversation even while idle.
+      // Its transcript is the durable membership evidence; workspace agents
+      // that never spoke here remain excluded.
+      ...all.flatMap((event) => (event.author !== "user" && this.workspace.agents[event.author] ? [event.author] : [])),
+    ]);
+    const usageAccounts = [...usageAgentIds]
+      .map((id) => this.workspace.agents[id])
+      .flatMap((agent) => (agent ? [usageAccountFor(agent, this.workspace)] : []))
+      .filter((account): account is string => Boolean(account));
     return {
       workspace: {
         id: this.workspaceId,
@@ -2562,14 +3185,19 @@ export class RoomService {
         eventTotal: all.length,
         ...(state.thanksDario ? { thanksDario: true } : {}),
         ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
+        ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
         ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
         ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
+        ...(() => {
+          const ambient = readAmbientWatchdog(this.roomId);
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
+        })(),
       },
       rooms: await this.listRooms(),
-      commands: this.paletteCommands(),
+      commands: await this.paletteCommands(),
       agents: await Promise.all(
         Object.values(this.workspace.agents).map(async (agent) => ({
           id: agent.id,
@@ -2586,6 +3214,7 @@ export class RoomService {
           defaultRole: agent.defaultRole,
           harness: harnessIdFor(agent, this.workspace),
           ...(agent.account ? { account: agent.account } : {}),
+          ...(usageAccountFor(agent, this.workspace) ? { usageAccount: usageAccountFor(agent, this.workspace) } : {}),
           roles: await listAgentRoles(agent),
           status: (this.compactingAgents.has(agent.id)
             ? "compacting"
@@ -2597,6 +3226,7 @@ export class RoomService {
         })),
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
+      backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.
@@ -2743,6 +3373,13 @@ export class RoomService {
     this.recentTasks = [...this.recentTasks.slice(-9), task];
     if (this.activeTask?.id === task.id) this.activeTask = undefined;
     if (this.activeAgentTurn?.id === task.id) this.activeAgentTurn = undefined;
+    // Close the settle->drain gap now, synchronously, in the SAME tick as the
+    // activeTask clear above — see `draining`'s doc comment. `resolveDraining`
+    // fires from inside drain() the instant it has decided (see onDecided).
+    let resolveDraining: () => void = () => {};
+    this.draining = new Promise<void>((resolve) => {
+      resolveDraining = resolve;
+    });
     if (status === "error") {
       this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });
@@ -2761,7 +3398,13 @@ export class RoomService {
     void this.emitSnapshot()
       .catch(() => {})
       .finally(() => {
-        void this.drain();
+        void this.drain(resolveDraining).finally(() => {
+          // Defensive: drain() always calls onDecided via its own try/finally,
+          // but a second resolve() is a no-op, so this just guarantees the
+          // promise can never dangle unresolved if drain() were ever changed.
+          resolveDraining();
+          if (this.draining) this.draining = undefined;
+        });
       });
   }
 
@@ -2790,11 +3433,22 @@ export class RoomService {
   private applyLiveTurn(eventId: string, event: AgentEvent): void {
     const live = this.liveTurn;
     if (!live || live.eventId !== eventId) return;
+    // Mirror the harness's own stall bookkeeping (RunnerHost.arm/clearStallDeadline):
+    // an upstream-stall notice marks the turn as reconnecting so a client that
+    // (re)subscribes mid-stall renders the retry state from the snapshot rather
+    // than a frozen bubble; ANY real output (a non-notice event) proves the
+    // harness recovered and clears it. Uniform for every harness — the notice is
+    // harness-agnostic (no `=== "claude"` branch).
+    if (event.type === "notice") {
+      if (event.kind === "upstream-stall") live.stalled = true;
+    } else if (live.stalled) {
+      live.stalled = false;
+    }
     if (event.type === "text-delta") live.text += event.delta;
     applyEventToDetails(live.details, event);
   }
 
-  private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent {
+  private toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent | undefined {
     const scope = { workspaceId: this.workspaceId, roomId: this.roomId, taskId, agentId, eventId };
     switch (event.type) {
       case "model-info":
@@ -2822,6 +3476,9 @@ export class RoomService {
         return { ...scope, type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError };
       case "steered":
         return { ...scope, type: "steered", steerEventId: event.eventId };
+      case "notice":
+        // Not a UI transport event — no-op. Never rendered as reply text.
+        return undefined;
     }
   }
 
