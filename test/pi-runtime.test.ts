@@ -26,31 +26,10 @@ class FakeSession implements PiSessionLike {
   compact?: (customInstructions?: string) => Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
   /** Per-test fixture for PiSessionLike.getUserMessagesForForking. */
   userMessagesForForking: Array<{ entryId: string; text: string }> = [];
-  /** Per-test fixture: entryId -> parentId (undefined entry = "no such
-   * entry"; null parentId = "first message in the session"), consumed by
-   * PiSessionLike.sessionManager.getEntry(). */
-  entryParents = new Map<string, string | null>();
-  /** PiSessionLike.sessionManager.getSessionFile() fixture. */
-  sessionFile: string | undefined = "fake-session/original.jsonl";
-  createBranchedSessionCalls: string[] = [];
-  newSessionCalls: Array<{ parentSession?: string } | undefined> = [];
-  /** Per-test override: what createBranchedSession/newSession "write" —
-   * undefined simulates a non-persisted session (can't fork). */
-  forkedSessionFile: string | undefined = "fake-session/branch.jsonl";
-
-  readonly sessionManager = {
-    getEntry: (id: string): { parentId: string | null | undefined } | undefined =>
-      this.entryParents.has(id) ? { parentId: this.entryParents.get(id) ?? null } : undefined,
-    getSessionFile: (): string | undefined => this.sessionFile,
-    createBranchedSession: (targetLeafId: string): string | undefined => {
-      this.createBranchedSessionCalls.push(targetLeafId);
-      return this.forkedSessionFile;
-    },
-    newSession: (options?: { parentSession?: string }): string | undefined => {
-      this.newSessionCalls.push(options);
-      return this.forkedSessionFile;
-    },
-  };
+  /** Calls recorded against PiSessionLike.navigateTree. */
+  navigateTreeCalls: string[] = [];
+  /** Per-test override: what navigateTree returns for the NEXT call. */
+  navigateTreeResult: { cancelled: boolean; editorText?: string } = { cancelled: false };
 
   constructor(id: string) {
     this.sessionId = id;
@@ -58,6 +37,11 @@ class FakeSession implements PiSessionLike {
 
   getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
     return this.userMessagesForForking;
+  }
+
+  async navigateTree(targetEntryId: string): Promise<{ cancelled: boolean; editorText?: string }> {
+    this.navigateTreeCalls.push(targetEntryId);
+    return this.navigateTreeResult;
   }
 
   setThinkingLevel(level: string): void {
@@ -538,7 +522,7 @@ test("PiRuntime.compact stays a clean no-op when the session dir is truly empty 
   }
 });
 
-test("PiRuntime.forkAtMessage maps the gaia origin to pi's Kth user entry BY ORDINAL (never text) and branches at its parent", async () => {
+test("PiRuntime.forkAtMessage maps the gaia origin to pi's Kth user entry BY ORDINAL (never text) and calls navigateTree with its entryId", async () => {
   const fx = await harnessFixture();
   try {
     const sessions: FakeSession[] = [];
@@ -559,28 +543,22 @@ test("PiRuntime.forkAtMessage maps the gaia origin to pi's Kth user entry BY ORD
       { entryId: "entry-1", text: "Room: default\nCurrent agent: @echo\n\nNewest user message:\nfirst" },
       { entryId: "entry-2", text: "Room: default\nCurrent agent: @echo\n\nNewest user message:\nsecond" },
     ];
-    session.entryParents.set("entry-1", null);
-    session.entryParents.set("entry-2", "entry-1");
 
     const result = await runtime.forkAtMessage("default", "evt_2", 2);
-    assert.deepEqual(result, { ok: true, message: "forked pi session to a new branch before entry entry-2" });
-    // "before" position: branches at the TARGET's PARENT, dropping the
-    // target (and everything after) from the new branch.
-    assert.deepEqual(session.createBranchedSessionCalls, ["entry-1"]);
-    assert.deepEqual(session.newSessionCalls, []);
-    // The stale session handle is disposed — the branch is a NEW durable
-    // file, so the room's session is rebuilt (lazily, same as a cold
-    // restore) around SessionManager.continueRecent() picking up that file,
-    // never left rewound in place.
-    assert.equal(session.disposed, true);
-    assert.equal(sessions.length, 2, "the room's session was rebuilt around the new branch");
+    assert.deepEqual(result, { ok: true, message: "forked pi session at user message 2 (entry entry-2)" });
+    // navigateTree is called with the TARGET entry itself — pi's own
+    // navigateTree rewinds to that entry's parent internally.
+    assert.deepEqual(session.navigateTreeCalls, ["entry-2"]);
+    // The session stays LIVE — no dispose/rebuild for the native fork path.
+    assert.equal(session.disposed, false);
+    assert.equal(sessions.length, 1, "no session rebuild — navigateTree rewinds the SAME live session");
     runtime.dispose();
   } finally {
     await fx.cleanup();
   }
 });
 
-test("PiRuntime.forkAtMessage K=1 (first user message) forks via newSession (parentId null, no entry to branch to)", async () => {
+test("PiRuntime.forkAtMessage K=1 (first user message) calls navigateTree with the first entry's id", async () => {
   const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
@@ -589,20 +567,14 @@ test("PiRuntime.forkAtMessage K=1 (first user message) forks via newSession (par
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
     const session = meta!.session;
-    // Two user entries; forking at ordinal 1 (the FIRST) whose parentId is
-    // null must use pi's newSession fallback, NOT createBranchedSession.
     session.userMessagesForForking = [
       { entryId: "entry-1", text: "wrapped prompt A" },
       { entryId: "entry-2", text: "wrapped prompt B" },
     ];
-    session.entryParents.set("entry-1", null);
-    session.entryParents.set("entry-2", "entry-1");
-    session.sessionFile = "fake-session/original.jsonl";
 
     const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.equal(result.ok, true);
-    assert.deepEqual(session.createBranchedSessionCalls, []);
-    assert.deepEqual(session.newSessionCalls, [{ parentSession: "fake-session/original.jsonl" }]);
+    assert.deepEqual(session.navigateTreeCalls, ["entry-1"]);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -624,13 +596,10 @@ test("PiRuntime.forkAtMessage picks strictly by position even when entry texts a
       { entryId: "entry-2", text: "same text" },
       { entryId: "entry-3", text: "same text" },
     ];
-    session.entryParents.set("entry-1", null);
-    session.entryParents.set("entry-2", "entry-1");
-    session.entryParents.set("entry-3", "entry-2");
 
     const result = await runtime.forkAtMessage("default", "evt_x", 3);
     assert.equal(result.ok, true);
-    assert.deepEqual(session.createBranchedSessionCalls, ["entry-2"], "ordinal 3 → entries[2] (entry-3) → branch at its parent (entry-2)");
+    assert.deepEqual(session.navigateTreeCalls, ["entry-3"], "ordinal 3 → entries[2] (entry-3)");
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -647,7 +616,6 @@ test("PiRuntime.forkAtMessage fails cleanly (ok:false) when the ordinal is out o
     const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
     const session = meta!.session;
     session.userMessagesForForking = [{ entryId: "entry-1", text: "only one" }];
-    session.entryParents.set("entry-1", null);
 
     // Beyond the end (session has 1 user entry, asking for the 2nd).
     const tooHigh = await runtime.forkAtMessage("default", "evt_missing", 2);
@@ -657,14 +625,14 @@ test("PiRuntime.forkAtMessage fails cleanly (ok:false) when the ordinal is out o
     const tooLow = await runtime.forkAtMessage("default", "evt_missing", 0);
     assert.equal(tooLow.ok, false);
     assert.match(tooLow.message, /out of range/);
-    assert.deepEqual(session.createBranchedSessionCalls, [], "no fork attempted on an out-of-range ordinal");
+    assert.deepEqual(session.navigateTreeCalls, [], "no fork attempted on an out-of-range ordinal");
     runtime.dispose();
   } finally {
     await fx.cleanup();
   }
 });
 
-test("PiRuntime.forkAtMessage fails cleanly when the session isn't persisted (fork write returns nothing)", async () => {
+test("PiRuntime.forkAtMessage fails cleanly when the session build lacks native-fork support", async () => {
   const fx = await harnessFixture();
   try {
     const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
@@ -674,12 +642,35 @@ test("PiRuntime.forkAtMessage fails cleanly when the session isn't persisted (fo
     const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
     const session = meta!.session;
     session.userMessagesForForking = [{ entryId: "entry-1", text: "hello" }];
-    session.entryParents.set("entry-1", "entry-0");
-    session.entryParents.set("entry-0", null);
-    session.forkedSessionFile = undefined;
+    // Simulate an older pi build: no navigateTree on the session at all.
+    // navigateTree is a prototype method, so it must be shadowed with an own
+    // `undefined` property rather than `delete`d (delete leaves the
+    // prototype's method reachable).
+    (session as unknown as { navigateTree?: unknown }).navigateTree = undefined;
 
     const result = await runtime.forkAtMessage("default", "evt_1", 1);
-    assert.deepEqual(result, { ok: false, message: "pi session is not persisted to disk — cannot fork" });
+    assert.deepEqual(result, { ok: false, message: "this pi session build does not support native forking" });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage fails cleanly when navigateTree reports cancelled", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
+    const session = meta!.session;
+    session.userMessagesForForking = [{ entryId: "entry-1", text: "hello" }];
+    session.navigateTreeResult = { cancelled: true };
+
+    const result = await runtime.forkAtMessage("default", "evt_1", 1);
+    assert.equal(result.ok, false);
+    assert.match(result.message, /cancelled/);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -697,7 +688,6 @@ test("PiRuntime.forkAtMessage lazily restores a persisted session after a daemon
     const factory: PiRuntimeSessionFactory = async () => {
       const session = new FakeSession(`restored${sessions.length + 1}`);
       session.userMessagesForForking = [{ entryId: "entry-1", text: "wrapped resumed prompt" }];
-      session.entryParents.set("entry-1", null);
       sessions.push(session);
       return { session };
     };
@@ -706,9 +696,9 @@ test("PiRuntime.forkAtMessage lazily restores a persisted session after a daemon
     // No send() ever ran on this runtime instance.
     const result = await runtime.forkAtMessage("default", "evt_1", 1);
     assert.equal(result.ok, true);
-    // One session restored to read/branch from, one more rebuilt around the
-    // fresh branch — never recreated beyond that.
-    assert.equal(sessions.length, 2, "restored once, then rebuilt once around the new branch");
+    // The lazily-restored session is reused directly — no rebuild.
+    assert.equal(sessions.length, 1, "restored once, forked in place");
+    assert.deepEqual(sessions[0].navigateTreeCalls, ["entry-1"]);
     runtime.dispose();
   } finally {
     await fx.cleanup();

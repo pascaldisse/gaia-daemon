@@ -113,6 +113,15 @@ export interface PiSessionLike {
    * present at runtime on the real AgentSession; declared here so the typed
    * cast can call it. */
   getUserMessagesForForking?(): Array<{ entryId: string; text: string }>;
+  /** Pi's native in-session fork: rewind the tree to `targetEntryId` — the new
+   * leaf becomes that entry's parent, so the target user message and everything
+   * after it leave the LIVE model context (agent.state.messages is resynced
+   * immediately). A new tree branch in the SAME file; the abandoned branch is
+   * preserved on disk. The follow-up re-send (edit/retry always re-prompts)
+   * appends under the new leaf and persists it, so the fork survives a restart
+   * (continueRecent seeds the leaf from the file's last entry = the new tip).
+   * Already present at runtime on the real AgentSession. */
+  navigateTree?(targetEntryId: string): Promise<{ cancelled: boolean; editorText?: string }>;
   /** The session's own SessionManager — a public field on the real
    * AgentSession (dist/core/agent-session.js). This is the minimal slice
    * forkAtMessage needs to branch the persisted session using the SAME
@@ -542,7 +551,7 @@ export class PiRuntime implements AgentRuntime {
       meta = await this.ensureSession(roomId, undefined);
     }
     const session = meta.session;
-    if (!session.getUserMessagesForForking || !session.sessionManager) {
+    if (!session.getUserMessagesForForking || !session.navigateTree) {
       return { ok: false, message: "this pi session build does not support native forking" };
     }
     const entries = session.getUserMessagesForForking();
@@ -550,25 +559,16 @@ export class PiRuntime implements AgentRuntime {
       return { ok: false, message: `fork ordinal ${userOrdinal} out of range (session has ${entries.length} user entries; event ${originEventId})` };
     }
     const target = entries[userOrdinal - 1];
-    const targetEntry = session.sessionManager.getEntry(target.entryId);
-    if (!targetEntry) {
-      return { ok: false, message: `pi entry ${target.entryId} (ordinal ${userOrdinal}) is missing from the session tree` };
+    // Pi's native fork: navigateTree drops this user message + everything after
+    // from the LIVE context (new leaf = target's parent) and branches the tree.
+    // Keep the session LIVE (do NOT dispose): the rewind lives in the running
+    // session, and the follow-up re-send appends under the new leaf + persists
+    // it, so it survives a restart.
+    const result = await session.navigateTree(target.entryId);
+    if (result?.cancelled) {
+      return { ok: false, message: `pi navigateTree cancelled for entry ${target.entryId} (ordinal ${userOrdinal})` };
     }
-    const currentSessionFile = session.sessionManager.getSessionFile();
-    const forkedFile =
-      targetEntry.parentId === null || targetEntry.parentId === undefined
-        ? session.sessionManager.newSession({ parentSession: currentSessionFile })
-        : session.sessionManager.createBranchedSession(targetEntry.parentId);
-    if (!forkedFile) {
-      return { ok: false, message: "pi session is not persisted to disk — cannot fork" };
-    }
-    // The branch is now the on-disk truth (newest file in the session dir).
-    // Drop this room's stale in-memory handle (disposes it) and rebuild
-    // lazily via the exact same path a cold restore uses — continueRecent()
-    // resumes the branch we just wrote.
-    this.sessions.reset(roomId);
-    await this.ensureSession(roomId, undefined);
-    return { ok: true, message: `forked pi session to a new branch before entry ${target.entryId}` };
+    return { ok: true, message: `forked pi session at user message ${userOrdinal} (entry ${target.entryId})` };
   }
 
   private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined): Promise<PiSessionMeta> {
