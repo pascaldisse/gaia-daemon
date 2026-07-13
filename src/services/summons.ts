@@ -262,6 +262,31 @@ export interface SummonHost {
  * of leaving an orphaned turn running. */
 export const SUMMON_TIMEOUT_MS = 30 * 60_000; // 30 minutes
 
+function levenshteinDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function unknownAgentMessage(agentId: string, availableAgentIds: readonly string[]): string {
+  const needle = agentId.toLowerCase();
+  const suggestions = availableAgentIds.filter((id) => {
+    const candidate = id.toLowerCase();
+    return candidate.includes(needle) || levenshteinDistance(candidate, needle) <= 2;
+  });
+  return `Unknown agent '${agentId}'. Did you mean: ${suggestions.join(", ") || "(none)"}? Available: ${availableAgentIds.join(", ")}`;
+}
+
 /** The tool-facing acknowledgment for a background summon — the ONE place this
  * contract is worded, shared by the HTTP endpoint and the in-process tool. */
 export function summonAck(agentId: string, childRoomId: string): string {
@@ -304,7 +329,7 @@ export class SummonCoordinator implements SummonHost {
    * promise — callers that must persist the room id before awaiting (the
    * scheduler's crash-recovery mark) use this. */
   async launch(parentRoomId: string, agentId: string, task: string, options: SummonOptions = {}): Promise<{ roomId: string; done: Promise<string> }> {
-    if (!this.workspace.agents[agentId]) throw new Error(`Unknown agent: @${agentId}`);
+    if (!this.workspace.agents[agentId]) throw new Error(unknownAgentMessage(agentId, Object.keys(this.workspace.agents)));
     const cap = await this.maxPerRoom();
     if (this.runningChildren(parentRoomId).length >= cap) {
       throw new Error(`Too many running summons in room ${parentRoomId}; wait for one to finish or cancel it first.`);

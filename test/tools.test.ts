@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { AgentDef } from "../src/core/types.js";
+import { gaiaCliPointer } from "../src/harness/prompt.js";
 import { INCOGNITO_STRIPPED_TOOLS, stripIncognitoTools } from "../src/harness/tools.js";
 
 function agentWith(tools: string[]): AgentDef {
   return { id: "a", tools } as unknown as AgentDef;
 }
+
+test("the uniform pointer resolver passes static docs through and injects live context into dynamic docs", () => {
+  const pointer = gaiaCliPointer(["memory", "summon"], ["memory", "summon"], {
+    availableAgents: [{ id: "gaia", label: "Gaia" }, { id: "ghoul-sol", label: "Ghoul Sol" }],
+  });
+  assert.match(pointer, /gaia mem list\|read\|add/);
+  assert.match(pointer, /`gaia summon \[--worktree\] <agent> "<task>"`/);
+  assert.match(pointer, /Available agents: gaia, ghoul-sol/);
+});
 
 test("stripIncognitoTools removes memory + recall, keeps everything else (incl. summon)", () => {
   const stripped = stripIncognitoTools(agentWith(["read", "bash", "edit", "write", "web", "memory", "recall", "summon"]));

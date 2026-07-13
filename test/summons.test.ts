@@ -222,12 +222,31 @@ test("a failed worker turn is delivered loudly, never swallowed", async () => {
   assert.equal(child.markedDelivered, 1); // delivered (the failure IS the result)
 });
 
+test("summon suggests substring and near-match agent ids in the unknown-agent error", async () => {
+  const ghoulSol = agent({ id: "ghoul-sol" });
+  const solas = agent({ id: "solas" });
+  const { workspace, path } = await makeWorkspace({ "ghoul-sol": ghoulSol, solas });
+  const room = fakeRoom("ok");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 1, () => {});
+
+  await assert.rejects(
+    () => coordinator.summon("default", "sol", "task"),
+    (error: Error) => {
+      assert.equal(
+        error.message,
+        "Unknown agent 'sol'. Did you mean: ghoul-sol, solas? Available: gaia, terry, ghoul-sol, solas",
+      );
+      return true;
+    },
+  );
+});
+
 test("summon refuses unknown agents and enforces the per-room cap", async () => {
   const { workspace, path } = await makeWorkspace();
   const room = fakeRoom("ok");
   const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 1, () => {});
 
-  await assert.rejects(() => coordinator.summon("default", "nobody", "task"), /Unknown agent/);
+  await assert.rejects(() => coordinator.summon("default", "nobody", "task"), /Unknown agent 'nobody'/);
 
   await coordinator.summon("default", "terry", "long task");
   assert.equal(coordinator.runningChildren("default").length, 1);

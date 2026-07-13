@@ -14,7 +14,7 @@ import { discoverContextFiles } from "../domain/workspace.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import type { AgentInput } from "./spec.js";
 import { harnessIdFor, nativeCommandsFor } from "./spec.js";
-import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
+import { GAIA_TOOLS, gaiaToolIds, type GaiaToolSpec, type PointerContext } from "./tools.js";
 
 export interface SystemPromptInput {
   agent: AgentDef;
@@ -179,11 +179,21 @@ export async function buildInlineSystemPrompt(params: {
   return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
 }
 
-// Progressive-disclosure pointer to the `gaia` CLI for whichever of
-// memory/recall/summon the agent has AND the harness can wire (`supported`).
-// Near-zero context until the agent runs `gaia <cmd> --help`.
-export function gaiaCliPointer(tools: string[], supported: readonly string[] = gaiaToolIds()): string {
-  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) => tool.pointer);
+// Self-contained `gaia` CLI documentation for whichever tools the agent has
+// AND the harness can wire (`supported`). Static and live-derived pointers flow
+// through the same resolver; agents never need a separate documentation lookup.
+export function resolvePointer(spec: GaiaToolSpec, context: PointerContext): string {
+  return typeof spec.pointer === "function" ? spec.pointer(context) : spec.pointer;
+}
+
+export function gaiaCliPointer(
+  tools: string[],
+  supported: readonly string[] = gaiaToolIds(),
+  context: PointerContext = { availableAgents: [] },
+): string {
+  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) =>
+    resolvePointer(tool, context),
+  );
   if (!lines.length) return "";
   return [
     "# GAIA tools (run via shell)",
