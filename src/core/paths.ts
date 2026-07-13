@@ -20,6 +20,8 @@ export const globalPaths = {
   accounts: () => join(gaiaHome(), "accounts.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   agentDir: (agentId: string) => join(gaiaHome(), "agents", agentId),
+  /** Reversible agent deletion moves the agent dir here instead of rm -rf. */
+  agentTrashDir: () => join(gaiaHome(), "trash", "agents"),
   skillsDir: () => join(gaiaHome(), "skills"),
   setupsDir: () => join(gaiaHome(), "setups"),
   voiceSettings: () => join(gaiaHome(), "voice.json"),

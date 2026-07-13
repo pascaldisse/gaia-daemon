@@ -19,7 +19,7 @@ import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { normalizeRoomState } from "./domain/rooms.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
-import { setAgentDefaultRole } from "./domain/agents.js";
+import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
@@ -751,6 +751,27 @@ export class Daemon {
     const snapshot = await rebuilt.getSnapshot();
     this.broadcast({ type: "snapshot", workspaceId, roomId: rebuilt.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+  }
+
+  /** Delete a global agent: move its directory to the global trash (reversible — never rm -rf). Refuses if the agent doesn't exist or if it's the workspace's default agent. Returns payload with reloaded agents list. */
+  async deleteAgent(agentId: string, workspaceId: string): Promise<{ agents: Record<string, AgentDef> }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+
+    const service = await this.serviceFor(workspaceId);
+    const agent = service.workspace.agents[agentId];
+    if (!agent) throw new Error(`Unknown agent: @${agentId}`);
+    if (service.workspace.config.defaultAgent === agentId) {
+      throw new Error(`Cannot delete the default agent for this workspace: @${agentId}`);
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = await trashGlobalAgent(agentId, stamp);
+    this.log(`deleted agent ${agentId} → trash ${trash || "(already gone)"}`);
+
+    // Reload the workspace to pick up the updated agents list.
+    const workspace = await loadWorkspace(record.path);
+    return { agents: workspace.agents };
   }
 
   // --- keep-awake (Global Settings ▸ General) ---------------------------------------
