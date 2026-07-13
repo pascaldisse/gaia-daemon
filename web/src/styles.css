@@ -1828,3 +1828,39 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
+
+/* Codex-compatible animated pet: frame selection is driven imperatively by
+   pet.js's unequal-duration setTimeout chain (never CSS steps()). */
+.gaia-pet-overlay {
+  position: fixed;
+  z-index: 1200;
+  width: var(--gaia-pet-width, 7.04rem);
+  aspect-ratio: 192 / 208;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  filter: drop-shadow(0 4px 8px rgb(0 0 0 / 32%));
+}
+
+.gaia-pet-overlay[hidden] {
+  display: none;
+}
+
+.gaia-pet-overlay.dragging {
+  cursor: grabbing;
+}
+
+.gaia-pet-overlay[data-error]:not([data-error=""]) {
+  outline: 1px dashed var(--danger);
+  border-radius: 0.5rem;
+}
+
+.gaia-pet-sprite {
+  width: 100%;
+  aspect-ratio: 192 / 208;
+  background-repeat: no-repeat;
+  background-size: 800% 900%;
+  image-rendering: pixelated;
+  pointer-events: none;
+}

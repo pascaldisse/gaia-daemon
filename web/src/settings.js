@@ -8,6 +8,7 @@ import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from ".
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
+import { DEFAULT_PET_NAME, petEnabled, petName, setPetEnabled, setPetName } from "./pet.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
@@ -277,6 +278,29 @@ function GeneralTab() {
       ),
     );
   }
+  rows.push(
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Show animated pet" }),
+      h("input", {
+        type: "checkbox",
+        checked: petEnabled(),
+        onchange: (event) => setPetEnabled(/** @type {HTMLInputElement} */ (event.target).checked),
+      }),
+    ),
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Pet package name" }),
+      h("input", {
+        type: "text",
+        value: petName(),
+        placeholder: DEFAULT_PET_NAME,
+        onchange: (event) => setPetName(/** @type {HTMLInputElement} */ (event.target).value),
+      }),
+    ),
+  );
   return h("div", {}, rows);
 }
 
