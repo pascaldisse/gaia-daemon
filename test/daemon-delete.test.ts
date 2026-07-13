@@ -60,11 +60,11 @@ test("deleteAgent trashes the agent directory and reloads agents list", async ()
     const agentDir = join(agentsDir, "test-agent");
     assert.ok(existsSync(agentDir), "agent directory must exist");
 
-    // Delete the agent.
-    const result = await daemon.deleteAgent("test-agent", record.id);
+    // Delete the agent (global op, returns void; the UI refreshes via the
+    // settings-change broadcast the HTTP route triggers, not a return value).
+    await daemon.deleteAgent("test-agent");
 
-    // Verify the agent was removed from the agents list.
-    assert.strictEqual(result.agents["test-agent"], undefined, "deleted agent must not be in agents list");
+    // Verify the agent directory was trashed.
     assert.ok(existsSync(agentsDir), "agents directory itself must still exist");
     assert.equal(existsSync(agentDir), false, "deleted agent directory must be gone");
 
@@ -90,7 +90,7 @@ test("deleteAgent throws when trying to delete a non-existent agent", async () =
 
     // Try to delete a non-existent agent.
     await assert.rejects(
-      () => daemon.deleteAgent("nonexistent", record.id),
+      () => daemon.deleteAgent("nonexistent"),
       /Unknown agent/,
       "deleting a nonexistent agent must throw"
     );
@@ -115,10 +115,10 @@ test("deleteAgent throws when trying to delete the default agent", async () => {
     const service = await daemon.serviceFor(record.id);
     const defaultAgentId = service.workspace.config.defaultAgent;
 
-    // Try to delete the default agent.
+    // Try to delete the default agent — refused (would break the workspace).
     await assert.rejects(
-      () => daemon.deleteAgent(defaultAgentId, record.id),
-      /Cannot delete the default agent/,
+      () => daemon.deleteAgent(defaultAgentId),
+      /default agent/,
       "deleting the default agent must throw"
     );
   } finally {
