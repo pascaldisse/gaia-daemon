@@ -724,20 +724,7 @@ export class RoomService {
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
     if (this.activeTask) {
-      task.status = "queued";
-      if (recordedSteerEventId) task.recorded = true;
-      if (options.attachments?.length) task.attachments = options.attachments;
-      await this.room.enqueue({
-        taskId: task.id,
-        text,
-        targets,
-        ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
-        ...(options.attachments?.length ? { attachments: options.attachments } : {}),
-        ...(options.nativeCommand ? { nativeCommand: true } : {}),
-        ...(recordedSteerEventId ? { eventId: recordedSteerEventId, recorded: true } : {}),
-        queuedAt: task.startedAt,
-      });
-      this.queuedTasks.push(task);
+      await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
       void this.emitSnapshot();
       return task;
@@ -754,11 +741,40 @@ export class RoomService {
       return task;
     }
 
-    // A failed steer's guidance is already committed — the direct run (the
-    // turn ended AND settled before we reached the queue check) must not
-    // record it a second time; the prompt text still drives the turn.
-    this.startTask(task, text, recordedSteerEventId ? { ...options, recordUserMessage: false } : options);
+    // Durable-first even while idle: the 2026-07-13 append→pendingTurn incident
+    // proved a direct start could strand a transcript-only user message.
+    await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
+    await this.drain();
+    if (task.status === "queued") {
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      void this.emitSnapshot();
+    }
     return task;
+  }
+
+  private async enqueueTask(
+    task: Task,
+    text: string,
+    targets: string[],
+    options: SendMessageOptions,
+    recordedEventId?: string,
+  ): Promise<void> {
+    const recorded = Boolean(recordedEventId) || options.recordUserMessage === false;
+    task.status = "queued";
+    if (recorded) task.recorded = true;
+    if (options.attachments?.length) task.attachments = options.attachments;
+    await this.room.enqueue({
+      taskId: task.id,
+      text,
+      targets,
+      ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+      ...(options.attachments?.length ? { attachments: options.attachments } : {}),
+      ...(options.nativeCommand ? { nativeCommand: true } : {}),
+      ...(recordedEventId ? { eventId: recordedEventId } : {}),
+      ...(recorded ? { recorded: true } : {}),
+      queuedAt: task.startedAt,
+    });
+    this.queuedTasks.push(task);
   }
 
   private startTask(task: Task, text: string, options: SendMessageOptions): void {

@@ -406,6 +406,49 @@ test("messages sent while busy queue DURABLY and drain in order", async () => {
   assert.equal((await room.state()).queue, undefined);
 });
 
+test("idle dispatch keeps durable custody across the append→pendingTurn gap and replays exactly once", async () => {
+  const { service, root, runtimes } = await makeService({ agents: ["gaia"] });
+  const originalMarkPendingTurn = service.room.markPendingTurn.bind(service.room);
+  let markCalls = 0;
+  let reachedGap!: () => void;
+  let releaseFailure!: () => void;
+  const atGap = new Promise<void>((resolve) => (reachedGap = resolve));
+  const holdFailure = new Promise<void>((resolve) => (releaseFailure = resolve));
+
+  service.room.markPendingTurn = async (...args: Parameters<RoomHandle["markPendingTurn"]>) => {
+    markCalls += 1;
+    if (markCalls === 1) {
+      reachedGap();
+      await holdFailure;
+      throw new Error("injected failure after user append, before pendingTurn persistence");
+    }
+    await originalMarkPendingTurn(...args);
+  };
+
+  const task = await service.sendMessage("survive the custody gap");
+  await atGap;
+
+  const room = await RoomHandle.open(root, "default");
+  const failedState = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(failedState.queue?.length, 1, "the idle message remains durably queued in the loss gap");
+  assert.equal(failedState.queue?.[0].taskId, task.id);
+  assert.ok(failedState.queue?.[0].eventId, "the queued entry reserved the appended user event id");
+  const { events: beforeReplay } = await room.eventsFrom(0);
+  assert.equal(beforeReplay.filter((event) => event.author === "user").length, 1, "the first append reached the transcript");
+  assert.equal(beforeReplay.find((event) => event.author === "user")?.id, failedState.queue?.[0].eventId);
+
+  releaseFailure();
+  await waitFor(async () => {
+    room.invalidate();
+    const state = await room.state();
+    return markCalls === 2 && runtimes.get("gaia")?.sends === 1 && state.queue === undefined && state.pendingTurn === undefined;
+  });
+
+  const { events: afterReplay } = await room.eventsFrom(0);
+  assert.equal(afterReplay.filter((event) => event.author === "user" && event.text === "survive the custody gap").length, 1);
+  assert.equal(afterReplay.filter((event) => event.author === "gaia").length, 1, "the drained turn ran exactly once");
+});
+
 test("a runtime that streams text then exits without turn-end commits the partial notice and drains the queued next message", async () => {
   const runner = await makeDurabilityRunner();
   const { service, root, events } = await makeService({
@@ -1198,9 +1241,10 @@ test("/steer injects into the RUNNING turn without queueing behind it", async ()
   const reply = events.find((event) => event.type === "room-event" && event.event.author === "system");
   assert.match((reply as { event: { text: string } }).event.text, /Steering @gaia/);
 
-  // Not queued: the durable queue stays empty.
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue, undefined);
+  // The steer itself is not queued. The active message may still occupy its
+  // queue→WAL custody slot until its pendingTurn write completes.
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(state.queue?.some((entry) => entry.text === "/steer focus only on the tests") ?? false, false);
 
   release();
   await service.waitForIdle();
@@ -1249,8 +1293,12 @@ test("steer-by-default: a plain message to the busy agent injects; @other and qu
   const forcedQueue = await service.sendMessage("do this afterwards", { queue: true });
   assert.equal(forcedQueue.status, "queued");
 
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue?.length, 2, "only @other and the queue:true message persisted to the queue");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.deepEqual(
+    state.queue?.filter((entry) => entry.text !== "start a long task").map((entry) => entry.text),
+    ["@terry take a look", "do this afterwards"],
+    "only @other and the queue:true message joined the active message's custody entry",
+  );
 
   release();
   await service.waitForIdle();
@@ -1293,8 +1341,8 @@ test("steer-by-default: a message WITH attachments steers too — breadcrumb lin
   assert.equal(steerCalls.length, 1);
   assert.match(steerCalls[0], /^look at this\n\n\[attached file: shot\.png \(image\/png, 2 kB\) at \/tmp\/shot\.png\]$/, "breadcrumb line rides the steer text");
 
-  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: unknown[] };
-  assert.equal(state.queue?.length ?? 0, 0, "nothing fell to the durable queue");
+  const state = (await readJson(workspacePaths.roomState(root, "default"))) as { queue?: QueuedMessage[] };
+  assert.equal(state.queue?.some((entry) => entry.text === "look at this") ?? false, false, "the steered message did not join the queue");
 
   release();
   await service.waitForIdle();
