@@ -111,8 +111,10 @@ test("PiRuntime exposes summon as a custom tool when enabled", async () => {
       calls.push(params);
       return "summon complete";
     };
+    const worker = { ...fx.agent, id: "sidia", displayName: "Sidia" };
+    const workspace = { ...fx.workspace, agents: { gaia: fx.agent, sidia: worker } };
     const runtime = new PiRuntime({
-      workspace: fx.workspace,
+      workspace,
       agent: fx.agent,
       memoryStore: new MemoryStore(),
       sessionFactory: factory,
@@ -123,6 +125,9 @@ test("PiRuntime exposes summon as a custom tool when enabled", async () => {
 
     assert.equal(customTools.length, 1);
     assert.equal(customTools[0].name, "summon");
+    assert.match(customTools[0].description, /Available agents: gaia, sidia/);
+    assert.deepEqual(customTools[0].parameters.properties.agent.enum, ["gaia", "sidia"]);
+    assert.deepEqual(customTools[0].parameters.properties.whales.items.properties.agent.enum, ["gaia", "sidia"]);
     const result = await customTools[0].execute("call_1", { agent: "sidia", task: "map routes" });
     assert.deepEqual(calls, [{ roomId: "default", agentId: "sidia", task: "map routes" }]);
     assert.deepEqual(result.content, [{ type: "text", text: "summon complete" }]);

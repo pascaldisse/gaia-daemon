@@ -22,7 +22,7 @@ import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResu
 import { gaiaHome, workspacePaths } from "../core/paths.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { agentSkillNames, resolveSkillRefs } from "../domain/skills.js";
-import { buildPiTools } from "./tools.js";
+import { agentRoster, buildPiTools } from "./tools.js";
 import {
   type AgentInput,
   type AgentRuntime,
@@ -432,6 +432,7 @@ export class PiRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir,
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     });

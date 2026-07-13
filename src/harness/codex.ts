@@ -34,7 +34,7 @@ import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { buildPiTools } from "./tools.js";
+import { agentRoster, buildPiTools } from "./tools.js";
 import { emailFromJwt, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -982,6 +982,7 @@ export class CodexRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir: workspacePaths.roomDir(this.cwd, roomId),
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     })) as PiToolLike[];
