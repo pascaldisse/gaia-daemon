@@ -106,6 +106,33 @@ export interface PiSessionLike {
   getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   /** Native session compaction — the same call the pi CLI's /compact runs. */
   compact?(customInstructions?: string): Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
+  /** Every user-message entry in this session, in order, id + text — pi's own
+   * addressing for forking (dist/core/agent-session.js). Backs
+   * forkAtMessage's gaia-origin → pi-entry-id mapping (see there). Already
+   * present at runtime on the real AgentSession; declared here so the typed
+   * cast can call it. */
+  getUserMessagesForForking?(): Array<{ entryId: string; text: string }>;
+  /** The session's own SessionManager — a public field on the real
+   * AgentSession (dist/core/agent-session.js). This is the minimal slice
+   * forkAtMessage needs to branch the persisted session using the SAME
+   * primitives pi's own `AgentSessionRuntime.fork()` composes them from
+   * (dist/core/agent-session-runtime.js) — gaia holds a bare AgentSession,
+   * never that wrapper, so it re-composes the primitives itself rather than
+   * calling a single pre-built fork() method. Already present at runtime;
+   * declared here so the typed cast can reach it. */
+  readonly sessionManager?: {
+    getEntry(id: string): { parentId: string | null | undefined } | undefined;
+    getSessionFile(): string | undefined;
+    /** Rewrite THIS manager's own on-disk file to hold only root→targetLeafId
+     * (drops targetLeafId's siblings/descendants), returning the new file
+     * path — or undefined when the session isn't persisted. Mutates the
+     * manager in place (dist/core/session-manager.js). */
+    createBranchedSession(targetLeafId: string): string | undefined;
+    /** Start a brand-new empty session, recording `parentSession` as its
+     * lineage — pi's own fallback when forking "before" the very first
+     * message (no parent entry to branch to). Mutates the manager in place. */
+    newSession(options?: { parentSession?: string }): string | undefined;
+  };
   abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
@@ -188,6 +215,14 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: false,
   supportsSteer: true,
   supportsCompact: true,
+  // Pi's own session.sessionManager.createBranchedSession/newSession branch
+  // the persisted session to a NEW file at a prior user entry (see
+  // PiRuntime.forkAtMessage) — unlike claude/codex, dropping the in-memory
+  // session cache alone is a no-op here because SessionManager.continueRecent
+  // would just resume the untouched file; the native fork is what makes
+  // edit/retry actually change the model's context, and it's durable (a new
+  // file, unlike an in-place rewind) so it survives a runner respawn.
+  supportsForkAtMessage: true,
   // Pi has no claude-style slash-command passthrough surface.
   supportsNativeCommands: false,
   // Pi's only fan-out surface IS the gaia summon tool — nothing to suppress.
@@ -440,6 +475,89 @@ export class PiRuntime implements AgentRuntime {
       message: `session compacted (${result.tokensBefore} tokens before${after}).`,
       ...(result.summary ? { summary: result.summary } : {}),
     };
+  }
+
+  /** Native pi fork (backs edit/retry — capabilities.supportsForkAtMessage).
+   * Unlike claude/codex, dropping this room's session cache alone is a no-op
+   * for pi: SessionManager.continueRecent would just resume the untouched
+   * on-disk file on the next turn, so the model keeps seeing the "rewound"
+   * turns and the edit/retry never actually changes its context (the bug
+   * this whole feature fixes).
+   *
+   * Composed from the SAME primitives pi's own `AgentSessionRuntime.fork()`
+   * uses (dist/core/agent-session-runtime.js) — gaia holds a bare
+   * `AgentSession` from `createAgentSession()`, never that wrapper, so it
+   * re-composes the primitives itself instead of calling one pre-built
+   * method: `session.sessionManager.createBranchedSession(parentId)` (or
+   * `.newSession()` when forking before the very first message — pi's own
+   * fallback, no parent entry to branch to) rewrites the manager's on-disk
+   * file to hold only root→parent(target), dropping target and everything
+   * after — "position: before" in pi's own vocabulary, matching gaia's WAL
+   * rewind (the origin is re-sent fresh right after this resolves). The
+   * fork WRITES A NEW SESSION FILE (durable — survives a runner
+   * respawn/restart, unlike an in-place rewind): this session's own
+   * `PiSessionMeta` is then reset (disposed + dropped) and lazily rebuilt via
+   * the SAME `ensureSession` a normal turn uses, so its
+   * `SessionManager.continueRecent()` call resumes the just-written branch
+   * (now the newest file in the room's session dir) — no different from a
+   * cold-daemon restore. Assumes the session is IDLE (safe: room-service only
+   * calls this between turns, never mid-turn).
+   *
+   * Mapping gaia's origin (an id + raw text from the ROOM transcript) onto
+   * pi's own entry addressing: buildTurnPrompt always renders the raw turn
+   * text verbatim after its "Newest user message:" header (see prompt.ts), so
+   * it survives as a literal substring of whatever pi recorded as that
+   * prompt's user-entry text — `entry.text.includes(originText)` is therefore
+   * a strong signal even though pi's entry also carries the memory/recall/
+   * transcript wrapper gaia adds. KNOWN LIMITATION: when the SAME literal
+   * message text was sent more than once in this session (a real but rare
+   * case), containment alone can't tell the occurrences apart — no ordinal
+   * crosses the runner boundary (forkAtMessage only carries the gaia origin's
+   * id + text, never its transcript position), so ties are broken by picking
+   * the MOST RECENT match, which is right for the common "edit the last
+   * thing I said" case and wrong for editing an earlier occurrence of an
+   * exact repeat. Returns {ok:false} on any of: no persisted session, the SDK
+   * session lacking the fork methods (older pi build), no textual match, or
+   * the session not being persisted (in-memory, can't fork) — callers fall
+   * back to the shared WAL-reset-and-replay path in every one of these
+   * cases. */
+  async forkAtMessage(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }> {
+    let meta = this.sessions.get(roomId);
+    if (!meta) {
+      if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return { ok: false, message: "no active pi session for this room" };
+      meta = await this.ensureSession(roomId, undefined);
+    }
+    const session = meta.session;
+    if (!session.getUserMessagesForForking || !session.sessionManager) {
+      return { ok: false, message: "this pi session build does not support native forking" };
+    }
+    const entries = session.getUserMessagesForForking();
+    const matches = entries.filter((entry) => entry.text.includes(originText));
+    if (matches.length === 0) {
+      return { ok: false, message: `no pi session entry matches the message being forked (event ${originEventId})` };
+    }
+    // See the doc comment above: ties (same literal text sent more than once)
+    // resolve to the most recent occurrence.
+    const target = matches[matches.length - 1];
+    const targetEntry = session.sessionManager.getEntry(target.entryId);
+    if (!targetEntry) {
+      return { ok: false, message: `matched pi entry ${target.entryId} is missing from the session tree` };
+    }
+    const currentSessionFile = session.sessionManager.getSessionFile();
+    const forkedFile =
+      targetEntry.parentId === null || targetEntry.parentId === undefined
+        ? session.sessionManager.newSession({ parentSession: currentSessionFile })
+        : session.sessionManager.createBranchedSession(targetEntry.parentId);
+    if (!forkedFile) {
+      return { ok: false, message: "pi session is not persisted to disk — cannot fork" };
+    }
+    // The branch is now the on-disk truth (newest file in the session dir).
+    // Drop this room's stale in-memory handle (disposes it) and rebuild
+    // lazily via the exact same path a cold restore uses — continueRecent()
+    // resumes the branch we just wrote.
+    this.sessions.reset(roomId);
+    await this.ensureSession(roomId, undefined);
+    return { ok: true, message: `forked pi session to a new branch before entry ${target.entryId}` };
   }
 
   private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined): Promise<PiSessionMeta> {

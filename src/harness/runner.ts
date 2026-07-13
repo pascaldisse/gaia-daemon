@@ -186,6 +186,16 @@ export async function runAgentRunner(): Promise<void> {
             send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );
         return;
+      case "fork":
+        void (
+          runtime.forkAtMessage?.(command.roomId, command.originEventId, command.originText) ??
+          Promise.reject(new Error("fork not supported"))
+        )
+          .then((result) => send({ type: "fork-result", ok: result.ok, message: result.message }))
+          .catch((error: unknown) =>
+            send({ type: "fork-result", ok: false, message: error instanceof Error ? error.message : String(error) }),
+          );
+        return;
       case "reset":
         runtime.resetRoom(command.roomId);
         return;

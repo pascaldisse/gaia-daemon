@@ -70,6 +70,30 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
   return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number; refreshes: number };
 }
 
+/** A scriptedRuntime whose harness declares capabilities.supportsForkAtMessage
+ * (mirrors the real pi harness): edit/retry must call forkAtMessage instead of
+ * resetRoom() + full-floor replay (see room-service.forkAtUserMessage /
+ * resetAfterTruncation). `forkOk: false` simulates a failed native fork (no
+ * matching session entry, stalled runner, …) to prove the fail-safe fallback
+ * to resetRoom() still runs. */
+function forkCapableRuntime(
+  agent: AgentDef,
+  script: () => AgentEvent[],
+  options: { forkOk?: boolean } = {},
+): ReturnType<typeof scriptedRuntime> & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; originText: string }> } {
+  const base = scriptedRuntime(agent, script);
+  const runtime = base as typeof base & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; originText: string }> };
+  (runtime.capabilities as { supportsForkAtMessage?: boolean }).supportsForkAtMessage = true;
+  runtime.forks = 0;
+  runtime.forkCalls = [];
+  runtime.forkAtMessage = async (roomId: string, originEventId: string, originText: string) => {
+    runtime.forks += 1;
+    runtime.forkCalls.push({ roomId, originEventId, originText });
+    return options.forkOk === false ? { ok: false, message: "fork failed (test)" } : { ok: true, message: "forked" };
+  };
+  return runtime;
+}
+
 async function makeService(options: {
   script?: () => AgentEvent[];
   agents?: string[];
@@ -1890,6 +1914,97 @@ test("editMessage forks at the edited user message and re-sends the new text wit
 
   // Unknown event ids refuse cleanly.
   await assert.rejects(() => service.editMessage("evt_nope", "x"), /not found/i);
+});
+
+test("editMessage on a fork-capable agent (pi) calls forkAtMessage with the gaia origin instead of resetRoom + replay", async () => {
+  let n = 0;
+  const script = () => [{ type: "text-delta", delta: `reply ${++n}` } as AgentEvent];
+  const sendInputTranscriptLengths: number[] = [];
+  const { service, runtimes } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = forkCapableRuntime(agent, script);
+      const originalSend = runtime.send.bind(runtime);
+      runtime.send = (input) => {
+        sendInputTranscriptLengths.push(input.transcript.length);
+        return originalSend(input);
+      };
+      return runtime;
+    },
+  });
+  // Two exchanges, then edit the SECOND question — this is what distinguishes
+  // "cursor advanced to the fork point" (only the resent tail is fresh input)
+  // from "cursor reseeded to the floor" (the whole kept conversation replays).
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+  await service.sendMessage("second question");
+  await service.waitForIdle();
+
+  const before = (await service.room.eventsFrom(0)).events;
+  assert.equal(before.length, 4);
+  const originId = before[2].id;
+  assert.equal(before[2].text, "second question");
+
+  sendInputTranscriptLengths.length = 0; // only care about the post-edit turn now
+  await service.editMessage(originId, "edited second question");
+  await service.waitForIdle();
+
+  const gaia = runtimes.get("gaia") as ReturnType<typeof forkCapableRuntime>;
+  assert.equal(gaia.forks, 1, "the native fork ran exactly once");
+  assert.deepEqual(gaia.forkCalls[0], { roomId: "default", originEventId: originId, originText: "second question" });
+  // A successful native fork means the harness's OWN session already holds
+  // the trimmed context — resetRoom() (the shared WAL-reset path) must NOT
+  // also run, or the harness would replay the whole floor a second time.
+  assert.equal(gaia.resets, 0, "forkAtMessage replaces resetRoom(), it doesn't run alongside it");
+
+  const after = (await service.room.eventsFrom(0)).events;
+  assert.equal(after.length, 4);
+  assert.equal(after[2].text, "edited second question");
+  assert.equal(after[3].text, "reply 3");
+
+  // The cursor for the fork-capable agent advances straight to the fork point
+  // (the harness's own session was durably forked to reflect the first
+  // exchange) — the post-edit turn's input carries only the ONE
+  // freshly-resent message (same shape as every normal turn's input), never
+  // the first Q&A pair replayed alongside it (which would make this 3).
+  assert.deepEqual(sendInputTranscriptLengths, [1], "no full-floor replay — only the fresh resend crosses into the turn's input");
+});
+
+test("editMessage falls back to resetRoom + replay when the fork-capable agent's native fork fails", async () => {
+  let n = 0;
+  const script = () => [{ type: "text-delta", delta: `reply ${++n}` } as AgentEvent];
+  const { service, runtimes } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => forkCapableRuntime(agent, script, { forkOk: false }),
+  });
+  await service.sendMessage("original question");
+  await service.waitForIdle();
+
+  const before = (await service.room.eventsFrom(0)).events;
+  await service.editMessage(before[0].id, "edited question");
+  await service.waitForIdle();
+
+  const gaia = runtimes.get("gaia") as ReturnType<typeof forkCapableRuntime>;
+  assert.equal(gaia.forks, 1, "the native fork was attempted");
+  assert.ok(gaia.resets >= 1, "a failed native fork falls back to the shared resetRoom() + replay path");
+
+  const after = (await service.room.eventsFrom(0)).events;
+  assert.equal(after[0].text, "edited question");
+  assert.equal(after[1].text, "reply 2");
+});
+
+test("editMessage on a NON-fork-capable agent (claude/codex) never calls forkAtMessage, only resetRoom", async () => {
+  const { service, runtimes } = await makeService({ agents: ["gaia", "terry"] });
+  await service.sendMessage("@terry original question");
+  await service.waitForIdle();
+
+  const before = (await service.room.eventsFrom(0)).events;
+  await service.editMessage(before[0].id, "edited question");
+  await service.waitForIdle();
+
+  const terry = runtimes.get("terry") as ReturnType<typeof scriptedRuntime> & { forkAtMessage?: unknown };
+  assert.equal(terry.forkAtMessage, undefined, "scriptedRuntime has no forkAtMessage — capability defaults off");
+  assert.ok(terry.resets >= 1, "the shared resetRoom() + replay path still runs unchanged");
 });
 
 test("attachments: stored on the user event, handed to the runtime, kept across retry", async () => {
