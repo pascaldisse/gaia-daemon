@@ -777,6 +777,17 @@ export class GaiaWebServer {
       });
     }
 
+    // Reversible agent delete: move the agent dir to trash (recoverable), then
+    // reload global settings so the agents list refreshes. Placed here — with
+    // the other /api/agents routes, AFTER match/params are declared.
+    if (method === "DELETE" && (params = match(/^\/api\/agents\/([^/]+)$/))) {
+      return this.respond(response, async () => {
+        await this.daemon.deleteAgent(params![0]);
+        await this.daemon.applySettingsChange("global");
+        return {};
+      });
+    }
+
     // Per-agent account binding: which named account (if any) an agent's
     // harness subprocess runs under. Harness-blind — compares harness id
     // STRINGS pulled from agent.json/accounts.json data, never a literal id.
@@ -807,15 +818,6 @@ export class GaiaWebServer {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
-    }
-
-    // Reversible agent delete: moves agent dir to trash. Triggers global settings reload.
-    if (method === "DELETE" && (params = match(/^\/api\/agents\/([^/]+)$/))) {
-      return this.respond(response, async () => {
-        await this.daemon.deleteAgent(params![0]);
-        await this.daemon.applySettingsChange("global");
-        return {};
-      });
     }
 
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {

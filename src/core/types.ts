@@ -534,10 +534,15 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Present only when agent.json explicitly sets `tools`. An unset tools key
+   * inherits the active role's tool defaults (or the normal agent defaults). */
+  toolOverride?: string[];
   /** Skills to load for this agent, by name — resolved against every
    * auto-detected skill dir (gaia/pi/claude/codex/hermes). Merged with the
    * active role's skills. Detected ≠ loaded: this is where you opt in. */
   skills?: string[];
+  /** Present only when agent.json explicitly sets `skills`; see toolOverride. */
+  skillOverride?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: string;
@@ -649,6 +654,11 @@ export interface FieldHint {
   /** Optional fields render an explicit "(not set)" choice; empty omits the key on save. */
   optional?: boolean;
   options?: FieldHintOption[];
+  /** Value shown by the settings form when this field is absent from the raw
+   * file. The first edit writes an ordinary per-agent override. */
+  defaultValue?: unknown;
+  /** Per-role defaults for an inheritable field (currently tools and skills). */
+  roleDefaults?: Record<string, unknown>;
   /** JSON path of another field whose current value filters options by their `group`. */
   groupBy?: string;
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */

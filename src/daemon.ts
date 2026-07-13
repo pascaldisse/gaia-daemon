@@ -14,6 +14,7 @@ import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
 import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
+import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
@@ -754,9 +755,10 @@ export class Daemon {
   }
 
   /** Delete a global agent: move its directory to the global trash (reversible —
-   * never rm -rf). Refuses if the agent doesn't exist, or is any currently-loaded
-   * workspace's default agent (checked against in-memory services only — a
-   * workspace that hasn't been loaded this session is not consulted). */
+   * never rm -rf). Refuses if the agent doesn't exist (checked against the disk,
+   * not just in-memory loaded workspaces — trashGlobalAgent's own existsSync
+   * catches an agent no workspace has loaded yet this session), or is any
+   * currently-loaded workspace's default agent. */
   async deleteAgent(agentId: string): Promise<void> {
     for (const service of this.services.values()) {
       if (service.workspace.config.defaultAgent === agentId) {
@@ -1293,7 +1295,11 @@ function consolidateLlm(): ConsolidateLlm {
       import("@earendil-works/pi-coding-agent"),
     ]);
     const authStorage = AuthStorage.create();
-    const resolved = ModelRegistry.create(authStorage).find(provider, name);
+    // Alias fallback (RULE #0): short tier names (fable/opus/sonnet/haiku) in an
+    // agent's config resolve here too — this direct pi-ai path bypasses the
+    // harness CLI, so an un-aliased `find` was silently killing consolidation
+    // for any agent configured with a short name (e.g. anthropic/fable).
+    const resolved = findModelWithAlias(ModelRegistry.create(authStorage), provider, name);
     if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
     const apiKey = await authStorage.getApiKey(provider);
     const message = await completeSimple(

@@ -1069,7 +1069,8 @@ function filterMultiselectGroups(container, query) {
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
 function MultiselectWidget(entry, ctx) {
   const rawValue = getJsonPathValue(ctx.draft, entry.path);
-  const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
+  const inherited = inheritedFieldValue(entry, ctx);
+  const values = Array.isArray(rawValue) ? rawValue.map(String) : Array.isArray(inherited) ? inherited.map(String) : [];
   const options = /** @type {FieldHintOption[]} */ (entry.hint.options ?? []);
   const known = new Set(options.map((option) => option.value));
   // Preserve stale configured values instead of silently dropping them on save.
@@ -1084,7 +1085,8 @@ function MultiselectWidget(entry, ctx) {
         type: "checkbox",
         checked: values.includes(option.value),
         onchange: () => {
-          const current = Array.isArray(getJsonPathValue(ctx.draft, entry.path)) ? [...getJsonPathValue(ctx.draft, entry.path)] : [];
+          const rawCurrent = getJsonPathValue(ctx.draft, entry.path);
+          const current = Array.isArray(rawCurrent) ? [...rawCurrent] : [...values];
           const at = current.indexOf(option.value);
           if (box.checked && at === -1) current.push(option.value);
           else if (!box.checked && at !== -1) current.splice(at, 1);
@@ -1139,6 +1141,16 @@ function MultiselectWidget(entry, ctx) {
   }
   updateMultiselectGroupCounts(container);
   return container;
+}
+
+/** The Settings form shows role-provided defaults before an agent has chosen
+ * an explicit value. The first checkbox change writes the ordinary field, so
+ * settings always remain the per-agent override surface.
+ * @param {FieldEntry} entry @param {FormCtx} ctx @returns {unknown} */
+function inheritedFieldValue(entry, ctx) {
+  const role = typeof ctx.draft?.role === "string" ? ctx.draft.role : undefined;
+  if (role && entry.hint.roleDefaults && role in entry.hint.roleDefaults) return entry.hint.roleDefaults[role];
+  return entry.hint.defaultValue;
 }
 
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */

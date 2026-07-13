@@ -117,7 +117,7 @@ test("deleteAgent throws when trying to delete the default agent", async () => {
     const service = await daemon.serviceFor(record.id);
     const defaultAgentId = service.workspace.config.defaultAgent;
 
-    // Try to delete the default agent.
+    // Try to delete the default agent — refused (would break the workspace).
     await assert.rejects(
       () => daemon.deleteAgent(defaultAgentId),
       /Cannot delete @/,
