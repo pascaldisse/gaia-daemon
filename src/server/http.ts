@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
+import { DEFAULTS, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
@@ -476,7 +476,19 @@ export class GaiaWebServer {
             }
           })();
           const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
-          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          // Prefer a stable named identity over ad-hoc ("-") signing: ad-hoc
+          // keys the TCC designated requirement to the binary's cdhash, which
+          // changes on every rebuild and orphans every mic/camera grant. A
+          // named identity keys it to the certificate leaf instead, which
+          // stays stable across rebuilds. Fall back to ad-hoc only when the
+          // configured identity isn't actually present in the keychain.
+          const wantIdentity = gaiaCodesignIdentity();
+          const probe = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+          const identity = probe.status === 0 && probe.stdout.includes(`"${wantIdentity}"`) ? wantIdentity : "-";
+          if (identity === "-" && wantIdentity !== "-") {
+            writeSync(reloadLog, `[gaia] reload: codesign identity "${wantIdentity}" not found in keychain — falling back to ad-hoc (TCC grants will be orphaned)\n`);
+          }
+          const codesignArgs = ["--force", "--deep", "--sign", identity];
           if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
           codesignArgs.push(appRoot);
           const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });

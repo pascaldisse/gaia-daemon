@@ -767,24 +767,22 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
-  /** Reversible agent delete: move the agent dir to the global trash (never
-   * rm -rf). Refuses if the agent doesn't exist, or if it's ANY workspace's
-   * configured default agent (deleting that would break the workspace). */
+  /** Delete a global agent: move its directory to the global trash (reversible —
+   * never rm -rf). Refuses if the agent doesn't exist (checked against the disk,
+   * not just in-memory loaded workspaces — trashGlobalAgent's own existsSync
+   * catches an agent no workspace has loaded yet this session), or is any
+   * currently-loaded workspace's default agent. */
   async deleteAgent(agentId: string): Promise<void> {
-    // Scan the loaded workspaces (the global registry): confirm the agent
-    // exists somewhere, and refuse if any workspace defaults to it.
-    let found = false;
     for (const service of this.services.values()) {
-      if (service.workspace.agents[agentId]) found = true;
       if (service.workspace.config.defaultAgent === agentId) {
-        throw new Error(`Cannot delete a workspace's default agent: @${agentId}`);
+        throw new Error(`Cannot delete @${agentId}: it's the default agent for workspace "${service.workspace.rootDir}"`);
       }
     }
-    if (!found) throw new Error(`Unknown agent: @${agentId}`);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const trash = await trashGlobalAgent(agentId, stamp);
-    this.log(`deleted agent ${agentId} → trash ${trash || "(already gone)"}`);
+    if (!trash) throw new Error(`Unknown agent: @${agentId}`);
+    this.log(`deleted agent ${agentId} → trash ${trash}`);
   }
 
   // --- keep-awake (Global Settings ▸ General) ---------------------------------------
