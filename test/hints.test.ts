@@ -28,7 +28,7 @@ test("config.json gets harness, agent and room dropdowns and a numeric window", 
   assert.ok(hints);
   assert.equal(hint(hints, "harness").input, "select");
   assert.equal(hint(hints, "harness").optional, true);
-  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["claude", "codex", "pi"]);
+  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["antigravity", "claude", "codex", "pi"]);
   assert.equal(hint(hints, "defaultAgent").input, "select");
   assert.deepEqual(hint(hints, "defaultAgent").options?.map((option) => option.value), ["gaia", "sidia"]);
   assert.deepEqual(hint(hints, "room").options?.map((option) => option.value), ["default", "lab"]);
@@ -49,7 +49,7 @@ test("agent.json gets tools multiselect and grouped model dropdowns", () => {
 
   assert.equal(hint(hints, "model.name").groupBy, "model.provider");
   const sonnet = hint(hints, "model.name").options?.find((option) => option.value === "claude-sonnet-4-6");
-  assert.equal(sonnet?.group, "anthropic");
+  assert.equal(sonnet?.group, "Anthropic");
   assert.match(sonnet?.description ?? "", /Anthropic · Claude Sonnet · subscription/);
 
   assert.equal(hint(hints, "thinking").optional, true);
@@ -71,12 +71,12 @@ test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);
 });
 
-test("agent.json gets harness select (optional, pi/codex/claude)", () => {
+test("agent.json gets harness select (optional, every registered harness)", () => {
   const hints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
   assert.ok(hints);
   assert.equal(hint(hints, "harness").input, "select");
   assert.equal(hint(hints, "harness").optional, true);
-  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["claude", "codex", "pi"]);
+  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["antigravity", "claude", "codex", "pi"]);
 });
 
 test("agent.json tools hint visible for codex (the array controls its gaia/native tools)", () => {
