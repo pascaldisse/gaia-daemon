@@ -385,24 +385,25 @@ function messageViews() {
   return ranked.sort((a, b) => a.order - b.order || a.index - b.index).map((entry) => entry.view);
 }
 
-// Auto-stick-to-bottom by reader INTENT, not raw position. A chat pins to the
-// bottom while output streams in, but the instant the reader scrolls up it must
-// STOP yanking them back down on every delta — that yank IS the "flickers when I
-// scroll up while responding" bug. Two things make intent-tracking necessary
-// rather than recomputing "am I near the bottom?" each frame:
-//   1. The old 140px positional band re-pinned on ANY scroll-up shorter than
-//      140px, so a slow scroll-up got repeatedly snapped back — you had to
-//      out-run the stream to escape. Intent unpins on the first real scroll-up
-//      (STICK_SLACK) and only re-pins when the reader returns to the bottom.
-//   2. A large delta grows the content by more than the band in one frame;
-//      recomputing position would read "far from bottom" and silently drop the
-//      pin though the reader never moved. Intent only flips on a real scroll
-//      event, so content growth can't break the follow.
-// A room switch re-pins (the newest message wins). Our own scroll-to-bottom lands
-// at the bottom, so it re-pins/stays pinned and never counts as a scroll-up.
-const STICK_SLACK = 24;
+// Auto-stick-to-bottom while output streams in, WITHOUT fighting a reader who
+// scrolls up to re-read. The whole thing turns on one hard rule: only a genuine
+// upward DRAG by the reader may unpin — never content growth, never our own
+// snap-to-bottom. That distinction is what a naive "am I near the bottom?" check
+// gets fatally wrong: a stream delta grows the content by more than the slack
+// between the snap and the (async) scroll event, so the handler reads "far from
+// bottom" and unpins though the reader never moved — and then, with nothing to
+// re-snap, every reply streams in below the fold, unseen. (That regression is
+// exactly why answers "stopped displaying".)
+// A drag up lowers scrollTop; our snap and streaming growth only ever raise it or
+// leave it. So we unpin only when scrollTop DROPS, and re-pin the moment the view
+// is back within STICK_SLACK of the bottom (so following at the bottom, a room
+// switch, or sending a message all keep/resume the follow). STICK_SLACK also sets
+// how far up a deliberate scroll must go to "stick" as unpinned.
+const STICK_SLACK = 48;
 /** @type {{ roomId: string, stick: boolean }} */
 let stickState = { roomId: "", stick: true };
+/** Last observed scrollTop, to tell a reader's upward drag from a downward snap. */
+let lastScrollTop = -1;
 
 /** @param {HTMLElement} container @returns {number} px from the bottom (0 = pinned). */
 function distanceFromBottom(container) {
@@ -423,7 +424,21 @@ export function pinTranscriptToBottom() {
 function onTranscriptScroll() {
   const container = $("#transcript");
   if (container) {
-    stickState = { roomId: state.snapshot?.room?.id ?? "", stick: distanceFromBottom(container) <= STICK_SLACK };
+    const roomId = state.snapshot?.room?.id ?? "";
+    // A room switch resets the frame of reference: the new room's scrollTop is
+    // unrelated to the old one, so don't read a phantom drag-up from it.
+    const fresh = stickState.roomId !== roomId;
+    const top = container.scrollTop;
+    let stick = fresh ? true : stickState.stick;
+    // Unpin ONLY on a real upward drag (scrollTop dropped); content growth and
+    // our own snap never lower it, so the follow can't spuriously stop.
+    if (!fresh && lastScrollTop >= 0 && top < lastScrollTop - 2) stick = false;
+    // Re-pin whenever we're back at the bottom — this also keeps a following
+    // reader pinned (our snap lands here) and recovers from a clamp when content
+    // shrinks. A drag that stays within the slack of the bottom never sticks.
+    if (distanceFromBottom(container) <= STICK_SLACK) stick = true;
+    lastScrollTop = top;
+    stickState = { roomId, stick };
   }
   maybeLoadOlderOnScroll();
 }
