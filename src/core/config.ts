@@ -47,6 +47,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Parse the generic `env` section (.gaia/config.json): a flat string map merged
+ * into every harness subprocess's env (WorkspaceConfig.env). Non-string values
+ * drop silently like every other section; absent/garbage → undefined. */
+export function parseEnvPassthrough(raw: unknown): Record<string, string> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out = Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (!isRecord(raw)) return undefined;
   const config: SandboxConfig = {};
@@ -225,6 +234,8 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   if (hooks) config.hooks = hooks;
   const contextGate = parseContextGate(obj.contextGate);
   if (contextGate) config.contextGate = contextGate;
+  const envPassthrough = parseEnvPassthrough(obj.env);
+  if (envPassthrough) config.env = envPassthrough;
   return config;
 }
 

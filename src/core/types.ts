@@ -584,6 +584,12 @@ export interface WorkspaceConfig {
   /** Context-gate: warn before a NEWLY-addressed agent loads a transcript above
    * this many (estimated) tokens. Omitted → the built-in default. 0 disables. */
   contextGate?: { warnAboveTokens: number };
+  /** Generic runner env passthrough (.gaia/config.json `env`): merged into every
+   * harness subprocess's env, e.g. skill API keys (BRAVE_API_KEY, ...). Applied
+   * BEFORE credential-proxy stripping — never a channel to smuggle an LLM
+   * provider key past the proxy (host.ts buildEnv). Uniform across harnesses;
+   * this layer has no idea what any key means. */
+  env?: Record<string, string>;
 }
 
 export interface ContextFile {

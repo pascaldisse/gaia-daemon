@@ -14,12 +14,13 @@ import "../src/harness/index.js"; // register the real harnesses + their credent
 import { RunnerHost } from "../src/harness/host.js";
 import type { SandboxPolicy } from "../src/harness/sandbox/spec.js";
 
-function makeHost(harness: string, root: string, incognito = false): RunnerHost {
+function makeHost(harness: string, root: string, incognito = false, configEnv?: Record<string, string>): RunnerHost {
   const workspace = {
     rootDir: root,
     roomsDir: join(root, ".gaia", "rooms"),
     configPath: join(root, ".gaia", "config.json"),
     agentsOverrideDir: join(root, ".gaia", "agents"),
+    ...(configEnv ? { config: { env: configEnv } } : {}),
   } as unknown as Workspace;
   const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as unknown as AgentDef;
   return new RunnerHost({
@@ -123,6 +124,23 @@ test("the runner env carries the uniform RUNNER_ENV keys for any harness", () =>
     assert.equal(env.GAIA_DAEMON_TOKEN, "tok-123");
     // A normal room does NOT set the incognito flag.
     assert.equal(env.GAIA_RUNNER_INCOGNITO, undefined);
+  });
+});
+
+test("config.json `env` passthrough reaches the child, but a provider key placed there is still stripped when the proxy is on", () => {
+  withTemp((root) => {
+    const configEnv = { BRAVE_API_KEY: "skill-key-abc", OPENAI_API_KEY: "sneaky-smuggled-key" };
+    const env = envFor(makeHost("pi", root, false, configEnv), "room1", PROXY_ON);
+    assert.equal(env.BRAVE_API_KEY, "skill-key-abc"); // generic passthrough reaches the harness subprocess
+    assert.equal(env.OPENAI_API_KEY, undefined); // config env cannot smuggle a provider key past the credential proxy
+  });
+});
+
+test("config.json `env` passthrough reaches the child when the proxy is off too", () => {
+  withTemp((root) => {
+    const configEnv = { BRAVE_API_KEY: "skill-key-abc" };
+    const env = envFor(makeHost("pi", root, false, configEnv), "room1", PROXY_OFF);
+    assert.equal(env.BRAVE_API_KEY, "skill-key-abc");
   });
 });
 

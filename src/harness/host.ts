@@ -675,6 +675,11 @@ export class RunnerHost implements AgentRuntime {
   private buildEnv(roomId: string, ctx: ProxyLaunch): NodeJS.ProcessEnv {
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      // Generic runner env passthrough from .gaia/config.json `env` (skill API
+      // keys etc.) — merged right after the process.env spread, so it flows
+      // through the SAME stripProviderKeys() pass below when the credential
+      // proxy is on: config env can never smuggle an LLM provider key past it.
+      ...(this.options.workspace.config?.env ?? {}),
       [RUNNER_ENV.workspacePath]: this.options.workspace.rootDir,
       [RUNNER_ENV.agentId]: this.agent.id,
       [RUNNER_ENV.harness]: this.options.harness,
