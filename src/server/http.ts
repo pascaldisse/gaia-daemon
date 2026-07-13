@@ -809,6 +809,15 @@ export class GaiaWebServer {
       return;
     }
 
+    // Reversible agent delete: moves agent dir to trash. Triggers global settings reload.
+    if (method === "DELETE" && (params = match(/^\/api\/agents\/([^/]+)$/))) {
+      return this.respond(response, async () => {
+        await this.daemon.deleteAgent(params![0]);
+        await this.daemon.applySettingsChange("global");
+        return {};
+      });
+    }
+
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {
       const service = await this.daemon.serviceFor(params[0]);
       json(response, 200, {
