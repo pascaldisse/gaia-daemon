@@ -26,6 +26,7 @@ import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
 import { configureRoomServiceReload } from "../services/room-service.js";
 import { summonAck } from "../services/summons.js";
+import { DEFAULT_PET_NAME, loadPet } from "./pet.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
 
@@ -529,6 +530,40 @@ export class GaiaWebServer {
 
     if (method === "GET" && path === "/api/app") {
       json(response, 200, await this.daemon.appPayload());
+      return;
+    }
+
+    // Codex-compatible pet packages live outside the web root. Resolve and
+    // validate the requested package here; the browser receives only manifest
+    // data and this scoped spritesheet URL, never a local filesystem path.
+    if (method === "GET" && path === "/api/pet") {
+      try {
+        const name = url.searchParams.get("name")?.trim() || DEFAULT_PET_NAME;
+        const { manifest } = await loadPet(name);
+        json(response, 200, {
+          pet: {
+            ...manifest,
+            spritesheetUrl: `/api/pet/spritesheet?name=${encodeURIComponent(name)}`,
+          },
+        });
+      } catch (error) {
+        json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (method === "GET" && path === "/api/pet/spritesheet") {
+      try {
+        const name = url.searchParams.get("name")?.trim() || DEFAULT_PET_NAME;
+        const { spritesheetFile } = await loadPet(name);
+        response.writeHead(200, {
+          "content-type": MIME[extname(spritesheetFile)] ?? "application/octet-stream",
+          "cache-control": "no-store",
+        });
+        createReadStream(spritesheetFile).pipe(response);
+      } catch (error) {
+        json(response, 404, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
