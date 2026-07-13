@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, selectRoom, sendMessage, stopAll, uploadAttachment } from "./actions.js";
+import { editMessage, selectRoom, sendMessage, stopAll, stopEscalating, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -14,7 +14,7 @@ import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
-import { isBusy, runningSummonRooms, state } from "./state.js";
+import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
   abortActiveTranscription,
@@ -47,6 +47,8 @@ let bannerEl = null;
 let bannerLabelEl = null;
 /** @type {HTMLElement|null} */
 let bannerBarEl = null;
+/** @type {HTMLButtonElement|null} */
+let stopBtnEl = null;
 /** @type {HTMLElement|null} */
 let summonListEl = null;
 /** @type {HTMLElement|null} */
@@ -140,13 +142,16 @@ export function initComposer() {
   // Expandable list of this room's running summons; each row jumps to its
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
+  stopBtnEl = /** @type {HTMLButtonElement} */ (
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopEscalating() })
+  );
   bannerEl = h(
     "div",
     { class: "running-banner", hidden: true },
     h("span", { class: "running-dot" }),
     bannerLabelEl,
     bannerBarEl,
-    h("button", { type: "button", class: "stop-btn", title: "stop all agents (Esc)", text: "■ stop", onclick: () => void stopAll() }),
+    stopBtnEl,
     summonListEl,
   );
   editBannerEl = h(
@@ -261,6 +266,24 @@ function renderComposer() {
   // the bar between it and ■ stop shows the estimated fraction.
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
+  // Escalating stop: the button (and Esc) first stops THIS room's own turn;
+  // once the room is idle it retargets the running summons (whole descendant
+  // subtree). Ctrl+C skips the escalation and kills everything at once. Grey
+  // the button out only when neither the room nor any summon is running
+  // (e.g. a compaction pass is what's keeping the banner up).
+  if (stopBtnEl) {
+    const roomBusy = Boolean(activeTask(snapshot));
+    const summonCount = runningSummonRooms(snapshot).length;
+    stopBtnEl.disabled = !roomBusy && summonCount === 0;
+    stopBtnEl.textContent = !roomBusy && summonCount > 0 ? "■ stop summons" : "■ stop";
+    stopBtnEl.title = roomBusy
+      ? summonCount > 0
+        ? "stop this room's turn (Esc) — press again for summons; Ctrl+C stops everything"
+        : "stop this room's turn (Esc)"
+      : summonCount > 0
+        ? `stop ${summonCount} running summon${summonCount === 1 ? "" : "s"} (Esc)`
+        : "nothing running to stop";
+  }
   const compactingAgent = busy ? (snapshot?.agents ?? []).find((agent) => agent.status === "compacting" && agent.compact) : undefined;
   if (bannerBarEl) {
     bannerBarEl.hidden = !compactingAgent;
@@ -1138,8 +1161,10 @@ export function installComposerRouting() {
         cancelDictation();
         return;
       }
-      // Panic stop: Ctrl+C or Esc aborts the running turn AND all summoned
-      // workers, from anywhere in the app, for every agent/harness.
+      // Stop keys, from anywhere in the app, for every agent/harness:
+      // Ctrl+C kills the whole tree (active turn + all summons) in one press;
+      // Esc escalates — first press stops the active room's turn, second
+      // press stops the summons (see stopEscalating / stopAll in actions.js).
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {
         event.preventDefault();
         void stopAll();
@@ -1149,7 +1174,7 @@ export function installComposerRouting() {
       // not panic-stop — his own review summon would be collateral otherwise.
       if (event.key === "Escape" && isBusy() && !state.dario.open) {
         event.preventDefault();
-        void stopAll();
+        void stopEscalating();
         return;
       }
 
