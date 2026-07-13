@@ -205,6 +205,57 @@ test("PiRuntime reloads an existing session after context refresh when the promp
   }
 });
 
+test("PiRuntime appends gaia's assembled prompt onto pi's own base instead of replacing it", async () => {
+  const fx = await harnessFixture();
+  try {
+    await mkdir(join(fx.home, "skills", "a"), { recursive: true });
+    await writeFile(join(fx.home, "skills", "a", "SKILL.md"), "---\ndescription: test skill A\n---\n# A\n", "utf8");
+
+    let seenSystemPrompt: string | undefined;
+    let seenAppendSystemPrompt: string[] = [];
+    let seenSkillNames: string[] = [];
+    let seenSystemPromptRef: { current: string } | undefined;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      // Mirrors what createAgentSession does with a real resourceLoader: reload it,
+      // then read back exactly what the SDK's own buildSystemPrompt will consume
+      // (system-prompt.js: customPrompt undefined ⇒ pi's own default base is
+      // built, THEN appendSystemPrompt joined on, THEN skills — proven by
+      // reading the SDK source directly, not re-testing pi's own logic here).
+      await options.loader.reload();
+      seenSystemPrompt = options.loader.getSystemPrompt();
+      seenAppendSystemPrompt = options.loader.getAppendSystemPrompt();
+      seenSkillNames = options.loader.getSkills().skills.map((skill) => skill.name);
+      seenSystemPromptRef = options.systemPromptRef;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(
+      runtime.send({
+        roomId: "default",
+        message: "one",
+        transcript: [],
+        activeRole: { name: "a", prompt: "A", skills: ["a"], diagnostics: [] },
+      }),
+    );
+
+    // Pi's own base system prompt (tool usage, conventions, docs pointers)
+    // stays untouched — no customPrompt override, so buildSystemPrompt falls
+    // through to pi's hardcoded default base instead of gaia's assembly.
+    assert.equal(seenSystemPrompt, undefined);
+    // Gaia's assembled layer (soul+AGENTS.md+role+style law) rides as the
+    // APPENDED section, verbatim, not folded into/replacing the base.
+    assert.deepEqual(seenAppendSystemPrompt, [seenSystemPromptRef?.current]);
+    assert.match(seenSystemPromptRef?.current ?? "", /A/);
+    // The skills block keeps working (system-prompt.js only appends it when
+    // the read tool is present, independent of customPrompt vs default).
+    assert.deepEqual(seenSkillNames, ["a"]);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime reports the session's actual model as a model-info event", async () => {
   const fx = await harnessFixture();
   try {

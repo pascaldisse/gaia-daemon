@@ -484,8 +484,14 @@ export class PiRuntime implements AgentRuntime {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => systemPromptRef.current,
-      appendSystemPromptOverride: () => [],
+      // Pi's own base system prompt (tool usage, conventions, docs pointers)
+      // must stay — gaia's assembled layer (soul+AGENTS.md+role+style law from
+      // buildBaseSystemPrompt) rides APPENDED via pi's append mechanism, never
+      // replacing pi's base. systemPromptOverride left unset so
+      // DefaultResourceLoader falls through to its discovered/undefined base,
+      // which makes pi's system-prompt.js build its own default prompt
+      // (customPrompt undefined) and then append this section + skills.
+      appendSystemPromptOverride: () => [systemPromptRef.current],
     });
     if (!this.sessionFactory) await loader.reload();
 
