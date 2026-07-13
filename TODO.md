@@ -190,6 +190,19 @@ that block is for dedicated writer personas, not workhorse agents.
 
 Filed: 2026-07-14, by Pascal (room: claude-20260703-documenting-service-interruptions-for-re)
 
+**FOUNDING PRINCIPLE (Pascal, explicit): this app is an EXTENSION OF PI.** It was
+always meant to use pi's own mechanisms (session tree, fork/navigateTree,
+compaction, context accounting) as the single source of truth. The
+harness-agnostic layer — gaia's own transcript.jsonl, the replay path, the
+cursor/context-floor bookkeeping, the whole "drive pi/claude/codex
+interchangeably" abstraction (RULE #0) — was NEVER authorized for this app and
+is the source of every context bug tonight (divergence, duplication,
+double-billing). The rebuild REMOVES everything not-pi. Pi is not one harness
+behind an abstraction here; pi IS the engine. Anything gaia needs (UI, history,
+search, memory) derives FROM pi's session — it never maintains a parallel copy.
+Do not preserve the multi-harness abstraction "just in case"; that's what caused
+this.
+
 **Problem:** gaia maintains its OWN `~/.gaia/rooms/<room>/transcript.jsonl` as a
 harness-agnostic source of truth, SEPARATE from pi's native SDK session file
 (`<room>/pi-sessions/<agent>/*.jsonl`). gaia "replays" its transcript into the
