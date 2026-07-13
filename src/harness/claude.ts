@@ -183,6 +183,9 @@ interface ClaudeRoomMeta {
 // session while leaving subscription auth, the model, built-in tools, and
 // permissions intact (confirmed in `claude --help`).
 const SAFE_MODE = "--safe-mode";
+// gaia owns compaction: the daemon's /compact drives harness compaction
+// explicitly; the CLI must NEVER auto-compact on its own (Pascal, 2026-07-13).
+const NO_AUTOCOMPACT_SETTINGS = JSON.stringify({ autoCompactEnabled: false });
 
 // A steer (an extra user message injected on the open stdin) that lands after
 // the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
@@ -840,7 +843,7 @@ export class ClaudeRuntime implements AgentRuntime {
     if (!room?.started) return NO_SESSION_TO_COMPACT;
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--settings", NO_AUTOCOMPACT_SETTINGS, "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
@@ -1080,6 +1083,8 @@ export class ClaudeRuntime implements AgentRuntime {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
+      "--settings",
+      NO_AUTOCOMPACT_SETTINGS,
       // Isolation: normal turns use --safe-mode (no user CLAUDE.md/skills/hooks/
       // commands). A native command NEEDS the skill/slash-command surface that
       // --safe-mode kills, so it isolates a different way — no user setting

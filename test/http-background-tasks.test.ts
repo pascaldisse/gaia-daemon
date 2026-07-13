@@ -82,6 +82,7 @@ test("background-task output endpoint serves the last 16KB and 404s unknown or m
           outputPath,
           startedAt: new Date().toISOString(),
           agentId: "gaia",
+          roomId: "default",
         },
         {
           taskId: "bg-missing-file",
@@ -89,6 +90,7 @@ test("background-task output endpoint serves the last 16KB and 404s unknown or m
           outputPath: join(temp.path, "missing.output"),
           startedAt: new Date().toISOString(),
           agentId: "gaia",
+          roomId: "default",
         },
       ];
     });
@@ -101,13 +103,58 @@ test("background-task output endpoint serves the last 16KB and 404s unknown or m
 
     const found = await fetch(`${route}/bg-present/output`);
     assert.equal(found.status, 200);
-    const body = await found.json() as { text: string };
+    const body = await found.json() as { text: string; running: boolean };
     assert.equal(body.text, Buffer.from(output).subarray(-16 * 1024).toString("utf8"));
+    // The file was written and closed above — no process still holds it open.
+    assert.equal(body.running, false);
 
     const unknown = await fetch(`${route}/bg-unknown/output`);
     assert.equal(unknown.status, 404);
     const missing = await fetch(`${route}/bg-missing-file/output`);
     assert.equal(missing.status, 404);
+  } finally {
+    if (server) await closeServer(server);
+    await web?.daemon.dispose();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
+
+test("DELETE background-tasks stops/dismisses a known task and 404s an unknown id", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  let server: HttpServer | undefined;
+  let web: WebInternals | undefined;
+  try {
+    const workspace = join(temp.path, "workspace");
+    await mkdir(workspace, { recursive: true });
+    await initWorkspace(workspace);
+
+    const room = await RoomHandle.open(workspace, "default");
+    await room.updateState((state) => {
+      state.backgroundTasks = [
+        { taskId: "bg-stop", toolName: "Bash", startedAt: new Date().toISOString(), agentId: "gaia", roomId: "default" },
+      ];
+    });
+
+    web = new GaiaWebServer({ cwd: workspace }) as unknown as WebInternals;
+    const record = await web.daemon.registry.add(workspace);
+    const listening = await listenRoute(web);
+    server = listening.server;
+    const route = `${listening.baseUrl}/api/workspaces/${encodeURIComponent(record.id)}/rooms/default/background-tasks`;
+
+    const unknown = await fetch(`${route}/bg-unknown`, { method: "DELETE" });
+    assert.equal(unknown.status, 404);
+
+    const stopped = await fetch(`${route}/bg-stop`, { method: "DELETE" });
+    assert.equal(stopped.status, 200);
+    const body = await stopped.json() as { ok: boolean };
+    assert.equal(body.ok, true);
+
+    const after = await RoomHandle.open(workspace, "default");
+    assert.deepEqual((await after.state()).backgroundTasks ?? [], []);
   } finally {
     if (server) await closeServer(server);
     await web?.daemon.dispose();
