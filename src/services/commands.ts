@@ -12,6 +12,7 @@ export type SlashCommand =
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "model"; agent?: string; spec?: string }
   | { type: "clear" }
+  | { type: "refresh" }
   | { type: "fork" }
   | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "consolidate"; agent?: string }
@@ -36,6 +37,11 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
+  {
+    name: "refresh",
+    type: "refresh",
+    description: "re-read context files (soul, AGENTS.md, skills) into agents' system prompts — applies on each agent's next turn",
+  },
   { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },

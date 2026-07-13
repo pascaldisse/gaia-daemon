@@ -130,13 +130,11 @@ export async function readOptional(path: string | undefined): Promise<string> {
   }
 }
 
-// Reads soul + optional project-intent + the workspace's AGENTS.md off disk and
-// composes the base system prompt. Every harness needs this exact
-// read-then-assemble step. Context files are LIVE-read on every call (the same
-// deliberate cache-bypass as liveMaxSummonsPerRoom): assembly runs per turn in
-// every harness, so an AGENTS.md edit reaches existing rooms on their very next
-// turn — pi hot-swaps via session.reload(), CLI harnesses pass the prompt per
-// invocation. No session is ever reset for a prompt change.
+// Reads soul + optional project-intent + the workspace's AGENTS.md off disk at
+// call time and composes the base system prompt. SessionMap-backed runtimes
+// serve this builder through SessionMap.systemPrompt, so disk reads happen only
+// at session birth, /compact, /clear, /refresh, or a role switch — never
+// mid-conversation otherwise.
 export async function buildBaseSystemPrompt(params: {
   agent: AgentDef;
   role: ResolvedRole | undefined;

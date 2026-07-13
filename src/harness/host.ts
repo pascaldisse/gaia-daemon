@@ -417,6 +417,11 @@ export class RunnerHost implements AgentRuntime {
     if (this.child) this.write({ type: "reset", roomId });
   }
 
+  refreshContext(roomId: string): void {
+    // A down runner has no in-memory snapshot; its next spawn reads fresh.
+    if (this.child) this.write({ type: "refresh", roomId });
+  }
+
   /** Answered daemon-side from the spec's on-disk descriptor — the runner may
    * not even be spawned yet, and a fresh process is exactly the case that
    * matters (its cursor is only honest if the persisted handle survived). */

@@ -599,7 +599,7 @@ export interface Workspace {
   roomsDir: string;
   globalAgentsDir: string;
   config: WorkspaceConfig;
-  contextFiles: ContextFile[]; // boot-time snapshot — NOT used for prompt assembly (prompts live-read via discoverContextFiles each turn); kept for test fixtures
+  contextFiles: ContextFile[]; // boot-time snapshot — NOT used for prompt assembly (prompts re-read via discoverContextFiles at session boundaries: birth, /compact, /clear, /refresh); kept for test fixtures
   agents: Record<string, AgentDef>;
 }
 

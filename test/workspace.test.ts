@@ -54,7 +54,9 @@ test("workspace context never inherits AGENTS.md from parent directories", async
   ]);
 });
 
-test("buildBaseSystemPrompt live-reads AGENTS.md on every call", async () => {
+test("buildBaseSystemPrompt reads AGENTS.md from disk at assembly time", async () => {
+  // Session freezing happens in SessionMap.systemPrompt; this test exercises
+  // the uncached builder directly.
   const dir = mkdtempSync(join(tmpdir(), "gaia-prompt-live-"));
   const soulPath = join(dir, "soul.md");
   writeFileSync(soulPath, "test soul");

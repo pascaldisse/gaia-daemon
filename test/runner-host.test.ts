@@ -63,6 +63,7 @@ import { createInterface } from "node:readline";
 const esc = (o) => JSON.stringify(o).replace(/\\u2028/g, "\\\\u2028").replace(/\\u2029/g, "\\\\u2029");
 const send = (o) => process.stdout.write(esc(o) + "\\n");
 send({ type: "ready", modelLabel: "stub/model" });
+const refreshed = new Set();
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -101,8 +102,10 @@ rl.on("line", (line) => {
       return;
     }
     send({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } });
-    send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
+    send({ type: "event", event: { type: "text-delta", delta: cmd.input.message === "refresh-status" ? "refreshed-before-turn:" + (refreshed.has(cmd.input.roomId) ? "yes" : "no") : "echo:" + cmd.input.message } });
     send({ type: "turn-end" });
+  } else if (cmd.type === "refresh") {
+    refreshed.add(cmd.roomId);
   } else if (cmd.type === "steer") {
     if (cmd.message === "finish") {
       send({ type: "event", event: { type: "text-delta", delta: "post-steer" } });
@@ -222,6 +225,30 @@ test("a turn whose content contains U+2028 survives the wire round trip (regress
     const echo = events.find((e) => e.type === "text-delta");
     assert.ok(echo && echo.type === "text-delta", "turn must stream back instead of wedging");
     assert.equal(echo.delta, `echo:${poison}`, "content must arrive intact, separators included");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost sends refresh to a live child and no-ops while the child is down", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    host.refreshContext("default"); // no child yet: the fresh spawn already reads fresh
+
+    const before: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "refresh-status", transcript: [] })) before.push(event);
+    const beforeText = before.find((event) => event.type === "text-delta");
+    assert.ok(beforeText && beforeText.type === "text-delta");
+    assert.equal(beforeText.delta, "refreshed-before-turn:no");
+
+    host.refreshContext("default");
+    const after: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "refresh-status", transcript: [] })) after.push(event);
+    const afterText = after.find((event) => event.type === "text-delta");
+    assert.ok(afterText && afterText.type === "text-delta");
+    assert.equal(afterText.delta, "refreshed-before-turn:yes");
     await host.dispose();
   } finally {
     await temp.cleanup();

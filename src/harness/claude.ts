@@ -993,6 +993,10 @@ export class ClaudeRuntime implements AgentRuntime {
     this.sessions.reset(roomId);
   }
 
+  refreshContext(roomId: string): void {
+    this.sessions.refreshPrompt(roomId);
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -1117,12 +1121,15 @@ export class ClaudeRuntime implements AgentRuntime {
   private buildSystemPrompt(input: AgentInput): Promise<string> {
     // Claude Code never sees Pi-style skill files, so the active role's skill
     // text is inlined into the system prompt (handled by buildInlineSystemPrompt).
-    return buildInlineSystemPrompt({
-      workspace: this.workspace,
-      agent: this.agent,
-      role: input.activeRole,
-      toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
-    });
+    const roleKey = input.activeRole?.name ?? "";
+    return this.sessions.systemPrompt(input.roomId, roleKey, () =>
+      buildInlineSystemPrompt({
+        workspace: this.workspace,
+        agent: this.agent,
+        role: input.activeRole,
+        toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools),
+      }),
+    );
   }
 
   // Start (once) the loopback shim that un-redacts extended-thinking text. Newer

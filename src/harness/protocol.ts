@@ -12,6 +12,7 @@ export type RunnerCommand =
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
   | { type: "reset"; roomId: string }
+  | { type: "refresh"; roomId: string }
   | { type: "dispose" };
 
 /** Runner -> daemon. */
