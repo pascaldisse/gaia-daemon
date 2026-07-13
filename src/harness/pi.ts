@@ -409,7 +409,31 @@ export class PiRuntime implements AgentRuntime {
     }
     const session = meta.session;
     if (!session.compact) return NO_SESSION_TO_COMPACT;
-    const result = await session.compact();
+    let result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number };
+    try {
+      result = await session.compact();
+    } catch (error) {
+      // pi-ai's own session.compact() throws (rather than returning a result)
+      // when its cutPoint search finds nothing outside the always-kept "recent"
+      // window (default keepRecentTokens: 20000 tokens — see
+      // @earendil-works/pi-coding-agent dist/core/compaction/compaction.js
+      // prepareCompaction/findCutPoint). A session whose ENTIRE history is
+      // smaller than that floor is genuinely too small to shrink — this is not
+      // a session-loss/restore bug (that case is NO_SESSION_TO_COMPACT above,
+      // fixed by 64cff59's lazy restore). It commonly fires well under 20% of a
+      // model's context window: e.g. a 200k-token model's session sits under
+      // the 20000-token floor at roughly ctx ≤10%, so a small ctx% chip and
+      // this message are CONSISTENT, not contradictory. Surface it as the same
+      // clean no-op contract other harnesses use instead of letting it read as
+      // a failure (room-service's catch wraps any thrown compact() error as
+      // "Compaction failed for @agent: …", which reads like a crash for what
+      // is actually "there's nothing to trim yet").
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/too small/i.test(msg) || /already compacted/i.test(msg)) {
+        return { compacted: false, message: `nothing to compact — ${msg.toLowerCase()}.` };
+      }
+      throw error;
+    }
     const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
     return {
       compacted: true,
