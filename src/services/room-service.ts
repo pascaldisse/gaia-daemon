@@ -295,6 +295,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
@@ -2895,6 +2896,11 @@ export class RoomService {
     this.recentTasks = [];
     await this.emitSnapshot();
     return "Cleared room history and reset all agent sessions.";
+  }
+
+  async runRefreshCommand(): Promise<string> {
+    for (const runtime of Object.values(this.runtimes)) runtime.refreshContext?.(this.roomId);
+    return "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn";
   }
 
   /** /fork: branch into a sibling room. Transcript copies verbatim; cursors

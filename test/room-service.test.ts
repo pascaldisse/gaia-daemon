@@ -33,7 +33,7 @@ function makeAgent(id: string, root: string): AgentDef {
 }
 
 /** Scripted runtime: replies with fixed events per send() call. */
-function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number; resets: number } {
+function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRuntime & { aborted: boolean; sends: number; resets: number; refreshes: number } {
   const runtime = {
     agent,
     modelLabel: "test/model",
@@ -41,6 +41,7 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
     aborted: false,
     sends: 0,
     resets: 0,
+    refreshes: 0,
     async *send() {
       runtime.sends += 1;
       for (const event of script()) yield event;
@@ -52,8 +53,11 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
     resetRoom() {
       runtime.resets += 1;
     },
+    refreshContext() {
+      runtime.refreshes += 1;
+    },
   };
-  return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number };
+  return runtime as AgentRuntime & { aborted: boolean; sends: number; resets: number; refreshes: number };
 }
 
 async function makeService(options: {
@@ -664,6 +668,28 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   const { events: forkEvents } = await forkRoom.eventsFrom(0);
   assert.ok(forkEvents.length >= 2, "transcript copied");
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
+});
+
+test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {
+  const { service, root, runtimes } = await makeService();
+  await service.sendMessage("keep this history");
+  await service.waitForIdle();
+
+  const task = await service.sendMessage("/refresh");
+  assert.equal(task.status, "complete");
+  assert.deepEqual(
+    [...runtimes.values()].map((runtime) => runtime.refreshes),
+    [1, 1],
+  );
+  assert.deepEqual(
+    [...runtimes.values()].map((runtime) => runtime.resets),
+    [0, 0],
+  );
+
+  const room = await RoomHandle.open(root, "default");
+  const { events } = await room.eventsFrom(0);
+  assert.equal(events[0].text, "keep this history");
+  assert.equal(events.at(-1)?.text, "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn");
 });
 
 test("slash commands emit a system room-event and settle synchronously", async () => {

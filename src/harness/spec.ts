@@ -76,6 +76,9 @@ export interface AgentRuntime {
   dispose(): void | Promise<void>;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
+  /** Drop the session-scoped system-prompt snapshot; the next assembly
+   * re-reads soul/AGENTS.md/skills from disk. */
+  refreshContext?(roomId: string): void;
   /** Does a durable, resumable session for this room still exist? An agent's
    * transcript cursor promises "everything before me lives in the harness
    * session" — when the session is gone (crash, dropped handle, pruned store)

@@ -185,7 +185,7 @@ test("PiRuntime treats aborted-final messages as non-fatal", async () => {
   }
 });
 
-test("PiRuntime reloads an existing session when prompt changes but skills do not", async () => {
+test("PiRuntime reloads an existing session after context refresh when the prompt changed", async () => {
   const fx = await harnessFixture();
   try {
     const sessions: FakeSession[] = [];
@@ -198,6 +198,10 @@ test("PiRuntime reloads an existing session when prompt changes but skills do no
 
     await collect(runtime.send({ roomId: "default", message: "one", transcript: [], activeRole: { name: "plan", prompt: "A", skills: [], diagnostics: [] } }));
     await collect(runtime.send({ roomId: "default", message: "two", transcript: [], activeRole: { name: "plan", prompt: "B", skills: [], diagnostics: [] } }));
+    assert.equal(sessions[0].reloads, 0, "same-role prompt changes stay frozen mid-session");
+
+    runtime.refreshContext("default");
+    await collect(runtime.send({ roomId: "default", message: "three", transcript: [], activeRole: { name: "plan", prompt: "B", skills: [], diagnostics: [] } }));
 
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].reloads, 1);

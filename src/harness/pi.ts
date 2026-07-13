@@ -333,6 +333,10 @@ export class PiRuntime implements AgentRuntime {
     this.sessions.reset(roomId);
   }
 
+  refreshContext(roomId: string): void {
+    this.sessions.refreshPrompt(roomId);
+  }
+
   // Applies a per-turn thinking override (voice mode forces "off") and
   // restores the agent's own level on turns without one. Reading
   // agent.thinking live means a settings change hot-applies on the next
@@ -383,11 +387,14 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async ensureSession(input: AgentInput): Promise<PiSessionMeta> {
-    const systemPrompt = await buildBaseSystemPrompt({
-      agent: this.agent,
-      role: input.activeRole,
-      contextFiles: this.workspace.contextFiles,
-    });
+    const roleKey = input.activeRole?.name ?? "";
+    const systemPrompt = await this.sessions.systemPrompt(input.roomId, roleKey, () =>
+      buildBaseSystemPrompt({
+        agent: this.agent,
+        role: input.activeRole,
+        workspaceRoot: this.workspace.rootDir,
+      }),
+    );
     const skillNames = agentSkillNames(this.agent, input.activeRole);
     // Pi's translation of the harness-agnostic `web` tool: claude/codex expose a
     // native web tool, pi shells out to the brave-search skill (its search.js —
