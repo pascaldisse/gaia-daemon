@@ -106,9 +106,10 @@ export interface PiSessionLike {
   getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   /** Native session compaction — the same call the pi CLI's /compact runs. */
   compact?(customInstructions?: string): Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
-  /** Every user-message entry in this session, in order, id + text — pi's own
-   * addressing for forking (dist/core/agent-session.js). Backs
-   * forkAtMessage's gaia-origin → pi-entry-id mapping (see there). Already
+  /** Every user-message entry in this session, IN ORDER (id + text) — pi's own
+   * addressing for forking (dist/core/agent-session.js). forkAtMessage maps
+   * gaia's origin to pi's entry purely by POSITION: the Kth of these is the
+   * Kth thing the human said (see there — text is never matched). Already
    * present at runtime on the real AgentSession; declared here so the typed
    * cast can call it. */
   getUserMessagesForForking?(): Array<{ entryId: string; text: string }>;
@@ -503,25 +504,38 @@ export class PiRuntime implements AgentRuntime {
    * cold-daemon restore. Assumes the session is IDLE (safe: room-service only
    * calls this between turns, never mid-turn).
    *
-   * Mapping gaia's origin (an id + raw text from the ROOM transcript) onto
-   * pi's own entry addressing: buildTurnPrompt always renders the raw turn
-   * text verbatim after its "Newest user message:" header (see prompt.ts), so
-   * it survives as a literal substring of whatever pi recorded as that
-   * prompt's user-entry text — `entry.text.includes(originText)` is therefore
-   * a strong signal even though pi's entry also carries the memory/recall/
-   * transcript wrapper gaia adds. KNOWN LIMITATION: when the SAME literal
-   * message text was sent more than once in this session (a real but rare
-   * case), containment alone can't tell the occurrences apart — no ordinal
-   * crosses the runner boundary (forkAtMessage only carries the gaia origin's
-   * id + text, never its transcript position), so ties are broken by picking
-   * the MOST RECENT match, which is right for the common "edit the last
-   * thing I said" case and wrong for editing an earlier occurrence of an
-   * exact repeat. Returns {ok:false} on any of: no persisted session, the SDK
-   * session lacking the fork methods (older pi build), no textual match, or
-   * the session not being persisted (in-memory, can't fork) — callers fall
-   * back to the shared WAL-reset-and-replay path in every one of these
-   * cases. */
-  async forkAtMessage(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }> {
+   * Mapping gaia's origin onto pi's own entry addressing is by POSITION, not
+   * text. Text matching was tried first and is fundamentally unreliable: pi
+   * records the buildTurnPrompt-WRAPPED prompt (room header, agent line,
+   * worktree note, memory/recall blocks, transcript, "Newest user message:"
+   * header, …) as the user-entry text — NOT gaia's raw event text — and
+   * gaia's origin text additionally carries the "@agent " mention prefix, so
+   * no substring relation holds (this is exactly the fallback-to-resetRoom
+   * bug the live echo test caught). Instead `userOrdinal` is the origin's
+   * 1-based index among the room's user messages, and pi's
+   * getUserMessagesForForking() returns its user entries IN ORDER — so the
+   * target is simply entries[userOrdinal - 1]. This assumes a 1:1
+   * correspondence between gaia user turns and pi user entries (one gaia user
+   * message = one prompt() = one pi user entry); a mid-turn steer that pi
+   * recorded as an extra user entry would desync the ordinal — out of scope
+   * for now (a rare edit-during-steer case), and a wrong ordinal only
+   * mis-targets the branch, it can't corrupt anything.
+   *
+   * Branch BEFORE the target: getEntry(target).parentId is the fork point.
+   * When parentId is null (userOrdinal === 1, the very first message)
+   * there is no parent to branch to, so pi's own fallback applies — start a
+   * fresh session via newSession({parentSession}), which records lineage and
+   * returns a new file path. Otherwise createBranchedSession(parentId)
+   * rewrites the manager's file to root→parent, dropping the target and
+   * everything after — "position: before" in pi's own vocabulary, matching
+   * gaia's WAL rewind (the origin is re-sent fresh right after this resolves).
+   *
+   * Returns {ok:false} on any of: no persisted session, the SDK session
+   * lacking the fork methods (older pi build), the ordinal out of range, the
+   * target entry missing, or the session not being persisted to disk (the
+   * fork write returns no path) — callers fall back to the shared
+   * WAL-reset-and-replay path in every one of these cases. */
+  async forkAtMessage(roomId: string, originEventId: string, userOrdinal: number): Promise<{ ok: boolean; message: string }> {
     let meta = this.sessions.get(roomId);
     if (!meta) {
       if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return { ok: false, message: "no active pi session for this room" };
@@ -532,16 +546,13 @@ export class PiRuntime implements AgentRuntime {
       return { ok: false, message: "this pi session build does not support native forking" };
     }
     const entries = session.getUserMessagesForForking();
-    const matches = entries.filter((entry) => entry.text.includes(originText));
-    if (matches.length === 0) {
-      return { ok: false, message: `no pi session entry matches the message being forked (event ${originEventId})` };
+    if (userOrdinal < 1 || userOrdinal > entries.length) {
+      return { ok: false, message: `fork ordinal ${userOrdinal} out of range (session has ${entries.length} user entries; event ${originEventId})` };
     }
-    // See the doc comment above: ties (same literal text sent more than once)
-    // resolve to the most recent occurrence.
-    const target = matches[matches.length - 1];
+    const target = entries[userOrdinal - 1];
     const targetEntry = session.sessionManager.getEntry(target.entryId);
     if (!targetEntry) {
-      return { ok: false, message: `matched pi entry ${target.entryId} is missing from the session tree` };
+      return { ok: false, message: `pi entry ${target.entryId} (ordinal ${userOrdinal}) is missing from the session tree` };
     }
     const currentSessionFile = session.sessionManager.getSessionFile();
     const forkedFile =

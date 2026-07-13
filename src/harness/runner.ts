@@ -188,7 +188,7 @@ export async function runAgentRunner(): Promise<void> {
         return;
       case "fork":
         void (
-          runtime.forkAtMessage?.(command.roomId, command.originEventId, command.originText) ??
+          runtime.forkAtMessage?.(command.roomId, command.originEventId, command.userOrdinal) ??
           Promise.reject(new Error("fork not supported"))
         )
           .then((result) => send({ type: "fork-result", ok: result.ok, message: result.message }))

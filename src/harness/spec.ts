@@ -88,17 +88,31 @@ export interface AgentRuntime {
    * capabilities.supportsForkAtMessage: a harness with no native fork
    * primitive relies on the shared WAL rewind + resetRoom() + full-floor
    * replay instead (room-service.forkAtUserMessage), which stays unchanged.
-   * `originEventId`/`originText` identify the gaia transcript's user message
-   * the fork must land BEFORE; the harness maps that to its own session's
-   * entry id however its own history is addressed (pi: getUserMessagesFor-
-   * Forking + session.sessionManager.createBranchedSession/newSession — a NEW
+   *
+   * The origin is identified by POSITION, not text: `userOrdinal` is the
+   * origin's 1-based index among the room's USER-authored messages (the Kth
+   * thing the human said). Text matching was tried first and is fundamentally
+   * unreliable — pi records the buildTurnPrompt-WRAPPED prompt (room header,
+   * agent line, worktree note, …), never gaia's raw event text, and gaia's
+   * origin text additionally carries the "@agent " mention prefix, so no
+   * substring relation holds. Ordinal mapping assumes a 1:1 correspondence
+   * between gaia user turns and the harness's own user entries (one gaia user
+   * message = one prompt = one harness user entry); mid-turn steers that the
+   * harness records as extra user entries would desync it — out of scope for
+   * now (documented in pi.ts). `originEventId` rides along only for error
+   * messages/logging.
+   *
+   * The harness maps `userOrdinal` to its own entry (pi: the Kth of
+   * getUserMessagesForForking(), then branch BEFORE it via
+   * session.sessionManager.createBranchedSession(parent) / newSession — a NEW
    * durable session file, not an in-place rewind, so it survives a runner
    * respawn). Resolves `{ ok: true, ... }` once the fork is written and this
    * room's session has been rebuilt around it (so a following resend appends
    * under the fork point and persists there); `{ ok: false, message }` when
-   * the mapping/fork fails, so the caller can fall back to the shared reset
-   * path instead of silently leaving stale context behind. */
-  forkAtMessage?(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }>;
+   * the ordinal is out of range or the fork fails, so the caller can fall
+   * back to the shared reset path instead of silently leaving stale context
+   * behind. */
+  forkAtMessage?(roomId: string, originEventId: string, userOrdinal: number): Promise<{ ok: boolean; message: string }>;
   dispose(): void | Promise<void>;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;

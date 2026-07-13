@@ -452,7 +452,7 @@ export class RunnerHost implements AgentRuntime {
    * durable session on disk can be forked even from a cold daemon, mirroring
    * compact()'s lazy-restore spawn: only when there is neither a live child
    * nor a durable session is there genuinely nothing to fork. */
-  async forkAtMessage(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }> {
+  async forkAtMessage(roomId: string, originEventId: string, userOrdinal: number): Promise<{ ok: boolean; message: string }> {
     if (!this.capabilities.supportsForkAtMessage) throw new Error("this harness has no native message fork");
     if (!this.child && !this.hasDurableSession(roomId)) return { ok: false, message: "no session to fork" };
     await this.ensureChild(roomId);
@@ -467,7 +467,7 @@ export class RunnerHost implements AgentRuntime {
         this.forkWaiter = undefined;
         resolve(result);
       };
-      this.write({ type: "fork", roomId, originEventId, originText });
+      this.write({ type: "fork", roomId, originEventId, userOrdinal });
     });
   }
 

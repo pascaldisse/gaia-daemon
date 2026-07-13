@@ -80,15 +80,15 @@ function forkCapableRuntime(
   agent: AgentDef,
   script: () => AgentEvent[],
   options: { forkOk?: boolean } = {},
-): ReturnType<typeof scriptedRuntime> & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; originText: string }> } {
+): ReturnType<typeof scriptedRuntime> & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; userOrdinal: number }> } {
   const base = scriptedRuntime(agent, script);
-  const runtime = base as typeof base & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; originText: string }> };
+  const runtime = base as typeof base & { forks: number; forkCalls: Array<{ roomId: string; originEventId: string; userOrdinal: number }> };
   (runtime.capabilities as { supportsForkAtMessage?: boolean }).supportsForkAtMessage = true;
   runtime.forks = 0;
   runtime.forkCalls = [];
-  runtime.forkAtMessage = async (roomId: string, originEventId: string, originText: string) => {
+  runtime.forkAtMessage = async (roomId: string, originEventId: string, userOrdinal: number) => {
     runtime.forks += 1;
-    runtime.forkCalls.push({ roomId, originEventId, originText });
+    runtime.forkCalls.push({ roomId, originEventId, userOrdinal });
     return options.forkOk === false ? { ok: false, message: "fork failed (test)" } : { ok: true, message: "forked" };
   };
   return runtime;
@@ -1951,7 +1951,9 @@ test("editMessage on a fork-capable agent (pi) calls forkAtMessage with the gaia
 
   const gaia = runtimes.get("gaia") as ReturnType<typeof forkCapableRuntime>;
   assert.equal(gaia.forks, 1, "the native fork ran exactly once");
-  assert.deepEqual(gaia.forkCalls[0], { roomId: "default", originEventId: originId, originText: "second question" });
+  // Origin is the SECOND user message → 1-based user-ordinal 2 (mapped by
+  // position, not text — see forkAtUserMessage).
+  assert.deepEqual(gaia.forkCalls[0], { roomId: "default", originEventId: originId, userOrdinal: 2 });
   // A successful native fork means the harness's OWN session already holds
   // the trimmed context — resetRoom() (the shared WAL-reset path) must NOT
   // also run, or the harness would replay the whole floor a second time.
