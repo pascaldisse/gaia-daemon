@@ -99,6 +99,12 @@ function renderProjectContext(contextFiles: ContextFile[]): string {
     : "(no AGENTS.md files found)";
 }
 
+// Standing style law (Pascal, 2026-07-13): context artifacts live at
+// machine-recall density, not human-prose density (07-09 compression research
+// — "episodes born terse"). Rides in EVERY agent's system prompt, uniformly.
+const STYLE_LAW =
+  '# Style law (Pascal, 2026-07-13)\nEverything you WRITE INTO CONTEXT — memory files, skills, roles, docs, specs, summon tasks — uses telegraphic notation: fragments + arrows + § pointers, no filler sentences, no prose grammar. State once, point after; NEVER re-explain in different wording. Exemplar: your MEMORY.md format. Replies: dense, zero repetition, zero bloat.';
+
 export function buildSystemPrompt(input: SystemPromptInput): string {
   const roleSection = input.role ? [`# Active Role: ${input.role.name}`, input.role.prompt.trim()].filter(Boolean).join("\n\n") : "";
   const roleDiagnostics = input.role?.diagnostics.length
@@ -112,6 +118,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     `# Agent Soul\n\n${input.soulText.trim()}`,
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
+    STYLE_LAW,
     roleSection,
     roleDiagnostics,
     "You are participating in a shared GAIA room with other people and agents. Reply only as the current agent. Address whoever you are speaking to directly, in the second person (\"you\") — even when several participants are present, do not narrate about them in the third person as if they were absent. Third person is right only for people genuinely not in the room.",
