@@ -264,6 +264,7 @@ test("recording a background task drops entries older than 24 hours", async () =
         toolName: "Shell",
         startedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
         agentId: "gaia",
+        roomId: "default",
       },
     ];
   });
@@ -271,6 +272,20 @@ test("recording a background task drops entries older than 24 hours", async () =
   await service.sendMessage("start another");
   await service.waitForIdle();
   assert.deepEqual((await service.getSnapshot()).backgroundTasks.map((task) => task.taskId), ["fresh"]);
+});
+
+test("stopBackgroundTask reports false for an unknown id and removes a known one", async () => {
+  const { service } = await makeService({});
+  assert.equal(await service.stopBackgroundTask("nope"), false);
+
+  await service.room.updateState((state) => {
+    state.backgroundTasks = [
+      { taskId: "bg-1", toolName: "Shell", startedAt: new Date().toISOString(), agentId: "gaia", roomId: "default" },
+    ];
+  });
+
+  assert.equal(await service.stopBackgroundTask("bg-1"), true);
+  assert.deepEqual((await service.getSnapshot()).backgroundTasks, []);
 });
 
 test("snapshot usage scope contains only accounts of agents active in this room", async () => {
