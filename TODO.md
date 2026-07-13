@@ -185,3 +185,37 @@ that block is for dedicated writer personas, not workhorse agents.
 - When ~/.codex/pets/nari/ exists (pet.json + spritesheet.webp): flip pet name
   setting gaia → nari, /rebuild, verify overlay live with own eyes.
 - Note: hatch-pet scripts need `python3` (bare `python` missing on this machine).
+
+## ⚠️ MAJOR REDESIGN — kill the dual transcript; pi session IS the conversation
+
+Filed: 2026-07-14, by Pascal (room: claude-20260703-documenting-service-interruptions-for-re)
+
+**Problem:** gaia maintains its OWN `~/.gaia/rooms/<room>/transcript.jsonl` as a
+harness-agnostic source of truth, SEPARATE from pi's native SDK session file
+(`<room>/pi-sessions/<agent>/*.jsonl`). gaia "replays" its transcript into the
+pi session, and the two are meant to stay in sync — but they DIVERGE, and it
+corrupts state:
+- Live failure (nyari, 2026-07-13): edit/retry rewound gaia's transcript while
+  pi's session kept APPENDING (fork fell back). Result: gaia had 970 user events,
+  pi had 23; the recent tails no longer matched (1× "dario got mad again" in
+  gaia vs 5× in pi from failed retries). Fork mapping (by ordinal) is impossible
+  once they diverge. Context ballooned to ~266k tokens from 6 duplicate copies
+  of the full-history replay blob (~40k tok each) stacked by the fallback retries.
+- This is the OPPOSITE of the intent: this app is supposed to BE a Pi agent
+  (built on the Pi SDK). A second, gaia-owned transcript that can drift out of
+  sync with pi's own session is a design flaw, not a feature.
+
+**Direction (redesign, NOT today — needs full-app rework):**
+- Remove the separate gaia transcript as a parallel conversation store. Pi's SDK
+  session (its tree + entries) is the SINGLE source of truth for a pi agent — no
+  replay, no re-derivation, no chance of divergence.
+- edit/retry/fork/compact all operate on pi's session directly via the SDK
+  (navigateTree, fork, compact) — gaia never keeps its own shadow copy to
+  reconcile.
+- Tension to resolve deliberately: RULE #0 (harness-agnostic) is what motivated
+  the separate transcript. Decision here is to go pi-NATIVE for this app rather
+  than keep the multi-harness abstraction that causes the drift. Whatever UI/
+  history/search gaia needs, derive it FROM pi's session, don't duplicate it.
+- Until the redesign lands, edit/retry on imported rooms (gaia transcript ≫ pi
+  session) is unreliable; the ordinal fork mapping added 2026-07-13 only works
+  when the two happen to align.
