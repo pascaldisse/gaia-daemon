@@ -802,17 +802,44 @@ function ToolActivityList(tools) {
 
 /**
  * One tool-call expander. Reused by the bucketed list and by the ordered
- * layout, where a single tool sits inline between prose blocks.
+ * layout, where a single tool sits inline between prose blocks. A read of a
+ * SKILL.md file renders as a skill invocation chip instead of a plain read,
+ * mirroring pi's TUI classifier (see skillReadLabel doc comment).
  * @param {ToolDetail} tool
  */
 function ToolActivity(tool) {
+  const skillLabel = skillReadLabel(tool);
+  const options = skillLabel
+    ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: "🧩", title: `[skill] ${skillLabel}` }
+    : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) };
   return ActivityDetails(
-    { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) },
+    options,
     ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
     ToolPayload("args", tool.args),
     ToolPayload("partial", tool.partialResult),
     ToolPayload("result", tool.result),
   );
+}
+
+/**
+ * Classify a read tool call as a skill invocation when its target file is a
+ * SKILL.md, mirroring pi's TUI getCompactReadClassification (read.js:~76):
+ * classify by FILENAME only ('.../SKILL.md'), never by a hardcoded skills-dir
+ * location — any read of any SKILL.md, anywhere, is a skill invocation.
+ * toolName is harness-dependent ('read' from pi, 'Read' from claude — case-
+ * insensitive match); the path arg is 'path' (pi) or 'file_path' (claude),
+ * same fallback pi's own classifier uses.
+ * @param {ToolDetail} tool
+ * @returns {string|undefined} the skill name (SKILL.md's parent dir basename)
+ */
+function skillReadLabel(tool) {
+  if (String(tool.toolName ?? "").toLowerCase() !== "read") return undefined;
+  const args = /** @type {{ path?: unknown, file_path?: unknown }} */ (tool.args ?? {});
+  const rawPath = String(args.file_path ?? args.path ?? "");
+  if (!rawPath) return undefined;
+  const segments = rawPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+  if ((segments.at(-1) ?? "") !== "SKILL.md") return undefined;
+  return segments.at(-2) || "SKILL.md";
 }
 
 /**

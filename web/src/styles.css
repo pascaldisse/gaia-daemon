@@ -726,6 +726,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .activity-result { width: 18px; flex: 0 0 18px; text-align: right; color: var(--accent); }
 
+/* Skill invocation: a read of a SKILL.md, classified by filename (see
+   skillReadLabel in transcript.js) — bold + accented so it reads as a
+   distinct "skill" event, not a plain file read. */
+.activity-details.skill-call summary { color: var(--fg); }
+.activity-details.skill-call .activity-title { font-weight: 700; color: var(--accent); }
+.activity-details.skill-call .activity-icon { filter: none; }
+
 /* A summon worker's result: a collapsed expander with a subtle accent rail so
    it reads as a subagent callback, not a plain reply. Revealed body renders at
    full contrast (it's real content, not chrome). */
