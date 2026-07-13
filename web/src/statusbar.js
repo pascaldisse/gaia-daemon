@@ -321,7 +321,7 @@ function bgChipSeg() {
   return {
     text: `\u2699 ${n} bg`,
     cls: `seg-run on`,
-    title: "background processes",
+    title: "agents",
     onclick: openBgTasks,
   };
 }
@@ -359,6 +359,11 @@ function elapsed(ms) {
   return `${hours}h ${mins % 60}m`;
 }
 
+/** @param {string} roomId @param {string|undefined} [agentId] */
+function runningAgentLabel(roomId, agentId) {
+  return `@${agentId || roomId.replace(/-[0-9a-z]+$/i, "")} — ${roomId}`;
+}
+
 function BgTasksPopover() {
   const snapshot = state.snapshot;
   if (!snapshot) return null;
@@ -386,7 +391,7 @@ function BgTasksPopover() {
       h(
         "div",
         { class: "palette-head" },
-        h("strong", { text: "background processes" }),
+        h("strong", { text: "running agents" }),
         h("small", { text: `${runningTasks.length + summons.length} running \u00b7 esc to close` }),
       ),
       // Running task rows
@@ -397,7 +402,10 @@ function BgTasksPopover() {
           h(
             "div",
             { class: "usage-row-top" },
-            h("span", { class: "usage-label", text: task.text || task.id }),
+            h("span", {
+              class: "usage-label",
+              text: runningAgentLabel(task.roomId, /** @type {{ agentId?: string }} */ (task).agentId),
+            }),
             h("span", { class: "usage-pct sev-normal", text: task.startedAt ? elapsed(now - new Date(task.startedAt).getTime()) : "" }),
           ),
           task.targets?.length
@@ -420,14 +428,14 @@ function BgTasksPopover() {
           h(
             "div",
             { class: "usage-row-top" },
-            h("span", { class: "usage-label", text: `\u25b7 ${room.id}` }),
+            h("span", { class: "usage-label", text: runningAgentLabel(room.id) }),
             h("span", { class: "usage-pct sev-normal", text: room.lastActivity ? elapsed(now - new Date(room.lastActivity).getTime()) : "" }),
           ),
           room.running ? h("small", { class: "usage-reset", text: "streaming \u00b7 click to watch" }) : null,
         ),
       ),
       runningTasks.length === 0 && summons.length === 0
-        ? h("div", { class: "search-empty", text: "No background processes." })
+        ? h("div", { class: "search-empty", text: "No agents running in the background." })
         : null,
     ),
   );
