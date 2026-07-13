@@ -366,6 +366,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .segmented-tabs button { width: auto; display: flex; align-items: center; gap: 6px; }
 
+/* Agent row in settings: flex layout so delete button sits inline with the agent name. */
+.agent-row-wrapper { display: flex; gap: 4px; align-items: stretch; }
+.agent-row-wrapper > button:first-child { flex: 1; min-width: 0; }
+
 /* The sidebar is a tmux session tree: names matter, absolute paths are noise.
    Keep just the names; the full path lives on the button's hover title. */
 .sidebar .nav-item small { display: none; }
@@ -1858,39 +1862,3 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
-
-/* Codex-compatible animated pet: frame selection is driven imperatively by
-   pet.js's unequal-duration setTimeout chain (never CSS steps()). */
-.gaia-pet-overlay {
-  position: fixed;
-  z-index: 1200;
-  width: var(--gaia-pet-width, 7.04rem);
-  aspect-ratio: 192 / 208;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  filter: drop-shadow(0 4px 8px rgb(0 0 0 / 32%));
-}
-
-.gaia-pet-overlay[hidden] {
-  display: none;
-}
-
-.gaia-pet-overlay.dragging {
-  cursor: grabbing;
-}
-
-.gaia-pet-overlay[data-error]:not([data-error=""]) {
-  outline: 1px dashed var(--danger);
-  border-radius: 0.5rem;
-}
-
-.gaia-pet-sprite {
-  width: 100%;
-  aspect-ratio: 192 / 208;
-  background-repeat: no-repeat;
-  background-size: 800% 900%;
-  image-rendering: pixelated;
-  pointer-events: none;
-}

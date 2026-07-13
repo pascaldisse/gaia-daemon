@@ -382,6 +382,23 @@ test("PiRuntime feeds pasted images to the SDK's native channel and breadcrumbs 
   }
 });
 
+test("PiRuntime resolves short model aliases to canonical registry ids (anthropic/fable → claude-fable-5)", async () => {
+  const fx = await harnessFixture({ model: { provider: "anthropic", name: "fable" } });
+  try {
+    let resolvedModel: { id?: string } | undefined;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      resolvedModel = options.model as { id?: string } | undefined;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.equal(resolvedModel?.id, "claude-fable-5");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // hasDurableSession — pi self-persists sessions as files under the room's
 // pi-sessions/<agent>/ dir; any file there is what continueRecent resumes

@@ -4,12 +4,12 @@
 // every other code path knows exactly one layout.
 
 import { existsSync } from "node:fs";
-import { rename } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
-import { agentPaths } from "../core/paths.js";
+import { agentPaths, globalPaths } from "../core/paths.js";
 import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
 import { MemoryStore } from "./memory.js";
 
@@ -39,6 +39,9 @@ interface RawAgentConfig {
   mcpServers?: unknown;
   env?: unknown;
 }
+
+/** The ordinary work surface for a newly-created agent with no role defaults. */
+export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "memory", "recall"] as const;
 
 function parseEnvMap(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -92,13 +95,13 @@ function assertSafeAgentId(id: string): void {
 }
 
 /** The default agent.json shape, shared by `gaia agent create` and the seeded default agents. */
-export function agentConfigTemplate(id: string, displayName: string, icon: string, tools: string[]): Record<string, unknown> {
+export function agentConfigTemplate(id: string, displayName: string, icon: string, tools: string[] | undefined): Record<string, unknown> {
   return {
     id,
     displayName,
     icon,
     thinking: DEFAULTS.thinking,
-    tools,
+    ...(tools ? { tools } : {}),
     harness: DEFAULTS.harness,
     model: { ...DEFAULTS.model },
   };
@@ -119,7 +122,10 @@ export async function scaffoldGlobalAgent(globalAgentsDir: string, id: string, o
 
   const displayName = options.displayName?.trim() || titleCase(id) || id;
   const icon = options.icon?.trim() || "•";
-  const tools = options.tools ?? ["read", "write", "edit", "memory", "recall"];
+  // Omit `tools` for a fresh agent: it receives DEFAULT_AGENT_TOOLS normally,
+  // or an active role's defaults once the user assigns one. The Settings tools
+  // checkboxes remain the per-agent override surface.
+  const tools = options.tools;
   const configPath = agentPaths.config(agentDir);
   const soulPath = agentPaths.soul(agentDir);
   const memoryDir = agentPaths.memoryDir(agentDir);
@@ -192,6 +198,28 @@ async function ensureDefaultAgent(
 }
 
 export async function ensureGlobalDefaultAgents(agentsDir: string): Promise<void> {
+  // Shared roles are not personas: any agent may select them. The ghoul role
+  // supplies the minimal worker surface; a user's checked Tools/Skills values
+  // remain an explicit per-agent override.
+  const rolesDir = join(dirname(agentsDir), "roles");
+  await ensureDir(rolesDir);
+  await writeIfMissing(
+    join(rolesDir, "ghoul.md"),
+    `---
+tools:
+  - web
+  - bash
+  - read
+  - write
+  - edit
+---
+# Ghoul Role
+
+You are a bare-bones autonomous worker. Execute the assigned task directly,
+use the available work tools, report concrete evidence, and do not carry a
+persona, personal history, or cross-task assumptions into the job.
+`,
+  );
   await ensureDefaultAgent(
     agentsDir,
     "gaia",
@@ -364,8 +392,10 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       defaultRole: typeof raw.role === "string" && raw.role.trim() ? raw.role.trim() : undefined,
       soulPath,
       memoryDir,
-      tools: stringList(raw.tools, []),
+      tools: stringList(raw.tools, [...DEFAULT_AGENT_TOOLS]),
+      ...(raw.tools !== undefined ? { toolOverride: stringList(raw.tools, []) } : {}),
       skills: stringList(raw.skills, []),
+      ...(raw.skills !== undefined ? { skillOverride: stringList(raw.skills, []) } : {}),
       model: raw.model,
       thinking: raw.thinking,
       harness: typeof raw.harness === "string" && raw.harness.trim() ? raw.harness : undefined,
@@ -386,4 +416,18 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
   }
 
   return agents;
+}
+
+/** Reversible agent delete: move the agent dir from globalPaths.agentDir()
+ * into the global trash instead of destroying it. The `stamp` lands in the
+ * trashed leaf so re-creating and re-deleting the same agent never collides.
+ * Returns the trash path, or "" if the agent dir was already gone. */
+export async function trashGlobalAgent(agentId: string, stamp: string): Promise<string> {
+  const source = globalPaths.agentDir(agentId);
+  if (!existsSync(source)) return "";
+  const trashRoot = globalPaths.agentTrashDir();
+  await mkdir(trashRoot, { recursive: true });
+  const dest = join(trashRoot, `${agentId}__${stamp}`);
+  await rename(source, dest);
+  return dest;
 }

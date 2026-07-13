@@ -215,6 +215,29 @@ export async function setAgentAccount(agentId, account) {
   }
 }
 
+/** Reversible agent delete: moves agent dir to trash (recoverable).
+ * @param {string} agentId
+ */
+export async function deleteAgent(agentId) {
+  const ok = await confirmDialog(`Delete agent @${agentId}?`, {
+    detail: "The agent moves to trash (recoverable). It won't appear in the agents list anymore.",
+    okLabel: "Delete agent",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    state.error = "";
+    // Global settings changed; SSE will broadcast snapshot update
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */

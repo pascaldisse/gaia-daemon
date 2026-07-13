@@ -32,6 +32,9 @@ mod webkit {
     // LATER: the optional macOS Chromium enhancement (Phase 3). See
     // IMPLEMENTATION-PLAN.md and webview2-re/BUILD-SPEC.md.
 
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::hash::{DefaultHasher, Hash, Hasher};
     use std::process::Child;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
@@ -105,6 +108,30 @@ mod webkit {
     /// A daemon child process we spawned ourselves. Held in managed state so we can
     /// kill it on exit — and ONLY if we were the ones who started it.
     struct SpawnedDaemon(Mutex<Option<Child>>);
+
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    struct PetBinding {
+        workspace_id: String,
+        room_id: String,
+        agent_id: String,
+        package: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PetProgress {
+        workspace_id: String,
+        room_id: String,
+        agent_id: String,
+        task_id: String,
+        status: String,
+        tool_name: Option<String>,
+    }
+
+    /// Native pet label -> durable binding. The package participates in the
+    /// label hash, so replacing a package closes/recreates exactly one window.
+    struct PetWindows(Mutex<HashMap<String, PetBinding>>);
 
     fn resolve_port() -> u16 {
         std::env::var("GAIA_PORT")
@@ -210,6 +237,133 @@ mod webkit {
         }
         let _window = builder.build().map_err(|e| e.to_string())?;
         Ok(label)
+    }
+
+    fn valid_pet_package(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+
+    fn pet_window_label(binding: &PetBinding) -> String {
+        let mut hasher = DefaultHasher::new();
+        binding.workspace_id.hash(&mut hasher);
+        binding.room_id.hash(&mut hasher);
+        binding.agent_id.hash(&mut hasher);
+        binding.package.hash(&mut hasher);
+        format!("pet-{:016x}", hasher.finish())
+    }
+
+    fn pet_window_url(binding: &PetBinding) -> Result<tauri::Url, String> {
+        let base: tauri::Url = resolve_url()
+            .parse()
+            .map_err(|e| format!("bad shell url: {e}"))?;
+        let mut url = base.join("pet.html").map_err(|e| e.to_string())?;
+        url.query_pairs_mut()
+            .append_pair("workspaceId", &binding.workspace_id)
+            .append_pair("roomId", &binding.room_id)
+            .append_pair("agentId", &binding.agent_id)
+            .append_pair("package", &binding.package);
+        Ok(url)
+    }
+
+    /// Reconcile one workspace's complete durable binding snapshot into real
+    /// desktop windows. Mobile compiles the no-op sibling below: iOS must never
+    /// pretend an in-app webview can stay above unrelated apps.
+    #[tauri::command]
+    #[cfg(desktop)]
+    fn sync_pets(
+        app: tauri::AppHandle,
+        workspace_id: String,
+        bindings: Vec<PetBinding>,
+    ) -> Result<bool, String> {
+        if bindings.iter().any(|binding| {
+            binding.workspace_id != workspace_id
+                || binding.room_id.is_empty()
+                || binding.agent_id.is_empty()
+                || !valid_pet_package(&binding.package)
+        }) {
+            return Err("invalid pet binding snapshot".to_string());
+        }
+
+        let desired: HashMap<String, PetBinding> = bindings
+            .into_iter()
+            .map(|binding| (pet_window_label(&binding), binding))
+            .collect();
+        let state = app.state::<PetWindows>();
+        let mut live = state.0.lock().map_err(|_| "pet window state poisoned")?;
+
+        let stale: Vec<String> = live
+            .iter()
+            .filter(|(label, binding)| {
+                binding.workspace_id == workspace_id && !desired.contains_key(*label)
+            })
+            .map(|(label, _)| label.clone())
+            .collect();
+        for label in stale {
+            if let Some(window) = app.get_webview_window(&label) {
+                let _ = window.close();
+            }
+            live.remove(&label);
+        }
+
+        for (index, (label, binding)) in desired.into_iter().enumerate() {
+            if live.contains_key(&label) && app.get_webview_window(&label).is_some() {
+                continue;
+            }
+            let url = pet_window_url(&binding)?;
+            WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+                .title(format!("GAIA Pet — @{}", binding.agent_id))
+                .inner_size(240.0, 190.0)
+                .position(
+                    24.0 + (index % 5) as f64 * 190.0,
+                    24.0 + (index / 5) as f64 * 155.0,
+                )
+                .resizable(false)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .focused(false)
+                .initialization_script(&crate::debug_server::init_script())
+                .build()
+                .map_err(|e| e.to_string())?;
+            live.insert(label, binding);
+        }
+        Ok(true)
+    }
+
+    #[tauri::command]
+    #[cfg(mobile)]
+    fn sync_pets(
+        _app: tauri::AppHandle,
+        _workspace_id: String,
+        _bindings: Vec<PetBinding>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// Route one globally-delivered room+agent progress event only to its bound
+    /// window. The daemon derives status/toolName from shared AgentEvents; Rust
+    /// has no harness knowledge.
+    #[tauri::command]
+    fn pet_progress(app: tauri::AppHandle, progress: PetProgress) -> Result<(), String> {
+        let state = app.state::<PetWindows>();
+        let live = state.0.lock().map_err(|_| "pet window state poisoned")?;
+        for (label, binding) in live.iter() {
+            if binding.workspace_id == progress.workspace_id
+                && binding.room_id == progress.room_id
+                && binding.agent_id == progress.agent_id
+            {
+                if let Some(window) = app.get_webview_window(label) {
+                    window
+                        .emit("gaia://pet-progress", progress.clone())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Re-dock a torn-off chat: tell the main window to re-adopt `room` as a tab,
@@ -413,11 +567,14 @@ mod webkit {
         let builder = tauri::Builder::default()
             .plugin(tauri_plugin_notification::init())
             .manage(SpawnedDaemon(Mutex::new(None)))
+            .manage(PetWindows(Mutex::new(HashMap::new())))
             .invoke_handler(tauri::generate_handler![
                 open_window,
                 redock,
                 set_badge,
-                notify
+                notify,
+                sync_pets,
+                pet_progress
             ]);
 
         #[cfg(desktop)]

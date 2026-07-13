@@ -11,6 +11,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { findModelWithAlias } from "../harness/model-aliases.js";
 import type { AgentDef } from "../core/types.js";
 
 export interface UpstreamCredential {
@@ -165,7 +166,7 @@ export async function resolveUpstreamCredential(agent: AgentDef, deps: UpstreamR
 
   const authStorage = deps.authStorage ?? AuthStorage.create();
   const registry = deps.registry ?? ModelRegistry.create(authStorage as AuthStorage);
-  const model = registry.find(provider, name);
+  const model = findModelWithAlias(registry, provider, name);
   if (!model?.baseUrl) return undefined; // unknown model → can't pick an upstream
 
   const key = await lookupProviderKey(provider, authStorage);

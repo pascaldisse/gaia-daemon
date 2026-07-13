@@ -289,8 +289,16 @@ governs both surfaces.
 
 ## Roles
 
-A role is a markdown prompt overlay for an agent.
-It can request Pi skills through frontmatter.
+A role is a markdown prompt overlay for an agent. It can also provide default
+tools and skills through frontmatter. The agent's own Tools/Skills checkboxes
+in Settings always win: change one and it becomes that agent's explicit
+override of the role default.
+
+Shared role (available to every agent):
+
+```text
+~/.gaia/roles/ghoul.md
+```
 
 Global role:
 
@@ -310,6 +318,12 @@ Example role:
 
 ```md
 ---
+tools:
+  - web
+  - bash
+  - read
+  - write
+  - edit
 skills:
   - brainstorm
   - web
@@ -318,6 +332,10 @@ skills:
 
 Explore options. Notice patterns. Ask crisp questions.
 ```
+
+`ghoul` is seeded as a shared role. Its five-tool worker surface is useful for
+summons; every summon child room is incognito by default, so neither its
+transcript nor its worker turns enter recall or episodic memory.
 
 Room commands:
 

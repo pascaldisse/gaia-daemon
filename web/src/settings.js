@@ -4,11 +4,10 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
-import { DEFAULT_PET_NAME, petEnabled, petName, setPetEnabled, setPetName } from "./pet.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 
@@ -278,29 +277,6 @@ function GeneralTab() {
       ),
     );
   }
-  rows.push(
-    h(
-      "label",
-      { class: "settings2-row" },
-      h("span", { text: "Show animated pet" }),
-      h("input", {
-        type: "checkbox",
-        checked: petEnabled(),
-        onchange: (event) => setPetEnabled(/** @type {HTMLInputElement} */ (event.target).checked),
-      }),
-    ),
-    h(
-      "label",
-      { class: "settings2-row" },
-      h("span", { text: "Pet package name" }),
-      h("input", {
-        type: "text",
-        value: petName(),
-        placeholder: DEFAULT_PET_NAME,
-        onchange: (event) => setPetName(/** @type {HTMLInputElement} */ (event.target).value),
-      }),
-    ),
-  );
   return h("div", {}, rows);
 }
 
@@ -345,10 +321,23 @@ function AgentsTab() {
           ? h("span", { class: "empty", text: "no agents" })
           : groups.map((group) =>
               h(
-                "button",
-                { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
-                h("span", { text: group.id }),
-                h("small", { text: `${group.files.length} files` }),
+                "div",
+                { class: "agent-row-wrapper" },
+                h(
+                  "button",
+                  { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
+                  h("span", { text: group.id }),
+                  h("small", { text: `${group.files.length} files` }),
+                ),
+                h("button", {
+                  class: "settings2-row-remove",
+                  title: `delete @${group.id}`,
+                  onclick: (event) => {
+                    event.stopPropagation();
+                    void deleteAgent(group.id);
+                  },
+                  text: "Delete",
+                }),
               ),
             ),
       ),
@@ -1056,7 +1045,8 @@ function filterMultiselectGroups(container, query) {
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
 function MultiselectWidget(entry, ctx) {
   const rawValue = getJsonPathValue(ctx.draft, entry.path);
-  const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
+  const inherited = inheritedFieldValue(entry, ctx);
+  const values = Array.isArray(rawValue) ? rawValue.map(String) : Array.isArray(inherited) ? inherited.map(String) : [];
   const options = /** @type {FieldHintOption[]} */ (entry.hint.options ?? []);
   const known = new Set(options.map((option) => option.value));
   // Preserve stale configured values instead of silently dropping them on save.
@@ -1071,7 +1061,8 @@ function MultiselectWidget(entry, ctx) {
         type: "checkbox",
         checked: values.includes(option.value),
         onchange: () => {
-          const current = Array.isArray(getJsonPathValue(ctx.draft, entry.path)) ? [...getJsonPathValue(ctx.draft, entry.path)] : [];
+          const rawCurrent = getJsonPathValue(ctx.draft, entry.path);
+          const current = Array.isArray(rawCurrent) ? [...rawCurrent] : [...values];
           const at = current.indexOf(option.value);
           if (box.checked && at === -1) current.push(option.value);
           else if (!box.checked && at !== -1) current.splice(at, 1);
@@ -1126,6 +1117,16 @@ function MultiselectWidget(entry, ctx) {
   }
   updateMultiselectGroupCounts(container);
   return container;
+}
+
+/** The Settings form shows role-provided defaults before an agent has chosen
+ * an explicit value. The first checkbox change writes the ordinary field, so
+ * settings always remain the per-agent override surface.
+ * @param {FieldEntry} entry @param {FormCtx} ctx @returns {unknown} */
+function inheritedFieldValue(entry, ctx) {
+  const role = typeof ctx.draft?.role === "string" ? ctx.draft.role : undefined;
+  if (role && entry.hint.roleDefaults && role in entry.hint.roleDefaults) return entry.hint.roleDefaults[role];
+  return entry.hint.defaultValue;
 }
 
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLInputElement} */
