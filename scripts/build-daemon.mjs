@@ -84,9 +84,30 @@ for (const name of ["web", "setups"]) {
 }
 
 timeStep("write-source-json", () => {
+  const git = (args) => {
+    const result = spawnSync("git", args, {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+    });
+    return result.status === 0 ? result.stdout.trim() : null;
+  };
+  const commit = git(["rev-parse", "HEAD"]);
+  const status = git(["status", "--porcelain"]);
+
   writeFileSync(
     join(outDir, "gaia-source.json"),
-    JSON.stringify({ root: repoRoot, bun: process.execPath }, null, 2) + "\n"
+    JSON.stringify(
+      {
+        root: repoRoot,
+        bun: process.execPath,
+        commit,
+        dirty: status !== null && status !== "",
+        builtAt: new Date().toISOString(),
+      },
+      null,
+      2
+    ) + "\n"
   );
 });
 
