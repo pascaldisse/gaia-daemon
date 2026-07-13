@@ -541,11 +541,29 @@ export class PiRuntime implements AgentRuntime {
     return meta;
   }
 
+  // No configured model ⇒ legitimately fall through to the pi CLI's own
+  // default (untouched). A CONFIGURED model that fails to resolve (even
+  // after alias resolution) is a misconfiguration, not a provider choice —
+  // silently handing the turn to Pi's default model previously masked this
+  // (an OpenAI agent quietly ran on a Claude subscription model and hit a
+  // billing 400 with zero signal the real fault was model resolution).
+  // Throwing here — inside createSessionMeta, itself inside send()'s async
+  // generator — surfaces through runner.ts's per-turn try/catch as a loud
+  // `turn-error` naming the agent + what didn't resolve, the uniform
+  // failure-reporting path every harness already uses (RULE #0: no new
+  // mechanism, no harness-id branch in shared code — this stays pi-internal).
   private resolveModel(): Model<any> | undefined {
     const provider = this.agent.model?.provider;
     const name = this.agent.model?.name;
     if (!provider || !name) return undefined;
-    return findModelWithAlias(this.modelRegistry, provider, name);
+    const resolved = findModelWithAlias(this.modelRegistry, provider, name);
+    if (resolved) return resolved;
+    const availableProviders = Array.from(new Set(this.modelRegistry.getAll().map((model) => model.provider))).sort();
+    throw new Error(
+      `agent "${this.agent.id}" is configured for model "${provider}/${name}", but that model is not in the pi model registry ` +
+        `(known providers: ${availableProviders.join(", ") || "none"}). Refusing to silently fall back to the Pi default model — ` +
+        `fix agent.json's model.provider/model.name (check for a typo, or that the model exists under this provider).`,
+    );
   }
 
   private resolveModelLabel(): string {
