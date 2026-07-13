@@ -31,6 +31,10 @@ export const globalPaths = {
   agentTrashDir: () => join(gaiaHome(), "trash", "agents"),
   skillsDir: () => join(gaiaHome(), "skills"),
   setupsDir: () => join(gaiaHome(), "setups"),
+  /** User-space runner plugins (*.mjs) loaded into the agent runner subprocess
+   * at boot; see harness/runner-plugins.ts. Out-of-tree fetch transforms live
+   * here, never in the repo. */
+  runnerPluginsDir: () => join(gaiaHome(), "plugins", "runner"),
   voiceSettings: () => join(gaiaHome(), "voice.json"),
   /** Durable record of live voice-call overrides — swept on boot so a crash
    * mid-call can never leave a "temporary" override applied forever. */

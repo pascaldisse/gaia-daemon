@@ -17,6 +17,7 @@ import { BridgeMemoryStore, bridgeRecallSearch, bridgeSummonCreate, fixedTokenHo
 // an empty registry.
 import "./index.js";
 import { encodeFrame, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
+import { installRunnerPlugins } from "./runner-plugins.js";
 import { type AgentRuntime, harnessIdFor, harnessSpecFor } from "./spec.js";
 import { stripIncognitoTools } from "./tools.js";
 
@@ -53,6 +54,11 @@ export async function runAgentRunner(): Promise<void> {
   };
   process.on("uncaughtException", crashDuringTurn);
   process.on("unhandledRejection", crashDuringTurn);
+
+  // Load user-space runner plugins (~/.gaia/plugins/runner/*.mjs) before any
+  // harness runtime is built, so their fetch transforms are in place for the
+  // first outbound request. Uniform across harnesses (RULE #0); never throws.
+  await installRunnerPlugins();
 
   const workspacePath = env(RUNNER_ENV.workspacePath);
   const agentId = env(RUNNER_ENV.agentId);
