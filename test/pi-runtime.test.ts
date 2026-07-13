@@ -395,6 +395,57 @@ test("PiRuntime.compact surfaces the SDK's summary for durable compaction", asyn
   }
 });
 
+test("PiRuntime.compact turns pi-ai's 'session too small' throw into a clean no-op instead of a scary failure", async () => {
+  const fx = await harnessFixture();
+  try {
+    // pi-ai's own session.compact() (agent-session.js) THROWS rather than
+    // returning a result when prepareCompaction finds nothing outside the
+    // always-kept "recent" window (default keepRecentTokens: 20000 tokens) —
+    // this fires even on a small-but-real, freshly-restored session, and is
+    // NOT the session-loss/restore bug fixed by 64cff59. Before this fix,
+    // compact() let the throw propagate; room-service's catch then rendered
+    // it as "Compaction failed for @agent: Nothing to compact (session too
+    // small)" — indistinguishable from a real crash, even though ctx% can be
+    // legitimately small (e.g. 8%) at the same time (both are honest signals
+    // of the same small session, not a contradiction).
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.compact = async () => {
+        throw new Error("Nothing to compact (session too small)");
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const result = await runtime.compact("default");
+    assert.deepEqual(result, { compacted: false, message: "nothing to compact — nothing to compact (session too small)." });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compact lets an unrelated session.compact() failure propagate as a real error", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      session.compact = async () => {
+        throw new Error("network error contacting provider");
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    await assert.rejects(runtime.compact("default"), /network error contacting provider/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime.compact lazily restores a persisted session after a daemon restart (fresh runtime, no prior turn in this process)", async () => {
   const fx = await harnessFixture();
   try {
