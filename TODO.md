@@ -174,3 +174,14 @@ that block is for dedicated writer personas, not workhorse agents.
   instead of being pasted per-agent-file, is unaddressed — `ghoul-sonnet`/
   `ghoul-opus` currently diverge only by this edit being applied to both by
   hand; no shared-include mechanism exists for persona SOUL.md today.
+
+## Nari pet — finish hatch (Pascal, 2026-07-13)
+- Overlay habitat DONE: commit c03bc19 (pet overlay, param pet name default 'gaia',
+  Codex-exact playback, settings toggle). Live rendering UNVERIFIED until Pascal
+  /rebuilds the running daemon.
+- PENDING: Pascal is hatching the 'nari' pet himself in codex (/hatch-pet, picky
+  with design — his run, don't re-summon). Ref image:
+  ~/Downloads/nari-gothic/nari-pet-catgirl-v3.png
+- When ~/.codex/pets/nari/ exists (pet.json + spritesheet.webp): flip pet name
+  setting gaia → nari, /rebuild, verify overlay live with own eyes.
+- Note: hatch-pet scripts need `python3` (bare `python` missing on this machine).
