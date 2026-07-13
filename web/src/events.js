@@ -109,7 +109,10 @@ export function connectEvents(resyncOnReady = false) {
     }
     syncReadMarks();
     refreshAttention();
-    markDirty("sidebar", "tabs");
+    // "composer" too: the running banner counts THIS room's live summons from
+    // snapshot.rooms — without it the banner kept showing dead summons until
+    // some unrelated event happened to repaint the composer.
+    markDirty("sidebar", "tabs", "composer");
   });
 
   listen("room-event", (event) => {
