@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -345,10 +345,23 @@ function AgentsTab() {
           ? h("span", { class: "empty", text: "no agents" })
           : groups.map((group) =>
               h(
-                "button",
-                { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
-                h("span", { text: group.id }),
-                h("small", { text: `${group.files.length} files` }),
+                "div",
+                { class: "agent-row-wrapper" },
+                h(
+                  "button",
+                  { class: group.id === selected?.id ? "active" : "", onclick: () => void selectAgent(group.id) },
+                  h("span", { text: group.id }),
+                  h("small", { text: `${group.files.length} files` }),
+                ),
+                h("button", {
+                  class: "settings2-row-remove",
+                  title: `delete @${group.id}`,
+                  onclick: (event) => {
+                    event.stopPropagation();
+                    void deleteAgent(group.id);
+                  },
+                  text: "Delete",
+                }),
               ),
             ),
       ),

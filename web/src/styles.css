@@ -366,6 +366,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .segmented-tabs button { width: auto; display: flex; align-items: center; gap: 6px; }
 
+/* Agent row in settings: flex layout so delete button sits inline with the agent name. */
+.agent-row-wrapper { display: flex; gap: 4px; align-items: stretch; }
+.agent-row-wrapper > button:first-child { flex: 1; min-width: 0; }
+
 /* The sidebar is a tmux session tree: names matter, absolute paths are noise.
    Keep just the names; the full path lives on the button's hover title. */
 .sidebar .nav-item small { display: none; }
