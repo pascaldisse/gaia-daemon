@@ -1435,7 +1435,8 @@ export class RoomService {
       // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      const abnormalReason = turn.error ?? (cancelled ? new Error("aborted") : undefined);
+      // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
+      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
       if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
       const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
@@ -1471,7 +1472,8 @@ export class RoomService {
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
       if (abnormalReason !== undefined && !producedOutput) {
-        await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+        if (cancelled) await this.appendTurnStopped(target);
+        else await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
       }
 
       if (failed) {
@@ -1703,6 +1705,23 @@ export class RoomService {
         timestamp: new Date().toISOString(),
         author: "system",
         text: `⚠ turn failed (@${agentId}): ${message}`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
+  }
+
+  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
+   * first token: a stop is not a failure. */
+  private async appendTurnStopped(agentId: string): Promise<void> {
+    try {
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `■ turn stopped (@${agentId}) — no output yet`,
       };
       await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
