@@ -999,12 +999,49 @@ function SelectWidget(entry, ctx) {
   return select;
 }
 
+/** Whether a skill group currently has a checked option. @param {HTMLDetailsElement} group */
+function multiselectGroupHasChecked(group) {
+  return [...group.querySelectorAll('input[type="checkbox"]')].some((box) => /** @type {HTMLInputElement} */ (box).checked);
+}
+
+/** Rewrite every grouped multiselect header with its live checked/total count. @param {HTMLElement} container */
+function updateMultiselectGroupCounts(container) {
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    const boxes = [...group.querySelectorAll('input[type="checkbox"]')];
+    const count = group.querySelector(".settings2-skill-group-count");
+    if (count) count.textContent = `${boxes.filter((box) => /** @type {HTMLInputElement} */ (box).checked).length}/${boxes.length}`;
+  }
+}
+
+/** Filter only the rendered skills, retaining hidden checked boxes for saving.
+ * @param {HTMLElement} container @param {string} query */
+function filterMultiselectGroups(container, query) {
+  const needle = query.trim().toLowerCase();
+  for (const group of container.querySelectorAll("details.settings2-skill-group")) {
+    let anyVisible = false;
+    for (const option of group.querySelectorAll(".settings2-multi-option")) {
+      const visible = !needle || (option.getAttribute("data-skill-name") ?? "").includes(needle);
+      /** @type {HTMLElement} */ (option).style.display = visible ? "" : "none";
+      if (visible) anyVisible = true;
+    }
+    /** @type {HTMLElement} */ (group).style.display = anyVisible ? "" : "none";
+    /** @type {HTMLDetailsElement} */ (group).open = needle ? anyVisible : multiselectGroupHasChecked(/** @type {HTMLDetailsElement} */ (group));
+  }
+}
+
 /** @param {FieldEntry} entry @param {FormCtx} ctx @returns {HTMLDivElement} */
 function MultiselectWidget(entry, ctx) {
   const rawValue = getJsonPathValue(ctx.draft, entry.path);
   const values = Array.isArray(rawValue) ? rawValue.map(String) : [];
-  const container = /** @type {HTMLDivElement} */ (h("div", { class: "settings2-multiselect" }));
-  for (const option of entry.hint.options ?? []) {
+  const options = /** @type {FieldHintOption[]} */ (entry.hint.options ?? []);
+  const known = new Set(options.map((option) => option.value));
+  // Preserve stale configured values instead of silently dropping them on save.
+  const allOptions = [...options, ...values.filter((value) => !known.has(value)).map((value) => ({ value, group: "other" }))];
+  const grouped = allOptions.some((option) => option.group);
+  const container = /** @type {HTMLDivElement} */ (h("div", { class: grouped ? "settings2-multi-grouped" : "settings2-multiselect" }));
+
+  /** @param {FieldHintOption} option */
+  const optionRow = (option) => {
     const box = /** @type {HTMLInputElement} */ (
       h("input", {
         type: "checkbox",
@@ -1021,8 +1058,49 @@ function MultiselectWidget(entry, ctx) {
     );
     const name = option.label ?? option.value;
     const title = option.description ? `${name} — ${option.description}` : name;
-    container.append(h("label", { class: "settings2-multi-option", title }, box, h("span", { text: name })));
+    return h(
+      "label",
+      { class: "settings2-multi-option", title, "data-skill-name": name.toLowerCase() },
+      box,
+      h("span", { text: name }),
+      option.badge ? h("small", { class: "settings2-multi-badge", text: option.badge }) : null,
+    );
+  };
+
+  if (!grouped) {
+    for (const option of allOptions) container.append(optionRow(option));
+    return container;
   }
+
+  container.append(
+    h("input", {
+      type: "search",
+      class: "settings2-skill-filter",
+      placeholder: "filter skills…",
+      oninput: (/** @type {Event} */ event) => filterMultiselectGroups(container, /** @type {HTMLInputElement} */ (event.target).value),
+    }),
+  );
+  /** @type {Map<string, FieldHintOption[]>} */
+  const groups = new Map();
+  for (const option of allOptions) {
+    const group = option.group ?? "other";
+    const bucket = groups.get(group);
+    if (bucket) bucket.push(option);
+    else groups.set(group, [option]);
+  }
+  for (const [group, groupOptions] of groups) {
+    const details = /** @type {HTMLDetailsElement} */ (
+      h(
+        "details",
+        { class: "settings2-skill-group" },
+        h("summary", {}, h("span", { class: "settings2-skill-group-name", text: group }), h("span", { class: "settings2-skill-group-count" })),
+        h("div", { class: "settings2-multiselect" }, groupOptions.map(optionRow)),
+      )
+    );
+    details.open = groupOptions.some((option) => values.includes(option.value));
+    container.append(details);
+  }
+  updateMultiselectGroupCounts(container);
   return container;
 }
 
