@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, selectRoom, sendMessage, stopAll, stopEscalating, uploadAttachment } from "./actions.js";
+import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -143,7 +143,7 @@ export function initComposer() {
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
   stopBtnEl = /** @type {HTMLButtonElement} */ (
-    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopEscalating() })
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopActiveRoom() })
   );
   bannerEl = h(
     "div",
@@ -266,23 +266,17 @@ function renderComposer() {
   // the bar between it and ■ stop shows the estimated fraction.
   bannerEl.hidden = !busy;
   if (busy) bannerLabelEl.textContent = runningLabel(snapshot);
-  // Escalating stop: the button (and Esc) first stops THIS room's own turn;
-  // once the room is idle it retargets the running summons (whole descendant
-  // subtree). Ctrl+C skips the escalation and kills everything at once. Grey
-  // the button out only when neither the room nor any summon is running
-  // (e.g. a compaction pass is what's keeping the banner up).
+  // The stop button (and Esc) targets ONLY this room's own running turn —
+  // never summons. Any escalating/second-press behavior was removed on
+  // purpose: UI or stream delay made a second press land on the summons by
+  // accident. Ctrl+C (stopAll) is the one deliberate kill-everything path.
   if (stopBtnEl) {
     const roomBusy = Boolean(activeTask(snapshot));
-    const summonCount = runningSummonRooms(snapshot).length;
-    stopBtnEl.disabled = !roomBusy && summonCount === 0;
-    stopBtnEl.textContent = !roomBusy && summonCount > 0 ? "■ stop summons" : "■ stop";
+    stopBtnEl.disabled = !roomBusy;
+    stopBtnEl.textContent = "■ stop";
     stopBtnEl.title = roomBusy
-      ? summonCount > 0
-        ? "stop this room's turn (Esc) — press again for summons; Ctrl+C stops everything"
-        : "stop this room's turn (Esc)"
-      : summonCount > 0
-        ? `stop ${summonCount} running summon${summonCount === 1 ? "" : "s"} (Esc)`
-        : "nothing running to stop";
+      ? "stop this room's turn (Esc) — summons unaffected; Ctrl+C stops everything"
+      : "nothing running in this room — Ctrl+C stops summons too";
   }
   const compactingAgent = busy ? (snapshot?.agents ?? []).find((agent) => agent.status === "compacting" && agent.compact) : undefined;
   if (bannerBarEl) {
@@ -1162,9 +1156,9 @@ export function installComposerRouting() {
         return;
       }
       // Stop keys, from anywhere in the app, for every agent/harness:
-      // Ctrl+C kills the whole tree (active turn + all summons) in one press;
-      // Esc escalates — first press stops the active room's turn, second
-      // press stops the summons (see stopEscalating / stopAll in actions.js).
+      // Ctrl+C is the ONLY summon-killer — whole tree (active turn + all
+      // summons) in one press. Esc stops just the active room's turn and can
+      // never reach summons (delay made escalation misfire — removed).
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && isBusy()) {
         event.preventDefault();
         void stopAll();
@@ -1172,9 +1166,9 @@ export function installComposerRouting() {
       }
       // With the Dario popup open, Escape means "close the popup" (keys.js),
       // not panic-stop — his own review summon would be collateral otherwise.
-      if (event.key === "Escape" && isBusy() && !state.dario.open) {
+      if (event.key === "Escape" && Boolean(activeTask(state.snapshot)) && !state.dario.open) {
         event.preventDefault();
-        void stopEscalating();
+        void stopActiveRoom();
         return;
       }
 

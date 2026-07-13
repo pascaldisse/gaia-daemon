@@ -550,8 +550,9 @@ export async function cancelActiveTask() {
 }
 
 /**
- * Stop the ACTIVE ROOM's running turn only. First press of Esc / the stop
- * button lands here (via stopEscalating).
+ * Stop the ACTIVE ROOM's running turn only — bound to Esc and the stop button.
+ * Deliberately CANNOT reach summons: UI/stream delay made any escalating
+ * behavior kill summons by accident; only Ctrl+C (stopAll) stops those.
  */
 export async function stopActiveRoom() {
   const snapshot = state.snapshot;
@@ -568,6 +569,7 @@ export async function stopActiveRoom() {
  * Stop every running summon descended from the active room. Summons nest;
  * runningSummonRooms walks the whole parent chain, so sub-sub-rooms are
  * included — one call clears the entire subtree.
+ * Only reachable via stopAll (Ctrl+C) — never bound to Esc or the button directly.
  */
 export async function stopSummons() {
   const snapshot = state.snapshot;
@@ -585,17 +587,6 @@ export async function stopSummons() {
   } catch (error) {
     setError(error);
   }
-}
-
-/**
- * Escalating stop, bound to Esc and the stop button: first press stops the
- * active room's own turn; press again (room now idle) to stop its summons.
- */
-export async function stopEscalating() {
-  const snapshot = state.snapshot;
-  if (!snapshot) return;
-  if (activeTask(snapshot)) return stopActiveRoom();
-  return stopSummons();
 }
 
 /**
