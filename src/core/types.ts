@@ -774,6 +774,11 @@ export interface BackgroundTask extends BackgroundTaskInfo {
   toolName: string;
   startedAt: string;
   agentId: string;
+  /** The room this process was launched from. Snapshots today only carry the
+   * viewing room's own tasks, but the tray labels and jumps by this id
+   * regardless — the one durable place a background task remembers its
+   * origin, ready the moment a future snapshot ever merges other rooms' in. */
+  roomId: string;
 }
 
 export type AgentEvent =

@@ -28,7 +28,7 @@ test("config.json gets harness, agent and room dropdowns and a numeric window", 
   assert.ok(hints);
   assert.equal(hint(hints, "harness").input, "select");
   assert.equal(hint(hints, "harness").optional, true);
-  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["claude", "codex", "pi"]);
+  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["antigravity", "claude", "codex", "pi"]);
   assert.equal(hint(hints, "defaultAgent").input, "select");
   assert.deepEqual(hint(hints, "defaultAgent").options?.map((option) => option.value), ["gaia", "sidia"]);
   assert.deepEqual(hint(hints, "room").options?.map((option) => option.value), ["default", "lab"]);
@@ -49,7 +49,7 @@ test("agent.json gets tools multiselect and grouped model dropdowns", () => {
 
   assert.equal(hint(hints, "model.name").groupBy, "model.provider");
   const sonnet = hint(hints, "model.name").options?.find((option) => option.value === "claude-sonnet-4-6");
-  assert.equal(sonnet?.group, "anthropic");
+  assert.equal(sonnet?.group, "Anthropic");
   assert.match(sonnet?.description ?? "", /Anthropic · Claude Sonnet · subscription/);
 
   assert.equal(hint(hints, "thinking").optional, true);
@@ -71,12 +71,12 @@ test("markdown and unknown json files get no hints", () => {
   assert.equal(buildFileHints({ label: "app.json", kind: "json" }, sources), undefined);
 });
 
-test("agent.json gets harness select (optional, pi/codex/claude)", () => {
+test("agent.json gets harness select (optional, every registered harness)", () => {
   const hints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
   assert.ok(hints);
   assert.equal(hint(hints, "harness").input, "select");
   assert.equal(hint(hints, "harness").optional, true);
-  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["claude", "codex", "pi"]);
+  assert.deepEqual(hint(hints, "harness").options?.map((option) => option.value).sort(), ["antigravity", "claude", "codex", "pi"]);
 });
 
 test("agent.json tools hint visible for codex (the array controls its gaia/native tools)", () => {
@@ -127,33 +127,31 @@ test("agent.json for a locked-provider harness hides model.provider and filters 
   assert.deepEqual(hint(codexHints, "model.name").options, []);
 });
 
-test("agent.json skills are filtered to the agent's harness plus universal gaia/project, harness-first", () => {
+test("agent.json shows every on-disk skill for any harness, hiding only OTHER harnesses' native builtins", () => {
   const skills: FieldHintOption[] = [
-    { value: "dr", group: "claude", badge: "native" },
-    { value: "cs", group: "claude" },
-    { value: "h1", group: "hermes" },
-    { value: "h2", group: "hermes" },
-    { value: "h3", group: "hermes" },
-    { value: "cx", group: "codex" },
-    { value: "img", group: "gaia" }, // universal — usable by every harness
-    { value: "img", group: "codex" }, // same skill also in codex's ecosystem
+    { value: "dr", group: "claude", badge: "native" }, // claude native builtin (fileless)
+    { value: "cs", group: "claude" }, // on-disk claude SKILL.md
+    { value: "h1", group: "hermes" }, // on-disk hermes SKILL.md
+    { value: "cx", group: "codex" }, // on-disk codex SKILL.md
+    { value: "img", group: "gaia" }, // on-disk gaia SKILL.md
   ];
   const withSkills: HintSources = { ...sources, skills };
 
-  // A codex agent sees ONLY its own ecosystem + universal gaia — never hermes or
-  // claude. `img` is shown once, PREFERRING the codex group over gaia.
+  // A codex agent sees ALL portable on-disk skills (markdown is not harness-tied),
+  // but NOT claude's native builtin `dr`. Its own ecosystem sorts first.
   const codex = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, withSkills);
-  const codexOpts = hint(codex, "skills").options ?? [];
-  assert.deepEqual(codexOpts.map((option) => option.value), ["cx", "img"]);
-  assert.equal(codexOpts.find((option) => option.value === "img")?.group, "codex");
+  const codexVals = hint(codex, "skills").options?.map((option) => option.value) ?? [];
+  assert.ok(!codexVals.includes("dr"), "claude's native builtin must be hidden for a codex agent");
+  assert.deepEqual([...codexVals].sort(), ["cs", "cx", "h1", "img"]);
+  assert.equal(codexVals[0], "cx", "the agent's own ecosystem is ordered first");
 
-  // A claude agent sees claude (native ahead of on-disk) + universal gaia; no
-  // hermes, no codex. `img` here only exists in gaia for claude, shown under gaia.
+  // A claude agent sees everything, INCLUDING its own native `dr` (still badged).
   const claude = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "claude" }) }, withSkills);
   const claudeOpts = hint(claude, "skills").options ?? [];
-  assert.deepEqual(claudeOpts.map((option) => option.value), ["dr", "cs", "img"]);
+  const claudeVals = claudeOpts.map((option) => option.value);
+  assert.ok(claudeVals.includes("dr"), "a claude agent sees its own native builtin");
+  assert.deepEqual([...claudeVals].sort(), ["cs", "cx", "dr", "h1", "img"]);
   assert.equal(claudeOpts.find((option) => option.value === "dr")?.badge, "native");
-  assert.equal(claudeOpts.find((option) => option.value === "img")?.group, "gaia");
 });
 
 test("hints carry _harness meta with per-harness hidden fields and ui locks", () => {

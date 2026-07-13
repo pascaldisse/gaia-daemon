@@ -7,13 +7,14 @@ import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { stopReadAloud } from "./readaloud.js";
-import { clearError, markDirty, registerRegion } from "./render.js";
+import { clearError, markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
 import { jumpToEvent } from "./transcript.js";
 
 /** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
+/** @typedef {import("./types.js").Snapshot} Snapshot */
 
 function renderStatus() {
   renderTopbar();
@@ -310,14 +311,28 @@ export function closeUsagePopover() {
 // plus harness-reported process starts (which are not claimed to still be
 // alive); a click opens a palette with elapsed time and available output.
 
+// `snapshot.tasks` is this room's OWN task history/queue/active-task \u2014 the
+// room you're currently looking at, whose turn is already streaming right
+// there in the transcript. That's foreground, not background; only a task
+// belonging to some OTHER room would actually be a background process (and
+// today the true source for those is `runningSummonRooms` below). Filtering
+// on roomId keeps this correct even if a future snapshot ever merges other
+// rooms' tasks in here. Shared by the chip and the popover so the chip's
+// count always equals the number of rows the popover actually renders.
+/** @param {Snapshot} snapshot */
+function bgPopoverCounts(snapshot) {
+  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running" && task.roomId !== snapshot.room.id);
+  const summons = runningSummonRooms(snapshot);
+  const backgroundTasks = snapshot.backgroundTasks ?? [];
+  return { runningTasks, summons, backgroundTasks };
+}
+
 /** @returns {Seg|null} */
 function bgChipSeg() {
   const snapshot = state.snapshot;
   if (!snapshot) return null;
-  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running").length;
-  const summons = runningSummonRooms(snapshot).length;
-  const backgroundTasks = (snapshot.backgroundTasks ?? []).length;
-  const n = runningTasks + summons + backgroundTasks;
+  const { runningTasks, summons, backgroundTasks } = bgPopoverCounts(snapshot);
+  const n = runningTasks.length + summons.length + backgroundTasks.length;
   if (n === 0) return null;
   return {
     text: `\u2699 ${n} bg`,
@@ -329,17 +344,27 @@ function bgChipSeg() {
 
 export function openBgTasks() {
   state.bgTasksOpen = true;
+  // Prime liveness for every currently-listed background task (see
+  // loadBackgroundOutput) so the status word can render "running"/"ended" as
+  // soon as it's known, not just for whichever one gets clicked.
+  for (const task of state.snapshot?.backgroundTasks ?? []) void loadBackgroundOutput(task.taskId);
   markDirty("bgtasks");
 }
 
-/** @type {{ taskId: string, loading: boolean, text?: string, error?: string }|null} */
-let backgroundOutput = null;
-let backgroundOutputRequest = 0;
+/** @typedef {{ loading: boolean, text?: string, error?: string, running?: boolean }} BgOutput */
+/** Per-task fetched output/liveness, keyed by taskId — a Map (not the single
+ * last-clicked slot v1 had) because liveness is now primed for every listed
+ * task at once. @type {Map<string, BgOutput>} */
+const backgroundOutputs = new Map();
+/** Per-task request counter — the same stale-response guard as before, just
+ * scoped per taskId so concurrent fetches for different tasks don't clobber
+ * each other. @type {Map<string, number>} */
+const backgroundOutputRequests = new Map();
 
 export function closeBgTasks() {
   state.bgTasksOpen = false;
-  backgroundOutput = null;
-  backgroundOutputRequest += 1;
+  backgroundOutputs.clear();
+  backgroundOutputRequests.clear();
   markDirty("bgtasks");
 }
 
@@ -352,18 +377,33 @@ function truncate(text, max) {
 async function loadBackgroundOutput(taskId) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const request = ++backgroundOutputRequest;
-  backgroundOutput = { taskId, loading: true };
+  const request = (backgroundOutputRequests.get(taskId) ?? 0) + 1;
+  backgroundOutputRequests.set(taskId, request);
+  backgroundOutputs.set(taskId, { loading: true });
   markDirty("bgtasks");
   try {
     const body = await api(
       `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/background-tasks/${encodeURIComponent(taskId)}/output`,
     );
-    if (request !== backgroundOutputRequest) return;
-    backgroundOutput = { taskId, loading: false, text: typeof body.text === "string" ? body.text : "" };
+    if (backgroundOutputRequests.get(taskId) !== request) return;
+    backgroundOutputs.set(taskId, { loading: false, text: typeof body.text === "string" ? body.text : "", running: body.running === true });
   } catch (error) {
-    if (request !== backgroundOutputRequest) return;
-    backgroundOutput = { taskId, loading: false, error: error instanceof Error ? error.message : String(error) };
+    if (backgroundOutputRequests.get(taskId) !== request) return;
+    backgroundOutputs.set(taskId, { loading: false, error: error instanceof Error ? error.message : String(error) });
+  }
+  markDirty("bgtasks");
+}
+
+/** Stop (still running) or dismiss (already ended) a tracked background task,
+ * then refresh the tray. @param {string} workspaceId @param {string} roomId @param {string} taskId */
+async function stopOrDismissBackgroundTask(workspaceId, roomId, taskId) {
+  try {
+    await api(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/background-tasks/${encodeURIComponent(taskId)}`,
+      { method: "DELETE", body: "{}" },
+    );
+  } catch (error) {
+    setError(error);
   }
   markDirty("bgtasks");
 }
@@ -399,16 +439,7 @@ function runningAgentLabel(roomId, agentId) {
 function BgTasksPopover() {
   const snapshot = state.snapshot;
   if (!snapshot) return null;
-  // `snapshot.tasks` is this room's OWN task history/queue/active-task — the
-  // room you're currently looking at, whose turn is already streaming right
-  // there in the transcript. That's foreground, not background; only a task
-  // belonging to some OTHER room would actually be a background process (and
-  // today the true source for those is `runningSummonRooms` below). Filtering
-  // on roomId keeps this correct even if a future snapshot ever merges other
-  // rooms' tasks in here.
-  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running" && task.roomId !== snapshot.room.id);
-  const summons = runningSummonRooms(snapshot);
-  const backgroundTasks = snapshot.backgroundTasks ?? [];
+  const { runningTasks, summons, backgroundTasks } = bgPopoverCounts(snapshot);
   const agentCount = runningTasks.length + summons.length;
   const now = Date.now();
   return h(
@@ -478,32 +509,52 @@ function BgTasksPopover() {
             { class: "usage-group" },
             h("div", { class: "usage-group-head" }, h("span", { class: "usage-harness", text: "background processes" })),
             ...backgroundTasks.map((task) => {
-              const output = backgroundOutput?.taskId === task.taskId ? backgroundOutput : null;
+              const output = backgroundOutputs.get(task.taskId);
               const age = elapsed(now - new Date(task.startedAt).getTime());
               const label = task.description || task.command || `${task.toolName} ${task.taskId}`;
+              // Status is unknown until loadBackgroundOutput (primed on popover
+              // open) resolves — while loading/errored, the word is withheld
+              // and the stop/dismiss button defaults to the safe "dismiss".
+              const known = Boolean(output) && output?.loading === false && !output?.error;
+              const running = known && output?.running === true;
               return h(
-                "div",
-                { class: "usage-row" },
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);padding:9px;cursor:pointer;color:inherit;font:inherit;",
-                    title: task.command ?? task.description ?? task.taskId,
-                    onclick: () => void loadBackgroundOutput(task.taskId),
+                "button",
+                {
+                  type: "button",
+                  class: "usage-row",
+                  style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);padding:9px;cursor:pointer;color:inherit;font:inherit;",
+                  title: task.command ?? task.description ?? task.taskId,
+                  onclick: () => {
+                    selectRoom(snapshot.workspace.id, task.roomId);
+                    closeBgTasks();
                   },
+                },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", { class: "usage-label", text: truncate(label, 60) }),
                   h(
                     "div",
-                    { class: "usage-row-top" },
-                    h("span", { class: "usage-label", text: truncate(label, 60) }),
+                    { style: "display:flex;align-items:baseline;gap:8px;" },
+                    known ? h("span", { class: `usage-pct ${running ? "sev-normal" : "muted"}`, text: running ? "running" : "ended" }) : null,
                     h("span", { class: "usage-pct sev-normal", text: age ? `started ${age} ago` : "started just now" }),
+                    h("span", {
+                      class: "usage-pct",
+                      style: "cursor:pointer;",
+                      text: running ? "■ stop" : "✕ dismiss",
+                      title: running ? "stop this background process" : "dismiss this entry",
+                      onclick: (event) => {
+                        event.stopPropagation();
+                        void stopOrDismissBackgroundTask(snapshot.workspace.id, snapshot.room.id, task.taskId);
+                      },
+                    }),
                   ),
-                  h("small", { class: "usage-reset", text: `@${task.agentId} · ${task.toolName}` }),
                 ),
-                output
+                h("small", { class: "usage-reset", text: `@${task.agentId} · ${task.toolName} · room ${task.roomId}` }),
+                output && !output.loading
                   ? h("pre", {
                       style: "max-height:220px;overflow:auto;margin:6px 0 0;padding:9px;background:var(--ink);border:1px solid var(--border);white-space:pre-wrap;",
-                      text: output.loading ? "loading…" : output.error ? `Error: ${output.error}` : output.text || "(no output yet)",
+                      text: output.error ? `Error: ${output.error}` : output.text || "(no output yet)",
                     })
                   : null,
               );

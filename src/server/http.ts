@@ -906,7 +906,18 @@ export class GaiaWebServer {
       const service = await this.daemon.serviceFor(params[0], params[1]);
       const output = await service.backgroundTaskOutput(params[2]);
       if (output === undefined) return json(response, 404, { error: "Background task output not found" });
-      json(response, 200, { text: output });
+      json(response, 200, { text: output.text, running: output.running });
+      return;
+    }
+
+    // Stop (SIGTERM its live writers) or dismiss a tracked background task —
+    // the tray's ■ stop / ✕ dismiss action. Harness-agnostic: liveness/stop
+    // live entirely in the shared room layer, no runtime is touched.
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const stopped = await service.stopBackgroundTask(params[2]);
+      if (!stopped) return json(response, 404, { error: "Background task not found" });
+      json(response, 200, { ok: true });
       return;
     }
 
