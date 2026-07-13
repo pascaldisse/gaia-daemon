@@ -43,6 +43,7 @@ export const REFERENCE_TRANSACTION_HOOK = `#!/usr/bin/env bun
 // (comma-separated full ref names); default is "refs/heads/main".
 
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 
 const state = process.argv[2];
 // Only the "prepared" state can veto: a non-zero exit here aborts the whole
@@ -53,12 +54,19 @@ if (process.env.GAIA_GIT_GUARD === "off") process.exit(0);
 
 const zeroRe = /^0+$/; // all-zeros == git's null-oid sentinel
 
+// Parse the protected-ref allow-list defensively. \`??\` alone would NOT fall
+// back on an empty/whitespace string (GAIA_PROTECTED_REFS="" is not
+// null/undefined), which would silently disable the guard for every ref — an
+// unacceptable quiet bypass via an ordinary-looking env var. Treat empty/blank
+// as unset, and never let the resulting set end up empty.
+const rawProtected = (process.env.GAIA_PROTECTED_REFS ?? "").trim();
 const protectedRefs = new Set(
-  (process.env.GAIA_PROTECTED_REFS ?? "refs/heads/main")
+  (rawProtected || "refs/heads/main")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
 );
+if (protectedRefs.size === 0) protectedRefs.add("refs/heads/main");
 
 const input = await new Response(process.stdin).text();
 
@@ -81,10 +89,30 @@ for (const line of input.split("\\n")) {
   const cur = spawnSync("git", ["rev-parse", "--verify", "--quiet", \`\${ref}^{commit}\`], { encoding: "utf8" });
   const currentTip = cur.status === 0 ? cur.stdout.trim() : null;
 
-  // Deletion (new-oid == zero) of an existing protected branch is forbidden.
+  // Deletion (new-oid == zero) of a protected branch is forbidden — with ONE
+  // narrow exception: git's internal loose->packed migration (\`git pack-refs\` /
+  // \`gc\`). pack-refs writes the ref into packed-refs FIRST, then removes the
+  // loose file, and that loose removal is reported here as a deletion
+  // (tip -> zero) even though the tip is preserved. Naively rejecting it broke
+  // routine maintenance (\`git gc\` exited 128) on the very checkout we protect.
+  // We allow the deletion ONLY when it carries the exact migration signature —
+  // ALL THREE must hold, else the tip would truly be orphaned:
+  //   1. the loose ref file still exists (it is what pack-refs is removing),
+  //   2. packed-refs already records this ref, AND
+  //   3. that packed OID equals the authoritative current tip (not a stale
+  //      packed value shadowed by a newer loose tip).
+  // This still refuses packed-only deletion (\`update-ref -d\` after gc — which
+  // git does NOT natively block even for a checked-out branch), loose-only
+  // deletion, and stale-packed deletion, while letting gc/pack-refs run.
   if (zeroRe.test(newOid)) {
-    if (currentTip) reject(ref, currentTip, newOid, "deletion of a protected branch is forbidden");
-    continue; // nothing there to protect
+    if (currentTip) {
+      const packedOid = packedRefOid(ref);
+      const isMigration = looseRefFileExists(ref) && packedOid !== null && packedOid === currentTip;
+      if (!isMigration) {
+        reject(ref, currentTip, newOid, "deletion of a protected branch is forbidden");
+      }
+    }
+    continue; // storage migration, or nothing there to protect
   }
 
   // Creation: the protected ref does not exist yet. Allowed.
@@ -108,6 +136,41 @@ for (const line of input.split("\\n")) {
 process.exit(0);
 
 /**
+ * The OID packed-refs currently records for \`ref\`, or null if none. During a
+ * loose->packed migration pack-refs writes this BEFORE removing the loose ref,
+ * so it equals the current tip; for a genuine deletion it is absent or stale.
+ * @param {string} ref
+ * @returns {string | null}
+ */
+function packedRefOid(ref) {
+  const p = spawnSync("git", ["rev-parse", "--git-path", "packed-refs"], { encoding: "utf8" });
+  if (p.status !== 0) return null;
+  try {
+    const txt = readFileSync(p.stdout.trim(), "utf8");
+    for (const line of txt.split("\\n")) {
+      // "<oid> <ref>" — skip "^<peeled>" tag lines, comments, and blanks.
+      const sp = line.indexOf(" ");
+      if (sp > 0 && line.slice(sp + 1) === ref) return line.slice(0, sp);
+    }
+  } catch {
+    // no packed-refs file / unreadable — treat as "not packed".
+  }
+  return null;
+}
+
+/**
+ * Does a LOOSE ref file exist for \`ref\`? True mid-migration (the file that
+ * pack-refs is about to remove); false once the ref is packed-only.
+ * @param {string} ref
+ * @returns {boolean}
+ */
+function looseRefFileExists(ref) {
+  const p = spawnSync("git", ["rev-parse", "--git-path", ref], { encoding: "utf8" });
+  if (p.status !== 0) return false;
+  return existsSync(p.stdout.trim());
+}
+
+/**
  * @param {string} ref @param {string} oldOid @param {string} newOid @param {string} why
  * @returns {never}
  */
@@ -124,6 +187,7 @@ function reject(ref, oldOid, newOid, why) {
       \`  merge-only; git reset --hard / branch -f / checkout -B on it are banned).\\n\\n\` +
       \`  Do your git surgery in your room worktree branch, then land with\\n\` +
       \`    git -C <root> merge --ff-only <your-branch>\\n\` +
+      \`  If you are stuck mid-rebase, get out cleanly with:  git rebase --abort\\n\` +
       \`  If this is a deliberate, human-authorized recovery, re-run the one\\n\` +
       \`  command with:  GAIA_GIT_GUARD=off git ...\\n\\n\`,
   );

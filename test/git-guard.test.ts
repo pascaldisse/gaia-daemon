@@ -56,8 +56,12 @@ test("git-guard blocks every rewind vector, allows fast-forward", () => {
     let r = run(dir, ["reset", "--hard", shaA]);
     assert.notEqual(r.status, 0, "reset --hard should be vetoed");
     assert.equal(mainTip(dir), shaB);
-    // reset moved the index/worktree expectations? No — the ref veto aborts
-    // the transaction; make sure the checkout still matches main.
+    // HONESTY (per red-team): a vetoed `reset --hard <older>` still lets git
+    // move the index/worktree toward <older> and discard dirty tracked content
+    // BEFORE it proposes the ref update the hook then refuses. The guard
+    // protects the landed COMMITS on the ref, NOT uncommitted work or git's
+    // pre-ref side effects — so we assert only that main's tip held, never that
+    // the working tree still matches main.
     git(dir, "status");
 
     // (b) update-ref with no expected-old (the spoofed-zero case) is rejected.
@@ -101,6 +105,60 @@ test("git-guard blocks every rewind vector, allows fast-forward", () => {
     r = run(dir, ["reset", "--hard", shaA], { GAIA_GIT_GUARD: "off" });
     assert.equal(r.status, 0, `off-switch rewind should pass: ${r.stderr}`);
     assert.equal(mainTip(dir), shaA);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("git-guard tolerates loose->packed migration (pack-refs / gc succeed) but still blocks genuine deletion", () => {
+  const { dir, shaB } = makeRepo();
+  try {
+    // pack-refs migrates main loose->packed: the loose removal is reported to
+    // the hook as a deletion (tip -> zero) though the tip survives in
+    // packed-refs. A naive delete-veto broke routine maintenance (gc exit 128);
+    // this must now pass.
+    let r = run(dir, ["pack-refs", "--all"]);
+    assert.equal(r.status, 0, `pack-refs should pass: ${r.stderr}`);
+    assert.equal(mainTip(dir), shaB, "main survives pack-refs");
+    // gc runs pack-refs internally — must also succeed.
+    r = run(dir, ["gc"]);
+    assert.equal(r.status, 0, `gc should pass: ${r.stderr}`);
+    assert.equal(mainTip(dir), shaB);
+    // Packed-only genuine deletion must STILL be refused — the migration
+    // exception must not become a hole. `update-ref -d` is the sharp case: git
+    // does NOT natively block it even for a checked-out branch, so the hook is
+    // the only thing standing between it and an orphaned main.
+    git(dir, "checkout", "-b", "aside");
+    r = run(dir, ["update-ref", "-d", "refs/heads/main"]);
+    assert.notEqual(r.status, 0, "packed-only delete of protected branch must stay blocked");
+    assert.equal(mainTip(dir), shaB);
+
+    // Stale-packed deletion: advance a NEW loose tip so packed OID (shaB) is
+    // behind the current tip. The migration signature requires packed OID ==
+    // current tip, so this deletion must also be refused.
+    git(dir, "checkout", "main");
+    const shaC = commit(dir, "c.txt"); // loose main -> shaC; packed still shaB
+    git(dir, "checkout", "aside");
+    r = run(dir, ["update-ref", "-d", "refs/heads/main"]);
+    assert.notEqual(r.status, 0, "stale-packed delete must stay blocked");
+    assert.equal(mainTip(dir), shaC);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("git-guard falls back to the default ref when GAIA_PROTECTED_REFS is empty/blank (no silent bypass)", () => {
+  const { dir, shaA, shaB } = makeRepo();
+  try {
+    // "" is not null/undefined, so a naive `?? default` would leave the set
+    // empty and disable the guard entirely. Empty AND whitespace must both fall
+    // back to refs/heads/main and keep blocking.
+    let r = run(dir, ["reset", "--hard", shaA], { GAIA_PROTECTED_REFS: "" });
+    assert.notEqual(r.status, 0, "empty env must not disable the guard");
+    assert.equal(mainTip(dir), shaB);
+    r = run(dir, ["reset", "--hard", shaA], { GAIA_PROTECTED_REFS: "   " });
+    assert.notEqual(r.status, 0, "whitespace env must not disable the guard");
+    assert.equal(mainTip(dir), shaB);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
