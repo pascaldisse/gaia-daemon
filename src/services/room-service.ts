@@ -1820,7 +1820,17 @@ export class RoomService {
    * next reload — the poisoned-gateway incident left rooms full of failed
    * turns with zero on-disk evidence). Authored by "system" so it renders as a
    * system line and stays out of every agent's context. Best-effort: marking
-   * the failure must never mask the failure itself. */
+   * the failure must never mask the failure itself.
+   *
+   * `kind: "turn-failed"` is the ONLY signal the client needs to offer a resend
+   * — it means the user message right before this row got NO reply at all
+   * (producedOutput was false at the call site). Without it, the transcript's ⟳
+   * only ever appears on an agent reply, so a reply-less failed turn had no
+   * fork-based recovery and users retyped the same text into the composer,
+   * which appends a brand-new user event instead of regenerating (the
+   * duplicate-resend bug). retryMessage(eventId) on THIS event's id already
+   * resolves correctly — forkAtUserMessage walks backward past non-user authors
+   * to the user message that produced it. */
   private async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
     try {
       const message = error instanceof Error ? error.message : String(error);
@@ -1828,6 +1838,7 @@ export class RoomService {
         id: newId("system_turnfail"),
         timestamp: new Date().toISOString(),
         author: "system",
+        kind: "turn-failed",
         text: `⚠ turn failed (@${agentId}): ${message}`,
       };
       await this.room.appendEvent(event);

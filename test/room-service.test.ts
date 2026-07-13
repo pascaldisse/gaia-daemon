@@ -1802,6 +1802,70 @@ test("retryMessage forks at the originating user message and regenerates the rep
   assert.deepEqual(rewound.map((event) => event.text), ["second question", "reply 2"]);
 });
 
+test("retry on a failed reply-less turn regenerates in place instead of appending duplicates", async () => {
+  // Reproduces the recurring "resend" bug: a turn that errors (e.g. a 400)
+  // before producing any output leaves the user message with NO reply after
+  // it — only a durable `kind:"turn-failed"` system marker (appendTurnFailure,
+  // room-service.ts). The web ⟳ now renders on that marker and calls
+  // retryMessage(markerId); this proves the server side of that path rewinds
+  // and regenerates rather than piling up duplicate user messages, even across
+  // repeated failures.
+  let call = 0;
+  const { service, root, runtimes } = await makeService({
+    agents: ["gaia"],
+    script: () => {
+      call += 1;
+      if (call <= 2) throw new Error("upstream 400: bad request");
+      return [{ type: "text-delta", delta: "reply after retry" } as AgentEvent];
+    },
+  });
+
+  await service.sendMessage("hello");
+  await service.waitForIdle();
+
+  let events = (await service.room.eventsFrom(0)).events;
+  assert.equal(events.length, 2, "user message + durable turn-failed marker, no reply");
+  assert.equal(events[0].author, "user");
+  assert.equal(events[1].author, "system");
+  assert.equal((events[1] as { kind?: string }).kind, "turn-failed", "client needs this to offer a resend ⟳");
+  assert.match(events[1].text, /⚠ turn failed/);
+
+  // First resend: the retry ITSELF fails again (call 2). The transcript must
+  // still read as one exchange, not two — a failed retry is not a reason to
+  // keep the stale attempt lying around next to the fresh one.
+  await service.retryMessage(events[1].id);
+  await service.waitForIdle();
+
+  events = (await service.room.eventsFrom(0)).events;
+  assert.equal(events.length, 2, "regenerated in place, not appended, even though the retry itself also failed");
+  assert.equal(events[0].author, "user");
+  assert.equal(events[0].text, "hello");
+  assert.equal(events[1].author, "system");
+  assert.equal((events[1] as { kind?: string }).kind, "turn-failed");
+
+  // Second resend: this attempt succeeds (call 3).
+  await service.retryMessage(events[1].id);
+  await service.waitForIdle();
+
+  events = (await service.room.eventsFrom(0)).events;
+  assert.equal(events.length, 2, "success also lands in place — still exactly one exchange");
+  assert.equal(events[0].author, "user");
+  assert.equal(events[0].text, "hello");
+  assert.equal(events[1].author, "gaia");
+  assert.equal(events[1].text, "reply after retry");
+  assert.equal(runtimes.get("gaia")?.sends, 3, "one send per attempt (initial + 2 retries), never a growing fan-out");
+
+  // No progress ever lost: every dropped user/turn-failed pair from the two
+  // rewinds is preserved beside the transcript, not destroyed.
+  const rewound = (await readFileText(join(root, ".gaia", "rooms", "default", "rewound.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { author: string; text: string });
+  assert.equal(rewound.length, 4, "2 rewinds x (user + turn-failed marker)");
+  assert.equal(rewound.filter((event) => event.author === "user" && event.text === "hello").length, 2);
+  assert.equal(rewound.filter((event) => event.text.startsWith("⚠ turn failed")).length, 2);
+});
+
 test("editMessage forks at the edited user message and re-sends the new text with kept routing", async () => {
   const { service, runtimes } = await makeService({ agents: ["gaia", "terry"] });
   await service.sendMessage("@terry original question");
