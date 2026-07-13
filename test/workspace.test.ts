@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureWorkspaceRoom } from "../src/domain/workspace.js";
+import { discoverContextFiles, ensureWorkspaceRoom } from "../src/domain/workspace.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
 
@@ -36,4 +36,17 @@ test("incognito is immutable: re-ensuring never flips an existing room either wa
   await ensureWorkspaceRoom(root, "vault", { incognito: true });
   await ensureWorkspaceRoom(root, "vault");
   assert.equal((await readState(root, "vault")).incognito, true, "existing incognito room never loses the flag");
+});
+
+test("workspace context never inherits AGENTS.md from parent directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-ws-"));
+  const parent = join(root, "parent");
+  const workspace = join(parent, "project");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(parent, "AGENTS.md"), "parent instructions", "utf8");
+  await writeFile(join(workspace, "AGENTS.md"), "workspace instructions", "utf8");
+
+  assert.deepEqual(await discoverContextFiles(workspace), [
+    { path: join(workspace, "AGENTS.md"), content: "workspace instructions" },
+  ]);
 });

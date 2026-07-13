@@ -599,7 +599,7 @@ export interface Workspace {
   roomsDir: string;
   globalAgentsDir: string;
   config: WorkspaceConfig;
-  contextFiles: ContextFile[]; // AGENTS.md chain, parent-most first
+  contextFiles: ContextFile[]; // workspace-local AGENTS.md (if present)
   agents: Record<string, AgentDef>;
 }
 
