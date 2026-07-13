@@ -386,7 +386,7 @@ export class PiRuntime implements AgentRuntime {
     const systemPrompt = await buildBaseSystemPrompt({
       agent: this.agent,
       role: input.activeRole,
-      contextFiles: this.workspace.contextFiles,
+      workspaceRoot: this.workspace.rootDir,
     });
     const skillNames = agentSkillNames(this.agent, input.activeRole);
     // Pi's translation of the harness-agnostic `web` tool: claude/codex expose a
