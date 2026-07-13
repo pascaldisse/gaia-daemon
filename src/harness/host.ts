@@ -208,6 +208,8 @@ export class RunnerHost implements AgentRuntime {
   /** Forwards the runner's compact-progress frames to the /compact caller (and
    * re-arms the idle backstop) while a pass runs. */
   private compactProgress: ((update: CompactProgressUpdate) => void) | undefined;
+  /** Resolver for the single in-flight fork round trip (see forkAtMessage). */
+  private forkWaiter: ((result: { ok: boolean; message: string }) => void) | undefined;
 
   constructor(options: RunnerHostOptions) {
     this.options = options;
@@ -445,6 +447,30 @@ export class RunnerHost implements AgentRuntime {
     });
   }
 
+  /** Forward a fork request (backs edit/retry on a harness with
+   * capabilities.supportsForkAtMessage — see AgentRuntime.forkAtMessage). A
+   * durable session on disk can be forked even from a cold daemon, mirroring
+   * compact()'s lazy-restore spawn: only when there is neither a live child
+   * nor a durable session is there genuinely nothing to fork. */
+  async forkAtMessage(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }> {
+    if (!this.capabilities.supportsForkAtMessage) throw new Error("this harness has no native message fork");
+    if (!this.child && !this.hasDurableSession(roomId)) return { ok: false, message: "no session to fork" };
+    await this.ensureChild(roomId);
+    return new Promise<{ ok: boolean; message: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.forkWaiter = undefined;
+        reject(new Error("fork stalled — no response from the runner"));
+      }, COMPACT_TIMEOUT_MS);
+      timer.unref?.();
+      this.forkWaiter = (result) => {
+        clearTimeout(timer);
+        this.forkWaiter = undefined;
+        resolve(result);
+      };
+      this.write({ type: "fork", roomId, originEventId, originText });
+    });
+  }
+
   resetRoom(roomId: string): void {
     // Queue unconditionally so the reset survives a down runner (the disk-
     // persisted session would otherwise --resume the ghost). Also send now if the
@@ -613,6 +639,9 @@ export class RunnerHost implements AgentRuntime {
       if (this.compactWaiter && !this.disposed) {
         this.compactWaiter({ ok: false, compacted: false, message: `agent runner exited during compaction (${signal ? `signal ${signal}` : `code ${code}`}).` });
       }
+      if (this.forkWaiter && !this.disposed) {
+        this.forkWaiter({ ok: false, message: `agent runner exited during fork (${signal ? `signal ${signal}` : `code ${code}`}).` });
+      }
       if (this.steerWaiter && !this.disposed) this.steerWaiter(false);
       // A dead child can hold no turn — release abort()/idle waiters.
       this.settleTurn();
@@ -669,6 +698,9 @@ export class RunnerHost implements AgentRuntime {
       }
       case "compact-result":
         this.compactWaiter?.({ ok: message.ok, compacted: message.compacted, message: message.message, ...(message.summary ? { summary: message.summary } : {}) });
+        return;
+      case "fork-result":
+        this.forkWaiter?.({ ok: message.ok, message: message.message });
         return;
     }
   }

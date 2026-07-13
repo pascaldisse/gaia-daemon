@@ -450,6 +450,10 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   // /compact is supportsNonInteractive in the CLI: a headless resumed turn
   // with the prompt "/compact" compacts the session file durably.
   supportsCompact: true,
+  // Claude's own session store's clear() already forces a fresh session that
+  // replays the truncated transcript correctly on edit/retry — no native
+  // in-place fork primitive needed here (see HarnessCapabilities.supportsForkAtMessage).
+  supportsForkAtMessage: false,
   // Claude Code resolves skills/slash commands (/deep-research, /code-review, …)
   // from a raw `-p` stdin when its command surface is enabled — so gaia can pass
   // an unrecognized slash command straight through (see the native branch in

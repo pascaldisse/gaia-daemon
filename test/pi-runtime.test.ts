@@ -24,9 +24,40 @@ class FakeSession implements PiSessionLike {
   thinkingChanges: string[] = [];
   /** Optional per-test native compaction (PiSessionLike.compact). */
   compact?: (customInstructions?: string) => Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
+  /** Per-test fixture for PiSessionLike.getUserMessagesForForking. */
+  userMessagesForForking: Array<{ entryId: string; text: string }> = [];
+  /** Per-test fixture: entryId -> parentId (undefined entry = "no such
+   * entry"; null parentId = "first message in the session"), consumed by
+   * PiSessionLike.sessionManager.getEntry(). */
+  entryParents = new Map<string, string | null>();
+  /** PiSessionLike.sessionManager.getSessionFile() fixture. */
+  sessionFile: string | undefined = "fake-session/original.jsonl";
+  createBranchedSessionCalls: string[] = [];
+  newSessionCalls: Array<{ parentSession?: string } | undefined> = [];
+  /** Per-test override: what createBranchedSession/newSession "write" —
+   * undefined simulates a non-persisted session (can't fork). */
+  forkedSessionFile: string | undefined = "fake-session/branch.jsonl";
+
+  readonly sessionManager = {
+    getEntry: (id: string): { parentId: string | null | undefined } | undefined =>
+      this.entryParents.has(id) ? { parentId: this.entryParents.get(id) ?? null } : undefined,
+    getSessionFile: (): string | undefined => this.sessionFile,
+    createBranchedSession: (targetLeafId: string): string | undefined => {
+      this.createBranchedSessionCalls.push(targetLeafId);
+      return this.forkedSessionFile;
+    },
+    newSession: (options?: { parentSession?: string }): string | undefined => {
+      this.newSessionCalls.push(options);
+      return this.forkedSessionFile;
+    },
+  };
 
   constructor(id: string) {
     this.sessionId = id;
+  }
+
+  getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
+    return this.userMessagesForForking;
   }
 
   setThinkingLevel(level: string): void {
@@ -501,6 +532,177 @@ test("PiRuntime.compact stays a clean no-op when the session dir is truly empty 
 
     assert.deepEqual(await runtime.compact("default"), { compacted: false, message: "nothing to compact — no active session for this room." });
     assert.equal(factoryCalls, 0, "no session should be created for a no-op compact");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage maps the gaia origin to pi's matching entry and branches the persisted session at its parent", async () => {
+  const fx = await harnessFixture();
+  try {
+    const sessions: FakeSession[] = [];
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession(`s${sessions.length + 1}`);
+      sessions.push(session);
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const session = sessions[0];
+    // buildTurnPrompt always renders the raw origin text verbatim after its
+    // "Newest user message:" header — a stand-in for what pi actually
+    // recorded as this prompt's user-entry text (see forkAtMessage's doc
+    // comment in pi.ts).
+    session.userMessagesForForking = [
+      { entryId: "entry-1", text: "Room: default\n\nNewest user message:\n\nfirst question" },
+      { entryId: "entry-2", text: "Room: default\n\nNewest user message:\n\nsecond question" },
+    ];
+    session.entryParents.set("entry-1", null);
+    session.entryParents.set("entry-2", "entry-1");
+
+    const result = await runtime.forkAtMessage("default", "evt_2", "second question");
+    assert.deepEqual(result, { ok: true, message: "forked pi session to a new branch before entry entry-2" });
+    // "before" position: branches at the TARGET's PARENT, dropping the
+    // target (and everything after) from the new branch.
+    assert.deepEqual(session.createBranchedSessionCalls, ["entry-1"]);
+    assert.deepEqual(session.newSessionCalls, []);
+    // The stale session handle is disposed — the branch is a NEW durable
+    // file, so the room's session is rebuilt (lazily, same as a cold
+    // restore) around SessionManager.continueRecent() picking up that file,
+    // never left rewound in place.
+    assert.equal(session.disposed, true);
+    assert.equal(sessions.length, 2, "the room's session was rebuilt around the new branch");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage forks 'before' the very first message via newSession (no parent entry to branch to)", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
+    const session = meta!.session;
+    session.userMessagesForForking = [{ entryId: "entry-1", text: "Newest user message:\n\nonly question" }];
+    session.entryParents.set("entry-1", null);
+    session.sessionFile = "fake-session/original.jsonl";
+
+    const result = await runtime.forkAtMessage("default", "evt_1", "only question");
+    assert.equal(result.ok, true);
+    assert.deepEqual(session.createBranchedSessionCalls, []);
+    assert.deepEqual(session.newSessionCalls, [{ parentSession: "fake-session/original.jsonl" }]);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage disambiguates duplicate-text entries by picking the most recent occurrence", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
+    const session = meta!.session;
+    session.userMessagesForForking = [
+      { entryId: "entry-1", text: "Newest user message:\n\nsame text" },
+      { entryId: "entry-2", text: "Newest user message:\n\nsame text" },
+    ];
+    session.entryParents.set("entry-1", null);
+    session.entryParents.set("entry-2", "entry-1");
+
+    const result = await runtime.forkAtMessage("default", "evt_x", "same text");
+    assert.equal(result.ok, true);
+    assert.deepEqual(session.createBranchedSessionCalls, ["entry-1"], "the most recent match (entry-2) forks at ITS parent (entry-1)");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage fails cleanly (ok:false) when no pi entry matches the origin text", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const result = await runtime.forkAtMessage("default", "evt_missing", "never sent this");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /no pi session entry matches/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage fails cleanly when the session isn't persisted (fork write returns nothing)", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const meta = (runtime as unknown as { sessions: { get(id: string): { session: FakeSession } | undefined } }).sessions.get("default");
+    const session = meta!.session;
+    session.userMessagesForForking = [{ entryId: "entry-1", text: "hello" }];
+    session.entryParents.set("entry-1", "entry-0");
+    session.entryParents.set("entry-0", null);
+    session.forkedSessionFile = undefined;
+
+    const result = await runtime.forkAtMessage("default", "evt_1", "hello");
+    assert.deepEqual(result, { ok: false, message: "pi session is not persisted to disk — cannot fork" });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage lazily restores a persisted session after a daemon restart, same as compact()", async () => {
+  const fx = await harnessFixture();
+  try {
+    const dir = piRoomSessionDir(fx.workspace, "default", fx.agent.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "session-1.jsonl"), "{}\n", "utf8");
+
+    const sessions: FakeSession[] = [];
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession(`restored${sessions.length + 1}`);
+      session.userMessagesForForking = [{ entryId: "entry-1", text: "resumed question" }];
+      session.entryParents.set("entry-1", null);
+      sessions.push(session);
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    // No send() ever ran on this runtime instance.
+    const result = await runtime.forkAtMessage("default", "evt_1", "resumed question");
+    assert.equal(result.ok, true);
+    // One session restored to read/branch from, one more rebuilt around the
+    // fresh branch — never recreated beyond that.
+    assert.equal(sessions.length, 2, "restored once, then rebuilt once around the new branch");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.forkAtMessage stays a clean no-op when there is no session to restore", async () => {
+  const fx = await harnessFixture();
+  try {
+    const factory: PiRuntimeSessionFactory = async () => ({ session: new FakeSession("s1") });
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    const result = await runtime.forkAtMessage("default", "evt_1", "anything");
+    assert.deepEqual(result, { ok: false, message: "no active pi session for this room" });
     runtime.dispose();
   } finally {
     await fx.cleanup();

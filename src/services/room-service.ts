@@ -2474,7 +2474,7 @@ export class RoomService {
     if (index < 0) throw new Error("No user message precedes that event to fork from.");
     const origin = events[index];
     await this.room.rewindToEvent(origin.id);
-    await this.resetAfterTruncation("reset-keep-context");
+    await this.resetAfterTruncation("reset-keep-context", undefined, { id: origin.id, text: origin.text });
     return {
       text: origin.text,
       targets: "targets" in origin ? origin.targets : [],
@@ -2509,14 +2509,44 @@ export class RoomService {
    * (edit/retry/rewind) omit it → the whole tail past `kept` is affected; sanitize
    * passes the index of the first REWRITTEN event — its events survive in place,
    * but any session that read past that point holds the original text and must be
-   * treated as affected. */
-  private async resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number): Promise<void> {
+   * treated as affected.
+   *
+   * `forkOrigin` (edit/retry only — see forkAtUserMessage) is the gaia user
+   * message the fork landed on. For an affected agent whose runtime declares
+   * capabilities.supportsForkAtMessage (pi), we call runtime.forkAtMessage
+   * INSTEAD of resetRoom(): the harness's OWN session is rewound in place to
+   * that message, so it already holds the correct trimmed context and the
+   * cursor can advance straight to the fork point — no resetRoom, no
+   * full-floor replay. Gated purely on the capability flag, never a harness-id
+   * branch (AGENTS.md §RULE #0). A harness without the capability (claude/
+   * codex), or a forkAtMessage call that fails, keeps the exact existing
+   * resetRoom() + floor-replay path — fail-safe. */
+  private async resetAfterTruncation(
+    mode: "reset-sessions" | "reset-keep-context",
+    cut?: number,
+    forkOrigin?: { id: string; text: string },
+  ): Promise<void> {
     const kept = (await this.room.eventsFrom(0)).events.length;
     const affectedAbove = Math.min(cut ?? kept, kept);
     const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
     const state = await this.room.state();
+    // Agents whose own harness natively forked in place: their session
+    // already reflects state through the fork point, so their cursor advances
+    // there directly below instead of replaying from the floor.
+    const forked = new Set<string>();
     for (const [id, cursor] of Object.entries(state.agentCursors)) {
-      if (cursor > affectedAbove) this.runtimes[id]?.resetRoom(this.roomId);
+      if (cursor <= affectedAbove) continue;
+      const runtime = this.runtimes[id];
+      if (mode === "reset-keep-context" && forkOrigin && runtime?.capabilities.supportsForkAtMessage && runtime.forkAtMessage) {
+        const result = await runtime.forkAtMessage(this.roomId, forkOrigin.id, forkOrigin.text);
+        if (result.ok) {
+          forked.add(id);
+          continue;
+        }
+        // Native fork failed (no match, unsupported session build, stalled
+        // runner, …) — fall through to the fail-safe reset below.
+      }
+      runtime?.resetRoom(this.roomId);
     }
     // rewind moves the floor to a fresh window base — any durable compaction
     // summary captured at the old floor is now stale and must be dropped (its
@@ -2525,7 +2555,12 @@ export class RoomService {
     await this.room.updateState((current) => {
       for (const [id, cursor] of Object.entries(current.agentCursors)) {
         if (cursor <= affectedAbove) continue;
-        if (mode === "reset-sessions") {
+        if (forked.has(id)) {
+          // The harness's own session already holds the forked context up to
+          // the fork point (this message is about to be re-sent and appended
+          // right after it) — advance the cursor there directly.
+          current.agentCursors[id] = kept;
+        } else if (mode === "reset-sessions") {
           current.agentCursors[id] = base;
           current.contextFloors = { ...(current.contextFloors ?? {}), [id]: base };
           forgot.push(id);

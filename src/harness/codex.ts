@@ -341,6 +341,10 @@ const CODEX_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: true,
   supportsSteer: true,
   supportsCompact: true,
+  // Codex's own session store's clear() already forces a fresh session that
+  // replays the truncated transcript correctly on edit/retry — no native
+  // in-place fork primitive needed here (see HarnessCapabilities.supportsForkAtMessage).
+  supportsForkAtMessage: false,
   // Codex has no skill/slash-command passthrough surface.
   supportsNativeCommands: false,
   // Codex has no native subagent tool — its only fan-out is the gaia summon tool.

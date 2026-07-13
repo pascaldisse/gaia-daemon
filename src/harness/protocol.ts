@@ -11,6 +11,7 @@ export type RunnerCommand =
   | { type: "abort" }
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
+  | { type: "fork"; roomId: string; originEventId: string; originText: string }
   | { type: "reset"; roomId: string }
   | { type: "refresh"; roomId: string }
   | { type: "dispose" };
@@ -30,7 +31,9 @@ export type RunnerMessage =
   // `ok` = the pass ran without error; `compacted` = history was actually
   // evicted into a summary (false for a no-op). The daemon draws the visible
   // boundary from `compacted`, never from the message text.
-  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string; summary?: string };
+  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string; summary?: string }
+  // Result of a `fork` command — see AgentRuntime.forkAtMessage.
+  | { type: "fork-result"; ok: boolean; message: string };
 
 /** Serialize one protocol frame for the newline-delimited wire.
  *
@@ -105,6 +108,8 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
         message: typeof msg.message === "string" ? msg.message : "",
         ...(typeof msg.summary === "string" ? { summary: msg.summary } : {}),
       };
+    case "fork-result":
+      return { type: "fork-result", ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : "" };
     default:
       return undefined;
   }

@@ -23,6 +23,9 @@ const ANTIGRAVITY_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: true,
   supportsSteer: true,
   supportsCompact: true,
+  // No native in-place session fork; edit/retry use the shared WAL-reset +
+  // replay path (see HarnessCapabilities.supportsForkAtMessage).
+  supportsForkAtMessage: false,
   supportsNativeCommands: false,
   fanOutTools: [],
 };

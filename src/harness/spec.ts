@@ -83,6 +83,22 @@ export interface AgentRuntime {
    * receives whatever token counts the harness can report as the pass runs
    * (best-effort). Only present when capabilities.supportsCompact. */
   compact?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
+  /** Fork the harness's OWN durable session to the point of a prior user
+   * message (backs edit/retry — /compact's exact sibling). Only present when
+   * capabilities.supportsForkAtMessage: a harness with no native fork
+   * primitive relies on the shared WAL rewind + resetRoom() + full-floor
+   * replay instead (room-service.forkAtUserMessage), which stays unchanged.
+   * `originEventId`/`originText` identify the gaia transcript's user message
+   * the fork must land BEFORE; the harness maps that to its own session's
+   * entry id however its own history is addressed (pi: getUserMessagesFor-
+   * Forking + session.sessionManager.createBranchedSession/newSession — a NEW
+   * durable session file, not an in-place rewind, so it survives a runner
+   * respawn). Resolves `{ ok: true, ... }` once the fork is written and this
+   * room's session has been rebuilt around it (so a following resend appends
+   * under the fork point and persists there); `{ ok: false, message }` when
+   * the mapping/fork fails, so the caller can fall back to the shared reset
+   * path instead of silently leaving stale context behind. */
+  forkAtMessage?(roomId: string, originEventId: string, originText: string): Promise<{ ok: boolean; message: string }>;
   dispose(): void | Promise<void>;
   /** Drop the room's session so the next turn starts fresh (backs /clear). */
   resetRoom(roomId: string): void;
@@ -127,6 +143,15 @@ export interface HarnessCapabilities {
    * session.compact, claude /compact, codex thread compaction)? Backs
    * /compact. */
   readonly supportsCompact: boolean;
+  /** Has a native DURABLE session fork the runtime can invoke to branch onto
+   * a prior user message (pi session.sessionManager.createBranchedSession)?
+   * Backs edit/retry: when true, room-service forks the harness's OWN
+   * session there instead of resetRoom() + full-floor replay
+   * (AgentRuntime.forkAtMessage). Absent
+   * harnesses (claude/codex) keep the existing WAL-rewind + reset + replay
+   * path unchanged — their own session store's clear() already forces a fresh
+   * session that replays the truncated transcript correctly. */
+  readonly supportsForkAtMessage: boolean;
   /** Passes an UNRECOGNIZED gaia slash command through to its underlying CLI as
    * a native command turn (claude runs it as a skill/slash-command with the
    * command surface enabled). Backs "/deep-research"-style passthrough, gated
