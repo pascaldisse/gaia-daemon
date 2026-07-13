@@ -183,6 +183,9 @@ interface ClaudeRoomMeta {
 // session while leaving subscription auth, the model, built-in tools, and
 // permissions intact (confirmed in `claude --help`).
 const SAFE_MODE = "--safe-mode";
+// gaia owns compaction: the daemon's /compact drives harness compaction
+// explicitly; the CLI must NEVER auto-compact on its own (Pascal, 2026-07-13).
+const NO_AUTOCOMPACT_SETTINGS = JSON.stringify({ autoCompactEnabled: false });
 
 // A steer (an extra user message injected on the open stdin) that lands after
 // the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
@@ -772,10 +775,17 @@ export class ClaudeRuntime implements AgentRuntime {
       env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
-        if (!channel.closed && code !== 0 && !channel.hasError) {
+        // A `result` message closes the channel before the process exits. If
+        // the process gets here with the channel still open, no result ever
+        // arrived — even exit 0 is an abnormal turn end (Claude can keep a
+        // background task alive, stream the full answer, then exit cleanly
+        // without a result record). Fail the uniform AgentRuntime stream so
+        // runner.ts emits turn-error rather than the false turn-end that used
+        // to make room-service discard the accumulated reply.
+        if (!channel.closed && !channel.hasError) {
           channel.fail(
             claudeStartupError(
-              new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
+              new Error(`claude exited without a result (${signal ? `signal ${signal}` : `exit ${code}`}).`),
               stderr,
             ),
           );
@@ -833,7 +843,7 @@ export class ClaudeRuntime implements AgentRuntime {
     if (!room?.started) return NO_SESSION_TO_COMPACT;
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--settings", NO_AUTOCOMPACT_SETTINGS, "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
@@ -1073,6 +1083,8 @@ export class ClaudeRuntime implements AgentRuntime {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
+      "--settings",
+      NO_AUTOCOMPACT_SETTINGS,
       // Isolation: normal turns use --safe-mode (no user CLAUDE.md/skills/hooks/
       // commands). A native command NEEDS the skill/slash-command surface that
       // --safe-mode kills, so it isolates a different way — no user setting
@@ -1362,6 +1374,37 @@ registerHarness({
     modelNameOptions: ["fable", "opus", "sonnet", "haiku"],
     // Claude Code's own --permission-mode vocabulary, passed verbatim.
     permissionModes: ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
+  },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      if (toolName !== "Bash" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+      const call = args as Record<string, unknown>;
+      if (call.run_in_background !== true) return undefined;
+      const text =
+        typeof result === "string"
+          ? result
+          : Array.isArray(result)
+            ? result
+                .map((block) =>
+                  block && typeof block === "object" && typeof (block as { text?: unknown }).text === "string"
+                    ? (block as { text: string }).text
+                    : "",
+                )
+                .filter(Boolean)
+                .join("\n")
+            : result && typeof result === "object" && typeof (result as { text?: unknown }).text === "string"
+              ? (result as { text: string }).text
+              : "";
+      const taskId = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/.exec(text)?.[1];
+      if (!taskId) return undefined;
+      const outputPath = /written to:\s*([^\r\n]+?)(?=\.\s|$)/i.exec(text)?.[1]?.trim();
+      return {
+        taskId,
+        ...(typeof call.command === "string" ? { command: call.command } : {}),
+        ...(typeof call.description === "string" ? { description: call.description } : {}),
+        ...(outputPath ? { outputPath } : {}),
+      };
+    },
   },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),

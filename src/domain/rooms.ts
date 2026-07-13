@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -106,6 +106,31 @@ function contextUsageFrom(value: unknown): Record<string, { usedTokens: number; 
 
 /** A held context-gate decision persisted in state.json. Needs an agent id and
  * message; malformed → absent (never blocks the room from opening). */
+function backgroundTasksFrom(value: unknown): BackgroundTask[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tasks: BackgroundTask[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+    if (typeof raw.taskId !== "string" || !raw.taskId.trim()) continue;
+    if (typeof raw.toolName !== "string" || !raw.toolName.trim()) continue;
+    if (typeof raw.agentId !== "string" || !raw.agentId.trim()) continue;
+    if (typeof raw.roomId !== "string" || !raw.roomId.trim()) continue;
+    if (typeof raw.startedAt !== "string" || !Number.isFinite(Date.parse(raw.startedAt))) continue;
+    tasks.push({
+      taskId: raw.taskId,
+      toolName: raw.toolName,
+      ...(typeof raw.command === "string" ? { command: raw.command } : {}),
+      ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      ...(typeof raw.outputPath === "string" && raw.outputPath ? { outputPath: raw.outputPath } : {}),
+      startedAt: raw.startedAt,
+      agentId: raw.agentId,
+      roomId: raw.roomId,
+    });
+  }
+  const capped = tasks.slice(-20);
+  return capped.length > 0 ? capped : undefined;
+}
+
 function contextGateFrom(value: unknown): ContextGatePending | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.agentId !== "string" || !value.agentId.trim()) return undefined;
@@ -304,6 +329,7 @@ export function normalizeRoomState(value: unknown): RoomState {
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
   const queue = queueFrom(value.queue);
   const contextUsage = contextUsageFrom(value.contextUsage);
+  const backgroundTasks = backgroundTasksFrom(value.backgroundTasks);
   const contextGate = contextGateFrom(value.contextGate);
   const contextFloors = cursorRecord(value.contextFloors);
   return {
@@ -324,6 +350,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(pendingTurn ? { pendingTurn } : {}),
     ...(queue ? { queue } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    ...(backgroundTasks ? { backgroundTasks } : {}),
     ...(contextGate ? { contextGate } : {}),
     ...(value.thanksDario === true ? { thanksDario: true } : {}),
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),

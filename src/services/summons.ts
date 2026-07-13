@@ -136,6 +136,8 @@ export interface SummonRoomAccess {
   deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void>;
   /** Stamp this CHILD room's summon record delivered (idempotent). */
   markSummonDelivered(): Promise<void>;
+  /** Rebroadcast the workspace rooms list (see RoomService.broadcastRoomsChanged). */
+  broadcastRoomsChanged(): Promise<void>;
   /** Panic-stop this room's active turn — the EXACT plumbing the /cancel
    * slash command uses (cancelActiveTask under the hood): aborts the runner,
    * lets the partial commit (NO PROGRESS EVER LOST), settles the task
@@ -385,10 +387,21 @@ export class SummonCoordinator implements SummonHost {
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
 
-    const done = this.runChild(child, info, task, options).finally(() => this.running.delete(childRoomId));
+    const done = this.runChild(child, info, task, options).finally(() => {
+      this.running.delete(childRoomId);
+      this.notifyParentRoomsChanged(parentRoomId);
+    });
     // Don't crash on background summons whose result no one awaits.
     done.catch(() => {});
     return { roomId: childRoomId, done };
+  }
+
+  /** After a child leaves the running set, push a fresh rooms list from the
+   * parent so no client keeps counting a dead summon. Chrome, best-effort. */
+  private notifyParentRoomsChanged(parentRoomId: string): void {
+    void this.serviceForRoom(parentRoomId)
+      .then((parent) => parent.broadcastRoomsChanged())
+      .catch(() => {});
   }
 
   /** Run the worker's first turn; with a delivery mode, land the result (or the
@@ -398,14 +411,16 @@ export class SummonCoordinator implements SummonHost {
 
     let reply: string;
     let failed = false;
+    let cancelled = false;
     try {
       reply = await this.runFirstTurn(child, info.agentId, task, info.roomId);
     } catch (error) {
       failed = true;
+      cancelled = error instanceof Error && (error as { summonCancelled?: boolean }).summonCancelled === true;
       reply = error instanceof Error ? error.message : String(error);
     }
     try {
-      await this.deliver(child, info, options, reply, failed);
+      await this.deliver(child, info, options, reply, failed, cancelled);
     } catch (error) {
       // Leave the child's summon record "running": the boot sweep retries the
       // delivery on the next daemon start instead of losing the result.
@@ -436,7 +451,8 @@ export class SummonCoordinator implements SummonHost {
     }
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
     if (turn.status === "error") throw new Error([turn.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"));
-    if (turn.status === "cancelled") throw new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n"));
+    if (turn.status === "cancelled")
+      throw Object.assign(new Error(["cancelled before completion", worker.digest].filter(Boolean).join("\n\n")), { summonCancelled: true });
     const reply = (await child.latestReplyFrom(agentId)).trim();
     if (reply) return reply;
     // Empty completion: a worker that genuinely did something — produced
@@ -455,13 +471,24 @@ export class SummonCoordinator implements SummonHost {
    * SummonResultMeta, not baked into the text), then — deliver:"turn" — nudge
    * the caller agent to continue. Marks the child's durable record delivered
    * ONLY after the parent write committed — a crash in between re-delivers
-   * rather than losing it. */
-  private async deliver(child: SummonRoomAccess, info: SummonChild, options: Pick<SummonOptions, "deliver" | "callerAgentId">, reply: string, failed: boolean): Promise<void> {
+   * rather than losing it.
+   *
+   * A CANCELLED summon delivers its note but never re-invokes the caller — the
+   * user just killed it (Ctrl+C kill-all); triggering a new parent turn
+   * resurrected the room and forced repeated presses. */
+  private async deliver(
+    child: SummonRoomAccess,
+    info: SummonChild,
+    options: Pick<SummonOptions, "deliver" | "callerAgentId">,
+    reply: string,
+    failed: boolean,
+    cancelled = false,
+  ): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
     await parent.deliverAgentResult(info.agentId, reply, {
       childRoomId: info.roomId,
       failed,
-      ...(options.deliver === "turn" && options.callerAgentId ? { triggerTarget: options.callerAgentId } : {}),
+      ...(options.deliver === "turn" && options.callerAgentId && !cancelled ? { triggerTarget: options.callerAgentId } : {}),
     });
     await child.markSummonDelivered();
   }
@@ -496,7 +523,10 @@ export class SummonCoordinator implements SummonHost {
       this.log(`summon recovery: re-arming '${roomId}' (@${record.agentId} → '${parentRoomId}')`);
       void this.recoverOne(info, record)
         .catch((error) => this.log(`summon recovery for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
-        .finally(() => this.running.delete(roomId));
+        .finally(() => {
+          this.running.delete(roomId);
+          this.notifyParentRoomsChanged(parentRoomId);
+        });
     }
   }
 
@@ -511,12 +541,14 @@ export class SummonCoordinator implements SummonHost {
     const worker = await inspectWorker(this.workspace.rootDir, info.roomId, info.agentId);
     let reply: string;
     let failed: boolean;
+    let cancelled = false;
     if (lastTask?.status === "error") {
       reply = [lastTask.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
     } else if (lastTask?.status === "cancelled") {
       reply = ["cancelled before completion", worker.digest].filter(Boolean).join("\n\n");
       failed = true;
+      cancelled = true;
     } else {
       const raw = (await child.latestReplyFrom(info.agentId)).trim();
       if (raw) {
@@ -533,6 +565,6 @@ export class SummonCoordinator implements SummonHost {
         failed = true;
       }
     }
-    await this.deliver(child, info, record, reply, failed);
+    await this.deliver(child, info, record, reply, failed, cancelled);
   }
 }

@@ -26,6 +26,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   snapshot: Snapshot|null,
  *   streams: Map<string, StreamEntry>,
  *   eventSource: EventSource|EventChannel|null,
+ *   eventConnectionStale: boolean,
  *   error: string,
  *   composerText: string,
  *   pendingAttachments: PendingAttachment[],
@@ -92,6 +93,7 @@ export const state = {
   // v2 SSE `eventId`). v1's author+text snapshot-merge heuristic is gone.
   streams: new Map(),
   eventSource: null,
+  eventConnectionStale: false,
   error: "",
   composerText: "",
   // Files pasted into the composer (system paste, no button), shown as a
