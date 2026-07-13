@@ -997,6 +997,20 @@ test("/pet persists independent room+agent bindings, validates, lists, removes, 
   assert.deepEqual((await (await RoomHandle.open(root, "default")).state()).petBindings, { gaia: "gaia" });
 });
 
+test("bare /pet (no package, no @agent) spawns the default pet for the agent you're talking to", async () => {
+  const loaded: string[] = [];
+  const { service, root } = await makeService({
+    agents: ["gaia", "terry"],
+    petLoader: async (name) => { loaded.push(name); },
+  });
+
+  assert.equal((await service.sendMessage("@terry hey")).status, "running");
+  await service.waitForIdle();
+  assert.equal((await service.sendMessage("/pet")).status, "complete");
+  assert.deepEqual((await (await RoomHandle.open(root, "default")).state()).petBindings, { terry: "gaia" }, "defaults to DEFAULT_PET_NAME for the room's active agent, no package/mention required");
+  assert.deepEqual(loaded, ["gaia"]);
+});
+
 test("pet progress is room+agent scoped and derived from uniform AgentEvents", async () => {
   const { service, events } = await makeService({
     agents: ["gaia"],
