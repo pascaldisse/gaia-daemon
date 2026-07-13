@@ -295,6 +295,21 @@ export function connectEvents(resyncOnReady = false) {
     upsertTask(payload.task);
     setPetActivity(payload.task.status === "complete" ? { level: "success" } : { level: "warning" });
     markDirty("panel", "status", "composer", "tabs", "sidebar");
+    // Defense in depth: the turn's own final "room-event" (or a "steered"
+    // fold-in delta it depended on) can be lost on an open-but-lossy
+    // transport without the socket ever closing — the reconnect-triggered
+    // resync in the "ready" handler never fires then. task-end is a separate,
+    // independently-delivered broadcast: if it says the task is done but a
+    // stream for that task is still sitting uncommitted, the client missed a
+    // frame. Resync once instead of leaving a permanently fossilized
+    // streaming bubble / unsuppressed steer.
+    if (state.snapshot) {
+      const committed = new Set(state.snapshot.room.events.map((e) => e.id));
+      const orphaned = [...state.streams.values()].some(
+        (stream) => stream.taskId === payload.task.id && !committed.has(stream.id),
+      );
+      if (orphaned) void resyncSnapshot(state.snapshot.workspace.id);
+    }
   });
 
   listen("task-error", (event) => {
