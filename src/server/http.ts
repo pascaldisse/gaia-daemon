@@ -19,6 +19,7 @@ import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
+import { installGitGuard } from "../domain/git-guard.js";
 import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { harnessSpecs } from "../harness/spec.js";
 import { agentRoster } from "../harness/tools.js";
@@ -244,6 +245,9 @@ export class GaiaWebServer {
   }
 
   async listen(): Promise<{ url: string; close(): Promise<void> }> {
+    // Daemon boot self-heal: (re)install the git-guard hook into the serving
+    // workspace's shared hooks dir. Best-effort — a non-repo cwd just warns.
+    installGitGuard(this.options.cwd);
     const server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
