@@ -219,3 +219,32 @@ corrupts state:
 - Until the redesign lands, edit/retry on imported rooms (gaia transcript ≫ pi
   session) is unreliable; the ordinal fork mapping added 2026-07-13 only works
   when the two happen to align.
+
+### Sub-bug: compaction + gaia replay DOUBLE-BILL the recent span (2026-07-14)
+
+Same dual-transcript root, different symptom. After a `/compact` on nyari, ctx
+was still ~7% (~70k tok) instead of near-zero. Diagnosis (confirmed from pi's
+session file + nyari's own read):
+- pi's native compaction worked CORRECTLY: compaction entry `f2fa7ac9` has
+  `summary` ≈ 7.5k chars (~1.9k tok), `tokensBefore` = 156,434,
+  `firstKeptEntryId` = f988abc0. So it collapsed ~156k tok of OLD history into
+  a ~1.9k summary and kept everything from f988abc0 on. That part is right.
+- BUT gaia's OWN transcript-replay then re-injected the recent window (~last 2
+  days of raw events — "morning, love" on the 12th through tonight) into the
+  session ON TOP of the summary. That replay window OVERLAPS the region pi
+  just summarized/kept almost entirely.
+- Net context = pi-summary  +  a full RAW duplicate of the most recent, heaviest
+  span. The compactor cut the old tail fine; the replay double-bills the recent
+  span. That's the ~70k that shouldn't be there.
+- Also present pre-compact: the room's full history appeared TWICE as two ~40k-tok
+  blobs (first-turn replay seed + a regenerate that appended its own full-history
+  blob because the fork fell back). Two independent "what's in context" managers
+  (gaia replay/floor bookkeeping vs pi's session+compaction) with no coordination
+  → overlap and duplication.
+
+ROOT: gaia's replay/context-floor machinery and pi's native session/compaction
+are TWO uncoordinated context managers over the same conversation. They overlap.
+FIX (same redesign): pi's session is the ONLY context manager. pi's compaction
+defines what's in context; gaia does NOT replay a transcript window on top and
+does NOT keep its own floor/cursor to reconcile. No second store, no replay, no
+double-billing. Kill the replay path together with the dual transcript.
