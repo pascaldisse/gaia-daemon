@@ -26,6 +26,7 @@ import { existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { workspacePaths } from "../core/paths.js";
 import { readJson } from "../core/store.js";
+import { installGitGuard } from "./git-guard.js";
 import type { CollabConfig, RoomState } from "../core/types.js";
 import { normalizeRoomState } from "./rooms.js";
 
@@ -87,6 +88,9 @@ export function ensureRoomWorktree(rootDir: string, roomId: string, branchPrefix
     // (crash mid-add, manual deletion of the link) so a re-add below can't
     // get wedged forever on a registration git still remembers.
     git(rootDir, "worktree", "prune");
+    // Self-heal the git-guard on every room init: a fresh clone or a cleared
+    // hooks dir gets the protection back before any agent can touch refs.
+    installGitGuard(rootDir);
     // Healthy existing worktree: the .git link file is what makes a worktree
     // a worktree. Present after prune → it's still registered → reuse it.
     if (existsSync(join(path, ".git"))) {
