@@ -437,7 +437,20 @@ export class GaiaWebServer {
             // Build succeeded. Atomically swap web/ and setups/ from staging
             // into plan.out. This is atomic from TCC's perspective — it never
             // sees the bundle in an inconsistent state.
-            for (const name of ["web", "setups"]) {
+            //
+            // A packaged (!fromSource) install ALSO swaps the compiled
+            // `gaia-daemon` binary + `gaia-source.json` — otherwise the app
+            // rebuilds a fresh binary into staging on every /rebuild and then
+            // discards it, re-execing the SAME OLD BINARY forever (daemon
+            // code changes never take effect on a compiled install). Renaming
+            // the running binary aside then moving the new one into its path
+            // is a plain POSIX rename — never a write into the open inode —
+            // so it never hits ETXTBSY, and the process currently executing
+            // out of the old (now unlinked-from-the-directory) inode keeps
+            // running fine until it re-execs below. The from-source (tsx) dev
+            // flow is untouched: only web/setups swap, exactly as before.
+            const names = fromSource ? ["web", "setups"] : ["web", "setups", "gaia-daemon", "gaia-source.json"];
+            for (const name of names) {
               const src = join(stagingDir, name);
               const dst = join(plan.out, name);
               const tmp = `${dst}.old-${Date.now()}`;
@@ -446,11 +459,21 @@ export class GaiaWebServer {
                 // This is as atomic as POSIX rename gets.
                 if (existsSync(dst)) await rename(dst, tmp);
                 await rename(src, dst);
-                // Clean up the .old backup.
-                if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
               } catch (error) {
                 writeSync(reloadLog, `[gaia] reload: atomic swap FAILED for ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
                 throw error;
+              }
+              // Clean up the .old backup, best-effort. `gaia-daemon.old-*`
+              // may still be the inode THIS process is executing out of —
+              // some filesystems refuse to unlink an in-use executable.
+              // That must never fail the reload; the swap itself (the
+              // renames above) already succeeded.
+              if (existsSync(tmp)) {
+                try {
+                  rmSync(tmp, { recursive: true, force: true });
+                } catch (error) {
+                  writeSync(reloadLog, `[gaia] reload: cleanup of stale ${tmp} failed (tolerated): ${error instanceof Error ? error.message : String(error)}\n`);
+                }
               }
             }
             rebuildOk = true;
@@ -521,7 +544,14 @@ export class GaiaWebServer {
         .slice(2)
         .filter((arg) => arg !== "--dev" && !arg.startsWith("/$bunfs") && !arg.includes("~BUN"));
       const compiledBinary = plan ? join(plan.out, "gaia-daemon") : undefined;
-      const migrateToCompiled = rebuildOk && fromSource && compiledBinary !== undefined && existsSync(compiledBinary);
+      // Not gated on `fromSource`: a packaged (!fromSource) install now
+      // installs its freshly-built binary into plan.out above, so
+      // compiledBinary IS the new build there too — re-exec it the same way
+      // a source checkout re-execs onto a pre-existing dist/gaia-daemon.
+      // From-source dev behavior is unchanged: it only ever finds a compiled
+      // binary here if one was separately built into dist/ (e.g. `bun run
+      // build`), exactly as before.
+      const migrateToCompiled = rebuildOk && compiledBinary !== undefined && existsSync(compiledBinary);
 
       // gaia never sets ANTHROPIC_BASE_URL on its OWN process env — the only
       // writer is the per-turn thinking-proxy shim, which sets it on a spawned
