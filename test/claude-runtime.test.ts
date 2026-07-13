@@ -569,6 +569,27 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
   }
 });
 
+test("claude background-task descriptor parses the real Bash result shape", () => {
+  const parse = findHarness("claude")?.backgroundTasks?.fromToolCall;
+  assert.ok(parse);
+  const result =
+    "Command running in background with ID: bmuru0sip. Output is being written to: /private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output. You will be notified when it completes. To check interim output, use Read on that file path.";
+  const args = { command: "sleep 30", description: "run the drill", run_in_background: true };
+  const expected = {
+    taskId: "bmuru0sip",
+    command: "sleep 30",
+    description: "run the drill",
+    outputPath:
+      "/private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output",
+  };
+  assert.deepEqual(parse("Bash", args, result), expected);
+  assert.deepEqual(parse("Bash", args, { type: "text", text: result }), expected, "a content block is accepted");
+  assert.deepEqual(parse("Bash", args, [{ type: "text", text: result }]), expected, "content-block arrays are flattened");
+  assert.equal(parse("Bash", { ...args, run_in_background: false }, result), undefined);
+  assert.equal(parse("Read", args, result), undefined);
+  assert.equal(parse("Bash", args, "ordinary command output"), undefined);
+});
+
 test("ClaudeRuntime rejects on an error result", async () => {
   const fx = await fixture();
   try {

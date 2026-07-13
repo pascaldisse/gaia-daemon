@@ -1,12 +1,13 @@
 // One descriptor per harness. Adding a harness = one `harness/<x>.ts` module
 // calling `registerHarness(...)` at its bottom + one import line in the barrel
 // (harness/index.ts). Nothing else learns the harness id: differences live as
-// DATA on the spec (capabilities, ui, credentialProxy, sandboxPaths), read
+// DATA on the spec (capabilities, ui, credentialProxy, backgroundTasks,
+// sandboxPaths), read
 // uniformly — never as `=== "claude"` branches. This rule is absolute
 // (AGENTS.md §RULE #0).
 
 import { DEFAULTS } from "../core/config.js";
-import type { AgentDef, AgentEvent, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
@@ -293,6 +294,12 @@ export interface HarnessSpec {
    * backoff instead of failing the turn. Differences live as DATA here — never as harness-id
    * branches (RULE #0). */
   transientAuthPatterns?: RegExp[];
+  /** Parse a harness-native detached process from a completed tool call. The
+   * shared host invokes this descriptor uniformly after every tool-end; absent
+   * means this harness does not expose background-process starts. */
+  backgroundTasks?: {
+    fromToolCall(toolName: string, args: unknown, result: unknown): BackgroundTaskInfo | undefined;
+  };
   credentialProxy?(ctx: CredentialProxyContext): CredentialProxyWiring;
   /** Named multi-account wiring (see HarnessAccountsSpec). Absent ⇒ this
    * harness has no account concept. */

@@ -1370,6 +1370,37 @@ registerHarness({
     // Claude Code's own --permission-mode vocabulary, passed verbatim.
     permissionModes: ["default", "acceptEdits", "auto", "dontAsk", "plan", "bypassPermissions"],
   },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      if (toolName !== "Bash" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+      const call = args as Record<string, unknown>;
+      if (call.run_in_background !== true) return undefined;
+      const text =
+        typeof result === "string"
+          ? result
+          : Array.isArray(result)
+            ? result
+                .map((block) =>
+                  block && typeof block === "object" && typeof (block as { text?: unknown }).text === "string"
+                    ? (block as { text: string }).text
+                    : "",
+                )
+                .filter(Boolean)
+                .join("\n")
+            : result && typeof result === "object" && typeof (result as { text?: unknown }).text === "string"
+              ? (result as { text: string }).text
+              : "";
+      const taskId = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/.exec(text)?.[1];
+      if (!taskId) return undefined;
+      const outputPath = /written to:\s*([^\r\n]+?)(?=\.\s|$)/i.exec(text)?.[1]?.trim();
+      return {
+        taskId,
+        ...(typeof call.command === "string" ? { command: call.command } : {}),
+        ...(typeof call.description === "string" ? { description: call.description } : {}),
+        ...(outputPath ? { outputPath } : {}),
+      };
+    },
+  },
   create: (ctx) => new ClaudeRuntime(ctx),
   contextWindow: (model) => claudeContextWindow(model),
   resolveApiModelId: (name) => claudeApiModelId(name),

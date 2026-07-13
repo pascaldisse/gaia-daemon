@@ -306,9 +306,9 @@ export function closeUsagePopover() {
 }
 
 // ---------------------------------------------------------------------------
-// Background-process tray — the status-bar chip shows a count of running
-// background tasks + summon rooms; a click opens a palette listing each one
-// with its command, target, elapsed time, and live-output jump for summons.
+// Background-process tray — the status-bar chip counts running agent turns
+// plus harness-reported process starts (which are not claimed to still be
+// alive); a click opens a palette with elapsed time and available output.
 
 /** @returns {Seg|null} */
 function bgChipSeg() {
@@ -316,12 +316,13 @@ function bgChipSeg() {
   if (!snapshot) return null;
   const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running").length;
   const summons = runningSummonRooms(snapshot).length;
-  const n = runningTasks + summons;
+  const backgroundTasks = (snapshot.backgroundTasks ?? []).length;
+  const n = runningTasks + summons + backgroundTasks;
   if (n === 0) return null;
   return {
     text: `\u2699 ${n} bg`,
     cls: `seg-run on`,
-    title: "agents",
+    title: "agents and tracked background processes",
     onclick: openBgTasks,
   };
 }
@@ -331,8 +332,39 @@ export function openBgTasks() {
   markDirty("bgtasks");
 }
 
+/** @type {{ taskId: string, loading: boolean, text?: string, error?: string }|null} */
+let backgroundOutput = null;
+let backgroundOutputRequest = 0;
+
 export function closeBgTasks() {
   state.bgTasksOpen = false;
+  backgroundOutput = null;
+  backgroundOutputRequest += 1;
+  markDirty("bgtasks");
+}
+
+/** @param {string} text @param {number} max */
+function truncate(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** @param {string} taskId */
+async function loadBackgroundOutput(taskId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const request = ++backgroundOutputRequest;
+  backgroundOutput = { taskId, loading: true };
+  markDirty("bgtasks");
+  try {
+    const body = await api(
+      `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/background-tasks/${encodeURIComponent(taskId)}/output`,
+    );
+    if (request !== backgroundOutputRequest) return;
+    backgroundOutput = { taskId, loading: false, text: typeof body.text === "string" ? body.text : "" };
+  } catch (error) {
+    if (request !== backgroundOutputRequest) return;
+    backgroundOutput = { taskId, loading: false, error: error instanceof Error ? error.message : String(error) };
+  }
   markDirty("bgtasks");
 }
 
@@ -376,6 +408,8 @@ function BgTasksPopover() {
   // rooms' tasks in here.
   const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running" && task.roomId !== snapshot.room.id);
   const summons = runningSummonRooms(snapshot);
+  const backgroundTasks = snapshot.backgroundTasks ?? [];
+  const agentCount = runningTasks.length + summons.length;
   const now = Date.now();
   return h(
     "div",
@@ -392,49 +426,91 @@ function BgTasksPopover() {
         "div",
         { class: "palette-head" },
         h("strong", { text: "running agents" }),
-        h("small", { text: `${runningTasks.length + summons.length} running \u00b7 esc to close` }),
+        h("small", { text: `${agentCount} running · ${backgroundTasks.length} started · esc to close` }),
       ),
-      // Running task rows
-      ...runningTasks.map((task) =>
-        h(
-          "div",
-          { class: "usage-row" },
-          h(
+      agentCount > 0
+        ? h(
             "div",
-            { class: "usage-row-top" },
-            h("span", {
-              class: "usage-label",
-              text: runningAgentLabel(task.roomId, /** @type {{ agentId?: string }} */ (task).agentId),
+            { class: "usage-group" },
+            // Running task rows
+            ...runningTasks.map((task) =>
+              h(
+                "div",
+                { class: "usage-row" },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", {
+                    class: "usage-label",
+                    text: runningAgentLabel(task.roomId, /** @type {{ agentId?: string }} */ (task).agentId),
+                  }),
+                  h("span", { class: "usage-pct sev-normal", text: task.startedAt ? elapsed(now - new Date(task.startedAt).getTime()) : "" }),
+                ),
+                task.targets?.length ? h("small", { class: "usage-reset", text: `target: ${task.targets.join(", ")}` }) : null,
+              ),
+            ),
+            // Running summon room rows — clickable, jump to live output
+            ...summons.map((room) =>
+              h(
+                "button",
+                {
+                  class: "usage-row",
+                  style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);margin-top:6px;cursor:pointer;",
+                  onclick: () => {
+                    selectRoom(snapshot.workspace.id, room.id);
+                    closeBgTasks();
+                  },
+                },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", { class: "usage-label", text: runningAgentLabel(room.id) }),
+                  h("span", { class: "usage-pct sev-normal", text: room.lastActivity ? elapsed(now - new Date(room.lastActivity).getTime()) : "" }),
+                ),
+                room.running ? h("small", { class: "usage-reset", text: "streaming · click to watch" }) : null,
+              ),
+            ),
+          )
+        : null,
+      backgroundTasks.length > 0
+        ? h(
+            "div",
+            { class: "usage-group" },
+            h("div", { class: "usage-group-head" }, h("span", { class: "usage-harness", text: "background processes" })),
+            ...backgroundTasks.map((task) => {
+              const output = backgroundOutput?.taskId === task.taskId ? backgroundOutput : null;
+              const age = elapsed(now - new Date(task.startedAt).getTime());
+              const label = task.description || task.command || `${task.toolName} ${task.taskId}`;
+              return h(
+                "div",
+                { class: "usage-row" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);padding:9px;cursor:pointer;color:inherit;font:inherit;",
+                    title: task.command ?? task.description ?? task.taskId,
+                    onclick: () => void loadBackgroundOutput(task.taskId),
+                  },
+                  h(
+                    "div",
+                    { class: "usage-row-top" },
+                    h("span", { class: "usage-label", text: truncate(label, 60) }),
+                    h("span", { class: "usage-pct sev-normal", text: age ? `started ${age} ago` : "started just now" }),
+                  ),
+                  h("small", { class: "usage-reset", text: `@${task.agentId} · ${task.toolName}` }),
+                ),
+                output
+                  ? h("pre", {
+                      style: "max-height:220px;overflow:auto;margin:6px 0 0;padding:9px;background:var(--ink);border:1px solid var(--border);white-space:pre-wrap;",
+                      text: output.loading ? "loading…" : output.error ? `Error: ${output.error}` : output.text || "(no output yet)",
+                    })
+                  : null,
+              );
             }),
-            h("span", { class: "usage-pct sev-normal", text: task.startedAt ? elapsed(now - new Date(task.startedAt).getTime()) : "" }),
-          ),
-          task.targets?.length
-            ? h("small", { class: "usage-reset", text: `target: ${task.targets.join(", ")}` })
-            : null,
-        ),
-      ),
-      // Running summon room rows — clickable, jump to live output
-      ...summons.map((room) =>
-        h(
-          "button",
-          {
-            class: "usage-row",
-            style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);margin-top:6px;cursor:pointer;",
-            onclick: () => {
-              selectRoom(snapshot.workspace.id, room.id);
-              closeBgTasks();
-            },
-          },
-          h(
-            "div",
-            { class: "usage-row-top" },
-            h("span", { class: "usage-label", text: runningAgentLabel(room.id) }),
-            h("span", { class: "usage-pct sev-normal", text: room.lastActivity ? elapsed(now - new Date(room.lastActivity).getTime()) : "" }),
-          ),
-          room.running ? h("small", { class: "usage-reset", text: "streaming \u00b7 click to watch" }) : null,
-        ),
-      ),
-      runningTasks.length === 0 && summons.length === 0
+          )
+        : null,
+      agentCount === 0 && backgroundTasks.length === 0
         ? h("div", { class: "search-empty", text: "No agents running in the background." })
         : null,
     ),

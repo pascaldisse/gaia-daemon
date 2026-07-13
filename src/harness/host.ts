@@ -224,6 +224,9 @@ export class RunnerHost implements AgentRuntime {
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     await this.ensureChild(input.roomId);
+    const backgroundTasks = harnessSpecFor(this.options.harness).backgroundTasks;
+    const toolArgsById = new Map<string, unknown>();
+    const toolArgsByName = new Map<string, unknown[]>();
     // Deliver any reset queued while the child was down (or racing a child death)
     // BEFORE the turn, so a fresh runtime forgets the persisted session and this
     // turn starts a genuinely new harness conversation instead of --resuming the
@@ -237,7 +240,30 @@ export class RunnerHost implements AgentRuntime {
     this.write({ type: "turn", input });
     this.armTurnIdle();
     try {
-      for await (const event of channel.stream()) yield event;
+      for await (const event of channel.stream()) {
+        if (event.type === "tool-start") {
+          if (event.toolCallId) toolArgsById.set(event.toolCallId, event.args);
+          else {
+            const pending = toolArgsByName.get(event.toolName) ?? [];
+            pending.push(event.args);
+            toolArgsByName.set(event.toolName, pending);
+          }
+        }
+        yield event;
+        if (event.type === "tool-end" && backgroundTasks) {
+          let args: unknown;
+          if (event.toolCallId) {
+            args = toolArgsById.get(event.toolCallId);
+            toolArgsById.delete(event.toolCallId);
+          } else {
+            const pending = toolArgsByName.get(event.toolName);
+            args = pending?.shift();
+            if (pending?.length === 0) toolArgsByName.delete(event.toolName);
+          }
+          const task = backgroundTasks.fromToolCall(event.toolName, args, event.result);
+          if (task) yield { type: "background-task", toolName: event.toolName, ...task };
+        }
+      }
       // `close()` is deliberately not enough to mean success. Only the
       // runner's explicit turn-end frame proves the runtime completed. This
       // last-resort guard makes any future unclassified channel-close path

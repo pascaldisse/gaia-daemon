@@ -222,6 +222,57 @@ test("a plain message routes to the default agent and commits a detailed reply",
   assert.equal(delta?.eventId, reply["id" as keyof typeof reply]);
 });
 
+test("background-task events persist, surface in snapshots, and cap at 20", async () => {
+  const { service, root } = await makeService({
+    script: () => [
+      ...Array.from({ length: 22 }, (_, index): AgentEvent => ({
+        type: "background-task",
+        taskId: `bg-${index}`,
+        toolName: "Shell",
+        command: `work ${index}`,
+        description: `background work ${index}`,
+        outputPath: `/tmp/bg-${index}.out`,
+      })),
+      { type: "text-delta", delta: "started them" },
+    ],
+  });
+
+  await service.sendMessage("start background work");
+  await service.waitForIdle();
+
+  const state = await readJson(workspacePaths.roomState(root, "default")) as { backgroundTasks?: Array<{ taskId: string; agentId: string }> };
+  assert.equal(state.backgroundTasks?.length, 20);
+  assert.deepEqual(state.backgroundTasks?.map((task) => task.taskId), Array.from({ length: 20 }, (_, index) => `bg-${index + 2}`));
+  assert.ok(state.backgroundTasks?.every((task) => task.agentId === "gaia"));
+
+  const snapshot = await service.getSnapshot();
+  assert.deepEqual(snapshot.backgroundTasks.map((task) => task.taskId), state.backgroundTasks?.map((task) => task.taskId));
+  assert.equal(snapshot.backgroundTasks[0]?.description, "background work 2");
+});
+
+test("recording a background task drops entries older than 24 hours", async () => {
+  const { service } = await makeService({
+    script: () => [
+      { type: "background-task", taskId: "fresh", toolName: "Shell", outputPath: "/tmp/fresh.out" },
+      { type: "text-delta", delta: "started" },
+    ],
+  });
+  await service.room.updateState((state) => {
+    state.backgroundTasks = [
+      {
+        taskId: "stale",
+        toolName: "Shell",
+        startedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+        agentId: "gaia",
+      },
+    ];
+  });
+
+  await service.sendMessage("start another");
+  await service.waitForIdle();
+  assert.deepEqual((await service.getSnapshot()).backgroundTasks.map((task) => task.taskId), ["fresh"]);
+});
+
 test("snapshot usage scope contains only accounts of agents active in this room", async () => {
   const { service, workspace } = await makeService({ agents: ["gaia", "terry", "elsewhere"] });
   workspace.agents.gaia.account = "claude-current";

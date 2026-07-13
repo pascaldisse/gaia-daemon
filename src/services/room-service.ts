@@ -14,7 +14,7 @@
 //   50-entry LRU side-table: metadata amnesia by design).
 
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -169,6 +169,9 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+const BACKGROUND_TASK_MAX = 20;
+const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
 
 /** Render the reason carried by the uniform runtime/channel failure contract. */
 function turnEndReason(error: unknown): string {
@@ -1340,6 +1343,9 @@ export class RoomService {
             }
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
+            }
+            if (event.type === "background-task") {
+              void this.recordBackgroundTask(target, event).catch(() => {});
             }
             if (event.type === "notice") {
               // Visible, throttled system line — never reply text (toUiEvent
@@ -2964,6 +2970,51 @@ export class RoomService {
     return events.find((event) => event.id === eventId);
   }
 
+  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+    const now = Date.now();
+    const startedAt = new Date(now).toISOString();
+    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
+    await this.room.updateState((state) => {
+      const recent = (state.backgroundTasks ?? []).filter(
+        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
+      );
+      recent.push({
+        taskId: event.taskId,
+        toolName: event.toolName,
+        ...(event.command !== undefined ? { command: event.command } : {}),
+        ...(event.description !== undefined ? { description: event.description } : {}),
+        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
+        startedAt,
+        agentId,
+      });
+      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
+    });
+    await this.emitSnapshot();
+  }
+
+  /** The tail of a tracked background process's output. The path comes only
+   * from durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<string | undefined> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task?.outputPath) return undefined;
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(task.outputPath, "r");
+      const { size } = await file.stat();
+      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
+      if (length === 0) return "";
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
+      return buffer.subarray(0, bytesRead).toString("utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    } finally {
+      await file?.close();
+    }
+  }
+
   /** Page backwards through committed history: the `limit` events immediately
    * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
    * the transcript's "load older" — the snapshot only carries the tail window. */
@@ -3052,6 +3103,7 @@ export class RoomService {
         })),
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
+      backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.

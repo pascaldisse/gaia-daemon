@@ -898,6 +898,14 @@ export class GaiaWebServer {
       return;
     }
 
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)\/output$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const output = await service.backgroundTaskOutput(params[2]);
+      if (output === undefined) return json(response, 404, { error: "Background task output not found" });
+      json(response, 200, { text: output });
+      return;
+    }
+
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/messages$/))) {
       const service = await this.daemon.serviceFor(params[0], params[1]);
       const body = await parseBody(request);
