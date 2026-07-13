@@ -512,6 +512,69 @@ test("PiRuntime resolves short model aliases to canonical registry ids (anthropi
 });
 
 // ---------------------------------------------------------------------------
+// resolveModel() loud-failure — a CONFIGURED-but-unresolvable model must
+// never silently fall back to the pi CLI default (the OpenAI-agent-on-a-
+// Claude-subscription-model footgun); only the "no model configured" case
+// legitimately reaches the default.
+// ---------------------------------------------------------------------------
+
+test("PiRuntime throws a loud, actionable error when the configured model doesn't resolve in the registry", async () => {
+  const fx = await harnessFixture({ model: { provider: "totally-not-a-real-provider", name: "nope-9000" } });
+  try {
+    const factory: PiRuntimeSessionFactory = async () => {
+      throw new Error("session factory should never be reached — resolveModel must throw first");
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await assert.rejects(
+      collect(runtime.send({ roomId: "default", message: "hi", transcript: [] })),
+      (error: Error) => {
+        assert.match(error.message, /gaia/); // names the agent
+        assert.match(error.message, /totally-not-a-real-provider\/nope-9000/); // names the unresolved provider/name
+        assert.match(error.message, /anthropic/); // names an available provider, for actionability
+        return true;
+      },
+    );
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime still resolves a configured, registry-known model (unchanged)", async () => {
+  const fx = await harnessFixture({ model: { provider: "anthropic", name: "claude-sonnet-5" } });
+  try {
+    let resolvedModel: { id?: string } | undefined;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      resolvedModel = options.model as { id?: string } | undefined;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.equal(resolvedModel?.id, "claude-sonnet-5");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime with NO configured model still passes undefined through to the pi default (unchanged)", async () => {
+  const fx = await harnessFixture({ model: undefined });
+  try {
+    let resolvedModel: unknown = "unset";
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      resolvedModel = options.model;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    assert.equal(resolvedModel, undefined);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // hasDurableSession — pi self-persists sessions as files under the room's
 // pi-sessions/<agent>/ dir; any file there is what continueRecent resumes
 // ---------------------------------------------------------------------------
