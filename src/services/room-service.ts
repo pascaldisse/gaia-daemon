@@ -14,7 +14,7 @@
 //   50-entry LRU side-table: metadata amnesia by design).
 
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -169,6 +169,27 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+const BACKGROUND_TASK_MAX = 20;
+const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+
+/** Render the reason carried by the uniform runtime/channel failure contract. */
+function turnEndReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return reason.trim() || "unknown reason";
+}
+
+/** The visible tail every abnormal turn with output commits on its reserved id. */
+function preservePartialReply(reply: string, error: unknown): string {
+  const notice = `⚠ turn ended without completion (${turnEndReason(error)}) — partial output preserved`;
+  const partial = reply.trim();
+  return partial ? `${partial}\n\n${notice}` : notice;
+}
+
+/** The durable system failure used when an abnormal turn emitted no output. */
+function diedWithoutOutput(error: unknown): Error {
+  return new Error(`turn died without output (${turnEndReason(error)})`);
+}
 
 /** Min gap between visible "upstream stall" system lines within one streaming
  * turn — a harness retrying against a dead upstream can emit the notice
@@ -295,6 +316,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
@@ -1322,6 +1344,9 @@ export class RoomService {
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
             }
+            if (event.type === "background-task") {
+              void this.recordBackgroundTask(target, event).catch(() => {});
+            }
             if (event.type === "notice") {
               // Visible, throttled system line — never reply text (toUiEvent
               // already drops `notice` as a no-op UI transport event above).
@@ -1381,20 +1406,19 @@ export class RoomService {
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
-        // the failure fired before any event streamed. Preserve whatever the
-        // flush recorded and clear the marker (never replay a terminally-failed
-        // turn — poison pill).
+        // setup/progress persistence failed around the stream. Preserve any
+        // WAL-flushed text through the SAME reserved-id commit path and make
+        // the abnormal end visible; a blank turn gets a loud durable failure.
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
-        else await this.room.clearPendingTurn();
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, error);
+        if (partial.trim()) await this.commitReply(target, eventId, preservePartialReply(partial, error), {}, channel);
+        else {
+          await this.room.clearPendingTurn();
+          await this.appendTurnFailure(target, diedWithoutOutput(error));
         }
+        await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
@@ -1406,17 +1430,22 @@ export class RoomService {
       // Cancelled, failed, or completed: ALL commit what was produced. A user
       // stop lands as a stream death (abort → turn-error → the runtime stream
       // throws), so `turn.error` with the cancel flag set IS the normal stop
-      // shape — never a reason to drop the accumulator. A stop is a deliberate
-      // end, not an eraser: the reply text, the tool calls, and the thinking
-      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      // shape — never a reason to drop the accumulator. Every abnormal teardown
+      // gets an explicit visible outcome: output commits under the reserved id
+      // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
-      const reply = turn.reply.trim();
+      const abnormalReason = turn.error ?? (cancelled ? new Error("aborted") : undefined);
+      if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
+      const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
-      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const interruptedProgress = abnormalReason !== undefined && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const producedOutput = Boolean(partialReply || interruptedProgress);
+      const committedReply = abnormalReason !== undefined && producedOutput
+        ? preservePartialReply(partialReply, abnormalReason)
+        : partialReply;
       // Multi-target hand-off: this target's commit (or clear) must not open a
       // window where the remaining targets' owed turns exist in memory only —
       // the SAME atomic state write that retires this target's marker installs
@@ -1438,27 +1467,27 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
+      if (abnormalReason !== undefined && !producedOutput) {
+        await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+      }
 
       if (failed) {
-        // Genuine mid-stream failure (not a user stop): the progress is now
-        // durable; surface the error so the task settles as error.
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, turn.error);
-        }
-        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        // Genuine mid-stream failure (not a user stop): the preservation notice
+        // or no-output failure is durable; surface the original error so the
+        // task settles as error, retaining the existing retry policy.
+        await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
+        await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
         throw turn.error;
       }
 
-      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
-        reply: reply.slice(0, HOOK_TEXT_CAP),
+        reply: partialReply.slice(0, HOOK_TEXT_CAP),
         outcome: cancelled ? "cancelled" : "complete",
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
@@ -1466,7 +1495,7 @@ export class RoomService {
       if (cancelled) return;
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
-      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
+      if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -2897,6 +2926,11 @@ export class RoomService {
     return "Cleared room history and reset all agent sessions.";
   }
 
+  async runRefreshCommand(): Promise<string> {
+    for (const runtime of Object.values(this.runtimes)) runtime.refreshContext?.(this.roomId);
+    return "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn";
+  }
+
   /** /fork: branch into a sibling room. Transcript copies verbatim; cursors
    * RESET so the branch's first turn replays the whole transcript — the one
    * context-rebuild mechanism that works for every harness (sessions cannot
@@ -2934,6 +2968,51 @@ export class RoomService {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
     return events.find((event) => event.id === eventId);
+  }
+
+  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+    const now = Date.now();
+    const startedAt = new Date(now).toISOString();
+    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
+    await this.room.updateState((state) => {
+      const recent = (state.backgroundTasks ?? []).filter(
+        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
+      );
+      recent.push({
+        taskId: event.taskId,
+        toolName: event.toolName,
+        ...(event.command !== undefined ? { command: event.command } : {}),
+        ...(event.description !== undefined ? { description: event.description } : {}),
+        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
+        startedAt,
+        agentId,
+      });
+      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
+    });
+    await this.emitSnapshot();
+  }
+
+  /** The tail of a tracked background process's output. The path comes only
+   * from durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<string | undefined> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task?.outputPath) return undefined;
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(task.outputPath, "r");
+      const { size } = await file.stat();
+      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
+      if (length === 0) return "";
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
+      return buffer.subarray(0, bytesRead).toString("utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    } finally {
+      await file?.close();
+    }
   }
 
   /** Page backwards through committed history: the `limit` events immediately
@@ -3024,6 +3103,7 @@ export class RoomService {
         })),
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
+      backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.

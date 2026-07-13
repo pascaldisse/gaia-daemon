@@ -7,16 +7,35 @@
 // in tools-pi.ts and are imported lazily, so the lightweight `gaia` CLI can
 // use the registry for verb dispatch without paying for pi-coding-agent.
 
-import type { AgentDef } from "../core/types.js";
+import type { AgentDef, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { GaiaTool, RecallSearch, SummonCreate } from "../harness/spec.js";
 
 /** Everything the in-process Pi tool factories might need. */
+export interface AgentRosterEntry {
+  id: string;
+  label: string;
+}
+
+/** Live state available to every registry pointer. Keep this as one object so
+ * future dynamic documentation can grow without changing pointer signatures. */
+export interface PointerContext {
+  availableAgents: readonly AgentRosterEntry[];
+}
+
+/** One derivation from the loaded workspace feeds prompt pointers, native tool
+ * schemas, and the read-only harness roster endpoint. */
+export function agentRoster(workspace: Pick<Workspace, "agents">): AgentRosterEntry[] {
+  return Object.values(workspace.agents).map((agent) => ({ id: agent.id, label: agent.displayName }));
+}
+
 export interface PiToolContext {
   memoryStore: MemoryStore;
   agent: AgentDef;
   roomId: string;
   roomDir: string;
+  /** Live workspace roster used to constrain self-describing tool schemas. */
+  availableAgents?: readonly AgentRosterEntry[];
   summonCreate?: SummonCreate;
   /** Daemon-side hybrid search; absent → the tool falls back to the local
    * transcript index (works without a bridge, lexical room-only). */
@@ -29,8 +48,9 @@ export interface GaiaToolSpec {
   cliVerbs: string[];
   /** Claude `--allowedTools` permission grant (narrow, locked CLI prefix). */
   grant: string;
-  /** One-line system-prompt pointer, shown when the agent has this tool. */
-  pointer: string;
+  /** System-prompt pointer shown when the agent has this tool. Static docs stay
+   * strings; docs using live state derive from the uniform pointer context. */
+  pointer: string | ((context: PointerContext) => string);
   /** Build the in-process Pi tool, or null when unavailable (lazy import). */
   makePiTool(ctx: PiToolContext): Promise<unknown | null>;
 }
@@ -60,9 +80,17 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     id: "summon",
     cliVerbs: ["summon"],
     grant: "Bash(gaia summon:*)",
-    pointer:
-      '- `gaia summon <agent> "<task>"` — spin up a background worker agent in its own sub-room (nested under this room in the sidebar); returns immediately, and when the worker finishes its result is posted back to this room and you are invoked to continue — never wait or poll for it',
-    makePiTool: async (ctx) => (ctx.summonCreate ? (await import("./tools-pi.js")).createSummonTool(ctx.summonCreate, ctx.roomId) : null),
+    pointer: ({ availableAgents }) =>
+      [
+        '- `gaia summon [--worktree] <agent> "<task>"` — spin up a background worker agent in its own sub-room (nested under this room in the sidebar); `--worktree` requests a separate checkout when worktree isolation is configured; returns immediately, and when the worker finishes its result is posted back to this room and you are invoked to continue — never wait or poll for it',
+        availableAgents.length ? `Available agents: ${availableAgents.map((agent) => agent.id).join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    makePiTool: async (ctx) =>
+      ctx.summonCreate
+        ? (await import("./tools-pi.js")).createSummonTool(ctx.summonCreate, ctx.roomId, ctx.availableAgents)
+        : null,
   },
   {
     id: "resume",

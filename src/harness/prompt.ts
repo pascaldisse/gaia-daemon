@@ -10,10 +10,11 @@ import { readFile } from "node:fs/promises";
 import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
+import { discoverContextFiles } from "../domain/workspace.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import type { AgentInput } from "./spec.js";
 import { harnessIdFor, nativeCommandsFor } from "./spec.js";
-import { GAIA_TOOLS, gaiaToolIds } from "./tools.js";
+import { GAIA_TOOLS, gaiaToolIds, type GaiaToolSpec, type PointerContext } from "./tools.js";
 
 export interface SystemPromptInput {
   agent: AgentDef;
@@ -129,23 +130,27 @@ export async function readOptional(path: string | undefined): Promise<string> {
   }
 }
 
-// Reads soul + optional project-intent off disk and composes the base system
-// prompt. Every harness needs this exact read-then-assemble step.
+// Reads soul + optional project-intent + the workspace's AGENTS.md off disk at
+// call time and composes the base system prompt. SessionMap-backed runtimes
+// serve this builder through SessionMap.systemPrompt, so disk reads happen only
+// at session birth, /compact, /clear, /refresh, or a role switch — never
+// mid-conversation otherwise.
 export async function buildBaseSystemPrompt(params: {
   agent: AgentDef;
   role: ResolvedRole | undefined;
-  contextFiles: ContextFile[];
+  workspaceRoot: string;
 }): Promise<string> {
-  const [soulText, intentText] = await Promise.all([
+  const [soulText, intentText, contextFiles] = await Promise.all([
     readFile(params.agent.soulPath, "utf8"),
     readOptional(params.agent.projectIntentPath),
+    discoverContextFiles(params.workspaceRoot),
   ]);
   return buildSystemPrompt({
     agent: params.agent,
     soulText,
     role: params.role,
     intentText,
-    contextFiles: params.contextFiles,
+    contextFiles,
   });
 }
 
@@ -161,7 +166,7 @@ export async function buildInlineSystemPrompt(params: {
   const base = await buildBaseSystemPrompt({
     agent: params.agent,
     role: params.role,
-    contextFiles: params.workspace.contextFiles,
+    workspaceRoot: params.workspace.rootDir,
   });
   // A harness's native commands (claude builtins like deep-research) have no
   // SKILL.md to inline — they reach the agent by passthrough. Pass their names as
@@ -174,11 +179,21 @@ export async function buildInlineSystemPrompt(params: {
   return [base, skills.text, params.toolPointer].filter(Boolean).join("\n\n---\n\n");
 }
 
-// Progressive-disclosure pointer to the `gaia` CLI for whichever of
-// memory/recall/summon the agent has AND the harness can wire (`supported`).
-// Near-zero context until the agent runs `gaia <cmd> --help`.
-export function gaiaCliPointer(tools: string[], supported: readonly string[] = gaiaToolIds()): string {
-  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) => tool.pointer);
+// Self-contained `gaia` CLI documentation for whichever tools the agent has
+// AND the harness can wire (`supported`). Static and live-derived pointers flow
+// through the same resolver; agents never need a separate documentation lookup.
+export function resolvePointer(spec: GaiaToolSpec, context: PointerContext): string {
+  return typeof spec.pointer === "function" ? spec.pointer(context) : spec.pointer;
+}
+
+export function gaiaCliPointer(
+  tools: string[],
+  supported: readonly string[] = gaiaToolIds(),
+  context: PointerContext = { availableAgents: [] },
+): string {
+  const lines = GAIA_TOOLS.filter((tool) => tools.includes(tool.id) && supported.includes(tool.id)).map((tool) =>
+    resolvePointer(tool, context),
+  );
   if (!lines.length) return "";
   return [
     "# GAIA tools (run via shell)",

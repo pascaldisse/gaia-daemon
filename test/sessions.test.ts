@@ -9,8 +9,50 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileSessionStore } from "../src/harness/sessions.js";
+import { fileSessionStore, SessionMap } from "../src/harness/sessions.js";
 import { workspacePaths } from "../src/core/paths.js";
+
+test("SessionMap.systemPrompt assembles once and returns the cached snapshot", async () => {
+  const sessions = new SessionMap<string>();
+  let assemblies = 0;
+  const assemble = async () => `prompt-${++assemblies}`;
+
+  assert.equal(await sessions.systemPrompt("room", "role", assemble), "prompt-1");
+  assert.equal(await sessions.systemPrompt("room", "role", assemble), "prompt-1");
+  assert.equal(assemblies, 1);
+});
+
+test("SessionMap.refreshPrompt forces system-prompt re-assembly", async () => {
+  const sessions = new SessionMap<string>();
+  let assemblies = 0;
+  const assemble = async () => `prompt-${++assemblies}`;
+
+  await sessions.systemPrompt("room", "role", assemble);
+  sessions.refreshPrompt("room");
+  assert.equal(await sessions.systemPrompt("room", "role", assemble), "prompt-2");
+  assert.equal(assemblies, 2);
+});
+
+test("SessionMap.reset forces system-prompt re-assembly", async () => {
+  const sessions = new SessionMap<string>();
+  let assemblies = 0;
+  const assemble = async () => `prompt-${++assemblies}`;
+
+  await sessions.systemPrompt("room", "role", assemble);
+  sessions.reset("room");
+  assert.equal(await sessions.systemPrompt("room", "role", assemble), "prompt-2");
+  assert.equal(assemblies, 2);
+});
+
+test("SessionMap.systemPrompt re-assembles for a different role key", async () => {
+  const sessions = new SessionMap<string>();
+  let assemblies = 0;
+  const assemble = async () => `prompt-${++assemblies}`;
+
+  assert.equal(await sessions.systemPrompt("room", "role-a", assemble), "prompt-1");
+  assert.equal(await sessions.systemPrompt("room", "role-b", assemble), "prompt-2");
+  assert.equal(assemblies, 2);
+});
 
 test("fileSessionStore: two same-harness agents in one room keep separate sessions", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-sess-"));

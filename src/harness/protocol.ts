@@ -12,6 +12,7 @@ export type RunnerCommand =
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
   | { type: "reset"; roomId: string }
+  | { type: "refresh"; roomId: string }
   | { type: "dispose" };
 
 /** Runner -> daemon. */
@@ -19,6 +20,9 @@ export type RunnerMessage =
   | { type: "ready"; modelLabel: string }
   | { type: "event"; event: AgentEvent }
   | { type: "model-label"; modelLabel: string }
+  // Exactly one of these terminates every turn. `turn-end` means the runtime's
+  // iterable exhausted after a proper harness completion record; every
+  // abnormal teardown is `turn-error`, even an underlying process exit 0.
   | { type: "turn-end" }
   | { type: "turn-error"; message: string }
   | { type: "steer-result"; ok: boolean }

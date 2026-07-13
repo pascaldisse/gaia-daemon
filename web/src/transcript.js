@@ -41,6 +41,10 @@ import { state } from "./state.js";
  * @property {MessageAttachment[]} [attachments]
  * @property {boolean} [redacted]
  * @property {boolean} streaming
+ * @property {number} [lastDeltaAt] epoch milliseconds of the last turn-scoped
+ *   SSE payload for a live stream.
+ * @property {boolean} [connectionStale] the client has not received an SSE
+ *   event for over 45 seconds and is reconnecting.
  * @property {boolean} [stalled] A streaming reply whose upstream socket dropped
  *   mid-stream — the harness is reconnecting. Paints a "reconnecting…" pill on
  *   the live bubble (even one that already has partial text) so a retry gap
@@ -283,6 +287,8 @@ function messageViews() {
       text: stream.text,
       details: stream.details,
       streaming: true,
+      lastDeltaAt: stream.lastDeltaAt,
+      ...(state.eventConnectionStale ? { connectionStale: true } : {}),
       ...(stream.stalled ? { stalled: true } : {}),
     });
   }
@@ -379,16 +385,102 @@ function messageViews() {
   return ranked.sort((a, b) => a.order - b.order || a.index - b.index).map((entry) => entry.view);
 }
 
+// Auto-stick-to-bottom by reader INTENT, not raw position. A chat pins to the
+// bottom while output streams in, but the instant the reader scrolls up it must
+// STOP yanking them back down on every delta — that yank IS the "flickers when I
+// scroll up while responding" bug. Two things make intent-tracking necessary
+// rather than recomputing "am I near the bottom?" each frame:
+//   1. The old 140px positional band re-pinned on ANY scroll-up shorter than
+//      140px, so a slow scroll-up got repeatedly snapped back — you had to
+//      out-run the stream to escape. Intent unpins on the first real scroll-up
+//      (STICK_SLACK) and only re-pins when the reader returns to the bottom.
+//   2. A large delta grows the content by more than the band in one frame;
+//      recomputing position would read "far from bottom" and silently drop the
+//      pin though the reader never moved. Intent only flips on a real scroll
+//      event, so content growth can't break the follow.
+// A room switch re-pins (the newest message wins). Our own scroll-to-bottom lands
+// at the bottom, so it re-pins/stays pinned and never counts as a scroll-up.
+const STICK_SLACK = 24;
+/** @type {{ roomId: string, stick: boolean }} */
+let stickState = { roomId: "", stick: true };
+
+/** @param {HTMLElement} container @returns {number} px from the bottom (0 = pinned). */
+function distanceFromBottom(container) {
+  return container.scrollHeight - container.scrollTop - container.clientHeight;
+}
+
+/**
+ * Re-pin the transcript to the bottom on the next render. Used when the reader
+ * takes an action that should snap them back down — e.g. sending a message: they
+ * want to follow their own message and the reply, even if they'd scrolled up.
+ */
+export function pinTranscriptToBottom() {
+  stickState = { roomId: state.snapshot?.room?.id ?? "", stick: true };
+  markDirty("transcript");
+}
+
+/** Fold a real scroll event into the stick intent (see stickState). */
+function onTranscriptScroll() {
+  const container = $("#transcript");
+  if (container) {
+    stickState = { roomId: state.snapshot?.room?.id ?? "", stick: distanceFromBottom(container) <= STICK_SLACK };
+  }
+  maybeLoadOlderOnScroll();
+}
+
+/**
+ * WKWebView has no CSS scroll anchoring (overflow-anchor is a no-op there — the
+ * .transcript rule is dead weight on WebKit), so a streaming re-render, which
+ * rebuilds the whole reply node every delta, resets the scroll offset of any open
+ * thinking/tool box the reader is scrolling through — snapping it back to the top
+ * ("jumps up and down while I try to scroll through it"). Snapshot each scrolled
+ * box's offset before the keyed sync, keyed by its stable activity id + ordinal,
+ * and restore it onto the rebuilt box after.
+ * @param {HTMLElement} container @returns {Map<string, number>}
+ */
+function captureActivityScroll(container) {
+  /** @type {Map<string, number>} */
+  const offsets = new Map();
+  for (const activity of container.querySelectorAll("[data-activity-id]")) {
+    const id = /** @type {HTMLElement} */ (activity).dataset.activityId;
+    if (!id) continue;
+    activity.querySelectorAll(".markdown-message, .tool-payload pre").forEach((box, index) => {
+      const top = /** @type {HTMLElement} */ (box).scrollTop;
+      if (top > 0) offsets.set(`${id}#${index}`, top);
+    });
+  }
+  return offsets;
+}
+
+/** @param {HTMLElement} container @param {Map<string, number>} offsets */
+function restoreActivityScroll(container, offsets) {
+  if (offsets.size === 0) return;
+  for (const activity of container.querySelectorAll("[data-activity-id]")) {
+    const id = /** @type {HTMLElement} */ (activity).dataset.activityId;
+    if (!id) continue;
+    activity.querySelectorAll(".markdown-message, .tool-payload pre").forEach((box, index) => {
+      const saved = offsets.get(`${id}#${index}`);
+      if (saved !== undefined) /** @type {HTMLElement} */ (box).scrollTop = saved;
+    });
+  }
+}
+
 function renderTranscript() {
   const container = $("#transcript");
   if (!container) return;
-  // Bind the infinite-scroll pager once; the container is never replaced, so a
-  // single passive listener outlives every keyed re-render.
+  // Bind the infinite-scroll pager + stick-intent tracker once; the container is
+  // never replaced, so a single passive listener outlives every keyed re-render.
   if (!container.dataset.olderScrollBound) {
     container.dataset.olderScrollBound = "1";
-    container.addEventListener("scroll", maybeLoadOlderOnScroll, { passive: true });
+    container.addEventListener("scroll", onTranscriptScroll, { passive: true });
   }
-  const stick = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+  // Re-pin to the bottom when the room changes; otherwise honor the reader's
+  // tracked intent so a mid-stream scroll-up isn't fought back down every delta.
+  const roomId = state.snapshot?.room?.id ?? "";
+  if (stickState.roomId !== roomId) stickState = { roomId, stick: true };
+  const stick = stickState.stick;
+  // Snapshot open thinking/tool scroll offsets before the sync rebuilds nodes.
+  const activityScroll = captureActivityScroll(container);
 
   const views = messageViews();
   if (views.length === 0) {
@@ -461,6 +553,9 @@ function renderTranscript() {
     container.insertBefore(node, ref);
   }
 
+  // Restore the reader's place: put any scrolled thinking/tool boxes back where
+  // they were, THEN (only if pinned) snap the transcript itself to the bottom.
+  restoreActivityScroll(container, activityScroll);
   if (stick) container.scrollTop = container.scrollHeight;
 }
 
@@ -575,8 +670,30 @@ function Message(view) {
           text: "⚠ reconnecting…",
         })
       : null,
+    view.streaming ? LiveHeartbeat(view) : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
+}
+
+/** @param {MessageView} view @returns {HTMLElement} */
+function LiveHeartbeat(view) {
+  if (view.connectionStale) {
+    return h("div", { class: "live-heartbeat stale", text: "⚠ connection stale — reconnecting…" });
+  }
+  const elapsed = Math.max(0, Date.now() - Date.parse(view.timestamp));
+  const activity = Math.max(0, Date.now() - (view.lastDeltaAt ?? Date.now()));
+  const blockTools = view.details?.blocks?.filter((block) => block.kind === "tool").length;
+  const toolCalls = blockTools ?? view.details?.tools?.length ?? 0;
+  return h("div", {
+    class: "live-heartbeat",
+    text: `⚙ working · ${formatElapsed(elapsed)} · ${toolCalls} tool calls · last activity ${Math.floor(activity / 1000)}s ago`,
+  });
+}
+
+/** @param {number} milliseconds @returns {string} */
+function formatElapsed(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 /** @param {MessageView} view @returns {HTMLElement} */

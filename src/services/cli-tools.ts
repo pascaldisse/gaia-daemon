@@ -11,7 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { daemonPost as postToDaemon } from "../core/daemon-client.js";
+import { daemonGet as getFromDaemon, daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
@@ -64,6 +64,38 @@ function parseFlags(args: string[], booleans: ReadonlySet<string> = new Set()): 
 function fail(message: string): number {
   console.error(message);
   return 1;
+}
+
+async function daemonAgents(): Promise<{ ok: boolean; agents: Array<{ id: string; label: string }>; text: string }> {
+  const url = env("GAIA_DAEMON_URL");
+  const token = env("GAIA_DAEMON_TOKEN");
+  if (!url || !token) {
+    return {
+      ok: false,
+      agents: [],
+      text: "ERROR: this command needs the GAIA daemon; run it from inside a GAIA agent turn.",
+    };
+  }
+  try {
+    const { ok, status, payload } = await getFromDaemon({ url, token }, "/api/harness/agents");
+    if (!ok) {
+      return {
+        ok: false,
+        agents: [],
+        text: `ERROR: ${typeof payload.error === "string" ? payload.error : `daemon returned ${status}`}`,
+      };
+    }
+    const agents = Array.isArray(payload.agents)
+      ? payload.agents.flatMap((entry) => {
+          if (!entry || typeof entry !== "object") return [];
+          const { id, label } = entry as Record<string, unknown>;
+          return typeof id === "string" && typeof label === "string" ? [{ id, label }] : [];
+        })
+      : [];
+    return { ok: true, agents, text: "" };
+  } catch (error) {
+    return { ok: false, agents: [], text: `ERROR: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 async function daemonPost(path: string, body: unknown): Promise<{ ok: boolean; text: string }> {
@@ -213,7 +245,21 @@ async function runRecall(args: string[]): Promise<number> {
   return 0;
 }
 
+async function summonUsage(): Promise<{ ok: boolean; text: string }> {
+  const roster = await daemonAgents();
+  return {
+    ok: roster.ok,
+    text: [SUMMON_USAGE, roster.ok ? `Available agents: ${roster.agents.map((agent) => agent.id).join(", ")}` : roster.text].join("\n"),
+  };
+}
+
 async function runSummon(args: string[]): Promise<number> {
+  if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
+    const usage = await summonUsage();
+    if (usage.ok) console.log(usage.text);
+    else console.error(usage.text);
+    return usage.ok && args[0] === "--help" ? 0 : 1;
+  }
   const ownWorktree = args[0] === "--worktree";
   const { positional } = parseFlags(ownWorktree ? args.slice(1) : args);
   const agent = positional[0];

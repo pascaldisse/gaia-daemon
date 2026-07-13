@@ -102,6 +102,8 @@
  * @property {string} taskId
  * @property {string} author
  * @property {string} startedAt
+ * @property {number} lastDeltaAt epoch milliseconds of the last turn-scoped
+ *   SSE payload; drives the live heartbeat's activity age.
  * @property {string} text
  * @property {EventDetails} details
  * @property {number} version bumped on every mutation; drives keyed patching

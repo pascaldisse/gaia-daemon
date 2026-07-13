@@ -21,6 +21,16 @@ registerHarness({
   id: "stub",
   capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true },
   ui: { label: "Stub", description: "protocol test double" },
+  backgroundTasks: {
+    fromToolCall: (toolName, args, result) => {
+      const call = args as { detached?: unknown; command?: unknown } | undefined;
+      if (call?.detached !== true || typeof result !== "string") return undefined;
+      const match = /^detached:([^:]+):(.+)$/.exec(result);
+      return match
+        ? { taskId: match[1], command: typeof call.command === "string" ? call.command : undefined, outputPath: match[2] }
+        : undefined;
+    },
+  },
   // No durable session on disk → a cold /compact has nothing to resume.
   hasDurableSession: () => false,
   create: () => {
@@ -63,6 +73,7 @@ import { createInterface } from "node:readline";
 const esc = (o) => JSON.stringify(o).replace(/\\u2028/g, "\\\\u2028").replace(/\\u2029/g, "\\\\u2029");
 const send = (o) => process.stdout.write(esc(o) + "\\n");
 send({ type: "ready", modelLabel: "stub/model" });
+const refreshed = new Set();
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -76,6 +87,12 @@ rl.on("line", (line) => {
   if (cmd.type === "turn") {
     if (cmd.input.message === "boom") {
       send({ type: "turn-error", message: "stub failure" });
+      return;
+    }
+    if (cmd.input.message === "background") {
+      send({ type: "event", event: { type: "tool-start", toolName: "Shell", toolCallId: "call-bg", args: { detached: true, command: "work" } } });
+      send({ type: "event", event: { type: "tool-end", toolName: "Shell", toolCallId: "call-bg", result: "detached:bg-42:/tmp/bg-42.out", isError: false } });
+      send({ type: "turn-end" });
       return;
     }
     if (cmd.input.message === "hold") {
@@ -101,8 +118,10 @@ rl.on("line", (line) => {
       return;
     }
     send({ type: "event", event: { type: "model-info", provider: "stub", modelId: "m", subscription: false } });
-    send({ type: "event", event: { type: "text-delta", delta: "echo:" + cmd.input.message } });
+    send({ type: "event", event: { type: "text-delta", delta: cmd.input.message === "refresh-status" ? "refreshed-before-turn:" + (refreshed.has(cmd.input.roomId) ? "yes" : "no") : "echo:" + cmd.input.message } });
     send({ type: "turn-end" });
+  } else if (cmd.type === "refresh") {
+    refreshed.add(cmd.roomId);
   } else if (cmd.type === "steer") {
     if (cmd.message === "finish") {
       send({ type: "event", event: { type: "text-delta", delta: "post-steer" } });
@@ -155,6 +174,24 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost emits background-task from a fake spec descriptor after tool-end", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    const events: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "background", transcript: [] })) events.push(event);
+
+    assert.deepEqual(events, [
+      { type: "tool-start", toolName: "Shell", toolCallId: "call-bg", args: { detached: true, command: "work" } },
+      { type: "tool-end", toolName: "Shell", toolCallId: "call-bg", result: "detached:bg-42:/tmp/bg-42.out", isError: false },
+      { type: "background-task", toolName: "Shell", taskId: "bg-42", command: "work", outputPath: "/tmp/bg-42.out" },
+    ]);
     await host.dispose();
   } finally {
     await temp.cleanup();
@@ -222,6 +259,30 @@ test("a turn whose content contains U+2028 survives the wire round trip (regress
     const echo = events.find((e) => e.type === "text-delta");
     assert.ok(echo && echo.type === "text-delta", "turn must stream back instead of wedging");
     assert.equal(echo.delta, `echo:${poison}`, "content must arrive intact, separators included");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost sends refresh to a live child and no-ops while the child is down", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    host.refreshContext("default"); // no child yet: the fresh spawn already reads fresh
+
+    const before: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "refresh-status", transcript: [] })) before.push(event);
+    const beforeText = before.find((event) => event.type === "text-delta");
+    assert.ok(beforeText && beforeText.type === "text-delta");
+    assert.equal(beforeText.delta, "refreshed-before-turn:no");
+
+    host.refreshContext("default");
+    const after: AgentEvent[] = [];
+    for await (const event of host.send({ roomId: "default", message: "refresh-status", transcript: [] })) after.push(event);
+    const afterText = after.find((event) => event.type === "text-delta");
+    assert.ok(afterText && afterText.type === "text-delta");
+    assert.equal(afterText.delta, "refreshed-before-turn:yes");
     await host.dispose();
   } finally {
     await temp.cleanup();

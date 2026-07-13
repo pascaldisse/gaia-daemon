@@ -212,6 +212,31 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
   }
 });
 
+test("ClaudeRuntime treats process exit 0 without a result as abnormal after draining streamed text", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // Smoking incident shape: the answer streamed, but a background task kept
+    // Claude alive and it later exited 0 without ever writing a result record.
+    fake.script([initMsg(), textDelta("full answer before exit")], { code: 0, signal: null });
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events: AgentEvent[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of runtime.send({ roomId: "default", message: "hi", transcript: [] })) events.push(event);
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.ok(events.some((event) => event.type === "text-delta" && event.delta === "full answer before exit"));
+    assert.match(caught instanceof Error ? caught.message : String(caught), /claude exited without a result \(exit 0\)/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // A claude agent that granted the web tool, for native-command turns.
 const webFixture = () =>
   harnessFixture({ tools: ["read", "web"], harness: "claude", model: { provider: "anthropic", name: "claude-opus-4-8" } });
@@ -544,6 +569,27 @@ test("ClaudeRuntime maps tool_use (assistant) and tool_result (user) to tool-sta
   }
 });
 
+test("claude background-task descriptor parses the real Bash result shape", () => {
+  const parse = findHarness("claude")?.backgroundTasks?.fromToolCall;
+  assert.ok(parse);
+  const result =
+    "Command running in background with ID: bmuru0sip. Output is being written to: /private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output. You will be notified when it completes. To check interim output, use Read on that file path.";
+  const args = { command: "sleep 30", description: "run the drill", run_in_background: true };
+  const expected = {
+    taskId: "bmuru0sip",
+    command: "sleep 30",
+    description: "run the drill",
+    outputPath:
+      "/private/tmp/claude-501/-Users-pascaldisse-projects-gaia-daemon--gaia-worktrees-chat-mrj85nvi-5ewt/a5b47f85-715c-4a2c-9384-a1a09223e95f/tasks/bmuru0sip.output",
+  };
+  assert.deepEqual(parse("Bash", args, result), expected);
+  assert.deepEqual(parse("Bash", args, { type: "text", text: result }), expected, "a content block is accepted");
+  assert.deepEqual(parse("Bash", args, [{ type: "text", text: result }]), expected, "content-block arrays are flattened");
+  assert.equal(parse("Bash", { ...args, run_in_background: false }, result), undefined);
+  assert.equal(parse("Read", args, result), undefined);
+  assert.equal(parse("Bash", args, "ordinary command output"), undefined);
+});
+
 test("ClaudeRuntime rejects on an error result", async () => {
   const fx = await fixture();
   try {
@@ -856,19 +902,24 @@ test("ClaudeRuntime always routes egress through the thinking shim (reveal is un
   }
 });
 
-test("ClaudeRuntime appends a gaia CLI pointer to the system prompt for memory/recall agents", async () => {
+test("ClaudeRuntime appends exact gaia CLI syntax and the live summon roster to the system prompt", async () => {
   const fx = await fixture();
   try {
     const fake = new FakeClaude();
     fake.script([initMsg(), textDelta("ok"), resultSuccess()]);
+    const agent = { ...fx.agent, tools: [...fx.agent.tools, "summon"] };
+    const worker = { ...fx.agent, id: "ghoul-sol", displayName: "Ghoul Sol" };
+    const workspace = { ...fx.workspace, agents: { gaia: agent, "ghoul-sol": worker } };
 
-    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const runtime = new ClaudeRuntime({ workspace, agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
 
     const args = fake.calls[0].args;
     const systemPrompt = args[args.indexOf("--system-prompt") + 1];
     assert.match(systemPrompt, /gaia mem/);
     assert.match(systemPrompt, /gaia recall/);
+    assert.match(systemPrompt, /`gaia summon \[--worktree\] <agent> "<task>"`/);
+    assert.match(systemPrompt, /Available agents: gaia, ghoul-sol/);
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -908,9 +959,10 @@ test("ClaudeRuntime abort kills the active process", async () => {
     await runtime.abort();
     assert.equal(fake.killCount, 1);
 
-    // Unwind the iterator by completing the process.
+    // Unwind the iterator by completing the process. Exit without a result is
+    // abnormal even when it follows an explicit abort and carries exit code 0.
     fake.lastOptions?.onExit({ code: 0, signal: null, stderr: "" });
-    await sendPromise;
+    await assert.rejects(sendPromise, /claude exited without a result \(exit 0\)/);
     runtime.dispose();
   } finally {
     await fx.cleanup();
