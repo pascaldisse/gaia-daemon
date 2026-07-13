@@ -39,7 +39,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
-  { name: "pet", type: "pet", description: "manage native desktop pets: /pet [@agent] <package> | off [@agent] | list" },
+  { name: "pet", type: "pet", description: "manage native desktop pets: /pet | /pet <package> | /pet @agent [<package>] | off [@agent] | list" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
   {
     name: "refresh",
