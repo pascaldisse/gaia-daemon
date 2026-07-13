@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { refreshAttention } from "./attention.js";
 import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
-import { setPetActivity } from "./pet.js";
+import { forwardNativePetProgress, syncNativePets } from "./pet.js";
 import { markDirty, setError } from "./render.js";
 import { state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
@@ -83,6 +83,19 @@ export function connectEvents() {
     markDirty("sidebar", "tabs");
   });
 
+  // Native pet events are globally delivered by the daemon, independent of
+  // this tab's selected room. The shell receives the complete workspace binding
+  // snapshot plus every room+agent progress event; browsers/iOS render nothing.
+  source.addEventListener("pet-bindings", (event) => {
+    const payload = /** @type {Ev<"pet-bindings">} */ (JSON.parse(event.data));
+    void syncNativePets(payload.workspaceId, payload.bindings);
+  });
+
+  source.addEventListener("pet-progress", (event) => {
+    const payload = /** @type {Ev<"pet-progress">} */ (JSON.parse(event.data));
+    void forwardNativePetProgress(payload);
+  });
+
   source.addEventListener("room-event", (event) => {
     const payload = /** @type {Ev<"room-event">} */ (JSON.parse(event.data));
     if (!state.snapshot) return;
@@ -99,7 +112,6 @@ export function connectEvents() {
     // stream reads as a retry-in-progress instead of a dead turn.
     if (isStallNotice(payload.event)) {
       setError(payload.event.text);
-      setPetActivity({ level: "warning" });
       markStreamsStalled(payload.event.text);
     }
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
@@ -253,21 +265,18 @@ export function connectEvents() {
   source.addEventListener("task-start", (event) => {
     const payload = /** @type {Ev<"task-start">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
-    setPetActivity({ isLoading: true });
     markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
   source.addEventListener("task-end", (event) => {
     const payload = /** @type {Ev<"task-end">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
-    setPetActivity(payload.task.status === "complete" ? { level: "success" } : { level: "warning" });
     markDirty("panel", "status", "composer", "tabs", "sidebar");
   });
 
   source.addEventListener("task-error", (event) => {
     const payload = /** @type {Ev<"task-error">} */ (JSON.parse(event.data));
     upsertTask(payload.task);
-    setPetActivity({ level: "danger" });
     // Drop the empty streaming placeholder the failed turn left behind;
     // partial replies stay visible (frozen) until the next snapshot.
     for (const [id, stream] of state.streams) {

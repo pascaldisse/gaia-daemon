@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DEFAULT_PET_NAME, loadPet } from "../src/server/pet.js";
-import { PET_ANIMATIONS, statusToPetState } from "../web/src/pet-state.js";
+import { listWorkspacePetBindings } from "../src/domain/pets.js";
+import { PET_ANIMATIONS, petProgressView } from "../web/src/pet-state.js";
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "gaia-pets-"));
@@ -50,14 +51,29 @@ test("loadPet rejects a spritesheet outside its package", async () => {
   }
 });
 
-test("status reducer matches Codex notification precedence", () => {
-  assert.equal(statusToPetState(null), "idle");
-  assert.equal(statusToPetState({ level: "info" }), "idle");
-  assert.equal(statusToPetState({ kind: "first-awake", isLoading: true, level: "danger" }), "waving");
-  assert.equal(statusToPetState({ isLoading: true, level: "danger" }), "running");
-  assert.equal(statusToPetState({ level: "warning" }), "waiting");
-  assert.equal(statusToPetState({ level: "danger" }), "failed");
-  assert.equal(statusToPetState({ level: "success" }), "review");
+test("workspace binding snapshot scans every room, not only the selected/resident one", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-pet-bindings-"));
+  try {
+    await mkdir(join(root, ".gaia", "rooms", "selected"), { recursive: true });
+    await mkdir(join(root, ".gaia", "rooms", "background"), { recursive: true });
+    await writeFile(join(root, ".gaia", "rooms", "selected", "state.json"), JSON.stringify({ petBindings: { gaia: "gaia" } }));
+    await writeFile(join(root, ".gaia", "rooms", "background", "state.json"), JSON.stringify({ petBindings: { terry: "nari", bad: "../escape" } }));
+    assert.deepEqual(await listWorkspacePetBindings("ws1", root), [
+      { workspaceId: "ws1", roomId: "background", agentId: "terry", package: "nari" },
+      { workspaceId: "ws1", roomId: "selected", agentId: "gaia", package: "gaia" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("progress reducer exposes the locked bubble labels and shared sprite states", () => {
+  assert.deepEqual(petProgressView({ status: "thinking" }), { label: "Thinking", state: "waiting" });
+  assert.deepEqual(petProgressView({ status: "tool", toolName: "Bash" }), { label: "Bash", state: "running" });
+  assert.deepEqual(petProgressView({ status: "tool" }), { label: "Working", state: "running" });
+  assert.deepEqual(petProgressView({ status: "working" }), { label: "Working", state: "running" });
+  assert.deepEqual(petProgressView({ status: "done" }), { label: "Done", state: "review" });
+  assert.deepEqual(petProgressView({ status: "failed" }), { label: "Failed", state: "failed" });
 });
 
 test("animation table preserves all nine rows, frame counts, and unequal timings", () => {

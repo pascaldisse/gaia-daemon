@@ -665,10 +665,18 @@ export class GaiaWebServer {
       };
       beginSse(response);
       response.write(encodeSse("ready", { bootId }));
-      // Seed the account-usage chip: the SSE fan-out only carries events emitted
-      // while this client is subscribed, so replay the cached usage now instead
-      // of leaving the chip blank until the next daemon poll.
+      // Seed account usage and the COMPLETE workspace pet binding set. Pet
+      // windows are shell-global and may belong to unselected rooms, so this is
+      // deliberately not derived from the selected-room snapshot below.
       for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
+      if (client.workspaceId) {
+        const bindings: UiEvent = {
+          type: "pet-bindings",
+          workspaceId: client.workspaceId,
+          bindings: await this.daemon.petBindings(client.workspaceId),
+        };
+        response.write(encodeSse(bindings.type, bindings));
+      }
       this.clients.add(client);
       response.on("close", () => this.clients.delete(client));
       return;
@@ -1626,14 +1634,11 @@ export class GaiaWebServer {
 
   private broadcast(event: UiEvent): void {
     const payload = encodeSse(event.type, event);
-    // `rooms` is workspace-TAGGED but globally DELIVERED: it carries a
-    // workspaceId only so the client knows which workspace it describes, and
-    // must reach EVERY client (not just those viewing that workspace) so the
-    // sidebar's workspace-level running/unread dots stay live for workspaces
-    // you're not currently in. Every other workspace-scoped event targets a
-    // specific room — room ids are unique only WITHIN a workspace, so those stay
-    // scoped by both ids.
-    const ambient = event.type === "rooms";
+    // `rooms` and native-pet control events are workspace-TAGGED but globally
+    // DELIVERED. Room chrome keeps every sidebar live; pets must keep tracking a
+    // bound agent even when that room is not selected. Every other workspace
+    // event stays scoped by workspace+room (room ids are only locally unique).
+    const ambient = event.type === "rooms" || event.type === "pet-bindings" || event.type === "pet-progress";
     for (const client of this.clients) {
       const scoped = event as { workspaceId?: string; roomId?: string };
       if (!ambient) {

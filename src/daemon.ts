@@ -12,12 +12,13 @@ import { Bus } from "./core/bus.js";
 import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
-import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
+import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, PetBinding, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { normalizeRoomState } from "./domain/rooms.js";
+import { listWorkspacePetBindings } from "./domain/pets.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
@@ -274,6 +275,14 @@ export class Daemon {
   }
 
   // --- account usage limits (account-keyed; see services/usage-service.ts) ------
+
+  /** Complete durable native-pet seed for one workspace. It scans RoomState on
+   * disk, so background/non-resident rooms are included and the shell never
+   * depends on the currently selected room's snapshot. */
+  async petBindings(workspaceId: string): Promise<PetBinding[]> {
+    const record = await this.registry.find(workspaceId);
+    return record ? listWorkspacePetBindings(workspaceId, record.path) : [];
+  }
 
   /** Current cached usage as replayable events — used to seed a client the
    * moment it connects (SSE fan-out only carries events broadcast while it's
@@ -656,6 +665,7 @@ export class Daemon {
     const nextService = await this.serviceFor(workspaceId, next);
     const snapshot = await nextService.getSnapshot();
     this.broadcast({ type: "rooms", workspaceId, rooms: await nextService.listRooms() });
+    this.broadcast({ type: "pet-bindings", workspaceId, bindings: await this.petBindings(workspaceId) });
     this.broadcast({ type: "snapshot", workspaceId, roomId: nextService.roomId, snapshot });
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
@@ -693,6 +703,9 @@ export class Daemon {
     this.currentRoom.delete(workspaceId);
 
     await this.registry.remove(workspaceId);
+    // The workspace's files remain on disk, but it no longer belongs to this
+    // shell process: close its native pet windows immediately.
+    this.broadcast({ type: "pet-bindings", workspaceId, bindings: [] });
     this.log(`removed workspace ${record.name} (${workspaceId}) from the registry; files left on disk`);
 
     // Select a remaining initialized workspace (if any) for the returned payload.

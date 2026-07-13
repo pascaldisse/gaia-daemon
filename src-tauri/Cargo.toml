@@ -16,7 +16,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["devtools"] }
+# macos-private-api is required by Tauri's transparent native-window builder;
+# pet windows are frameless/transparent by product contract.
+tauri = { version = "2", features = ["devtools", "macos-private-api"] }
 # Native OS notifications (dock/notification-center banner when an agent turn
 # finishes). Called from Rust via NotificationExt, so no plugin JS/ACL surface.
 tauri-plugin-notification = "2"

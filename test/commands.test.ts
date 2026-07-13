@@ -26,6 +26,11 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/compact @nyari"), { type: "compact", agent: "nyari" });
   assert.deepEqual(parseCommand("/model opus"), { type: "model", spec: "opus" });
   assert.deepEqual(parseCommand("/model @nyari anthropic/opus"), { type: "model", agent: "nyari", spec: "anthropic/opus" });
+  assert.deepEqual(parseCommand("/pet @nyari nari"), { type: "pet", action: "set", agent: "nyari", package: "nari" });
+  assert.deepEqual(parseCommand("/pet gaia"), { type: "pet", action: "set", agent: undefined, package: "gaia" });
+  assert.deepEqual(parseCommand("/pet off @nyari"), { type: "pet", action: "off", agent: "nyari" });
+  assert.deepEqual(parseCommand("/pet off"), { type: "pet", action: "off", agent: undefined });
+  assert.deepEqual(parseCommand("/pet list"), { type: "pet", action: "list" });
   assert.deepEqual(parseCommand("/thanks-dario"), { type: "thanks-dario", sub: "run" });
   assert.deepEqual(parseCommand("/thanks-dario on"), { type: "thanks-dario", sub: "on" });
   assert.deepEqual(parseCommand("/thanks-dario off"), { type: "thanks-dario", sub: "off" });

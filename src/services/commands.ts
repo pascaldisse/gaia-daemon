@@ -11,6 +11,9 @@ export type SlashCommand =
   | { type: "summon"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "model"; agent?: string; spec?: string }
+  | { type: "pet"; action: "set"; agent?: string; package?: string }
+  | { type: "pet"; action: "off"; agent?: string }
+  | { type: "pet"; action: "list" }
   | { type: "clear" }
   | { type: "fork" }
   | { type: "setup"; sub?: string; id?: string; room?: string }
@@ -35,6 +38,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
+  { name: "pet", type: "pet", description: "manage native desktop pets: /pet [@agent] <package> | off [@agent] | list" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
   { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
@@ -92,6 +96,20 @@ export function parseCommand(input: string): SlashCommand {
       // "/model fable" targets the default agent; "/model nyari fable" names one.
       // The spec keeps its slash intact (provider/name) — split(/\s+/) only breaks on whitespace.
       return stripped.length >= 2 ? { type: "model", agent: stripped[0], spec: stripped[1] } : { type: "model", spec: stripped[0] };
+    case "pet": {
+      const first = args[0];
+      if (first?.toLowerCase() === "list") return { type: "pet", action: "list" };
+      if (first?.toLowerCase() === "off") {
+        return { type: "pet", action: "off", agent: args[1]?.startsWith("@") ? stripped[1] : undefined };
+      }
+      const explicitAgent = first?.startsWith("@") ?? false;
+      return {
+        type: "pet",
+        action: "set",
+        agent: explicitAgent ? stripped[0] : undefined,
+        package: explicitAgent ? stripped[1] : stripped[0],
+      };
+    }
     case "consolidate":
       return { type: "consolidate", agent: stripped[0] || undefined };
     case "dream": {
@@ -133,7 +151,7 @@ export function parseCommand(input: string): SlashCommand {
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(
   "\n",
-)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet <package>             bind the active/default agent in this room\n  /pet @agent <package>      enable or replace one agent's pet\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
 
 // --- mention routing -----------------------------------------------------------
 //

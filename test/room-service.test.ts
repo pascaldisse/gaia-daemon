@@ -62,6 +62,7 @@ async function makeService(options: {
   runtimeFactory?: (agent: AgentDef) => AgentRuntime;
   memory?: RoomMemoryHooks;
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
+  petLoader?: (name: string) => Promise<unknown>;
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
@@ -110,6 +111,7 @@ async function makeService(options: {
     memoryStore: new MemoryStore(),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.settingsChanged ? { settingsChanged: options.settingsChanged } : {}),
+    ...(options.petLoader ? { petLoader: options.petLoader } : {}),
     ...(options.summonHost ? { summonHost: options.summonHost } : {}),
     ...(options.llm ? { llm: options.llm } : {}),
     runtimeFactory: (agent) => {
@@ -674,6 +676,71 @@ test("slash commands emit a system room-event and settle synchronously", async (
   assert.ok(system, "system reply emitted");
   const unknown = await service.sendMessage("/nonsense");
   assert.equal(unknown.status, "complete");
+});
+
+test("/pet persists independent room+agent bindings, validates, lists, removes, and emits a workspace snapshot", async () => {
+  const loaded: string[] = [];
+  const { service, root, events } = await makeService({
+    agents: ["gaia", "terry"],
+    petLoader: async (name) => {
+      if (name === "missing" || name.includes("/")) throw new Error("package not found");
+      loaded.push(name);
+    },
+  });
+
+  assert.equal((await service.getSnapshot()).room.petBindings, undefined, "pets are off by default");
+  assert.equal((await service.sendMessage("/pet @terry nari")).status, "complete");
+  assert.equal((await service.sendMessage("/pet gaia")).status, "complete");
+  assert.deepEqual((await (await RoomHandle.open(root, "default")).state()).petBindings, { terry: "nari", gaia: "gaia" });
+  assert.deepEqual(loaded, ["nari", "gaia"]);
+
+  const bindingEvent = events.filter((event) => event.type === "pet-bindings").at(-1);
+  assert.equal(bindingEvent?.type, "pet-bindings");
+  if (bindingEvent?.type === "pet-bindings") {
+    assert.deepEqual(bindingEvent.bindings, [
+      { workspaceId: "ws1", roomId: "default", agentId: "gaia", package: "gaia" },
+      { workspaceId: "ws1", roomId: "default", agentId: "terry", package: "nari" },
+    ]);
+  }
+
+  await service.sendMessage("/pet list");
+  const listReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").at(-1);
+  assert.ok(listReply?.type === "room-event" && listReply.event.text.includes("@terry → nari"));
+
+  await service.sendMessage("/pet @nobody gaia");
+  const unknownReply = events.filter((event) => event.type === "room-event" && event.event.author === "system").at(-1);
+  assert.ok(unknownReply?.type === "room-event" && unknownReply.event.text.includes("Unknown agent"));
+
+  await service.sendMessage("/pet @terry missing");
+  assert.equal((await (await RoomHandle.open(root, "default")).state()).petBindings?.terry, "nari", "invalid replacement is rejected");
+  await service.sendMessage("/pet off @terry");
+  assert.deepEqual((await (await RoomHandle.open(root, "default")).state()).petBindings, { gaia: "gaia" });
+});
+
+test("pet progress is room+agent scoped and derived from uniform AgentEvents", async () => {
+  const { service, events } = await makeService({
+    agents: ["gaia"],
+    script: () => [
+      { type: "thinking-start" },
+      { type: "tool-start", toolName: "Bash", toolCallId: "t1" },
+      { type: "tool-end", toolName: "Bash", toolCallId: "t1", isError: false },
+      { type: "text-delta", delta: "done" },
+    ],
+  });
+  await service.sendMessage("work");
+  await service.waitForIdle();
+  const progress = events.filter((event) => event.type === "pet-progress");
+  assert.deepEqual(
+    progress.map((event) => event.type === "pet-progress" ? [event.workspaceId, event.roomId, event.agentId, event.status, event.toolName] : []),
+    [
+      ["ws1", "default", "gaia", "working", undefined],
+      ["ws1", "default", "gaia", "thinking", undefined],
+      ["ws1", "default", "gaia", "tool", "Bash"],
+      ["ws1", "default", "gaia", "working", undefined],
+      ["ws1", "default", "gaia", "working", undefined],
+      ["ws1", "default", "gaia", "done", undefined],
+    ],
+  );
 });
 
 test("/compact runs on an idle room (does not self-block), shows a compacting status mid-pass, and persists its reply", async () => {

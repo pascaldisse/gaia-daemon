@@ -4,7 +4,8 @@
   "description": "Base capability for the main window and every spawned GAIA window (win-*). The gaia UI is normally served by the already-running localhost daemon; loopback remote URLs are explicitly allowed so Tauri IPC (open_window/redock, native menu events, redock) works even when the WKWebView loads http://127.0.0.1:8787 directly.",
   "windows": [
     "main",
-    "win-*"
+    "win-*",
+    "pet-*"
   ],
   "permissions": [
     "core:default",
@@ -12,10 +13,13 @@
     "core:event:allow-unlisten",
     "core:window:allow-close",
     "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
     "allow-open-window",
     "allow-redock",
     "allow-set-badge",
-    "allow-notify"
+    "allow-notify",
+    "allow-sync-pets",
+    "allow-pet-progress"
   ],
   "remote": {
     "urls": [

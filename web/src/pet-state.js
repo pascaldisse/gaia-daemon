@@ -1,6 +1,7 @@
 /** @typedef {"idle"|"running-right"|"running-left"|"waving"|"jumping"|"failed"|"waiting"|"running"|"review"} PetState */
 /** @typedef {{ row: number, timings: readonly number[] }} PetAnimation */
-/** @typedef {{ kind?: "first-awake", isLoading?: boolean, level?: "warning"|"danger"|"success"|"info" }} PetActivity */
+/** @typedef {import("./types.js").PetProgress} PetProgress */
+/** @typedef {{ label: string, state: PetState }} PetProgressView */
 
 /** Codex's fixed 8×9 atlas contract, in row order. */
 export const PET_ANIMATIONS = /** @type {Readonly<Record<PetState, PetAnimation>>} */ ({
@@ -15,12 +16,19 @@ export const PET_ANIMATIONS = /** @type {Readonly<Record<PetState, PetAnimation>
   review: { row: 8, timings: [150, 150, 150, 150, 150, 280] },
 });
 
-/** Pure Codex notification/activity → mascot reducer. @param {PetActivity|null|undefined} activity @returns {PetState} */
-export function statusToPetState(activity) {
-  if (activity?.kind === "first-awake") return "waving";
-  if (activity?.isLoading) return "running";
-  if (activity?.level === "warning") return "waiting";
-  if (activity?.level === "danger") return "failed";
-  if (activity?.level === "success") return "review";
-  return "idle";
+/** Uniform daemon progress → native window bubble + sprite state.
+ * @param {Pick<PetProgress, "status"|"toolName">} progress @returns {PetProgressView} */
+export function petProgressView(progress) {
+  switch (progress.status) {
+    case "thinking":
+      return { label: "Thinking", state: "waiting" };
+    case "tool":
+      return { label: progress.toolName?.trim() || "Working", state: "running" };
+    case "working":
+      return { label: "Working", state: "running" };
+    case "failed":
+      return { label: "Failed", state: "failed" };
+    case "done":
+      return { label: "Done", state: "review" };
+  }
 }
