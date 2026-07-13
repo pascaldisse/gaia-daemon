@@ -6,5 +6,7 @@
   <string>GAIA uses the microphone for dictation and voice calls.</string>
   <key>NSCameraUsageDescription</key>
   <string>GAIA uses the camera for video features.</string>
+  <key>NSPasteboardUsageDescription</key>
+  <string>GAIA accesses the pasteboard to copy code snippets and share content.</string>
 </dict>
 </plist>
