@@ -67,7 +67,13 @@ const RELOAD_DELAY_MS = 250;
 // /rebuild stopped after keep-awake teardown, never rebuilt, never re-exec'd,
 // port dead until the app was force-quit. Reload's contract is "the app always
 // comes back", so past this deadline we abandon graceful teardown and proceed.
-const RELOAD_CLOSE_TIMEOUT_MS = 5_000;
+// Kept short (Pascal 2026-07-13): a wedged runner is common (mid-turn agent,
+// dead upstream socket retry loop) and this is a pure wait with no durability
+// payoff — pending turns persist to state.json and resume on next boot
+// regardless, and the orphan sweep on boot reaps any child a skipped dispose
+// left behind. 5s here was measured making /rebuild take ~7s end-to-end on a
+// busy daemon vs ~2.5s idle; 1s caps that same worst case near the idle time.
+const RELOAD_CLOSE_TIMEOUT_MS = 1_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
