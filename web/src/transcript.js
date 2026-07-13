@@ -610,6 +610,18 @@ function Message(view) {
   // reply. Both rewind the room to that point (rewound.jsonl keeps the rest).
   // A queued ghost isn't a committed event yet, so it can't be forked.
   const canFork = !view.streaming && !view.queued && view.author !== "system";
+  // A failed turn (kind:"turn-failed", stamped by appendTurnFailure) leaves the
+  // user message right before it with NO reply at all — canFork above excludes
+  // this row (author "system"), and the user message itself only ever gets ✎
+  // edit, never ⟳. Without a fork-based way to regenerate it, retyping the same
+  // text into the composer was the only option — that calls sendMessage and
+  // APPENDS a new user event instead of regenerating, so N retries produced N
+  // duplicate user messages (the recurring "resend" bug). retryMessage(view.id)
+  // on THIS system row works exactly like the ⟳ below: the server walks
+  // backward past the non-user author to the user message that produced it,
+  // rewinds the room there (this failure row + the stale user message move to
+  // rewound.jsonl), and re-runs the same text once — never a growing pile.
+  const canResendFailedTurn = view.kind === "turn-failed" && !view.streaming && !view.queued;
   // The action row lives at the FOOT of the message (Claude-style), not the meta
   // header — on a long reply the buttons should sit where the reader ends up, not
   // scrolled far above. Built here, appended after the body below.
@@ -628,6 +640,15 @@ function Message(view) {
           type: "button",
           class: "msg-action",
           title: "retry — regenerate from the message that produced this reply",
+          text: "⟳",
+          onclick: () => void retryMessage(view.id),
+        })
+      : null,
+    canResendFailedTurn
+      ? h("button", {
+          type: "button",
+          class: "msg-action",
+          title: "resend — regenerate the failed turn from the message that produced it",
           text: "⟳",
           onclick: () => void retryMessage(view.id),
         })
