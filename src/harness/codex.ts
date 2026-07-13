@@ -34,7 +34,7 @@ import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
 import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
-import { buildPiTools } from "./tools.js";
+import { agentRoster, buildPiTools } from "./tools.js";
 import { emailFromJwt, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -859,6 +859,10 @@ export class CodexRuntime implements AgentRuntime {
     this.roomTools.delete(roomId);
   }
 
+  refreshContext(roomId: string): void {
+    this.threads.refreshPrompt(roomId);
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -901,12 +905,15 @@ export class CodexRuntime implements AgentRuntime {
   private async startThread(client: CodexClient, input: AgentInput): Promise<ThreadState> {
     // Gaia tools are native dynamic tools here (self-describing, like Pi's
     // in-process tools), so the system prompt carries no CLI pointer.
-    const baseInstructions = await buildInlineSystemPrompt({
-      workspace: this.workspace,
-      agent: this.agent,
-      role: input.activeRole,
-      toolPointer: "",
-    });
+    const roleKey = input.activeRole?.name ?? "";
+    const baseInstructions = await this.threads.systemPrompt(input.roomId, roleKey, () =>
+      buildInlineSystemPrompt({
+        workspace: this.workspace,
+        agent: this.agent,
+        role: input.activeRole,
+        toolPointer: "",
+      }),
+    );
     const tools = await this.buildRoomTools(input.roomId);
 
     const response = (await client.request("thread/start", {
@@ -942,12 +949,15 @@ export class CodexRuntime implements AgentRuntime {
     activeRole?: ResolvedRole,
   ): Promise<ThreadState | undefined> {
     try {
-      const baseInstructions = await buildInlineSystemPrompt({
-        workspace: this.workspace,
-        agent: this.agent,
-        role: activeRole,
-        toolPointer: "",
-      });
+      const roleKey = activeRole?.name ?? "";
+      const baseInstructions = await this.threads.systemPrompt(roomId, roleKey, () =>
+        buildInlineSystemPrompt({
+          workspace: this.workspace,
+          agent: this.agent,
+          role: activeRole,
+          toolPointer: "",
+        }),
+      );
       await this.buildRoomTools(roomId);
       const response = (await client.request("thread/resume", {
         threadId: state.threadId,
@@ -982,6 +992,7 @@ export class CodexRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir: workspacePaths.roomDir(this.cwd, roomId),
+      availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       recallSearch: this.recallSearch,
     })) as PiToolLike[];

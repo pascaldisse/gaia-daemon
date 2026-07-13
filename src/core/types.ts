@@ -288,6 +288,10 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+  /** Harness-native shells that detached into the background during a turn.
+   * These are start records only: the harness exposes no reliable exit marker,
+   * so consumers must not infer liveness from their presence. */
+  backgroundTasks?: BackgroundTask[];
   /** A held first turn for a newly-addressed agent whose transcript load would
    * exceed the warn threshold; the human picks how much context to give it
    * before it runs. Durable so the choice survives a restart. */
@@ -534,10 +538,15 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Present only when agent.json explicitly sets `tools`. An unset tools key
+   * inherits the active role's tool defaults (or the normal agent defaults). */
+  toolOverride?: string[];
   /** Skills to load for this agent, by name — resolved against every
    * auto-detected skill dir (gaia/pi/claude/codex/hermes). Merged with the
    * active role's skills. Detected ≠ loaded: this is where you opt in. */
   skills?: string[];
+  /** Present only when agent.json explicitly sets `skills`; see toolOverride. */
+  skillOverride?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
   harness?: string;
@@ -603,7 +612,7 @@ export interface Workspace {
   roomsDir: string;
   globalAgentsDir: string;
   config: WorkspaceConfig;
-  contextFiles: ContextFile[]; // workspace-local AGENTS.md (if present)
+  contextFiles: ContextFile[]; // boot-time snapshot — NOT used for prompt assembly (prompts re-read via discoverContextFiles at session boundaries: birth, /compact, /clear, /refresh); kept for test fixtures
   agents: Record<string, AgentDef>;
 }
 
@@ -649,6 +658,11 @@ export interface FieldHint {
   /** Optional fields render an explicit "(not set)" choice; empty omits the key on save. */
   optional?: boolean;
   options?: FieldHintOption[];
+  /** Value shown by the settings form when this field is absent from the raw
+   * file. The first edit writes an ordinary per-agent override. */
+  defaultValue?: unknown;
+  /** Per-role defaults for an inheritable field (currently tools and skills). */
+  roleDefaults?: Record<string, unknown>;
   /** JSON path of another field whose current value filters options by their `group`. */
   groupBy?: string;
   /** Hint is applicable but currently hidden by another field's value (e.g. tools hidden for codex harness). */
@@ -763,6 +777,24 @@ export type UsageProbeResult =
 // ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)
 
+export interface BackgroundTaskInfo {
+  taskId: string;
+  command?: string;
+  description?: string;
+  outputPath?: string;
+}
+
+export interface BackgroundTask extends BackgroundTaskInfo {
+  toolName: string;
+  startedAt: string;
+  agentId: string;
+  /** The room this process was launched from. Snapshots today only carry the
+   * viewing room's own tasks, but the tray labels and jumps by this id
+   * regardless — the one durable place a background task remembers its
+   * origin, ready the moment a future snapshot ever merges other rooms' in. */
+  roomId: string;
+}
+
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
@@ -774,6 +806,7 @@ export type AgentEvent =
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
+  | { type: "background-task"; taskId: string; toolName: string; command?: string; description?: string; outputPath?: string }
   /** Synthesized DAEMON-side (RunnerHost.injectEvent) the moment a mid-turn
    * steer is accepted, so the marker lands in the stream — and therefore in
    * `details.blocks` — at the exact position the steer took effect. Uniform for
@@ -1029,6 +1062,7 @@ export interface Snapshot {
   commands: SlashCommandDefinition[];
   agents: AgentStatus[];
   tasks: Task[];
+  backgroundTasks: BackgroundTask[];
   thinkingLevels: string[];
   /** Memory-subsystem degradation chips ("embedder dead", "index degraded") —
    * absent/empty when healthy. Degradation is loud (MEMORY-DESIGN.md §10):

@@ -16,6 +16,7 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/thinking high"), { type: "thinking", level: "high" });
   assert.deepEqual(parseCommand("/thinking @gaia off"), { type: "thinking", agent: "gaia", level: "off" });
   assert.deepEqual(parseCommand("/clear"), { type: "clear" });
+  assert.deepEqual(parseCommand("/refresh"), { type: "refresh" });
   assert.deepEqual(parseCommand("/fork"), { type: "fork" });
   assert.deepEqual(parseCommand("/setup"), { type: "setup", sub: "list" });
   assert.deepEqual(parseCommand("/setup activate monad room2"), { type: "setup", sub: "activate", id: "monad", room: "room2" });

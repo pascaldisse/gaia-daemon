@@ -7,10 +7,11 @@ import { join } from "node:path";
 import "../src/harness/index.js";
 import { Daemon } from "../src/daemon.js";
 import { readJson } from "../src/core/store.js";
-import { workspacePaths } from "../src/core/paths.js";
+import { globalPaths, workspacePaths } from "../src/core/paths.js";
 import type { UiEvent } from "../src/core/types.js";
 import { RoomHandle } from "../src/domain/rooms.js";
 import { ensureWorkspaceRoom, initWorkspace } from "../src/domain/workspace.js";
+import { scaffoldGlobalAgent } from "../src/domain/agents.js";
 
 test("deleteRoom does not resurrect the deleted current room as an empty directory", async () => {
   const previousHome = process.env.GAIA_HOME;
@@ -40,6 +41,94 @@ test("deleteRoom does not resurrect the deleted current room as an empty directo
 
     const trashed = await readdir(workspacePaths.roomTrashDir(project));
     assert.ok(trashed.some((name) => name.startsWith("default__")), "deleted room is still recoverable from trash");
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+  }
+});
+
+test("deleteAgent trashes the agent directory and reloads agents list", async () => {
+  const previousHome = process.env.GAIA_HOME;
+  const home = await mkdtemp(join(tmpdir(), "gaia-home-"));
+  process.env.GAIA_HOME = home;
+  try {
+    const project = await mkdtemp(join(tmpdir(), "gaia-project-"));
+    await initWorkspace(project);
+
+    const daemon = new Daemon({ cwd: project, log: () => {} });
+    const record = await daemon.registry.add(project);
+
+    // Create a test agent.
+    const agentsDir = globalPaths.agentsDir();
+    await scaffoldGlobalAgent(agentsDir, "test-agent", { displayName: "Test Agent" });
+
+    // Verify the agent exists before deletion.
+    const service = await daemon.serviceFor(record.id);
+    assert.ok(service.workspace.agents["test-agent"], "test agent must exist before deletion");
+    const agentDir = join(agentsDir, "test-agent");
+    assert.ok(existsSync(agentDir), "agent directory must exist");
+
+    // Delete the agent (global op, returns void; the UI refreshes via the
+    // settings-change broadcast the HTTP route triggers, not a return value).
+    await daemon.deleteAgent("test-agent");
+
+    // Verify the agent directory was trashed.
+    assert.ok(existsSync(agentsDir), "agents directory itself must still exist");
+    assert.equal(existsSync(agentDir), false, "deleted agent directory must be gone");
+
+    // Verify the agent is in the trash.
+    const trashed = await readdir(globalPaths.agentTrashDir());
+    assert.ok(trashed.some((name) => name.startsWith("test-agent__")), "deleted agent must be recoverable from trash");
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+  }
+});
+
+test("deleteAgent throws when trying to delete a non-existent agent", async () => {
+  const previousHome = process.env.GAIA_HOME;
+  const home = await mkdtemp(join(tmpdir(), "gaia-home-"));
+  process.env.GAIA_HOME = home;
+  try {
+    const project = await mkdtemp(join(tmpdir(), "gaia-project-"));
+    await initWorkspace(project);
+
+    const daemon = new Daemon({ cwd: project, log: () => {} });
+    const record = await daemon.registry.add(project);
+
+    // Try to delete a non-existent agent.
+    await assert.rejects(
+      () => daemon.deleteAgent("nonexistent"),
+      /Unknown agent/,
+      "deleting a nonexistent agent must throw"
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+  }
+});
+
+test("deleteAgent throws when trying to delete the default agent", async () => {
+  const previousHome = process.env.GAIA_HOME;
+  const home = await mkdtemp(join(tmpdir(), "gaia-home-"));
+  process.env.GAIA_HOME = home;
+  try {
+    const project = await mkdtemp(join(tmpdir(), "gaia-project-"));
+    await initWorkspace(project);
+
+    const daemon = new Daemon({ cwd: project, log: () => {} });
+    const record = await daemon.registry.add(project);
+
+    // Get the default agent.
+    const service = await daemon.serviceFor(record.id);
+    const defaultAgentId = service.workspace.config.defaultAgent;
+
+    // Try to delete the default agent — refused (would break the workspace).
+    await assert.rejects(
+      () => daemon.deleteAgent(defaultAgentId),
+      /default agent/,
+      "deleting the default agent must throw"
+    );
   } finally {
     if (previousHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = previousHome;

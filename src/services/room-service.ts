@@ -13,8 +13,9 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -28,6 +29,7 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
+  BackgroundTask,
   CompactProgress,
   ContextGatePending,
   EventDetails,
@@ -50,7 +52,7 @@ import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
-import { effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
+import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
@@ -173,6 +175,34 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
+const BACKGROUND_TASK_MAX = 20;
+const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+/** `lsof` binary used to probe whether a tracked background process still has
+ * a live writer on its output file (see backgroundTaskPids). Env-overridable —
+ * never hardcode a bare path as the only option. */
+const LSOF_BIN = process.env.GAIA_LSOF_BIN || "/usr/sbin/lsof";
+/** How long backgroundTaskPids waits for `lsof` before giving up and reporting
+ * no live writers (a hung/missing lsof must never wedge a snapshot). */
+const BACKGROUND_TASK_LSOF_TIMEOUT_MS = 2000;
+
+/** Render the reason carried by the uniform runtime/channel failure contract. */
+function turnEndReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return reason.trim() || "unknown reason";
+}
+
+/** The visible tail every abnormal turn with output commits on its reserved id. */
+function preservePartialReply(reply: string, error: unknown): string {
+  const notice = `⚠ turn ended without completion (${turnEndReason(error)}) — partial output preserved`;
+  const partial = reply.trim();
+  return partial ? `${partial}\n\n${notice}` : notice;
+}
+
+/** The durable system failure used when an abnormal turn emitted no output. */
+function diedWithoutOutput(error: unknown): Error {
+  return new Error(`turn died without output (${turnEndReason(error)})`);
+}
 
 /** Min gap between visible "upstream stall" system lines within one streaming
  * turn — a harness retrying against a dead upstream can emit the notice
@@ -300,6 +330,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
@@ -711,20 +742,7 @@ export class RoomService {
     // Busy? Persist to the durable queue and return — it runs on settle and
     // survives a daemon crash in between.
     if (this.activeTask) {
-      task.status = "queued";
-      if (recordedSteerEventId) task.recorded = true;
-      if (options.attachments?.length) task.attachments = options.attachments;
-      await this.room.enqueue({
-        taskId: task.id,
-        text,
-        targets,
-        ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
-        ...(options.attachments?.length ? { attachments: options.attachments } : {}),
-        ...(options.nativeCommand ? { nativeCommand: true } : {}),
-        ...(recordedSteerEventId ? { eventId: recordedSteerEventId, recorded: true } : {}),
-        queuedAt: task.startedAt,
-      });
-      this.queuedTasks.push(task);
+      await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
       void this.emitSnapshot();
       return task;
@@ -741,11 +759,40 @@ export class RoomService {
       return task;
     }
 
-    // A failed steer's guidance is already committed — the direct run (the
-    // turn ended AND settled before we reached the queue check) must not
-    // record it a second time; the prompt text still drives the turn.
-    this.startTask(task, text, recordedSteerEventId ? { ...options, recordUserMessage: false } : options);
+    // Durable-first even while idle: the 2026-07-13 append→pendingTurn incident
+    // proved a direct start could strand a transcript-only user message.
+    await this.enqueueTask(task, text, targets, options, recordedSteerEventId);
+    await this.drain();
+    if (task.status === "queued") {
+      this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
+      void this.emitSnapshot();
+    }
     return task;
+  }
+
+  private async enqueueTask(
+    task: Task,
+    text: string,
+    targets: string[],
+    options: SendMessageOptions,
+    recordedEventId?: string,
+  ): Promise<void> {
+    const recorded = Boolean(recordedEventId) || options.recordUserMessage === false;
+    task.status = "queued";
+    if (recorded) task.recorded = true;
+    if (options.attachments?.length) task.attachments = options.attachments;
+    await this.room.enqueue({
+      taskId: task.id,
+      text,
+      targets,
+      ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+      ...(options.attachments?.length ? { attachments: options.attachments } : {}),
+      ...(options.nativeCommand ? { nativeCommand: true } : {}),
+      ...(recordedEventId ? { eventId: recordedEventId } : {}),
+      ...(recorded ? { recorded: true } : {}),
+      queuedAt: task.startedAt,
+    });
+    this.queuedTasks.push(task);
   }
 
   private startTask(task: Task, text: string, options: SendMessageOptions): void {
@@ -982,6 +1029,15 @@ export class RoomService {
     });
     const target = delivery.triggerTarget;
     if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
+  }
+
+  /** Public rooms rebroadcast for the summon coordinator: a summon child
+   * leaving the coordinator's running set changes the PARENT room's
+   * banner/sidebar truth, but the child's own task-end broadcast raced
+   * ahead of that cleanup — the coordinator calls this after dropping the
+   * child so clients stop counting a dead summon. */
+  async broadcastRoomsChanged(): Promise<void> {
+    await this.emitRoomsChanged();
   }
 
   /** Re-invoke a caller agent after its summon returned — steer its live turn if
@@ -1354,6 +1410,8 @@ export class RoomService {
             ...(attachments ? { attachments } : {}),
             transcript: events,
             activeRole,
+            tools: effectiveAgentTools(agent, activeRole),
+            skills: effectiveAgentSkills(agent, activeRole),
             channel: options.channel,
             thinking: options.thinking ?? state.thinkingOverrides[target],
             recall,
@@ -1384,6 +1442,9 @@ export class RoomService {
             }
             if (event.type === "model-fallback") {
               this.modelFallbacks[target] = { from: event.fromModel, to: event.toModel, reason: event.reason };
+            }
+            if (event.type === "background-task") {
+              void this.recordBackgroundTask(target, event).catch(() => {});
             }
             if (event.type === "notice") {
               // Visible, throttled system line — never reply text (toUiEvent
@@ -1462,20 +1523,19 @@ export class RoomService {
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
-        // the failure fired before any event streamed. Preserve whatever the
-        // flush recorded and clear the marker (never replay a terminally-failed
-        // turn — poison pill).
+        // setup/progress persistence failed around the stream. Preserve any
+        // WAL-flushed text through the SAME reserved-id commit path and make
+        // the abnormal end visible; a blank turn gets a loud durable failure.
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
-        else await this.room.clearPendingTurn();
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, error);
+        if (partial.trim()) await this.commitReply(target, eventId, preservePartialReply(partial, error), {}, channel);
+        else {
+          await this.room.clearPendingTurn();
+          await this.appendTurnFailure(target, diedWithoutOutput(error));
         }
+        await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         this.settlePetTarget(task, target, "failed");
         throw error;
@@ -1488,17 +1548,23 @@ export class RoomService {
       // Cancelled, failed, or completed: ALL commit what was produced. A user
       // stop lands as a stream death (abort → turn-error → the runtime stream
       // throws), so `turn.error` with the cancel flag set IS the normal stop
-      // shape — never a reason to drop the accumulator. A stop is a deliberate
-      // end, not an eraser: the reply text, the tool calls, and the thinking
-      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      // shape — never a reason to drop the accumulator. Every abnormal teardown
+      // gets an explicit visible outcome: output commits under the reserved id
+      // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
-      const reply = turn.reply.trim();
+      // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
+      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
+      if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
+      const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
-      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const interruptedProgress = abnormalReason !== undefined && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const producedOutput = Boolean(partialReply || interruptedProgress);
+      const committedReply = abnormalReason !== undefined && producedOutput
+        ? preservePartialReply(partialReply, abnormalReason)
+        : partialReply;
       // Multi-target hand-off: this target's commit (or clear) must not open a
       // window where the remaining targets' owed turns exist in memory only —
       // the SAME atomic state write that retires this target's marker installs
@@ -1520,28 +1586,29 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
+      if (abnormalReason !== undefined && !producedOutput) {
+        if (cancelled) await this.appendTurnStopped(target);
+        else await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+      }
 
       if (failed) {
-        // Genuine mid-stream failure (not a user stop): the progress is now
-        // durable; surface the error so the task settles as error.
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, turn.error);
-        }
-        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        // Genuine mid-stream failure (not a user stop): the preservation notice
+        // or no-output failure is durable; surface the original error so the
+        // task settles as error, retaining the existing retry policy.
+        await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
+        await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
         this.settlePetTarget(task, target, "failed");
         throw turn.error;
       }
 
-      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
-        reply: reply.slice(0, HOOK_TEXT_CAP),
+        reply: partialReply.slice(0, HOOK_TEXT_CAP),
         outcome: cancelled ? "cancelled" : "complete",
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
@@ -1553,7 +1620,7 @@ export class RoomService {
       this.settlePetTarget(task, target, "done");
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
-      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
+      if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -1761,6 +1828,23 @@ export class RoomService {
         timestamp: new Date().toISOString(),
         author: "system",
         text: `⚠ turn failed (@${agentId}): ${message}`,
+      };
+      await this.room.appendEvent(event);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    } catch {
+      // The task-error path still surfaces the original error live.
+    }
+  }
+
+  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
+   * first token: a stop is not a failure. */
+  private async appendTurnStopped(agentId: string): Promise<void> {
+    try {
+      const event: RoomEvent = {
+        id: newId("system_turnfail"),
+        timestamp: new Date().toISOString(),
+        author: "system",
+        text: `■ turn stopped (@${agentId}) — no output yet`,
       };
       await this.room.appendEvent(event);
       this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
@@ -2673,8 +2757,8 @@ export class RoomService {
    * merged into the native-command check so a role can enable a builtin too. */
   private async activeRoleSkills(agentId: string, agent: AgentDef): Promise<string[]> {
     const roleName = effectiveRoleName((await this.room.state()).activeRoles, agent);
-    if (!roleName) return [];
-    return (await resolveAgentRole(agent, roleName))?.skills ?? [];
+    const role = roleName ? await resolveAgentRole(agent, roleName) : undefined;
+    return effectiveAgentSkills(agent, role);
   }
 
   private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>, extraSkills: string[] = []): Set<string> {
@@ -2984,6 +3068,11 @@ export class RoomService {
     return "Cleared room history and reset all agent sessions.";
   }
 
+  async runRefreshCommand(): Promise<string> {
+    for (const runtime of Object.values(this.runtimes)) runtime.refreshContext?.(this.roomId);
+    return "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn";
+  }
+
   /** /fork: branch into a sibling room. Transcript copies verbatim; cursors
    * RESET so the branch's first turn replays the whole transcript — the one
    * context-rebuild mechanism that works for every harness (sessions cannot
@@ -3021,6 +3110,119 @@ export class RoomService {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
     return events.find((event) => event.id === eventId);
+  }
+
+  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+    const now = Date.now();
+    const startedAt = new Date(now).toISOString();
+    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
+    await this.room.updateState((state) => {
+      const recent = (state.backgroundTasks ?? []).filter(
+        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
+      );
+      recent.push({
+        taskId: event.taskId,
+        toolName: event.toolName,
+        ...(event.command !== undefined ? { command: event.command } : {}),
+        ...(event.description !== undefined ? { description: event.description } : {}),
+        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
+        startedAt,
+        agentId,
+        roomId: this.roomId,
+      });
+      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
+    });
+    await this.emitSnapshot();
+  }
+
+  /** PIDs still holding `task.outputPath` open for writing, per `lsof -t`
+   * (a live writer means the shell/process is still running). Best-effort:
+   * no output path, a missing/erroring lsof, or a timeout all report "no live
+   * writers" rather than fail the caller — liveness is advisory, never a hard
+   * dependency for the tray to render. */
+  private async backgroundTaskPids(task: BackgroundTask): Promise<number[]> {
+    if (!task.outputPath) return [];
+    try {
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = spawn(LSOF_BIN, ["-t", task.outputPath as string], { stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGKILL");
+          reject(new Error("lsof timed out"));
+        }, BACKGROUND_TASK_LSOF_TIMEOUT_MS);
+        child.stdout?.on("data", (chunk: Buffer) => {
+          out += chunk.toString("utf8");
+        });
+        child.once("error", (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(out);
+        });
+      });
+      return stdout
+        .split(/\s+/)
+        .map((line) => Number(line.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The tail of a tracked background process's output, plus whether it still
+   * has a live writer (see backgroundTaskPids). The path comes only from
+   * durable room state; callers supply a task id, never a filesystem path. */
+  async backgroundTaskOutput(taskId: string): Promise<{ text: string; running: boolean } | undefined> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task?.outputPath) return undefined;
+    const running = (await this.backgroundTaskPids(task)).length > 0;
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(task.outputPath, "r");
+      const { size } = await file.stat();
+      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
+      if (length === 0) return { text: "", running };
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
+      return { text: buffer.subarray(0, bytesRead).toString("utf8"), running };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    } finally {
+      await file?.close();
+    }
+  }
+
+  /** Stop a tracked background process (SIGTERM every live writer PID) and
+   * drop its tray entry, or just drop the entry when nothing is still
+   * running — either way this is the tray's stop/dismiss action. Returns
+   * false when the task id is unknown (already expired/removed). */
+  async stopBackgroundTask(taskId: string): Promise<boolean> {
+    await this.init();
+    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
+    if (!task) return false;
+    for (const pid of await this.backgroundTaskPids(task)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await this.room.updateState((state) => {
+      state.backgroundTasks = (state.backgroundTasks ?? []).filter((candidate) => candidate.taskId !== taskId);
+    });
+    await this.emitSnapshot();
+    return true;
   }
 
   /** Page backwards through committed history: the `limit` events immediately
@@ -3112,6 +3314,7 @@ export class RoomService {
         })),
       ),
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
+      backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.

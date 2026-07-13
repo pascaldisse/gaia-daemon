@@ -14,13 +14,14 @@ import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
 import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, PetBinding, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
+import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
 import { normalizeRoomState } from "./domain/rooms.js";
 import { listWorkspacePetBindings } from "./domain/pets.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
-import { setAgentDefaultRole } from "./domain/agents.js";
+import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
@@ -766,6 +767,26 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
+  /** Reversible agent delete: move the agent dir to the global trash (never
+   * rm -rf). Refuses if the agent doesn't exist, or if it's ANY workspace's
+   * configured default agent (deleting that would break the workspace). */
+  async deleteAgent(agentId: string): Promise<void> {
+    // Scan the loaded workspaces (the global registry): confirm the agent
+    // exists somewhere, and refuse if any workspace defaults to it.
+    let found = false;
+    for (const service of this.services.values()) {
+      if (service.workspace.agents[agentId]) found = true;
+      if (service.workspace.config.defaultAgent === agentId) {
+        throw new Error(`Cannot delete a workspace's default agent: @${agentId}`);
+      }
+    }
+    if (!found) throw new Error(`Unknown agent: @${agentId}`);
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = await trashGlobalAgent(agentId, stamp);
+    this.log(`deleted agent ${agentId} → trash ${trash || "(already gone)"}`);
+  }
+
   // --- keep-awake (Global Settings ▸ General) ---------------------------------------
 
   /** Current keep-awake capability/state — served in /api/app. */
@@ -1289,7 +1310,11 @@ function consolidateLlm(): ConsolidateLlm {
       import("@earendil-works/pi-coding-agent"),
     ]);
     const authStorage = AuthStorage.create();
-    const resolved = ModelRegistry.create(authStorage).find(provider, name);
+    // Alias fallback (RULE #0): short tier names (fable/opus/sonnet/haiku) in an
+    // agent's config resolve here too — this direct pi-ai path bypasses the
+    // harness CLI, so an un-aliased `find` was silently killing consolidation
+    // for any agent configured with a short name (e.g. anthropic/fable).
+    const resolved = findModelWithAlias(ModelRegistry.create(authStorage), provider, name);
     if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
     const apiKey = await authStorage.getApiKey(provider);
     const message = await completeSimple(

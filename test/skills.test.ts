@@ -140,9 +140,10 @@ test("project .claude/skills resolves beside the workspace ROOT, not inside .gai
   assert.equal(byName.get("ghost"), undefined);
 });
 
-test("agentSkillNames merges role + agent skills, deduped", () => {
+test("agentSkillNames uses role defaults unless the agent explicitly overrides them", () => {
   const role = { skills: ["brave-search", "shared"] } as unknown as ResolvedRole;
   const agent = { skills: ["shared", "browser-tools"] } as unknown as AgentDef;
-  assert.deepEqual(agentSkillNames(agent, role), ["brave-search", "shared", "browser-tools"]);
+  assert.deepEqual(agentSkillNames(agent, role), ["brave-search", "shared"]);
+  assert.deepEqual(agentSkillNames({ ...agent, skillOverride: ["browser-tools"] }, role), ["browser-tools"]);
   assert.deepEqual(agentSkillNames({ skills: undefined } as AgentDef, undefined), []);
 });

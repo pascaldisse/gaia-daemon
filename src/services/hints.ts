@@ -22,6 +22,8 @@ import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from ".
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { discoverSkills } from "../domain/skills.js";
+import { DEFAULT_AGENT_TOOLS } from "../domain/agents.js";
+import { globalRoleDefaults } from "../domain/roles.js";
 import { listAccounts } from "../domain/accounts.js";
 import { findTtsEngine, ttsEngineIds, type TtsEngineSpec } from "./read-aloud.js";
 import { sttEngineIds } from "./transcribe.js";
@@ -113,11 +115,12 @@ export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOp
     group: skillGroup(skill.source),
     description: [skill.source, skill.description].filter(Boolean).join(" · "),
   }));
-  // Native (fileless-builtin) commands each harness runs itself — pickable so a
-  // command like deep-research is enabled by CHECKING it, no separate toggle.
-  // The picker is workspace-global; only the matching harness runs them. Deduped
-  // by name against on-disk skills (which inline instead) and across harnesses.
-  // They fold into their harness's ecosystem group, tagged `native`.
+  // Native (fileless-builtin) commands each harness runs ITSELF — claude's
+  // /deep-research and the like. Unlike a SKILL.md (portable markdown, usable by
+  // any harness), these are baked into one harness's CLI and cannot run under
+  // another, so they carry a `native` badge and their harness `group`; the
+  // per-agent view (selectSkillsForHarness) hides a native that belongs to a
+  // DIFFERENT harness. Deduped by name against on-disk skills and each other.
   const seen = new Set(options.map((option) => option.value.toLowerCase()));
   for (const spec of harnessSpecs()) {
     for (const command of nativeCommandsFor(spec.id)) {
@@ -162,6 +165,19 @@ function orderSkillSections(options: FieldHintOption[], harnessId: string | unde
     return (groups.get(b)?.length ?? 0) - (groups.get(a)?.length ?? 0) || a.localeCompare(b);
   });
   return order.flatMap((key) => groups.get(key) ?? []);
+}
+
+/**
+ * The skills shown for ONE agent. A skill is a portable SKILL.md — just markdown,
+ * loadable by ANY harness — so EVERY installed on-disk skill is shown, whatever
+ * the agent's harness. The ONE thing filtered out is a NATIVE builtin (a fileless
+ * harness command like claude's /deep-research, badge "native") that belongs to a
+ * DIFFERENT harness, since those are baked into that harness's CLI and cannot run
+ * here. Sections are ordered harness-first.
+ */
+function selectSkillsForHarness(options: FieldHintOption[], harnessId: string | undefined): FieldHintOption[] {
+  const visible = (options ?? []).filter((option) => option.badge !== "native" || option.group === harnessId);
+  return orderSkillSections(visible, harnessId);
 }
 
 export interface ModelCatalog {
@@ -241,7 +257,7 @@ function roleNamesInDir(dir: string): string[] {
 function roleHintOptions(agentId: string | undefined): FieldHintOption[] {
   if (!agentId) return [];
   const rolesDir = agentPaths.rolesDir(globalPaths.agentDir(agentId));
-  return [...new Set(roleNamesInDir(rolesDir))]
+  return [...new Set([...roleNamesInDir(globalPaths.rolesDir()), ...roleNamesInDir(rolesDir)])]
     .sort((a, b) => a.localeCompare(b))
     .map((value) => ({ value }));
 }
@@ -456,15 +472,27 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
     ? modelOptions(allModels.filter((model) => modelFilterProviders.includes(model.provider)))
     : modelOptions(allModels);
   const providerOptionList = providerOptions(allModels);
+  const roleDefaults = agentId ? globalRoleDefaults(agentId) : {};
+  const roleToolDefaults = Object.fromEntries(Object.entries(roleDefaults).flatMap(([name, defaults]) => (defaults.tools ? [[name, defaults.tools]] : [])));
+  const roleSkillDefaults = Object.fromEntries(Object.entries(roleDefaults).flatMap(([name, defaults]) => (defaults.skills ? [[name, defaults.skills]] : [])));
 
   return {
     thinking: select(values(sources.thinkingLevels), { optional: true }),
-    tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
+    tools: {
+      input: "multiselect",
+      options: values(sources.toolNames),
+      defaultValue: [...DEFAULT_AGENT_TOOLS],
+      roleDefaults: roleToolDefaults,
+      hidden: hiddenByHarness.has("tools"),
+      description: "Role defaults apply when this setting is untouched. Checking or unchecking any tool creates this agent's own override.",
+    },
     skills: {
       input: "multiselect",
-      options: orderSkillSections(sources.skills, rawHarness),
+      options: selectSkillsForHarness(sources.skills, rawHarness),
+      defaultValue: [],
+      roleDefaults: roleSkillDefaults,
       label: "Skills",
-      description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
+      description: "Role defaults apply when this setting is untouched. Checking or unchecking any skill creates this agent's own override.",
     },
     role: select(roleHintOptions(agentId), {
       optional: true,

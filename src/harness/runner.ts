@@ -72,7 +72,8 @@ export async function runAgentRunner(): Promise<void> {
   // tools), so this is the ONE place the strip actually reaches the harness —
   // and because every harness's create() reads agent.tools, it applies to all of
   // them uniformly (RULE #0), claude/codex/pi and any future harness alike.
-  const agent = env(RUNNER_ENV.incognito) === "1" ? stripIncognitoTools(loadedAgent) : loadedAgent;
+  const incognito = env(RUNNER_ENV.incognito) === "1";
+  const agent = incognito ? stripIncognitoTools(loadedAgent) : loadedAgent;
 
   // Bridge target (daemon url + token) is present whenever the daemon has a
   // harness bridge. memory reads are disk; writes + summon go to the daemon.
@@ -87,20 +88,38 @@ export async function runAgentRunner(): Promise<void> {
   // The daemon already resolved the harness (agent > workspace > default) and
   // passed it down; fall back to recomputing if the env is somehow absent.
   const harness = env(RUNNER_ENV.harness) ?? harnessIdFor(agent, workspace);
-  const runtime: AgentRuntime = harnessSpecFor(harness).create({
-    workspace,
-    agent,
-    memoryStore,
-    summonCreate,
-    harnessHost,
-    recallSearch: target ? bridgeRecallSearch(target) : undefined,
-  });
+  const createRuntime = (runtimeAgent: typeof agent): AgentRuntime =>
+    harnessSpecFor(harness).create({
+      workspace,
+      agent: runtimeAgent,
+      memoryStore,
+      summonCreate,
+      harnessHost,
+      recallSearch: target ? bridgeRecallSearch(target) : undefined,
+    });
+  let runtime = createRuntime(agent);
+  let runtimeKey = JSON.stringify({ tools: agent.tools, skills: agent.skills ?? [] });
 
   send({ type: "ready", modelLabel: runtime.modelLabel });
 
   const runTurn = async (input: Parameters<AgentRuntime["send"]>[0]): Promise<void> => {
     turnActive = true;
     try {
+      // Role defaults are turn-scoped. Recreate the harness runtime only when
+      // its enforced surface changes, so every harness gets the exact same
+      // tool/skill transition without shared code learning a harness id.
+      const turnAgent = {
+        ...loadedAgent,
+        ...(input.tools ? { tools: input.tools, toolOverride: input.tools } : {}),
+        ...(input.skills ? { skills: input.skills, skillOverride: input.skills } : {}),
+      };
+      const enforcedAgent = incognito ? stripIncognitoTools(turnAgent) : turnAgent;
+      const nextKey = JSON.stringify({ tools: enforcedAgent.tools, skills: enforcedAgent.skills ?? [] });
+      if (nextKey !== runtimeKey) {
+        await runtime.dispose();
+        runtime = createRuntime(enforcedAgent);
+        runtimeKey = nextKey;
+      }
       for await (const event of runtime.send(input)) send({ type: "event", event });
       send({ type: "model-label", modelLabel: runtime.modelLabel });
       send({ type: "turn-end" });
@@ -147,21 +166,25 @@ export async function runAgentRunner(): Promise<void> {
           runtime.compact?.(command.roomId, (update) => send({ type: "compact-progress", ...update })) ??
           Promise.reject(new Error("compaction not supported"))
         )
-          .then((result) =>
+          .then((result) => {
+            if (result.compacted === true) runtime.refreshContext?.(command.roomId);
             send({
               type: "compact-result",
               ok: true,
               compacted: result.compacted,
               message: result.message,
               ...(result.summary ? { summary: result.summary } : {}),
-            }),
-          )
+            });
+          })
           .catch((error: unknown) =>
             send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );
         return;
       case "reset":
         runtime.resetRoom(command.roomId);
+        return;
+      case "refresh":
+        runtime.refreshContext?.(command.roomId);
         return;
       case "dispose":
         // Runner-side runtimes are sync in practice; the daemon-side host owns async child shutdown.
