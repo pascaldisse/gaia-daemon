@@ -945,6 +945,15 @@ export class RoomService {
     if (target && this.workspace.agents[target]) await this.triggerSummonCallback(target, reply, delivery);
   }
 
+  /** Public rooms rebroadcast for the summon coordinator: a summon child
+   * leaving the coordinator's running set changes the PARENT room's
+   * banner/sidebar truth, but the child's own task-end broadcast raced
+   * ahead of that cleanup — the coordinator calls this after dropping the
+   * child so clients stop counting a dead summon. */
+  async broadcastRoomsChanged(): Promise<void> {
+    await this.emitRoomsChanged();
+  }
+
   /** Re-invoke a caller agent after its summon returned — steer its live turn if
    * it has one (the harness picks up the nudge at the next tool boundary), else
    * a fresh turn. Never records a "user →" bubble. Two paths, two shapes:

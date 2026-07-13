@@ -136,6 +136,8 @@ export interface SummonRoomAccess {
   deliverAgentResult(fromAgentId: string, reply: string, delivery: SummonResultDelivery): Promise<void>;
   /** Stamp this CHILD room's summon record delivered (idempotent). */
   markSummonDelivered(): Promise<void>;
+  /** Rebroadcast the workspace rooms list (see RoomService.broadcastRoomsChanged). */
+  broadcastRoomsChanged(): Promise<void>;
   /** Panic-stop this room's active turn — the EXACT plumbing the /cancel
    * slash command uses (cancelActiveTask under the hood): aborts the runner,
    * lets the partial commit (NO PROGRESS EVER LOST), settles the task
@@ -385,10 +387,21 @@ export class SummonCoordinator implements SummonHost {
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
 
-    const done = this.runChild(child, info, task, options).finally(() => this.running.delete(childRoomId));
+    const done = this.runChild(child, info, task, options).finally(() => {
+      this.running.delete(childRoomId);
+      this.notifyParentRoomsChanged(parentRoomId);
+    });
     // Don't crash on background summons whose result no one awaits.
     done.catch(() => {});
     return { roomId: childRoomId, done };
+  }
+
+  /** After a child leaves the running set, push a fresh rooms list from the
+   * parent so no client keeps counting a dead summon. Chrome, best-effort. */
+  private notifyParentRoomsChanged(parentRoomId: string): void {
+    void this.serviceForRoom(parentRoomId)
+      .then((parent) => parent.broadcastRoomsChanged())
+      .catch(() => {});
   }
 
   /** Run the worker's first turn; with a delivery mode, land the result (or the
@@ -510,7 +523,10 @@ export class SummonCoordinator implements SummonHost {
       this.log(`summon recovery: re-arming '${roomId}' (@${record.agentId} → '${parentRoomId}')`);
       void this.recoverOne(info, record)
         .catch((error) => this.log(`summon recovery for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
-        .finally(() => this.running.delete(roomId));
+        .finally(() => {
+          this.running.delete(roomId);
+          this.notifyParentRoomsChanged(parentRoomId);
+        });
     }
   }
 

@@ -146,6 +146,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
     async markSummonDelivered() {
       room.markedDelivered += 1;
     },
+    async broadcastRoomsChanged() {},
   };
   return room;
 }
