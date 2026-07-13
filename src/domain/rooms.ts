@@ -18,6 +18,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import { normalizePetBindings } from "./pets.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
@@ -332,8 +333,10 @@ export function normalizeRoomState(value: unknown): RoomState {
   const backgroundTasks = backgroundTasksFrom(value.backgroundTasks);
   const contextGate = contextGateFrom(value.contextGate);
   const contextFloors = cursorRecord(value.contextFloors);
+  const petBindings = normalizePetBindings(value.petBindings);
   return {
     activeRoles: stringRecord(value.activeRoles),
+    ...(petBindings ? { petBindings } : {}),
     thinkingOverrides: stringRecord(value.thinkingOverrides),
     agentCursors: cursorRecord(value.agentCursors),
     ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),

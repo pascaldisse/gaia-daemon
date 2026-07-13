@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-pets"
+description = "Enables the sync_pets command without any pre-configured scope."
+commands.allow = ["sync_pets"]
+
+[[permission]]
+identifier = "deny-sync-pets"
+description = "Denies the sync_pets command without any pre-configured scope."
+commands.deny = ["sync_pets"]

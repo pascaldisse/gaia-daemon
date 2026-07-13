@@ -16,5 +16,6 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSMicrophoneUsageDescription</key><string>GAIA uses the microphone for voice recording and dictation.</string>
   <key>NSCameraUsageDescription</key><string>GAIA may request camera access for WebKit media capture.</string>
+  <key>NSPasteboardUsageDescription</key><string>GAIA accesses the pasteboard to copy code snippets and share content.</string>
 </dict>
 </plist>

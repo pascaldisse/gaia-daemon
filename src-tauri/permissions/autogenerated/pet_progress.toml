@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pet-progress"
+description = "Enables the pet_progress command without any pre-configured scope."
+commands.allow = ["pet_progress"]
+
+[[permission]]
+identifier = "deny-pet-progress"
+description = "Denies the pet_progress command without any pre-configured scope."
+commands.deny = ["pet_progress"]

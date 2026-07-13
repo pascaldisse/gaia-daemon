@@ -37,6 +37,7 @@ import type {
   MessageAttachment,
   ModelFallback,
   PendingTurn,
+  PetProgressStatus,
   QueuedMessage,
   RoomEvent,
   RoomEventKind,
@@ -49,6 +50,7 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
+import { listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
 import { discoverSkills } from "../domain/skills.js";
@@ -105,6 +107,8 @@ export interface RoomServiceOptions {
    * config — runners snapshot agent.json at spawn, so an in-place mutation
    * alone never reaches a live subprocess. */
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
+  /** Test seam around the real safe Codex package loader. Production omits it. */
+  petLoader?: (name: string) => Promise<unknown>;
 }
 
 /** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
@@ -322,6 +326,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   role: (service, command) => (command.type === "role" ? service.setRole(command.agent, command.role) : Promise.resolve("")),
   thinking: (service, command) => (command.type === "thinking" ? service.runThinkingCommand(command.agent, command.level) : Promise.resolve("")),
   model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
+  pet: (service, command) => (command.type === "pet" ? service.runPetCommand(command) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
@@ -413,6 +418,10 @@ export class RoomService {
    * whenever a human speaks. In-memory (a runaway chain shouldn't outlive a
    * restart anyway). */
   private agentDialogueHops = 0;
+  /** Per-target terminal pet states already emitted for a multi-agent task, so
+   * a later target failure cannot repaint an earlier successful pet as failed. */
+  private readonly settledPetTargets = new Set<string>();
+  private readonly startedPetTargets = new Set<string>();
   private initPromise: Promise<void> | undefined;
   /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
    * services/plugins.ts) — loaded once per RoomService and cached. */
@@ -906,6 +915,58 @@ export class RoomService {
     return active && this.workspace.agents[active] ? active : this.workspace.config.defaultAgent;
   }
 
+  /** /pet persists one room+agent package binding. Native windows are a shell
+   * concern: the daemon emits a complete workspace snapshot after every change,
+   * and browsers/iOS deliberately render no fake in-chat or cross-app pet. */
+  async runPetCommand(command: Extract<RoomCommand, { type: "pet" }>): Promise<string> {
+    if (command.action === "list") {
+      const bindings = (await this.room.state()).petBindings ?? {};
+      const rows = Object.entries(bindings).sort(([a], [b]) => a.localeCompare(b));
+      return rows.length > 0
+        ? `Pet bindings in this room:\n${rows.map(([agentId, packageName]) => `  @${agentId} → ${packageName}`).join("\n")}`
+        : "No pet bindings in this room. Pets are off by default.";
+    }
+
+    const target = command.agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+
+    if (command.action === "off") {
+      let removed = false;
+      await this.room.updateState((state) => {
+        if (!state.petBindings?.[target]) return;
+        removed = true;
+        delete state.petBindings[target];
+        if (Object.keys(state.petBindings).length === 0) delete state.petBindings;
+      });
+      await this.emitPetBindings();
+      return removed
+        ? `Pet removed for @${target}.`
+        : `No pet is bound to @${target} in this room.`;
+    }
+
+    const packageName = command.package?.trim();
+    if (!packageName) return "Usage: /pet [@agent] <package>";
+    try {
+      await (this.options.petLoader ?? loadPet)(packageName);
+    } catch (error) {
+      return `Invalid pet package '${packageName}': ${error instanceof Error ? error.message : String(error)}`;
+    }
+    await this.room.updateState((state) => {
+      state.petBindings = { ...(state.petBindings ?? {}), [target]: packageName };
+    });
+    await this.emitPetBindings();
+    return `Pet '${packageName}' bound to @${target} in this room. The transparent always-on-top pet window is available in the desktop app only.`;
+  }
+
+  private async emitPetBindings(): Promise<void> {
+    this.emit({
+      type: "pet-bindings",
+      workspaceId: this.workspaceId,
+      bindings: await listWorkspacePetBindings(this.workspaceId, this.workspace.rootDir),
+    });
+    await this.emitSnapshot();
+  }
+
   /** Remember the agent a turn addressed as this room's active agent (persisted,
    * best-effort). The last target of a broadcast wins — that's who a bare next
    * message goes to. Skips unknown ids so a stale write can't wedge routing. */
@@ -1205,6 +1266,8 @@ export class RoomService {
       }
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
+      this.startedPetTargets.add(this.petTargetKey(task.id, target));
+      this.emitPetProgress(task, target, "working");
       const state = await this.room.state();
       // A NEW agent (never spoke here → no cursor) loads the whole back-transcript.
       // An EXISTING agent normally loads only events since its cursor — everything
@@ -1419,6 +1482,24 @@ export class RoomService {
                 .catch(() => {});
             }
             this.applyLiveTurn(eventId, event);
+            // Native-pet progress comes exclusively from the uniform AgentEvent
+            // stream. No harness id is inspected: every present/future harness
+            // gets Thinking/tool/Working with the same mapping.
+            switch (event.type) {
+              case "thinking-start":
+              case "thinking-delta":
+                this.emitPetProgress(task, target, "thinking");
+                break;
+              case "tool-start":
+              case "tool-update":
+                this.emitPetProgress(task, target, "tool", event.toolName);
+                break;
+              case "thinking-end":
+              case "tool-end":
+              case "text-delta":
+                this.emitPetProgress(task, target, "working");
+                break;
+            }
             const uiEvent = this.toUiEvent(task.id, agent.id, eventId, event);
             if (uiEvent) this.emit(uiEvent);
             if (event.type === "tool-end") {
@@ -1456,6 +1537,7 @@ export class RoomService {
         await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
           await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
+        this.settlePetTarget(task, target, "failed");
         throw error;
       }
 
@@ -1519,6 +1601,7 @@ export class RoomService {
         await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
           await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
         await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
+        this.settlePetTarget(task, target, "failed");
         throw turn.error;
       }
 
@@ -1530,7 +1613,11 @@ export class RoomService {
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
 
-      if (cancelled) return;
+      if (cancelled) {
+        this.settlePetTarget(task, target, "failed");
+        return;
+      }
+      this.settlePetTarget(task, target, "done");
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
       if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
@@ -3187,6 +3274,7 @@ export class RoomService {
         ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
         ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
+        ...(state.petBindings ? { petBindings: { ...state.petBindings } } : {}),
         ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),
@@ -3362,6 +3450,31 @@ export class RoomService {
 
   // --- internals ---------------------------------------------------------------
 
+  private petTargetKey(taskId: string, agentId: string): string {
+    return `${taskId}\u0000${agentId}`;
+  }
+
+  /** Emit one workspace-wide, room+agent-scoped pet update. The status is
+   * derived only from the shared AgentEvent vocabulary in the caller below. */
+  private emitPetProgress(task: Task, agentId: string, status: PetProgressStatus, toolName?: string): void {
+    this.emit({
+      type: "pet-progress",
+      workspaceId: this.workspaceId,
+      roomId: this.roomId,
+      agentId,
+      taskId: task.id,
+      status,
+      ...(status === "tool" && toolName ? { toolName } : {}),
+    });
+  }
+
+  private settlePetTarget(task: Task, agentId: string, status: "done" | "failed"): void {
+    const key = this.petTargetKey(task.id, agentId);
+    if (this.settledPetTargets.has(key)) return;
+    this.settledPetTargets.add(key);
+    this.emitPetProgress(task, agentId, status);
+  }
+
   private createTask(text: string, targets: string[]): Task {
     return { id: newId("task"), roomId: this.roomId, text, targets, status: "running", startedAt: new Date().toISOString() };
   }
@@ -3380,6 +3493,15 @@ export class RoomService {
     this.draining = new Promise<void>((resolve) => {
       resolveDraining = resolve;
     });
+    for (const agentId of task.targets) {
+      if (this.startedPetTargets.has(this.petTargetKey(task.id, agentId))) {
+        this.settlePetTarget(task, agentId, status === "complete" ? "done" : "failed");
+      }
+    }
+    for (const agentId of task.targets) {
+      this.settledPetTargets.delete(this.petTargetKey(task.id, agentId));
+      this.startedPetTargets.delete(this.petTargetKey(task.id, agentId));
+    }
     if (status === "error") {
       this.fireHooks("error", { taskId: task.id, agentIds: task.targets, error: (task.error ?? "").slice(0, HOOK_TEXT_CAP) });
       this.emit({ type: "task-error", workspaceId: this.workspaceId, roomId: this.roomId, task, error: task.error ?? "" });

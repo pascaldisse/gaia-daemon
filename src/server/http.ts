@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULTS, gaiaHost, gaiaPort } from "../core/config.js";
+import { DEFAULTS, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
@@ -476,7 +476,19 @@ export class GaiaWebServer {
             }
           })();
           const entitlements = parsed ? join(parsed.root, "src-tauri/Entitlements.plist") : undefined;
-          const codesignArgs = ["--force", "--deep", "--sign", "-"];
+          // Prefer a stable named identity over ad-hoc ("-") signing: ad-hoc
+          // keys the TCC designated requirement to the binary's cdhash, which
+          // changes on every rebuild and orphans every mic/camera grant. A
+          // named identity keys it to the certificate leaf instead, which
+          // stays stable across rebuilds. Fall back to ad-hoc only when the
+          // configured identity isn't actually present in the keychain.
+          const wantIdentity = gaiaCodesignIdentity();
+          const probe = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+          const identity = probe.status === 0 && probe.stdout.includes(`"${wantIdentity}"`) ? wantIdentity : "-";
+          if (identity === "-" && wantIdentity !== "-") {
+            writeSync(reloadLog, `[gaia] reload: codesign identity "${wantIdentity}" not found in keychain — falling back to ad-hoc (TCC grants will be orphaned)\n`);
+          }
+          const codesignArgs = ["--force", "--deep", "--sign", identity];
           if (entitlements && existsSync(entitlements)) codesignArgs.push("--entitlements", entitlements);
           codesignArgs.push(appRoot);
           const sign = spawnSync("codesign", codesignArgs, { stdio: ["ignore", reloadLog, reloadLog] });
@@ -694,10 +706,18 @@ export class GaiaWebServer {
       };
       beginSse(response);
       response.write(encodeSse("ready", { bootId }));
-      // Seed the account-usage chip: the SSE fan-out only carries events emitted
-      // while this client is subscribed, so replay the cached usage now instead
-      // of leaving the chip blank until the next daemon poll.
+      // Seed account usage and the COMPLETE workspace pet binding set. Pet
+      // windows are shell-global and may belong to unselected rooms, so this is
+      // deliberately not derived from the selected-room snapshot below.
       for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
+      if (client.workspaceId) {
+        const bindings: UiEvent = {
+          type: "pet-bindings",
+          workspaceId: client.workspaceId,
+          bindings: await this.daemon.petBindings(client.workspaceId),
+        };
+        response.write(encodeSse(bindings.type, bindings));
+      }
       this.clients.add(client);
       // EventSource ignores comment-only heartbeats, so keep every SSE socket
       // visibly alive with a named event the client can observe.
@@ -1695,14 +1715,11 @@ export class GaiaWebServer {
 
   private broadcast(event: UiEvent): void {
     const payload = encodeSse(event.type, event);
-    // `rooms` is workspace-TAGGED but globally DELIVERED: it carries a
-    // workspaceId only so the client knows which workspace it describes, and
-    // must reach EVERY client (not just those viewing that workspace) so the
-    // sidebar's workspace-level running/unread dots stay live for workspaces
-    // you're not currently in. Every other workspace-scoped event targets a
-    // specific room — room ids are unique only WITHIN a workspace, so those stay
-    // scoped by both ids.
-    const ambient = event.type === "rooms";
+    // `rooms` and native-pet control events are workspace-TAGGED but globally
+    // DELIVERED. Room chrome keeps every sidebar live; pets must keep tracking a
+    // bound agent even when that room is not selected. Every other workspace
+    // event stays scoped by workspace+room (room ids are only locally unique).
+    const ambient = event.type === "rooms" || event.type === "pet-bindings" || event.type === "pet-progress";
     for (const client of this.clients) {
       const scoped = event as { workspaceId?: string; roomId?: string };
       if (!ambient) {

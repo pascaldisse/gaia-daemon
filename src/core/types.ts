@@ -226,6 +226,10 @@ export interface SummonDelivery {
 
 export interface RoomState {
   activeRoles: Record<string, string>;
+  /** Room-scoped Codex-pet bindings, keyed by agent id. Absence means pets are
+   * off. Each entry binds exactly this room + that agent to one validated pet
+   * package; several agents may be bound at once. */
+  petBindings?: Record<string, string>;
   /** Per-agent room-scoped thinking-level override (mirrors activeRoles):
    * room entry wins; absent inherits the agent.json global default
    * (agent.thinking). Never written to agent.json. */
@@ -976,6 +980,29 @@ export interface ChatSearchResult {
   degraded: string[];
 }
 
+/** One native desktop pet window. Bindings are durable in each room's
+ * RoomState; workspaceId/roomId are added when the daemon snapshots them for
+ * the shell. */
+export interface PetBinding {
+  workspaceId: string;
+  roomId: string;
+  agentId: string;
+  package: string;
+}
+
+export type PetProgressStatus = "thinking" | "tool" | "working" | "done" | "failed";
+
+export interface PetProgress {
+  workspaceId: string;
+  roomId: string;
+  agentId: string;
+  taskId: string;
+  status: PetProgressStatus;
+  /** Present only while status === "tool"; this is the shared AgentEvent's
+   * toolName, never a harness-specific label. */
+  toolName?: string;
+}
+
 export interface SlashCommandDefinition {
   name: string;
   type: string;
@@ -1016,6 +1043,9 @@ export interface Snapshot {
     usageAccounts?: string[];
     /** Room agent-dialogue toggle (agents replying to each other's @mentions). */
     agentDialogue?: boolean;
+    /** Native desktop pet bindings for this room, keyed by agent. Empty/absent
+     * means pets are off. Browser/iOS clients do not render an in-chat stand-in. */
+    petBindings?: Record<string, string>;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;
@@ -1088,6 +1118,11 @@ export type UiEvent =
   // workspace) so a sidebar can update both the open workspace's room tree AND
   // the running/unread dots rolled up onto every OTHER workspace in the list.
   | { type: "rooms"; workspaceId: string; rooms: RoomSummary[] }
+  // Workspace-wide native-pet control plane. Both are globally DELIVERED by
+  // the SSE server (not selected-room scoped): the shell must keep windows for
+  // bindings in background rooms alive and track their agents' live progress.
+  | { type: "pet-bindings"; workspaceId: string; bindings: PetBinding[] }
+  | ({ type: "pet-progress" } & PetProgress)
   // Daemon-global (NO workspaceId → fans out to EVERY connected client): one
   // subscription account's usage limits refreshed. Usage is account-level, not
   // per-workspace/room. `usage: null` clears that account's meter (every
