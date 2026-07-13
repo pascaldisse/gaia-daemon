@@ -127,7 +127,7 @@ test("agent.json for a locked-provider harness hides model.provider and filters 
   assert.deepEqual(hint(codexHints, "model.name").options, []);
 });
 
-test("agent.json skills sections are ordered harness-first, then by descending count", () => {
+test("agent.json skills are filtered to the agent's harness plus universal gaia/project, harness-first", () => {
   const skills: FieldHintOption[] = [
     { value: "dr", group: "claude", badge: "native" },
     { value: "cs", group: "claude" },
@@ -135,23 +135,25 @@ test("agent.json skills sections are ordered harness-first, then by descending c
     { value: "h2", group: "hermes" },
     { value: "h3", group: "hermes" },
     { value: "cx", group: "codex" },
+    { value: "img", group: "gaia" }, // universal — usable by every harness
+    { value: "img", group: "codex" }, // same skill also in codex's ecosystem
   ];
   const withSkills: HintSources = { ...sources, skills };
 
-  // A codex agent sees its own ecosystem first, then the rest by descending count (hermes 3, claude 2).
+  // A codex agent sees ONLY its own ecosystem + universal gaia — never hermes or
+  // claude. `img` is shown once, PREFERRING the codex group over gaia.
   const codex = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, withSkills);
-  assert.deepEqual(
-    hint(codex, "skills").options?.map((option) => option.value),
-    ["cx", "h1", "h2", "h3", "dr", "cs"],
-  );
+  const codexOpts = hint(codex, "skills").options ?? [];
+  assert.deepEqual(codexOpts.map((option) => option.value), ["cx", "img"]);
+  assert.equal(codexOpts.find((option) => option.value === "img")?.group, "codex");
 
-  // A claude agent sees claude first (native ahead of on-disk within it), then hermes, then codex.
+  // A claude agent sees claude (native ahead of on-disk) + universal gaia; no
+  // hermes, no codex. `img` here only exists in gaia for claude, shown under gaia.
   const claude = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "claude" }) }, withSkills);
-  assert.deepEqual(
-    hint(claude, "skills").options?.map((option) => option.value),
-    ["dr", "cs", "h1", "h2", "h3", "cx"],
-  );
-  assert.equal(hint(claude, "skills").options?.find((option) => option.value === "dr")?.badge, "native");
+  const claudeOpts = hint(claude, "skills").options ?? [];
+  assert.deepEqual(claudeOpts.map((option) => option.value), ["dr", "cs", "img"]);
+  assert.equal(claudeOpts.find((option) => option.value === "dr")?.badge, "native");
+  assert.equal(claudeOpts.find((option) => option.value === "img")?.group, "gaia");
 });
 
 test("hints carry _harness meta with per-harness hidden fields and ui locks", () => {

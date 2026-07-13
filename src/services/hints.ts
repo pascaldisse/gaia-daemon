@@ -21,7 +21,7 @@ import { writeTextAtomic } from "../core/store.js";
 import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
-import { discoverSkills } from "../domain/skills.js";
+import { scanSkillRoot, skillRoots } from "../domain/skills.js";
 import { listAccounts } from "../domain/accounts.js";
 import { findTtsEngine, ttsEngineIds, type TtsEngineSpec } from "./read-aloud.js";
 import { sttEngineIds } from "./transcribe.js";
@@ -107,23 +107,37 @@ function skillGroup(source: string): string {
 }
 
 export function skillHintOptions(workspace: Pick<Workspace, "dir">): FieldHintOption[] {
-  const options: FieldHintOption[] = discoverSkills(workspace).map((skill) => ({
-    value: skill.name,
-    label: skill.name,
-    group: skillGroup(skill.source),
-    description: [skill.source, skill.description].filter(Boolean).join(" · "),
-  }));
+  // ONE option per (ecosystem, skill): a skill physically present in several
+  // ecosystems (e.g. `imagegen` in both ~/.gaia and ~/.codex) appears under EACH
+  // so the per-harness picker can show it under the harness that will run it.
+  // The cross-ecosystem collapse is deliberately NOT done here — it happens
+  // later, harness-aware, in selectSkillsForHarness (a codex agent then sees
+  // codex's own imagegen instead of it being stolen into the gaia group).
+  const options: FieldHintOption[] = [];
+  const seenPerGroup = new Set<string>(); // `${group}\0${name}` — dedup WITHIN a group only
+  for (const root of skillRoots(workspace)) {
+    const group = skillGroup(root.source);
+    for (const skill of scanSkillRoot(root.path, root.source)) {
+      const key = `${group}\0${skill.name.toLowerCase()}`;
+      if (seenPerGroup.has(key)) continue;
+      seenPerGroup.add(key);
+      options.push({
+        value: skill.name,
+        label: skill.name,
+        group,
+        description: [skill.source, skill.description].filter(Boolean).join(" · "),
+      });
+    }
+  }
   // Native (fileless-builtin) commands each harness runs itself — pickable so a
   // command like deep-research is enabled by CHECKING it, no separate toggle.
-  // The picker is workspace-global; only the matching harness runs them. Deduped
-  // by name against on-disk skills (which inline instead) and across harnesses.
-  // They fold into their harness's ecosystem group, tagged `native`.
-  const seen = new Set(options.map((option) => option.value.toLowerCase()));
+  // One per harness group, tagged `native`, deduped against that group's on-disk
+  // skills. Only the matching harness runs them (enforced by the per-harness filter).
   for (const spec of harnessSpecs()) {
     for (const command of nativeCommandsFor(spec.id)) {
-      const key = command.name.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const key = `${spec.id}\0${command.name.toLowerCase()}`;
+      if (seenPerGroup.has(key)) continue;
+      seenPerGroup.add(key);
       options.push({
         value: command.name,
         label: command.name,
@@ -162,6 +176,32 @@ function orderSkillSections(options: FieldHintOption[], harnessId: string | unde
     return (groups.get(b)?.length ?? 0) - (groups.get(a)?.length ?? 0) || a.localeCompare(b);
   });
   return order.flatMap((key) => groups.get(key) ?? []);
+}
+
+/** Ecosystems every harness can load, regardless of the agent's own harness. */
+const UNIVERSAL_SKILL_GROUPS = new Set(["gaia", "project"]);
+
+/**
+ * The skills shown for ONE agent, filtered to what its harness can actually run:
+ * the harness's own ecosystem (plus its native commands) and the universal
+ * gaia/project skills — nothing else (a codex agent never sees the ~76 hermes
+ * skills). A skill present in several ecosystems is shown once, PREFERRING the
+ * agent's harness group, so a codex agent sees `imagegen`/`pi` under `codex`
+ * rather than losing them to gaia/claude. Sections are ordered harness-first.
+ * With no harness, everything is shown (deduped first-wins) — the global view.
+ */
+function selectSkillsForHarness(options: FieldHintOption[], harnessId: string | undefined): FieldHintOption[] {
+  const all = options ?? [];
+  const relevant = harnessId
+    ? all.filter((option) => option.group === harnessId || UNIVERSAL_SKILL_GROUPS.has(option.group ?? ""))
+    : all;
+  const byName = new Map<string, FieldHintOption>();
+  for (const option of relevant) {
+    const existing = byName.get(option.value);
+    if (!existing) byName.set(option.value, option);
+    else if (option.group === harnessId && existing.group !== harnessId) byName.set(option.value, option);
+  }
+  return orderSkillSections([...byName.values()], harnessId);
 }
 
 export interface ModelCatalog {
@@ -462,7 +502,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
     tools: { input: "multiselect", options: values(sources.toolNames), hidden: hiddenByHarness.has("tools") },
     skills: {
       input: "multiselect",
-      options: orderSkillSections(sources.skills, rawHarness),
+      options: selectSkillsForHarness(sources.skills, rawHarness),
       label: "Skills",
       description: "Auto-detected skills this agent loads — from the project, ~/.gaia, and every installed harness (pi, Claude, Codex, Hermes). Detected ≠ loaded: check the ones this agent should use.",
     },
