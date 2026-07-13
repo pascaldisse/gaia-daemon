@@ -127,31 +127,31 @@ test("agent.json for a locked-provider harness hides model.provider and filters 
   assert.deepEqual(hint(codexHints, "model.name").options, []);
 });
 
-test("agent.json skills sections are ordered harness-first, then by descending count", () => {
+test("agent.json shows every on-disk skill for any harness, hiding only OTHER harnesses' native builtins", () => {
   const skills: FieldHintOption[] = [
-    { value: "dr", group: "claude", badge: "native" },
-    { value: "cs", group: "claude" },
-    { value: "h1", group: "hermes" },
-    { value: "h2", group: "hermes" },
-    { value: "h3", group: "hermes" },
-    { value: "cx", group: "codex" },
+    { value: "dr", group: "claude", badge: "native" }, // claude native builtin (fileless)
+    { value: "cs", group: "claude" }, // on-disk claude SKILL.md
+    { value: "h1", group: "hermes" }, // on-disk hermes SKILL.md
+    { value: "cx", group: "codex" }, // on-disk codex SKILL.md
+    { value: "img", group: "gaia" }, // on-disk gaia SKILL.md
   ];
   const withSkills: HintSources = { ...sources, skills };
 
-  // A codex agent sees its own ecosystem first, then the rest by descending count (hermes 3, claude 2).
+  // A codex agent sees ALL portable on-disk skills (markdown is not harness-tied),
+  // but NOT claude's native builtin `dr`. Its own ecosystem sorts first.
   const codex = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "codex" }) }, withSkills);
-  assert.deepEqual(
-    hint(codex, "skills").options?.map((option) => option.value),
-    ["cx", "h1", "h2", "h3", "dr", "cs"],
-  );
+  const codexVals = hint(codex, "skills").options?.map((option) => option.value) ?? [];
+  assert.ok(!codexVals.includes("dr"), "claude's native builtin must be hidden for a codex agent");
+  assert.deepEqual([...codexVals].sort(), ["cs", "cx", "h1", "img"]);
+  assert.equal(codexVals[0], "cx", "the agent's own ecosystem is ordered first");
 
-  // A claude agent sees claude first (native ahead of on-disk within it), then hermes, then codex.
+  // A claude agent sees everything, INCLUDING its own native `dr` (still badged).
   const claude = buildFileHints({ label: "agents/x/agent.json", kind: "json", content: JSON.stringify({ harness: "claude" }) }, withSkills);
-  assert.deepEqual(
-    hint(claude, "skills").options?.map((option) => option.value),
-    ["dr", "cs", "h1", "h2", "h3", "cx"],
-  );
-  assert.equal(hint(claude, "skills").options?.find((option) => option.value === "dr")?.badge, "native");
+  const claudeOpts = hint(claude, "skills").options ?? [];
+  const claudeVals = claudeOpts.map((option) => option.value);
+  assert.ok(claudeVals.includes("dr"), "a claude agent sees its own native builtin");
+  assert.deepEqual([...claudeVals].sort(), ["cs", "cx", "dr", "h1", "img"]);
+  assert.equal(claudeOpts.find((option) => option.value === "dr")?.badge, "native");
 });
 
 test("hints carry _harness meta with per-harness hidden fields and ui locks", () => {
