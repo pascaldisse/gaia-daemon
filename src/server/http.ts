@@ -670,7 +670,13 @@ export class GaiaWebServer {
       // of leaving the chip blank until the next daemon poll.
       for (const event of this.daemon.currentUsage()) response.write(encodeSse(event.type, event));
       this.clients.add(client);
-      response.on("close", () => this.clients.delete(client));
+      // EventSource ignores comment-only heartbeats, so keep every SSE socket
+      // visibly alive with a named event the client can observe.
+      const keepalive = setInterval(() => response.write("event: ping\ndata: {}\n\n"), 15_000);
+      response.on("close", () => {
+        clearInterval(keepalive);
+        this.clients.delete(client);
+      });
       return;
     }
 

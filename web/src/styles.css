@@ -589,6 +589,19 @@ body.resizing { cursor: col-resize; user-select: none; }
   animation: stream-pulse 1.2s ease-in-out infinite;
 }
 
+/* One line of turn liveness beneath every streaming reply. */
+.live-heartbeat {
+  grid-column: 2;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: .8em;
+  font-variant-numeric: tabular-nums;
+}
+.live-heartbeat.stale {
+  color: var(--warn);
+  animation: stream-pulse 1.2s ease-in-out infinite;
+}
+
 .message-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--accent); }
 .message-meta .model-tag { margin-left: auto; color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
