@@ -369,8 +369,7 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
   if (typeof raw.timestamp !== "string" || typeof raw.author !== "string" || typeof raw.text !== "string") return undefined;
   // Pre-id transcript lines get a deterministic line-based id.
   const id = typeof raw.id === "string" && raw.id ? raw.id : `legacy_${index}`;
-  const kind: RoomEventKind | undefined =
-    raw.kind === "compact-complete" || raw.kind === "turn-failed" ? raw.kind : undefined;
+  const kind: RoomEventKind | undefined = raw.kind === "compact-complete" ? "compact-complete" : undefined;
   const base = {
     id,
     timestamp: raw.timestamp,

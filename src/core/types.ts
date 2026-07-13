@@ -121,7 +121,7 @@ export interface UserRoomEvent {
   redacted?: boolean;
 }
 
-export type RoomEventKind = "compact-complete" | "turn-failed";
+export type RoomEventKind = "compact-complete";
 
 export interface AgentRoomEvent {
   id: string;
