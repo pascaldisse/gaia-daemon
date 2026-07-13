@@ -8,6 +8,7 @@ import { markDirty, setError } from "./render.js";
 import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
+import { pinTranscriptToBottom } from "./transcript.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
@@ -438,6 +439,9 @@ export async function uploadAttachment(file, name) {
 export async function sendMessage(text, attachments = [], options = {}) {
   const snapshot = state.snapshot;
   if (!snapshot || (!text.trim() && attachments.length === 0)) return false;
+  // Sending is a "follow along" intent: snap back to the bottom so the reader
+  // sees their own message and the incoming reply even if they'd scrolled up.
+  pinTranscriptToBottom();
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/messages`, {
       method: "POST",
