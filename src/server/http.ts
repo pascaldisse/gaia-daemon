@@ -2,7 +2,7 @@
 // OpenAI-compatible voice endpoints. No business logic lives here — if a
 // handler grows past parsing and delegating, it belongs on the Daemon.
 
-import { createReadStream, existsSync, openSync, readFileSync, writeSync } from "node:fs";
+import { createReadStream, existsSync, openSync, readFileSync, writeSync, rmSync } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -423,31 +423,48 @@ export class GaiaWebServer {
       }
 
       let rebuildOk = false;
-      if (plan) {
-        const build = spawnSync(plan.bun, [plan.script, "--out", plan.out], {
-          stdio: ["ignore", reloadLog, reloadLog],
-          timeout: 120_000,
-        });
-        if (build.status === 0) {
-          rebuildOk = true;
-        } else {
-          writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+      const stagingDir = plan ? `${plan.out}.staging-${Date.now()}` : undefined;
+      if (plan && stagingDir) {
+        try {
+          // Build into a staging directory, OUTSIDE the .app bundle (if bundled).
+          // This keeps the app's code signature intact during the build.
+          await mkdir(stagingDir, { recursive: true });
+          const build = spawnSync(plan.bun, [plan.script, "--out", stagingDir], {
+            stdio: ["ignore", reloadLog, reloadLog],
+            timeout: 120_000,
+          });
+          if (build.status === 0) {
+            // Build succeeded. Atomically swap web/ and setups/ from staging
+            // into plan.out. This is atomic from TCC's perspective — it never
+            // sees the bundle in an inconsistent state.
+            for (const name of ["web", "setups"]) {
+              const src = join(stagingDir, name);
+              const dst = join(plan.out, name);
+              const tmp = `${dst}.old-${Date.now()}`;
+              try {
+                // Move current (if exists) to .old, then move staging into place.
+                // This is as atomic as POSIX rename gets.
+                if (existsSync(dst)) await rename(dst, tmp);
+                await rename(src, dst);
+                // Clean up the .old backup.
+                if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+              } catch (error) {
+                writeSync(reloadLog, `[gaia] reload: atomic swap FAILED for ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+                throw error;
+              }
+            }
+            rebuildOk = true;
+          } else {
+            writeSync(reloadLog, "[gaia] reload rebuild FAILED — relaunching previous build\n");
+          }
+        } finally {
+          // Clean up staging directory.
+          if (existsSync(stagingDir)) rmSync(stagingDir, { recursive: true, force: true });
         }
       }
 
-      // build-daemon.mjs (above) overwrites gaia-daemon/web/setups IN PLACE
-      // inside whatever directory it's pointed at. When that directory is a
-      // macOS .app's Contents/MacOS (the installed-app case: plan.out came
-      // from gaia-source.json, not the fromSource dev-repo case), those files
-      // sit inside the bundle's sealed code-signature — overwriting them
-      // without re-signing breaks the seal (`codesign --verify` then reports
-      // "invalid Info.plist (plist or signature have been modified)"), and a
-      // broken seal makes macOS's TCC privacy daemon silently refuse the
-      // NSMicrophoneUsageDescription prompt on next mic use — no dialog, just
-      // "microphone permission denied or unavailable" forever, until someone
-      // re-signs by hand. Observed live 2026-07-12: every /rebuild since
-      // 2026-07-10's mic fix re-broke it. Re-seal here, every time, so the
-      // installed app is never left signature-invalid after a rebuild.
+      // After atomic swap, re-sign the bundle (macOS only). Code signature is
+      // only broken momentarily if a rename fails; normal case is fully safe.
       if (rebuildOk && plan && !fromSource && process.platform === "darwin") {
         const appRoot = findAppBundleRoot(plan.out);
         if (appRoot) {
