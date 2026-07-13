@@ -771,10 +771,17 @@ export class ClaudeRuntime implements AgentRuntime {
       env: this.buildEnv(),
       onMessage,
       onExit: ({ code, signal, stderr }) => {
-        if (!channel.closed && code !== 0 && !channel.hasError) {
+        // A `result` message closes the channel before the process exits. If
+        // the process gets here with the channel still open, no result ever
+        // arrived — even exit 0 is an abnormal turn end (Claude can keep a
+        // background task alive, stream the full answer, then exit cleanly
+        // without a result record). Fail the uniform AgentRuntime stream so
+        // runner.ts emits turn-error rather than the false turn-end that used
+        // to make room-service discard the accumulated reply.
+        if (!channel.closed && !channel.hasError) {
           channel.fail(
             claudeStartupError(
-              new Error(`claude exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`),
+              new Error(`claude exited without a result (${signal ? `signal ${signal}` : `exit ${code}`}).`),
               stderr,
             ),
           );

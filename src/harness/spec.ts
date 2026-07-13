@@ -49,6 +49,11 @@ export interface AgentRuntime {
   readonly agent: AgentDef;
   readonly modelLabel: string;
   readonly capabilities: HarnessCapabilities;
+  /** Stream one turn. Clean iterable exhaustion means the harness delivered a
+   * proper completion record. Every other teardown — process exit without a
+   * result, channel error, abort, or stall-abort — MUST throw after yielding
+   * any queued events, so the uniform runner sends `turn-error` and the room
+   * can commit the accumulated partial instead of mistaking it for success. */
   send(input: AgentInput): AsyncIterable<AgentEvent>;
   abort(): Promise<void>;
   /** Inject guidance into the room's RUNNING turn (backs /steer). Resolves

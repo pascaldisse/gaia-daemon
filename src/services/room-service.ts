@@ -170,6 +170,24 @@ export interface SendMessageOptions {
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 const PARTIAL_FLUSH_MS = 1000;
 
+/** Render the reason carried by the uniform runtime/channel failure contract. */
+function turnEndReason(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return reason.trim() || "unknown reason";
+}
+
+/** The visible tail every abnormal turn with output commits on its reserved id. */
+function preservePartialReply(reply: string, error: unknown): string {
+  const notice = `⚠ turn ended without completion (${turnEndReason(error)}) — partial output preserved`;
+  const partial = reply.trim();
+  return partial ? `${partial}\n\n${notice}` : notice;
+}
+
+/** The durable system failure used when an abnormal turn emitted no output. */
+function diedWithoutOutput(error: unknown): Error {
+  return new Error(`turn died without output (${turnEndReason(error)})`);
+}
+
 /** Min gap between visible "upstream stall" system lines within one streaming
  * turn — a harness retrying against a dead upstream can emit the notice
  * repeatedly; the room should say it's stuck once, not spam the transcript. */
@@ -1382,20 +1400,19 @@ export class RoomService {
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
-        // the failure fired before any event streamed. Preserve whatever the
-        // flush recorded and clear the marker (never replay a terminally-failed
-        // turn — poison pill).
+        // setup/progress persistence failed around the stream. Preserve any
+        // WAL-flushed text through the SAME reserved-id commit path and make
+        // the abnormal end visible; a blank turn gets a loud durable failure.
         const pending = (await this.room.state()).pendingTurn;
         const partial = pending?.partialReply ?? "";
         this.liveTurn = undefined;
-        if (partial.trim()) await this.commitReply(target, eventId, partial, {}, channel);
-        else await this.room.clearPendingTurn();
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, error);
+        if (partial.trim()) await this.commitReply(target, eventId, preservePartialReply(partial, error), {}, channel);
+        else {
+          await this.room.clearPendingTurn();
+          await this.appendTurnFailure(target, diedWithoutOutput(error));
         }
+        await this.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.captureEpisode(target, text, partial, "error", {}, channel);
         throw error;
       }
@@ -1407,17 +1424,22 @@ export class RoomService {
       // Cancelled, failed, or completed: ALL commit what was produced. A user
       // stop lands as a stream death (abort → turn-error → the runtime stream
       // throws), so `turn.error` with the cancel flag set IS the normal stop
-      // shape — never a reason to drop the accumulator. A stop is a deliberate
-      // end, not an eraser: the reply text, the tool calls, and the thinking
-      // all commit exactly as streamed (NO PROGRESS EVER LOST).
+      // shape — never a reason to drop the accumulator. Every abnormal teardown
+      // gets an explicit visible outcome: output commits under the reserved id
+      // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
       const failed = turn.error !== undefined && !cancelled;
-      if (turn.error !== undefined || cancelled) finalizeInterruptedTools(turn.details);
-      const reply = turn.reply.trim();
+      const abnormalReason = turn.error ?? (cancelled ? new Error("aborted") : undefined);
+      if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
+      const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
       // commits — stopping an agent mid-tool-phase must not vanish the work the
       // user watched happen. (A CLEAN empty turn stays uncommitted as before.)
-      const interruptedProgress = (cancelled || failed) && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const interruptedProgress = abnormalReason !== undefined && Boolean(turn.details.tools?.length || turn.details.thinking);
+      const producedOutput = Boolean(partialReply || interruptedProgress);
+      const committedReply = abnormalReason !== undefined && producedOutput
+        ? preservePartialReply(partialReply, abnormalReason)
+        : partialReply;
       // Multi-target hand-off: this target's commit (or clear) must not open a
       // window where the remaining targets' owed turns exist in memory only —
       // the SAME atomic state write that retires this target's marker installs
@@ -1439,27 +1461,27 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (reply || interruptedProgress) await this.commitReply(target, eventId, reply, turn.details, channel, nextPending);
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
+      if (abnormalReason !== undefined && !producedOutput) {
+        await this.appendTurnFailure(target, diedWithoutOutput(abnormalReason));
+      }
 
       if (failed) {
-        // Genuine mid-stream failure (not a user stop): the progress is now
-        // durable; surface the error so the task settles as error.
-        if (
-          !(await this.maybeRequeueStall(remaining, target, text, turn.error, reply, channel, attachments, options)) &&
-          !(await this.maybeRequeueAuth(remaining, target, text, turn.error, reply, channel, attachments, options))
-        ) {
-          await this.appendTurnFailure(target, turn.error);
-        }
-        await this.captureEpisode(target, text, reply, "error", turn.details, channel);
+        // Genuine mid-stream failure (not a user stop): the preservation notice
+        // or no-output failure is durable; surface the original error so the
+        // task settles as error, retaining the existing retry policy.
+        await this.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
+          await this.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
+        await this.captureEpisode(target, text, partialReply, "error", turn.details, channel);
         throw turn.error;
       }
 
-      if (reply || interruptedProgress) await this.captureEpisode(target, text, reply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       this.fireHooks("postTurn", {
         agentId: target,
-        reply: reply.slice(0, HOOK_TEXT_CAP),
+        reply: partialReply.slice(0, HOOK_TEXT_CAP),
         outcome: cancelled ? "cancelled" : "complete",
         tools: [...new Set((turn.details.tools ?? []).map((tool) => tool.toolName))],
       });
@@ -1467,7 +1489,7 @@ export class RoomService {
       if (cancelled) return;
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
-      if (reply) await this.maybeDispatchAgentDialogue(target, reply);
+      if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");

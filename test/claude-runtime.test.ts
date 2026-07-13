@@ -212,6 +212,31 @@ test("ClaudeRuntime yields model-info from init and text-delta from stream_event
   }
 });
 
+test("ClaudeRuntime treats process exit 0 without a result as abnormal after draining streamed text", async () => {
+  const fx = await fixture();
+  try {
+    const fake = new FakeClaude();
+    // Smoking incident shape: the answer streamed, but a background task kept
+    // Claude alive and it later exited 0 without ever writing a result record.
+    fake.script([initMsg(), textDelta("full answer before exit")], { code: 0, signal: null });
+
+    const runtime = new ClaudeRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), processFactory: fake.factory });
+    const events: AgentEvent[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of runtime.send({ roomId: "default", message: "hi", transcript: [] })) events.push(event);
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.ok(events.some((event) => event.type === "text-delta" && event.delta === "full answer before exit"));
+    assert.match(caught instanceof Error ? caught.message : String(caught), /claude exited without a result \(exit 0\)/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // A claude agent that granted the web tool, for native-command turns.
 const webFixture = () =>
   harnessFixture({ tools: ["read", "web"], harness: "claude", model: { provider: "anthropic", name: "claude-opus-4-8" } });
@@ -908,9 +933,10 @@ test("ClaudeRuntime abort kills the active process", async () => {
     await runtime.abort();
     assert.equal(fake.killCount, 1);
 
-    // Unwind the iterator by completing the process.
+    // Unwind the iterator by completing the process. Exit without a result is
+    // abnormal even when it follows an explicit abort and carries exit code 0.
     fake.lastOptions?.onExit({ code: 0, signal: null, stderr: "" });
-    await sendPromise;
+    await assert.rejects(sendPromise, /claude exited without a result \(exit 0\)/);
     runtime.dispose();
   } finally {
     await fx.cleanup();
