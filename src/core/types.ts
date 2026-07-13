@@ -284,6 +284,10 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+  /** Harness-native shells that detached into the background during a turn.
+   * These are start records only: the harness exposes no reliable exit marker,
+   * so consumers must not infer liveness from their presence. */
+  backgroundTasks?: BackgroundTask[];
   /** A held first turn for a newly-addressed agent whose transcript load would
    * exceed the warn threshold; the human picks how much context to give it
    * before it runs. Durable so the choice survives a restart. */
@@ -759,6 +763,19 @@ export type UsageProbeResult =
 // ---------------------------------------------------------------------------
 // Harness stream events (what a runtime yields during a turn)
 
+export interface BackgroundTaskInfo {
+  taskId: string;
+  command?: string;
+  description?: string;
+  outputPath?: string;
+}
+
+export interface BackgroundTask extends BackgroundTaskInfo {
+  toolName: string;
+  startedAt: string;
+  agentId: string;
+}
+
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
@@ -770,6 +787,7 @@ export type AgentEvent =
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
+  | { type: "background-task"; taskId: string; toolName: string; command?: string; description?: string; outputPath?: string }
   /** Synthesized DAEMON-side (RunnerHost.injectEvent) the moment a mid-turn
    * steer is accepted, so the marker lands in the stream — and therefore in
    * `details.blocks` — at the exact position the steer took effect. Uniform for
@@ -999,6 +1017,7 @@ export interface Snapshot {
   commands: SlashCommandDefinition[];
   agents: AgentStatus[];
   tasks: Task[];
+  backgroundTasks: BackgroundTask[];
   thinkingLevels: string[];
   /** Memory-subsystem degradation chips ("embedder dead", "index degraded") —
    * absent/empty when healthy. Degradation is loud (MEMORY-DESIGN.md §10):

@@ -80,7 +80,7 @@ setInterval(() => {
 
 log(`[tunnel-up] starting cloudflared at ${new Date().toISOString()}`);
 
-const CLOUDFLARED_BIN = "/opt/homebrew/bin/cloudflared";
+const CLOUDFLARED_BIN = process.env.GAIA_CLOUDFLARED_BIN || "/opt/homebrew/bin/cloudflared";
 
 const child = spawn(CLOUDFLARED_BIN, ["tunnel", "--url", "http://127.0.0.1:8789"], {
   stdio: ["ignore", "pipe", "pipe"],

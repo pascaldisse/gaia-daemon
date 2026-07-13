@@ -1800,6 +1800,22 @@ body.resizing { cursor: col-resize; user-select: none; }
 .settings2-multi-option input[type="checkbox"] { width: auto; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
 .settings2-multi-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Skills carry a server-provided ecosystem group. Keep those long lists
+   navigable without changing the ordinary flat tool grid. */
+.settings2-multi-grouped { display: flex; flex-direction: column; gap: 6px; }
+.settings2-skill-filter { width: 100%; }
+.settings2-skill-group { border: 1px solid var(--border); }
+.settings2-skill-group > summary { cursor: pointer; padding: 5px 8px; display: flex; align-items: center; gap: 8px; list-style: none; user-select: none; }
+.settings2-skill-group > summary::-webkit-details-marker { display: none; }
+.settings2-skill-group > summary::marker { content: ""; }
+.settings2-skill-group > summary::before { content: "▸"; color: var(--muted); font-size: 0.8em; }
+.settings2-skill-group[open] > summary::before { content: "▾"; }
+.settings2-skill-group > summary:hover { color: var(--accent); }
+.settings2-skill-group-name { font-weight: 500; }
+.settings2-skill-group-count { color: var(--muted); font-size: 0.85em; }
+.settings2-skill-group > .settings2-multiselect { border: 0; border-top: 1px solid var(--border); }
+.settings2-multi-badge { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); border: 1px solid var(--border); padding: 0 4px; }
+
 /* JSON sub-editor: monospace, red border while what's typed doesn't parse. */
 .settings2-json-field { font-family: var(--font); font-size: 12px; resize: vertical; }
 .settings2-json-field.settings2-invalid { border-color: var(--danger); }
