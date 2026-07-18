@@ -102,6 +102,19 @@ function renderProjectContext(contextFiles: ContextFile[]): string {
 // Standing style law (Pascal, 2026-07-13): context artifacts live at
 // machine-recall density, not human-prose density (07-09 compression research
 // — "episodes born terse"). Rides in EVERY agent's system prompt, uniformly.
+// Harness usage (Pascal, 2026-07-18, whip 169): every agent KNOWS its own
+// harness — in the system prompt itself, never in soul/memory files.
+const HARNESS_LAW =
+  '# Harness (GAIA) — you already know this; never rediscover it\n' +
+  'CLI `gaia` (in PATH) — the room system\'s full surface, usable from bash any turn:\n' +
+  '- `gaia summon` … — launch worker lanes (also a native tool).\n' +
+  '- `gaia resume <roomId> "<message>"` — STEER a running lane mid-flight: append orders, correct specs, redirect, stop. Lanes are steerable, never fire-and-forget. Spec changed? `resume`, don\'t wait for the wall + relaunch.\n' +
+  '- `gaia mem|recall` — memory/recall from bash.\n' +
+  '- `gaia dream [agent] [--apply]` — memory consolidation (user-triggered).\n' +
+  '- `gaia caryll compress|expand|stats <file>` — lossless context compression.\n' +
+  '- `gaia serve <room>` — expose a monad room as one model.\n' +
+  'Laws: summon timeouts eat the ROOM, not committed work → workers commit every stage; salvage from disk before relaunching. Never invent harness limitations — this section IS the surface.';
+
 const STYLE_LAW =
   '# Style law (Pascal, 2026-07-13)\nEverything you WRITE INTO CONTEXT — memory files, skills, roles, docs, specs, summon tasks — uses telegraphic notation: fragments + arrows + § pointers, no filler sentences, no prose grammar. State once, point after; NEVER re-explain in different wording. Exemplar: your MEMORY.md format. Replies: dense, zero repetition, zero bloat.';
 
@@ -118,6 +131,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     `# Agent Soul\n\n${input.soulText.trim()}`,
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
+    HARNESS_LAW,
     STYLE_LAW,
     roleSection,
     roleDiagnostics,
