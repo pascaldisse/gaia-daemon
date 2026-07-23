@@ -182,5 +182,5 @@ test("sdk tool names and thinking levels come from the SDK + tool registry", () 
     assert.ok(names.includes(expected), `missing tool: ${expected}`);
   }
   assert.ok(sdkThinkingLevels().includes("medium"));
-  assert.deepEqual(sdkThinkingLevels(), ["off", "minimal", "low", "medium", "high", "xhigh"]);
+  assert.deepEqual(sdkThinkingLevels(), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 });

@@ -407,7 +407,7 @@ export interface SanitizeStatus {
 // ---------------------------------------------------------------------------
 // Agents (agent.json + resolved paths)
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AgentModelConfig {
   provider?: string;

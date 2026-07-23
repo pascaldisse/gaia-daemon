@@ -298,6 +298,9 @@ function effortFor(level: string | undefined): string | undefined {
       return "high";
     case "xhigh":
       return "xhigh";
+    // Codex CLI tops at xhigh; GAIA "max" clamps down to it.
+    case "max":
+      return "xhigh";
     default:
       return undefined;
   }

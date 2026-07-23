@@ -74,7 +74,7 @@ export interface HintSources {
 
 // The list is validated against the core ThinkingLevel union so a compiler
 // error flags any drift.
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] satisfies ThinkingLevel[];
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] satisfies ThinkingLevel[];
 
 // grep/find/ls are valid session tools but not part of createCodingTools();
 // the ToolName annotation keeps this list checked against the SDK union.

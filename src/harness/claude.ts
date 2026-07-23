@@ -321,6 +321,9 @@ function effortFor(level: string | undefined): string | undefined {
       return "high";
     case "xhigh":
       return "xhigh";
+    // CLI ladder confirmed by `claude --help`: low | medium | high | xhigh | max.
+    case "max":
+      return "max";
     default:
       return undefined;
   }
