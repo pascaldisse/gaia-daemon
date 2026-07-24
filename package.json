@@ -25,9 +25,9 @@
     "mobile:ios:device": "bun scripts/gaia-mobile.mjs device"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.80.3",
-    "@earendil-works/pi-ai": "^0.80.3",
-    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-agent-core": "^0.82.0",
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
     "gpt-tokenizer": "^3.4.0",
     "typebox": "^1.1.24"
   },

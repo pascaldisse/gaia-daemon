@@ -9,11 +9,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
   ModelRegistry,
+  ModelRuntime,
+  readStoredCredential,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -259,8 +260,15 @@ export class PiRuntime implements AgentRuntime {
   private readonly sessionFactory?: PiRuntimeSessionFactory;
   private readonly summonCreate?: SummonCreate;
   private readonly recallSearch?: RecallSearch;
-  private readonly authStorage = AuthStorage.create();
-  private readonly modelRegistry = ModelRegistry.create(this.authStorage);
+  // ModelRuntime.create() is async (it can touch the network for catalog
+  // refresh), but HarnessSpec.create() must return synchronously — so
+  // construction kicks it off here and every path that touches the registry
+  // awaits `modelRuntimeReady` first. `ensureSession` is the ONE choke point
+  // every public entry (send/compact/forkAtMessage) already funnels through,
+  // so gating there covers all of them without repeating the await.
+  private modelRuntime!: ModelRuntime;
+  private modelRegistry!: ModelRegistry;
+  private readonly modelRuntimeReady: Promise<void>;
   private readonly sessions = new SessionMap<PiSessionMeta>((meta) => meta.session.dispose());
   private readonly label: ModelLabel;
   private readonly cwd: string;
@@ -280,7 +288,13 @@ export class PiRuntime implements AgentRuntime {
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
-    this.applyCredentialProxy();
+    this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
+      this.modelRuntime = runtime;
+      this.modelRegistry = new ModelRegistry(runtime);
+      this.applyCredentialProxy();
+    });
+    // Registry-independent: a real resolution failure surfaces later, loudly,
+    // from resolveModel() once the turn actually runs (see its comment below).
     this.label = new ModelLabel(this.resolveModelLabel());
   }
 
@@ -584,6 +598,7 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined): Promise<PiSessionMeta> {
+    await this.modelRuntimeReady;
     const roleKey = activeRole?.name ?? "";
     const systemPrompt = await this.sessions.systemPrompt(roomId, roleKey, () =>
       buildBaseSystemPrompt({
@@ -678,8 +693,7 @@ export class PiRuntime implements AgentRuntime {
         })
       : await createAgentSession({
           cwd: this.workDir,
-          authStorage: this.authStorage,
-          modelRegistry: this.modelRegistry,
+          modelRuntime: this.modelRuntime,
           model,
           thinkingLevel: toPiThinking(this.agent.thinking),
           // Pi treats `tools` as an allowlist over built-in AND custom tools,
@@ -734,9 +748,7 @@ export class PiRuntime implements AgentRuntime {
   private resolveModelLabel(): string {
     const provider = this.agent.model?.provider;
     const name = this.agent.model?.name;
-    if (!provider || !name) return "Pi default";
-    const resolved = findModelWithAlias(this.modelRegistry, provider, name);
-    return resolved ? `${provider}/${name}` : "Pi default";
+    return provider && name ? `${provider}/${name}` : "Pi default";
   }
 }
 
@@ -760,11 +772,14 @@ async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<Usa
   let cred: { type?: string; accountId?: unknown } | undefined;
   let token: string | undefined;
   try {
-    const storage = AuthStorage.create();
-    cred = storage.get(provider) as typeof cred;
+    // readStoredCredential is a one-off raw read (no refresh) — enough to tell
+    // api-key/no-login (skip) from oauth (probe further) before paying for a
+    // full ModelRuntime spin-up.
+    cred = readStoredCredential(provider);
     if (!cred || cred.type !== "oauth") return { status: "none" }; // API-key or no login — no subscription meter.
-    // getApiKey auto-refreshes an expired OAuth token (with file locking).
-    token = await storage.getApiKey(provider);
+    // ModelRuntime.getAuth auto-refreshes an expired OAuth token (locked, like the old AuthStorage.getApiKey).
+    const runtime = await ModelRuntime.create();
+    token = (await runtime.getAuth(provider))?.auth.apiKey;
   } catch {
     return { status: "error" }; // store unreadable / refresh raced — transient, keep last-known.
   }

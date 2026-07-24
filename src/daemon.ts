@@ -1227,7 +1227,7 @@ export class Daemon {
       }
     }
 
-    this.hintSourcesCache ??= { toolNames: sdkToolNames(this.options.cwd), models: readModelCatalog().models };
+    this.hintSourcesCache ??= { toolNames: sdkToolNames(this.options.cwd), models: (await readModelCatalog()).models };
     const sources: HintSources = {
       agentIds,
       roomIds,
@@ -1302,19 +1302,19 @@ function consolidateLlm(): ConsolidateLlm {
   return async ({ system, user, model }) => {
     const provider = model?.provider ?? DEFAULTS.model.provider;
     const name = model?.name ?? DEFAULTS.model.name;
-    const [{ completeSimple }, { AuthStorage, ModelRegistry }] = await Promise.all([
+    const [{ completeSimple }, { ModelRegistry, ModelRuntime }] = await Promise.all([
       // completeSimple moved to the compat subpath in pi-ai 0.80 (same shape).
       import("@earendil-works/pi-ai/compat"),
       import("@earendil-works/pi-coding-agent"),
     ]);
-    const authStorage = AuthStorage.create();
+    const runtime = await ModelRuntime.create();
     // Alias fallback (RULE #0): short tier names (fable/opus/sonnet/haiku) in an
     // agent's config resolve here too — this direct pi-ai path bypasses the
     // harness CLI, so an un-aliased `find` was silently killing consolidation
     // for any agent configured with a short name (e.g. anthropic/fable).
-    const resolved = findModelWithAlias(ModelRegistry.create(authStorage), provider, name);
+    const resolved = findModelWithAlias(new ModelRegistry(runtime), provider, name);
     if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
-    const apiKey = await authStorage.getApiKey(provider);
+    const apiKey = (await runtime.getAuth(provider))?.auth.apiKey;
     const message = await completeSimple(
       resolved,
       { systemPrompt: system, messages: [{ role: "user", content: user, timestamp: Date.now() }] },

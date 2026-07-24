@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename as pathBasename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { AuthStorage, ModelRegistry, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
 import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ThinkingLevel, Workspace } from "../core/types.js";
 import { agentPaths, gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { writeTextAtomic } from "../core/store.js";
@@ -188,9 +188,9 @@ export interface ModelCatalog {
  * Read the model catalog from the Pi SDK. Includes API-key, subscription
  * (OAuth), and local/custom models (~/.pi/agent/models.json providers).
  */
-export function readModelCatalog(): ModelCatalog {
-  const authStorage = AuthStorage.create();
-  const registry = ModelRegistry.create(authStorage);
+export async function readModelCatalog(): Promise<ModelCatalog> {
+  const runtime = await ModelRuntime.create();
+  const registry = new ModelRegistry(runtime);
   const models = registry.getAll().map((model) => ({
     provider: model.provider,
     providerLabel: registry.getProviderDisplayName(model.provider),

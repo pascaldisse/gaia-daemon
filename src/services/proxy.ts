@@ -10,7 +10,7 @@
 // forwarded unauthenticated.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { findModelWithAlias } from "../harness/model-aliases.js";
 import type { AgentDef } from "../core/types.js";
 
@@ -154,8 +154,20 @@ function authHeadersFor(provider: string, key: string): Record<string, string> {
   return { authorization: `Bearer ${key}` };
 }
 
+// Lazily-built, memoized per daemon process — ModelRuntime.create() reads
+// auth.json/models.json and composes providers, no need to redo that per call.
+let runtimeReady: Promise<ModelRuntime> | undefined;
+function sharedModelRuntime(): Promise<ModelRuntime> {
+  return (runtimeReady ??= ModelRuntime.create());
+}
+
 /** The real key for a provider from the Pi auth store (auth.json/OAuth/env). Daemon-side only. */
-export async function lookupProviderKey(providerId: string, store: NonNullable<UpstreamResolverDeps["authStorage"]> = AuthStorage.create()): Promise<string | undefined> {
+export async function lookupProviderKey(
+  providerId: string,
+  store: NonNullable<UpstreamResolverDeps["authStorage"]> = {
+    getApiKey: async (id) => (await (await sharedModelRuntime()).getAuth(id))?.auth.apiKey,
+  },
+): Promise<string | undefined> {
   return store.getApiKey(providerId);
 }
 
@@ -164,8 +176,9 @@ export async function resolveUpstreamCredential(agent: AgentDef, deps: UpstreamR
   const name = agent.model?.name;
   if (!provider || !name) return undefined;
 
-  const authStorage = deps.authStorage ?? AuthStorage.create();
-  const registry = deps.registry ?? ModelRegistry.create(authStorage as AuthStorage);
+  const runtime = await sharedModelRuntime();
+  const authStorage = deps.authStorage ?? { getApiKey: async (id: string) => (await runtime.getAuth(id))?.auth.apiKey };
+  const registry = deps.registry ?? new ModelRegistry(runtime);
   const model = findModelWithAlias(registry, provider, name);
   if (!model?.baseUrl) return undefined; // unknown model → can't pick an upstream
 
