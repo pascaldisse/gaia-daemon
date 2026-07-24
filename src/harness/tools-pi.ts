@@ -11,6 +11,13 @@ import { bareWorkspaceRecall, formatMemoryHits, scrollTranscriptWindow, type Mem
 import type { RecallSearch, SummonCreate } from "../harness/spec.js";
 import type { AgentRosterEntry } from "./tools.js";
 
+// Strict-schema providers (e.g. Moonshot) reject property schemas lacking an
+// explicit `type` — typebox's Type.Enum emits bare {enum:[...]} and
+// Type.Union(Literal...) emits type-less anyOf. Emit {type:"string",enum:[...]}
+// instead: valid everywhere.
+const stringEnum = <T extends string>(values: readonly T[], description?: string) =>
+  Type.Unsafe<T>({ type: "string", enum: [...values], ...(description ? { description } : {}) });
+
 const MEMORY_DESCRIPTION = [
   "Persist long-term notes for the current agent across sessions.",
   `Layout: ${CORE_MEMORY_FILE} (durable notes + index, always visible to you), ${USER_MEMORY_FILE} (what you know about the user, always visible), and topic files like debugging.md or agents/<id>.md (notes about another agent) that you read on demand.`,
@@ -25,14 +32,14 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
     description: MEMORY_DESCRIPTION,
     promptSnippet: `memory: add, replace, or remove notes in your memory files (${CORE_MEMORY_FILE}, ${USER_MEMORY_FILE}, topic files); read and list topic files on demand.`,
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove"), Type.Literal("read"), Type.Literal("list"), Type.Literal("batch")]),
+      action: stringEnum(["add", "replace", "remove", "read", "list", "batch"]),
       file: Type.Optional(Type.String({ description: `Memory file to act on, relative to your memory dir. Defaults to ${CORE_MEMORY_FILE}.` })),
       content: Type.Optional(Type.String({ description: "New memory content for add or replace." })),
       old_text: Type.Optional(Type.String({ description: "Exact existing text for replace or remove." })),
       operations: Type.Optional(
         Type.Array(
           Type.Object({
-            action: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("remove")]),
+            action: stringEnum(["add", "replace", "remove"]),
             content: Type.Optional(Type.String()),
             old_text: Type.Optional(Type.String()),
           }),
@@ -149,7 +156,7 @@ export function createSummonTool(summonCreate: SummonCreate, roomId: string, ava
   const rosterLine = availableAgentIds.length ? `Available agents: ${availableAgentIds.join(", ")}` : "";
   const agentParameter = () => {
     const description = ["Worker agent id to summon.", rosterLine].filter(Boolean).join(" ");
-    return availableAgentIds.length ? Type.Enum(availableAgentIds, { description }) : Type.String({ description });
+    return availableAgentIds.length ? stringEnum(availableAgentIds, description) : Type.String({ description });
   };
 
   return defineTool({
