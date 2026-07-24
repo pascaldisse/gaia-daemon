@@ -8,6 +8,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFi
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -38,6 +39,13 @@ import { createEventChannel } from "./events.js";
 import { SessionMap } from "./sessions.js";
 import { RUNNER_ENV } from "./protocol.js";
 import { ModelLabel } from "./model-label.js";
+
+// pi-ai 0.82 lazy-loads OAuth flow modules through a bundler-opaque dynamic
+// import; inside the `bun build --compile` binary that import cannot resolve
+// ("Cannot find module './anthropic.js'") and every stored-OAuth toAuth dies
+// with "OAuth auth derivation failed". Register the statically bundled flows
+// up front, same as pi's own compiled CLI entry (dist/bun/cli.js).
+registerBunOAuthFlows();
 import { findModelWithAlias } from "./model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
 import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
