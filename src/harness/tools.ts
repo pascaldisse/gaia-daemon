@@ -71,7 +71,7 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     makePiTool: async (ctx) => {
       const factory = await import("./tools-pi.js");
       return factory.createRecallTool(
-        ctx.recallSearch ?? factory.localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir }),
+        ctx.recallSearch ?? factory.localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir, insight: ctx.agent.insight }),
         ctx.roomId,
       );
     },

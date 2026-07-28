@@ -2,11 +2,13 @@
 // (Pi SDK, typebox) live here, loaded lazily via tools.ts's makePiTool — the
 // registry itself stays cheap for the `gaia` CLI.
 
+import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { workspaceRootFromRoomDir } from "../core/paths.js";
-import type { AgentDef } from "../core/types.js";
+import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
+import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
+import { RoomHandle } from "../domain/rooms.js";
 import { bareWorkspaceRecall, formatMemoryHits, scrollTranscriptWindow, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { RecallSearch, SummonCreate } from "../harness/spec.js";
 import type { AgentRosterEntry } from "./tools.js";
@@ -95,7 +97,7 @@ export function createMemoryTool(store: MemoryStore, agent: AgentDef) {
 /** Fallback recall when no daemon bridge exists: the workspace memory index
  * opened directly (lexical-only, whole workspace — v3's per-room recall.db
  * fallback retired with the rest of the v3 engine). */
-export function localRecallSearch(roomDir: string, _roomId: string, agent?: { id: string; memoryDir: string }): RecallSearch {
+export function localRecallSearch(roomDir: string, _roomId: string, agent?: { id: string; memoryDir: string; insight?: InsightLevel }): RecallSearch {
   const root = workspaceRootFromRoomDir(roomDir);
   const search = async (query: string, limit?: number) =>
     bareWorkspaceRecall(root, query, {
@@ -105,6 +107,39 @@ export function localRecallSearch(roomDir: string, _roomId: string, agent?: { id
   return Object.assign(search, {
     scroll: async (hitId: number, options?: { span?: number; offset?: number }) =>
       (await scrollTranscriptWindow(root, hitId, options ?? {})) ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`,
+    // INSIGHT "full" tier (decree 2026-07-28 part 3), bare/no-daemon fallback:
+    // same gate as the daemon-bridge path (harnessGhoulRoomRead), duplicated
+    // here because this fallback has no token/claims to check server-side.
+    ghoulRoom: async (roomId: string, options?: { offset?: number; limit?: number }) => {
+      if (agent?.insight !== "full") throw new Error(`insight "full" required to read another room's raw transcript (caller '${agent?.id ?? "?"}' has insight "${agent?.insight ?? "none"}")`);
+      // RoomHandle.open has create-on-open semantics (it seeds a default
+      // state.json for any id that doesn't exist yet) — wrong for a read-only
+      // "look into the labyrinth" operation, so check existence FIRST and
+      // never let a typo'd room id silently create a phantom room on disk.
+      if (!existsSync(workspacePaths.roomState(root, roomId))) throw new Error(`no such room: ${roomId}`);
+      const handle = await RoomHandle.open(root, roomId);
+      const state = await handle.state();
+      if (state.incognito !== true) throw new Error(`'${roomId}' is not an incognito room — read it through normal recall instead`);
+      const { events } = await handle.eventsFrom(0);
+      const offset = Math.max(0, options?.offset ?? 0);
+      const limit = Math.min(Math.max(1, options?.limit ?? 40), 200);
+      const window = events.slice(offset, offset + limit);
+      if (window.length === 0) return `'${roomId}': no events at offset ${offset} (${events.length} total)`;
+      const lines = window.map((event, index) => {
+        const shown = event.text.length > 800 ? `${event.text.slice(0, 800)}…` : event.text;
+        return `[${offset + index}] ${event.author}: ${shown || "(no text)"}`;
+      });
+      const consumed = offset + window.length;
+      const more = consumed < events.length ? `\n\n… ${events.length - consumed} more events; pass offset=${consumed} to continue` : "";
+      return `${roomId} (${events.length} events total, showing ${offset}–${consumed - 1}):\n\n${lines.join("\n")}${more}`;
+    },
+    // Ledger search needs every agent's memoryDir (the full workspace roster),
+    // which this room-scoped fallback does not have — honest gap, not a silent
+    // one: real implementation lives in the daemon-bridge path every harness
+    // actually runs under (bridgeRecallSearch → harnessGhoulLedgerSearch).
+    ghoulLedgers: async () => {
+      throw new Error("ghoul ledger search requires the daemon bridge (not available in the bare/no-daemon recall fallback)");
+    },
   });
 }
 
@@ -113,27 +148,45 @@ export function createRecallTool(search: RecallSearch, roomId: string) {
     name: "recall",
     label: "Recall",
     description:
-      "Search your long-term memory: distilled facts, past task episodes (with outcomes), and the full history of EVERY room — every past session, not just your current context. Use when the conversation references something you do not remember: an earlier decision, a name, a lesson from a failed attempt, a discussion from weeks ago. To read the raw conversation around a transcript result, call again with `around` set to that hit's id.",
-    promptSnippet: `recall: deep ranked search over your facts, episodes, and all room history (not just ${roomId}); pass around=<hit id> to scroll the raw transcript at a hit.`,
+      "Search your long-term memory: distilled facts, past task episodes (with outcomes), and the full history of EVERY room — every past session, not just your current context. Use when the conversation references something you do not remember: an earlier decision, a name, a lesson from a failed attempt, a discussion from weeks ago. To read the raw conversation around a transcript result, call again with `around` set to that hit's id. If your insight tier is 'full': `ghoul_room` reads any (even incognito) room's raw transcript directly; `ghoul_ledgers` searches every agent's distilled summon-ledger — both denied for any other agent.",
+    promptSnippet: `recall: deep ranked search over your facts, episodes, and all room history (not just ${roomId}); pass around=<hit id> to scroll the raw transcript at a hit; insight:'full' only — ghoul_room=<roomId> / ghoul_ledgers=true.`,
     parameters: Type.Object({
-      query: Type.String({ description: "Words or a phrase to search for (ignored when `around` is set)." }),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 8)." })),
+      query: Type.Optional(Type.String({ description: "Words or a phrase to search for (ignored when `around`, `ghoul_room`, or `ghoul_ledgers` is set; required otherwise)." })),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 8; also caps ghoul_room's event window)." })),
       around: Type.Optional(Type.Number({ description: "Scroll mode: a transcript hit id from a previous recall — returns the raw conversation around it." })),
       span: Type.Optional(Type.Number({ description: "Scroll window: events each side of the hit (default 12)." })),
-      offset: Type.Optional(Type.Number({ description: "Scroll shift: move the window by this many events (negative = earlier)." })),
+      offset: Type.Optional(Type.Number({ description: "Scroll shift: move the window by this many events (negative = earlier); also ghoul_room's paging offset." })),
+      ghoul_room: Type.Optional(
+        Type.String({ description: "INSIGHT 'full' ONLY: read a specific room's RAW transcript directly, even if incognito (e.g. a ghoul's own room id) — windowed by offset/limit. Denied for any agent without insight:'full'." }),
+      ),
+      ghoul_ledgers: Type.Optional(
+        Type.Boolean({ description: "INSIGHT 'full' ONLY: search every agent's distilled summon ledgers (not raw transcripts) — pass `query` to filter, omit for the full list. Denied for any agent without insight:'full'." }),
+      ),
     }),
-    execute: async (_toolCallId: string, params: { query: string; limit?: number; around?: number; span?: number; offset?: number }) => {
+    execute: async (
+      _toolCallId: string,
+      params: { query?: string; limit?: number; around?: number; span?: number; offset?: number; ghoul_room?: string; ghoul_ledgers?: boolean },
+    ) => {
       let text: string;
       let hits: MemorySearchHit[] = [];
       try {
-        if (params.around !== undefined && search.scroll) {
+        if (params.ghoul_room !== undefined && search.ghoulRoom) {
+          text = await search.ghoulRoom(params.ghoul_room, {
+            ...(params.offset !== undefined ? { offset: params.offset } : {}),
+            ...(params.limit !== undefined ? { limit: params.limit } : {}),
+          });
+        } else if (params.ghoul_ledgers === true && search.ghoulLedgers) {
+          text = await search.ghoulLedgers(params.query);
+        } else if (params.around !== undefined && search.scroll) {
           text = await search.scroll(params.around, {
             ...(params.span !== undefined ? { span: params.span } : {}),
             ...(params.offset !== undefined ? { offset: params.offset } : {}),
           });
-        } else {
+        } else if (params.query) {
           hits = await search(params.query, params.limit ?? 8);
           text = hits.length ? formatMemoryHits(hits, { full: true }) : "no matches in memory or room history";
+        } else {
+          text = "ERROR: query is required (unless around, ghoul_room, or ghoul_ledgers is set)";
         }
       } catch (error) {
         text = `ERROR: ${error instanceof Error ? error.message : String(error)}`;

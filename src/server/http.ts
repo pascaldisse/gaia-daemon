@@ -1496,6 +1496,30 @@ export class GaiaWebServer {
         const raw = (body as Record<string, unknown>)[name];
         return typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : undefined;
       };
+      // INSIGHT "full" tier (decree 2026-07-28): pull-based raw read of any
+      // currently-incognito room, gated daemon-side on the caller's own
+      // insight tier — checked before touching disk, never a widened index.
+      const ghoulRoom = stringField(body, "ghoul_room")?.trim();
+      if (ghoulRoom) {
+        try {
+          const result = await this.daemon.harnessGhoulRoomRead(claims, ghoulRoom, { offset: numberField("offset"), limit: numberField("limit") });
+          json(response, 200, { ok: true, result, hits: [] });
+        } catch (error) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+      // INSIGHT "full" tier: search every agent's distilled ledgers (never the
+      // raw transcripts — "index the ledgers, not the transcripts").
+      if ((body as Record<string, unknown>).ghoul_ledgers === true) {
+        try {
+          const result = await this.daemon.harnessGhoulLedgerSearch(claims, stringField(body, "query"));
+          json(response, 200, { ok: true, result, hits: [] });
+        } catch (error) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
       // Scroll mode (§8): a raw transcript window around a prior hit id.
       const around = numberField("around");
       if (around !== undefined) {

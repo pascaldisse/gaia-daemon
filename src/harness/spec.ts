@@ -237,6 +237,13 @@ export interface RuntimeCreateContext {
 export interface RecallSearch {
   (query: string, limit?: number): Promise<MemorySearchHit[]>;
   scroll?(hitId: number, options?: { span?: number; offset?: number }): Promise<string>;
+  /** INSIGHT "full" tier only (decree 2026-07-28 part 3): pull-based raw read
+   * of ANY currently-incognito room, gated daemon-side on the caller's own
+   * insight tier — absent/denied for every other agent, exactly as today. */
+  ghoulRoom?(roomId: string, options?: { offset?: number; limit?: number }): Promise<string>;
+  /** INSIGHT "full" tier only: substring search over every agent's distilled
+   * summon ledgers (never the raw transcripts — "index the ledgers"). */
+  ghoulLedgers?(query?: string): Promise<string>;
 }
 
 /** Create a background summon from inside a turn. Resolves IMMEDIATELY with a

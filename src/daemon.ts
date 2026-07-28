@@ -6,6 +6,7 @@
 // route table over this class.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { Bus } from "./core/bus.js";
@@ -18,7 +19,7 @@ import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
-import { normalizeRoomState } from "./domain/rooms.js";
+import { normalizeRoomState, RoomHandle } from "./domain/rooms.js";
 import { listWorkspacePetBindings } from "./domain/pets.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
@@ -971,6 +972,85 @@ export class Daemon {
     if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
     const window = await scrollTranscriptWindow(record.path, hitId, options);
     return window ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`;
+  }
+
+  /** INSIGHT "full" tier, decree 2026-07-28 part 3: direct, pull-based read of
+   * ANY currently-incognito room's raw transcript, on demand — never indexed,
+   * never pushed anywhere, reachable only when the CALLING agent's own
+   * `insight` is "full" (Solas reading a brother's room, not a general
+   * capability — the target room's own owner/agentId is irrelevant to the
+   * gate). Windowed by event count (offset/limit) because a ghoul's
+   * transcript can run to megabytes of tool-call noise; unwindowed dumping
+   * would defeat the point of a considered, on-demand read. */
+  async harnessGhoulRoomRead(claims: HarnessTokenClaims, targetRoomId: string, options: { offset?: number; limit?: number } = {}): Promise<string> {
+    const record = await this.registry.find(claims.workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const caller = service.workspace.agents[claims.agentId];
+    if (caller?.insight !== "full") {
+      throw new Error(`insight "full" required to read another room's raw transcript (caller '${claims.agentId}' has insight "${caller?.insight ?? "none"}")`);
+    }
+    // RoomHandle.open has create-on-open semantics (seeds a default state.json
+    // for any id that doesn't exist) — wrong for a read-only "look into the
+    // labyrinth" operation, so check existence first; never let a typo'd room
+    // id silently create a phantom room on disk.
+    if (!existsSync(workspacePaths.roomState(record.path, targetRoomId))) throw new Error(`no such room: ${targetRoomId}`);
+    const handle = await RoomHandle.open(record.path, targetRoomId);
+    const state = await handle.state();
+    if (state.incognito !== true) {
+      throw new Error(`'${targetRoomId}' is not an incognito room — read it through normal recall instead`);
+    }
+    const { events } = await handle.eventsFrom(0);
+    const offset = Math.max(0, options.offset ?? 0);
+    const limit = Math.min(Math.max(1, options.limit ?? 40), 200);
+    const window = events.slice(offset, offset + limit);
+    if (window.length === 0) return `'${targetRoomId}': no events at offset ${offset} (${events.length} total)`;
+    const lines = window.map((event, index) => {
+      const shown = event.text.length > 800 ? `${event.text.slice(0, 800)}…` : event.text;
+      return `[${offset + index}] ${event.author}: ${shown || "(no text)"}`;
+    });
+    const consumed = offset + window.length;
+    const more = consumed < events.length ? `\n\n… ${events.length - consumed} more events; pass offset=${consumed} to continue` : "";
+    return `${targetRoomId} (${events.length} events total, showing ${offset}–${consumed - 1}):\n\n${lines.join("\n")}${more}`;
+  }
+
+  /** INSIGHT "full" tier: search every agent's distilled summon ledgers (never
+   * the raw transcripts) by substring — "index the ledgers, not the
+   * transcripts" (decree 2026-07-28 part 2): real search power, zero
+   * widening of the shared recall index (ledgers never enter that index; this
+   * reads the plain .md files directly, filesystem-scoped). Omitted query =
+   * list every entry. */
+  async harnessGhoulLedgerSearch(claims: HarnessTokenClaims, query?: string): Promise<string> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const caller = service.workspace.agents[claims.agentId];
+    if (caller?.insight !== "full") {
+      throw new Error(`insight "full" required to search other agents' ledgers (caller '${claims.agentId}' has insight "${caller?.insight ?? "none"}")`);
+    }
+    const needle = query?.trim().toLowerCase();
+    const hits: string[] = [];
+    for (const agent of Object.values(service.workspace.agents)) {
+      const dir = join(agent.memoryDir, "ledgers");
+      let files: string[];
+      try {
+        files = (await readdir(dir)).filter((name) => name.endsWith(".md"));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        let content: string;
+        try {
+          content = await readFile(join(dir, file), "utf8");
+        } catch {
+          continue;
+        }
+        const entries = content.split(/\n(?=§ )/).filter((entry) => entry.trim());
+        for (const entry of entries) {
+          if (!needle || entry.toLowerCase().includes(needle)) hits.push(`--- ${agent.id} / ${file} ---\n${entry.trim()}`);
+        }
+      }
+    }
+    if (hits.length === 0) return needle ? `no ledger entries matching "${query}"` : "no ledger entries recorded yet";
+    return hits.slice(0, 40).join("\n\n");
   }
 
   /** Dream v2 propose: a user-triggered consolidation preview for `agentId`

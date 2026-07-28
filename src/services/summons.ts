@@ -332,11 +332,14 @@ async function recordInsightLedger(
   try {
     const path = ledgerPath(caller.memoryDir, workerAgentId);
     await mkdir(join(caller.memoryDir, "ledgers"), { recursive: true });
+    // Budgets loosened 2026-07-28 (decree part 2: "the search is actually
+    // worth having") — a distilled entry, not a payload dump, but full enough
+    // to carry a worker's actual lessons rather than a clipped first line.
     const header = `§ ${new Date().toISOString()} — ${childRoomId} — ${failed ? "FAILED" : "done"}`;
     const entry = [
       header,
-      `task: ${truncateForLedger(task, 200)}`,
-      `result: ${truncateForLedger(resultText, 400)}`,
+      `task: ${truncateForLedger(task, 400)}`,
+      `result: ${truncateForLedger(resultText, 1500)}`,
       "",
     ].join("\n");
     await appendFile(path, `${entry}\n`, "utf8");

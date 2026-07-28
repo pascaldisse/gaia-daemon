@@ -56,6 +56,16 @@ export function bridgeRecallSearch(target: DaemonTarget): RecallSearch {
       if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "recall scroll failed");
       return typeof payload.result === "string" ? payload.result : "";
     },
+    ghoulRoom: async (roomId: string, options?: { offset?: number; limit?: number }) => {
+      const { ok, payload } = await daemonPost(target, "/api/harness/recall", { ghoul_room: roomId, ...(options?.offset !== undefined ? { offset: options.offset } : {}), ...(options?.limit !== undefined ? { limit: options.limit } : {}) });
+      if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "ghoul room read failed");
+      return typeof payload.result === "string" ? payload.result : "";
+    },
+    ghoulLedgers: async (query?: string) => {
+      const { ok, payload } = await daemonPost(target, "/api/harness/recall", { ghoul_ledgers: true, ...(query ? { query } : {}) });
+      if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "ledger search failed");
+      return typeof payload.result === "string" ? payload.result : "";
+    },
   });
 }
 

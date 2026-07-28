@@ -516,6 +516,10 @@ export interface AgentTtsConfig {
   voice?: string;
 }
 
+/** AgentDef.insight tiers — see the field doc on AgentDef.insight for the
+ * full contract (decree 2026-07-28). */
+export type InsightLevel = "none" | "line" | "full";
+
 export interface AgentDef {
   id: string;
   displayName: string;
@@ -578,7 +582,7 @@ export interface AgentDef {
    * this documents that as intended, not incidental). Never widens the
    * SHARED recall index or its PII surface — a ghoul room's incognito bit
    * (domain/workspace-index.ts roomIsIncognito) is untouched by this. */
-  insight?: "none" | "line" | "full";
+  insight?: InsightLevel;
   /** Per-agent memory overrides applied over the workspace MemoryConfig. */
   memory?: MemoryConfigPatch;
   /** Per-agent MCP servers, merged over the workspace set (agent wins). */
