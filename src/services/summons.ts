@@ -28,7 +28,8 @@
 // summoning. Nested summons are default-deny. No approval gates anywhere —
 // summons run autonomously; the trust tier IS the boundary.
 
-import { readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
 
 /** How a finished worker's result lands in the parent room (see
@@ -289,6 +290,63 @@ function unknownAgentMessage(agentId: string, availableAgentIds: readonly string
   return `Unknown agent '${agentId}'. Did you mean: ${suggestions.join(", ") || "(none)"}? Available: ${availableAgentIds.join(", ")}`;
 }
 
+/** Truncate to a byte-ish budget on a whitespace boundary where possible —
+ * keeps ledger entries skimmable and, per the PII boundary from the redteam
+ * finding, bounds how much of a task/result's raw content a ledger can ever
+ * carry (a summary, not a payload). */
+function truncateForLedger(text: string, maxChars: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  const cut = flat.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
+/** Where a caller agent's per-worker-line ledger lives — a plain topic file
+ * under its OWN memoryDir, so it's readable with the agent's existing
+ * `memory` tool (file: "ledgers/<workerAgentId>.md") with no new tool needed.
+ * Deliberately NOT facts.jsonl/episodes.jsonl (syncAgentMemory's inputs), so
+ * it never enters the shared recall index — insight is caller-scoped
+ * visibility, not a widened search surface. */
+function ledgerPath(callerMemoryDir: string, workerAgentId: string): string {
+  return join(callerMemoryDir, "ledgers", `${workerAgentId}.md`);
+}
+
+/** At a summon's lane close, give the CALLER back a distilled trace of its
+ * own worker — task + outcome, truncated, never the raw transcript (the
+ * worker's own room stays incognito regardless; this is a separate, opt-in
+ * record written by the coordinator, not by the worker). Gated on the
+ * caller's `insight` tier ("line"/"full"); "none"/unset (today's default,
+ * every existing ghoul) writes nothing — zero behavior change unless an
+ * agent opts in. Best-effort: a ledger write NEVER fails a summon. */
+async function recordInsightLedger(
+  caller: AgentDef | undefined,
+  workerAgentId: string,
+  childRoomId: string,
+  task: string,
+  resultText: string,
+  failed: boolean,
+  log: (message: string) => void,
+): Promise<void> {
+  if (!caller || (caller.insight !== "line" && caller.insight !== "full")) return;
+  try {
+    const path = ledgerPath(caller.memoryDir, workerAgentId);
+    await mkdir(join(caller.memoryDir, "ledgers"), { recursive: true });
+    const header = `§ ${new Date().toISOString()} — ${childRoomId} — ${failed ? "FAILED" : "done"}`;
+    const entry = [
+      header,
+      `task: ${truncateForLedger(task, 200)}`,
+      `result: ${truncateForLedger(resultText, 400)}`,
+      "",
+    ].join("\n");
+    await appendFile(path, `${entry}\n`, "utf8");
+  } catch (error) {
+    // A ledger is a courtesy record, not the summon's contract — never let a
+    // disk hiccup here surface as a summon failure.
+    log(`insight ledger write for '${workerAgentId}' (${childRoomId}) failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /** The tool-facing acknowledgment for a background summon — the ONE place this
  * contract is worded, shared by the HTTP endpoint and the in-process tool. */
 export function summonAck(agentId: string, childRoomId: string): string {
@@ -387,7 +445,17 @@ export class SummonCoordinator implements SummonHost {
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
 
-    const done = this.runChild(child, info, task, options).finally(() => {
+    const ledgered = this.runChild(child, info, task, options).then(
+      async (reply) => {
+        await recordInsightLedger(caller, agentId, childRoomId, task, reply, false, this.log);
+        return reply;
+      },
+      async (error) => {
+        await recordInsightLedger(caller, agentId, childRoomId, task, error instanceof Error ? error.message : String(error), true, this.log);
+        throw error;
+      },
+    );
+    const done = ledgered.finally(() => {
       this.running.delete(childRoomId);
       this.notifyParentRoomsChanged(parentRoomId);
     });

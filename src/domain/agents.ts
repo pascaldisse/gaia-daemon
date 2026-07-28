@@ -35,6 +35,7 @@ interface RawAgentConfig {
   sandbox?: unknown;
   trust?: unknown;
   allowNestedSummon?: unknown;
+  insight?: unknown;
   memory?: unknown;
   mcpServers?: unknown;
   env?: unknown;
@@ -402,6 +403,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       sandbox: parseSandboxConfig(raw.sandbox),
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
+      insight: raw.insight === "line" || raw.insight === "full" ? raw.insight : undefined,
       permissionMode: normalizePermissionMode(raw.permissionMode),
       account: typeof raw.account === "string" && raw.account.trim() ? raw.account.trim() : undefined,
       memory: parseMemoryPatch(raw.memory),

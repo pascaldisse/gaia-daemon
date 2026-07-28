@@ -566,6 +566,19 @@ export interface AgentDef {
   trust?: boolean;
   /** May summon further workers when itself a summon (default false). */
   allowNestedSummon?: boolean;
+  /** How much of THIS agent's summon history it gets to keep, as the caller
+   * (not as the worker — a ghoul's own room is incognito regardless, see
+   * services/summons.ts). Default "none": today's behavior, a summon's child
+   * room leaves no trace once it delivers. "line": a distilled entry (task +
+   * outcome, truncated, never the raw transcript) is appended to
+   * `<memoryDir>/ledgers/<workerAgentId>.md` at each summon's lane close —
+   * readable via the normal `memory` tool (file: "ledgers/<id>.md"). "full":
+   * same ledger, plus this agent is the one persona meant to actually read
+   * its workers' raw rooms (it already has filesystem reach via bash/read;
+   * this documents that as intended, not incidental). Never widens the
+   * SHARED recall index or its PII surface — a ghoul room's incognito bit
+   * (domain/workspace-index.ts roomIsIncognito) is untouched by this. */
+  insight?: "none" | "line" | "full";
   /** Per-agent memory overrides applied over the workspace MemoryConfig. */
   memory?: MemoryConfigPatch;
   /** Per-agent MCP servers, merged over the workspace set (agent wins). */

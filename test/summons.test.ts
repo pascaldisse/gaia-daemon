@@ -451,3 +451,39 @@ test("end-to-end: a background summon posts its result into the parent room and 
   assert.equal(childState.incognito, true, "summon child rooms stay out of workspace recall and memory capture");
   assert.equal(childState.summon?.status, "delivered");
 });
+
+test("insight ledger: a caller with insight opts into a distilled per-worker trace at lane close; default caller writes nothing", async () => {
+  const insightMemDir = await mkdtemp(join(tmpdir(), "gaia-ledger-mem-"));
+  const { workspace, path } = await makeWorkspace({
+    watcher: agent({ id: "watcher", memoryDir: insightMemDir, insight: "line" }),
+  });
+  const room = fakeRoom("scouted the area, all quiet");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 8, () => {});
+
+  const { roomId: childRoomId, done } = await coordinator.launch("default", "terry", "scout the ruins", { callerAgentId: "watcher" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  room.settle();
+  await done;
+
+  const { readFile: read } = await import("node:fs/promises");
+  const ledger = await read(join(insightMemDir, "ledgers", "terry.md"), "utf8");
+  assert.match(ledger, /done/); // outcome recorded
+  assert.match(ledger, new RegExp(childRoomId)); // provenance
+  assert.match(ledger, /scout the ruins/); // task, distilled
+  assert.match(ledger, /scouted the area, all quiet/); // result, distilled
+
+  // The worker's OWN room is still incognito — insight is caller-scoped
+  // visibility via the ledger file, never a widened recall index.
+  const childState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(childState.incognito, true);
+
+  // A caller with no `insight` (today's every ghoul) writes NOTHING — zero
+  // behavior change unless an agent opts in.
+  const plainRoom = fakeRoom("quiet run");
+  const plainCoordinator = new SummonCoordinator(workspace, path, async () => plainRoom, async () => 8, () => {});
+  const { done: plainDone } = await plainCoordinator.launch("default", "terry", "another task", { callerAgentId: "gaia" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  plainRoom.settle();
+  await plainDone;
+  await assert.rejects(read(join(workspace.agents.gaia!.memoryDir, "ledgers", "terry.md"), "utf8"));
+});
