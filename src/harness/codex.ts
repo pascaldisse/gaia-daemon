@@ -33,7 +33,7 @@ import { createEventChannel } from "./events.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
 import { missingBinaryError, spawnLineReader } from "./proc.js";
 import { configuredModelLabel, ModelLabel } from "./model-label.js";
-import { buildInlineSystemPrompt, buildTurnPromptFor } from "./prompt.js";
+import { buildInlineSystemPrompt, buildTurnPromptFor, promptCacheKey } from "./prompt.js";
 import { agentRoster, buildPiTools } from "./tools.js";
 import { emailFromJwt, fetchChatGptUsage } from "./usage.js";
 
@@ -411,7 +411,7 @@ export class CodexRuntime implements AgentRuntime {
     let thread = this.threads.get(input.roomId);
     let announce = false;
     if (thread && !this.attachedThreads.has(thread.threadId)) {
-      thread = await this.resumeThread(client, thread, input.roomId, input.activeRole);
+      thread = await this.resumeThread(client, thread, input.roomId, input.activeRole, input.protocolThinkingLevel);
       announce = Boolean(thread);
     }
     if (!thread) {
@@ -912,12 +912,13 @@ export class CodexRuntime implements AgentRuntime {
   private async startThread(client: CodexClient, input: AgentInput): Promise<ThreadState> {
     // Gaia tools are native dynamic tools here (self-describing, like Pi's
     // in-process tools), so the system prompt carries no CLI pointer.
-    const roleKey = input.activeRole?.name ?? "";
+    const roleKey = promptCacheKey(input.activeRole?.name, input.protocolThinkingLevel);
     const baseInstructions = await this.threads.systemPrompt(input.roomId, roleKey, () =>
       buildInlineSystemPrompt({
         workspace: this.workspace,
         agent: this.agent,
         role: input.activeRole,
+        thinkingLevel: input.protocolThinkingLevel,
         toolPointer: "",
       }),
     );
@@ -954,14 +955,16 @@ export class CodexRuntime implements AgentRuntime {
     state: ThreadState,
     roomId: string,
     activeRole?: ResolvedRole,
+    thinkingLevel?: number,
   ): Promise<ThreadState | undefined> {
     try {
-      const roleKey = activeRole?.name ?? "";
+      const roleKey = promptCacheKey(activeRole?.name, thinkingLevel);
       const baseInstructions = await this.threads.systemPrompt(roomId, roleKey, () =>
         buildInlineSystemPrompt({
           workspace: this.workspace,
           agent: this.agent,
           role: activeRole,
+          thinkingLevel,
           toolPointer: "",
         }),
       );

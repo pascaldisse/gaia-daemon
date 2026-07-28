@@ -34,6 +34,9 @@ export interface AgentInput {
   channel?: "text" | "voice";
   /** Per-turn thinking override (e.g. voice forcing it off). */
   thinking?: string;
+  /** Room-wide GAIA-THINK protocol level (0-10) from RoomState.thinkingLevel;
+   * rides into the `# Protocols` section of the system prompt. Unset = 0. */
+  protocolThinkingLevel?: number;
   /** Auto-retrieved memory block for this turn ("" / absent = nothing cleared
    * the relevance gate). Turn-level overlay, never part of the session. */
   recall?: string;

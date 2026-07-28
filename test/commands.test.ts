@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasExplicitMention, parseCommand, planMentionRoute } from "../src/services/commands.js";
+import { hasExplicitMention, parseCommand, planMentionRoute, validateThinkingLevel, THINKING_LEVEL_MAX } from "../src/services/commands.js";
 
 test("parseCommand: plain text is a message", () => {
   assert.deepEqual(parseCommand("hello there"), { type: "message", text: "hello there" });
@@ -15,6 +15,11 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/summon terry fix the tests"), { type: "summon", agent: "terry", task: "fix the tests" });
   assert.deepEqual(parseCommand("/thinking high"), { type: "thinking", level: "high" });
   assert.deepEqual(parseCommand("/thinking @gaia off"), { type: "thinking", agent: "gaia", level: "off" });
+  // GAIA-THINK protocol level: bare numeric or `off` (single token) → thinking-level.
+  assert.deepEqual(parseCommand("/thinking 7"), { type: "thinking-level", level: 7 });
+  assert.deepEqual(parseCommand("/thinking 0"), { type: "thinking-level", level: 0 });
+  assert.deepEqual(parseCommand("/thinking off"), { type: "thinking-level", level: 0 });
+  assert.deepEqual(parseCommand("/thinking 11"), { type: "thinking-level", level: 11 }); // parsed; rejected at validation
   assert.deepEqual(parseCommand("/clear"), { type: "clear" });
   assert.deepEqual(parseCommand("/refresh"), { type: "refresh" });
   assert.deepEqual(parseCommand("/fork"), { type: "fork" });
@@ -94,4 +99,13 @@ test("hasExplicitMention: leading known addresses only", () => {
   assert.equal(hasExplicitMention("email bob@gaia.dev", agents), false); // pasted email must not count
   assert.equal(hasExplicitMention("@unknown ping", agents), false);
   assert.equal(hasExplicitMention("no mentions", agents), false);
+});
+
+test("validateThinkingLevel: 0-MAX accepted, out-of-range rejected (existing style)", () => {
+  assert.equal(validateThinkingLevel(0), null);
+  assert.equal(validateThinkingLevel(7), null);
+  assert.equal(validateThinkingLevel(THINKING_LEVEL_MAX), null);
+  assert.match(validateThinkingLevel(11) ?? "", /Invalid thinking level: 11/);
+  assert.match(validateThinkingLevel(-1) ?? "", /Invalid thinking level/);
+  assert.match(validateThinkingLevel(3.5) ?? "", /Invalid thinking level/);
 });

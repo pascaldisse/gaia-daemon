@@ -313,6 +313,7 @@ class AntigravityRuntime implements AgentRuntime {
       workspace: this.workspace,
       agent: this.agent,
       role: input.activeRole,
+      thinkingLevel: input.protocolThinkingLevel,
       toolPointer: "",
       contextFiles: []
     } as any); // using partial args for now since system prompts vary by harness

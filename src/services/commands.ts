@@ -10,6 +10,7 @@ export type SlashCommand =
   | { type: "role"; agent?: string; role?: string }
   | { type: "summon"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
+  | { type: "thinking-level"; level: number }
   | { type: "model"; agent?: string; spec?: string }
   | { type: "pet"; action: "set"; agent?: string; package?: string }
   | { type: "pet"; action: "off"; agent?: string }
@@ -31,13 +32,25 @@ export type SlashCommand =
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
 
+/** Max GAIA-THINK protocol level (`/thinking N`). Levels are integers 0-N. */
+export const THINKING_LEVEL_MAX = 10;
+
+/** Reject out-of-range protocol levels (mirrors setRoomThinking's reject
+ * style): returns an error message, or null when `level` is a valid 0-MAX. */
+export function validateThinkingLevel(level: number): string | null {
+  if (!Number.isInteger(level) || level < 0 || level > THINKING_LEVEL_MAX) {
+    return `Invalid thinking level: ${level}. Use an integer 0-${THINKING_LEVEL_MAX} (or 'off').`;
+  }
+  return null;
+}
+
 export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "help", type: "help", description: "show command help" },
   { name: "agents", type: "agents", description: "list available agents" },
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
-  { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>" },
+  { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>, or GAIA-THINK protocol level: /thinking <0-10|off>" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
   { name: "pet", type: "pet", description: "manage native desktop pets: /pet | /pet <package> | /pet @agent [<package>] | off [@agent] | list" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
@@ -96,8 +109,19 @@ export function parseCommand(input: string): SlashCommand {
       return stripped.length >= 2 ? { type: "role", agent: stripped[0], role: stripped[1] } : { type: "role", role: stripped[0] };
     case "summon":
       return { type: "summon", agent: stripped[0] || undefined, task: args.slice(1).join(" ") || undefined };
-    case "thinking":
-      return stripped.length >= 2 ? { type: "thinking", agent: stripped[0], level: stripped[1] } : { type: "thinking", level: stripped[0] };
+    case "thinking": {
+      // Two-token form (`/thinking @agent low`) stays the per-agent SDK
+      // reasoning-EFFORT command. A single numeric token or bare `off`
+      // (`/thinking 7`, `/thinking off`) is the room-wide GAIA-THINK protocol
+      // level 0-10 ("off" = 0); word levels (`/thinking low`) stay SDK effort.
+      if (stripped.length >= 2) return { type: "thinking", agent: stripped[0], level: stripped[1] };
+      const arg = stripped[0];
+      if (arg !== undefined) {
+        if (arg.toLowerCase() === "off") return { type: "thinking-level", level: 0 };
+        if (/^\d+$/.test(arg)) return { type: "thinking-level", level: Number(arg) };
+      }
+      return { type: "thinking", level: arg };
+    }
     case "model":
       // "/model fable" targets the default agent; "/model nyari fable" names one.
       // The spec keeps its slash intact (provider/name) — split(/\s+/) only breaks on whitespace.

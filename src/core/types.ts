@@ -234,6 +234,11 @@ export interface RoomState {
    * room entry wins; absent inherits the agent.json global default
    * (agent.thinking). Never written to agent.json. */
   thinkingOverrides: Record<string, string>;
+  /** Room-wide GAIA-THINK protocol level (0-10), set via `/thinking N`.
+   * Distinct from thinkingOverrides (per-agent SDK reasoning effort): this is
+   * a single room value driving the `# Protocols` section's thinking line for
+   * ALL agents. Absent/0 = thought blocks disabled. */
+  thinkingLevel?: number;
   agentCursors: Record<string, number>;
   /** Per-agent active-context floor: the transcript line index below which
    * content is NOT in the agent's live context (never loaded via a context-gate

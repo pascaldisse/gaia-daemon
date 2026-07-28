@@ -60,7 +60,7 @@ import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
 import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor, usageAccountFor } from "../harness/spec.js";
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
-import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
+import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, validateThinkingLevel, type SlashCommand } from "./commands.js";
 import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
@@ -325,6 +325,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   roles: (service, command) => service.renderRoles(command.type === "roles" ? command.agent : undefined),
   role: (service, command) => (command.type === "role" ? service.setRole(command.agent, command.role) : Promise.resolve("")),
   thinking: (service, command) => (command.type === "thinking" ? service.runThinkingCommand(command.agent, command.level) : Promise.resolve("")),
+  "thinking-level": (service, command) => (command.type === "thinking-level" ? service.runThinkingLevelCommand(command.level) : Promise.resolve("")),
   model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
   pet: (service, command) => (command.type === "pet" ? service.runPetCommand(command) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
@@ -1415,6 +1416,7 @@ export class RoomService {
             skills: effectiveAgentSkills(agent, activeRole),
             channel: options.channel,
             thinking: options.thinking ?? state.thinkingOverrides[target],
+            ...(state.thinkingLevel ? { protocolThinkingLevel: state.thinkingLevel } : {}),
             recall,
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
             ...(userName ? { userName } : {}),
@@ -2940,6 +2942,25 @@ export class RoomService {
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
+  }
+
+  /** Room-wide GAIA-THINK protocol level (`/thinking N`, 0-10; `off`=0).
+   * Distinct from the per-agent SDK reasoning-effort override above: this is a
+   * single room value written to RoomState.thinkingLevel that drives the
+   * `# Protocols` section's thinking line for EVERY agent. Rejects out-of-range
+   * (existing validation style). The level rides in the system prompt via
+   * promptCacheKey, so it takes effect on each agent's next turn. */
+  async runThinkingLevelCommand(level: number): Promise<string> {
+    const error = validateThinkingLevel(level);
+    if (error) return error;
+    await this.room.updateState((state) => {
+      if (level === 0) delete state.thinkingLevel;
+      else state.thinkingLevel = level;
+    });
+    await this.emitSnapshot();
+    return level === 0
+      ? "Thinking disabled for this room (GAIA-THINK level 0)."
+      : `Set GAIA-THINK level to ${level}/10 for this room.`;
   }
 
   /** Room-scoped thinking override (mirrors setRole): writes ONLY

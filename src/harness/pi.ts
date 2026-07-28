@@ -47,7 +47,7 @@ import { ModelLabel } from "./model-label.js";
 // up front, same as pi's own compiled CLI entry (dist/bun/cli.js).
 registerBunOAuthFlows();
 import { findModelWithAlias } from "./model-aliases.js";
-import { buildBaseSystemPrompt, buildTurnPromptFor } from "./prompt.js";
+import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey } from "./prompt.js";
 import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -152,6 +152,16 @@ export interface PiSessionLike {
      * message (no parent entry to branch to). Mutates the manager in place. */
     newSession(options?: { parentSession?: string }): string | undefined;
   };
+  /** The session's own read-only SettingsManager (the instance gaia passes to
+   * createAgentSession). compact() reaches it to force a smaller recent-keep
+   * window when an explicit /compact would otherwise no-op as "session too
+   * small". applyOverrides only mutates the in-memory merged settings — it never
+   * writes to disk — so it is safe on the read-only manager. Already present at
+   * runtime; declared here so the typed cast can reach it. */
+  readonly settingsManager?: {
+    getCompactionKeepRecentTokens(): number;
+    applyOverrides(overrides: { compaction?: { keepRecentTokens?: number } }): void;
+  };
   abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
@@ -195,6 +205,13 @@ export function piRoomSessionDir(workspace: Pick<Workspace, "rootDir">, roomId: 
 // session (fresh room or a room that never sent this agent a turn). Shared by
 // the harness spec's hasDurableSession (host.ts's pre-spawn gate) and compact()'s
 // own lazy-restore decision below — one on-disk truth, read twice.
+/** Forced recent-keep window (tokens) for an EXPLICIT /compact that would
+ * otherwise no-op because the whole session sits under pi's default 20000
+ * keepRecentTokens floor (findCutPoint then finds nothing outside the kept
+ * window). A user who runs /compact wants the session shrunk NOW, so the retry
+ * keeps only a small live tail and summarizes the rest. Restored immediately. */
+const FORCE_COMPACT_KEEP_RECENT_TOKENS = 2000;
+
 function hasPersistedPiSession(rootDir: string, roomId: string, agentId: string): boolean {
   try {
     return readdirSync(piRoomSessionDir({ rootDir }, roomId, agentId)).length > 0;
@@ -338,7 +355,7 @@ export class PiRuntime implements AgentRuntime {
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
-    const meta = await this.ensureSession(input.roomId, input.activeRole);
+    const meta = await this.ensureSession(input.roomId, input.activeRole, input.protocolThinkingLevel);
     const session = meta.session;
     this.applyThinkingLevel(meta, input.thinking);
 
@@ -488,37 +505,62 @@ export class PiRuntime implements AgentRuntime {
     }
     const session = meta.session;
     if (!session.compact) return NO_SESSION_TO_COMPACT;
-    let result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number };
+
+    const toResult = (result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number }): CompactResult => {
+      const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
+      return {
+        compacted: true,
+        message: `session compacted (${result.tokensBefore} tokens before${after}).`,
+        ...(result.summary ? { summary: result.summary } : {}),
+      };
+    };
+
     try {
-      result = await session.compact();
+      return toResult(await session.compact());
     } catch (error) {
       // pi-ai's own session.compact() throws (rather than returning a result)
       // when its cutPoint search finds nothing outside the always-kept "recent"
       // window (default keepRecentTokens: 20000 tokens — see
       // @earendil-works/pi-coding-agent dist/core/compaction/compaction.js
-      // prepareCompaction/findCutPoint). A session whose ENTIRE history is
-      // smaller than that floor is genuinely too small to shrink — this is not
-      // a session-loss/restore bug (that case is NO_SESSION_TO_COMPACT above,
-      // fixed by 64cff59's lazy restore). It commonly fires well under 20% of a
-      // model's context window: e.g. a 200k-token model's session sits under
-      // the 20000-token floor at roughly ctx ≤10%, so a small ctx% chip and
-      // this message are CONSISTENT, not contradictory. Surface it as the same
-      // clean no-op contract other harnesses use instead of letting it read as
-      // a failure (room-service's catch wraps any thrown compact() error as
-      // "Compaction failed for @agent: …", which reads like a crash for what
-      // is actually "there's nothing to trim yet").
+      // prepareCompaction/findCutPoint). "Already compacted" (last entry is a
+      // compaction boundary) is a real no-op. But "too small" only means the
+      // WHOLE session fits under that 20000-token floor — NOT that there's
+      // nothing worth trimming: for an EXPLICIT /compact the user wants it
+      // shrunk NOW (a poisoned/heavy tail the model keeps re-reading, a room
+      // that won't reply). So retry ONCE with a small forced recent-keep window
+      // (FORCE_COMPACT_KEEP_RECENT_TOKENS) so findCutPoint has something to cut,
+      // then restore the real floor — the override is in-memory only
+      // (applyOverrides never writes to disk, safe on the read-only manager).
+      // This is not a session-loss/restore bug (that case is NO_SESSION_TO_COMPACT
+      // above, fixed by 64cff59's lazy restore).
       const msg = error instanceof Error ? error.message : String(error);
-      if (/too small/i.test(msg) || /already compacted/i.test(msg)) {
+      if (/already compacted/i.test(msg)) {
         return { compacted: false, message: `nothing to compact — ${msg.toLowerCase()}.` };
       }
-      throw error;
+      if (!/too small/i.test(msg)) throw error;
+
+      // "too small" = the whole session fits under pi's 20000-token
+      // keepRecentTokens floor. For an EXPLICIT /compact the user still wants it
+      // shrunk, so retry once with a small forced recent-keep window so
+      // findCutPoint has something to cut, then restore the real floor (the
+      // override is in-memory only — applyOverrides never writes to disk). If we
+      // can't reach the settings manager, or even the forced window finds
+      // nothing (a genuinely tiny one-turn session), fall through to the same
+      // clean no-op contract the other harnesses use.
+      if (session.settingsManager) {
+        const original = session.settingsManager.getCompactionKeepRecentTokens();
+        session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: FORCE_COMPACT_KEEP_RECENT_TOKENS } });
+        try {
+          return toResult(await session.compact());
+        } catch (retryError) {
+          const rmsg = retryError instanceof Error ? retryError.message : String(retryError);
+          if (!/too small/i.test(rmsg) && !/already compacted/i.test(rmsg)) throw retryError;
+        } finally {
+          session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: original } });
+        }
+      }
+      return { compacted: false, message: `nothing to compact — ${msg.toLowerCase()}.` };
     }
-    const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
-    return {
-      compacted: true,
-      message: `session compacted (${result.tokensBefore} tokens before${after}).`,
-      ...(result.summary ? { summary: result.summary } : {}),
-    };
   }
 
   /** Native pi fork (backs edit/retry — capabilities.supportsForkAtMessage).
@@ -605,14 +647,15 @@ export class PiRuntime implements AgentRuntime {
     return { ok: true, message: `forked pi session at user message ${userOrdinal} (entry ${target.entryId})` };
   }
 
-  private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined): Promise<PiSessionMeta> {
+  private async ensureSession(roomId: string, activeRole: ResolvedRole | undefined, thinkingLevel?: number): Promise<PiSessionMeta> {
     await this.modelRuntimeReady;
-    const roleKey = activeRole?.name ?? "";
+    const roleKey = promptCacheKey(activeRole?.name, thinkingLevel);
     const systemPrompt = await this.sessions.systemPrompt(roomId, roleKey, () =>
       buildBaseSystemPrompt({
         agent: this.agent,
         role: activeRole,
         workspaceRoot: this.workspace.rootDir,
+        thinkingLevel,
       }),
     );
     const skillNames = agentSkillNames(this.agent, activeRole);

@@ -338,6 +338,9 @@ export function normalizeRoomState(value: unknown): RoomState {
     activeRoles: stringRecord(value.activeRoles),
     ...(petBindings ? { petBindings } : {}),
     thinkingOverrides: stringRecord(value.thinkingOverrides),
+    ...(typeof value.thinkingLevel === "number" && Number.isFinite(value.thinkingLevel) && value.thinkingLevel > 0 && value.thinkingLevel <= 10
+      ? { thinkingLevel: Math.floor(value.thinkingLevel) }
+      : {}),
     agentCursors: cursorRecord(value.agentCursors),
     ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),

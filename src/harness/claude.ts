@@ -29,7 +29,7 @@ import { fileSessionStore, SessionMap } from "./sessions.js";
 import { ModelLabel } from "./model-label.js";
 import { resolveApiModelAlias } from "./model-aliases.js";
 import { killProcessTree, missingBinaryError, resolveCliEntry, selfRelaunchArgv, spawnLineReader } from "./proc.js";
-import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer } from "./prompt.js";
+import { buildInlineSystemPrompt, buildTurnPromptFor, gaiaCliPointer, promptCacheKey } from "./prompt.js";
 import { startThinkingProxy, type ThinkingProxyHandle } from "./claude-thinking-proxy.js";
 import { agentRoster } from "./tools.js";
 import { fetchAnthropicUsage, USAGE_TIMEOUT_MS } from "./usage.js";
@@ -1178,12 +1178,13 @@ export class ClaudeRuntime implements AgentRuntime {
   private buildSystemPrompt(input: AgentInput): Promise<string> {
     // Claude Code never sees Pi-style skill files, so the active role's skill
     // text is inlined into the system prompt (handled by buildInlineSystemPrompt).
-    const roleKey = input.activeRole?.name ?? "";
+    const roleKey = promptCacheKey(input.activeRole?.name, input.protocolThinkingLevel);
     return this.sessions.systemPrompt(input.roomId, roleKey, () =>
       buildInlineSystemPrompt({
         workspace: this.workspace,
         agent: this.agent,
         role: input.activeRole,
+        thinkingLevel: input.protocolThinkingLevel,
         toolPointer: gaiaCliPointer(this.agent.tools, this.capabilities.gaiaTools, { availableAgents: agentRoster(this.workspace) }),
       }),
     );
