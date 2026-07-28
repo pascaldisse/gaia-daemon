@@ -6,7 +6,9 @@
 // CLI harnesses additionally inline role-skill text + a `gaia` CLI pointer
 // (buildInlineSystemPrompt) because they cannot load Pi-style skill files.
 
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { globalPaths } from "../core/paths.js";
 import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
@@ -22,6 +24,43 @@ export interface SystemPromptInput {
   role?: ResolvedRole;
   intentText?: string;
   contextFiles: ContextFile[];
+  /** Concatenated verbatim text of ~/.gaia/protocols/*.md (buildBaseSystemPrompt
+   * reads it). ""/undefined = no `# Protocols` section at all (zero change). */
+  protocolsText?: string;
+  /** Room-scoped GAIA-THINK level 0-10. Only affects the trailing line of the
+   * Protocols section, and only when protocolsText is present. Unset = 0. */
+  thinkingLevel?: number;
+}
+
+/** Cache key for the per-session system prompt: role name plus the room's
+ * protocol thinking level, so changing the level invalidates the cached prompt
+ * on the next turn (the level rides IN the system prompt). */
+export function promptCacheKey(roleName: string | undefined, thinkingLevel?: number): string {
+  return `${roleName ?? ""}#t${thinkingLevel ?? 0}`;
+}
+
+/** The `# Protocols` section (or "" when no protocol text is loaded). When
+ * loaded, a trailing line always states the room's GAIA-THINK level: level 0
+ * (or unset) disables thought blocks, level N announces `N/10`. */
+export function buildProtocolsSection(protocolsText?: string, thinkingLevel?: number): string {
+  const body = protocolsText?.trim();
+  if (!body) return "";
+  const level = thinkingLevel ?? 0;
+  const levelLine = level > 0 ? `Current thinking level: ${level}/10` : "Thinking disabled — do not emit <gaia:think> blocks.";
+  return `# Protocols\n\n${body}\n\n${levelLine}`;
+}
+
+/** Read every *.md in the protocols dir (sorted by filename) and join their
+ * verbatim contents with blank lines. Missing dir / no *.md → "". */
+export async function readProtocolsText(dir: string = globalPaths.protocolsDir()): Promise<string> {
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".md")).sort();
+  } catch {
+    return "";
+  }
+  const parts = await Promise.all(names.map((name) => readOptional(join(dir, name))));
+  return parts.map((part) => part.trim()).filter(Boolean).join("\n\n");
 }
 
 export interface TurnPromptInput {
@@ -129,6 +168,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
   // context files.
   return [
     `# Agent Soul\n\n${input.soulText.trim()}`,
+    buildProtocolsSection(input.protocolsText, input.thinkingLevel),
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
     HARNESS_LAW,
@@ -160,11 +200,16 @@ export async function buildBaseSystemPrompt(params: {
   agent: AgentDef;
   role: ResolvedRole | undefined;
   workspaceRoot: string;
+  /** Room-scoped GAIA-THINK level (0-10). Unset = 0. */
+  thinkingLevel?: number;
+  /** Override the protocols source dir (tests); defaults to ~/.gaia/protocols. */
+  protocolsDir?: string;
 }): Promise<string> {
-  const [soulText, intentText, contextFiles] = await Promise.all([
+  const [soulText, intentText, contextFiles, protocolsText] = await Promise.all([
     readFile(params.agent.soulPath, "utf8"),
     readOptional(params.agent.projectIntentPath),
     discoverContextFiles(params.workspaceRoot),
+    readProtocolsText(params.protocolsDir),
   ]);
   return buildSystemPrompt({
     agent: params.agent,
@@ -172,6 +217,8 @@ export async function buildBaseSystemPrompt(params: {
     role: params.role,
     intentText,
     contextFiles,
+    protocolsText,
+    thinkingLevel: params.thinkingLevel,
   });
 }
 
@@ -183,11 +230,14 @@ export async function buildInlineSystemPrompt(params: {
   agent: AgentDef;
   role: ResolvedRole | undefined;
   toolPointer: string;
+  /** Room-scoped GAIA-THINK level (0-10). Unset = 0. */
+  thinkingLevel?: number;
 }): Promise<string> {
   const base = await buildBaseSystemPrompt({
     agent: params.agent,
     role: params.role,
     workspaceRoot: params.workspace.rootDir,
+    thinkingLevel: params.thinkingLevel,
   });
   // A harness's native commands (claude builtins like deep-research) have no
   // SKILL.md to inline — they reach the agent by passthrough. Pass their names as

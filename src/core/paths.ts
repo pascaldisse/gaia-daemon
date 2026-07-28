@@ -23,6 +23,10 @@ export const globalPaths = {
   appSettings: () => join(gaiaHome(), "app.json"),
   accounts: () => join(gaiaHome(), "accounts.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
+  /** Always-loaded global prompt protocols: every *.md here (sorted by
+   * filename) loads verbatim into EVERY agent's system prompt as a
+   * `# Protocols` section. Missing/empty dir = section omitted, zero change. */
+  protocolsDir: () => join(gaiaHome(), "protocols"),
   agentDir: (agentId: string) => join(gaiaHome(), "agents", agentId),
   /** Shared role definitions available to every agent. Agent-local and project
    * role files may layer on top of these defaults. */
