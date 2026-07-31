@@ -260,12 +260,13 @@ test("wsToHttp converts websocket urls", () => {
 // settings
 
 test("settings: defaults apply and the bundled unmute dir resolves at runtime", async () => {
-  await withTempHome(async () => {
+  await withTempHome(async (home) => {
     const loaded = await readVoiceSettings();
     assert.equal(loaded.unmuteUrl, VOICE_SETTINGS_DEFAULTS.unmuteUrl);
     assert.equal(loaded.autoStart, true);
     assert.equal(loaded.disableThinking, true);
     assert.equal(loaded.unmuteDir, bundledUnmuteDir()); // "" in defaults → resolved live
+    assert.equal(loaded.ttsArchiveDir, join(home, "voice-archive", "tts"));
   });
 });
 

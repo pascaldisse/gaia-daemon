@@ -398,14 +398,63 @@ async function readCachedAudio(dir: string, key: string): Promise<TtsAudio | und
   }
 }
 
-async function writeCachedAudio(dir: string, key: string, result: TtsAudio, format?: TtsStreamFormat): Promise<void> {
+function cachedAudioMetadata(result: TtsAudio, format?: TtsStreamFormat): string {
+  return JSON.stringify({ contentType: result.contentType, ...(format ? { format } : {}) });
+}
+
+function isAlreadyArchived(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+/** Write missing archive halves without ever replacing an existing render. */
+async function archiveCachedAudio(dir: string, key: string, result: TtsAudio, format?: TtsStreamFormat): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  const audioPath = join(dir, `${key}.audio`);
+  const metadataPath = join(dir, `${key}.json`);
+  const metadata = cachedAudioMetadata(result, format);
+
+  // Exclusive creates preserve the first render for this content-addressed key.
+  // EEXIST is normal for re-generation or concurrent requests.
+  try {
+    await writeFile(audioPath, result.audio, { flag: "wx" });
+  } catch (error) {
+    if (!isAlreadyArchived(error)) throw error;
+  }
+  try {
+    await writeFile(metadataPath, metadata, { flag: "wx" });
+  } catch (error) {
+    if (!isAlreadyArchived(error)) throw error;
+  }
+}
+
+async function writeCachedAudio(
+  dir: string,
+  key: string,
+  result: TtsAudio,
+  format?: TtsStreamFormat,
+  archiveDir?: string,
+  log: (message: string) => void = () => {},
+): Promise<void> {
   try {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${key}.audio`), result.audio);
-    await writeFile(join(dir, `${key}.json`), JSON.stringify({ contentType: result.contentType, ...(format ? { format } : {}) }));
+    await writeFile(join(dir, `${key}.json`), cachedAudioMetadata(result, format));
     void sweepTtsCache(dir).catch(() => {});
   } catch {
     // Cache is best-effort.
+    return;
+  }
+
+  if (!archiveDir) return;
+  try {
+    await archiveCachedAudio(archiveDir, key, result, format);
+  } catch (error) {
+    // Archival is best-effort: playback must never depend on durable storage.
+    try {
+      log(`WARNING: could not archive TTS render ${key}: ${error instanceof Error ? error.message : String(error)}`);
+    } catch {
+      // A consumer's logger must not turn an archive failure into a playback failure.
+    }
   }
 }
 
@@ -450,6 +499,9 @@ export interface ReadAloudRequest {
   chunk?: number;
   /** Cache directory override (tests); default ~/.gaia/cache/tts. */
   cacheDir?: string;
+  /** Append-only archive directory override (tests); default voice.json
+   * ttsArchiveDir or ~/.gaia/voice-archive/tts. */
+  archiveDir?: string;
   /** Skip the cache READ and re-synthesize, overwriting the entry — the "regen"
    * button, for when a cached clip is bad (e.g. an old truncated stream). The
    * write path is unchanged, so the fresh audio replaces the stale one. */
@@ -476,6 +528,8 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
 
   const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
+  const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
+  const log = request.log ?? (() => {});
   const key = ttsCacheKey(engine.id, voice, chunks[index]);
   if (!request.regenerate) {
     const cached = await readCachedAudio(cacheDir, key);
@@ -487,9 +541,9 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
     voice,
     settings: request.settings,
     ensureTts: request.ensureTts,
-    log: request.log ?? (() => {}),
+    log,
   });
-  await writeCachedAudio(cacheDir, key, result);
+  await writeCachedAudio(cacheDir, key, result, undefined, archiveDir, log);
   return { ...result, chunks: chunks.length, chunk: index };
 }
 
@@ -523,6 +577,8 @@ async function* teeFramesToCache(
   dir: string,
   key: string,
   format: TtsStreamFormat,
+  archiveDir: string,
+  log: (message: string) => void,
 ): AsyncGenerator<Buffer> {
   const collected: Buffer[] = [];
   let complete = false;
@@ -534,7 +590,7 @@ async function* teeFramesToCache(
     complete = true;
   } finally {
     if (complete && collected.length) {
-      await writeCachedAudio(dir, key, { audio: Buffer.concat(collected), contentType: "audio/pcm" }, format).catch(() => {});
+      await writeCachedAudio(dir, key, { audio: Buffer.concat(collected), contentType: "audio/pcm" }, format, archiveDir, log).catch(() => {});
     }
   }
 }
@@ -549,6 +605,8 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
   if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length };
 
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
+  const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
+  const log = request.log ?? (() => {});
   const key = ttsCacheKey(`${engine.id}:stream`, voice, text);
   if (!request.regenerate) {
     const cached = await readCachedPcm(cacheDir, key);
@@ -560,9 +618,9 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
     voice,
     settings: request.settings,
     ensureTts: request.ensureTts,
-    log: request.log ?? (() => {}),
+    log,
   });
-  return { mode: "stream", format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, stream.format) };
+  return { mode: "stream", format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, stream.format, archiveDir, log) };
 }
 
 /** VoiceSettings → the stack subset ensureTts needs (mirrors startVoiceCall). */

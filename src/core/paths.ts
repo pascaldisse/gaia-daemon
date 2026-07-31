@@ -54,6 +54,8 @@ export const globalPaths = {
   usageCache: () => join(gaiaHome(), "usage.json"),
   /** Derived read-aloud audio, content-addressed per speech chunk. */
   ttsCacheDir: () => join(gaiaHome(), "cache", "tts"),
+  /** Append-only copy of every rendered read-aloud clip; never cache-swept. */
+  ttsArchiveDir: () => join(gaiaHome(), "voice-archive", "tts"),
   /** Local model files (embedding/reranker GGUFs) pulled once, checksummed. */
   modelsCacheDir: () => join(gaiaHome(), "cache", "models"),
 };

@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
 import {
@@ -363,6 +363,46 @@ test("readAloud: refuses user messages and empty speakable text, then routes to 
     assert.equal(calls[0].voice, "airy");
   } finally {
     await temp.cleanup();
+  }
+});
+
+test("readAloud: archives new renders without replacing the first archived hash", async () => {
+  const cache = await createTempDir();
+  const archive = await createTempDir("gaia2-tts-archive-");
+  let renders = 0;
+  registerTtsEngine({
+    id: "test-archive-tee",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from(`AUDIO:${++renders}`), contentType: "audio/test" }),
+  });
+  const settings = voiceSettings({ ttsEngine: "test-archive-tee" });
+  const request = {
+    event: { author: "gaia", text: "Archive this new render." },
+    settings,
+    ensureTts: async () => ({ ttsUrl: "http://127.0.0.1:1" }),
+    cacheDir: cache.path,
+    archiveDir: archive.path,
+  };
+
+  try {
+    await readAloud(request);
+    const names = (await readdir(archive.path)).sort();
+    assert.equal(names.length, 2);
+    assert.match(names[0], /^[a-f0-9]{64}\.(audio|json)$/);
+    assert.equal(names[0].replace(/\.(audio|json)$/, ""), names[1].replace(/\.(audio|json)$/, ""));
+    const audioName = names.find((name) => name.endsWith(".audio"));
+    const metadataName = names.find((name) => name.endsWith(".json"));
+    assert.ok(audioName);
+    assert.ok(metadataName);
+    assert.equal((await readFile(join(archive.path, audioName))).toString(), "AUDIO:1");
+    assert.deepEqual(JSON.parse(await readFile(join(archive.path, metadataName), "utf8")), { contentType: "audio/test" });
+
+    // A regeneration overwrites the LRU cache but never the durable archive.
+    await readAloud({ ...request, regenerate: true });
+    assert.equal((await readFile(join(archive.path, audioName))).toString(), "AUDIO:1");
+  } finally {
+    await archive.cleanup();
+    await cache.cleanup();
   }
 });
 

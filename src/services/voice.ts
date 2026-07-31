@@ -51,6 +51,9 @@ export interface VoiceSettings {
   /** Default read-aloud TTS engine for the transcript play button; agents
    * override per-persona via agent.json `tts.engine`. */
   ttsEngine: string;
+  /** Append-only archive of rendered read-aloud clips. Empty uses
+   * ~/.gaia/voice-archive/tts, resolved at runtime. */
+  ttsArchiveDir: string;
   /** claude-voice daemon the "claude" read-aloud engine talks to. */
   claudeVoiceUrl: string;
   /** claude-voice checkout to auto-start when its daemon is down ("" = never
@@ -99,6 +102,9 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   silenceDelaySec: 7,
   disableThinking: true,
   ttsEngine: "kyutai",
+  // Empty = ~/.gaia/voice-archive/tts, resolved at runtime; never persist a
+  // stale absolute home path in voice.json.
+  ttsArchiveDir: "",
   claudeVoiceUrl: "http://127.0.0.1:8778",
   claudeVoiceDir: "",
   elevenLabsApiKey: "",
@@ -143,6 +149,8 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.silenceDelaySec === "number" && raw.silenceDelaySec > 0) settings.silenceDelaySec = raw.silenceDelaySec;
   if (typeof raw.disableThinking === "boolean") settings.disableThinking = raw.disableThinking;
   if (typeof raw.ttsEngine === "string" && raw.ttsEngine.trim()) settings.ttsEngine = raw.ttsEngine.trim();
+  // Empty explicitly selects the runtime default archive path.
+  if (typeof raw.ttsArchiveDir === "string") settings.ttsArchiveDir = raw.ttsArchiveDir.trim();
   if (typeof raw.claudeVoiceUrl === "string" && raw.claudeVoiceUrl.trim()) settings.claudeVoiceUrl = raw.claudeVoiceUrl.trim();
   if (typeof raw.claudeVoiceDir === "string" && raw.claudeVoiceDir.trim()) settings.claudeVoiceDir = raw.claudeVoiceDir.trim();
   if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
@@ -158,6 +166,7 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();
+  if (!settings.ttsArchiveDir) settings.ttsArchiveDir = globalPaths.ttsArchiveDir();
   return settings;
 }
 

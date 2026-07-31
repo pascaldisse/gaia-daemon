@@ -566,6 +566,7 @@ function voiceJsonHints(): FileHints {
       label: "Voice mode (default TTS engine)",
       description: "Which voice speaks — kyutai (local), claude (claude.ai voices), or elevenlabs. This is the workspace default; an agent overrides it in its own settings (tts.engine).",
     }),
+    ttsArchiveDir: { input: "text", optional: true, label: "Read-aloud archive", description: "Append-only archive of rendered read-aloud audio; empty = ~/.gaia/voice-archive/tts. Never cache-evicted." },
     disableThinking: { input: "boolean", label: "Auto-disable thinking on calls", description: "Turn the agent's thinking off for the duration of a voice call (lower latency); it reverts on hang-up." },
     speakOnSilence: { input: "boolean", label: "Speak up during silences", description: "When you go quiet on a call, let the agent check back in on its own instead of waiting." },
     silenceDelaySec: { input: "number", label: "Silence before speaking up (seconds)", description: "How long you can be quiet before the agent speaks up (only when 'Speak up during silences' is on)." },
