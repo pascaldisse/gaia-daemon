@@ -208,10 +208,14 @@ test("openai: a localhost base URL needs no key; a remote one does", async () =>
 // ---------------------------------------------------------------------------
 // replicate — Predictions API, data URL audio, optional model version
 
-test("replicate: POSTs audio as a data URL to the model endpoint and returns text", async () => {
+test("replicate: resolves latest_version, POSTs audio as a data URL, and returns text", async () => {
   const spec = findSttEngine("replicate");
   if (!spec) throw new Error("replicate not registered");
-  const { calls, restore } = stubFetch(() => jsonResponse({ status: "succeeded", output: { transcription: "replicate whisper" } }));
+  const { calls, restore } = stubFetch((url) =>
+    url.endsWith("/v1/models/openai/whisper")
+      ? jsonResponse({ latest_version: { id: "version123" } })
+      : jsonResponse({ status: "succeeded", output: { transcription: "replicate whisper" } }),
+  );
   try {
     const result = await spec.transcribe({
       audio: audio({ contentType: "audio/webm" }),
@@ -220,10 +224,12 @@ test("replicate: POSTs audio as a data URL to the model endpoint and returns tex
       log: () => {},
     });
     assert.equal(result.text, "replicate whisper");
-    assert.ok(calls[0].url.endsWith("/v1/models/openai/whisper/predictions"));
-    assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Token r8_test");
-    assert.equal((calls[0].init.headers as Record<string, string>).prefer, "wait=60");
-    const body = JSON.parse(calls[0].init.body as string) as { input: { audio: string; language?: string; transcription?: string } };
+    assert.ok(calls[0].url.endsWith("/v1/models/openai/whisper"));
+    assert.ok(calls[1].url.endsWith("/v1/predictions"));
+    assert.equal((calls[1].init.headers as Record<string, string>).authorization, "Token r8_test");
+    assert.equal((calls[1].init.headers as Record<string, string>).prefer, "wait=60");
+    const body = JSON.parse(calls[1].init.body as string) as { version: string; input: { audio: string; language?: string; transcription?: string } };
+    assert.equal(body.version, "version123");
     assert.ok(body.input.audio.startsWith("data:audio/webm;base64,"));
     assert.equal(body.input.language, "en");
     assert.equal(body.input.transcription, "plain text");

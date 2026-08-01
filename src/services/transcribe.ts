@@ -232,8 +232,8 @@ registerSttEngine({
 // ---------------------------------------------------------------------------
 // replicate — Replicate Predictions API. The default model slug is
 // openai/whisper; a version may be pinned with sttReplicateVersion, otherwise
-// Replicate's model endpoint runs the current default version. Audio is sent as
-// a data URL so the daemon never needs to host a temporary public file.
+// the model metadata supplies latest_version. Audio is sent as a data URL so the
+// daemon never needs to host a temporary public file.
 
 const REPLICATE_BASE = "https://api.replicate.com/v1";
 const REPLICATE_POLL_MS = 1_000;
@@ -280,6 +280,23 @@ async function readReplicatePrediction(response: Response): Promise<ReplicatePre
   return data;
 }
 
+async function resolveReplicateVersion(context: SttContext, owner: string, name: string, key: string): Promise<string> {
+  const pinned = context.settings.sttReplicateVersion?.trim();
+  if (pinned) return pinned;
+  const response = await fetch(`${REPLICATE_BASE}/models/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+    headers: { authorization: `Token ${key}` },
+    signal: sttSignal(context),
+  });
+  const data = (await response.json()) as { latest_version?: { id?: unknown }; detail?: unknown; status?: unknown };
+  if (!response.ok) {
+    const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data);
+    throw new Error(`Replicate model lookup failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const version = data.latest_version?.id;
+  if (typeof version !== "string" || !version.trim()) throw new Error(`Replicate model ${owner}/${name} has no latest_version; set voice.json sttReplicateVersion`);
+  return version.trim();
+}
+
 async function replicateTranscribe(context: SttContext): Promise<SttResult> {
   const model = context.settings.sttReplicateModel || "openai/whisper";
   const [owner, name] = model.split("/");
@@ -289,15 +306,16 @@ async function replicateTranscribe(context: SttContext): Promise<SttResult> {
     transcription: "plain text",
     ...(context.language?.trim() ? { language: context.language.trim() } : {}),
   };
-  const version = context.settings.sttReplicateVersion?.trim();
-  const response = await fetch(version ? `${REPLICATE_BASE}/predictions` : `${REPLICATE_BASE}/models/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/predictions`, {
+  const key = replicateKey(context.settings);
+  const version = await resolveReplicateVersion(context, owner, name, key);
+  const response = await fetch(`${REPLICATE_BASE}/predictions`, {
     method: "POST",
     headers: {
-      authorization: `Token ${replicateKey(context.settings)}`,
+      authorization: `Token ${key}`,
       "content-type": "application/json",
       prefer: "wait=60",
     },
-    body: JSON.stringify(version ? { version, input } : { input }),
+    body: JSON.stringify({ version, input }),
     signal: sttSignal(context),
   });
   let prediction = await readReplicatePrediction(response);
@@ -305,7 +323,7 @@ async function replicateTranscribe(context: SttContext): Promise<SttResult> {
     const url = prediction.urls?.get;
     if (!url) break;
     await new Promise((resolve) => setTimeout(resolve, REPLICATE_POLL_MS));
-    const poll = await fetch(url, { headers: { authorization: `Token ${replicateKey(context.settings)}` }, signal: sttSignal(context) });
+    const poll = await fetch(url, { headers: { authorization: `Token ${key}` }, signal: sttSignal(context) });
     prediction = await readReplicatePrediction(poll);
   }
   if (prediction.status !== "succeeded") {
