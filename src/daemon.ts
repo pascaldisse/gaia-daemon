@@ -51,6 +51,7 @@ import {
 import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "./services/read-aloud.js";
 import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
+import { SttCallBridge } from "./services/voice-stt-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 
@@ -184,6 +185,8 @@ export class Daemon {
   // Live only while a call routes its TTS through a read-aloud engine
   // (claude-voice); torn down on hang-up.
   private ttsBridge: TtsCallBridge | undefined;
+  // Live only while a call routes STT through Replicate; torn down on hang-up.
+  private sttBridge: SttCallBridge | undefined;
   // Resolves once boot()'s orphan sweep has finished. serviceFor() awaits this
   // so an HTTP request landing in the window between "server listening" and
   // "orphan sweep done" (the server accepts connections before boot() settles
@@ -1161,6 +1164,19 @@ export class Daemon {
       this.log(`voice: routing @${agent.id}'s call TTS through the ${ttsChoice.engine.id} bridge (voice: ${ttsChoice.voice ?? "default"})`);
     }
 
+    // Replicate is one-shot transcription, so the bridge presents it as the
+    // native unmute streaming STT protocol. kyutai remains the untouched native
+    // default; unknown settings deliberately retain that safe default.
+    let sttEndpoint: string | undefined;
+    if (settings.callSttEngine === "replicate") {
+      const bridge = new SttCallBridge({ log: (message) => this.log(message) });
+      const { wsUrl } = await bridge.start(settings);
+      this.sttBridge?.stop();
+      this.sttBridge = bridge;
+      sttEndpoint = wsUrl;
+      this.log("voice: routing call STT through the Replicate bridge");
+    }
+
     this.voiceStarting = true;
     let unmuteUrl: string;
     try {
@@ -1172,6 +1188,7 @@ export class Daemon {
           startTimeoutMs: settings.startTimeoutSec * 1000,
           silenceTimeoutSec: settings.speakOnSilence ? settings.silenceDelaySec : null,
           ttsEndpoint,
+          sttEndpoint,
         },
         gaiaUrl,
         (message) => {
@@ -1182,6 +1199,8 @@ export class Daemon {
       // A failed stack start must not leak the bridge listener.
       this.ttsBridge?.stop();
       this.ttsBridge = undefined;
+      this.sttBridge?.stop();
+      this.sttBridge = undefined;
       throw error;
     } finally {
       this.voiceStarting = false;
@@ -1214,10 +1233,12 @@ export class Daemon {
       await clearCallOverride().catch(() => {});
       this.broadcast({ type: "voice-status", workspaceId, roomId: ended.info.roomId, voice: null });
     }
-    // Tear down the TTS bridge (if this call used claude-voice), then stop
-    // exactly the services GAIA spawned; external ones are left alone.
+    // Tear down call bridges, then stop exactly the services GAIA spawned;
+    // externally started services are left alone.
     this.ttsBridge?.stop();
     this.ttsBridge = undefined;
+    this.sttBridge?.stop();
+    this.sttBridge = undefined;
     this.voiceStack.stop();
   }
 

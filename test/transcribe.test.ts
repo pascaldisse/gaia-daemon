@@ -36,12 +36,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 // ---------------------------------------------------------------------------
 // registry (same law as the TTS engine registry / harnesses)
 
-test("engines: elevenlabs and openai are registered", () => {
+test("engines: replicate, elevenlabs, and openai are registered", () => {
+  assert.ok(sttEngineIds().includes("replicate"));
   assert.ok(sttEngineIds().includes("elevenlabs"));
   assert.ok(sttEngineIds().includes("openai"));
 });
 
 test("resolveSttEngine picks the engine named by settings.sttEngine", () => {
+  assert.equal(resolveSttEngine(voiceSettings()).id, "replicate");
   assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "openai" })).id, "openai");
   assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "elevenlabs" })).id, "elevenlabs");
 });
@@ -145,6 +147,63 @@ test("elevenlabs: missing key is a clear error, not a network call", async () =>
     );
   } finally {
     if (prev !== undefined) process.env.ELEVENLABS_API_KEY = prev;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// replicate — hosted Whisper prediction API (fetch stubbed; no network)
+
+test("replicate: POSTs a data-url clip to the configured model and returns transcription", async () => {
+  const spec = findSttEngine("replicate");
+  if (!spec) throw new Error("replicate not registered");
+  const { calls, restore } = stubFetch((url) => url.endsWith("/models/vaibhavs10/incredibly-fast-whisper")
+    ? jsonResponse({ latest_version: { id: "version-id" } })
+    : jsonResponse({ status: "succeeded", output: { transcription: "fast whisper" } }));
+  try {
+    const result = await spec.transcribe({
+      audio: audio({ data: Buffer.from([1, 2, 3]), contentType: "audio/wav" }),
+      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttLanguage: "en" }),
+      language: "en",
+      log: () => {},
+    });
+    assert.equal(result.text, "fast whisper");
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].url.endsWith("/models/vaibhavs10/incredibly-fast-whisper"));
+    assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer r8_test");
+    assert.ok(calls[1].url.endsWith("/v1/predictions"));
+    const headers = calls[1].init.headers as Record<string, string>;
+    assert.equal(headers.authorization, "Bearer r8_test");
+    assert.equal(headers.prefer, "wait=60");
+    const body = JSON.parse(calls[1].init.body as string);
+    assert.equal(body.version, "version-id");
+    assert.equal(body.input.audio, "data:audio/wav;base64,AQID");
+    assert.equal(body.input.task, "transcribe");
+    assert.equal(body.input.language, "english");
+  } finally {
+    restore();
+  }
+});
+
+test("replicate: retries the configured fallback model after a primary failure", async () => {
+  const spec = findSttEngine("replicate");
+  if (!spec) throw new Error("replicate not registered");
+  const { calls, restore } = stubFetch((url) => {
+    if (url.includes("primary/whisper")) return new Response("not found", { status: 404 });
+    if (url.includes("fallback/whisper")) return jsonResponse({ latest_version: { id: "fallback-version" } });
+    return jsonResponse({ status: "succeeded", output: "fallback text" });
+  });
+  try {
+    const result = await spec.transcribe({
+      audio: audio(),
+      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttReplicateModel: "primary/whisper", sttReplicateFallbackModel: "fallback/whisper" }),
+      log: () => {},
+    });
+    assert.equal(result.text, "fallback text");
+    assert.deepEqual(calls.map(({ url }) => new URL(url).pathname), [
+      "/v1/models/primary/whisper", "/v1/models/fallback/whisper", "/v1/predictions",
+    ]);
+  } finally {
+    restore();
   }
 });
 
