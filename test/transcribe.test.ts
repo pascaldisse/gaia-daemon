@@ -162,7 +162,7 @@ test("replicate: POSTs a data-url clip to the configured model and returns trans
   try {
     const result = await spec.transcribe({
       audio: audio({ data: Buffer.from([1, 2, 3]), contentType: "audio/wav" }),
-      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttLanguage: "en" }),
+      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttReplicateModel: "vaibhavs10/incredibly-fast-whisper", sttLanguage: "en" }),
       language: "en",
       log: () => {},
     });
@@ -179,6 +179,31 @@ test("replicate: POSTs a data-url clip to the configured model and returns trans
     assert.equal(body.input.audio, "data:audio/wav;base64,AQID");
     assert.equal(body.input.task, "transcribe");
     assert.equal(body.input.language, "english");
+  } finally {
+    restore();
+  }
+});
+
+test("replicate: openai/gpt-4o-mini-transcribe uses the audio_file/ISO-code shape and joins token-array output", async () => {
+  const spec = findSttEngine("replicate");
+  if (!spec) throw new Error("replicate not registered");
+  const { calls, restore } = stubFetch((url) => url.endsWith("/models/openai/gpt-4o-mini-transcribe")
+    ? jsonResponse({ latest_version: { id: "4o-mini-version" } })
+    : jsonResponse({ status: "succeeded", output: ["hel", "lo ", "world"] }));
+  try {
+    const result = await spec.transcribe({
+      audio: audio({ data: Buffer.from([1, 2, 3]), contentType: "audio/wav" }),
+      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttReplicateModel: "openai/gpt-4o-mini-transcribe", sttLanguage: "de" }),
+      language: "de",
+      log: () => {},
+    });
+    assert.equal(result.text, "hello world");
+    const body = JSON.parse(calls[1].init.body as string);
+    assert.equal(body.version, "4o-mini-version");
+    assert.equal(body.input.audio_file, "data:audio/wav;base64,AQID");
+    assert.equal(body.input.language, "de");
+    assert.equal(body.input.audio, undefined, "no whisper-shaped audio field");
+    assert.equal(body.input.task, undefined, "no whisper-shaped task field");
   } finally {
     restore();
   }

@@ -128,7 +128,12 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   sttOpenAiApiKey: "",
   sttOpenAiModel: "whisper-1",
   sttReplicateApiKey: "",
-  sttReplicateModel: "vaibhavs10/incredibly-fast-whisper",
+  // OpenAI's gpt-4o-mini-transcribe, proxied by Replicate as an "official"
+  // CPU model (Replicate's own backend, not a shared community GPU queue) --
+  // consistent latency and cleaner transcripts than the community Whisper
+  // models, which sit behind a scale-to-zero worker pool (07-31/08-01: same
+  // clip ranged 8s-60s+ on incredibly-fast-whisper vs a steady ~9s here).
+  sttReplicateModel: "openai/gpt-4o-mini-transcribe",
   sttReplicateFallbackModel: "openai/whisper",
   callSttEngine: "kyutai",
 };
