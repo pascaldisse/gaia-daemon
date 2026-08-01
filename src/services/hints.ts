@@ -585,13 +585,16 @@ function voiceJsonHints(): FileHints {
     sttEngine: select(values(sttEngineIds()), {
       optional: true,
       label: "Voice input (dictation) engine",
-      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API, reuses the ElevenLabs key) or openai (any OpenAI-compatible /audio/transcriptions endpoint, hosted or a local whisper-server). Swappable like the TTS engine.",
+      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API), openai (OpenAI-compatible /audio/transcriptions), or replicate (Replicate Predictions API). Swappable like the TTS engine.",
     }),
     sttLanguage: { input: "text", optional: true, label: "Dictation language", description: "optional spoken-language hint (ISO code like 'en'); empty auto-detects" },
     elevenLabsSttModel: { input: "text", optional: true, label: "ElevenLabs STT model", description: "ElevenLabs speech-to-text model for the elevenlabs dictation engine (default scribe_v1)" },
     sttOpenAiBaseUrl: { input: "text", optional: true, label: "OpenAI STT base URL", description: "base URL for the openai dictation engine — default OpenAI, or a local whisper-server (http://127.0.0.1:8080/v1) to keep dictation fully local" },
     sttOpenAiApiKey: { input: "text", optional: true, label: "OpenAI STT API key", description: "API key for the openai dictation engine; empty falls back to OPENAI_API_KEY (a localhost base URL may need none)" },
     sttOpenAiModel: { input: "text", optional: true, label: "OpenAI STT model", description: "model for the openai dictation engine (default whisper-1, or a local model name)" },
+    sttReplicateApiKey: { input: "text", optional: true, label: "Replicate API token", description: "API token for the replicate dictation engine; empty falls back to REPLICATE_API_TOKEN" },
+    sttReplicateModel: { input: "text", optional: true, label: "Replicate STT model", description: "model slug for the replicate dictation engine (owner/name; default openai/whisper)" },
+    sttReplicateVersion: { input: "text", optional: true, label: "Replicate STT version", description: "optional pinned model version; empty uses the model's default endpoint" },
   };
 }
 
