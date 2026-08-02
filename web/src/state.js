@@ -70,6 +70,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   readMarks: Record<string, number>,
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
+ *   keymaker: {open: boolean, loading: boolean, error: string, data: any|null},
  *   settingsOpen: boolean,
  *   settingsTab: "general"|"workspace"|"agents"|"accounts",
  *   settingsAgentId: string|null,
@@ -200,6 +201,7 @@ export const state = {
   // by the cross-workspace `rooms` broadcasts (which fire for EVERY workspace,
   // not just the open one). The open workspace reads live from state.snapshot.
   workspaceRooms: {},
+  keymaker: { open: false, loading: false, error: "", data: null },
   // The Settings modal (sidebar's "settings" button / see settings.js). Files are
   // raw-edited for now (JSON/markdown content + textarea); settingsFileHints mirrors
   // whatever file is currently open so a later smart-form renderer can drive

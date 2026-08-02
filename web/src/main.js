@@ -20,6 +20,7 @@ import "./contextgate.js";
 import "./panel.js";
 import "./search.js";
 import "./settings.js";
+import "./keymaker.js";
 import "./sidebar.js";
 import "./tabsbar.js";
 import "./transcript.js";

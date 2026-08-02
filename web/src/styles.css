@@ -1869,3 +1869,57 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
+
+/* Keymaker · Follow the White Rabbit */
+.white-rabbit-btn { color: #b8ff6a; }
+.keymaker-backdrop {
+  position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.72); backdrop-filter: blur(7px);
+}
+.keymaker-modal {
+  width: min(980px, calc(100vw - 32px)); max-height: min(860px, calc(100vh - 32px)); overflow: auto;
+  border: 1px solid color-mix(in srgb, #b8ff6a 42%, var(--border));
+  background:
+    radial-gradient(circle at top right, rgba(184, 255, 106, 0.14), transparent 32%),
+    linear-gradient(180deg, rgba(8, 19, 12, 0.97), rgba(3, 8, 5, 0.98));
+  color: #eaffde; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(184, 255, 106, 0.08);
+  padding: 18px; font-family: var(--font);
+}
+.keymaker-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+.keymaker-head h2 { margin: 0; font-size: 28px; letter-spacing: -0.04em; }
+.eyebrow { margin: 0 0 5px; color: #b8ff6a; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; }
+.keymaker-error { color: var(--danger); }
+.rabbit-grid { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 12px; }
+.rabbit-card {
+  border: 1px solid rgba(184, 255, 106, 0.22); background: rgba(6, 18, 9, 0.72);
+  padding: 14px; margin-bottom: 12px;
+}
+.active-identity h3 { margin: 0; font-size: 34px; color: #b8ff6a; }
+.identity-pills, .form-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.identity-pill, .primary-btn, .credential-row button, .icon-btn {
+  border: 1px solid rgba(184, 255, 106, 0.28); background: rgba(184, 255, 106, 0.06); color: #eaffde;
+  padding: 7px 10px; cursor: pointer; font: inherit;
+}
+.identity-pill.active, .primary-btn { background: #b8ff6a; color: #071006; border-color: #b8ff6a; }
+.import-card input, .import-card select {
+  min-width: 0; flex: 1 1 170px; background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(184, 255, 106, 0.25);
+  color: #eaffde; padding: 8px; margin-bottom: 8px; font: inherit;
+}
+.import-card input[name="secret"] { width: 100%; box-sizing: border-box; }
+.microcopy, .muted { color: rgba(234, 255, 222, 0.68); }
+.microcopy { font-size: 12px; margin-bottom: 0; }
+.credential-table { display: flex; flex-direction: column; gap: 6px; }
+.credential-row {
+  display: grid; grid-template-columns: 1fr 1fr 90px 90px minmax(130px, 1.2fr) auto; gap: 8px; align-items: center;
+  border-top: 1px solid rgba(184, 255, 106, 0.12); padding: 8px 0;
+}
+.credential-row small { color: rgba(234, 255, 222, 0.62); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-chip { border: 1px solid rgba(184, 255, 106, 0.22); padding: 2px 6px; font-size: 12px; text-align: center; }
+.status-chip.stored { color: #b8ff6a; }
+.status-chip.error, .status-chip.missing { color: var(--warn); }
+.audit-row { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid rgba(184, 255, 106, 0.12); padding: 6px 0; }
+.audit-row small { color: rgba(234, 255, 222, 0.62); }
+@media (max-width: 760px) {
+  .rabbit-grid { grid-template-columns: 1fr; }
+  .credential-row { grid-template-columns: 1fr 1fr; }
+}
