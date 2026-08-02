@@ -520,6 +520,7 @@ export interface AgentDef {
   id: string;
   displayName: string;
   description?: string;
+  avatarUrl?: string;
   icon: string;
   voice?: string;
   /** Read-aloud TTS for the transcript play button (voice calls use `voice`). */
@@ -859,6 +860,7 @@ export interface AgentStatus {
   id: string;
   displayName: string;
   description?: string;
+  avatarUrl?: string;
   icon: string;
   modelLabel: string;
   /** The model agent.json asks for, e.g. `anthropic/fable`. `modelLabel`

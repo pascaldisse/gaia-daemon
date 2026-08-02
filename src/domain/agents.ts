@@ -17,6 +17,7 @@ interface RawAgentConfig {
   id?: string;
   displayName?: string;
   description?: unknown;
+  avatarUrl?: unknown;
   icon?: string;
   voice?: unknown;
   tts?: unknown;
@@ -384,6 +385,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       id,
       displayName,
       description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
+      avatarUrl: typeof raw.avatarUrl === "string" && raw.avatarUrl.trim() ? raw.avatarUrl.trim() : undefined,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
       voice: typeof raw.voice === "string" && raw.voice.trim() ? raw.voice.trim() : undefined,
       tts: parseTtsConfig(raw.tts),

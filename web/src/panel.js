@@ -124,7 +124,14 @@ function renderPanel() {
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
               h("span", { class: `dot ${agent.status}` }),
-              h("strong", { text: `${agent.icon} @${agent.id}` }),
+              h(
+                "strong",
+                {},
+                agent.avatarUrl
+                  ? h("img", { class: "agent-avatar", src: agent.avatarUrl, alt: agent.displayName || agent.id, loading: "lazy" })
+                  : h("span", { class: "agent-icon", text: agent.icon }),
+                h("span", { text: `@${agent.id}` }),
+              ),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.
