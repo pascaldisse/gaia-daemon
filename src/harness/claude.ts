@@ -179,14 +179,14 @@ interface ClaudeRoomMeta {
   started: boolean;
 }
 
-// GAIA owns the persona system prompt, project context, and memory; --safe-mode
-// keeps the user's own CLAUDE.md, skills, hooks, and MCP servers out of the
-// session while leaving subscription auth, the model, built-in tools, and
-// permissions intact (confirmed in `claude --help`).
-const SAFE_MODE = "--safe-mode";
+// GAIA owns the persona system prompt, project context, and memory. Current
+// Claude Code no longer exposes legacy --safe-mode; isolate by loading no user,
+// project, or local settings and accepting only gaia's inline MCP config. This
+// keeps subscription auth, model, built-in tools, and permissions intact.
 // gaia owns compaction: the daemon's /compact drives harness compaction
 // explicitly; the CLI must NEVER auto-compact on its own (Pascal, 2026-07-13).
 const NO_AUTOCOMPACT_SETTINGS = JSON.stringify({ autoCompactEnabled: false });
+const CLAUDE_ISOLATION_ARGS = ["--setting-sources", "", "--strict-mcp-config"] as const;
 
 // A steer (an extra user message injected on the open stdin) that lands after
 // the turn's LAST tool boundary doesn't fold into the turn — the CLI finishes,
@@ -457,8 +457,8 @@ const CLAUDE_CAPABILITIES: HarnessCapabilities = {
   // Claude Code resolves skills/slash commands (/deep-research, /code-review, …)
   // from a raw `-p` stdin when its command surface is enabled — so gaia can pass
   // an unrecognized slash command straight through (see the native branch in
-  // send() + buildArgs). Off under --safe-mode, so a native turn swaps the
-  // isolation flags for --setting-sources ""/--strict-mcp-config.
+  // send() + buildArgs). Isolation uses --setting-sources ""/--strict-mcp-config
+  // so the command surface stays available while user config stays out.
   supportsNativeCommands: true,
   // Claude Code's own subagent surfaces: the Task/Agent tool and the Workflow
   // orchestrator (what /deep-research fans out through). All suppressed via
@@ -884,7 +884,18 @@ export class ClaudeRuntime implements AgentRuntime {
     if (!room?.started) return NO_SESSION_TO_COMPACT;
     // --include-partial-messages so the summary streams as it's written: the
     // partial usage blocks below are the only mid-pass progress the CLI exposes.
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--settings", NO_AUTOCOMPACT_SETTINGS, "--include-partial-messages", SAFE_MODE, "--resume", room.sessionId];
+    const args = [
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--settings",
+      NO_AUTOCOMPACT_SETTINGS,
+      "--include-partial-messages",
+      ...CLAUDE_ISOLATION_ARGS,
+      "--resume",
+      room.sessionId,
+    ];
     const model = this.agent.model?.name;
     if (model) args.push("--model", claudeModelArg(model));
     await this.ensureThinkingProxy();
@@ -1113,9 +1124,10 @@ export class ClaudeRuntime implements AgentRuntime {
     native = false,
   ): string[] {
     const grant = buildClaudeToolGrant(this.agent.tools);
-    // Configured MCP servers ride in as an inline --mcp-config JSON (safe-mode
-    // already keeps the user's own MCP config out); `mcp__<name>` approves the
-    // server's tools in -p mode, where unapproved calls are silently denied.
+    // Configured MCP servers ride in as an inline --mcp-config JSON
+    // (--strict-mcp-config keeps the user's own MCP config out); `mcp__<name>`
+    // approves the server's tools in -p mode, where unapproved calls are
+    // silently denied.
     const mcpServers = resolveMcpServers(this.workspace.config, this.agent);
     const mcpAllowed = Object.keys(mcpServers).map((name) => `mcp__${name}`);
     const args = [
@@ -1126,12 +1138,10 @@ export class ClaudeRuntime implements AgentRuntime {
       "--verbose",
       "--settings",
       NO_AUTOCOMPACT_SETTINGS,
-      // Isolation: normal turns use --safe-mode (no user CLAUDE.md/skills/hooks/
-      // commands). A native command NEEDS the skill/slash-command surface that
-      // --safe-mode kills, so it isolates a different way — no user setting
-      // sources + only gaia's --mcp-config — which keeps built-in skills
-      // (/deep-research …) resolving while still dropping the user's own config.
-      ...(native ? ["--setting-sources", "", "--strict-mcp-config"] : [SAFE_MODE]),
+      // Isolation: no user/project/local settings + only gaia's --mcp-config.
+      // Unlike removed --safe-mode, this still lets native slash commands/skills
+      // resolve while dropping user's own config sources.
+      ...CLAUDE_ISOLATION_ARGS,
       "--system-prompt",
       systemPrompt,
       // Single comma-joined token: --tools/--allowedTools are variadic, so a

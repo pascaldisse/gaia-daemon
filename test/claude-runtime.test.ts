@@ -273,7 +273,7 @@ test("native command: raw stdin + skills-enabled flag profile (no --safe-mode)",
   }
 });
 
-test("normal turn is unchanged: --safe-mode + wrapped prompt (native-command regression guard)", async () => {
+test("normal turn uses settings-source isolation + wrapped prompt (native-command regression guard)", async () => {
   const fx = await webFixture();
   try {
     const fake = new FakeClaude();
@@ -282,8 +282,8 @@ test("normal turn is unchanged: --safe-mode + wrapped prompt (native-command reg
     await collect(runtime.send({ roomId: "default", message: "hello", transcript: [] }));
 
     const { args, prompt } = fake.lastOptions!;
-    assert.ok(args.includes("--safe-mode"));
-    assert.ok(!args.includes("--setting-sources"));
+    assert.ok(!args.includes("--safe-mode"));
+    assert.ok(args.includes("--setting-sources") && args.includes("--strict-mcp-config"));
     assert.notEqual(args[args.indexOf("--tools") + 1], "default");
     assert.ok(prompt.includes("Newest user message"));
     // Fan-out suppression applies on EVERY turn, not just native ones.
@@ -746,9 +746,10 @@ test("ClaudeRuntime uses --session-id on the first turn and --resume after, with
     assert.ok(!second.includes("--session-id"), "second turn does not pass --session-id");
     assert.equal(sessionFlagValue(first, "--session-id"), sessionFlagValue(second, "--resume"));
 
-    // Invariants: safe-mode isolation, custom system prompt, config-derived
-    // tools/permissions, model.
-    assert.ok(first.includes("--safe-mode"));
+    // Invariants: settings-source isolation, custom system prompt,
+    // config-derived tools/permissions, model.
+    assert.ok(!first.includes("--safe-mode"));
+    assert.ok(first.includes("--setting-sources") && first.includes("--strict-mcp-config"));
     assert.ok(first.includes("--system-prompt"));
     assert.equal(sessionFlagValue(first, "--tools"), "Read,Grep,Glob,Write,Edit,Bash");
     assert.equal(sessionFlagValue(first, "--allowedTools"), "Write,Edit,Bash(gaia mem:*),Bash(gaia recall:*)");
