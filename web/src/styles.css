@@ -1158,7 +1158,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .agent-main small { grid-column: 2; }
 .agent-main .agent-description { color: var(--muted); font-style: italic; opacity: 0.86; }
 .agent-main strong { display: flex; align-items: center; gap: 6px; }
-.agent-avatar { width: 22px; height: 22px; border-radius: 999px; object-fit: cover; flex: 0 0 auto; border: 1px solid var(--border); background: var(--paper); }
+.agent-avatar { width: 22px; height: 22px; border-radius: 6px; object-fit: contain; flex: 0 0 auto; background: transparent; }
 .agent-icon { flex: 0 0 auto; }
 
 /* Keep name + model to one line each so a row's height never depends on how
