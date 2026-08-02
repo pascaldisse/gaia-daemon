@@ -131,6 +131,13 @@ function renderPanel() {
                 title: agentSubtitle(agent, activeAgent),
                 text: agentSubtitle(agent, activeAgent),
               }),
+              agent.description
+                ? h("small", {
+                    class: "agent-description",
+                    title: agent.description,
+                    text: agent.description,
+                  })
+                : null,
               agent.status === "compacting" && agent.compact ? CompactBar(agent.compact) : null,
             ),
             agentAccounts.length > 0

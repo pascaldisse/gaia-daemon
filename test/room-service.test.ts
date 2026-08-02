@@ -215,6 +215,13 @@ function durabilityHost(agent: AgentDef, workspace: Workspace, runnerPath: strin
   });
 }
 
+test("snapshot carries agent descriptions for the room panel", async () => {
+  const { service, workspace } = await makeService();
+  workspace.agents.gaia.description = "The sun at the table, arranging broken maps until the next step glows.";
+  const snapshot = await service.getSnapshot();
+  assert.equal(snapshot.agents.find((agent) => agent.id === "gaia")?.description, workspace.agents.gaia.description);
+});
+
 test("a plain message routes to the default agent and commits a detailed reply", async () => {
   const { service, root, events } = await makeService({
     script: () => [

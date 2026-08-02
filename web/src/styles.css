@@ -1156,6 +1156,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .agent-cell.with-role.with-account .agent-main small { padding-right: 150px; }
 
 .agent-main small { grid-column: 2; }
+.agent-main .agent-description { color: var(--muted); font-style: italic; opacity: 0.86; }
 
 /* Keep name + model to one line each so a row's height never depends on how
    much width the role-select (present only for role-bearing agents) steals from
