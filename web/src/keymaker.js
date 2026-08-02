@@ -31,6 +31,13 @@ function closeKeymaker() {
 }
 
 /** @param {string} workspaceId */
+/** @param {string} workspaceId */
+function selectIdentity(workspaceId) {
+  state.keymaker.selectedIdentity = workspaceId;
+  markDirty("keymaker");
+  void bindRoom(workspaceId);
+}
+
 async function bindRoom(workspaceId) {
   const roomId = state.snapshot?.room.id;
   if (!roomId) return;
@@ -54,7 +61,7 @@ async function importCredentialFromForm(form) {
     const result = await api("/api/keymaker/credentials", {
       method: "POST",
       body: JSON.stringify({
-        workspaceId: String(fd.get("workspaceId") ?? ""),
+        workspaceId: selectedIdentity(),
         provider: String(fd.get("provider") ?? ""),
         capability: String(fd.get("capability") ?? ""),
         account: String(fd.get("account") ?? ""),
@@ -64,8 +71,6 @@ async function importCredentialFromForm(form) {
     });
     state.keymaker.data = result.state;
     form.reset();
-    const select = $("select[name='workspaceId']", form);
-    if (select && state.snapshot?.room.id) /** @type {HTMLSelectElement} */ (select).value = activeWorkspaceId();
     markDirty("keymaker");
   } catch (error) {
     setError(error);
@@ -89,6 +94,10 @@ function activeWorkspaceId() {
   return WORKSPACES.includes(bound) ? bound : "PERSONAL";
 }
 
+function selectedIdentity() {
+  return WORKSPACES.includes(state.keymaker.selectedIdentity) ? state.keymaker.selectedIdentity : activeWorkspaceId();
+}
+
 function renderKeymaker() {
   const mount = $("#overlay-keymaker");
   if (!mount) return;
@@ -99,8 +108,10 @@ function renderKeymaker() {
   const data = state.keymaker.data;
   const roomId = state.snapshot?.room.id;
   const active = activeWorkspaceId();
-  const credentials = Array.isArray(data?.credentials) ? data.credentials : [];
-  const audit = Array.isArray(data?.audit) ? data.audit.slice(-12).reverse() : [];
+  const selected = selectedIdentity();
+  const allCredentials = Array.isArray(data?.credentials) ? data.credentials : [];
+  const credentials = allCredentials.filter((/** @type {any} */ credential) => credential.workspaceId === selected);
+  const audit = Array.isArray(data?.audit) ? data.audit.filter((/** @type {any} */ item) => !item.workspaceId || item.workspaceId === selected).slice(-12).reverse() : [];
   mount.replaceChildren(
     h(
       "div",
@@ -111,7 +122,13 @@ function renderKeymaker() {
         h(
           "header",
           { class: "keymaker-head" },
-          h("div", {}, h("p", { class: "eyebrow", text: "FOLLOW THE WHITE RABBIT" }), h("h2", { text: "Keymaker" })),
+          h(
+            "div",
+            { class: "keymaker-title" },
+            h("p", { class: "eyebrow", text: "FOLLOW THE WHITE RABBIT" }),
+            h("h2", { text: "Keymaker" }),
+            h("div", { class: "rabbit-runway", "aria-hidden": "true" }, h("span", { class: "rabbit-assistant", text: "🐇" })),
+          ),
           h("button", { class: "icon-btn", title: "close", onclick: closeKeymaker, text: "×" }),
         ),
         state.keymaker.error ? h("p", { class: "keymaker-error", text: state.keymaker.error }) : null,
@@ -123,12 +140,20 @@ function renderKeymaker() {
             "div",
             { class: "rabbit-card active-identity" },
             h("p", { class: "eyebrow", text: "ACTIVE IDENTITY" }),
-            h("h3", { text: active }),
-            h("p", { class: "muted", text: roomId ? `room binding: ${roomId}` : "no room bound" }),
+            h("h3", { text: selected }),
+            h("p", { class: "muted", text: roomId ? `room binding: ${roomId} · bound to ${active}` : "no room bound" }),
             h(
               "div",
               { class: "identity-pills" },
-              WORKSPACES.map((id) => h("button", { class: `identity-pill ${id === active ? "active" : ""}`, onclick: () => void bindRoom(id), text: id })),
+              WORKSPACES.map((id) => {
+                const count = allCredentials.filter((/** @type {any} */ credential) => credential.workspaceId === id).length;
+                return h(
+                  "button",
+                  { class: `identity-pill ${id === selected ? "selected" : ""} ${id === active ? "active" : ""}`, onclick: () => selectIdentity(id) },
+                  h("strong", { text: id }),
+                  h("small", { text: `${count} connection${count === 1 ? "" : "s"}` }),
+                );
+              }),
             ),
           ),
           h(
@@ -140,8 +165,10 @@ function renderKeymaker() {
                 void importCredentialFromForm(/** @type {HTMLFormElement} */ (event.currentTarget));
               },
             },
-            h("p", { class: "eyebrow", text: "SECURE IMPORT" }),
-            h("div", { class: "form-row" }, Select("workspaceId", WORKSPACES, active), Input("provider", "provider · hubspot / n8n"), Input("capability", "capability · crm/read")),
+            h("p", { class: "eyebrow", text: `SECURE IMPORT · ${selected}` }),
+            h("input", { type: "hidden", name: "workspaceId", value: selected }),
+            h("div", { class: "identity-lock", text: `adding only to ${selected}` }),
+            h("div", { class: "form-row" }, Input("provider", "provider · hubspot / n8n"), Input("capability", "capability · crm/read")),
             h("div", { class: "form-row" }, Input("account", "account label"), Input("scopes", "scopes · crm.objects.contacts.read")),
             h("input", { name: "secret", type: "password", placeholder: "paste secret · stored in Keychain when available", autocomplete: "off" }),
             h("button", { class: "primary-btn", type: "submit", text: "store credential" }),
@@ -151,17 +178,17 @@ function renderKeymaker() {
         h(
           "section",
           { class: "rabbit-card" },
-          h("p", { class: "eyebrow", text: "CONNECTION OVERVIEW" }),
+          h("p", { class: "eyebrow", text: `CONNECTIONS · ${selected}` }),
           h(
             "div",
             { class: "credential-table" },
-            credentials.length ? credentials.map(CredentialRow) : h("p", { class: "muted", text: "No credentials yet. Add HubSpot or n8n first." }),
+            credentials.length ? credentials.map(CredentialRow) : h("p", { class: "muted", text: `No ${selected} credentials yet. Add HubSpot or n8n first.` }),
           ),
         ),
         h(
           "section",
           { class: "rabbit-card audit-card" },
-          h("p", { class: "eyebrow", text: "AUDIT" }),
+          h("p", { class: "eyebrow", text: `AUDIT · ${selected}` }),
           audit.length ? audit.map((/** @type {any} */ item) => h("div", { class: "audit-row" }, h("span", { text: item.action }), h("small", { text: `${item.workspaceId ?? "—"} · ${new Date(item.at).toLocaleString()}` }))) : h("p", { class: "muted", text: "No activity yet." }),
         ),
       ),
