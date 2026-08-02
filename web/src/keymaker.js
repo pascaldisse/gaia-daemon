@@ -31,13 +31,13 @@ function closeKeymaker() {
 }
 
 /** @param {string} workspaceId */
-/** @param {string} workspaceId */
 function selectIdentity(workspaceId) {
   state.keymaker.selectedIdentity = workspaceId;
   markDirty("keymaker");
   void bindRoom(workspaceId);
 }
 
+/** @param {string} workspaceId */
 async function bindRoom(workspaceId) {
   const roomId = state.snapshot?.room.id;
   if (!roomId) return;

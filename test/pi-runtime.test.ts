@@ -234,6 +234,7 @@ test("PiRuntime appends gaia's assembled prompt onto pi's own base instead of re
     let seenSystemPrompt: string | undefined;
     let seenAppendSystemPrompt: string[] = [];
     let seenSkillNames: string[] = [];
+    let seenNoExtensions: boolean | undefined;
     let seenSystemPromptRef: { current: string } | undefined;
     const factory: PiRuntimeSessionFactory = async (options) => {
       // Mirrors what createAgentSession does with a real resourceLoader: reload it,
@@ -245,6 +246,7 @@ test("PiRuntime appends gaia's assembled prompt onto pi's own base instead of re
       seenSystemPrompt = options.loader.getSystemPrompt();
       seenAppendSystemPrompt = options.loader.getAppendSystemPrompt();
       seenSkillNames = options.loader.getSkills().skills.map((skill) => skill.name);
+      seenNoExtensions = (options.loader as unknown as { noExtensions?: boolean }).noExtensions;
       seenSystemPromptRef = options.systemPromptRef;
       return { session: new FakeSession("s1") };
     };
@@ -270,6 +272,10 @@ test("PiRuntime appends gaia's assembled prompt onto pi's own base instead of re
     // The skills block keeps working (system-prompt.js only appends it when
     // the read tool is present, independent of customPrompt vs default).
     assert.deepEqual(seenSkillNames, ["a"]);
+    // Extensions are left ENABLED in the loader so trusted global pi
+    // extensions (e.g. Claude identity billing fix) can apply inside GAIA's
+    // pi-backed turns.
+    assert.equal(seenNoExtensions, false);
     runtime.dispose();
   } finally {
     await fx.cleanup();

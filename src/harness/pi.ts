@@ -634,7 +634,11 @@ export class PiRuntime implements AgentRuntime {
       cwd: this.workDir,
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
-      noExtensions: true,
+      // Keep pi's extension pipeline ON so provider-request rewrites and other
+      // trusted global extensions (e.g. Claude plan-billing identity fix) apply
+      // inside GAIA's pi-backed turns too. Skills/context remain composed by
+      // GAIA, so only those stay disabled here.
+      noExtensions: false,
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
