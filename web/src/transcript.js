@@ -515,6 +515,7 @@ function renderTranscript() {
     // stamp, so exactly the affected message re-renders when either toggles.
     const version =
       view.version +
+      avatarSignature(view) +
       (state.readAloud?.eventId === view.id ? `:ra-${state.readAloud.phase}` : "") +
       (state.search.highlightEventId === view.id ? ":search-hit" : "");
     const current = existing.get(view.id);
@@ -671,6 +672,7 @@ function Message(view) {
   return h(
     "article",
     { class: `message ${isUser ? "user" : "agent"} ${view.author === "system" ? "system" : ""} ${view.queued ? "queued" : ""}` },
+    MessageAvatar(view),
     h(
       "div",
       { class: "message-meta" },
@@ -709,6 +711,30 @@ function Message(view) {
     view.streaming ? LiveHeartbeat(view) : null,
     actions.length ? h("div", { class: "message-actions" }, actions) : null,
   );
+}
+
+/** @param {string} author */
+function agentStatus(author) {
+  return state.snapshot?.agents?.find((agent) => agent.id === author);
+}
+
+/** @param {MessageView} view @returns {string} */
+function avatarSignature(view) {
+  if (view.author === "user") return ":av-user";
+  if (view.author === "system") return ":av-system";
+  const agent = agentStatus(view.author);
+  return `:av-${agent?.avatarUrl ?? agent?.icon ?? view.author}`;
+}
+
+/** @param {MessageView} view @returns {HTMLElement} */
+function MessageAvatar(view) {
+  if (view.author === "user") return h("span", { class: "message-avatar user-avatar", title: "you", text: ">" });
+  if (view.author === "system") return h("span", { class: "message-avatar system-avatar", title: "system", text: "◆" });
+  const agent = agentStatus(view.author);
+  const label = agent?.displayName || view.author;
+  return agent?.avatarUrl
+    ? h("img", { class: "message-avatar agent-message-avatar", src: agent.avatarUrl, alt: label, title: `@${view.author}` })
+    : h("span", { class: "message-avatar agent-message-avatar fallback", title: `@${view.author}`, text: agent?.icon || "•" });
 }
 
 /** @param {MessageView} view @returns {HTMLElement} */

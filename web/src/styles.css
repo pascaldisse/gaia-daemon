@@ -517,8 +517,30 @@ body.resizing { cursor: col-resize; user-select: none; }
    so it can't fight the manual re-anchor in loadOlderEvents (WebKit has none). */
 .transcript { min-height: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; padding: 16px 14px 28px; }
 
-.message { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; margin: 0 0 16px; }
-.message::before { content: ">"; color: var(--accent); }
+.message { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; margin: 0 0 16px; }
+.message-avatar {
+  grid-column: 1;
+  grid-row: 1 / span 8;
+  width: 28px;
+  height: 28px;
+  align-self: start;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.78em;
+  font-weight: 700;
+  overflow: hidden;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.agent-message-avatar { object-fit: cover; padding: 0; }
+.agent-message-avatar.fallback { object-fit: contain; font-size: 1rem; }
+.user-avatar { border-radius: 6px; background: transparent; box-shadow: none; }
+.system-avatar { border-color: var(--border); color: var(--muted); background: transparent; box-shadow: none; }
 
 .compact-boundary {
   display: grid;
@@ -554,7 +576,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .compact-boundary time { grid-column: 1 / -1; justify-self: center; margin-top: -5px; font-size: 0.75em; color: var(--muted); }
 /* Queued ghost: a not-yet-run message waiting behind the current turn. */
 .message.queued { opacity: 0.55; }
-.message.queued::before { content: "⋯"; }
+.message.queued .message-avatar { border-style: dashed; }
 .message.queued .channel-tag { color: var(--muted); font-style: italic; }
 
 /* Mid-turn steer, rendered inside the reply at the stream position where it
@@ -1656,7 +1678,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   .status { max-width: 32vw; overflow: hidden; text-overflow: ellipsis; }
 
   .transcript { padding: 12px 10px 18px; }
-  .message { grid-template-columns: 8px minmax(0, 1fr); gap: 6px; margin-bottom: 14px; }
+  .message { grid-template-columns: 28px minmax(0, 1fr); gap: 8px; margin-bottom: 14px; }
+  .message-avatar { width: 24px; height: 24px; }
   .message-meta .model-tag { margin-left: 0; }
   .activity-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tool-payload { grid-template-columns: minmax(0, 1fr); gap: 4px; }
