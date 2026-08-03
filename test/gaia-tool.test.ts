@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGaiaTool } from "../src/harness/tools-pi.js";
+import { buildPiTools } from "../src/harness/tools.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import type { AgentDef } from "../src/core/types.js";
 
@@ -20,7 +21,7 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
   await writeFile(caryll, "same phrase repeats. same phrase repeats. same phrase repeats.\n");
   const calls: string[] = [];
   const agent = { id: "only-gaia", memoryDir, insight: "none" } as AgentDef;
-  const tool: any = createGaiaTool({
+  const onlyGaia = await buildPiTools(["gaia"], {
     memoryStore: new MemoryStore(),
     agent,
     roomId: "r1",
@@ -36,7 +37,8 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
       return "resumed";
     },
   });
-
+  assert.equal(onlyGaia.length, 1, "agent is configured with ONLY gaia");
+  const tool: any = onlyGaia[0];
   assert.equal(tool.name, "gaia");
   await tool.execute("w", { verb: "write", args: { path: file, content: "before" }, raw: true });
   assert.equal(await readFile(file, "utf8"), "before");
