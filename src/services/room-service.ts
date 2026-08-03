@@ -2108,10 +2108,13 @@ export class RoomService {
     try {
       const state = await this.room.state();
       const result = (await plugin.run(args, this.pluginContext(plugin, state))) ?? {};
-      if (result.state) {
+      if (result.state || (result.activeAgent && this.workspace.agents[result.activeAgent])) {
         await this.room.updateState((next) => {
-          next.pluginState ??= {};
-          next.pluginState[plugin.command] = result.state!;
+          if (result.state) {
+            next.pluginState ??= {};
+            next.pluginState[plugin.command] = result.state;
+          }
+          if (result.activeAgent && this.workspace.agents[result.activeAgent]) next.activeAgent = result.activeAgent;
         });
         await this.emitSnapshot();
       }

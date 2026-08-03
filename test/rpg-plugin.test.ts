@@ -12,6 +12,7 @@ const ctx = {
 test("rpg plugin projects the copied creator and durably maps GM, PC, and NPC roles", async () => {
   const opened = await plugin.run([], ctx);
   const gm = await plugin.run(["gm", "gm"], { ...ctx, state: opened.state });
+  assert.equal(gm.activeAgent, "gm");
   const pc = await plugin.run(["pc", "Ada", "swift scout", "repo-man"], { ...ctx, state: gm.state });
   const npc = await plugin.run(["npc", "Mira", "npc"], { ...ctx, state: pc.state });
   assert.equal(npc.state?.gm, "gm");

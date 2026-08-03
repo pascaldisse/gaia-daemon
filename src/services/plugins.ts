@@ -46,6 +46,8 @@ export interface PluginContext {
 export interface PluginResult {
   steer?: string;
   reply?: string;
+  /** Request a known workspace agent as the room's subsequent chat target. */
+  activeAgent?: string;
   /** Opaque JSON object durably owned by this plugin under RoomState.pluginState. */
   state?: Record<string, unknown>;
 }

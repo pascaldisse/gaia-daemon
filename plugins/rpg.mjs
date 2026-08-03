@@ -29,7 +29,7 @@ export default {
       const agent = clean(values[0], 80);
       if (!knownAgent(ctx, agent)) return { reply: `Unknown GM agent: ${agent}` };
       state.gm = agent;
-      return { state, reply: `RPG GM: @${agent}` };
+      return { state, activeAgent: agent, reply: `RPG GM: @${agent}` };
     }
     if (action === "pc") {
       const [name, description, archetype = ""] = values.map((value) => clean(value));
