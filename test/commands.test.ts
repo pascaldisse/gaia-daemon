@@ -48,6 +48,9 @@ test("parseCommand: known commands and arguments", () => {
   // parser — room-service forwards it only if the target agent CHECKED that
   // command name in its skills (no separate /native toggle anymore).
   assert.deepEqual(parseCommand("/deep-research the topic"), { type: "unknown", command: "deep-research" });
+  // Pi's native skill command syntax (`/skill:name`) must reach its SDK
+  // pipeline rather than being mistaken for a path/prose message.
+  assert.deepEqual(parseCommand("/skill:stoner-mode 7"), { type: "unknown", command: "skill:stoner-mode" });
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 

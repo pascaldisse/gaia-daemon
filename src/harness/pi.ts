@@ -271,8 +271,10 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   // edit/retry actually change the model's context, and it's durable (a new
   // file, unlike an in-place rewind) so it survives a runner respawn.
   supportsForkAtMessage: true,
-  // Pi has no claude-style slash-command passthrough surface.
-  supportsNativeCommands: false,
+  // AgentSession.prompt() natively expands loaded `/skill:name` commands and
+  // prompt templates. RoomService passes unclaimed slash tokens through; this
+  // runtime dynamically aliases `/name` to its loaded `/skill:name` command.
+  supportsNativeCommands: true,
   // Pi's only fan-out surface IS the gaia summon tool — nothing to suppress.
   fanOutTools: [],
 };
@@ -413,7 +415,9 @@ export class PiRuntime implements AgentRuntime {
     // The uniform turn-prompt composition (memory travels only when it changed
     // — SessionMap's diff — so memory-tool writes never force a session
     // reload), shared with every runtime via buildTurnPromptFor.
-    const prompt = await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions, { workDir: this.workDir, rootDir: this.cwd });
+    const prompt = input.nativeCommand
+      ? this.nativeCommandPrompt(meta, input.message)
+      : await buildTurnPromptFor(this.agent, input, this.memoryStore, this.sessions, { workDir: this.workDir, rootDir: this.cwd });
     // Pasted images ride the SDK's native channel (PromptOptions.images, the
     // same ImageContent[] the pi CLI builds for clipboard pastes); the prompt
     // text keeps the uniform path breadcrumbs for non-image files.
@@ -431,6 +435,21 @@ export class PiRuntime implements AgentRuntime {
       });
 
     for await (const event of channel.stream()) yield event;
+  }
+
+  /**
+   * Pi owns skill-command expansion in AgentSession.prompt(): its canonical
+   * syntax is `/skill:name`. Gaia accepts the terse `/name` spelling only as a
+   * dynamic convenience alias: resolve against THIS session's ResourceLoader,
+   * which is the same loaded-skill list Pi will expand. Templates and unknown
+   * commands remain untouched for Pi to handle as-is.
+   */
+  private nativeCommandPrompt(meta: PiSessionMeta, message: string): string {
+    const trimmed = message.trim();
+    const match = /^\/([^\s]+)([\s\S]*)$/.exec(trimmed);
+    if (!match || match[1].startsWith("skill:")) return trimmed;
+    const skill = meta.loader.getSkills().skills.find(({ name }) => name === match[1]);
+    return skill ? `/skill:${skill.name}${match[2]}` : trimmed;
   }
 
   dispose(): void {
@@ -714,7 +733,8 @@ export class PiRuntime implements AgentRuntime {
       additionalSkillPaths: skillPaths,
       noExtensions: true,
       noSkills: true,
-      noPromptTemplates: true,
+      // Keep Pi's template discovery enabled: AgentSession.prompt() expands
+      // these itself when RoomService passes a native slash command through.
       noThemes: true,
       noContextFiles: true,
       // Two modes, keyed on agent.json `promptLaw`:

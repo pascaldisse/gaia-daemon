@@ -97,7 +97,7 @@ export function parseCommand(input: string): SlashCommand {
     // non-command-shaped token is delivered as the message it is; only a
     // command-shaped token stays "unknown" (harness-native passthrough and the
     // typo hint still need that). A user message may never disappear.
-    return /^[A-Za-z][A-Za-z0-9_-]*$/.test(name) ? { type: "unknown", command: name } : { type: "message", text: input };
+    return /^[A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z][A-Za-z0-9_-]*)?$/.test(name) ? { type: "unknown", command: name } : { type: "message", text: input };
   }
 
   const stripped = args.map((arg) => arg.replace(/^@/, ""));

@@ -120,6 +120,40 @@ test("PiRuntime reuses one persistent session for repeated room-agent turns", as
   }
 });
 
+test("PiRuntime dynamically aliases a loaded terse skill command into Pi's native skill pipeline", async () => {
+  const fx = await harnessFixture();
+  try {
+    await mkdir(join(fx.home, "skills", "stoner-mode"), { recursive: true });
+    await writeFile(
+      join(fx.home, "skills", "stoner-mode", "SKILL.md"),
+      "---\nname: stoner-mode\ndescription: native skill command fixture\n---\n# stoner\n",
+      "utf8",
+    );
+    const agent = { ...fx.agent, skills: ["stoner-mode"] };
+    const workspace = { ...fx.workspace, agents: { gaia: agent } };
+    let session: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      // This is the real Pi ResourceLoader path; the runtime must ask its
+      // loaded skills rather than carrying a daemon-side command registry.
+      await options.loader.reload();
+      session = new FakeSession("s1");
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "/stoner-mode 7", transcript: [], nativeCommand: true }));
+    assert.equal(session?.prompts[0], "/skill:stoner-mode 7");
+
+    // Unknown/template-shaped tokens stay verbatim for AgentSession.prompt(),
+    // whose native template and unknown-command behavior remains authoritative.
+    await collect(runtime.send({ roomId: "default", message: "/not-a-daemon-command", transcript: [], nativeCommand: true }));
+    assert.equal(session?.prompts[1], "/not-a-daemon-command");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime exposes summon as a custom tool when enabled", async () => {
   const fx = await harnessFixture({ tools: ["summon"] });
   try {

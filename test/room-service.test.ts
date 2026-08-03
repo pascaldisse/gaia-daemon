@@ -978,8 +978,30 @@ test("slash commands emit a system room-event and settle synchronously", async (
   assert.equal(task.status, "complete");
   const system = events.find((event) => event.type === "room-event" && event.event.author === "system");
   assert.ok(system, "system reply emitted");
-  const unknown = await service.sendMessage("/nonsense");
-  assert.equal(unknown.status, "complete");
+  // Unclaimed slash commands are no longer daemon errors; the native-harness
+  // regression below verifies their asynchronous command turn.
+});
+
+test("unclaimed slash commands defer verbatim to the active native harness", async () => {
+  let received: AgentInput | undefined;
+  const { service } = await makeService({
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "native" }]);
+      runtime.send = async function* (input: AgentInput) {
+        received = input;
+        yield { type: "text-delta", delta: "native" };
+      };
+      return runtime;
+    },
+  });
+
+  // `stoner-mode` is deliberately absent from daemon commands and this test's
+  // agent config. The active Pi harness owns resolution from its loaded list.
+  const task = await service.sendMessage("/stoner-mode 7");
+  assert.equal(task.status, "running");
+  await service.waitForIdle();
+  assert.equal(received?.message, "/stoner-mode 7");
+  assert.equal(received?.nativeCommand, true);
 });
 
 test("/pet persists independent room+agent bindings, validates, lists, removes, and emits a workspace snapshot", async () => {

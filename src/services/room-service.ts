@@ -652,11 +652,11 @@ export class RoomService {
       }
       const target = await this.nativeCommandTarget();
       const agent = this.workspace.agents[target];
-      const commandName = text.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
-      // Honor role-granted native skills too (agentSkillNames merges them for the
-      // prompt); this rare typed-command path can afford the async role resolve.
-      const roleSkills = agent ? await this.activeRoleSkills(target, agent) : [];
-      if (agent && this.agentNativeSkillNames(agent, undefined, roleSkills).has(commandName)) {
+      // The harness owns its command surface. Never duplicate its skill/template
+      // registry here: pass an unclaimed command-shaped token through verbatim
+      // whenever the active harness advertises native command handling. Pi then
+      // resolves its loaded skills and prompt templates in AgentSession.prompt().
+      if (agent && findHarness(harnessIdFor(agent, this.workspace))?.capabilities.supportsNativeCommands) {
         command = { type: "message", text };
         options = { ...options, targets: [target], nativeCommand: true };
       } else if (text.trim().split(/\s+/).length > 1) {
