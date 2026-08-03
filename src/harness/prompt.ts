@@ -85,6 +85,9 @@ export interface TurnPromptInput {
   rootDir?: string;
   /** Settings ▸ General ▸ "Your name" — see renderRoomTranscript. */
   userName?: string;
+  /** Agent-declared law line (agent.json `turnLaw`) appended as the very last
+   * tokens of the composed turn prompt so it is always freshest. */
+  turnLaw?: string;
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -97,6 +100,17 @@ const VOICE_MODE_INSTRUCTIONS = [
   "Write numbers, abbreviations and symbols the way they should be spoken.",
   "You can still use your tools; the user only hears your final text.",
 ].join("\n");
+
+/** Render an event timestamp (stored as ISO UTC) in the host's local
+ * timezone for prompt injection. Timezone is auto-detected via Intl; pass
+ * `timeZone` to override (never hardcoded). Falls back to the raw string for
+ * unparseable input. */
+export function formatEventTimestamp(timestamp: string, timeZone?: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const tz = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return date.toLocaleString("sv-SE", { timeZone: tz, timeZoneName: "short" });
+}
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -127,7 +141,7 @@ export function renderRoomTranscript(events: RoomEvent[], userName?: string): st
           ? `${who} -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
       const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
-      return `[${event.timestamp}] ${header}:\n${event.text}${attachments}`;
+      return `[${formatEventTimestamp(event.timestamp)}] ${header}:\n${event.text}${attachments}`;
     })
     .join("\n\n");
 }
@@ -283,7 +297,7 @@ export function gaiaCliPointer(
  * calling harness composed — never a harness-id branch.
  */
 export async function buildTurnPromptFor(
-  agent: Pick<AgentDef, "id" | "memoryDir">,
+  agent: Pick<AgentDef, "id" | "memoryDir" | "turnLaw">,
   input: AgentInput,
   memoryStore: Pick<MemoryStore, "promptBlock">,
   sessions: { memoryChanged(roomId: string, memory: string): boolean },
@@ -305,6 +319,7 @@ export async function buildTurnPromptFor(
     workDir: paths?.workDir,
     rootDir: paths?.rootDir,
     userName: input.userName,
+    turnLaw: agent.turnLaw,
   });
 }
 
@@ -324,6 +339,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     renderRoomTranscript(input.events, input.userName),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
+    input.turnLaw?.trim() ?? "",
   ]
     .filter(Boolean)
     .join("\n\n");

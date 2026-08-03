@@ -23,6 +23,7 @@ interface RawAgentConfig {
   skills?: unknown;
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  turnLaw?: unknown;
   role?: unknown;
   harness?: unknown;
   /** Legacy alias for `harness`; some seed configs use "runtime". */
@@ -399,6 +400,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       ...(raw.skills !== undefined ? { skillOverride: stringList(raw.skills, []) } : {}),
       model: raw.model,
       thinking: raw.thinking,
+      turnLaw: typeof raw.turnLaw === "string" && raw.turnLaw.trim() ? raw.turnLaw.trim() : undefined,
       harness: typeof raw.harness === "string" && raw.harness.trim() ? raw.harness : undefined,
       sandbox: parseSandboxConfig(raw.sandbox),
       trust: raw.trust === false ? false : undefined,

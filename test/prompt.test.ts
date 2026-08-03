@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   buildProtocolsSection,
   buildSystemPrompt,
+  buildTurnPrompt,
   promptCacheKey,
   readProtocolsText,
   type SystemPromptInput,
@@ -76,4 +77,18 @@ test("readProtocolsText: missing dir = empty; *.md sorted + concatenated verbati
   await writeFile(join(dir, "ignore.txt"), "NOPE");
   const text = await readProtocolsText(dir);
   assert.equal(text, "FIRST\n\nSECOND"); // filename sort, .txt ignored
+});
+
+test("buildTurnPrompt: turnLaw lands as the very last tokens", () => {
+  const prompt = buildTurnPrompt({
+    roomId: "room-1",
+    agentId: "tester",
+    message: "hello",
+    events: [],
+    turnLaw: "LAW LINE",
+  });
+  assert.ok(prompt.endsWith("\n\nLAW LINE"), `prompt must end with law, got: ...${prompt.slice(-40)}`);
+  // without turnLaw nothing is appended
+  const bare = buildTurnPrompt({ roomId: "room-1", agentId: "tester", message: "hello", events: [] });
+  assert.doesNotMatch(bare, /LAW LINE/);
 });

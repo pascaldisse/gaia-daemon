@@ -558,6 +558,10 @@ export interface AgentDef {
   skillOverride?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  /** Optional agent.json law line appended fresh to EVERY composed turn
+   * prompt ("\n\n" + turnLaw) so it is always the newest tokens. No default
+   * content lives in code — the value comes only from agent.json. */
+  turnLaw?: string;
   harness?: string;
   /** Harness permission posture, passed through verbatim. The value vocabulary
    * is each harness's own, declared as DATA on its spec (ui.permissionModes) —
