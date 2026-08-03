@@ -25,6 +25,7 @@ export const THEMES = [
   { id: "dracula", name: "Dracula" },
   { id: "matte-black", name: "Matte Black" },
   { id: "matrix", name: "Matrix", retro: true },
+  { id: "bloodborne", name: "Bloodborne" },
 ];
 
 const STORAGE_KEY = "gaia.theme";

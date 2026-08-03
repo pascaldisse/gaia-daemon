@@ -89,6 +89,14 @@
   --good: #1cff8b; --warn: #ffdf70; --danger: #ff5c7a; --glow: rgba(28, 255, 139, 0.4);
 }
 
+/* Bloodborne — Yharnam night: lantern amber on umber-black, old blood,
+   paleblood sky. Fear the old blood; ship it anyway. */
+[data-theme="bloodborne"] {
+  --bg: #0d0a08; --bg2: #14100c; --bg3: #1f1813; --fg: #d8cbb3; --muted: #6f6355;
+  --border: #2e241b; --accent: #c99a4b; --accent2: #8d1f2c;
+  --good: #7d9367; --warn: #d98e32; --danger: #a41e22; --glow: rgba(201, 154, 75, 0.22);
+}
+
 /* The Matrix theme alone keeps the CRT identity: scanlines, phosphor glow,
    pixel font, no smoothing. Every other theme is a clean flat terminal. */
 html.retro { --font: "Perfect DOS VGA 437", "Px437 IBM VGA8", "Fixedsys", "Terminal", Menlo, "Courier New", monospace; }
