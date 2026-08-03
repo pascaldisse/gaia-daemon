@@ -10,6 +10,7 @@ import { DEFAULTS } from "../src/core/config.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
 import type { AgentDef, AgentEvent, QueuedMessage, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import "../src/harness/index.js"; // register Pi: its resolved SKILL.md commands are palette entries
 import { RunnerHost } from "../src/harness/host.js";
 import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
@@ -312,6 +313,32 @@ test("stopBackgroundTask reports false for an unknown id and removes a known one
 
   assert.equal(await service.stopBackgroundTask("bg-1"), true);
   assert.deepEqual((await service.getSnapshot()).backgroundTasks, []);
+});
+
+test("snapshot command palette advertises resolved Pi skills with SKILL.md descriptions", async () => {
+  const { service, workspace, root } = await makeService();
+  workspace.agents.gaia.harness = "pi";
+  workspace.agents.gaia.skills = ["stoner-mode"];
+  workspace.agents.terry.harness = "pi";
+  await mkdir(join(root, ".gaia", "skills", "stoner-mode"), { recursive: true });
+  await writeFile(join(root, ".gaia", "skills", "stoner-mode", "SKILL.md"), "---\nname: stoner-mode\ndescription: mellow, expansive analysis\n---\n", "utf8");
+  await mkdir(workspace.agents.terry.rolesDir, { recursive: true });
+  await writeFile(join(workspace.agents.terry.rolesDir, "cosmic.md"), "---\nskills: [gaiago-seal]\n---\n", "utf8");
+  await mkdir(join(root, ".gaia", "skills", "gaiago-seal"), { recursive: true });
+  await writeFile(join(root, ".gaia", "skills", "gaiago-seal", "SKILL.md"), "---\nname: gaiago-seal\ndescription: seal the Gaia protocol\n---\n", "utf8");
+  await service.room.updateState((state) => {
+    state.activeRoles.terry = "cosmic";
+  });
+
+  const commands = (await service.getSnapshot()).commands;
+  assert.equal(commands[0]?.name, "help", "daemon commands remain first");
+  assert.deepEqual(
+    commands.filter((command) => ["stoner-mode", "gaiago-seal"].includes(command.name)),
+    [
+      { name: "stoner-mode", type: "native", description: "mellow, expansive analysis", native: true },
+      { name: "gaiago-seal", type: "native", description: "seal the Gaia protocol", native: true },
+    ],
+  );
 });
 
 test("snapshot usage scope contains only accounts of agents active in this room", async () => {

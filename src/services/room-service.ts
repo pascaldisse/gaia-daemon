@@ -53,7 +53,7 @@ import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, norm
 import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../domain/roles.js";
-import { discoverSkills } from "../domain/skills.js";
+import { resolveSkillRefs } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
@@ -2822,47 +2822,63 @@ export class RoomService {
     return effectiveAgentSkills(agent, role);
   }
 
-  private agentNativeSkillNames(agent: AgentDef, onDiskLower?: Set<string>, extraSkills: string[] = []): Set<string> {
-    const skills = [...(agent.skills ?? []), ...extraSkills];
-    if (skills.length === 0) return new Set();
+  private agentNativeSkillNames(agent: AgentDef, skillNames: string[], onDiskLower: Set<string>): Set<string> {
+    if (skillNames.length === 0) return new Set();
     const harnessId = harnessIdFor(agent, this.workspace);
     // findHarness (not capabilitiesFor) so an unregistered harness yields "no
     // native support" instead of throwing — the palette runs even mid-boot.
     if (!findHarness(harnessId)?.capabilities.supportsNativeCommands) return new Set();
-    // A native command routes only if it's FILELESS (a builtin) — a name that
-    // also exists on disk inlines as text instead. Caller may pass the on-disk
-    // set so the palette scans once for all agents, not once per agent.
-    const onDisk = onDiskLower ?? new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
-    const native = new Set(nativeCommandsFor(harnessId).map((command) => command.name.toLowerCase()).filter((name) => !onDisk.has(name)));
-    return new Set(skills.map((skill) => skill.toLowerCase()).filter((name) => native.has(name)));
+    // A native command routes only if it is FILELESS. The resolved on-disk set
+    // comes from this agent's effective skills, so the palette never does a
+    // second registry scan or advertises a builtin over a loaded SKILL.md.
+    const native = new Set(nativeCommandsFor(harnessId).map((command) => command.name.toLowerCase()).filter((name) => !onDiskLower.has(name)));
+    return new Set(skillNames.map((skill) => skill.toLowerCase()).filter((name) => native.has(name)));
   }
 
-  /** The `/`-command palette: gaia commands + the harness-native commands each
-   * agent CHECKED as a skill (deduped, gaia names win) + loaded command plugins
-   * (see ./plugins.js). Native ones are hints — only a checked one passes
-   * through; plugins always pass through (see sendMessage's plugin dispatch). */
+  /** The `/`-command palette: daemon builtins first, then each room agent's
+   * resolved SKILL.md commands (including active-role grants), harness-fileless
+   * commands, and plugins. Skill resolution is the single discovery path: its
+   * frontmatter description becomes the autocomplete detail. */
   private async paletteCommands(): Promise<SlashCommandDefinition[]> {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
-    const native: SlashCommandDefinition[] = [];
-    const onDisk = new Set(discoverSkills(this.workspace).map((skill) => skill.name.toLowerCase()));
-    // Agent-level only (no async role resolve) since this runs per snapshot — a
-    // role-granted native command still ROUTES when typed, just isn't hinted here.
-    for (const agent of Object.values(this.workspace.agents)) {
-      const checked = this.agentNativeSkillNames(agent, onDisk);
-      if (checked.size === 0) continue;
-      for (const command of nativeCommandsFor(harnessIdFor(agent, this.workspace))) {
+    const dynamic: SlashCommandDefinition[] = [];
+    const agents = await Promise.all(
+      Object.values(this.workspace.agents).map(async (agent) => ({
+        agent,
+        harnessId: harnessIdFor(agent, this.workspace),
+        skillNames: await this.activeRoleSkills(agent.id, agent),
+      })),
+    );
+    // Resolve the effective skill names for the whole room once. This is the
+    // existing SKILL.md resolver (and its frontmatter parser), not a palette
+    // scan; per-agent filtering below preserves their exact command grants.
+    const resolved = new Map(resolveSkillRefs(this.workspace, agents.flatMap(({ skillNames }) => skillNames)).skills.map((skill) => [skill.name, skill]));
+    for (const { agent, harnessId, skillNames } of agents) {
+      if (!findHarness(harnessId)?.capabilities.supportsNativeCommands) continue;
+      const skills = skillNames.flatMap((name) => {
+        const skill = resolved.get(name);
+        return skill ? [skill] : [];
+      });
+      const onDisk = new Set(skills.map((skill) => skill.name.toLowerCase()));
+      for (const skill of skills) {
+        if (seen.has(skill.name)) continue;
+        seen.add(skill.name);
+        dynamic.push({ name: skill.name, type: "native", description: skill.description ?? "", native: true });
+      }
+      const checked = this.agentNativeSkillNames(agent, skillNames, onDisk);
+      for (const command of nativeCommandsFor(harnessId)) {
         const name = command.name.toLowerCase();
         if (!checked.has(name) || seen.has(command.name)) continue;
         seen.add(command.name);
-        native.push({ name: command.name, type: "native", description: command.description, native: true });
+        dynamic.push({ name: command.name, type: "native", description: command.description, native: true });
       }
     }
     for (const plugin of (await this.pluginsPromise).values()) {
       if (seen.has(plugin.command)) continue;
       seen.add(plugin.command);
-      native.push({ name: plugin.command, type: "native", description: plugin.description ?? "", native: true });
+      dynamic.push({ name: plugin.command, type: "native", description: plugin.description ?? "", native: true });
     }
-    return native.length ? [...SLASH_COMMANDS, ...native] : SLASH_COMMANDS;
+    return dynamic.length ? [...SLASH_COMMANDS, ...dynamic] : SLASH_COMMANDS;
   }
 
   async renderAgentsList(): Promise<string> {
