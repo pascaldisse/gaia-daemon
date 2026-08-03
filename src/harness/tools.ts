@@ -8,6 +8,7 @@
 // use the registry for verb dispatch without paying for pi-coding-agent.
 
 import type { AgentDef, Workspace } from "../core/types.js";
+import type { ResumeCreate } from "./spec.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { GaiaTool, RecallSearch, SummonCreate } from "../harness/spec.js";
 
@@ -34,9 +35,13 @@ export interface PiToolContext {
   agent: AgentDef;
   roomId: string;
   roomDir: string;
+  /** Harness execution cwd; native Pi tools resolve relative paths here. */
+  workDir?: string;
   /** Live workspace roster used to constrain self-describing tool schemas. */
   availableAgents?: readonly AgentRosterEntry[];
   summonCreate?: SummonCreate;
+  /** Existing-room steer implementation shared with `gaia resume`. */
+  resumeCreate?: ResumeCreate;
   /** Daemon-side hybrid search; absent → the tool falls back to the local
    * transcript index (works without a bridge, lexical room-only). */
   recallSearch?: RecallSearch;
@@ -56,6 +61,13 @@ export interface GaiaToolSpec {
 }
 
 export const GAIA_TOOLS: GaiaToolSpec[] = [
+  {
+    id: "gaia",
+    cliVerbs: [],
+    grant: "",
+    pointer: "- `gaia` custom tool — unified verb dispatcher: bash/read/write/edit/web/summon/resume/mem/recall/caryll; set raw:true for unformatted output.",
+    makePiTool: async (ctx) => (await import("./tools-pi.js")).createGaiaTool(ctx),
+  },
   {
     id: "memory",
     cliVerbs: ["mem", "memory"],

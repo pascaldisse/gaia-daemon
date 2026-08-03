@@ -12,7 +12,7 @@
 import { createInterface } from "node:readline";
 import { env } from "../core/env.js";
 import { loadWorkspace } from "../domain/workspace.js";
-import { BridgeMemoryStore, bridgeRecallSearch, bridgeSummonCreate, fixedTokenHost } from "./bridge-deps.js";
+import { BridgeMemoryStore, bridgeRecallSearch, bridgeResumeCreate, bridgeSummonCreate, fixedTokenHost } from "./bridge-deps.js";
 // Self-register every harness before the lookup — this subprocess starts with
 // an empty registry.
 import "./index.js";
@@ -89,6 +89,7 @@ export async function runAgentRunner(): Promise<void> {
 
   const memoryStore = target ? new BridgeMemoryStore(target) : new BridgeMemoryStore({ url: "", token: "" });
   const summonCreate = target ? bridgeSummonCreate(target) : undefined;
+  const resumeCreate = target ? bridgeResumeCreate(target) : undefined;
   const harnessHost = target ? fixedTokenHost(target) : undefined;
 
   // The daemon already resolved the harness (agent > workspace > default) and
@@ -100,6 +101,7 @@ export async function runAgentRunner(): Promise<void> {
       agent: runtimeAgent,
       memoryStore,
       summonCreate,
+      resumeCreate,
       harnessHost,
       recallSearch: target ? bridgeRecallSearch(target) : undefined,
     });

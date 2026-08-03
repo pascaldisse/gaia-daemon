@@ -7,7 +7,7 @@ import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import { LLM_PROXY_MOUNT } from "./protocol.js";
-import type { HarnessHost, RecallSearch, SummonCreate } from "./spec.js";
+import type { HarnessHost, RecallSearch, ResumeCreate, SummonCreate } from "./spec.js";
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
 export class BridgeMemoryStore extends MemoryStore {
@@ -80,6 +80,15 @@ export function bridgeSummonCreate(target: DaemonTarget): SummonCreate {
     const { ok, payload } = await daemonPost(target, "/api/harness/summon", { agent: agentId, task });
     if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "summon failed");
     return typeof payload.result === "string" ? payload.result : "summon launched";
+  };
+}
+
+/** Same daemon bridge operation used by the `gaia resume` CLI command. */
+export function bridgeResumeCreate(target: DaemonTarget): ResumeCreate {
+  return async ({ roomId, message }) => {
+    const { ok, payload } = await daemonPost(target, "/api/harness/resume", { room: roomId, message });
+    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "resume failed");
+    return typeof payload.result === "string" ? payload.result : "resume queued";
   };
 }
 

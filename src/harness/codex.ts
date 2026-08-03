@@ -25,6 +25,7 @@ import {
   type AgentRuntime,
   type HarnessCapabilities,
   type RecallSearch,
+  type ResumeCreate,
   registerHarness,
   type RuntimeCreateContext,
   type SummonCreate,
@@ -337,7 +338,7 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
 // (see CODEX_SANDBOX_MODE), so the tools field is a real control surface and
 // stays visible in settings (granularTools: true).
 const CODEX_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon", "resume"],
+  gaiaTools: ["memory", "recall", "summon", "resume", "gaia"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
@@ -360,6 +361,7 @@ export class CodexRuntime implements AgentRuntime {
   private readonly workspace: Workspace;
   private readonly memoryStore: MemoryStore;
   private readonly summonCreate?: SummonCreate;
+  private readonly resumeCreate?: ResumeCreate;
   private readonly recallSearch?: RecallSearch;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
@@ -386,6 +388,7 @@ export class CodexRuntime implements AgentRuntime {
     this.agent = options.agent;
     this.memoryStore = options.memoryStore;
     this.summonCreate = options.summonCreate;
+    this.resumeCreate = options.resumeCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
@@ -1002,8 +1005,10 @@ export class CodexRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir: workspacePaths.roomDir(this.cwd, roomId),
+      workDir: this.workDir,
       availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
+      resumeCreate: this.resumeCreate,
       recallSearch: this.recallSearch,
     })) as PiToolLike[];
     const tools = new Map(built.map((tool) => [tool.name, tool]));

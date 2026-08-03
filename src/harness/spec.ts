@@ -133,7 +133,7 @@ export interface AgentRuntime {
 
 // --- capabilities + ui (data on the spec) --------------------------------------
 
-export type GaiaTool = "memory" | "recall" | "summon" | "resume";
+export type GaiaTool = "memory" | "recall" | "summon" | "resume" | "gaia";
 
 export interface HarnessCapabilities {
   /** Which gaia tools this harness can wire into a session; the agent's
@@ -228,6 +228,8 @@ export interface RuntimeCreateContext {
   memoryStore: MemoryStore;
   /** In-process summon entry (Pi tools); absent when summoning is not allowed. */
   summonCreate?: SummonCreate;
+  /** Existing-room steering entry; same operation as `gaia resume`. */
+  resumeCreate?: ResumeCreate;
   /** Daemon bridge for subprocess harnesses' memory/recall/summon CLI. */
   harnessHost?: HarnessHost;
   /** Hybrid memory search (facts + episodes + room history), daemon-side. */
@@ -255,6 +257,11 @@ export interface RecallSearch {
  * by the summon coordinator when it settles, re-invoking the caller. */
 export interface SummonCreate {
   (params: { roomId: string; agentId: string; task: string }): Promise<string>;
+}
+
+/** Steer an existing room; same daemon endpoint as `gaia resume`. */
+export interface ResumeCreate {
+  (params: { roomId: string; message: string }): Promise<string>;
 }
 
 // --- credential proxy wiring (data, applied uniformly by RunnerHost) ------------

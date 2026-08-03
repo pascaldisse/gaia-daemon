@@ -13,6 +13,8 @@ export const DEFAULTS = {
   thinking: "medium",
   transcriptWindow: 20,
   maxSummonsPerRoom: 8,
+  /** Unified-tool gaiago formatting threshold; GAIA_TOOL_FORMAT_BYTES overrides. */
+  toolCompressionBytes: 8_192,
   host: "127.0.0.1",
   port: 8787,
   // Stable self-signed identity for macOS re-signing on /rebuild. Ad-hoc
@@ -41,6 +43,13 @@ export const MEMORY_DEFAULTS: MemoryConfig = {
 
 export function gaiaHost(): string {
   return env("GAIA_HOST") ?? DEFAULTS.host;
+}
+
+/** Unified-tool result-format budget. Process env makes this deployment-tunable
+ * without a daemon restart; per-call `compress_above_bytes` can override it. */
+export function gaiaToolCompressionBytes(): number {
+  const parsed = Number.parseInt(env("GAIA_TOOL_FORMAT_BYTES") ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : DEFAULTS.toolCompressionBytes;
 }
 
 /** GAIA_PORT overrides (0 = pick a free port). */

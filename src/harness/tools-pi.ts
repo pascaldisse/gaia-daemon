@@ -3,8 +3,11 @@
 // registry itself stays cheap for the `gaia` CLI.
 
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, defineTool } from "@earendil-works/pi-coding-agent";
+import { gaiaToolCompressionBytes } from "../core/config.js";
+import { compressCaryll, expandCaryll } from "../services/caryll.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
@@ -259,6 +262,124 @@ export function createSummonTool(summonCreate: SummonCreate, roomId: string, ava
 
       const text = settled.length === 1 ? settled[0].result : settled.map((entry) => `### @${entry.agent}\n${entry.result.trim()}`).join("\n\n");
       return { content: [{ type: "text" as const, text }], details: { ok: settled.every((entry) => entry.ok), results: settled } };
+    },
+  });
+}
+
+type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "caryll";
+type GaiaResult = { content: Array<{ type: "text"; text: string }>; details: unknown };
+type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
+
+function resultText(result: GaiaResult): string {
+  return result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+}
+
+/** Deterministic gaiago formatter: field-style header + compact graph rows.
+ * It deliberately does not use Caryll: lexical dictionaries measured 0% on
+ * reasoning output. `translator: "llm"` is a reserved hook; no model is
+ * invoked until a caller supplies one through the registry context. */
+export function formatGaiagoResult(verb: GaiaVerb, text: string, details: unknown): { text: string; formatter: "deterministic" } {
+  const lines = text.split("\n");
+  const nonblank = lines.filter((line) => line.trim()).length;
+  const status = text.startsWith("ERROR") ? "失" : "真";
+  const detailKind = details && typeof details === "object" ? Object.keys(details as object).join(",") || "none" : "none";
+  // Preserve payload bytes for read/edit and arbitrary command output; structural
+  // framing gives the model a stable graph without pretending lossy prose is a
+  // compressor. Whitespace-only rows disappear only for bash list/test output.
+  const payload = verb === "bash" ? lines.filter((line) => line.trim()).map((line, i) => `${i + 1}→${line.trim()}`).join("\n") : text;
+  return { text: `${status} ${verb} · 行=${nonblank} · 詳=${detailKind}\n${payload || "∅"}`, formatter: "deterministic" };
+}
+
+async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult> {
+  const action = args.action;
+  const path = typeof args.path === "string" ? args.path : "";
+  const output = typeof args.output === "string" ? args.output : path;
+  if ((action !== "compress" && action !== "expand" && action !== "stats") || !path) {
+    return { content: [{ type: "text", text: "ERROR: caryll args require { action: compress|expand|stats, path, output? }." }], details: { ok: false } };
+  }
+  const source = await readFile(path, "utf8");
+  if (action === "compress") {
+    const result = compressCaryll(source);
+    await writeFile(output, result.output);
+    return { content: [{ type: "text", text: `真 caryll.compress · ${path}→${output}` }], details: result.stats };
+  }
+  if (action === "expand") {
+    const result = expandCaryll(source);
+    await writeFile(output, result);
+    return { content: [{ type: "text", text: `真 caryll.expand · ${path}→${output}` }], details: { bytes: Buffer.byteLength(result) } };
+  }
+  const result = compressCaryll(source);
+  return { content: [{ type: "text", text: `真 caryll.stats · ${result.stats.tokensBefore}→${result.stats.tokensAfter} · legend=${result.stats.legendEntries}` }], details: result.stats };
+}
+
+/** One custom Pi tool: table-driven delegation to Pi native tools and the
+ * existing daemon tool factories. New verbs add exactly one registry entry. */
+export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
+  const cwd = ctx.workDir ?? process.cwd();
+  const native = {
+    bash: createBashToolDefinition(cwd),
+    read: createReadToolDefinition(cwd),
+    write: createWriteToolDefinition(cwd),
+    edit: createEditToolDefinition(cwd),
+  };
+  const memory = createMemoryTool(ctx.memoryStore, ctx.agent);
+  const recall = createRecallTool(
+    ctx.recallSearch ?? localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir, insight: ctx.agent.insight }),
+    ctx.roomId,
+  );
+  const summon = ctx.summonCreate ? createSummonTool(ctx.summonCreate, ctx.roomId, ctx.availableAgents) : undefined;
+  // Pi's exported tool definitions are the native implementations. The custom
+  // wrapper deliberately calls their executor rather than copying filesystem or
+  // shell semantics; they accept unused lifecycle arguments after call+params.
+  const executeNative = (tool: any, args: Record<string, unknown>) => tool.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
+  const registry: Record<GaiaVerb, GaiaHandler> = {
+    bash: (args) => executeNative(native.bash, args),
+    read: (args) => executeNative(native.read, args),
+    write: (args) => executeNative(native.write, args),
+    edit: (args) => executeNative(native.edit, args),
+    // Pi's web path is the brave-search skill via bash; with only gaia active,
+    // use the same native bash backend as the explicit curl fallback.
+    web: (args) => executeNative(native.bash, args),
+    mem: (args) => executeNative(memory, args),
+    recall: (args) => executeNative(recall, args),
+    summon: (args) => (summon ? executeNative(summon, args) : Promise.resolve({ content: [{ type: "text", text: "ERROR: summon is unavailable for this room." }], details: { ok: false } })),
+    resume: async (args) => {
+      const roomId = typeof args.roomId === "string" ? args.roomId : "";
+      const message = typeof args.message === "string" ? args.message : "";
+      if (!roomId || !message) return { content: [{ type: "text", text: "ERROR: resume args require { roomId, message }." }], details: { ok: false } };
+      if (!ctx.resumeCreate) return { content: [{ type: "text", text: "ERROR: resume is unavailable for this room." }], details: { ok: false } };
+      try {
+        return { content: [{ type: "text", text: await ctx.resumeCreate({ roomId, message }) }], details: { ok: true } };
+      } catch (error) {
+        return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+      }
+    },
+    caryll: runCaryllVerb,
+  };
+
+  return defineTool({
+    name: "gaia",
+    label: "Gaia",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web curl fallback, daemon memory/recall/summon/resume, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; only tool needed for files, commands, web curl, memory, worker summons, and room steering.",
+    parameters: Type.Object({
+      verb: stringEnum(["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "caryll"]),
+      args: Type.Record(Type.String(), Type.Unknown()),
+      raw: Type.Optional(Type.Boolean({ description: "Return native output unchanged." })),
+      compress_above_bytes: Type.Optional(Type.Number({ minimum: 0, description: "Override configured gaiago formatting threshold in bytes." })),
+      translator: Type.Optional(stringEnum(["deterministic", "llm"], "llm reserved: translation hook is not wired yet.")),
+    }),
+    execute: async (_toolCallId: string, params: { verb: GaiaVerb; args: Record<string, unknown>; raw?: boolean; compress_above_bytes?: number; translator?: "deterministic" | "llm" }) => {
+      try {
+        const result = await registry[params.verb](params.args);
+        const text = resultText(result);
+        const threshold = Number.isFinite(params.compress_above_bytes) && (params.compress_above_bytes ?? 0) >= 0 ? (params.compress_above_bytes as number) : gaiaToolCompressionBytes();
+        if (params.raw || Buffer.byteLength(text) <= threshold) return result;
+        const formatted = formatGaiagoResult(params.verb, text, result.details);
+        return { content: [{ type: "text" as const, text: formatted.text }], details: { native: result.details, formatter: formatted.formatter, translator: params.translator ?? "deterministic", threshold } };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+      }
     },
   });
 }

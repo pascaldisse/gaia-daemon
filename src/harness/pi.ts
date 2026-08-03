@@ -33,6 +33,7 @@ import {
   registerHarness,
   type RuntimeCreateContext,
   type RecallSearch,
+  type ResumeCreate,
   type SummonCreate,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
@@ -255,7 +256,7 @@ function toPiThinking(level: ThinkingLevel | string | undefined): any {
 }
 
 const PI_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon", "resume"],
+  gaiaTools: ["memory", "recall", "summon", "resume", "gaia"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
@@ -286,6 +287,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly memoryStore: MemoryStore;
   private readonly sessionFactory?: PiRuntimeSessionFactory;
   private readonly summonCreate?: SummonCreate;
+  private readonly resumeCreate?: ResumeCreate;
   private readonly recallSearch?: RecallSearch;
   // ModelRuntime.create() is async (it can touch the network for catalog
   // refresh), but HarnessSpec.create() must return synchronously — so
@@ -312,6 +314,7 @@ export class PiRuntime implements AgentRuntime {
     this.memoryStore = options.memoryStore;
     this.sessionFactory = options.sessionFactory;
     this.summonCreate = options.summonCreate;
+    this.resumeCreate = options.resumeCreate;
     this.recallSearch = options.recallSearch;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
@@ -721,8 +724,10 @@ export class PiRuntime implements AgentRuntime {
       agent: this.agent,
       roomId,
       roomDir,
+      workDir: this.workDir,
       availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
+      resumeCreate: this.resumeCreate,
       recallSearch: this.recallSearch,
     });
     const systemPromptRef = { current: systemPrompt };
