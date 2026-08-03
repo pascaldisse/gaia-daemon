@@ -3686,6 +3686,8 @@ export class RoomService {
         return { ...scope, type: "thinking-delta", delta: event.delta };
       case "thinking-end":
         return { ...scope, type: "thinking-end", content: event.content };
+      case "skill-invocation":
+        return { ...scope, type: "skill-invocation", skill: event.skill };
       case "tool-start":
         return { ...scope, type: "tool-start", toolName: event.toolName, toolCallId: event.toolCallId, args: event.args };
       case "tool-update":

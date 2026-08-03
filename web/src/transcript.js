@@ -858,6 +858,7 @@ function OrderedBlocks(view, blocks, tools) {
       const steer = view.steers?.get(block.id);
       return steer ? SteerInline(steer) : null;
     }
+    if (block.kind === "skill") return SkillInvocationActivity(block.skill);
     const tool = toolsById.get(block.id);
     return tool ? ToolActivity(tool) : null;
   });
@@ -1020,6 +1021,16 @@ function ReadAloudButton(eventId) {
 /** @param {ToolDetail[]} tools */
 function ToolActivityList(tools) {
   return h("div", { class: "tool-activity" }, tools.map(ToolActivity));
+}
+
+/** Pi's expanded `/skill:name` user message, mirrored as its native chip.
+ * @param {import("../../src/core/types.js").SkillInvocation} skill
+ */
+export function SkillInvocationActivity(skill) {
+  return ActivityDetails(
+    { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: "🧩", title: `[skill] ${skill.name}` },
+    MarkdownMessage(skill.content),
+  );
 }
 
 /**

@@ -43,9 +43,20 @@ export interface MessageAttachment {
  * `tool` references a `ToolDetail` in `EventDetails.tools[]` by id (the tool's
  * live status/args/result stay the single source of truth). Thinking can occur
  * more than once per turn, so multiple `thinking` blocks are expected. */
+export interface SkillInvocation {
+  /** Pi's canonical skill name, parsed from its expanded `<skill>` user message. */
+  name: string;
+  /** Pi's resolved SKILL.md path, carried verbatim from that message. */
+  location: string;
+  /** The Pi-expanded skill body; rendered only when its native-style chip opens. */
+  content: string;
+}
+
 export type MessageBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
+  /** Pi's own `/skill:name` expansion, observed from its user-message event. */
+  | { kind: "skill"; skill: SkillInvocation }
   | { kind: "tool"; id: string }
   /** A mid-turn user steer landed HERE in the stream. References the steer's
    * own user RoomEvent by id (the event stays the single source of truth for
@@ -839,6 +850,8 @@ export type AgentEvent =
   | { type: "thinking-start" }
   | { type: "thinking-delta"; delta: string }
   | { type: "thinking-end"; content?: string }
+  /** Pi emitted an expanded `/skill:name` user message for this turn. */
+  | { type: "skill-invocation"; skill: SkillInvocation }
   | { type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown }
   | { type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown }
   | { type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean }
@@ -1139,6 +1152,7 @@ export type UiEvent =
   | ({ type: "thinking-start" } & StreamScope)
   | ({ type: "thinking-delta"; delta: string } & StreamScope)
   | ({ type: "thinking-end"; content?: string } & StreamScope)
+  | ({ type: "skill-invocation"; skill: SkillInvocation } & StreamScope)
   | ({ type: "tool-start"; toolName: string; toolCallId?: string; args?: unknown } & StreamScope)
   | ({ type: "tool-update"; toolName: string; toolCallId?: string; partialResult?: unknown } & StreamScope)
   | ({ type: "tool-end"; toolName: string; toolCallId?: string; result?: unknown; isError: boolean } & StreamScope)

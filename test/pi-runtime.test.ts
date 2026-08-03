@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness, type SummonCreate } from "../src/harness/spec.js";
@@ -137,12 +137,38 @@ test("PiRuntime dynamically aliases a loaded terse skill command into Pi's nativ
       // loaded skills rather than carrying a daemon-side command registry.
       await options.loader.reload();
       session = new FakeSession("s1");
+      session.prompt = async (text, promptOptions) => {
+        session?.prompts.push(text);
+        session?.promptOptions.push(promptOptions);
+        const skill = options.loader.getSkills().skills.find((candidate) => text.startsWith(`/skill:${candidate.name}`));
+        if (skill) {
+          const body = (await readFile(skill.filePath, "utf8")).replace(/^---[\s\S]*?---\s*/, "").trim();
+          for (const listener of session?.listeners ?? []) {
+            listener({
+              type: "message_start",
+              message: { role: "user", content: [{ type: "text", text: `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>\n\n7` }] },
+            });
+            listener({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+          }
+        }
+      };
       return { session };
     };
     const runtime = new PiRuntime({ workspace, agent, memoryStore: new MemoryStore(), sessionFactory: factory });
 
-    await collect(runtime.send({ roomId: "default", message: "/stoner-mode 7", transcript: [], nativeCommand: true }));
+    const expanded = await collect(runtime.send({ roomId: "default", message: "/stoner-mode 7", transcript: [], nativeCommand: true }));
     assert.equal(session?.prompts[0], "/skill:stoner-mode 7");
+    assert.deepEqual(expanded, [
+      {
+        type: "skill-invocation",
+        skill: {
+          name: "stoner-mode",
+          location: join(fx.home, "skills", "stoner-mode", "SKILL.md"),
+          content: `References are relative to ${join(fx.home, "skills", "stoner-mode")}.\n\n# stoner`,
+        },
+      },
+      { type: "text-delta", delta: "ok" },
+    ]);
 
     // Unknown/template-shaped tokens stay verbatim for AgentSession.prompt(),
     // whose native template and unknown-command behavior remains authoritative.

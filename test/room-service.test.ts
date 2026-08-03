@@ -1011,11 +1011,14 @@ test("slash commands emit a system room-event and settle synchronously", async (
 
 test("unclaimed slash commands defer verbatim to the active native harness", async () => {
   let received: AgentInput | undefined;
-  const { service } = await makeService({
+  const { service, root, events } = await makeService({
     runtimeFactory: (agent) => {
       const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "native" }]);
       runtime.send = async function* (input: AgentInput) {
         received = input;
+        // The Pi runtime maps this directly from Pi's expanded user-message
+        // event; room plumbing preserves it as an ordered native skill chip.
+        yield { type: "skill-invocation", skill: { name: "stoner-mode", location: "/skills/stoner-mode/SKILL.md", content: "# stoner" } };
         yield { type: "text-delta", delta: "native" };
       };
       return runtime;
@@ -1029,6 +1032,12 @@ test("unclaimed slash commands defer verbatim to the active native harness", asy
   await service.waitForIdle();
   assert.equal(received?.message, "/stoner-mode 7");
   assert.equal(received?.nativeCommand, true);
+  assert.ok(events.some((event) => event.type === "skill-invocation" && event.skill.name === "stoner-mode"));
+  const transcript = (await RoomHandle.open(root, "default")).eventsFrom(0);
+  assert.deepEqual((await transcript).events.at(-1)?.details?.blocks, [
+    { kind: "skill", skill: { name: "stoner-mode", location: "/skills/stoner-mode/SKILL.md", content: "# stoner" } },
+    { kind: "text", text: "native" },
+  ]);
 });
 
 test("/pet persists independent room+agent bindings, validates, lists, removes, and emits a workspace snapshot", async () => {

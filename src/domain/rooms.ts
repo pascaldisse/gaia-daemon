@@ -174,6 +174,16 @@ function messageBlocks(value: unknown): MessageBlock[] | undefined {
     if (!isRecord(raw)) continue;
     if (raw.kind === "tool" || raw.kind === "steer") {
       if (typeof raw.id === "string" && raw.id.length > 0) blocks.push({ kind: raw.kind, id: raw.id });
+    } else if (raw.kind === "skill") {
+      const skill = raw.skill;
+      if (
+        isRecord(skill) &&
+        typeof skill.name === "string" && skill.name.length > 0 &&
+        typeof skill.location === "string" && skill.location.length > 0 &&
+        typeof skill.content === "string"
+      ) {
+        blocks.push({ kind: "skill", skill: { name: skill.name, location: skill.location, content: skill.content } });
+      }
     } else if (raw.kind === "text" || raw.kind === "thinking") {
       // Drop empty text/thinking spans — they carry nothing to render and only
       // arise transiently while streaming.

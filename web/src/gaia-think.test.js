@@ -51,7 +51,7 @@ function serialize(node) {
   return `${open}${inner}</${node.tagName}>`;
 }
 
-const { AgentText, splitLeadingGaiaThink } = await import("./transcript.js");
+const { AgentText, SkillInvocationActivity, splitLeadingGaiaThink } = await import("./transcript.js");
 
 test("splitLeadingGaiaThink: leading closed block", () => {
   expect(splitLeadingGaiaThink("<gaia:think>weighing</gaia:think>the answer")).toEqual({
@@ -91,6 +91,14 @@ test("AgentText: no leading block -> plain markdown, no thinking expander", () =
   const html = serialize(AgentText("id3", "Just a normal reply.", false));
   expect(html).not.toContain("activity-details");
   expect(html).toContain("Just a normal reply.");
+});
+
+test("SkillInvocationActivity: mirrors Pi's collapsed native skill chip", () => {
+  const html = serialize(SkillInvocationActivity({ name: "stoner-mode", location: "/skills/stoner-mode/SKILL.md", content: "# stoner" }));
+  expect(html).toContain('class="activity-details tool-call skill-call complete"');
+  expect(html).toContain('class="activity-icon" aria-hidden="true">🧩</span>');
+  expect(html).toContain("[skill] stoner-mode");
+  expect(html).toContain("stoner");
 });
 
 test("AgentText: literal non-leading tag is escaped as text (no raw HTML / XSS)", () => {

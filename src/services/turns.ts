@@ -92,6 +92,9 @@ export function applyEventToDetails(details: EventDetails, event: AgentEvent): v
       if (event.content && !details.thinking) details.thinking = event.content;
       recordBlockEvent(details, event);
       return;
+    case "skill-invocation":
+      recordBlockEvent(details, event);
+      return;
     case "tool-start": {
       const tool = newToolDetail(event.toolCallId, event.toolName, "running", { args: event.args });
       details.tools = [...(details.tools ?? []), tool];
@@ -160,6 +163,9 @@ export function recordBlockEvent(details: EventDetails, event: AgentEvent, toolI
           blocks.push({ kind: "thinking", text: event.content });
         }
       }
+      return;
+    case "skill-invocation":
+      blocks.push({ kind: "skill", skill: event.skill });
       return;
     case "tool-start":
     case "tool-end":

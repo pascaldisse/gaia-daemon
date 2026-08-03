@@ -248,6 +248,15 @@ export function connectEvents(resyncOnReady = false) {
     markDirty("transcript");
   });
 
+  listen("skill-invocation", (event) => {
+    const payload = /** @type {Ev<"skill-invocation">} */ (JSON.parse(event.data));
+    const stream = streamFor(payload);
+    if (!stream) return;
+    (stream.details.blocks ??= []).push({ kind: "skill", skill: payload.skill });
+    stream.version += 1;
+    markDirty("transcript");
+  });
+
   listen("tool-start", (event) => {
     const payload = /** @type {Ev<"tool-start">} */ (JSON.parse(event.data));
     const stream = streamFor(payload);

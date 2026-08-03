@@ -15,6 +15,7 @@ import {
   getAgentDir,
   ModelRegistry,
   ModelRuntime,
+  parseSkillBlock,
   readStoredCredential,
   SessionManager,
   SettingsManager,
@@ -243,6 +244,18 @@ function skillPathsKey(paths: string[]): string {
   return JSON.stringify(paths);
 }
 
+/** Text payload from Pi's SDK user-message event. Skill expansion always emits
+ * one text content part; malformed/foreign messages stay invisible here. */
+function piUserMessageText(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return undefined;
+  const text = content.find((part): part is { type: "text"; text: string } =>
+    Boolean(part && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string"),
+  );
+  return text?.text;
+}
+
 // GAIA's ThinkingLevel adds "max" on top of pi's own ceiling (pi-agent-core's
 // ThinkingLevel tops at "xhigh" — Claude CLI is the only harness that has a
 // literal "max" effort). Clamp at the pi SDK boundary so a session never gets
@@ -376,6 +389,15 @@ export class PiRuntime implements AgentRuntime {
     const channel = createEventChannel();
 
     const unsubscribe = session.subscribe((event) => {
+      // Pi emits the expanded `/skill:name` as the turn's user message. Mirror
+      // that SDK event, rather than inferring a skill from the slash text, so
+      // the room renders precisely the invocation Pi accepted (including its
+      // resolved SKILL.md path and body).
+      if (event.type === "message_start" && event.message.role === "user") {
+        const text = piUserMessageText(event.message);
+        const skill = text && parseSkillBlock(text);
+        if (skill) channel.push({ type: "skill-invocation", skill: { name: skill.name, location: skill.location, content: skill.content } });
+      }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         channel.push({ type: "text-delta", delta: event.assistantMessageEvent.delta });
       }
