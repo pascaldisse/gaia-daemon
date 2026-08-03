@@ -285,6 +285,40 @@ test("PiRuntime appends gaia's assembled prompt onto pi's own base instead of re
   }
 });
 
+test("PiRuntime replaces pi's base with the daemon prompt when promptLaw is set", async () => {
+  const fx = await harnessFixture();
+  try {
+    let seenSystemPrompt: string | undefined;
+    let seenAppendSystemPrompt: string[] = [];
+    let seenSystemPromptRef: { current: string } | undefined;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      await options.loader.reload();
+      seenSystemPrompt = options.loader.getSystemPrompt();
+      seenAppendSystemPrompt = options.loader.getAppendSystemPrompt();
+      seenSystemPromptRef = options.systemPromptRef;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: { ...fx.agent, promptLaw: "思開→即閉" },
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+    });
+
+    await collect(runtime.send({ roomId: "default", message: "one", transcript: [] }));
+
+    // Replace mode: loader's customPrompt IS the daemon-built prompt — pi's
+    // hardcoded default base never gets built — and the law sits at char 0.
+    assert.equal(seenSystemPrompt, seenSystemPromptRef?.current);
+    assert.match(seenSystemPrompt ?? "", /^思開→即閉/);
+    // Append channel stays empty — nothing rides above or duplicates the prompt.
+    assert.deepEqual(seenAppendSystemPrompt, []);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime reports the session's actual model as a model-info event", async () => {
   const fx = await harnessFixture();
   try {

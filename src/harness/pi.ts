@@ -717,14 +717,22 @@ export class PiRuntime implements AgentRuntime {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      // Pi's own base system prompt (tool usage, conventions, docs pointers)
-      // must stay — gaia's assembled layer (soul+AGENTS.md+role+style law from
-      // buildBaseSystemPrompt) rides APPENDED via pi's append mechanism, never
-      // replacing pi's base. systemPromptOverride left unset so
-      // DefaultResourceLoader falls through to its discovered/undefined base,
-      // which makes pi's system-prompt.js build its own default prompt
-      // (customPrompt undefined) and then append this section + skills.
-      appendSystemPromptOverride: () => [systemPromptRef.current],
+      // Two modes, keyed on agent.json `promptLaw`:
+      // - promptLaw UNSET (default): pi's own base system prompt (tool usage,
+      //   conventions, docs pointers) stays — gaia's assembled layer rides
+      //   APPENDED via pi's append mechanism (customPrompt undefined ⇒ pi
+      //   builds its default base, then appends this section + skills).
+      // - promptLaw SET: the law must be the ABSOLUTE FIRST tokens, so the
+      //   daemon-built prompt (promptLaw already at index 0) REPLACES pi's
+      //   base entirely via systemPromptOverride (system-prompt.js customPrompt
+      //   path: our prompt first, then skills/cwd suffix). Tool-use with the
+      //   replaced base is UNVERIFIED live.
+      // Replace mode also pins the append channel to [] — otherwise the
+      // loader discovers ~/.pi/agent/APPEND_SYSTEM.md and injects arbitrary
+      // user-dir content above/after the law.
+      ...(this.agent.promptLaw
+        ? { systemPromptOverride: () => systemPromptRef.current, appendSystemPromptOverride: () => [] }
+        : { appendSystemPromptOverride: () => [systemPromptRef.current] }),
     });
     if (!this.sessionFactory) await loader.reload();
 
