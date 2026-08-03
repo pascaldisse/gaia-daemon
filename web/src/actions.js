@@ -259,6 +259,24 @@ export function refreshAccountsCatalog() {
   accountsCatalogPromise = null;
 }
 
+/** Persist a result emitted by a same-origin embedded plugin experience.
+ * @param {string} command @param {string[]} args */
+export async function runPluginAction(command, args) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  try {
+    const body = await api(
+      `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/plugins/${encodeURIComponent(command)}`,
+      { method: "POST", body: JSON.stringify({ args }) },
+    );
+    applySnapshotPayload(body);
+    state.error = body.message || "";
+    markDirty();
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /** Toggle room agent-dialogue (agents responding to each other's @mentions).
  * @param {boolean} on */
 export async function setRoomAgentDialogue(on) {

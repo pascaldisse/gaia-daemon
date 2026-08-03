@@ -1110,6 +1110,8 @@ body.resizing { cursor: col-resize; user-select: none; }
    right panel: room (agents + tasks)
    ============================================================ */
 .panel { border: 1px solid var(--border); background: color-mix(in srgb, black 28%, transparent); padding: 10px; margin-bottom: 12px; }
+.plugin-panels { padding: 0; overflow: hidden; }
+.plugin-embed { display: block; width: 100%; height: min(76vh, 780px); border: 0; }
 .panel h2 { margin: 0; color: var(--accent); font-size: 15px; }
 .panel-head { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
 

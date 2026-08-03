@@ -241,6 +241,9 @@ export interface RoomState {
    * off. Each entry binds exactly this room + that agent to one validated pet
    * package; several agents may be bound at once. */
   petBindings?: Record<string, string>;
+  /** Opaque JSON state owned by local command plugins. Plugin code never writes
+   * state.json directly; RoomHandle remains the sole serialized writer. */
+  pluginState?: Record<string, Record<string, unknown>>;
   /** Per-agent room-scoped thinking-level override (mirrors activeRoles):
    * room entry wins; absent inherits the agent.json global default
    * (agent.thinking). Never written to agent.json. */
@@ -1095,6 +1098,18 @@ export interface Snapshot {
     /** Native desktop pet bindings for this room, keyed by agent. Empty/absent
      * means pets are off. Browser/iOS clients do not render an in-chat stand-in. */
     petBindings?: Record<string, string>;
+    /** Declarative room panels supplied by local command plugins. */
+    pluginPanels?: Record<string, {
+      title: string;
+      description?: string;
+      embed?: { src: string; title?: string };
+      forms?: Array<{
+        action: string;
+        label: string;
+        fields: Array<{ name: string; label: string; type: "text" | "select"; value?: string; options?: Array<{ value: string; label: string }> }>;
+      }>;
+      items?: Array<{ title: string; detail?: string; actions?: Array<{ action: string; label: string; args?: string[]; danger?: boolean }> }>;
+    }>;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;

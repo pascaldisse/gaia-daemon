@@ -61,7 +61,7 @@ import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCom
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, validateThinkingLevel, type SlashCommand } from "./commands.js";
-import { loadCommandPlugins, type CommandPlugin } from "./plugins.js";
+import { loadCommandPlugins, type CommandPlugin, type PluginContext, type PluginPanel } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import type { EpisodeCapture } from "./memory-service.js";
@@ -1401,6 +1401,7 @@ export class RoomService {
       let ambientFiredAt = 0;
 
       const userName = await readUserNameSetting();
+      const pluginContext = await this.pluginPrompt(state, target);
 
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
@@ -1418,6 +1419,7 @@ export class RoomService {
             thinking: options.thinking ?? state.thinkingOverrides[target],
             ...(state.thinkingLevel ? { protocolThinkingLevel: state.thinkingLevel } : {}),
             recall,
+            ...(pluginContext ? { pluginContext } : {}),
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
             ...(userName ? { userName } : {}),
           },
@@ -2092,14 +2094,68 @@ export class RoomService {
   /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
    * the same way loadCommandPlugins tolerates a bad module at load time —
    * never crashes the caller. See services/plugins.ts for the contract. */
+  private pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>): PluginContext {
+    return {
+      homedir: homedir(),
+      roomId: this.roomId,
+      workspaceRoot: this.workspace.rootDir,
+      state: state.pluginState?.[plugin.command],
+      agents: Object.values(this.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),
+    };
+  }
+
   private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
     try {
-      return (
-        (await plugin.run(args, { homedir: homedir(), roomId: this.roomId, workspaceRoot: this.workspace.rootDir })) ?? {}
-      );
+      const state = await this.room.state();
+      const result = (await plugin.run(args, this.pluginContext(plugin, state))) ?? {};
+      if (result.state) {
+        await this.room.updateState((next) => {
+          next.pluginState ??= {};
+          next.pluginState[plugin.command] = result.state!;
+        });
+        await this.emitSnapshot();
+      }
+      return result;
     } catch (error) {
       return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
     }
+  }
+
+  /** Generic API/UI bridge: plugin action args use the exact same durable run
+   * path as a slash command, so extensions never write room state themselves. */
+  async runPluginAction(command: string, args: string[]): Promise<string> {
+    await this.init();
+    const plugin = (await this.pluginsPromise).get(command);
+    if (!plugin) throw new Error(`Unknown plugin: ${command}`);
+    return (await this.runPlugin(plugin, args)).reply ?? "";
+  }
+
+  private async pluginPanels(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<Record<string, PluginPanel> | undefined> {
+    const panels: Record<string, PluginPanel> = {};
+    for (const plugin of (await this.pluginsPromise).values()) {
+      if (!plugin.panel) continue;
+      try {
+        const panel = await plugin.panel(this.pluginContext(plugin, state));
+        if (panel) panels[plugin.command] = panel;
+      } catch (error) {
+        console.warn(`[plugins] panel ${plugin.command}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return Object.keys(panels).length ? panels : undefined;
+  }
+
+  private async pluginPrompt(state: Awaited<ReturnType<RoomHandle["state"]>>, agentId: string): Promise<string | undefined> {
+    const blocks: string[] = [];
+    for (const plugin of (await this.pluginsPromise).values()) {
+      if (!plugin.prompt) continue;
+      try {
+        const block = await plugin.prompt({ ...this.pluginContext(plugin, state), agentId });
+        if (block?.trim()) blocks.push(block.trim());
+      } catch (error) {
+        console.warn(`[plugins] prompt ${plugin.command}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return blocks.length ? blocks.join("\n\n") : undefined;
   }
 
   /** Idle-path fallback for an unrecognized /command: the sendMessage seam
@@ -3326,6 +3382,7 @@ export class RoomService {
     const all = (await this.room.eventsFrom(0)).events;
     const events = all.slice(-this.workspace.config.transcriptWindow);
     const state = await this.room.state();
+    const pluginPanels = await this.pluginPanels(state);
     // The selected agent plus any agents actively executing this room's turn
     // are the only identities that can spend here. This is deliberately not
     // the workspace roster: an unrelated agent/account in another room must
@@ -3359,6 +3416,7 @@ export class RoomService {
         ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
         ...(state.agentDialogue ? { agentDialogue: true } : {}),
         ...(state.petBindings ? { petBindings: { ...state.petBindings } } : {}),
+        ...(pluginPanels ? { pluginPanels } : {}),
         ...(this.incognito ? { incognito: true } : {}),
         ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
         ...(this.contextGate ? { contextGate: this.contextGate } : {}),

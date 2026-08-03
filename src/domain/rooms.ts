@@ -81,6 +81,35 @@ function stringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(value).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim().length > 0));
 }
 
+/** Plugin data is untrusted extension output: retain only bounded JSON values,
+ * never executable/prototype-bearing objects. */
+function pluginStateFrom(value: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (!isRecord(value) || depth > 8) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 64)) {
+    if (!key || key.length > 128) continue;
+    if (raw === null || typeof raw === "boolean") out[key] = raw;
+    else if (typeof raw === "string") out[key] = raw.slice(0, 4_000);
+    else if (typeof raw === "number" && Number.isFinite(raw)) out[key] = raw;
+    else if (Array.isArray(raw)) {
+      const safe = raw.slice(0, 128).map((entry) => pluginStateValue(entry, depth + 1)).filter((entry) => entry !== undefined);
+      out[key] = safe;
+    } else {
+      const nested = pluginStateFrom(raw, depth + 1);
+      if (nested) out[key] = nested;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function pluginStateValue(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return value.slice(0, 4_000);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.slice(0, 128).map((entry) => pluginStateValue(entry, depth + 1)).filter((entry) => entry !== undefined);
+  return pluginStateFrom(value, depth);
+}
+
 function cursorRecord(value: unknown): Record<string, number> {
   if (!isRecord(value)) return {};
   return Object.fromEntries(
@@ -344,9 +373,11 @@ export function normalizeRoomState(value: unknown): RoomState {
   const contextGate = contextGateFrom(value.contextGate);
   const contextFloors = cursorRecord(value.contextFloors);
   const petBindings = normalizePetBindings(value.petBindings);
+  const pluginState = pluginStateFrom(value.pluginState);
   return {
     activeRoles: stringRecord(value.activeRoles),
     ...(petBindings ? { petBindings } : {}),
+    ...(pluginState ? { pluginState: pluginState as Record<string, Record<string, unknown>> } : {}),
     thinkingOverrides: stringRecord(value.thinkingOverrides),
     ...(typeof value.thinkingLevel === "number" && Number.isFinite(value.thinkingLevel) && value.thinkingLevel > 0 && value.thinkingLevel <= 10
       ? { thinkingLevel: Math.floor(value.thinkingLevel) }

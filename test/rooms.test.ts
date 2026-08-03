@@ -58,6 +58,13 @@ test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   assert.equal(state.queue?.[0].taskId, "q1");
 });
 
+test("normalizeRoomState keeps bounded JSON plugin state and drops executable shapes", () => {
+  const state = normalizeRoomState({
+    pluginState: { rpg: { gm: "terra", roster: [{ name: "Ada" }], ignored: () => "no" } },
+  });
+  assert.deepEqual(state.pluginState, { rpg: { gm: "terra", roster: [{ name: "Ada" }] } });
+});
+
 test("normalizeRoomState round-trips thinkingOverrides (mirrors activeRoles)", () => {
   const state = normalizeRoomState({
     activeRoles: {},

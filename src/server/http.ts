@@ -939,6 +939,14 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.setAgentDefaultRole(params![0], agentId.trim(), (role ?? "").trim()));
     }
 
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/plugins\/([A-Za-z0-9_-]+)$/))) {
+      const body = await parseBody(request);
+      const args = Array.isArray((body as { args?: unknown }).args)
+        ? (body as { args: unknown[] }).args.filter((arg): arg is string => typeof arg === "string").slice(0, 16)
+        : [];
+      return this.respond(response, () => this.daemon.runPluginAction(params![0], params![1], params![2], args));
+    }
+
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/agent-dialogue$/))) {
       const body = await parseBody(request);
       const on = (body as { on?: unknown }).on === true;

@@ -40,6 +40,9 @@ export interface AgentInput {
   /** Auto-retrieved memory block for this turn ("" / absent = nothing cleared
    * the relevance gate). Turn-level overlay, never part of the session. */
   recall?: string;
+  /** Room-local context supplied by installed command plugins. Resolved once in
+   * RoomService and threaded through every harness by the shared prompt seam. */
+  pluginContext?: string;
   /** This turn is a raw harness-native command (e.g. "/deep-research ..."):
    * the harness hands `message` to its underlying CLI VERBATIM — no prompt
    * wrapping, no memory/transcript overlay — with its own skill/slash-command

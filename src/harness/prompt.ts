@@ -73,6 +73,8 @@ export interface TurnPromptInput {
   memory?: string;
   /** Auto-retrieved memories for THIS turn; already fenced by the service. */
   recall?: string;
+  /** Context returned by room-local command plugins. */
+  pluginContext?: string;
   channel?: "text" | "voice";
   /** Files attached to the newest message (pasted into the composer). */
   attachments?: MessageAttachment[];
@@ -317,6 +319,7 @@ export async function buildTurnPromptFor(
     events: input.transcript,
     memory: memoryChanged ? memory : undefined,
     recall: input.recall,
+    pluginContext: input.pluginContext,
     channel: input.channel,
     attachments: input.attachments,
     workDir: paths?.workDir,
@@ -338,6 +341,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     input.channel === "voice" ? VOICE_MODE_INSTRUCTIONS : "",
     input.memory?.trim() ? `# Your persistent memory\n\n${input.memory.trim()}` : "",
     input.recall?.trim() ?? "",
+    input.pluginContext?.trim() ?? "",
     "New room events since your last turn:",
     renderRoomTranscript(input.events, input.userName),
     "Newest user message:",

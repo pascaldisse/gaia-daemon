@@ -746,6 +746,16 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
+  /** Run a declarative local-plugin panel action through its normal slash-command
+   * state path, then return/broadcast the authoritative room snapshot. */
+  async runPluginAction(workspaceId: string, roomId: string, command: string, args: string[]): Promise<SelectionPayload & { message: string }> {
+    const service = await this.serviceFor(workspaceId, roomId);
+    const message = await service.runPluginAction(command, args);
+    const snapshot = await service.getSnapshot();
+    this.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId), message };
+  }
+
   /** Toggle room agent-dialogue (agents replying to each other's @mentions). */
   async setRoomAgentDialogue(workspaceId: string, roomId: string, on: boolean): Promise<SelectionPayload> {
     const service = await this.serviceFor(workspaceId, roomId);

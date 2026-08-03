@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-TTRPG Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --fs-base: 17px;      /* W6-A readability pass: base text size */
+      --fs-log: 18px;       /* narration/dialogue transcript text */
+      --fs-system: 15px;    /* system/turn-notice lines: distinct, still readable */
+      --fs-ui: 16px;        /* action input + suggestion pills */
+      --log-line-height: 1.55;
+      --log-max-width: 70ch;
+      --c-text: #e8e8f0;        /* main light text on near-black bg */
+      --c-narration: #fde68a;   /* DM narration — full-opacity amber (was amber-200/80, too low-contrast) */
+      --c-system: #b0b3c0;      /* system/turn-notice — distinct muted, still AA on #111827 */
+    }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: var(--fs-base); }
+    .narration-log::-webkit-scrollbar { width: 6px; }
+    .narration-log::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
+    /* W6-A: narration log readability — override kernel/view.js's Tailwind classes
+       via #transcript-entries-scoped selectors (ID specificity beats plain utility
+       classes regardless of Tailwind CDN's injection order). No JS/layout changes. */
+    #transcript-entries .text-amber-200\/80 {
+      font-size: var(--fs-log);
+      line-height: var(--log-line-height);
+      color: var(--c-narration);
+      max-width: var(--log-max-width);
+      display: inline-block;
+    }
+    #transcript-entries .text-gray-200.leading-relaxed {
+      font-size: var(--fs-log);
+      line-height: var(--log-line-height);
+      color: var(--c-text);
+      max-width: var(--log-max-width);
+      display: inline-block;
+    }
+    #transcript-entries .text-gray-600.italic {
+      font-size: var(--fs-system);
+      color: var(--c-system);
+      max-width: var(--log-max-width);
+    }
+    #action-input { font-size: var(--fs-ui); }
+    .frontdoor { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:1.5rem; background:linear-gradient(135deg,#080b16,#1c1030 55%,#0a2330); color:#f3f4f6; }
+    .frontdoor-backdrop { position:absolute; inset:0; background-size:cover; background-position:center; opacity:.3; filter:saturate(.7); } .frontdoor-backdrop:after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,#080b16dd,#080b1688); } .frontdoor-backdrop img { display:none; }
+    .frontdoor-panel { position:relative; width:min(100%,34rem); max-height:calc(100vh - 3rem); overflow-y:auto; padding:2rem; border:1px solid #52525b; border-radius:1rem; background:#111827eF; box-shadow:0 25px 70px #0009; } .frontdoor-wide { width:min(100%,52rem); } .frontdoor h1,.frontdoor h2 { margin:.2rem 0 1rem; color:#fde68a; } .frontdoor h1 { font-size:2.6rem; } .frontdoor-kicker { color:#a1a1aa; font-size:.7rem; letter-spacing:.2em; } .frontdoor-copy,.frontdoor-hint { color:#9ca3af; font-size:.9rem; } .frontdoor-actions { display:flex; gap:.75rem; margin:1.5rem 0 .75rem; } .frontdoor button { cursor:pointer; border-radius:.5rem; padding:.65rem 1rem; } .frontdoor button:disabled { cursor:not-allowed; opacity:.45; } .frontdoor-primary { background:#2563eb; color:white; } .frontdoor-secondary,.frontdoor-back { border:1px solid #4b5563; background:#1f2937; color:#e5e7eb; } .frontdoor-back { margin-top:1rem; font-size:.85rem; }
+    .campaign-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(13rem,1fr)); gap:.75rem; margin-top:1rem; } .campaign-card { min-height:10rem; overflow:hidden; text-align:left; border:1px solid #4b5563; background:linear-gradient(145deg,#1f2937,#172554); color:#f3f4f6; } .campaign-card strong,.campaign-card span { display:block; padding:0 .9rem; } .campaign-card strong { margin-top:.8rem; } .campaign-card span { color:#cbd5e1; font-size:.85rem; margin:.4rem 0 .8rem; } .campaign-cover { width:100%; height:6rem; object-fit:cover; padding:0!important; }
+    .suggestion-row { display:flex; gap:.4rem; overflow-x:auto; padding:0 .1rem .1rem; scrollbar-width:thin; } .suggestion-pill { flex:0 0 auto; max-width:14rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border:1px solid #374151; border-radius:9999px; padding:.3rem .65rem; background:#1f2937; color:#9ca3af; font-size:var(--fs-ui); line-height:1.3; transition:background-color .15s,color .15s,border-color .15s; } .suggestion-pill:hover { border-color:#4b5563; background:#374151; color:#e5e7eb; }
+    .frontdoor-form { display:grid; gap:.55rem; } .frontdoor-form label,.frontdoor-form legend { color:#d1d5db; font-size:.85rem; } .frontdoor-form input[type=text],.frontdoor-form input:not([type]),.frontdoor-form textarea { width:100%; box-sizing:border-box; border:1px solid #4b5563; border-radius:.4rem; padding:.6rem; background:#030712; color:#fff; } .archetype-list { display:flex; flex-wrap:wrap; gap:.5rem; border:0; padding:0; } .archetype-choice { padding:.35rem .55rem; border:1px solid #4b5563; border-radius:.4rem; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 h-screen overflow-hidden">
+  <div class="max-w-7xl mx-auto p-3 h-full flex flex-col gap-3">
+
+    <!-- Header: title · player name · connection · new game -->
+    <header class="flex items-center gap-3 shrink-0">
+      <span class="text-amber-300 font-bold tracking-wide">⟁ AI-TTRPG</span>
+      <span id="conn-dot" class="w-2 h-2 rounded-full bg-gray-600" title="connecting…"></span>
+      <button id="music-toggle" class="text-sm px-1.5 rounded hover:bg-gray-800 transition-colors" title="Music">🔇</button>
+      <input id="track-volume" type="range" min="0" max="1" step="0.05" class="w-14 accent-amber-400" title="Track volume" />
+      <button id="track-mute" class="text-sm px-1.5 rounded hover:bg-gray-800 transition-colors" title="Mute track">🔇</button>
+      <button id="journal-toggle" class="text-sm px-1.5 rounded hover:bg-gray-800 transition-colors" title="Quest journal (J)">📜</button>
+      <button id="settings-toggle" class="text-sm px-1.5 rounded hover:bg-gray-800 transition-colors" title="Addons & settings">⚙</button>
+      <div class="flex-1"></div>
+      <label class="text-xs text-gray-500">You are</label>
+      <input id="player-name" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm w-36 focus:outline-none focus:border-blue-500" />
+      <button id="new-game" class="text-xs px-3 py-1.5 rounded border border-red-900/60 text-red-400/90 hover:bg-red-950/40 transition-colors" title="Reset the world to the campaign start">
+        New game
+      </button>
+    </header>
+
+    <div class="flex-1 min-h-0 grid grid-cols-12 gap-3">
+
+      <!-- LEFT: scene + story + input — the game itself -->
+      <div class="col-span-8 flex flex-col gap-3 min-h-0">
+
+        <!-- Scene (location art/prose, or the combat HUD during encounters) -->
+        <div id="scene-area" class="shrink-0 max-h-[45%] bg-gray-900 rounded-lg border border-gray-700 overflow-y-auto"></div>
+
+        <!-- The story — dominant, growable -->
+        <div id="narration-log" class="flex-1 min-h-0 bg-gray-900 rounded-lg border border-gray-700 p-4 overflow-y-auto narration-log">
+          <div id="transcript-entries" class="text-sm space-y-0">
+            <div class="text-gray-600 italic">— session begins —</div>
+          </div>
+        </div>
+
+        <!-- Suggested actions + input -->
+        <div id="suggestion-row" class="suggestion-row shrink-0" hidden aria-label="Suggested actions"></div>
+        <div id="action-area" class="shrink-0 flex gap-2">
+          <textarea id="action-input" rows="2" placeholder="What do you do?"
+            class="flex-1 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-100 resize-none focus:outline-none focus:border-blue-500"></textarea>
+          <button id="action-send"
+            class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-5 rounded-lg transition-colors">
+            Send
+          </button>
+        </div>
+      </div>
+
+      <!-- RIGHT: party · here · quests (+ collapsed debug inspector) -->
+      <div id="inspector" class="col-span-4 bg-gray-900 rounded-lg border border-gray-700 p-3 overflow-y-auto flex flex-col gap-2 min-h-0">
+        <!-- #player-hud is inserted as the first child by kernel/view.js -->
+        <details id="debug-entities" class="mt-auto pt-2 text-xs text-gray-600 border-t border-gray-800">
+          <summary class="cursor-pointer hover:text-gray-400 select-none">Debug · all entities</summary>
+          <div id="entity-list" class="flex flex-col gap-1 text-sm mt-1"></div>
+        </details>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Save-slot picker: front-door screen for resuming a specific save, or
+       quick-starting a new one. Wired entirely from client/main.js; reuses
+       the .frontdoor/.frontdoor-panel/.campaign-card styles above so it
+       matches the existing (kernel/frontdoor.js-owned) front door. Starts
+       hidden via inline style — a bare [hidden] attribute would lose to the
+       author rule ".frontdoor{display:grid}" in the cascade. -->
+  <main id="save-picker" class="frontdoor" style="display:none" aria-label="Choose a save">
+    <section class="frontdoor-panel frontdoor-wide">
+      <div class="frontdoor-kicker">SESSION ZERO</div>
+      <h2>Continue your journey</h2>
+      <div id="save-picker-list" class="campaign-cards"></div>
+      <div class="frontdoor-form" style="margin-top:1rem;">
+        <label for="save-picker-new-slot">New game — save slot name</label>
+        <input id="save-picker-new-slot" type="text" value="default" placeholder="default" />
+      </div>
+      <div class="frontdoor-actions">
+        <button id="save-picker-new-btn" type="button" class="frontdoor-primary">New Game</button>
+        <button id="save-picker-full-btn" type="button" class="frontdoor-secondary">Full campaign setup…</button>
+      </div>
+      <div id="save-picker-status" class="frontdoor-hint"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/rpg/main.js"></script>
+</body>
+</html>

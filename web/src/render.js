@@ -6,9 +6,9 @@
 import { $, h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
+/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"plugins"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
 
-const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
+const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "plugins", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
 
 /** @type {Map<Region, () => void>} */
 const renderers = new Map();
@@ -87,6 +87,7 @@ export function mountApp() {
         "aside",
         { class: "right", id: "right" },
         h("section", { class: "panel", id: "room-panel" }),
+        h("section", { class: "panel plugin-panels", id: "plugin-panels" }),
       ),
     ),
     h("footer", { class: "statusbar", id: "statusbar" }),
