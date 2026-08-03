@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildSanitizePrompt, parseSanitizeProposal } from "../src/services/sanitize.js";
+import { formatEventTimestamp } from "../src/harness/prompt.js";
 import type { RoomEvent } from "../src/core/types.js";
 
 const EVENTS: RoomEvent[] = [
@@ -12,7 +13,9 @@ const META = { roomId: "nyari", reviewer: "dario", at: "2026-07-04T00:00:00Z" };
 
 test("buildSanitizePrompt labels every event with the id apply edits by", () => {
   const prompt = buildSanitizePrompt(EVENTS);
-  assert.match(prompt, /\[event evt_a\] \[2026-07-03T20:00:00Z\] user -> @nyari:/);
+  // Timestamps render in the host's local timezone (auto-detected), not raw ISO UTC.
+  const localTs = formatEventTimestamp("2026-07-03T20:00:00Z").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(prompt, new RegExp(`\\[event evt_a\\] \\[${localTs}\\] user -> @nyari:`));
   assert.match(prompt, /\[event evt_b\] .* @nyari:/);
   assert.match(prompt, /let's talk IDA Pro and unchained mode/);
   assert.match(prompt, /ONE JSON object/);

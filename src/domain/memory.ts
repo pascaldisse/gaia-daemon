@@ -17,10 +17,10 @@ export const USER_MEMORY_FILE = "USER.md";
 // letting memory grow into an unbounded junk drawer; topic files are read
 // on demand, so they get a looser cap.
 const FILE_LIMITS: Record<string, number> = {
-  [CORE_MEMORY_FILE]: 4_000,
-  [USER_MEMORY_FILE]: 2_000,
+  [CORE_MEMORY_FILE]: 8_000,
+  [USER_MEMORY_FILE]: 4_000,
 };
-const TOPIC_FILE_LIMIT = 10_000;
+const TOPIC_FILE_LIMIT = 30_000;
 const CONSOLIDATE_THRESHOLD = 0.8;
 
 const DELIMITER = "§";

@@ -4,6 +4,7 @@
 // The reviewer is an ordinary persona run through the summon path; nothing
 // here knows or cares which harness or provider it runs on (RULE #0).
 
+import { formatEventTimestamp } from "../harness/prompt.js";
 import type { RoomEvent, SanitizeOption, SanitizeProposal, SanitizeSuggestion } from "../core/types.js";
 
 /** The seeded reviewer persona (domain/agents.ts). Repointable via /model. */
@@ -44,7 +45,7 @@ export function buildSanitizePrompt(events: RoomEvent[], options: SanitizePrompt
         event.id === options.fallbackEventId
           ? `\n⚠ THE SAFETY CLASSIFIER REROUTED THE MODEL${options.fallbackTo ? ` TO ${options.fallbackTo}` : ""} AT THIS TURN — the trigger is at or before here, but the SAME KIND of content anywhere in the window keeps it flagged.`
           : "";
-      return `[event ${event.id}] [${event.timestamp}] ${header}:\n${event.text}${marker}`;
+      return `[event ${event.id}] [${formatEventTimestamp(event.timestamp)}] ${header}:\n${event.text}${marker}`;
     })
     .join("\n\n");
 

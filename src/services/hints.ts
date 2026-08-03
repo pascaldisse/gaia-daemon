@@ -586,13 +586,21 @@ function voiceJsonHints(): FileHints {
     sttEngine: select(values(sttEngineIds()), {
       optional: true,
       label: "Voice input (dictation) engine",
-      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API, reuses the ElevenLabs key) or openai (any OpenAI-compatible /audio/transcriptions endpoint, hosted or a local whisper-server). Swappable like the TTS engine.",
+      description: "Which speech-to-text engine the composer mic uses — replicate (hosted Whisper; default), elevenlabs (Scribe API), or openai (any OpenAI-compatible /audio/transcriptions endpoint, including a local whisper-server). Swappable like the TTS engine.",
+    }),
+    callSttEngine: select(values(["kyutai", "replicate"]), {
+      optional: true,
+      label: "Live-call STT engine",
+      description: "kyutai runs bundled streaming Moshi; replicate routes call audio through the hosted Whisper bridge.",
     }),
     sttLanguage: { input: "text", optional: true, label: "Dictation language", description: "optional spoken-language hint (ISO code like 'en'); empty auto-detects" },
     elevenLabsSttModel: { input: "text", optional: true, label: "ElevenLabs STT model", description: "ElevenLabs speech-to-text model for the elevenlabs dictation engine (default scribe_v1)" },
     sttOpenAiBaseUrl: { input: "text", optional: true, label: "OpenAI STT base URL", description: "base URL for the openai dictation engine — default OpenAI, or a local whisper-server (http://127.0.0.1:8080/v1) to keep dictation fully local" },
     sttOpenAiApiKey: { input: "text", optional: true, label: "OpenAI STT API key", description: "API key for the openai dictation engine; empty falls back to OPENAI_API_KEY (a localhost base URL may need none)" },
     sttOpenAiModel: { input: "text", optional: true, label: "OpenAI STT model", description: "model for the openai dictation engine (default whisper-1, or a local model name)" },
+    sttReplicateApiKey: { input: "text", optional: true, label: "Replicate API token", description: "API token for hosted Whisper; empty falls back to REPLICATE_API_TOKEN or REPLICATE_API_KEY" },
+    sttReplicateModel: { input: "text", optional: true, label: "Replicate STT model", description: "primary Replicate owner/model slug (default vaibhavs10/incredibly-fast-whisper)" },
+    sttReplicateFallbackModel: { input: "text", optional: true, label: "Replicate STT fallback model", description: "retry model if the primary is unavailable or rejects input (default openai/whisper)" },
   };
 }
 

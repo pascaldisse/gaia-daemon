@@ -24,6 +24,15 @@ class FakeSession implements PiSessionLike {
   thinkingChanges: string[] = [];
   /** Optional per-test native compaction (PiSessionLike.compact). */
   compact?: (customInstructions?: string) => Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }>;
+  /** Optional per-test SettingsManager slice — mirrors the read-only manager
+   * gaia passes the real AgentSession. Records applyOverrides so a test can
+   * assert compact()'s forced recent-keep window is applied then restored. */
+  settingsManager?: {
+    getCompactionKeepRecentTokens(): number;
+    applyOverrides(overrides: { compaction?: { keepRecentTokens?: number } }): void;
+  };
+  /** keepRecentTokens history recorded by the fixture settingsManager below. */
+  keepRecentHistory: number[] = [];
   /** Per-test fixture for PiSessionLike.getUserMessagesForForking. */
   userMessagesForForking: Array<{ entryId: string; text: string }> = [];
   /** Calls recorded against PiSessionLike.navigateTree. */
@@ -435,6 +444,84 @@ test("PiRuntime.compact turns pi-ai's 'session too small' throw into a clean no-
     await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
     const result = await runtime.compact("default");
     assert.deepEqual(result, { compacted: false, message: "nothing to compact — nothing to compact (session too small)." });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compact forces a smaller recent-keep window and retries when the session is under pi's 20000-token floor", async () => {
+  const fx = await harnessFixture();
+  try {
+    // An EXPLICIT /compact on a session that fits under pi's default
+    // keepRecentTokens floor must still shrink it (the poisoned/heavy tail case)
+    // — pi throws "too small" on the first pass, so compact() retries once with
+    // a forced small recent-keep window, then restores the real floor.
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      let keepRecent = 20000;
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          if (overrides.compaction?.keepRecentTokens !== undefined) {
+            keepRecent = overrides.compaction.keepRecentTokens;
+            session.keepRecentHistory.push(keepRecent);
+          }
+        },
+      };
+      session.compact = async () => {
+        // Refuse until the recent-keep floor is lowered (mirrors findCutPoint
+        // finding nothing to cut above the default floor).
+        if (keepRecent >= 20000) throw new Error("Nothing to compact (session too small)");
+        return { summary: "trimmed the heavy tail", tokensBefore: 8000, estimatedTokensAfter: 2000 };
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const result = await runtime.compact("default");
+    assert.equal(result.compacted, true);
+    assert.match(result.message, /8000 tokens before → ~2000/);
+    assert.equal(result.summary, "trimmed the heavy tail");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compact still no-ops cleanly when even the forced window finds nothing", async () => {
+  const fx = await harnessFixture();
+  try {
+    // A genuinely tiny session (one short turn under the forced floor): both the
+    // default pass AND the forced retry throw "too small". The floor must be
+    // restored and the clean no-op surfaced — never a scary failure.
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      let keepRecent = 20000;
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          if (overrides.compaction?.keepRecentTokens !== undefined) {
+            keepRecent = overrides.compaction.keepRecentTokens;
+            session.keepRecentHistory.push(keepRecent);
+          }
+        },
+      };
+      session.compact = async () => {
+        throw new Error("Nothing to compact (session too small)");
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const session = (runtime as unknown as { sessions: Map<string, { session: FakeSession }> }).sessions.get("default")!.session;
+    const result = await runtime.compact("default");
+    assert.deepEqual(result, { compacted: false, message: "nothing to compact — nothing to compact (session too small)." });
+    // The floor was lowered for the retry, then restored to its original value.
+    assert.equal(session.keepRecentHistory[0], 2000);
+    assert.equal(session.keepRecentHistory[session.keepRecentHistory.length - 1], 20000);
     runtime.dispose();
   } finally {
     await fx.cleanup();

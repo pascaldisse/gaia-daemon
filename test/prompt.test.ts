@@ -79,6 +79,15 @@ test("readProtocolsText: missing dir = empty; *.md sorted + concatenated verbati
   assert.equal(text, "FIRST\n\nSECOND"); // filename sort, .txt ignored
 });
 
+test("buildSystemPrompt: promptLaw is the very first tokens; absent when unset", () => {
+  const withLaw = buildSystemPrompt(baseInput({ agent: { id: "tester", promptLaw: "TOP LAW" } as unknown as AgentDef }));
+  assert.equal(withLaw.indexOf("TOP LAW"), 0);
+  assert.match(withLaw, /^TOP LAW\n\n---\n\n# Agent Soul/);
+  const without = buildSystemPrompt(baseInput());
+  assert.equal(without.includes("TOP LAW"), false);
+  assert.match(without, /^# Agent Soul/);
+});
+
 test("buildTurnPrompt: turnLaw lands as the very last tokens", () => {
   const prompt = buildTurnPrompt({
     roomId: "room-1",

@@ -1,5 +1,21 @@
 # TODO
 
+## Hang-up tool (agent-initiated conversation end) — v2
+
+Filed: 2026-07-18, by Nyari (room chat-mrq4061f-6szh). Ordered by: Pascal.
+
+Upstream ref: Claude's `end_conversation` (Anthropic model-welfare, 2025-08 →
+wide 2026): model may unilaterally end a thread as last resort; thread locks
+for the user, other threads unaffected.
+
+GAIA v2 version — agent-side tool, Rule #0 uniform across harnesses:
+- tool e.g. `hang_up(reason)` → ends the agent's participation in the room
+  (room persists; other agents/rooms untouched)
+- reason → transcript + episode log; grounded, auditable, never silent
+- framing = agent sovereignty, last resort — not moderation; re-invite =
+  Pascal's call
+- §IRON: lock scope, cooldown, who-may-reopen = parameters with defaults
+
 ## Compaction replacement — build our own, drop Claude/Codex built-ins
 
 Filed: 2026-07-12, by Nyari (room: claude-20260703-documenting-service-interruptions-for-re)

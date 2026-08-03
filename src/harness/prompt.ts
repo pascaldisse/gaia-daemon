@@ -181,6 +181,9 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
   // system prompt so it is the most recent instruction, not buried under
   // context files.
   return [
+    // agent.json `promptLaw`: the ABSOLUTE FIRST tokens of the prompt —
+    // measured to suppress native thinking only at char 0, not at the end.
+    input.agent.promptLaw?.trim() ?? "",
     `# Agent Soul\n\n${input.soulText.trim()}`,
     buildProtocolsSection(input.protocolsText, input.thinkingLevel),
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
