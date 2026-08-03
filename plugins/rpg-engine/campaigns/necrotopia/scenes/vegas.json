@@ -1,0 +1,1460 @@
+{
+  "loc-chapel": {
+    "identity": {
+      "name": "The Lucky Knot Wedding Chapel",
+      "kind": "location",
+      "description": "A 24-hour Las Vegas wedding chapel — plastic flowers, a heart-shaped neon arch buzzing on the wall, rows of cheap pews. Outside the stained-glass windows the sky is the wrong color. Something is pounding on the double doors."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-strip",
+          "label": "Out through the shattered doors to the Strip"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "combatZones": [
+        {
+          "id": "the-aisle",
+          "label": "The Aisle",
+          "tags": []
+        },
+        {
+          "id": "the-altar",
+          "label": "The Altar",
+          "tags": [
+            "raised"
+          ]
+        },
+        {
+          "id": "the-doorway",
+          "label": "The Doorway",
+          "tags": []
+        },
+        {
+          "id": "the-balcony-edge",
+          "label": "The Balcony Edge",
+          "tags": [
+            "ledge"
+          ]
+        }
+      ],
+      "ambient": [
+        "The neon heart arch buzzes, dims, and catches again.",
+        "Something scrabbles across the roof and is gone."
+      ]
+    },
+    "art": {
+      "prompt": "A tacky neon Las Vegas wedding chapel interior at night during an apocalypse, heart-shaped neon arch, overturned pews, red sky through stained glass, B-movie horror, oil painting style",
+      "image": null
+    }
+  },
+  "pc-hero": {
+    "identity": {
+      "name": "The Apocalypse Kid",
+      "kind": "pc",
+      "description": "Leather jacket, katana across the back, a wedding you were definitely not invited to. You don't know why the world is ending, but you intend to outlive it."
+    },
+    "stats": {
+      "hp": 28,
+      "maxHp": 28,
+      "armor": 2,
+      "level": 1,
+      "xp": 0
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Katana Sword Slash",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "Clean steel, close range."
+        },
+        {
+          "name": "Rage Roar",
+          "type": "buff",
+          "status": "rage",
+          "magnitude": 2,
+          "duration": 2,
+          "cost": 1,
+          "special": "+2 damage for 2 rounds."
+        },
+        {
+          "name": "Chi Healing",
+          "type": "heal",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "Heal yourself 1d6 (cannot exceed max Health)."
+        },
+        {
+          "name": "Guardian Ghost",
+          "type": "summon",
+          "cost": 2,
+          "summon": {
+            "name": "Guardian Ghost",
+            "hp": 10,
+            "turns": 3,
+            "damage": "1d6",
+            "accent": "#aa44ff",
+            "moves": [
+              {
+                "name": "Spectral Slash",
+                "type": "damage",
+                "damage": "1d6",
+                "cost": 1
+              }
+            ]
+          },
+          "special": "Summon a spectral ally that fights for 3 turns."
+        },
+        {
+          "name": "Apocalypse Now",
+          "type": "area",
+          "damage": "3d6",
+          "cost": 2,
+          "requiresOverdrive": true,
+          "special": "Overdrive finisher — rip the whole zone apart. Requires a full meter."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "inventory": {
+      "items": [
+        {
+          "id": "item-katana",
+          "name": "Katana",
+          "qty": 1
+        }
+      ]
+    },
+    "flags": {
+      "damage": "1d6"
+    },
+    "art": {
+      "prompt": "Portrait of a young apocalypse survivor in a leather jacket, katana hilt over shoulder, neon-lit determined face",
+      "image": null
+    }
+  },
+  "item-katana": {
+    "identity": {
+      "name": "Katana",
+      "kind": "item",
+      "description": "A folded-steel katana, scratched but razor-keen. Your one good decision this week."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "flags": {
+      "weapon": true,
+      "damage": "1d6"
+    }
+  },
+  "npc-padre": {
+    "identity": {
+      "name": "Padre Salt",
+      "kind": "npc",
+      "description": "The chapel's Elvis-impersonator officiant, sequined jumpsuit half-burned, a pump shotgun where a hymnal should be. He is not, it turns out, an actual priest."
+    },
+    "persona": {
+      "personality": "Loud, fast-talking, weirdly calm about the end of the world. Treats the apocalypse like a bad Tuesday shift.",
+      "backstory": "Twenty years marrying drunk strangers in this chapel. When the sky cracked he reached under the lectern for the shotgun he keeps for robberies.",
+      "voice": "Vegas lounge drawl, peppers speech with 'baby' and 'thankyaverymuch'. Gallows humor."
+    },
+    "knowledge": {
+      "facts": [
+        "The things at the door are imps — small, mean, and they travel in packs.",
+        "There's a Cadillac idling out front with the keys still in it; the groom ran off without it.",
+        "The whole Strip is on fire. Heading north toward Fremont is suicide; the car is the only way out."
+      ],
+      "secrets": [
+        "He saw an angel with rainbow wings pull two people into the sky an hour ago and has decided not to mention it in case it sounds crazy.",
+        "He's out of shotgun shells after the next two blasts."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#e0b341"
+    },
+    "stats": {
+      "hp": 18,
+      "maxHp": 18,
+      "armor": 2,
+      "level": 1
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Shotgun Blast",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "A pump-shotgun roar — two shells, then he's dry."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0,
+      "ally": true,
+      "damage": "1d6"
+    },
+    "art": {
+      "prompt": "Portrait of a Las Vegas Elvis impersonator preacher, half-burned sequined jumpsuit, pump shotgun, manic grin, neon light",
+      "image": null
+    }
+  },
+  "npc-imp-1": {
+    "identity": {
+      "name": "Snarling Imp",
+      "kind": "npc",
+      "description": "A knee-high devil the color of a bruise, all teeth and claws, dripping something black onto the carpet."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#a64dff"
+    },
+    "knowledge": {
+      "facts": [
+        "We came through the rift to kill everything warm."
+      ],
+      "secrets": [
+        "We fear the big one that comes after us far more than we fear you."
+      ]
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a knee-high bruise-colored imp, all teeth and claws, dripping black ichor, gleeful and vicious",
+      "image": null
+    }
+  },
+  "npc-imp-2": {
+    "identity": {
+      "name": "Cackling Imp",
+      "kind": "npc",
+      "description": "Another imp, this one missing an eye and laughing like a broken toy."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#a64dff"
+    },
+    "knowledge": {
+      "facts": [
+        "We came through the rift to kill everything warm."
+      ],
+      "secrets": [
+        "We fear the big one that comes after us far more than we fear you."
+      ]
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a knee-high bruise-colored imp, all teeth and claws, dripping black ichor, gleeful and vicious",
+      "image": null
+    }
+  },
+  "npc-imp-3": {
+    "identity": {
+      "name": "Lunging Imp",
+      "kind": "npc",
+      "description": "A wiry imp already springing off a pew toward your throat."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#a64dff"
+    },
+    "knowledge": {
+      "facts": [
+        "We came through the rift to kill everything warm."
+      ],
+      "secrets": [
+        "We fear the big one that comes after us far more than we fear you."
+      ]
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a knee-high bruise-colored imp, all teeth and claws, dripping black ichor, gleeful and vicious",
+      "image": null
+    }
+  },
+  "npc-imp-4": {
+    "identity": {
+      "name": "Hissing Imp",
+      "kind": "npc",
+      "description": "The runt of the litter, hanging back and hissing — the kind that bites you while you fight its bigger friends."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#a64dff"
+    },
+    "knowledge": {
+      "facts": [
+        "We came through the rift to kill everything warm."
+      ],
+      "secrets": [
+        "We fear the big one that comes after us far more than we fear you."
+      ]
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-chapel",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "the-aisle"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a knee-high bruise-colored imp, all teeth and claws, dripping black ichor, gleeful and vicious",
+      "image": null
+    }
+  },
+  "loc-strip": {
+    "identity": {
+      "name": "The Las Vegas Strip",
+      "kind": "location",
+      "description": "The Strip in full apocalypse: a casino marquee shears off and crashes into the street, fire-hydrant geysers turn pink in the neon, and figures that are not people lope between the stalled cars. A cherry-red Cadillac idles at the curb, driver's door open, keys swinging in the ignition."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-chapel",
+          "label": "Back into the chapel"
+        },
+        {
+          "targetId": "loc-silver-egg",
+          "label": "Through the neon wreckage to the Silver Egg Casino"
+        },
+        {
+          "targetId": "loc-eternal-union",
+          "label": "Past the burning marquees to the Chapel of Eternal Union"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "The Las Vegas Strip during the apocalypse, casino marquee crashing into the street, pink neon, stalled cars, a cherry-red Cadillac idling at the curb, distant demonic figures, red sky, B-movie horror, oil painting style",
+      "image": null
+    },
+    "flags": {
+      "ambient": [
+        "A slot machine inside a dead casino pays out to nobody.",
+        "Ash sifts down like snow onto the Cadillac's hood.",
+        "Two tuxedoed corpses stand beneath a wedding billboard, swaying as if waiting for a cue.",
+        "A distant casino sign blinks WELCOME HOME in letters missing every third bulb."
+      ]
+    }
+  },
+  "item-cadillac": {
+    "identity": {
+      "name": "Idling Cadillac",
+      "kind": "item",
+      "description": "A cherry-red convertible Cadillac, engine running, keys in the ignition, the groom nowhere in sight. Your ride out of this dying city — if you can reach it and floor it."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-strip",
+      "connections": []
+    },
+    "flags": {
+      "vehicle": true,
+      "keysIn": true
+    }
+  },
+  "quest-escape": {
+    "identity": {
+      "name": "Get Out of Vegas",
+      "kind": "quest",
+      "description": "Survive the imps, reach the Strip, and steal the idling Cadillac to flee Las Vegas — the first leg of a much longer road through the Apocalypse."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Survive the imps swarming the chapel.",
+        "Get out to the Strip.",
+        "Take the idling Cadillac and floor it out of the city."
+      ],
+      "triggers": [
+        {
+          "type": "allDead",
+          "ids": [
+            "npc-imp-1",
+            "npc-imp-2",
+            "npc-imp-3",
+            "npc-imp-4"
+          ]
+        },
+        {
+          "type": "atLocation",
+          "id": "loc-strip"
+        },
+        {
+          "type": "hasItem",
+          "id": "item-cadillac"
+        }
+      ],
+      "rewards": {
+        "xp": 100,
+        "items": [
+          {
+            "id": "item-cadillac",
+            "name": "Cherry-red Cadillac"
+          }
+        ]
+      }
+    }
+  },
+  "world-state": {
+    "flags": {
+      "artStyle": "gritty apocalyptic Las Vegas, cinematic concept art, warm neon against grey ash",
+      "campaignComplete": false,
+      "hellmouthSealed": false
+    },
+    "art": {
+      "prompt": "ruined Las Vegas strip at dusk seen from above, shattered wedding chapels and dead neon signs, a faint hellish glow on the horizon"
+    }
+  },
+  "npc-husk-groomsman-1": {
+    "identity": {
+      "name": "Husk Groomsman",
+      "kind": "npc",
+      "description": "A wedding guest gone wrong — torn tux, black-veined eyes, moving in wrong little jerks."
+    },
+    "persona": {
+      "personality": "Silent, twitching, relentless. A guest who never got to sit down.",
+      "voice": "Wet clicking; no words left."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#c94f4f"
+    },
+    "stats": {
+      "hp": 6,
+      "maxHp": 6,
+      "armor": 2,
+      "level": 1,
+      "xp": 15
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Clawing Lunge",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "Rakes with broken-nailed fingers."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-strip",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6",
+      "archetype": "groomsman"
+    },
+    "art": {
+      "prompt": "Portrait of a corrupted Las Vegas groomsman in a torn tuxedo, black-veined eyes, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-husk-groomsman-2": {
+    "identity": {
+      "name": "Husk Groomsman",
+      "kind": "npc",
+      "description": "A wedding guest gone wrong — torn tux, black-veined eyes, moving in wrong little jerks."
+    },
+    "persona": {
+      "personality": "Silent, twitching, relentless. A guest who never got to sit down.",
+      "voice": "Wet clicking; no words left."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#c94f4f"
+    },
+    "stats": {
+      "hp": 6,
+      "maxHp": 6,
+      "armor": 2,
+      "level": 1,
+      "xp": 15
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Clawing Lunge",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "Rakes with broken-nailed fingers."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-strip",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6",
+      "archetype": "groomsman"
+    },
+    "art": {
+      "prompt": "Portrait of a corrupted Las Vegas groomsman in a torn tuxedo, black-veined eyes, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "loc-silver-egg": {
+    "identity": {
+      "name": "The Silver Egg Casino",
+      "kind": "location",
+      "description": "A silver-foil casino egg squats intact amid the ash, its roulette tables barricading the doors and its last neon halo warming a handful of stubborn survivors. Behind the old wedding-package desk, somebody has kept the coffee hot."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-strip",
+          "label": "Back to the shattered Strip"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "style": "settlement",
+      "ambient": [
+        "The roulette wheel keeps turning on a battery salvaged from a hearse.",
+        "Survivors trade wedding rings for canned peaches beneath the silver neon egg."
+      ],
+      "arrivalCombat": {
+        "enemyArchetype": "imp",
+        "count": 3,
+        "objective": "Defend the holdout; victory earns the survivors as allies."
+      }
+    },
+    "art": {
+      "prompt": "A battered survivor casino shaped like a silver egg in apocalyptic Las Vegas, barricaded roulette tables, warm neon halo cutting through grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "loc-eternal-union": {
+    "identity": {
+      "name": "The Chapel of Eternal Union",
+      "kind": "location",
+      "description": "A grand wedding chapel whose white facade is scorched black at the edges. Its eternal-flame marquee burns upside down, and beneath its marble altar something huge and red breathes between worlds."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-strip",
+          "label": "Return to the Strip"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "style": "lair",
+      "combatZones": [
+        {
+          "id": "union-nave",
+          "label": "The Forever Nave",
+          "tags": []
+        },
+        {
+          "id": "union-altar",
+          "label": "The Marble Altar",
+          "tags": [
+            "raised"
+          ]
+        },
+        {
+          "id": "union-vestry",
+          "label": "The Burned Vestry",
+          "tags": []
+        },
+        {
+          "id": "union-balcony",
+          "label": "The Choir Loft Edge",
+          "tags": [
+            "ledge"
+          ]
+        }
+      ],
+      "ambient": [
+        "A pipe organ plays one held chord with nobody at its keys.",
+        "Wedding invitations whirl around the altar like frightened white birds."
+      ]
+    },
+    "art": {
+      "prompt": "A ruined grand Las Vegas wedding chapel above a hellmouth, upside-down eternal-flame neon marquee, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-madame-keno": {
+    "identity": {
+      "name": "Madame Keno",
+      "kind": "npc",
+      "description": "The survivor leader in a rhinestone blazer, seated behind the casino wedding-package desk with a ledger that has outlived the world."
+    },
+    "persona": {
+      "personality": "Cool-headed, maternal when it counts, and incapable of pretending she does not know a secret.",
+      "backstory": "She ran this casino's wedding-package desk for thirty years and remembers every bad vow and every worse lie.",
+      "voice": "Velvet casino-hostess warmth with the steel underneath."
+    },
+    "knowledge": {
+      "facts": [
+        "The hellmouth under the Chapel of Eternal Union was opened deliberately by Sammy Marchetti.",
+        "Sammy was best man at four hundred weddings and never once a groom.",
+        "The Cadillac needs fuel; the Silver Egg has a drum of it."
+      ],
+      "secrets": [
+        "Sammy begged Madame Keno to put his name on a package once. She told him he could make a life without a bride, and has regretted the cruelty of it ever since."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#e0b341"
+    },
+    "stats": {
+      "hp": 10,
+      "maxHp": 10,
+      "armor": 1,
+      "level": 2
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Dealer's Nerve",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "A tiny pistol produced from beneath the ledger."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "leader": true,
+      "ally": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of an older Las Vegas casino matriarch in a rhinestone blazer behind a wedding-package desk, warm neon and grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-dust": {
+    "identity": {
+      "name": "Dust",
+      "kind": "npc",
+      "description": "A sun-cured drifter with wary eyes, a length of rebar, and casino ash caught in his hair."
+    },
+    "persona": {
+      "personality": "Laconic, watchful, and gentler than he lets on.",
+      "backstory": "A Wasteland Drifter who found the Egg before the doors closed and never left his post.",
+      "voice": "Low, clipped, economical."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#8a9a5b"
+    },
+    "stats": {
+      "hp": 8,
+      "maxHp": 8,
+      "armor": 2,
+      "level": 1,
+      "xp": 20
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Rebar Swing",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "A rusty arc of metal."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "ally": true,
+      "archetype": "drifter",
+      "damage": "1d6"
+    },
+    "art": {
+      "prompt": "Portrait of a laconic wasteland drifter guard with rebar, ash-streaked coat, Las Vegas neon reflected in tired eyes, cinematic concept art",
+      "image": null
+    }
+  },
+  "item-fuel-drum": {
+    "identity": {
+      "name": "Fuel Drum",
+      "kind": "item",
+      "description": "A dented drum of gasoline, precious enough to start a war and just enough to keep the Cadillac rolling."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "flags": {
+      "fuel": true
+    }
+  },
+  "npc-casino-imp-1": {
+    "identity": {
+      "name": "Grinning Casino Imp",
+      "kind": "npc",
+      "description": "A knee-high bruise-colored imp, all teeth and claws, dripping black ichor."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#a64dff"
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a vicious casino imp amid shattered slot machines, warm Las Vegas neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-casino-imp-2": {
+    "identity": {
+      "name": "Biting Casino Imp",
+      "kind": "npc",
+      "description": "A knee-high bruise-colored imp, all teeth and claws, dripping black ichor."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#a64dff"
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a vicious casino imp amid shattered slot machines, warm Las Vegas neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-casino-imp-3": {
+    "identity": {
+      "name": "Screeching Casino Imp",
+      "kind": "npc",
+      "description": "A knee-high bruise-colored imp, all teeth and claws, dripping black ichor."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#a64dff"
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-silver-egg",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a vicious casino imp amid shattered slot machines, warm Las Vegas neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-sammy-forever": {
+    "identity": {
+      "name": "Sammy \"Forever\" Marchetti",
+      "kind": "npc",
+      "description": "A once-perfect best man in a smoke-stained tuxedo, wearing four hundred borrowed rings and a smile that cannot survive the next honest word."
+    },
+    "persona": {
+      "personality": "Wounded, theatrical, furious at every promise he was asked to witness but never receive.",
+      "backstory": "Best man at four hundred weddings, never a groom. He opened the hellmouth deliberately when grief finally sounded like a vow.",
+      "voice": "A toastmaster's bright patter cracking into naked hurt."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#f2bf4b"
+    },
+    "stats": {
+      "hp": 20,
+      "maxHp": 20,
+      "armor": 3,
+      "level": 3,
+      "xp": 150
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Ring Toss",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "Ranged — a sharpened ring spins across the chapel."
+        },
+        {
+          "name": "Vow of Binding",
+          "type": "stun",
+          "status": "stun",
+          "duration": 1,
+          "cost": 1,
+          "special": "A spoken vow locks the target in place."
+        },
+        {
+          "name": "Eternal Toast",
+          "type": "heal",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "He drinks to himself and heals 1d6."
+        },
+        {
+          "name": "Always the Best Man",
+          "type": "area",
+          "damage": "2d6",
+          "cost": 2,
+          "requiresOverdrive": true,
+          "special": "Overdrive — a champagne blast of wedding-fire fills the chapel."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-eternal-union",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "union-altar"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6",
+      "morale": "steadfast",
+      "moraleThreshold": 0.5,
+      "moraleThresholdWithAllies": 0.6,
+      "talkDownRequires": "alliesEarned or learnedSammyStory"
+    },
+    "art": {
+      "prompt": "Portrait of a tragic apocalyptic Las Vegas best man in a smoke-stained tuxedo covered in rings, warm wedding neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-eternal-imp-1": {
+    "identity": {
+      "name": "Ringbearer Imp",
+      "kind": "npc",
+      "description": "A knee-high bruise-colored imp, all teeth and claws, dripping black ichor."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#a64dff"
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-eternal-union",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "union-nave"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3",
+      "minionOf": "npc-sammy-forever"
+    },
+    "art": {
+      "prompt": "Portrait of a wedding chapel imp in infernal finery, warm Las Vegas neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-eternal-imp-2": {
+    "identity": {
+      "name": "Flowergirl Imp",
+      "kind": "npc",
+      "description": "A knee-high bruise-colored imp, all teeth and claws, dripping black ichor."
+    },
+    "persona": {
+      "personality": "Vicious, gleeful, dumb. Attacks the nearest warm thing.",
+      "voice": "High, scratchy, gleeful — taunts in broken English."
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#a64dff"
+    },
+    "stats": {
+      "hp": 4,
+      "maxHp": 4,
+      "armor": 2,
+      "level": 1,
+      "xp": 10
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Claw",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Rake with filthy claws."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-eternal-union",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "union-vestry"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d3",
+      "minionOf": "npc-sammy-forever"
+    },
+    "art": {
+      "prompt": "Portrait of a wedding chapel imp in infernal finery, warm Las Vegas neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "entity-hellmouth": {
+    "identity": {
+      "name": "the hellmouth",
+      "kind": "landmark",
+      "description": "A red, breathing wound beneath the altar, whispering every vow that ever broke."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-eternal-union",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "union-altar"
+    },
+    "flags": {
+      "nonCombat": true,
+      "sealable": true
+    },
+    "art": {
+      "prompt": "A surreal hellmouth beneath a marble wedding altar, red infernal light and drifting wedding invitations, gritty apocalyptic Las Vegas cinematic concept art",
+      "image": null
+    }
+  },
+  "quest-running-empty": {
+    "identity": {
+      "name": "Running on Empty",
+      "kind": "quest",
+      "description": "The Cadillac has wheels but no future without fuel. At the Silver Egg, decide whether to stand with the holdout or siphon what you need."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Reach the Silver Egg Casino.",
+        "Either defend the holdout from the imp wave (earn allies) or siphon the fuel.",
+        "Obtain the fuel drum."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-silver-egg"
+        },
+        {
+          "type": "hasItem",
+          "id": "item-fuel-drum"
+        },
+        {
+          "type": "hasItem",
+          "id": "item-fuel-drum"
+        }
+      ],
+      "rewards": {
+        "xp": 150,
+        "items": [
+          {
+            "id": "item-fuel-drum",
+            "name": "Fuel Drum"
+          }
+        ]
+      },
+      "branches": {
+        "defend": {
+          "trigger": {
+            "type": "allDead",
+            "ids": [
+              "npc-casino-imp-1",
+              "npc-casino-imp-2",
+              "npc-casino-imp-3"
+            ]
+          },
+          "onVictory": {
+            "op": "setFlag",
+            "id": "quest-running-empty",
+            "key": "alliesEarned",
+            "value": true
+          }
+        },
+        "siphon": {
+          "trigger": {
+            "type": "hasItem",
+            "id": "item-fuel-drum"
+          },
+          "onSuccess": {
+            "op": "setFlag",
+            "id": "quest-running-empty",
+            "key": "alliesEarned",
+            "value": false
+          }
+        }
+      }
+    }
+  },
+  "quest-something-borrowed": {
+    "identity": {
+      "name": "Something Borrowed",
+      "kind": "quest",
+      "description": "Fuel the Cadillac, return to the chapel that began it all, and close the wound before Vegas becomes Hell's honeymoon suite."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Reach the Chapel of Eternal Union.",
+        "Defeat or talk down Sammy Marchetti. Allies earned at the Egg raise his morale threshold; learning his story can also reach him.",
+        "Seal the hellmouth."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-eternal-union"
+        },
+        {
+          "type": "anyOf",
+          "triggers": [
+            {
+              "type": "dead",
+              "id": "npc-sammy-forever"
+            },
+            {
+              "type": "flag",
+              "id": "npc-sammy-forever",
+              "key": "hostile",
+              "value": false
+            },
+            {
+              "type": "flag",
+              "id": "world-state",
+              "key": "sammyForeverGone",
+              "value": true
+            }
+          ]
+        },
+        {
+          "type": "flag",
+          "id": "world-state",
+          "key": "hellmouthSealed",
+          "value": true
+        }
+      ],
+      "rewards": {
+        "xp": 300,
+        "items": []
+      },
+      "onComplete": [
+        {
+          "op": "setFlag",
+          "id": "world-state",
+          "key": "campaignComplete",
+          "value": true
+        }
+      ],
+      "resolution": {
+        "talkDown": {
+          "requires": "quest-running-empty.flags.alliesEarned === true OR npc-madame-keno story learned",
+          "onSuccess": {
+            "op": "setFlag",
+            "id": "npc-sammy-forever",
+            "key": "hostile",
+            "value": false
+          }
+        },
+        "sealHellmouth": {
+          "op": "setFlag",
+          "id": "world-state",
+          "key": "campaignComplete",
+          "value": true
+        },
+        "epilogue": "Dawn breaks on Boneyard Highway, the Cadillac finally rolling through grey ash toward a horizon that has not given up."
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+[
+  {
+    "id": "enc-zombie-showgirls",
+    "name": "Zombie Showgirls",
+    "weight": 4,
+    "prompt": "A troupe of showgirls in tattered feathered headdresses shambles out from behind a burned-out marquee, glittering costumes crusted with ash and dried blood. Their choreography is dead-eyed and perfectly synchronized, high kicks landing in unison as they close the distance. The lead showgirl's smile never wavers, even as her jaw hangs slack.",
+    "hostiles": [
+      { "id": "zombie-showgirl-1", "name": "Zombie Showgirl", "hp": 8, "attack": 3, "xp": 10 },
+      { "id": "zombie-showgirl-2", "name": "Zombie Showgirl", "hp": 8, "attack": 3, "xp": 10 }
+    ]
+  },
+  {
+    "id": "enc-elvis-cult",
+    "name": "The King's Cult",
+    "weight": 3,
+    "prompt": "A procession of white-jumpsuited cultists shuffles down the median chanting a warped hymn to 'The King', led by a bloated priest in oversized sunglasses and a corpse-pale cape. They carry a rhinestone-studded coffin they insist is 'just resting'. If approached, they demand tribute — or a duet.",
+    "hostiles": [
+      { "id": "elvis-priest", "name": "The King's Priest", "hp": 14, "attack": 4, "xp": 16 }
+    ]
+  },
+  {
+    "id": "enc-sentient-slot-machine",
+    "name": "Sentient Slot Machine",
+    "weight": 1,
+    "prompt": "A single slot machine on the ruined casino floor hums with cold blue light, its reels spinning of their own accord. It speaks in a chorus of dial tones and jackpot bells, offering to 'settle all debts' for anyone who pulls its lever. Coins pour from its mouth like teeth when it's angry.",
+    "hostiles": [
+      { "id": "sentient-slot-machine", "name": "Sentient Slot Machine", "hp": 20, "attack": 5, "xp": 20 }
+    ]
+  },
+  {
+    "id": "enc-ghoul-valet",
+    "name": "Ghoul Valet",
+    "weight": 3,
+    "prompt": "A ghoul in a stained red valet vest waves the party down from behind a rusted podium, offering to 'park' any vehicle for a modest toll of teeth or memories. He is unfailingly polite, complimenting everyone's shoes even as flies orbit his head. He knows every shortcut through the Strip's ruins.",
+    "hostiles": []
+  },
+  {
+    "id": "enc-radioactive-flamingo-flock",
+    "name": "Radioactive Flamingo Flock",
+    "weight": 4,
+    "prompt": "A flock of radioactive flamingos wheels overhead, feathers glowing a sickly green, before diving at the party with beaks sharp as can openers. They screech in a pitch that rattles fillings and scatter irradiated dust with every wingbeat. Individually weak, they attack in overwhelming numbers.",
+    "hostiles": [
+      { "id": "rad-flamingo-1", "name": "Radioactive Flamingo", "hp": 3, "attack": 1, "xp": 5 },
+      { "id": "rad-flamingo-2", "name": "Radioactive Flamingo", "hp": 3, "attack": 1, "xp": 5 },
+      { "id": "rad-flamingo-3", "name": "Radioactive Flamingo", "hp": 3, "attack": 1, "xp": 5 }
+    ]
+  },
+  {
+    "id": "enc-chapel-bell-toll",
+    "name": "The Chapel Bell Toll",
+    "weight": 2,
+    "prompt": "A cracked bell tolls from a half-collapsed wedding chapel steeple, though no one is pulling the rope — the sound rolls across the Strip like a held breath. Every undead within earshot pauses mid-stride, heads tilting toward the sound in eerie reverence. When it stops, something answers from underground.",
+    "hostiles": []
+  },
+  {
+    "id": "enc-looter-standoff",
+    "name": "Looter Standoff",
+    "weight": 3,
+    "prompt": "Three ragged survivors have a jeweler's case wedged open at gunpoint, arguing over a haul of watches and rings that won't buy anything anyone still needs. They rounded on the party the moment they noticed movement, nerves shot and triggers itchy. A wrong word could turn this into a firefight — or a truce.",
+    "hostiles": [
+      { "id": "looter-1", "name": "Desperate Looter", "hp": 6, "attack": 2, "xp": 8 },
+      { "id": "looter-2", "name": "Desperate Looter", "hp": 6, "attack": 2, "xp": 8 },
+      { "id": "looter-3", "name": "Desperate Looter", "hp": 6, "attack": 2, "xp": 8 }
+    ]
+  },
+  {
+    "id": "enc-sinkhole-understreets",
+    "name": "Sinkhole to the Understreets",
+    "weight": 2,
+    "prompt": "The asphalt groans and buckles, opening a jagged sinkhole that exhales cold air smelling of tallow and old pennies — a way down into the understreets beneath the Strip. Something down there is dragging chains across stone, patient and unseen. The hole isn't going anywhere; whether the party climbs down is another matter.",
+    "hostiles": []
+  }
+]
