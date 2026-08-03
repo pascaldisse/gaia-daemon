@@ -315,7 +315,7 @@ test("stopBackgroundTask reports false for an unknown id and removes a known one
   assert.deepEqual((await service.getSnapshot()).backgroundTasks, []);
 });
 
-test("snapshot command palette advertises resolved Pi skills with SKILL.md descriptions", async () => {
+test("snapshot command palette leaves resolved Pi skills to Pi's native command surface", async () => {
   const { service, workspace, root } = await makeService();
   workspace.agents.gaia.harness = "pi";
   workspace.agents.gaia.skills = ["stoner-mode"];
@@ -332,13 +332,7 @@ test("snapshot command palette advertises resolved Pi skills with SKILL.md descr
 
   const commands = (await service.getSnapshot()).commands;
   assert.equal(commands[0]?.name, "help", "daemon commands remain first");
-  assert.deepEqual(
-    commands.filter((command) => ["stoner-mode", "gaiago-seal"].includes(command.name)),
-    [
-      { name: "stoner-mode", type: "native", description: "mellow, expansive analysis", native: true },
-      { name: "gaiago-seal", type: "native", description: "seal the Gaia protocol", native: true },
-    ],
-  );
+  assert.deepEqual(commands.filter((command) => ["stoner-mode", "gaiago-seal"].includes(command.name)), []);
 });
 
 test("snapshot usage scope contains only accounts of agents active in this room", async () => {

@@ -2835,10 +2835,9 @@ export class RoomService {
     return new Set(skillNames.map((skill) => skill.toLowerCase()).filter((name) => native.has(name)));
   }
 
-  /** The `/`-command palette: daemon builtins first, then each room agent's
-   * resolved SKILL.md commands (including active-role grants), harness-fileless
-   * commands, and plugins. Skill resolution is the single discovery path: its
-   * frontmatter description becomes the autocomplete detail. */
+  /** The `/`-command palette: daemon builtins, harness-fileless commands, and
+   * plugins. Pi owns discovery and slash-command presentation for SKILL.md
+   * commands; Gaia only forwards a typed native command to Pi's SDK. */
   private async paletteCommands(): Promise<SlashCommandDefinition[]> {
     const seen = new Set(SLASH_COMMANDS.map((command) => command.name));
     const dynamic: SlashCommandDefinition[] = [];
@@ -2849,22 +2848,11 @@ export class RoomService {
         skillNames: await this.activeRoleSkills(agent.id, agent),
       })),
     );
-    // Resolve the effective skill names for the whole room once. This is the
-    // existing SKILL.md resolver (and its frontmatter parser), not a palette
-    // scan; per-agent filtering below preserves their exact command grants.
-    const resolved = new Map(resolveSkillRefs(this.workspace, agents.flatMap(({ skillNames }) => skillNames)).skills.map((skill) => [skill.name, skill]));
     for (const { agent, harnessId, skillNames } of agents) {
       if (!findHarness(harnessId)?.capabilities.supportsNativeCommands) continue;
-      const skills = skillNames.flatMap((name) => {
-        const skill = resolved.get(name);
-        return skill ? [skill] : [];
-      });
-      const onDisk = new Set(skills.map((skill) => skill.name.toLowerCase()));
-      for (const skill of skills) {
-        if (seen.has(skill.name)) continue;
-        seen.add(skill.name);
-        dynamic.push({ name: skill.name, type: "native", description: skill.description ?? "", native: true });
-      }
+      // Fileless builtins remain daemon palette entries; on-disk skills belong
+      // exclusively to Pi's own command surface and are never advertised here.
+      const onDisk = new Set(resolveSkillRefs(this.workspace, skillNames).skills.map((skill) => skill.name.toLowerCase()));
       const checked = this.agentNativeSkillNames(agent, skillNames, onDisk);
       for (const command of nativeCommandsFor(harnessId)) {
         const name = command.name.toLowerCase();
