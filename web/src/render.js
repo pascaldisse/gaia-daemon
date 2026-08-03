@@ -86,13 +86,6 @@ export function mountApp() {
       h(
         "aside",
         { class: "right", id: "right" },
-        // Plugin panels (e.g. the RPG creator) render FIRST: with dozens of
-        // room agents, #room-panel's agent list can be many screens tall inside
-        // this scrolling aside, burying an opened panel below the fold — see
-        // GAIA-THINK note 2026-08-03 ("no ui" repro). An opened panel must be
-        // the first thing visible; it's `hidden` (renders nothing) when empty,
-        // so rooms with no active plugin panel look exactly as before.
-        h("section", { class: "panel plugin-panels", id: "plugin-panels" }),
         h("section", { class: "panel", id: "room-panel" }),
       ),
     ),
@@ -104,6 +97,10 @@ export function mountApp() {
       { id: "overlays" },
       h("div", { id: "overlay-dario" }),
       h("div", { id: "overlay-contextgate" }),
+      // Room-local plugin dialogs (e.g. the RPG popup): transient, snapshot-driven
+      // overlays only — never a persistent sidebar panel or an iframe. See
+      // plugins-panel.js.
+      h("div", { id: "overlay-plugins" }),
       h("div", { id: "overlay-theme" }),
       h("div", { id: "overlay-usage" }),
       h("div", { id: "overlay-bgtasks" }),

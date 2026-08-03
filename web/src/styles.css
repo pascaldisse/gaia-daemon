@@ -1110,9 +1110,20 @@ body.resizing { cursor: col-resize; user-select: none; }
    right panel: room (agents + tasks)
    ============================================================ */
 .panel { border: 1px solid var(--border); background: color-mix(in srgb, black 28%, transparent); padding: 10px; margin-bottom: 12px; }
-.plugin-panels { padding: 0; overflow: hidden; }
-.plugin-embed { display: block; width: 100%; height: min(76vh, 780px); border: 0; }
 .panel h2 { margin: 0; color: var(--accent); font-size: 15px; }
+
+/* Room-local plugin popup (plugins-panel.js): a transient overlay dialog —
+   layout only, every color comes from the .modal-backdrop/.modal/.prompt-*
+   rules above (var(--bg)/--fg/--accent/--border/--muted etc.), same as any
+   other themed modal. No plugin may introduce its own palette. */
+.plugin-dialog { display: flex; flex-direction: column; gap: 14px; }
+.plugin-form { border: 1px solid var(--border); background: var(--bg3); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.plugin-form-label { color: var(--accent); font-weight: 600; font-size: 0.9em; }
+.plugin-field { display: flex; flex-direction: column; gap: 2px; }
+.plugin-field-label { color: var(--muted); font-size: 0.82em; }
+.plugin-item { border: 1px solid var(--border); padding: 8px 10px; }
+.plugin-item-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.plugin-dialog .prompt-input { margin: 2px 0; }
 .panel-head { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
 
 /* Keep the room-panel header path to a single line so the panel title stays

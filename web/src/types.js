@@ -27,6 +27,8 @@
 /** @typedef {import("../../src/core/types.js").WorkspaceRecord} WorkspaceRecord */
 /** @typedef {import("../../src/core/types.js").KeepAwakeCapability} KeepAwakeCapability */
 /** @typedef {import("../../src/core/types.js").PetBinding} PetBinding */
+/** @typedef {import("../../src/core/types.js").SnapshotPluginPanel} PluginPanel */
+/** @typedef {import("../../src/core/types.js").SnapshotPluginPanelField} PluginPanelField */
 /** @typedef {import("../../src/core/types.js").PetProgress} PetProgress */
 /** @typedef {import("../../src/core/types.js").EditableFileDescriptor} FileDescriptor */
 /** @typedef {import("../../src/core/types.js").FieldHintOption} FieldHintOption */
