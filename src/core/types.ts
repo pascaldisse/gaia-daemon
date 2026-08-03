@@ -1066,6 +1066,28 @@ export interface SlashCommandDefinition {
   native?: boolean;
 }
 
+/** One field in a room-local plugin popup's form. Mirrors
+ * services/plugins.ts's PluginPanelField — kept as its own named export so
+ * the web client's JSDoc typedefs (web/src/types.js) can reference it. */
+export interface SnapshotPluginPanelField {
+  name: string;
+  label: string;
+  type: "text" | "select";
+  value?: string;
+  options?: Array<{ value: string; label: string }>;
+}
+
+/** A room-local plugin's declarative popup. Mirrors services/plugins.ts's
+ * PluginPanel: forms/items only — no iframe embed. Rendered as a transient,
+ * theme-inheriting overlay dialog (web/src/plugins-panel.js), present only
+ * while the plugin's own state says it's open. */
+export interface SnapshotPluginPanel {
+  title: string;
+  description?: string;
+  forms?: Array<{ action: string; label: string; fields: SnapshotPluginPanelField[] }>;
+  items?: Array<{ title: string; detail?: string; actions?: Array<{ action: string; label: string; args?: string[]; danger?: boolean }> }>;
+}
+
 export interface Snapshot {
   workspace: {
     id: string;
@@ -1099,17 +1121,7 @@ export interface Snapshot {
      * means pets are off. Browser/iOS clients do not render an in-chat stand-in. */
     petBindings?: Record<string, string>;
     /** Declarative room panels supplied by local command plugins. */
-    pluginPanels?: Record<string, {
-      title: string;
-      description?: string;
-      embed?: { src: string; title?: string };
-      forms?: Array<{
-        action: string;
-        label: string;
-        fields: Array<{ name: string; label: string; type: "text" | "select"; value?: string; options?: Array<{ value: string; label: string }> }>;
-      }>;
-      items?: Array<{ title: string; detail?: string; actions?: Array<{ action: string; label: string; args?: string[]; danger?: boolean }> }>;
-    }>;
+    pluginPanels?: Record<string, SnapshotPluginPanel>;
     /** Incognito room: no memory capture, no auto-recall, not indexed for recall,
      * memory/recall tools stripped. Immutable; drives the client's indicator. */
     incognito?: boolean;
