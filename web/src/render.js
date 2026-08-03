@@ -86,8 +86,14 @@ export function mountApp() {
       h(
         "aside",
         { class: "right", id: "right" },
-        h("section", { class: "panel", id: "room-panel" }),
+        // Plugin panels (e.g. the RPG creator) render FIRST: with dozens of
+        // room agents, #room-panel's agent list can be many screens tall inside
+        // this scrolling aside, burying an opened panel below the fold — see
+        // GAIA-THINK note 2026-08-03 ("no ui" repro). An opened panel must be
+        // the first thing visible; it's `hidden` (renders nothing) when empty,
+        // so rooms with no active plugin panel look exactly as before.
         h("section", { class: "panel plugin-panels", id: "plugin-panels" }),
+        h("section", { class: "panel", id: "room-panel" }),
       ),
     ),
     h("footer", { class: "statusbar", id: "statusbar" }),
