@@ -329,6 +329,10 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(attachments ? { attachments } : {}),
       ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
       ...(raw.nativeCommand === true ? { nativeCommand: true } : {}),
+      // eventId/recorded are the queue→transcript crash-idempotency pair: drop
+      // them and a restart re-appends a user event that is already on disk.
+      ...(typeof raw.eventId === "string" && raw.eventId.trim() ? { eventId: raw.eventId } : {}),
+      ...(raw.recorded === true ? { recorded: true } : {}),
       ...(raw.stallRetried === true ? { stallRetried: true } : {}),
       ...(typeof raw.authRetries === "number" ? { authRetries: raw.authRetries } : {}),
       ...(typeof raw.notBefore === "string" ? { notBefore: raw.notBefore } : {}),

@@ -25,6 +25,8 @@ export type SlashCommand =
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
   | { type: "cancel" }
+  | { type: "goal"; sub: "set"; objective: string; tokens?: number }
+  | { type: "goal"; sub: "status" | "pause" | "resume" | "clear" }
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
