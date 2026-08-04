@@ -54,6 +54,19 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
 });
 
+test("parseCommand: /goal sub-commands, objective and --tokens budget", () => {
+  assert.deepEqual(parseCommand("/goal"), { type: "goal", sub: "status" });
+  assert.deepEqual(parseCommand("/goal status"), { type: "goal", sub: "status" });
+  assert.deepEqual(parseCommand("/goal pause"), { type: "goal", sub: "pause" });
+  assert.deepEqual(parseCommand("/goal resume"), { type: "goal", sub: "resume" });
+  assert.deepEqual(parseCommand("/goal clear"), { type: "goal", sub: "clear" });
+  assert.deepEqual(parseCommand("/goal ship the release"), { type: "goal", sub: "set", objective: "ship the release" });
+  assert.deepEqual(parseCommand("/goal --tokens 50000 ship it"), { type: "goal", sub: "set", objective: "ship it", tokens: 50000 });
+  assert.deepEqual(parseCommand("/goal --tokens=1200 ship it"), { type: "goal", sub: "set", objective: "ship it", tokens: 1200 });
+  // A multi-word objective that merely BEGINS with a sub-command word is an objective.
+  assert.deepEqual(parseCommand("/goal status page rewrite"), { type: "goal", sub: "set", objective: "status page rewrite" });
+});
+
 test("parseCommand: a leading '/' that isn't command-shaped is a message, never a swallowed 'unknown'", () => {
   // The regression that ate a real message: a pasted absolute path starts with
   // "/" but is content, not a command. It MUST come back as a message.

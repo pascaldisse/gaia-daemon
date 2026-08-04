@@ -69,6 +69,11 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
   { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
   { name: "cancel", type: "cancel", description: "stop the running turn and drop queued messages", aliases: ["stop"] },
+  {
+    name: "goal",
+    type: "goal",
+    description: "pin an autonomous objective on this room: /goal [--tokens N] <objective> | status | pause | resume | clear",
+  },
   { name: "recall", type: "recall", description: "search memory + room history: /recall [@agent] <query>" },
   { name: "rewind", type: "rewind", description: "undo the last user turn(s) and their replies: /rewind [n]" },
   {
@@ -166,6 +171,33 @@ export function parseCommand(input: string): SlashCommand {
     }
     case "rewind":
       return { type: "rewind", count: stripped[0] };
+    case "goal": {
+      // Sub-commands are exact single words; anything else is the objective
+      // (a real objective may of course start with the word "status" — only a
+      // LONE token counts as the sub-command).
+      const sub = args.length === 1 ? args[0]?.toLowerCase() : undefined;
+      if (sub === "status" || sub === "pause" || sub === "resume" || sub === "clear") return { type: "goal", sub };
+      if (args.length === 0) return { type: "goal", sub: "status" };
+      // `--tokens N` (or `--tokens=N`) anywhere in the args, stripped from the objective.
+      let tokens: number | undefined;
+      const rest: string[] = [];
+      for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i] ?? "";
+        const inline = /^--tokens=(\d+)$/.exec(arg);
+        if (inline) {
+          tokens = Number(inline[1]);
+          continue;
+        }
+        if (arg === "--tokens" && /^\d+$/.test(args[i + 1] ?? "")) {
+          tokens = Number(args[i + 1]);
+          i += 1;
+          continue;
+        }
+        rest.push(arg);
+      }
+      const objective = rest.join(" ").trim();
+      return { type: "goal", sub: "set", objective, ...(tokens && tokens > 0 ? { tokens } : {}) };
+    }
     case "thanks-dario": {
       const sub = args[0]?.toLowerCase();
       return { type: "thanks-dario", sub: sub === "on" || sub === "off" ? sub : "run" };
@@ -183,7 +215,7 @@ export function parseCommand(input: string): SlashCommand {
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(
   "\n",
-)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet                       spawn the default pet for the agent you're talking to\n  /pet <package>             spawn a specific pet package instead\n  /pet @agent [package]      target a different agent (defaults if package omitted)\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet                       spawn the default pet for the agent you're talking to\n  /pet <package>             spawn a specific pet package instead\n  /pet @agent [package]      target a different agent (defaults if package omitted)\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nGoal commands:\n  /goal <objective>          pin an objective; the room's agent keeps working until it emits GOAL-COMPLETE\n  /goal --tokens N <obj>     same, with a token budget (reaching it pauses the goal)\n  /goal status               show the pinned goal, its progress and budget\n  /goal pause|resume         hold or restart the continuation loop\n  /goal clear                drop the goal\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
 
 // --- mention routing -----------------------------------------------------------
 //
