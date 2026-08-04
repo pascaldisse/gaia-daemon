@@ -58,6 +58,31 @@ test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   assert.equal(state.queue?.[0].taskId, "q1");
 });
 
+test("normalizeRoomState preserves queue hand-off markers across restart", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    queue: [{
+      taskId: "q1",
+      text: "continue goal",
+      targets: ["gaia"],
+      queuedAt: "2026-08-04T15:00:00.000Z",
+      eventId: "evt_user_1",
+      recorded: true,
+      nativeCommand: true,
+    }],
+  });
+  assert.deepEqual(state.queue?.[0], {
+    taskId: "q1",
+    text: "continue goal",
+    targets: ["gaia"],
+    queuedAt: "2026-08-04T15:00:00.000Z",
+    eventId: "evt_user_1",
+    recorded: true,
+    nativeCommand: true,
+  });
+});
+
 test("normalizeRoomState keeps bounded JSON plugin state and drops executable shapes", () => {
   const state = normalizeRoomState({
     pluginState: { rpg: { gm: "terra", roster: [{ name: "Ada" }], ignored: () => "no" } },
