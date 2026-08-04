@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
@@ -338,6 +338,28 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
   return queue.length > 0 ? queue : undefined;
 }
 
+/** A room's pinned objective (see RoomGoal). A malformed record is dropped —
+ * a broken goal must never wedge the room open/read path. */
+function goalFrom(value: unknown): RoomGoal | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.objective !== "string" || !value.objective.trim()) return undefined;
+  if (typeof value.agentId !== "string" || !value.agentId.trim()) return undefined;
+  const status = value.status === "paused" || value.status === "done" ? value.status : "active";
+  const budget = typeof value.tokenBudget === "number" && Number.isFinite(value.tokenBudget) && value.tokenBudget > 0 ? Math.floor(value.tokenBudget) : undefined;
+  const now = new Date().toISOString();
+  return {
+    objective: value.objective,
+    agentId: value.agentId,
+    status,
+    ...(budget ? { tokenBudget: budget } : {}),
+    tokensUsed: typeof value.tokensUsed === "number" && Number.isFinite(value.tokensUsed) && value.tokensUsed > 0 ? Math.floor(value.tokensUsed) : 0,
+    iterations: typeof value.iterations === "number" && Number.isFinite(value.iterations) && value.iterations > 0 ? Math.floor(value.iterations) : 0,
+    startedAt: typeof value.startedAt === "string" ? value.startedAt : now,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
+    ...(typeof value.stoppedReason === "string" && value.stoppedReason.trim() ? { stoppedReason: value.stoppedReason } : {}),
+  };
+}
+
 /** A summon child room's pending result delivery (see SummonDelivery). A
  * malformed record is dropped — the room still opens; only the callback is
  * forfeited (and the coordinator logs recovery misses loudly). */
@@ -366,6 +388,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     : undefined;
   const monad = monadFrom(value.monad);
   const summon = summonDeliveryFrom(value.summon);
+  const goal = goalFrom(value.goal);
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
   const queue = queueFrom(value.queue);
   const contextUsage = contextUsageFrom(value.contextUsage);
@@ -386,6 +409,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
+    ...(goal ? { goal } : {}),
     ...(summon ? { summon } : {}),
     ...(value.summonUntrusted === true ? { summonUntrusted: true } : {}),
     ...(typeof value.workDir === "string" && value.workDir.trim() ? { workDir: value.workDir } : {}),

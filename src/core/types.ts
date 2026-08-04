@@ -235,8 +235,40 @@ export interface SummonDelivery {
   launchedAt: string;
 }
 
+/** Marker an agent must emit VERBATIM (own line, or anywhere in the reply) to
+ * declare a room goal finished. Strict by design: no marker → the goal is NOT
+ * complete and the loop continues. Never infer completion from prose. */
+export const GOAL_COMPLETE_SIGNAL = "GOAL-COMPLETE";
+
+/** A room-pinned autonomous objective (`/goal`). Shared daemon state — no
+ * harness knows it exists: continuations ride the ordinary durable queue, so
+ * every harness (present + future) drives a goal identically.
+ * Durable in state.json; a restart resumes from it. */
+export interface RoomGoal {
+  /** What the room is working toward, verbatim from `/goal <objective>`. */
+  objective: string;
+  /** Agent the goal is pinned to (the room's target when it was set). */
+  agentId: string;
+  /** "active" = continuations enqueue after each turn; "paused" = held (state
+   * kept, nothing enqueued); "done" = the agent emitted GOAL_COMPLETE_SIGNAL. */
+  status: "active" | "paused" | "done";
+  /** Optional token ceiling (`--tokens N`). Reaching it pauses the goal. */
+  tokenBudget?: number;
+  /** Tokens attributed to goal turns so far (harness-uniform context-usage
+   * accounting — an approximation, not a billing figure). */
+  tokensUsed: number;
+  /** Continuation turns run for this goal. */
+  iterations: number;
+  startedAt: string;
+  updatedAt: string;
+  /** Why the goal stopped continuing (budget exhausted, completed, …). */
+  stoppedReason?: string;
+}
+
 export interface RoomState {
   activeRoles: Record<string, string>;
+  /** Room-pinned autonomous objective (see RoomGoal). Absent = no goal. */
+  goal?: RoomGoal;
   /** Room-scoped Codex-pet bindings, keyed by agent id. Absence means pets are
    * off. Each entry binds exactly this room + that agent to one validated pet
    * package; several agents may be bound at once. */
