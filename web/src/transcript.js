@@ -10,7 +10,7 @@
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
-import { detectArtifacts } from "./artifacts.js";
+import { detectArtifacts } from "./design/artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";

@@ -17,7 +17,7 @@ import { installDictationLifecycle } from "./dictation.js";
 // Region renderers registered by import side effect.
 import "./dario.js";
 import "./contextgate.js";
-import "./artifact-panel.js";
+import "./design/artifact-panel.js";
 import "./panel.js";
 import "./plugins-panel.js";
 import "./search.js";
