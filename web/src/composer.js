@@ -352,6 +352,12 @@ function renderComposer() {
 
 registerRegion("composer", renderComposer);
 
+/** Send an artifact-generation request through the composer's normal message action.
+ * @param {string} prompt */
+export async function sendArtifactPrompt(prompt) {
+  return sendMessage(`artifact生成せよ: ${prompt}`, []);
+}
+
 /** @param {{ focus?: boolean, queue?: boolean }} [options] */
 async function submitComposer(options = {}) {
   if (state.dictating || state.dictationBusy) {

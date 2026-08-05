@@ -6,9 +6,9 @@
 import { $, h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"plugins"|"status"|"transcript"|"composer"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
+/** @typedef {"layout"|"tabs"|"sidebar"|"panel"|"plugins"|"status"|"transcript"|"composer"|"artifacts"|"dario"|"contextgate"|"theme"|"usage"|"search"|"bgtasks"|"settings"} Region */
 
-const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "plugins", "status", "transcript", "composer", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
+const ORDER = /** @type {Region[]} */ (["layout", "tabs", "sidebar", "panel", "plugins", "status", "transcript", "composer", "artifacts", "dario", "contextgate", "theme", "usage", "search", "bgtasks", "settings"]);
 
 /** @type {Map<Region, () => void>} */
 const renderers = new Map();
@@ -101,6 +101,7 @@ export function mountApp() {
       // overlays only — never a persistent sidebar panel or an iframe. See
       // plugins-panel.js.
       h("div", { id: "overlay-plugins" }),
+      h("div", { id: "overlay-artifacts" }),
       h("div", { id: "overlay-theme" }),
       h("div", { id: "overlay-usage" }),
       h("div", { id: "overlay-bgtasks" }),
