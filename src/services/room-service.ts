@@ -23,6 +23,7 @@ import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
+import { GOAL_COMPLETE_SIGNAL } from "../core/types.js";
 import type { SanitizeProposal, SanitizeStatus } from "../core/types.js";
 import type {
   AgentDef,
@@ -41,6 +42,7 @@ import type {
   QueuedMessage,
   RoomEvent,
   RoomEventKind,
+  RoomGoal,
   SlashCommandDefinition,
   Snapshot,
   Task,
@@ -338,6 +340,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
+  goal: (service, command) => (command.type === "goal" ? service.runGoalCommand(command) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
   // steer and cancel never reach this registry: both must run WHILE a task is
@@ -1626,6 +1629,9 @@ export class RoomService {
       remaining.shift();
       // Let another agent this reply @mentions pick it up (room toggle + cap).
       if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
+      // Goal continuation runs ONLY here: past the failure/cancel returns, so a
+      // stream error or a stop never counts as goal progress (and never loops).
+      if (partialReply) await this.maybeContinueGoal(target, partialReply);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -2293,6 +2299,96 @@ export class RoomService {
     // Forgetting the rewound exchanges is the point — sessions that saw them reset.
     await this.resetAfterTruncation("reset-sessions");
     return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
+  }
+
+  /** /goal: pin an autonomous objective on this room. Shared daemon state +
+   * the ordinary durable queue drive it — zero harness knowledge, so every
+   * harness behaves identically (AGENTS.md RULE #0). */
+  async runGoalCommand(command: Extract<SlashCommand, { type: "goal" }>): Promise<string> {
+    if (command.sub === "set") {
+      const objective = command.objective.trim();
+      if (!objective) return "Usage: /goal [--tokens N] <objective> — pin an objective on this room.";
+      const target = await this.roomDefaultTarget();
+      if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+      const now = new Date().toISOString();
+      const goal: RoomGoal = {
+        objective,
+        agentId: target,
+        status: "active",
+        ...(command.tokens ? { tokenBudget: command.tokens } : {}),
+        tokensUsed: 0,
+        iterations: 0,
+        startedAt: now,
+        updatedAt: now,
+      };
+      await this.updateGoal(() => goal);
+      const budget = goal.tokenBudget ? ` Budget: ${goal.tokenBudget.toLocaleString()} tokens.` : "";
+      return `Goal pinned for @${target}: "${objective}".${budget} @${target} keeps working after each turn until it writes ${GOAL_COMPLETE_SIGNAL} in a reply (no marker = not done). /goal pause to hold, /goal clear to drop.`;
+    }
+    const goal = (await this.room.state()).goal;
+    if (command.sub === "status") {
+      if (!goal) return "No goal pinned in this room. Set one with /goal <objective>.";
+      const budget = goal.tokenBudget ? `${goal.tokensUsed.toLocaleString()}/${goal.tokenBudget.toLocaleString()} tokens` : `${goal.tokensUsed.toLocaleString()} tokens (no budget)`;
+      const stopped = goal.stoppedReason ? `\nStopped: ${goal.stoppedReason}` : "";
+      return `Goal (@${goal.agentId}, ${goal.status}): "${goal.objective}"\nIterations: ${goal.iterations} — ${budget}\nSince ${goal.startedAt}${stopped}`;
+    }
+    if (!goal) return "No goal pinned in this room. Set one with /goal <objective>.";
+    if (command.sub === "clear") {
+      await this.updateGoal(() => undefined);
+      return `Goal cleared: "${goal.objective}".`;
+    }
+    if (command.sub === "pause") {
+      if (goal.status === "paused") return "The goal is already paused.";
+      await this.updateGoal((current) => ({ ...current, status: "paused", stoppedReason: "paused by a human" }));
+      return `Goal paused: "${goal.objective}". /goal resume to continue.`;
+    }
+    // resume
+    if (goal.status === "active") return "The goal is already active.";
+    await this.updateGoal((current) => {
+      const next: RoomGoal = { ...current, status: "active" };
+      delete next.stoppedReason;
+      return next;
+    });
+    const note = goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget ? " Note: the token budget is already spent — raise it with /goal --tokens N <objective>." : "";
+    return `Goal resumed: "${goal.objective}".${note}`;
+  }
+
+  /** Single writer for the room goal: mutate-or-drop, then refresh clients. */
+  private async updateGoal(mutate: (current: RoomGoal) => RoomGoal | undefined): Promise<void> {
+    await this.room.updateState((state) => {
+      const next = state.goal ? mutate(state.goal) : mutate({} as RoomGoal);
+      if (next?.objective) state.goal = next;
+      else delete state.goal;
+    });
+    await this.emitSnapshot();
+  }
+
+  /** After a CLEAN goal turn: stop on the explicit completion signal or an
+   * exhausted budget, otherwise enqueue the next continuation on the durable
+   * queue (restart-safe). Strict by design — no signal means NOT done. */
+  private async maybeContinueGoal(author: string, reply: string): Promise<void> {
+    const goal = (await this.room.state()).goal;
+    if (!goal || goal.status !== "active" || goal.agentId !== author) return;
+    const spent = this.contextUsage[author]?.usedTokens ?? 0;
+    const tokensUsed = goal.tokensUsed + spent;
+    const iterations = goal.iterations + 1;
+    const base: RoomGoal = { ...goal, tokensUsed, iterations, updatedAt: new Date().toISOString() };
+
+    if (reply.includes(GOAL_COMPLETE_SIGNAL)) {
+      await this.updateGoal(() => ({ ...base, status: "done", stoppedReason: `completed by @${author}` }));
+      this.emitSystemNote(`Goal complete: "${goal.objective}" (${iterations} turn${iterations === 1 ? "" : "s"}).`);
+      return;
+    }
+    if (base.tokenBudget && tokensUsed >= base.tokenBudget) {
+      await this.updateGoal(() => ({ ...base, status: "paused", stoppedReason: `token budget exhausted (${tokensUsed}/${base.tokenBudget})` }));
+      this.emitSystemNote(`Goal paused: token budget spent (${tokensUsed}/${base.tokenBudget}). /goal --tokens N <objective> to extend, /goal resume to continue.`);
+      return;
+    }
+    await this.updateGoal(() => base);
+    await this.enqueueAgentDialogue(
+      [author],
+      `Continue the pinned room goal: "${goal.objective}". Keep working from your last message. When — and only when — the goal is fully achieved, write ${GOAL_COMPLETE_SIGNAL} on its own line; otherwise just continue.`,
+    );
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
