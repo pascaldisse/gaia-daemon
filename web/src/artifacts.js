@@ -137,7 +137,7 @@ async function hydrateArtifacts() {
   try {
     const body = await api(`/api/rooms/${encodeURIComponent(id)}/artifacts`);
     if (!Array.isArray(body.artifacts) || roomId !== id) return;
-    const remote = body.artifacts.filter(isArtifact);
+    const remote = /** @type {Artifact[]} */ (body.artifacts.filter(isArtifact));
     if (remote.length === 0) return;
     artifacts = remote.sort((a, b) => a.updated - b.updated);
     selectedId = artifacts.at(-1)?.id ?? null;
@@ -168,6 +168,8 @@ export function detectArtifacts(text, payload) {
   for (const candidate of candidates) {
     for (const artifact of artifactsFromText(candidate)) upsertArtifact(artifact);
   }
+  const direct = artifactFromValue(payload);
+  if (direct) upsertArtifact(direct);
 }
 
 /** @param {unknown} payload @returns {string} */
@@ -206,13 +208,24 @@ function artifactsFromText(text) {
 function parseArtifact(content, hinted) {
   try {
     const parsed = JSON.parse(content);
-    const value = parsed && typeof parsed === "object" && "artifact" in parsed ? parsed.artifact : parsed;
+    const wrapped = parsed && typeof parsed === "object" && "artifact" in parsed ? parsed.artifact : undefined;
+    const value = wrapped && typeof wrapped === "object" ? wrapped : parsed;
     if (!value || typeof value !== "object") return null;
     const candidate = /** @type {{ id?: unknown, type?: unknown, content?: unknown }} */ (value);
     const type = candidate.type === "html" || candidate.type === "json" || candidate.type === "design" ? candidate.type : hinted;
     if (!type) return null;
     const normalizedContent = typeof candidate.content === "string" ? candidate.content : type === "design" ? JSON.stringify(candidate) : content;
     return normalizeArtifact({ id: typeof candidate.id === "string" ? candidate.id : undefined, type, content: normalizedContent });
+  } catch {
+    return null;
+  }
+}
+
+/** @param {unknown} value @returns {Artifact|null} */
+function artifactFromValue(value) {
+  if (!value || typeof value !== "object") return null;
+  try {
+    return parseArtifact(JSON.stringify(value), undefined);
   } catch {
     return null;
   }

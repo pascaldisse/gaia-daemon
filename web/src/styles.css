@@ -1356,6 +1356,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* Right cluster opens with a left-pointing wedge so it reads as powerline too. */
 .seg-theme { --seg-bg: var(--bg2); color: var(--accent2); cursor: pointer; }
+.seg-artifacts { --seg-bg: var(--bg3); color: var(--muted); cursor: pointer; }
+.seg-artifacts.on { color: var(--accent); }
+.seg-artifacts:hover { color: var(--fg); }
 
 .seg-theme::before {
   content: "";
@@ -1570,6 +1573,54 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 /* ============================================================
+   artifacts: room-local side drawer + simple design canvas
+   ============================================================ */
+.artifact-panel {
+  position: fixed;
+  z-index: 35;
+  top: 50px;
+  right: 18px;
+  bottom: 42px;
+  width: min(580px, calc(100vw - 36px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  background: var(--bg2);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.58), 0 0 24px var(--glow);
+}
+.artifact-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border); }
+.artifact-panel-head strong { color: var(--accent); letter-spacing: 1px; }
+.artifact-panel-head small { display: block; margin-top: 2px; }
+.artifact-close { flex: none; width: 28px; height: 28px; padding: 0; color: var(--muted); background: transparent; box-shadow: none; }
+.artifact-close:hover { color: var(--danger); border-color: var(--danger); }
+.artifact-list { display: flex; gap: 5px; overflow-x: auto; padding: 8px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg3) 68%, transparent); }
+.artifact-tab { flex: 0 0 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; color: var(--muted); background: var(--ink); }
+.artifact-tab.active { color: var(--accent); border-color: var(--accent); }
+.artifact-list .empty { padding: 2px 0; white-space: nowrap; }
+.artifact-view { min-height: 0; overflow: auto; padding: 12px; background: var(--bg); }
+.artifact-empty { display: grid; height: 100%; place-items: center; color: var(--muted); }
+.artifact-html { display: block; width: 100%; height: 100%; min-height: 360px; border: 1px solid var(--border); background: white; color: black; }
+.artifact-json { min-height: 100%; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); background: var(--ink); color: var(--fg); line-height: 1.45; }
+.artifact-prompt { display: flex; gap: 7px; padding: 10px; border-top: 1px solid var(--border); background: var(--bg2); }
+.artifact-prompt-input { min-width: 0; }
+.artifact-prompt-send { flex: none; color: var(--accent); }
+.artifact-canvas-wrap { min-width: 100%; overflow: auto; border: 1px solid var(--border); background: color-mix(in srgb, var(--ink) 72%, var(--bg)); }
+.artifact-design-stage { position: relative; width: 800px; height: 520px; outline: none; background-image: radial-gradient(color-mix(in srgb, var(--border) 75%, transparent) 1px, transparent 1px); background-size: 16px 16px; }
+.artifact-design-stage:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.artifact-design-element { position: absolute; min-width: 24px; min-height: 24px; cursor: move; user-select: none; }
+.artifact-design-element.text { display: flex; align-items: center; background: transparent !important; }
+.artifact-design-text { width: 100%; min-height: 1.2em; padding: 3px; cursor: text; white-space: pre-wrap; overflow: hidden; }
+.artifact-design-text[contenteditable="true"] { user-select: text; outline: 1px solid var(--accent); background: color-mix(in srgb, var(--bg) 84%, transparent); }
+.artifact-design-element.selected { outline: 1px solid var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.artifact-resize-handle { position: absolute; z-index: 2; width: 8px; height: 8px; border: 1px solid var(--bg); background: var(--accent); opacity: 0; }
+.artifact-design-element.selected .artifact-resize-handle { opacity: 1; }
+.artifact-resize-handle.nw { top: -4px; left: -4px; cursor: nwse-resize; }
+.artifact-resize-handle.ne { top: -4px; right: -4px; cursor: nesw-resize; }
+.artifact-resize-handle.sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+.artifact-resize-handle.se { right: -4px; bottom: -4px; cursor: nwse-resize; }
+
+/* ============================================================
    responsive fallbacks
    ============================================================ */
 /* Below these widths fall back to flex so the layout stays correct no matter
@@ -1696,6 +1747,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   .seg-b, .seg-clock, .seg-keys { display: none; }
 
   .palette, .search-panel, .usage-popover, .dario-modal { width: calc(100vw - 20px); }
+  .artifact-panel { top: calc(42px + env(safe-area-inset-top)); right: 0; bottom: 0; width: min(100vw, 580px); }
+  .artifact-design-stage { width: 800px; }
   .search-backdrop { grid-template-rows: 8vh auto 1fr; }
   .search-filters { flex-wrap: wrap; gap: 8px; }
 }

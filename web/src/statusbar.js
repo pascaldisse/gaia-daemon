@@ -3,6 +3,7 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
+import { artifactPanelOpen, toggleArtifactPanel } from "./artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -128,6 +129,12 @@ function renderStatusbar() {
   if (usage) segs.push(usage);
   const bg = bgChipSeg();
   if (bg) segs.push(bg);
+  segs.push({
+    text: artifactPanelOpen() ? "◫ artifacts" : "□ artifacts",
+    cls: artifactPanelOpen() ? "seg-artifacts on" : "seg-artifacts",
+    title: "toggle artifacts",
+    onclick: toggleArtifactPanel,
+  });
   const theme = themeById(currentThemeId());
   segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
   segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
