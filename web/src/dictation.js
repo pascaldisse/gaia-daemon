@@ -29,14 +29,13 @@ const FINISH_WATCHDOG_MS = 1500;
 // the recording is cut off.
 const UPLOAD_FLUSH_WATCHDOG_MS = 2000;
 // A dictation result must appear promptly, but STT latency scales with clip
-// length: a real ~5min (MAX_RECORD_MS) clip measured 17s round-trip through
-// ElevenLabs Scribe directly (2026-07-13). 12_000 was too aggressive — it
-// aborted genuinely-in-flight (not hung) transcriptions of ordinary-length
-// recordings, surfacing as a spurious "Fetch is aborted" failure chip even
-// though the STT call would have succeeded a few seconds later. 45s keeps
-// comfortable headroom (~2.6x the measured worst case) while still failing
-// well before an actually-unhealthy STT provider would hang the composer.
-const TRANSCRIBE_TIMEOUT_MS = 45_000;
+// length AND provider. ElevenLabs returned a real ~5min clip in ~17s
+// (2026-07-13), but Replicate Whisper regularly needs 60–90s for multi-MB
+// WebM clips even when healthy (observed 76s on 2026-08-02). 45s caused false
+// "Fetch is aborted" failures while Replicate later succeeded server-side.
+// Keep this above the daemon's 120s STT fetch window with enough margin for
+// upload + prediction polling, but still bounded so the composer never wedges.
+const TRANSCRIBE_TIMEOUT_MS = 180_000;
 
 /** @param {number} ms @returns {AbortSignal|undefined} */
 function fetchTimeout(ms) {

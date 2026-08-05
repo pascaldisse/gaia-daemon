@@ -36,14 +36,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 // ---------------------------------------------------------------------------
 // registry (same law as the TTS engine registry / harnesses)
 
-test("engines: elevenlabs and openai are registered", () => {
+test("engines: elevenlabs, openai, and replicate are registered", () => {
   assert.ok(sttEngineIds().includes("elevenlabs"));
   assert.ok(sttEngineIds().includes("openai"));
+  assert.ok(sttEngineIds().includes("replicate"));
 });
 
 test("resolveSttEngine picks the engine named by settings.sttEngine", () => {
   assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "openai" })).id, "openai");
   assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "elevenlabs" })).id, "elevenlabs");
+  assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "replicate" })).id, "replicate");
 });
 
 test("resolveSttEngine throws on an unknown engine id", () => {
@@ -200,5 +202,59 @@ test("openai: a localhost base URL needs no key; a remote one does", async () =>
   } finally {
     restore();
     if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// replicate — Predictions API, data URL audio, optional model version
+
+test("replicate: resolves latest_version, POSTs audio as a data URL, and returns text", async () => {
+  const spec = findSttEngine("replicate");
+  if (!spec) throw new Error("replicate not registered");
+  const { calls, restore } = stubFetch((url) =>
+    url.endsWith("/v1/models/openai/whisper")
+      ? jsonResponse({ latest_version: { id: "version123" } })
+      : jsonResponse({ status: "succeeded", output: { transcription: "replicate whisper" } }),
+  );
+  try {
+    const result = await spec.transcribe({
+      audio: audio({ contentType: "audio/webm" }),
+      settings: voiceSettings({ sttReplicateApiKey: "r8_test", sttReplicateModel: "openai/whisper" }),
+      language: "en",
+      log: () => {},
+    });
+    assert.equal(result.text, "replicate whisper");
+    assert.ok(calls[0].url.endsWith("/v1/models/openai/whisper"));
+    assert.ok(calls[1].url.endsWith("/v1/predictions"));
+    assert.equal((calls[1].init.headers as Record<string, string>).authorization, "Token r8_test");
+    assert.equal((calls[1].init.headers as Record<string, string>).prefer, "wait=60");
+    const body = JSON.parse(calls[1].init.body as string) as { version: string; input: { audio: string; language?: string; transcription?: string } };
+    assert.equal(body.version, "version123");
+    assert.ok(body.input.audio.startsWith("data:audio/webm;base64,"));
+    assert.equal(body.input.language, "en");
+    assert.equal(body.input.transcription, "plain text");
+  } finally {
+    restore();
+  }
+});
+
+test("replicate: missing key is a clear error, not a network call", async () => {
+  const spec = findSttEngine("replicate");
+  if (!spec) throw new Error("replicate not registered");
+  const prevToken = process.env.REPLICATE_API_TOKEN;
+  const prevKey = process.env.REPLICATE_API_KEY;
+  delete process.env.REPLICATE_API_TOKEN;
+  delete process.env.REPLICATE_API_KEY;
+  const { calls, restore } = stubFetch(() => jsonResponse({ status: "succeeded", output: "nope" }));
+  try {
+    await assert.rejects(
+      spec.transcribe({ audio: audio(), settings: voiceSettings({ sttReplicateApiKey: "" }), log: () => {} }),
+      /Replicate STT API key not set/,
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    restore();
+    if (prevToken !== undefined) process.env.REPLICATE_API_TOKEN = prevToken;
+    if (prevKey !== undefined) process.env.REPLICATE_API_KEY = prevKey;
   }
 });

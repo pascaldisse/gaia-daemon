@@ -11,6 +11,7 @@ import { markDirty, setError } from "./render.js";
 import { state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
+import { canvas } from "./canvas.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
@@ -334,6 +335,46 @@ export function connectEvents(resyncOnReady = false) {
     const who = payload.task?.targets?.length ? ` (@${payload.task.targets.join(", @")})` : "";
     setError(`Turn failed${who}: ${payload.error || "unknown error"}`);
     markDirty("transcript", "panel", "composer", "tabs", "sidebar");
+  });
+
+  listen("canvas-command", (event) => {
+    const payload = /** @type {Ev<"canvas-command">} */ (JSON.parse(event.data));
+    const { command, params } = payload;
+    const p = /** @type {any} */ (params);
+    
+    // Execute canvas command
+    switch (command) {
+      case "show":
+        canvas.show();
+        break;
+      case "hide":
+        canvas.hide();
+        break;
+      case "create":
+        canvas.createElement(p.type, p);
+        break;
+      case "update":
+        canvas.updateElement(p.id, p);
+        break;
+      case "delete":
+        canvas.deleteElement(p.id);
+        break;
+      case "select":
+        canvas.selectElement(p.id);
+        break;
+      case "clear":
+        canvas.clear();
+        break;
+      case "export":
+        // Export handled separately
+        break;
+      case "import":
+        canvas.import(p.data);
+        break;
+      case "list":
+        // List handled separately
+        break;
+    }
   });
 
 }

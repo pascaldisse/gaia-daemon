@@ -191,9 +191,15 @@ export interface TtsBridgeDeps {
   log(message: string): void;
 }
 
+type BridgeSession = { close(): void };
+type BunServerLike = { port: number; stop(closeActiveConnections?: boolean): void };
+type BunWebSocketLike = { data?: { session?: BunTtsSession; url?: string }; send(data: Buffer): void; close(): void };
+type BunServeLike = (options: Record<string, unknown>) => BunServerLike;
+
 export class TtsCallBridge {
   private server: Server | undefined;
-  private readonly sessions = new Set<TtsSession>();
+  private bunServer: BunServerLike | undefined;
+  private readonly sessions = new Set<BridgeSession>();
   private port = 0;
 
   constructor(private readonly deps: TtsBridgeDeps) {}
@@ -204,6 +210,45 @@ export class TtsCallBridge {
     if (!engine.synthesizeStream && !engine.synthesizeDuplex) {
       throw new Error(`TTS engine "${engine.id}" cannot drive a voice call (no streaming synthesis)`);
     }
+    const bunServe = (globalThis as unknown as { Bun?: { serve?: BunServeLike } }).Bun?.serve;
+    if (bunServe) {
+      const bunServer = bunServe({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request: Request, server: { upgrade(request: Request, options?: Record<string, unknown>): boolean }) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/build_info" || url.pathname === "/") {
+            return new Response(JSON.stringify({ service: "gaia-tts-bridge", backend: engine.id, status: "ok", sample_rate: TARGET_RATE }), {
+              headers: { "content-type": "application/json" },
+            });
+          }
+          if (url.pathname.endsWith("/api/tts_streaming")) {
+            const upgraded = server.upgrade(request, { data: { url: request.url } });
+            return upgraded ? undefined : new Response("upgrade failed", { status: 400 });
+          }
+          return new Response("", { status: 404 });
+        },
+        websocket: {
+          open: (ws: BunWebSocketLike) => {
+            const url = new URL(String(ws.data?.["url"] ?? "ws://127.0.0.1/api/tts_streaming"));
+            const urlVoice = url.searchParams.get("voice") ?? undefined;
+            const session = new BunTtsSession(ws, engine, urlVoice || voice, settings, this.deps, () => this.sessions.delete(session));
+            ws.data = { ...(ws.data ?? {}), session };
+            this.sessions.add(session);
+            session.begin();
+          },
+          message: (ws: BunWebSocketLike, message: string | Buffer | ArrayBuffer | Uint8Array) => {
+            const data = typeof message === "string" ? Buffer.from(message) : Buffer.from(message instanceof ArrayBuffer ? new Uint8Array(message) : message);
+            ws.data?.session?.onMessage(data);
+          },
+          close: (ws: BunWebSocketLike) => ws.data?.session?.close(),
+        },
+      });
+      this.bunServer = bunServer;
+      this.port = bunServer.port;
+      return { wsUrl: `ws://127.0.0.1:${this.port}`, httpUrl: `http://127.0.0.1:${this.port}` };
+    }
+
     const server = createServer((request, response) => {
       const path = (request.url ?? "").split("?")[0];
       if (path === "/api/build_info" || path === "/") {
@@ -242,6 +287,8 @@ export class TtsCallBridge {
     this.sessions.clear();
     this.server?.close();
     this.server = undefined;
+    this.bunServer?.stop(true);
+    this.bunServer = undefined;
   }
 
   private accept(request: IncomingMessage, socket: Socket, engine: TtsEngineSpec, voice: string | undefined, settings: VoiceSettings): void {
@@ -259,6 +306,179 @@ export class TtsCallBridge {
     const session = new TtsSession(socket, engine, urlVoice || voice, settings, this.deps, () => this.sessions.delete(session));
     this.sessions.add(session);
     session.begin();
+  }
+}
+
+
+class BunTtsSession {
+  private textBuffer = "";
+  private synthesizing = false;
+  private closed = false;
+  private readonly aborter = new AbortController();
+  private textTail = "";
+  private duplexReady: Promise<TtsDuplexSession> | undefined;
+  private feedChain: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly socket: BunWebSocketLike,
+    private readonly engine: TtsEngineSpec,
+    private readonly voice: string | undefined,
+    private readonly settings: VoiceSettings,
+    private readonly deps: TtsBridgeDeps,
+    private readonly onClosed: () => void,
+  ) {}
+
+  begin(): void {
+    this.sendMessage({ type: "Ready" });
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.aborter.abort();
+    try { this.socket.close(); } catch {}
+    this.onClosed();
+  }
+
+  onMessage(data: Buffer): void {
+    let message: { type?: unknown; text?: unknown };
+    try {
+      message = unpackMessage(new Uint8Array(data)) as { type?: unknown; text?: unknown };
+    } catch {
+      return;
+    }
+    const type = String(message.type ?? "");
+    if (type === "Text") {
+      const text = String(message.text ?? "");
+      if (this.engine.synthesizeDuplex) this.feedText(text);
+      else this.textBuffer += text;
+    } else if (type === "Eos") {
+      if (this.engine.synthesizeDuplex) this.endText();
+      else void this.synthesizeTurn();
+    }
+  }
+
+  private feedText(raw: string): void {
+    this.textTail += raw;
+    const boundary = /[.!?…]+["')\]]*\s+|\n+/g;
+    let flushedTo = 0;
+    let match: RegExpExecArray | null;
+    while ((match = boundary.exec(this.textTail))) {
+      const end = match.index + match[0].length;
+      this.queuePush(this.textTail.slice(flushedTo, end));
+      flushedTo = end;
+    }
+    if (flushedTo) this.textTail = this.textTail.slice(flushedTo);
+  }
+
+  private endText(): void {
+    const tail = this.textTail.trim();
+    this.textTail = "";
+    if (tail) this.queuePush(tail);
+    this.feedChain = this.feedChain
+      .then(async () => {
+        if (this.duplexReady) {
+          const session = await this.duplexReady;
+          if (!this.closed) session.end();
+        } else if (!this.closed) {
+          this.finish();
+        }
+      })
+      .catch((error) => this.onDuplexError(error));
+  }
+
+  private queuePush(sentence: string): void {
+    const speech = speakableText(sentence);
+    if (!speech) return;
+    this.feedChain = this.feedChain
+      .then(async () => {
+        const session = await this.ensureDuplex();
+        if (!this.closed) session.push(speech);
+      })
+      .catch((error) => this.onDuplexError(error));
+  }
+
+  private ensureDuplex(): Promise<TtsDuplexSession> {
+    if (!this.duplexReady) {
+      this.duplexReady = this.engine.synthesizeDuplex!({
+        voice: this.voice,
+        settings: this.settings,
+        ensureTts: this.deps.ensureTts,
+        log: this.deps.log,
+        signal: this.aborter.signal,
+      }).then((session) => {
+        void this.pumpFrames(session.format, session.frames).then(() => {
+          if (!this.closed) this.finish();
+        });
+        return session;
+      });
+    }
+    return this.duplexReady;
+  }
+
+  private onDuplexError(error: unknown): void {
+    if (this.closed) return;
+    this.deps.log(`voice-tts-bridge: duplex synthesis failed: ${error instanceof Error ? error.message : String(error)}`);
+    this.finish();
+  }
+
+  private async synthesizeTurn(): Promise<void> {
+    if (this.synthesizing) return;
+    this.synthesizing = true;
+    const clean = speakableText(this.textBuffer);
+    if (clean) {
+      try {
+        const stream = await this.engine.synthesizeStream!({
+          text: clean,
+          voice: this.voice,
+          settings: this.settings,
+          ensureTts: this.deps.ensureTts,
+          log: this.deps.log,
+          signal: this.aborter.signal,
+        });
+        await this.pumpFrames(stream.format, stream.frames);
+      } catch (error) {
+        if (!this.closed) this.deps.log(`voice-tts-bridge: synthesis failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!this.closed) this.finish();
+  }
+
+  private async pumpFrames(format: TtsStreamFormat, frames: AsyncIterable<Buffer>): Promise<void> {
+    const resampler = new Resampler(format.sampleRate || TARGET_RATE, TARGET_RATE);
+    const decoder = new PcmS16Decoder();
+    const pending: number[] = [];
+    const flush = (final: boolean): void => {
+      while (pending.length >= FRAME_SAMPLES) {
+        this.sendMessage({ type: "Audio", pcm: pending.splice(0, FRAME_SAMPLES) });
+      }
+      if (final && pending.length) {
+        this.sendMessage({ type: "Audio", pcm: pending.splice(0, pending.length) });
+      }
+    };
+    try {
+      for await (const raw of frames) {
+        if (this.closed) break;
+        const resampled = resampler.process(decoder.push(raw));
+        for (const sample of resampled) pending.push(sample);
+        flush(false);
+      }
+      if (!this.closed) flush(true);
+    } catch (error) {
+      if (!this.closed) this.deps.log(`voice-tts-bridge: stream ended early: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private finish(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try { this.socket.close(); } catch {}
+    this.onClosed();
+  }
+
+  private sendMessage(value: unknown): void {
+    if (this.closed) return;
+    try { this.socket.send(packMsg(value)); } catch {}
   }
 }
 

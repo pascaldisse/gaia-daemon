@@ -25,7 +25,7 @@ const PROTECTED_MEMORY_FILE = "SOUL.md";
 
 // Bounds on one run's blast radius, deliberately not settings.
 const MAX_OPS = 20;
-const MAX_EPISODES_PER_RUN = 100;
+export const MAX_EPISODES_PER_RUN = 100;
 const MAX_FACTS_IN_PROMPT = 120;
 const RUN_LEDGER_LIMIT = 64;
 

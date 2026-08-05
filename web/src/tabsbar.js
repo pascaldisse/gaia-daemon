@@ -11,6 +11,7 @@
 // so we get a trustworthy release point to place the torn-off window at.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
 import { tearOff } from "./chrome.js";
+import { openKeymaker } from "./keymaker.js";
 import { $, h } from "./dom.js";
 import { isNative } from "./native.js";
 import { markDirty, registerRegion } from "./render.js";
@@ -64,6 +65,7 @@ function renderTabs() {
       snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer" }),
+    h("button", { class: "chrome-btn white-rabbit-btn", title: "Keymaker · Follow the white rabbit", onclick: () => void openKeymaker(), text: "🐇" }),
     h("button", {
       class: "chrome-btn",
       title: state.rightCollapsed ? "show room panel" : "hide room panel",

@@ -16,7 +16,10 @@ import { MemoryStore } from "./memory.js";
 interface RawAgentConfig {
   id?: string;
   displayName?: string;
+  description?: unknown;
+  avatarUrl?: unknown;
   icon?: string;
+  workspace?: unknown;
   voice?: unknown;
   tts?: unknown;
   tools?: unknown;
@@ -382,7 +385,10 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
     agents[id] = {
       id,
       displayName,
+      description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
+      avatarUrl: typeof raw.avatarUrl === "string" && raw.avatarUrl.trim() ? raw.avatarUrl.trim() : undefined,
       icon: typeof raw.icon === "string" && raw.icon.trim() ? raw.icon : "•",
+      workspace: typeof raw.workspace === "string" && raw.workspace.trim() ? raw.workspace.trim() : undefined,
       voice: typeof raw.voice === "string" && raw.voice.trim() ? raw.voice.trim() : undefined,
       tts: parseTtsConfig(raw.tts),
       dir,

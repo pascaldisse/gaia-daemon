@@ -2,7 +2,7 @@
 // banner, and the signature powerline status bar. Every segment is one fact
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
-import { selectRoom } from "./actions.js";
+import { accountsCatalog, selectRoom } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -12,6 +12,10 @@ import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";
 import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
 import { jumpToEvent } from "./transcript.js";
+
+/** @type {import("./actions.js").AccountsCatalog | null} */
+let usageAccountsCatalog = null;
+void accountsCatalog().then((c) => { usageAccountsCatalog = c; markDirty("usage"); }).catch(() => {});
 
 /** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
 /** @typedef {import("./types.js").Snapshot} Snapshot */
@@ -205,8 +209,12 @@ export function initStatusbarPref() {
  * showing a provider-wide fallback is how an old login escaped into the UI.
  * @returns {import("./types.js").UsageLimits[]} */
 function visibleUsageGroups() {
-  const accounts = state.snapshot?.room.usageAccounts ?? [];
-  return accounts.map((account) => state.usage[account]).filter(Boolean);
+  // Show only accounts used by agents in the current room.
+  // For full subscription overview, use Settings → Accounts → Usage.
+  const snapshot = state.snapshot;
+  if (!snapshot?.room.usageAccounts) return Object.values(state.usage);
+  const roomAccounts = new Set(snapshot.room.usageAccounts);
+  return Object.values(state.usage).filter((limits) => roomAccounts.has(limits.account));
 }
 
 /** @returns {import("./types.js").UsageWindow[]} every window across the visible accounts */
@@ -630,16 +638,38 @@ function UsagePopover(animate = false) {
           onclick: () => void refreshUsageNow(),
         }),
       ),
-      ...groups.map(({ limits, windows }) =>
-        h(
+      ...groups.map(({ limits, windows }) => {
+        // Resolve label + email from managed accounts catalog if available.
+        const managed = usageAccountsCatalog?.accounts?.find((/** @type {{id:string,label?:string,email?:string}} */ a) => a.id === limits.account);
+        const displayName = managed?.label || limits.account;
+        const email = managed?.email || null;
+        // Freshness: stale if fetched > 10min ago.
+        const ageMs = limits.fetchedAt ? Date.now() - new Date(limits.fetchedAt).getTime() : Infinity;
+        const isLive = ageMs < 10 * 60 * 1000;
+        const worstSev = windows.reduce((s, w) => {
+          const ord = /** @type {Record<string,number>} */({ critical: 2, warning: 1, normal: 0 });
+          return (ord[w.severity] ?? 0) > (ord[s] ?? 0) ? w.severity : s;
+        }, "normal");
+        return h(
           "div",
           { class: "usage-group" },
           h(
             "div",
             { class: "usage-group-head" },
-            h("span", { class: "usage-harness", text: limits.account }),
+            h("span", { class: `usage-active-dot sev-${isLive ? worstSev : "off"}`, title: isLive ? "active" : "stale — click ↻ to refresh" }),
+            h("span", { class: "usage-harness" },
+              h("span", { text: displayName }),
+              email ? h("span", { class: "muted", style: "font-size:0.8em; margin-left:0.4em;", text: email }) : null,
+            ),
             limits.plan ? h("span", { class: "usage-plan", text: limits.plan }) : null,
             h("span", { class: "usage-age", text: formatAge(limits.fetchedAt) }),
+            h("button", {
+              class: "usage-switch-btn",
+              type: "button",
+              title: "Switch active agent to this account",
+              text: "⇄",
+              onclick: () => void switchToAccount(managed?.id || limits.account),
+            }),
           ),
           ...windows.map((win) =>
             h(
@@ -655,8 +685,8 @@ function UsagePopover(animate = false) {
               win.resetsAt ? h("small", { class: "usage-reset", text: formatReset(win.resetsAt) }) : null,
             ),
           ),
-        ),
-      ),
+        );
+      }),
     ),
   );
 }
@@ -679,6 +709,25 @@ async function refreshUsageNow() {
   } finally {
     state.usageRefreshing = false;
     markDirty("status", "usage");
+  }
+}
+
+/** Switch the room's primary agent to use the specified account.
+ * @param {string} accountId */
+async function switchToAccount(accountId) {
+  const snapshot = state.snapshot;
+  if (!snapshot?.agents?.length) return;
+  const primaryAgent = snapshot.agents[0]?.id;
+  if (!primaryAgent) return;
+  try {
+    await api(`/api/agents/${encodeURIComponent(primaryAgent)}/account`, {
+      method: "PUT",
+      body: JSON.stringify({ account: accountId }),
+    });
+    closeUsagePopover();
+    markDirty("panel");
+  } catch (err) {
+    console.error("Failed to switch account:", err);
   }
 }
 

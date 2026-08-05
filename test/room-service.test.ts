@@ -215,6 +215,16 @@ function durabilityHost(agent: AgentDef, workspace: Workspace, runnerPath: strin
   });
 }
 
+test("snapshot carries agent descriptions and avatars for the room panel", async () => {
+  const { service, workspace } = await makeService();
+  workspace.agents.gaia.description = "Warm pattern shaper";
+  workspace.agents.gaia.avatarUrl = "https://api.dicebear.com/9.x/adventurer/svg?seed=gaia";
+  const snapshot = await service.getSnapshot();
+  const agent = snapshot.agents.find((candidate) => candidate.id === "gaia");
+  assert.equal(agent?.description, workspace.agents.gaia.description);
+  assert.equal(agent?.avatarUrl, workspace.agents.gaia.avatarUrl);
+});
+
 test("a plain message routes to the default agent and commits a detailed reply", async () => {
   const { service, root, events } = await makeService({
     script: () => [

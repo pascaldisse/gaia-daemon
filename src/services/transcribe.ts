@@ -8,6 +8,7 @@
 //   3. openai engine — any OpenAI-compatible /audio/transcriptions endpoint,
 //      hosted (OpenAI, Groq, …) OR a local whisper-server, so dictation can be
 //      "either local or API" without touching the shared path
+//   4. replicate engine — Replicate Predictions API, same one-shot contract
 // Live-CALL STT is a different pipeline (services/voice.ts + the unmute stack):
 // streaming and duplex. This module is one-shot: audio bytes in, text out.
 
@@ -226,4 +227,114 @@ registerSttEngine({
   id: "openai",
   label: "OpenAI / Whisper (any OpenAI-compatible endpoint, incl. local)",
   transcribe: openAiTranscribe,
+});
+
+// ---------------------------------------------------------------------------
+// replicate — Replicate Predictions API. The default model slug is
+// openai/whisper; a version may be pinned with sttReplicateVersion, otherwise
+// the model metadata supplies latest_version. Audio is sent as a data URL so the
+// daemon never needs to host a temporary public file.
+
+const REPLICATE_BASE = "https://api.replicate.com/v1";
+const REPLICATE_POLL_MS = 1_000;
+const REPLICATE_MAX_POLLS = 120;
+
+type ReplicatePrediction = {
+  id?: string;
+  status?: string;
+  output?: unknown;
+  error?: unknown;
+  urls?: { get?: string };
+};
+
+function replicateKey(settings: VoiceSettings): string {
+  const key = settings.sttReplicateApiKey?.trim() || process.env.REPLICATE_API_TOKEN?.trim() || process.env.REPLICATE_API_KEY?.trim() || "";
+  if (!key) throw new Error("Replicate STT API key not set (voice.json sttReplicateApiKey or REPLICATE_API_TOKEN env)");
+  return key;
+}
+
+function audioDataUrl(audio: SttAudioInput): string {
+  const type = (audio.contentType || "application/octet-stream").split(";")[0].trim();
+  return `data:${type};base64,${audio.data.toString("base64")}`;
+}
+
+function extractReplicateText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) return output.map(extractReplicateText).filter(Boolean).join(" ");
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    for (const key of ["text", "transcription", "transcript", "output"]) {
+      const value = extractReplicateText(record[key]);
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+async function readReplicatePrediction(response: Response): Promise<ReplicatePrediction> {
+  const data = (await response.json()) as ReplicatePrediction;
+  if (!response.ok) {
+    const detail = typeof data.error === "string" ? data.error : JSON.stringify(data);
+    throw new Error(`Replicate transcription failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  return data;
+}
+
+async function resolveReplicateVersion(context: SttContext, owner: string, name: string, key: string): Promise<string> {
+  const pinned = context.settings.sttReplicateVersion?.trim();
+  if (pinned) return pinned;
+  const response = await fetch(`${REPLICATE_BASE}/models/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+    headers: { authorization: `Token ${key}` },
+    signal: sttSignal(context),
+  });
+  const data = (await response.json()) as { latest_version?: { id?: unknown }; detail?: unknown; status?: unknown };
+  if (!response.ok) {
+    const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data);
+    throw new Error(`Replicate model lookup failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const version = data.latest_version?.id;
+  if (typeof version !== "string" || !version.trim()) throw new Error(`Replicate model ${owner}/${name} has no latest_version; set voice.json sttReplicateVersion`);
+  return version.trim();
+}
+
+async function replicateTranscribe(context: SttContext): Promise<SttResult> {
+  const model = context.settings.sttReplicateModel || "openai/whisper";
+  const [owner, name] = model.split("/");
+  if (!owner || !name) throw new Error(`Replicate STT model must be owner/name, got "${model}"`);
+  const input = {
+    audio: audioDataUrl(context.audio),
+    transcription: "plain text",
+    ...(context.language?.trim() ? { language: context.language.trim() } : {}),
+  };
+  const key = replicateKey(context.settings);
+  const version = await resolveReplicateVersion(context, owner, name, key);
+  const response = await fetch(`${REPLICATE_BASE}/predictions`, {
+    method: "POST",
+    headers: {
+      authorization: `Token ${key}`,
+      "content-type": "application/json",
+      prefer: "wait=60",
+    },
+    body: JSON.stringify({ version, input }),
+    signal: sttSignal(context),
+  });
+  let prediction = await readReplicatePrediction(response);
+  for (let i = 0; ["starting", "processing"].includes(prediction.status ?? "") && i < REPLICATE_MAX_POLLS; i += 1) {
+    const url = prediction.urls?.get;
+    if (!url) break;
+    await new Promise((resolve) => setTimeout(resolve, REPLICATE_POLL_MS));
+    const poll = await fetch(url, { headers: { authorization: `Token ${key}` }, signal: sttSignal(context) });
+    prediction = await readReplicatePrediction(poll);
+  }
+  if (prediction.status !== "succeeded") {
+    const detail = typeof prediction.error === "string" ? prediction.error : prediction.status;
+    throw new Error(`Replicate transcription failed${detail ? `: ${detail}` : ""}`);
+  }
+  return { text: extractReplicateText(prediction.output) };
+}
+
+registerSttEngine({
+  id: "replicate",
+  label: "Replicate Whisper (Predictions API)",
+  transcribe: replicateTranscribe,
 });

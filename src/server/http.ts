@@ -31,6 +31,7 @@ import { summonAck } from "../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "./pet.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
+import { checkCredential, importCredential, normalizeWorkspaceId, readKeymakerState, setRoomWorkspaceBinding } from "../services/keymaker.js";
 
 export interface WebServerOptions {
   cwd: string;
@@ -654,6 +655,44 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const name = stringField(body, "name") ?? "";
       return this.respond(response, async () => ({ userName: await this.daemon.setUserName(name) }));
+    }
+
+    if (method === "GET" && path === "/api/keymaker") {
+      return this.respond(response, async () => readKeymakerState());
+    }
+
+    if (method === "POST" && path === "/api/keymaker/room-binding") {
+      const body = await parseBody(request);
+      const roomId = stringField(body, "roomId")?.trim();
+      const workspaceId = normalizeWorkspaceId(stringField(body, "workspaceId") ?? "");
+      if (!roomId) return json(response, 400, { error: "Missing roomId" });
+      if (!workspaceId) return json(response, 400, { error: "Invalid workspaceId" });
+      return this.respond(response, async () => setRoomWorkspaceBinding(roomId, workspaceId));
+    }
+
+    if (method === "POST" && path === "/api/keymaker/credentials") {
+      const body = await parseBody(request);
+      const workspaceId = normalizeWorkspaceId(stringField(body, "workspaceId") ?? "");
+      const provider = stringField(body, "provider")?.trim();
+      const capability = stringField(body, "capability")?.trim();
+      if (!workspaceId) return json(response, 400, { error: "Invalid workspaceId" });
+      if (!provider) return json(response, 400, { error: "Missing provider" });
+      if (!capability) return json(response, 400, { error: "Missing capability" });
+      return this.respond(response, async () =>
+        importCredential({
+          workspaceId,
+          provider,
+          capability,
+          account: stringField(body, "account"),
+          scopes: stringArrayField(body, "scopes") ?? [],
+          secret: stringField(body, "secret"),
+        }),
+      );
+    }
+
+    const keymakerCheck = path.match(/^\/api\/keymaker\/credentials\/([^/]+)\/check$/);
+    if (method === "POST" && keymakerCheck) {
+      return this.respond(response, async () => checkCredential(decodeURIComponent(keymakerCheck[1] ?? "")));
     }
 
     if (
@@ -1410,6 +1449,27 @@ export class GaiaWebServer {
         json(response, 200, { file: { ...file, hints: await this.daemon.fileHints(file, workspaceId) } });
         return;
       }
+    }
+
+    // Design canvas commands — bridge between skill tools and browser UI
+    if (method === "POST" && path === "/api/canvas") {
+      const body = await parseBody(request);
+      const command = stringField(body, "command");
+      const params = (body && typeof body === "object" && "params" in body) ? body.params : {};
+      
+      if (!command) return json(response, 400, { error: "Missing command" });
+      
+      // Broadcast canvas command to all connected SSE clients
+      const event: UiEvent = {
+        type: "canvas-command",
+        command,
+        params
+      };
+      
+      this.broadcast(event);
+      
+      // Simple acknowledgment - actual result comes via canvas state update
+      return json(response, 200, { ok: true, command });
     }
 
     json(response, 404, { error: "Not found" });

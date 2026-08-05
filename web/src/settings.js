@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName, refreshAccountsCatalog } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -19,7 +19,7 @@ import { state } from "./state.js";
 /** @typedef {{ id: string, config: FileDescriptor[], persona: FileDescriptor[], memory: FileDescriptor[], files: FileDescriptor[] }} AgentGroup */
 /** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
-/** @typedef {{ id: string, harness: string, label?: string, email?: string }} Account */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string, workspace?: string, providers?: string[] }} Account */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarness */
 /** @typedef {{ accounts: Account[], harnesses: AccountHarness[] }} AccountsCatalog */
 /** @typedef {{
@@ -39,6 +39,10 @@ import { state } from "./state.js";
  *   rerender: () => void,
  *   markDirtyBadge: () => void,
  * }} FormCtx
+ */
+
+/**
+ * @typedef {{ draft: any, hints: Record<string, FieldHint>, harnessMeta: HarnessHintsMeta|undefined }} MinimalFormCtx
  */
 
 // ---------------------------------------------------------------------------
@@ -193,6 +197,7 @@ function renderSettingsModal() {
   if (!settingsWasOpen) {
     settingsWasOpen = true;
     void loadAccounts();
+    refreshAccountsCatalog();
   }
   slot.replaceChildren(SettingsModal());
 }
@@ -444,6 +449,7 @@ function applyLoginSession(session) {
     accountsNotice = `account ${session.account?.id ?? session.harness} added`;
     markDirty("settings"); // reflect the cleared session/notice now — loadAccounts's own markDirty lands later, once the refetch resolves
     void loadAccounts();
+    refreshAccountsCatalog();
     return;
   }
   if (session.status === "cancelled") {
@@ -521,6 +527,7 @@ async function removeAccount(id) {
   try {
     await api(`/api/accounts/${encodeURIComponent(id)}`, { method: "DELETE", body: "{}" });
     await loadAccounts();
+    refreshAccountsCatalog();
   } catch (error) {
     accountsError = error instanceof Error ? error.message : String(error);
     markDirty("settings");
@@ -544,6 +551,7 @@ async function saveAccount(account) {
     });
     accountsNotice = `account ${account.id} saved`;
     await loadAccounts();
+    refreshAccountsCatalog();
   } catch (error) {
     accountsError = error instanceof Error ? error.message : String(error);
     markDirty("settings");
@@ -565,10 +573,15 @@ async function loadAccounts() {
 /** @param {Account} account @returns {HTMLElement} */
 function AccountRow(account) {
   const draft = accountDraft(account);
+  const providers = account.providers?.join(", ") || account.harness || "unknown";
+  const emailText = account.email ? ` ${account.email}` : " email not recorded";
   return h(
     "div",
     { class: "account-row" },
-    h("div", { class: "account-row-head" }, h("strong", { text: account.id }), h("small", { class: "muted", text: account.email ? ` ${account.email}` : " email not recorded" })),
+    h("div", { class: "account-row-head" }, 
+      h("strong", { text: account.id }), 
+      h("small", { class: "muted", text: `${emailText} · ${providers}` })
+    ),
     h(
       "div",
       { class: "settings2-field-control" },
@@ -671,11 +684,44 @@ function LoginSessionPanel(session) {
 function HarnessAccountsGroup(harness) {
   const accounts = (accountsCatalog?.accounts ?? []).filter((account) => account.harness === harness.id);
   const isThisSession = loginSession?.harness === harness.id;
+  
+  // Group accounts by workspace
+  const workspaceGroups = new Map();
+  const noWorkspace = [];
+  
+  for (const account of accounts) {
+    if (account.workspace) {
+      if (!workspaceGroups.has(account.workspace)) {
+        workspaceGroups.set(account.workspace, []);
+      }
+      workspaceGroups.get(account.workspace).push(account);
+    } else {
+      noWorkspace.push(account);
+    }
+  }
+  
+  const workspaceElements = [];
+  
+  // Render workspace groups
+  for (const [workspace, wsAccounts] of Array.from(workspaceGroups.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+    workspaceElements.push(
+      h("div", { class: "workspace-group", style: "margin-top: 1rem;" },
+        h("div", { class: "muted", style: "font-size: 0.85rem; margin-bottom: 0.5rem;", text: `📁 ${workspace}` }),
+        ...wsAccounts.map((/** @type {Account} */ account) => AccountRow(account))
+      )
+    );
+  }
+  
+  // Render accounts without workspace
+  if (noWorkspace.length > 0) {
+    workspaceElements.push(...noWorkspace.map((/** @type {Account} */ account) => AccountRow(account)));
+  }
+  
   return h(
     "div",
     { class: "settings2-form" },
     h("div", { class: "nav-title", text: harness.label ?? harness.id }),
-    accounts.length === 0 ? h("div", { class: "empty", text: "no accounts" }) : accounts.map((account) => AccountRow(account)),
+    accounts.length === 0 ? h("div", { class: "empty", text: "no accounts" }) : workspaceElements,
     isThisSession ? null : harness.login ? LoginControls(harness) : h("div", { class: "muted", text: "add credentials via accounts.json" }),
     isThisSession && loginSession ? LoginSessionPanel(loginSession) : null,
   );
@@ -683,7 +729,7 @@ function HarnessAccountsGroup(harness) {
 
 function AccountsSection() {
   const managed = new Set((accountsCatalog?.accounts ?? []).map((account) => account.id));
-  const usage = Object.values(state.usage).filter((limits) => managed.has(limits.account));
+  const usage = Object.values(state.usage);
   return h(
     "div",
     { class: "settings2-body" },
@@ -696,18 +742,84 @@ function AccountsSection() {
       : accountsCatalog.harnesses.length === 0
         ? h("div", { class: "empty", text: "no harnesses support accounts" })
         : accountsCatalog.harnesses.map((harness) => HarnessAccountsGroup(harness)),
-    h("h3", { text: "Usage · all managed accounts" }),
+    h("h3", { text: "Usage · all accounts" }),
     usage.length === 0
-      ? h("div", { class: "empty", text: "no usage snapshots for managed accounts yet" })
-      : usage.map((limits) => {
-          const account = accountsCatalog?.accounts.find((item) => item.id === limits.account);
-          return h(
-            "div",
-            { class: "settings2-row account-usage-row" },
-            h("span", { text: account?.label || account?.email || limits.account }),
-            h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") }),
-          );
-        }),
+      ? h("div", { class: "empty", text: "no usage data yet" })
+      : (() => {
+          // Deduplicate: prefer named accounts over ambient, and merge duplicate ambients by email+provider
+          const seen = new Map(); // key: email+provider
+          /** @type {import("./types.js").UsageLimits[]} */
+          const filtered = [];
+          
+          for (const limits of usage) {
+            const account = accountsCatalog?.accounts.find((item) => item.id === limits.account);
+            const isManaged = managed.has(limits.account);
+            const displayEmail = limits.email || account?.email;
+            const providers = account?.providers?.join(",") || account?.harness || "unknown";
+            const dedupeKey = `${displayEmail}:${providers}`;
+            
+            const existing = seen.get(dedupeKey);
+            if (existing) {
+              // Prefer managed over ambient
+              if (isManaged && existing.account.startsWith("ambient:")) {
+                seen.set(dedupeKey, limits);
+                const idx = filtered.findIndex(l => l.account === existing.account);
+                if (idx >= 0) filtered[idx] = limits;
+              }
+              continue;
+            }
+            
+            seen.set(dedupeKey, limits);
+            filtered.push(limits);
+          }
+          
+          return filtered.map((limits) => {
+            const account = accountsCatalog?.accounts.find((item) => item.id === limits.account);
+            const isManaged = managed.has(limits.account);
+            const displayEmail = limits.email || account?.email;
+            const providers = account?.providers?.join(", ") || account?.harness || "";
+            const label = account?.label || displayEmail || limits.account;
+            const badge = isManaged ? "" : " (ambient)";
+            const providerBadge = providers ? ` · ${providers}` : "";
+            
+            const harnessId = account?.harness ?? null;
+            
+            return h(
+              "div",
+              { class: "settings2-row account-usage-row", style: "display: flex; justify-content: space-between; align-items: center;" },
+              h("div", { style: "flex: 1;" },
+                h("span", { text: label + badge + providerBadge }),
+                h("br"),
+                h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") })
+              ),
+              harnessId ? h("button", {
+                class: "settings2-button",
+                text: "Re-auth",
+                style: "margin-left: 1rem; padding: 0.25rem 0.75rem; font-size: 0.85rem;",
+                onclick: async () => {
+                  const harness = accountsCatalog?.harnesses.find(h => h.id === harnessId);
+                  if (!harness?.login) {
+                    accountsError = `${harnessId} doesn't support login`;
+                    markDirty("settings");
+                    return;
+                  }
+                  accountsError = "";
+                  accountsNotice = `Starting ${harness.label} login...`;
+                  markDirty("settings");
+                  try {
+                    const result = await api("/api/accounts/login", { method: "POST", body: JSON.stringify({ harness: harnessId }) });
+                    loginSession = result.session;
+                    markDirty("settings");
+                  } catch (err) {
+                    accountsError = err instanceof Error ? err.message : String(err);
+                    accountsNotice = "";
+                    markDirty("settings");
+                  }
+                }
+              }) : null
+            );
+          });
+        })(),
   );
 }
 
@@ -1000,6 +1112,25 @@ function SelectWidget(entry, ctx) {
       onchange: () => {
         if (select.value === "" && entry.hint.optional) deleteJsonPathValue(ctx.draft, entry.path);
         else setJsonPathValue(ctx.draft, entry.path, select.value);
+        // When account changes, cascade: set harness to match account's harness,
+        // auto-set model.provider and model.name based on account's providers.
+        if (entry.key === "account" && select.value) {
+          const chosen = accountsCatalog?.accounts.find((/** @type {{id:string,harness:string}} */ a) => a.id === select.value);
+          if (chosen) {
+            setJsonPathValue(ctx.draft, ["harness"], chosen.harness);
+            // If account declares providers, auto-set model.provider + default model.name
+            if (chosen.providers?.length === 1) {
+              const provider = chosen.providers[0];
+              setJsonPathValue(ctx.draft, ["model", "provider"], provider);
+              // Auto-set default model name per provider
+              const defaultModelName = provider === "anthropic" ? "claude-sonnet-4-5" : "gpt-5.5";
+              setJsonPathValue(ctx.draft, ["model", "name"], defaultModelName);
+            } else {
+              deleteJsonPathValue(ctx.draft, ["model", "provider"]);
+              deleteJsonPathValue(ctx.draft, ["model", "name"]);
+            }
+          }
+        }
         ctx.rerender();
       },
     })
@@ -1276,6 +1407,39 @@ function AddSettingPicker(hints, harnessHidden, draft, ctx) {
 }
 
 /** @param {FormCtx} ctx @returns {HTMLElement} */
+/** @param {any} draft @returns {HTMLElement|null} */
+function AgentConfigSummary(draft) {
+  if (!draft || typeof draft !== "object") return null;
+  const hasAccount = "account" in draft || "model" in draft || "harness" in draft;
+  if (!hasAccount) return null;
+  
+  const accountId = draft.account || null;
+  const accountLabel = accountId 
+    ? (accountsCatalog?.accounts.find(a => a.id === accountId)?.label || accountId)
+    : "ambient";
+  const provider = draft.model?.provider || "—";
+  const modelName = draft.model?.name || "—";
+  const harness = draft.harness || "—";
+  
+  return h(
+    "div",
+    { class: "settings2-agent-summary" },
+    h("div", { class: "summary-row" },
+      h("span", { class: "summary-label", text: "Account:" }),
+      h("span", { class: "summary-value", text: accountLabel }),
+    ),
+    h("div", { class: "summary-row" },
+      h("span", { class: "summary-label", text: "Model:" }),
+      h("span", { class: "summary-value", text: `${provider} / ${modelName}` }),
+    ),
+    h("div", { class: "summary-row" },
+      h("span", { class: "summary-label", text: "Harness:" }),
+      h("span", { class: "summary-value", text: harness }),
+    ),
+  );
+}
+
+/** @param {FormCtx} ctx */
 function FormBody(ctx) {
   const harnessHidden = harnessHiddenKeys(ctx.harnessMeta, ctx.draft);
   const { requiredRows, optionalRows, arrayRows } = computeRows(ctx.hints, harnessHidden, ctx.draft);
@@ -1287,6 +1451,7 @@ function FormBody(ctx) {
   return h(
     "div",
     { class: "settings2-form" },
+    AgentConfigSummary(ctx.draft),
     rows.length === 0 ? h("div", { class: "empty", text: "no settings to show" }) : rows.map((entry) => FieldRow(entry, ctx)),
     AddSettingPicker(ctx.hints, harnessHidden, ctx.draft, ctx),
   );

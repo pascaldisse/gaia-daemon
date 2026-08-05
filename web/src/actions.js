@@ -203,14 +203,27 @@ export async function setAgentDefaultRole(agentId, role) {
  * other global settings edit.
  * @param {string} agentId @param {string | null} account */
 export async function setAgentAccount(agentId, account) {
+  // Optimistic UI update: immediately update local state before API call completes
+  const agent = state.snapshot?.agents.find((a) => a.id === agentId);
+  if (agent) {
+    agent.account = account || undefined;
+    markDirty("panel");
+  }
+  
   try {
     await api(`/api/agents/${encodeURIComponent(agentId)}/account`, {
       method: "POST",
       body: JSON.stringify({ account: account || null }),
     });
     state.error = "";
-    markDirty();
+    // SSE snapshot will arrive and re-sync state
   } catch (error) {
+    // Revert optimistic update on error
+    if (agent) {
+      const snapshot = await api("/api/snapshot");
+      state.snapshot = snapshot;
+      markDirty();
+    }
     setError(error);
   }
 }
@@ -238,7 +251,7 @@ export async function deleteAgent(agentId) {
   }
 }
 
-/** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
+/** @typedef {{ id: string, harness: string, label?: string, email?: string, workspace?: string, providers?: string[] }} AccountRecordSummary */
 /** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
 

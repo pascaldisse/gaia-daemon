@@ -284,13 +284,16 @@ function harnessSelectOptions(): FieldHintOption[] {
  * even when the spawn path would (correctly) fail loudly. No harness id given
  * = every account, labeled with its owning harness. */
 function accountSelectOptions(harnessId?: string): FieldHintOption[] {
+  // Filter by harness: cross-harness selection causes runtime crash at spawn.
+  // Label includes email for identification.
   try {
-    return listAccounts()
-      .filter((account) => !harnessId || account.harness === harnessId)
-      .map((account) => ({
-        value: account.id,
-        label: harnessId ? (account.label ?? account.id) : `${account.label ?? account.id} (${account.harness})`,
-      }));
+    return listAccounts().filter((account) => !harnessId || account.harness === harnessId).map((account) => ({
+      value: account.id,
+      label: account.email
+        ? `${account.label ?? account.id} (${account.email})`
+        : (account.label ?? account.id),
+      group: account.workspace,
+    }));
   } catch {
     return [];
   }
@@ -306,7 +309,7 @@ function harnessHintsMeta(): HarnessHintsMeta {
       permissionModes: spec.ui.permissionModes,
       hiddenFields: hiddenFieldsFor(spec.id),
       accountsLabel: spec.accounts?.label,
-      accountOptions: spec.accounts ? accountSelectOptions(spec.id) : undefined,
+      accountOptions: accountSelectOptions(spec.id),
     };
   }
   return { configs };
@@ -450,7 +453,7 @@ function configJsonHints(sources: HintSources): FileHints {
   };
 }
 
-function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, agentId?: string): FileHints {
+function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, agentId?: string, workspaceId?: string): FileHints {
   const rawHarness = typeof parsed?.harness === "string" ? parsed.harness : undefined;
   const currentHarnessUi = rawHarness ? findHarness(rawHarness)?.ui : undefined;
 
@@ -475,6 +478,10 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
   const roleDefaults = agentId ? globalRoleDefaults(agentId) : {};
   const roleToolDefaults = Object.fromEntries(Object.entries(roleDefaults).flatMap(([name, defaults]) => (defaults.tools ? [[name, defaults.tools]] : [])));
   const roleSkillDefaults = Object.fromEntries(Object.entries(roleDefaults).flatMap(([name, defaults]) => (defaults.skills ? [[name, defaults.skills]] : [])));
+
+  // Auto-select account based on workspace match
+  const workspaceAccounts = accountSelectOptions(rawHarness).filter(opt => opt.group === workspaceId);
+  const defaultAccount = workspaceAccounts.length === 1 ? workspaceAccounts[0].value : undefined;
 
   return {
     thinking: select(values(sources.thinkingLevels), { optional: true }),
@@ -505,6 +512,7 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
       label: "Account",
       description: "named provider account this agent runs under (add accounts in the global accounts.json settings file); unset = the shared login",
       hidden: hiddenByHarness.has("account"),
+      ...(defaultAccount ? { defaultValue: defaultAccount } : {}),
     }),
     harness: select(harnessSelectOptions(), { optional: true }),
     "model.provider": select(providerOptionList, { optional: true, hidden: providerLocked }),
@@ -585,13 +593,16 @@ function voiceJsonHints(): FileHints {
     sttEngine: select(values(sttEngineIds()), {
       optional: true,
       label: "Voice input (dictation) engine",
-      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API, reuses the ElevenLabs key) or openai (any OpenAI-compatible /audio/transcriptions endpoint, hosted or a local whisper-server). Swappable like the TTS engine.",
+      description: "Which speech-to-text engine the composer mic uses — elevenlabs (Scribe API), openai (OpenAI-compatible /audio/transcriptions), or replicate (Replicate Predictions API). Swappable like the TTS engine.",
     }),
     sttLanguage: { input: "text", optional: true, label: "Dictation language", description: "optional spoken-language hint (ISO code like 'en'); empty auto-detects" },
     elevenLabsSttModel: { input: "text", optional: true, label: "ElevenLabs STT model", description: "ElevenLabs speech-to-text model for the elevenlabs dictation engine (default scribe_v1)" },
     sttOpenAiBaseUrl: { input: "text", optional: true, label: "OpenAI STT base URL", description: "base URL for the openai dictation engine — default OpenAI, or a local whisper-server (http://127.0.0.1:8080/v1) to keep dictation fully local" },
     sttOpenAiApiKey: { input: "text", optional: true, label: "OpenAI STT API key", description: "API key for the openai dictation engine; empty falls back to OPENAI_API_KEY (a localhost base URL may need none)" },
     sttOpenAiModel: { input: "text", optional: true, label: "OpenAI STT model", description: "model for the openai dictation engine (default whisper-1, or a local model name)" },
+    sttReplicateApiKey: { input: "text", optional: true, label: "Replicate API token", description: "API token for the replicate dictation engine; empty falls back to REPLICATE_API_TOKEN" },
+    sttReplicateModel: { input: "text", optional: true, label: "Replicate STT model", description: "model slug for the replicate dictation engine (owner/name; default openai/whisper)" },
+    sttReplicateVersion: { input: "text", optional: true, label: "Replicate STT version", description: "optional pinned model version; empty uses the model's default endpoint" },
   };
 }
 
@@ -620,7 +631,7 @@ function accountsJsonHints(): FileHints {
   return hints;
 }
 
-export function buildFileHints(file: { label: string; kind: string; content?: string }, sources: HintSources): FileHints | undefined {
+export function buildFileHints(file: { label: string; kind: string; content?: string; workspaceId?: string }, sources: HintSources): FileHints | undefined {
   if (file.kind !== "json") return undefined;
   const basename = file.label.split("/").pop() ?? file.label;
   let parsed: Record<string, unknown> | undefined;
@@ -632,7 +643,7 @@ export function buildFileHints(file: { label: string; kind: string; content?: st
     }
   }
   if (basename === "config.json") return configJsonHints(sources);
-  if (basename === "agent.json") return agentJsonHints(sources, parsed, agentIdFromAgentJsonLabel(file.label));
+  if (basename === "agent.json") return agentJsonHints(sources, parsed, agentIdFromAgentJsonLabel(file.label), file.workspaceId);
   if (basename === "voice.json") return voiceJsonHints();
   if (basename === "schedules.json") return schedulesJsonHints(sources);
   if (basename === "accounts.json") return accountsJsonHints();

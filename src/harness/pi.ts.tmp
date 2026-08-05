@@ -767,48 +767,107 @@ async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<Usa
 }
 
 async function probePiAccountUsage(credentials: Record<string, string>): Promise<UsageProbeResult> {
-  const token = credentials.accessToken;
-  return token ? fetchChatGptUsage(token, credentials.accountId) : { status: "none" };
+  // Normalize token format: support both old (accessToken/oauthToken) and new (access)
+  const accessToken = credentials.access || credentials.accessToken;
+  const oauthToken = credentials.access || credentials.oauthToken;
+  
+  // Anthropic (Claude) - detect by sk-ant- prefix
+  if (oauthToken?.startsWith("sk-ant-")) {
+    return fetchAnthropicUsage(oauthToken);
+  }
+  
+  // OpenAI (ChatGPT) - detect by JWT or accountId
+  if (accessToken && (credentials.accountId || accessToken.startsWith("eyJ"))) {
+    return fetchChatGptUsage(accessToken, credentials.accountId);
+  }
+  
+  return { status: "none" };
 }
 
 // Named pi accounts: an isolated PI_CODING_AGENT_DIR materialized from the
-// stored credential bag — the exact twin of codex's materializeCodexHome.
-// Pi's AuthStorage reads auth.json from that dir, refreshes tokens when the
-// stored expiry passes, and writes rotated tokens back into the file. The
-// materialized entry carries the access token's REAL expiry (a hardcoded 0
-// meant "already expired" — a forced refresh on every run, whose rotated
-// refresh token the next materialization then stomped with the store's
-// stale one, server-invalidating the whole credential chain). The file is
-// only rewritten when the store's credential is FRESHER than what is
-// already on disk, so pi's own rotation stays authoritative.
-// models.json is copied in from the real agent dir
-// (when present) so custom model definitions still resolve. v1 scope: the
-// openai-codex (ChatGPT OAuth) provider — pi's own provider vocabulary,
-// declared as data on this spec (RULE #0 intact).
+// stored credential bag. Pi's AuthStorage reads auth.json from that dir,
+// refreshes tokens when the stored expiry passes, and writes rotated tokens
+// back into the file. The file is only rewritten when the store's credential
+// is FRESHER than what is already on disk, so pi's own rotation stays
+// authoritative. Supports both openai-codex (ChatGPT OAuth: accessToken,
+// refreshToken, accountId) and anthropic (Claude OAuth: oauthToken,
+// refreshToken) credentials.
 function materializePiAgentDir(credentials: Record<string, string>): string {
-  const key = credentials.accountId?.trim() || createHash("sha256").update(credentials.refreshToken ?? "").digest("hex").slice(0, 16);
+  // Normalize credential format: support both old (accessToken/oauthToken/refreshToken)
+  // and new (access/refresh) formats
+  const accessToken = credentials.access || credentials.accessToken;
+  const refresh = credentials.refresh || credentials.refreshToken;
+  const oauthToken = credentials.access || credentials.oauthToken;
+  
+  const key = credentials.accountId?.trim() || createHash("sha256").update(refresh ?? credentials.access ?? credentials.accessToken ?? credentials.oauthToken ?? "").digest("hex").slice(0, 16);
   const dir = join(gaiaHome(), "pi-accounts", key);
+  const ambientDir = join(homedir(), ".pi", "agent");
+  
+  // Create full Pi directory structure
   mkdirSync(dir, { recursive: true });
-  const modelsSrc = join(homedir(), ".pi", "agent", "models.json");
-  const modelsDst = join(dir, "models.json");
-  if (existsSync(modelsSrc) && !existsSync(modelsDst)) copyFileSync(modelsSrc, modelsDst);
-  const authPath = join(dir, "auth.json");
-  const entry = {
-    type: "oauth",
-    refresh: credentials.refreshToken ?? "",
-    access: credentials.accessToken ?? "",
-    expires: expiryMsFromJwt(credentials.accessToken),
-    ...(credentials.accountId ? { accountId: credentials.accountId } : {}),
-  };
-  let existing: { ["openai-codex"]?: { refresh?: string; access?: string } } | undefined;
-  try {
-    existing = JSON.parse(readFileSync(authPath, "utf8")) as typeof existing;
-  } catch {
-    // missing or torn — rewrite below
+  for (const subdir of ["bin", "extensions", "skills", "sessions"]) {
+    mkdirSync(join(dir, subdir), { recursive: true });
   }
-  const materialized = existing?.["openai-codex"];
-  if (!materialized?.refresh || entry.expires > expiryMsFromJwt(materialized.access)) {
-    writeFileSync(authPath, JSON.stringify({ "openai-codex": entry }, null, 2) + "\n", { mode: 0o600 });
+  
+  // Copy settings.json from ambient if it doesn't exist
+  const settingsSrc = join(ambientDir, "settings.json");
+  const settingsDst = join(dir, "settings.json");
+  if (existsSync(settingsSrc) && !existsSync(settingsDst)) {
+    copyFileSync(settingsSrc, settingsDst);
+  }
+  
+  // Copy models.json if available
+  const modelsSrc = join(ambientDir, "models.json");
+  const modelsDst = join(dir, "models.json");
+  if (existsSync(modelsSrc) && !existsSync(modelsDst)) {
+    copyFileSync(modelsSrc, modelsDst);
+  }
+  const authPath = join(dir, "auth.json");
+
+  let existing: Record<string, any> = {};
+  try {
+    existing = JSON.parse(readFileSync(authPath, "utf8"));
+  } catch {
+    // missing or torn — start fresh
+  }
+
+  const auth: Record<string, any> = { ...existing };
+
+  // OpenAI credentials (ChatGPT OAuth): access + refresh + accountId
+  // Detect via accountId or accessToken/access format (JWT structure)
+  if (accessToken && (credentials.accountId || accessToken.startsWith("eyJ"))) {
+    const entry = {
+      type: "oauth",
+      refresh: refresh ?? "",
+      access: accessToken ?? "",
+      expires: expiryMsFromJwt(accessToken),
+      ...(credentials.accountId ? { accountId: credentials.accountId } : {}),
+    };
+    const materialized = existing?.["openai-codex"];
+    if (!materialized?.refresh || entry.expires > expiryMsFromJwt(materialized.access)) {
+      auth["openai-codex"] = entry;
+    }
+  }
+
+  // Anthropic credentials (Claude OAuth): access + refresh
+  // Detect via sk-ant prefix
+  else if (oauthToken && oauthToken.startsWith("sk-ant-")) {
+    const entry = {
+      type: "oauth",
+      access: oauthToken,
+      refresh: refresh ?? "",
+      expires: credentials.expires ? Number(credentials.expires) : Date.now() + 3600000,
+    };
+    const materialized = existing?.["anthropic"];
+    // Update if store has newer token or if no existing token
+    if (!materialized?.access || oauthToken !== materialized.access) {
+      auth["anthropic"] = entry;
+    }
+  }
+
+  // Write merged auth.json with both providers if needed
+  if (JSON.stringify(auth) !== JSON.stringify(existing)) {
+    writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
   }
   return dir;
 }
@@ -824,25 +883,22 @@ registerHarness({
   // there means the conversation behind the cursor is resumable; an empty or
   // missing dir means a fresh session — its history must be replayed.
   hasDurableSession: (rootDir, roomId, agentId) => hasPersistedPiSession(rootDir, roomId, agentId),
-  // Named accounts (ChatGPT OAuth): same field vocabulary as codex accounts,
-  // so credentials from a codex login can be reused for a pi binding. Applied
-  // by RunnerHost BEFORE the credential-proxy block — a proxied (sandboxed)
-  // turn strips it with every other provider key.
+  // Named accounts: Pi subscriptions with isolated credential directories.
+  // Each account gets ~/.gaia/pi-accounts/<hash>/ with full Pi directory structure.
   accounts: {
-    label: "Pi account (ChatGPT OAuth)",
+    label: "Pi subscription",
     fields: [
-      { key: "accessToken", label: "Access token", secret: true, hint: "~/.pi/agent/auth.json → openai-codex.access (or a codex account's tokens.access_token)" },
-      { key: "refreshToken", label: "Refresh token", secret: true, hint: "~/.pi/agent/auth.json → openai-codex.refresh (codex: tokens.refresh_token)" },
-      { key: "accountId", label: "Account ID", hint: "~/.pi/agent/auth.json → openai-codex.accountId (codex: tokens.account_id)" },
+      { key: "provider", label: "Provider", hint: "Which provider: 'anthropic' or 'openai-codex'" },
     ],
     env: (credentials) => ({ PI_CODING_AGENT_DIR: materializePiAgentDir(credentials) }),
-    email: (credentials) => emailFromJwt(credentials.accessToken),
+    email: (credentials) => credentials.email || "",
   },
   // Pi's proxy wiring (the in-process fetch redirect lives in applyCredentialProxy):
   // relocate its agent dir to an empty store so AuthStorage resolves no real key
   // (the token registered against the proxy is then what reaches the wire), and
   // deny-read the real store. The runner sets GAIA_LLM_PROXY_URL uniformly.
-  credentialProxy: ({ scratchDir }) => {
+  // credentialProxy DISABLED - causes Claude errors
+  // credentialProxy: ({ scratchDir }) => {
     const authJson = join(scratchDir, "auth.json");
     if (!existsSync(authJson)) writeFileSync(authJson, "{}\n");
     return { env: { PI_CODING_AGENT_DIR: scratchDir }, denyRead: [realPiAuthJson()] };

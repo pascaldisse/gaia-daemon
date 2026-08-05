@@ -3349,7 +3349,10 @@ export class RoomService {
         Object.values(this.workspace.agents).map(async (agent) => ({
           id: agent.id,
           displayName: agent.displayName,
+          ...(agent.description ? { description: agent.description } : {}),
+          ...(agent.avatarUrl ? { avatarUrl: agent.avatarUrl } : {}),
           icon: agent.icon,
+          ...(agent.workspace ? { workspace: agent.workspace } : {}),
           modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
           configuredModel: configuredModelLabel(agent.model, "default"),
           ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),

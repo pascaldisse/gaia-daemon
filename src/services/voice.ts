@@ -69,8 +69,8 @@ export interface VoiceSettings {
   /** Speech-to-text engine for composer dictation (voice INPUT), by id. Swap it
    * like ttsEngine — the shared transcribe path never branches on the engine.
    * "elevenlabs" (Scribe API) is the default; "openai" hits any
-   * OpenAI-compatible /audio/transcriptions endpoint (hosted or a local
-   * whisper-server). Live-CALL STT is a separate path (the unmute stack). */
+   * OpenAI-compatible /audio/transcriptions endpoint; "replicate" hits
+   * Replicate Predictions. Live-CALL STT is a separate path (the unmute stack). */
   sttEngine: string;
   /** Optional spoken-language hint for dictation (ISO 639 code); "" auto-detects. */
   sttLanguage: string;
@@ -86,6 +86,13 @@ export interface VoiceSettings {
   sttOpenAiApiKey: string;
   /** Model for the "openai" STT engine (whisper-1, or a local model name). */
   sttOpenAiModel: string;
+  /** API token for the "replicate" STT engine. Empty falls back to
+   * REPLICATE_API_TOKEN / REPLICATE_API_KEY. */
+  sttReplicateApiKey: string;
+  /** Replicate model slug for dictation (owner/name). */
+  sttReplicateModel: string;
+  /** Optional Replicate model version. Empty uses the model's default endpoint. */
+  sttReplicateVersion: string;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -114,6 +121,9 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   sttOpenAiBaseUrl: "https://api.openai.com/v1",
   sttOpenAiApiKey: "",
   sttOpenAiModel: "whisper-1",
+  sttReplicateApiKey: "",
+  sttReplicateModel: "openai/whisper",
+  sttReplicateVersion: "",
 };
 
 /** The ElevenLabs API key (xi-api-key), shared by the TTS and STT engines:
@@ -155,6 +165,9 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.sttOpenAiBaseUrl === "string" && raw.sttOpenAiBaseUrl.trim()) settings.sttOpenAiBaseUrl = raw.sttOpenAiBaseUrl.trim();
   if (typeof raw.sttOpenAiApiKey === "string" && raw.sttOpenAiApiKey.trim()) settings.sttOpenAiApiKey = raw.sttOpenAiApiKey.trim();
   if (typeof raw.sttOpenAiModel === "string" && raw.sttOpenAiModel.trim()) settings.sttOpenAiModel = raw.sttOpenAiModel.trim();
+  if (typeof raw.sttReplicateApiKey === "string" && raw.sttReplicateApiKey.trim()) settings.sttReplicateApiKey = raw.sttReplicateApiKey.trim();
+  if (typeof raw.sttReplicateModel === "string" && raw.sttReplicateModel.trim()) settings.sttReplicateModel = raw.sttReplicateModel.trim();
+  if (typeof raw.sttReplicateVersion === "string") settings.sttReplicateVersion = raw.sttReplicateVersion.trim();
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();

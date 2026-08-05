@@ -38,9 +38,18 @@ async function main(): Promise<void> {
 
   // Hidden: the per-(room, agent) runner subprocess the daemon spawns for
   // every harness. Long-lived; speaks the runner protocol over stdio.
+  // With --acp flag, speaks Agent Client Protocol instead (for external tools).
   if (args[0] === "__run-agent") {
-    const { runAgentRunner } = await import("./harness/runner.js");
-    await runAgentRunner();
+    const isACP = args.includes("--acp");
+    if (isACP) {
+      // TODO: ACP runner not yet implemented
+      throw new Error("--acp flag not yet supported");
+      // const { runACPAgent } = await import("./harness/acp-runner.js");
+      // await runACPAgent();
+    } else {
+      const { runAgentRunner } = await import("./harness/runner.js");
+      await runAgentRunner();
+    }
     return;
   }
 

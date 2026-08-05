@@ -464,6 +464,9 @@ export class Daemon {
       },
     });
     this.memoryServices.set(workspaceId, { service, live });
+    // Restart resilience: consolidation timers are ephemeral — re-arm them for
+    // every agent so a /rebuild never freezes the episode→facts pipeline.
+    service.resumeConsolidation();
     return service;
   }
 
@@ -1236,7 +1239,7 @@ export class Daemon {
       models: this.hintSourcesCache.models,
       skills: skillHintOptions(skillWorkspace),
     };
-    return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
+    return buildFileHints({ label: file.label, kind: file.kind, content: file.content, workspaceId }, sources);
   }
 
   async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {

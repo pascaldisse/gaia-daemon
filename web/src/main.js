@@ -20,9 +20,11 @@ import "./contextgate.js";
 import "./panel.js";
 import "./search.js";
 import "./settings.js";
+import "./keymaker.js";
 import "./sidebar.js";
 import "./tabsbar.js";
 import "./transcript.js";
+import { initCanvas } from "./canvas.js";
 
 // Restore the theme, status-bar visibility, and pane widths before the first
 // paint so there is no flash.
@@ -32,6 +34,7 @@ restoreColumnWidths();
 
 mountApp();
 initComposer();
+initCanvas();
 
 installOpenModifierTracking();
 installComposerRouting();
