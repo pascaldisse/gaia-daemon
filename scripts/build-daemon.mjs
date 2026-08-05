@@ -71,7 +71,7 @@ timeStep("install-binary", () => {
   renameSync(binaryTmp, binaryFinal);
 });
 
-for (const name of ["web", "setups"]) {
+for (const name of ["web", "setups", "design"]) {
   timeStep(`snapshot-${name}`, () => {
     const src = join(repoRoot, name);
     const dstTmp = join(outDir, `${name}.new`);
