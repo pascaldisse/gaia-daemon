@@ -14,8 +14,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { daemonGet as getFromDaemon, daemonPost as postToDaemon } from "../core/daemon-client.js";
 import { env } from "../core/env.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
+import { isArtifactKind } from "../domain/artifacts.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
 import { gaiaToolByVerb } from "../harness/tools.js";
+import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "./artifacts.js";
 import { compressCaryll, expandCaryll } from "./caryll.js";
 
 const MEMORY_USAGE = `Usage:
@@ -32,6 +34,11 @@ const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
 const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>`;
 const RESUME_USAGE = `Usage: gaia resume <roomId> "<message>"`;
+const ARTIFACT_USAGE = `Usage:
+  gaia artifact create --name N --kind html|json|design --media-type T [--file F | --content C]
+  gaia artifact update <id> [--name N] [--kind K] [--media-type T] [--file F | --content C]
+  gaia artifact list
+  gaia artifact read <id> [--output F]`;
 const DREAM_USAGE = `Usage:
   gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
   gaia dream [agent] --apply   apply the proposal from the last dream run`;
@@ -285,6 +292,62 @@ async function runResume(args: string[]): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
+async function runArtifact(args: string[]): Promise<number> {
+  const roomDir = env("GAIA_ROOM_DIR");
+  const roomId = env("GAIA_ROOM_ID");
+  if (!roomDir || !roomId) return fail("ERROR: GAIA_ROOM_DIR and GAIA_ROOM_ID are required.");
+  const location = { rootDir: workspaceRootFromRoomDir(roomDir), roomId };
+  const sub = args[0];
+  const { positional, flags } = parseFlags(args.slice(1));
+
+  try {
+    if (sub === "list") {
+      console.log(JSON.stringify(await listArtifacts(location), null, 2));
+      return 0;
+    }
+    if (sub === "read") {
+      const artifactId = positional[0];
+      if (!artifactId) return fail(ARTIFACT_USAGE);
+      const artifact = await readArtifact(location, artifactId);
+      if (flags.output) {
+        await writeFile(flags.output, artifact.payload);
+        console.log(JSON.stringify(artifact.manifest, null, 2));
+      } else {
+        console.log(`${JSON.stringify(artifact.manifest, null, 2)}\n\n${Buffer.from(artifact.payload).toString("utf8")}`);
+      }
+      return 0;
+    }
+    if (sub === "create") {
+      if (!flags.name || !isArtifactKind(flags.kind) || !flags["media-type"]) return fail(ARTIFACT_USAGE);
+      const payload = flags.file ? await readFile(flags.file) : (flags.content ?? positional.join(" "));
+      const manifest = await createArtifact(location, {
+        name: flags.name,
+        kind: flags.kind,
+        mediaType: flags["media-type"],
+        payload,
+      });
+      console.log(JSON.stringify(manifest, null, 2));
+      return 0;
+    }
+    if (sub === "update") {
+      const artifactId = positional[0];
+      if (!artifactId || (flags.kind !== undefined && !isArtifactKind(flags.kind))) return fail(ARTIFACT_USAGE);
+      const payload = flags.file ? await readFile(flags.file) : flags.content;
+      const manifest = await updateArtifact(location, artifactId, {
+        ...(flags.name !== undefined ? { name: flags.name } : {}),
+        ...(flags.kind !== undefined && isArtifactKind(flags.kind) ? { kind: flags.kind } : {}),
+        ...(flags["media-type"] !== undefined ? { mediaType: flags["media-type"] } : {}),
+        ...(payload !== undefined ? { payload } : {}),
+      });
+      console.log(JSON.stringify(manifest, null, 2));
+      return 0;
+    }
+  } catch (error) {
+    return fail(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return fail(ARTIFACT_USAGE);
+}
+
 // `gaia dream` — user-triggered memory consolidation ("Dream v2"). Unlike
 // mem/recall/summon it is never granted to an agent (no GaiaTool entry, no
 // Claude/Pi grant): a person runs it from a shell against their own workspace.
@@ -379,6 +442,8 @@ export async function runHarnessCommand(args: string[]): Promise<number> {
       return runMem(rest);
     case "recall":
       return runRecall(rest);
+    case "artifact":
+      return runArtifact(rest);
     case "summon":
       return runSummon(rest);
     case "resume":

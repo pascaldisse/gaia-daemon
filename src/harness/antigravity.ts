@@ -16,7 +16,7 @@ import {
 } from "./spec.js";
 
 const ANTIGRAVITY_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon", "resume"],
+  gaiaTools: ["memory", "recall", "artifact", "summon", "resume"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: true,

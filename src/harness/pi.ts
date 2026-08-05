@@ -269,7 +269,7 @@ function toPiThinking(level: ThinkingLevel | string | undefined): any {
 }
 
 const PI_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon", "resume", "gaia"],
+  gaiaTools: ["memory", "recall", "artifact", "summon", "resume", "gaia"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,

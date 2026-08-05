@@ -7,6 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, defineTool } from "@earendil-works/pi-coding-agent";
 import { gaiaToolCompressionBytes } from "../core/config.js";
+import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
 import { compressCaryll, expandCaryll } from "../services/caryll.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
@@ -266,7 +267,82 @@ export function createSummonTool(summonCreate: SummonCreate, roomId: string, ava
   });
 }
 
-type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "caryll";
+interface ArtifactToolParams {
+  action: "create" | "update" | "list" | "read";
+  artifact_id?: string;
+  name?: string;
+  kind?: "html" | "json" | "design";
+  media_type?: string;
+  content?: string;
+}
+
+function artifactParameters() {
+  return Type.Object({
+    action: stringEnum(["create", "update", "list", "read"]),
+    artifact_id: Type.Optional(Type.String({ description: "Artifact id; required for update/read." })),
+    name: Type.Optional(Type.String({ description: "Display name; required for create." })),
+    kind: Type.Optional(stringEnum(["html", "json", "design"], "Artifact kind; required for create.")),
+    media_type: Type.Optional(Type.String({ description: "Payload media type; required for create." })),
+    content: Type.Optional(Type.String({ description: "UTF-8 payload; required for create, optional for update." })),
+  });
+}
+
+async function runArtifactAction(
+  ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId">,
+  params: ArtifactToolParams,
+): Promise<{ text: string; details: unknown }> {
+  const location = { rootDir: workspaceRootFromRoomDir(ctx.roomDir), roomId: ctx.roomId };
+  if (params.action === "list") {
+    const artifacts = await listArtifacts(location);
+    return { text: JSON.stringify(artifacts, null, 2), details: { artifacts } };
+  }
+  if (params.action === "read") {
+    if (!params.artifact_id) throw new Error("artifact_id is required for read");
+    const artifact = await readArtifact(location, params.artifact_id);
+    const content = Buffer.from(artifact.payload).toString("utf8");
+    return { text: `${JSON.stringify(artifact.manifest, null, 2)}\n\n${content}`, details: { manifest: artifact.manifest } };
+  }
+  if (params.action === "create") {
+    if (!params.name || !params.kind || !params.media_type || params.content === undefined) {
+      throw new Error("name, kind, media_type, and content are required for create");
+    }
+    const manifest = await createArtifact(location, {
+      name: params.name,
+      kind: params.kind,
+      mediaType: params.media_type,
+      payload: params.content,
+    });
+    return { text: JSON.stringify(manifest, null, 2), details: { manifest } };
+  }
+  if (!params.artifact_id) throw new Error("artifact_id is required for update");
+  const manifest = await updateArtifact(location, params.artifact_id, {
+    ...(params.name !== undefined ? { name: params.name } : {}),
+    ...(params.kind !== undefined ? { kind: params.kind } : {}),
+    ...(params.media_type !== undefined ? { mediaType: params.media_type } : {}),
+    ...(params.content !== undefined ? { payload: params.content } : {}),
+  });
+  return { text: JSON.stringify(manifest, null, 2), details: { manifest } };
+}
+
+export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId">) {
+  return defineTool({
+    name: "artifact",
+    label: "Artifact",
+    description: "Create, update, list, and read durable artifacts owned by the current room.",
+    promptSnippet: "artifact: create/update/list/read room-owned html, json, and design payloads.",
+    parameters: artifactParameters(),
+    execute: async (_toolCallId: string, params: ArtifactToolParams) => {
+      try {
+        const result = await runArtifactAction(ctx, params);
+        return { content: [{ type: "text" as const, text: result.text || "[]" }], details: result.details };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+      }
+    },
+  });
+}
+
+type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll";
 type GaiaResult = { content: Array<{ type: "text"; text: string }>; details: unknown };
 type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
 
@@ -354,16 +430,20 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
         return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
       }
     },
+    artifact: async (args) => {
+      const result = await runArtifactAction(ctx, args as unknown as ArtifactToolParams);
+      return { content: [{ type: "text", text: result.text || "[]" }], details: result.details };
+    },
     caryll: runCaryllVerb,
   };
 
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web curl fallback, daemon memory/recall/summon/resume, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; only tool needed for files, commands, web curl, memory, worker summons, and room steering.",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; only tool needed for files, commands, web curl, memory, artifacts, worker summons, and room steering.",
     parameters: Type.Object({
-      verb: stringEnum(["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "caryll"]),
+      verb: stringEnum(["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"]),
       args: Type.Record(Type.String(), Type.Unknown()),
       raw: Type.Optional(Type.Boolean({ description: "Return native output unchanged." })),
       compress_above_bytes: Type.Optional(Type.Number({ minimum: 0, description: "Override configured gaiago formatting threshold in bytes." })),
