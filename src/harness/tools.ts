@@ -65,7 +65,7 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
     id: "gaia",
     cliVerbs: [],
     grant: "",
-    pointer: "- `gaia` custom tool — unified verb dispatcher: bash/read/write/edit/web/summon/resume/mem/recall/caryll; set raw:true for unformatted output.",
+    pointer: "- `gaia` custom tool — unified verb dispatcher: bash/read/write/edit/web/summon/resume/mem/recall/artifact/caryll; set raw:true for unformatted output.",
     makePiTool: async (ctx) => (await import("./tools-pi.js")).createGaiaTool(ctx),
   },
   {
@@ -87,6 +87,13 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
         ctx.roomId,
       );
     },
+  },
+  {
+    id: "artifact",
+    cliVerbs: ["artifact"],
+    grant: "Bash(gaia artifact:*)",
+    pointer: "- `gaia artifact create|update|list|read` — durable html/json/design payloads owned by the current room",
+    makePiTool: async (ctx) => (await import("./tools-pi.js")).createArtifactTool(ctx),
   },
   {
     id: "summon",

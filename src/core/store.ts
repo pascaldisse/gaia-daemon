@@ -64,6 +64,20 @@ export async function writeTextAtomic(path: string, content: string): Promise<vo
   await rename(tmp, path);
 }
 
+/** Atomic full-file binary write for room-owned payloads. */
+export async function writeBytesAtomic(path: string, content: Uint8Array): Promise<void> {
+  await ensureDir(dirname(path));
+  const tmp = join(dirname(path), `.${process.pid}.${(tmpSeq++).toString(36)}.${Date.now().toString(36)}.tmp`);
+  await writeFile(tmp, content);
+  const fd = openSync(tmp, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  await rename(tmp, path);
+}
+
 export async function appendText(path: string, content: string): Promise<void> {
   await ensureDir(dirname(path));
   await appendFile(path, content, "utf8");

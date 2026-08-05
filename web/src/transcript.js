@@ -10,6 +10,7 @@
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
+import { detectArtifacts } from "./artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";
@@ -578,6 +579,10 @@ registerRegion("transcript", renderTranscript);
 
 /** @param {MessageView} view @returns {HTMLElement} */
 function Message(view) {
+  // Fence detection is intentionally here, at the keyed message boundary: it
+  // sees both committed replies and their streaming updates without changing
+  // markdown rendering or event transport. detectArtifacts is idempotent.
+  if (view.author !== "user" && view.author !== "system") detectArtifacts(view.text, view.details);
   if (view.kind === "compact-complete") return CompactBoundary(view);
   const isUser = view.author === "user";
   const isAgent = !isUser && view.author !== "system";

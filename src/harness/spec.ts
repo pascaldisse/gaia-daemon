@@ -136,7 +136,7 @@ export interface AgentRuntime {
 
 // --- capabilities + ui (data on the spec) --------------------------------------
 
-export type GaiaTool = "memory" | "recall" | "summon" | "resume" | "gaia";
+export type GaiaTool = "memory" | "recall" | "artifact" | "summon" | "resume" | "gaia";
 
 export interface HarnessCapabilities {
   /** Which gaia tools this harness can wire into a session; the agent's

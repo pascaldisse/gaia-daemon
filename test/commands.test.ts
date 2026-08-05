@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasExplicitMention, parseCommand, planMentionRoute, validateThinkingLevel, THINKING_LEVEL_MAX } from "../src/services/commands.js";
+import { hasExplicitMention, parseCommand, planMentionRoute, SLASH_COMMANDS, validateThinkingLevel, THINKING_LEVEL_MAX } from "../src/services/commands.js";
 
 test("parseCommand: plain text is a message", () => {
   assert.deepEqual(parseCommand("hello there"), { type: "message", text: "hello there" });
@@ -9,6 +9,7 @@ test("parseCommand: plain text is a message", () => {
 test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/help"), { type: "help" });
   assert.deepEqual(parseCommand("/agents"), { type: "agents" });
+  assert.ok(SLASH_COMMANDS.some((command) => command.name === "design"), "/design is advertised to the command palette");
   assert.deepEqual(parseCommand("/roles @gaia"), { type: "roles", agent: "gaia" });
   assert.deepEqual(parseCommand("/role brainstorm"), { type: "role", role: "brainstorm" });
   assert.deepEqual(parseCommand("/role gaia brainstorm"), { type: "role", agent: "gaia", role: "brainstorm" });

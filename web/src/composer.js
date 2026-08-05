@@ -15,6 +15,7 @@ import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
+import { setArtifactPanelOpen, toggleArtifactPanel } from "./artifacts.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
   abortActiveTranscription,
@@ -34,6 +35,12 @@ import {
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 /** @typedef {{ label: string, value: string, description?: string, suffix?: string }} CompletionOption */
 /** @typedef {{ kind: "/"|"@", start: number, query: string, options: CompletionOption[] }} Completion */
+
+// Browser-owned commands work before the daemon is rebuilt. Keep these ahead
+// of the daemon snapshot; the name de-duplication in completionFor prevents a
+// second /design row after the rebuilt daemon also advertises it.
+/** @type {Array<{ name: string, description: string, native?: boolean }>} */
+const LOCAL_SLASH_COMMANDS = [{ name: "design", description: "toggle artifacts, or /design <request> to ask the active agent" }];
 
 /** @type {HTMLTextAreaElement|null} */
 let textarea = null;
@@ -352,6 +359,12 @@ function renderComposer() {
 
 registerRegion("composer", renderComposer);
 
+/** Send an artifact-generation request through the composer's normal message action.
+ * @param {string} prompt */
+export async function sendArtifactPrompt(prompt) {
+  return sendMessage(`artifact生成せよ: ${prompt}`, []);
+}
+
 /** @param {{ focus?: boolean, queue?: boolean }} [options] */
 async function submitComposer(options = {}) {
   if (state.dictating || state.dictationBusy) {
@@ -394,7 +407,19 @@ async function submitComposer(options = {}) {
     });
   };
 
-  if (editing && text.trim()) {
+  const designPrompt = !editing && pending.length === 0 ? designCommandPrompt(text) : null;
+  if (designPrompt !== null) {
+    clearDraft();
+    if (!designPrompt) {
+      toggleArtifactPanel();
+      return;
+    }
+    // This is deliberately the same send path as the drawer's prompt form.
+    // The browser consumes /design, so the daemon's palette registration never
+    // receives a second command turn after it is rebuilt.
+    setArtifactPanelOpen(true);
+    restoreOnFailure(sendArtifactPrompt(designPrompt));
+  } else if (editing && text.trim()) {
     releasePreviews(pending);
     restoreOnFailure(editMessage(editing, text, editingAttachments.map((a) => a.path)));
   } else if (pending.length > 0) {
@@ -610,13 +635,23 @@ function onComposerKeydown(event) {
 // ---------------------------------------------------------------------------
 // Autocomplete: /commands and @agents.
 
+/** /design returns its trimmed request; null means this is not that command.
+ * @param {string} text */
+function designCommandPrompt(text) {
+  const match = text.trim().match(/^\/design(?:\s+([\s\S]*))?$/);
+  return match ? (match[1]?.trim() ?? "") : null;
+}
+
 /** @param {string} text @returns {Completion|null} */
 function completionFor(text) {
   if (!state.snapshot) return null;
   const slash = text.match(/^\/([^\s]*)$/);
   if (slash) {
     const query = slash[1].toLowerCase();
-    const options = (state.snapshot.commands ?? [])
+    const commands = [...LOCAL_SLASH_COMMANDS, ...(state.snapshot.commands ?? [])].filter(
+      (command, index, all) => all.findIndex((candidate) => candidate.name === command.name) === index,
+    );
+    const options = commands
       .filter((command) => command.name.toLowerCase().startsWith(query))
       .map((command) => ({
         label: command.name,
@@ -624,7 +659,7 @@ function completionFor(text) {
         description: command.description,
         // Commands that take an argument (roles, and native passthrough like
         // /deep-research <query>) get a trailing space to keep typing.
-        suffix: command.native || command.name === "role" || command.name === "roles" ? " " : "",
+        suffix: command.native || command.name === "role" || command.name === "roles" || command.name === "design" ? " " : "",
       }));
     state.completionIndex = Math.min(state.completionIndex, Math.max(0, options.length - 1));
     return { kind: "/", start: 0, query, options };

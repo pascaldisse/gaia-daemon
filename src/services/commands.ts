@@ -53,6 +53,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "role", type: "role", description: "set or clear an agent role" },
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>, or GAIA-THINK protocol level: /thinking <0-10|off>" },
+  { name: "design", type: "design", description: "toggle artifacts, or /design <request> to ask the active agent" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
   { name: "pet", type: "pet", description: "manage native desktop pets: /pet | /pet <package> | /pet @agent [<package>] | off [@agent] | list" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },

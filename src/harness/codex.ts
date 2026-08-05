@@ -338,7 +338,7 @@ export interface CodexRuntimeOptions extends RuntimeCreateContext {
 // (see CODEX_SANDBOX_MODE), so the tools field is a real control surface and
 // stays visible in settings (granularTools: true).
 const CODEX_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "summon", "resume", "gaia"],
+  gaiaTools: ["memory", "recall", "artifact", "summon", "resume", "gaia"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: false,
