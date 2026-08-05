@@ -3,7 +3,7 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
-import { artifactPanelOpen, toggleArtifactPanel } from "./artifacts.js";
+import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";

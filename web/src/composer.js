@@ -15,7 +15,7 @@ import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
-import { setArtifactPanelOpen, toggleArtifactPanel } from "./artifacts.js";
+import { setArtifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { endCall, setMicMuted } from "./voice.js";
 import {
   abortActiveTranscription,
