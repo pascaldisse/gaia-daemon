@@ -1,7 +1,7 @@
 # 車線B仕様: artifact view + Figma様canvas (web/のみ)
 
 ## 形
-artifact = { id:string, type:"html"|"json"|"design", content:string, updated:number }
+artifact = { id:string, kind:"html"|"json"|"design", content:string, updated:number } (車線A ArtifactKind準拠)
 design content = JSON: { elements: [{ id, kind:"box"|"text", x, y, w, h, text?, fill?, color?, fontSize? }] }
 
 ## 檔(新規、全てweb/src/)
@@ -20,7 +20,7 @@ design content = JSON: { elements: [{ id, kind:"box"|"text", x, y, w, h, text?, 
 
 ## ①即座表示
 - transcript.js: message内 ```json artifact / ```html fence 或 event payload に artifact 検出 → artifacts.js state 更新 → panel auto開
-- 検出=軽く: fence 先頭 `{"artifact":` 或 type付JSON
+- 検出=軽く: fence 先頭 `{"artifact":` 或 kind付JSON(legacy `type`も寛容受理)
 
 ## ②canvas(design型)
 - 単純のみ: 要素click選択(枠表示)、drag移動、四隅handle resize、textはdblclick→contenteditable、Esc解除、Del削除

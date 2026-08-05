@@ -5,8 +5,8 @@ import { api } from "./api.js";
 import { markDirty } from "./render.js";
 import { state } from "./state.js";
 
-/** @typedef {"html"|"json"|"design"} ArtifactType */
-/** @typedef {{ id: string, type: ArtifactType, content: string, updated: number }} Artifact */
+/** @typedef {"html"|"json"|"design"} ArtifactKind */
+/** @typedef {{ id: string, kind: ArtifactKind, content: string, updated: number }} Artifact */
 
 /** @type {Artifact[]} */
 let artifacts = [];
@@ -49,10 +49,10 @@ function readLocal(id) {
 /** @param {unknown} value @returns {value is Artifact} */
 function isArtifact(value) {
   if (!value || typeof value !== "object") return false;
-  const candidate = /** @type {{ id?: unknown, type?: unknown, content?: unknown, updated?: unknown }} */ (value);
+  const candidate = /** @type {{ id?: unknown, kind?: unknown, content?: unknown, updated?: unknown }} */ (value);
   return (
     typeof candidate.id === "string" &&
-    (candidate.type === "html" || candidate.type === "json" || candidate.type === "design") &&
+    (candidate.kind === "html" || candidate.kind === "json" || candidate.kind === "design") &&
     typeof candidate.content === "string" &&
     typeof candidate.updated === "number"
   );
@@ -111,7 +111,7 @@ export function upsertArtifact(artifact) {
   if (!roomId || !isArtifact(artifact)) return;
   const index = artifacts.findIndex((candidate) => candidate.id === artifact.id);
   const existing = index === -1 ? undefined : artifacts[index];
-  if (existing && existing.type === artifact.type && existing.content === artifact.content) return;
+  if (existing && existing.kind === artifact.kind && existing.content === artifact.content) return;
   const next = { ...artifact, updated: artifact.updated || Date.now() };
   if (index === -1) artifacts = [...artifacts, next];
   else artifacts = [...artifacts.slice(0, index), next, ...artifacts.slice(index + 1)];
@@ -193,7 +193,7 @@ function artifactsFromText(text) {
     const content = match[2].trim();
     if (!content) continue;
     if (language === "html") {
-      found.push(normalizeArtifact({ type: "html", content }));
+      found.push(normalizeArtifact({ kind: "html", content }));
       continue;
     }
     if (language === "json" || language === "design" || !language) {
@@ -204,18 +204,19 @@ function artifactsFromText(text) {
   return found;
 }
 
-/** @param {string} content @param {ArtifactType|undefined} hinted @returns {Artifact|null} */
+/** @param {string} content @param {ArtifactKind|undefined} hinted @returns {Artifact|null} */
 function parseArtifact(content, hinted) {
   try {
     const parsed = JSON.parse(content);
     const wrapped = parsed && typeof parsed === "object" && "artifact" in parsed ? parsed.artifact : undefined;
     const value = wrapped && typeof wrapped === "object" ? wrapped : parsed;
     if (!value || typeof value !== "object") return null;
-    const candidate = /** @type {{ id?: unknown, type?: unknown, content?: unknown }} */ (value);
-    const type = candidate.type === "html" || candidate.type === "json" || candidate.type === "design" ? candidate.type : hinted;
-    if (!type) return null;
-    const normalizedContent = typeof candidate.content === "string" ? candidate.content : type === "design" ? JSON.stringify(candidate) : content;
-    return normalizeArtifact({ id: typeof candidate.id === "string" ? candidate.id : undefined, type, content: normalizedContent });
+    const candidate = /** @type {{ id?: unknown, kind?: unknown, type?: unknown, content?: unknown }} */ (value);
+    const declared = candidate.kind ?? candidate.type; // accept legacy `type` payloads leniently
+    const kind = declared === "html" || declared === "json" || declared === "design" ? declared : hinted;
+    if (!kind) return null;
+    const normalizedContent = typeof candidate.content === "string" ? candidate.content : kind === "design" ? JSON.stringify(candidate) : content;
+    return normalizeArtifact({ id: typeof candidate.id === "string" ? candidate.id : undefined, kind, content: normalizedContent });
   } catch {
     return null;
   }
@@ -231,11 +232,11 @@ function artifactFromValue(value) {
   }
 }
 
-/** @param {{ id?: string, type: ArtifactType, content: string }} value @returns {Artifact} */
+/** @param {{ id?: string, kind: ArtifactKind, content: string }} value @returns {Artifact} */
 function normalizeArtifact(value) {
   return {
-    id: value.id ?? `${value.type}-${stableHash(value.content)}`,
-    type: value.type,
+    id: value.id ?? `${value.kind}-${stableHash(value.content)}`,
+    kind: value.kind,
     content: value.content,
     updated: Date.now(),
   };

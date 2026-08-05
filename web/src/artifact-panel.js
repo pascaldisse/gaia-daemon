@@ -58,7 +58,7 @@ function ArtifactPanel() {
               role: "tab",
               "aria-selected": artifact.id === selected?.id,
               title: artifact.id,
-              text: `${artifact.type} · ${artifact.id}`,
+              text: `${artifact.kind} · ${artifact.id}`,
               onclick: () => selectArtifact(artifact.id),
             }),
           )
@@ -69,12 +69,12 @@ function ArtifactPanel() {
   );
 }
 
-/** @param {{ id: string, type: "html"|"json"|"design", content: string, updated: number }} artifact @returns {HTMLElement} */
+/** @param {{ id: string, kind: "html"|"json"|"design", content: string, updated: number }} artifact @returns {HTMLElement} */
 function ArtifactView(artifact) {
-  if (artifact.type === "html") {
+  if (artifact.kind === "html") {
     return h("iframe", { class: "artifact-html", sandbox: "", srcdoc: artifact.content, title: artifact.id });
   }
-  if (artifact.type === "json") {
+  if (artifact.kind === "json") {
     return h("pre", { class: "artifact-json", text: prettyJson(artifact.content) });
   }
   return ArtifactCanvas(artifact.content, (content) => {
