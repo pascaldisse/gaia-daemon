@@ -98,6 +98,12 @@ export const workspacePaths = {
   memoryIndexDb: (rootDir: string) => join(rootDir, ".gaia", "memory", "index.db"),
   memoryEval: (rootDir: string) => join(rootDir, ".gaia", "memory", "eval.json"),
   roomFilesDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "files"),
+  roomArtifactsDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "artifacts"),
+  roomArtifactDir: (rootDir: string, roomId: string, artifactId: string) => join(rootDir, ".gaia", "rooms", roomId, "artifacts", artifactId),
+  roomArtifactManifest: (rootDir: string, roomId: string, artifactId: string) =>
+    join(rootDir, ".gaia", "rooms", roomId, "artifacts", artifactId, "manifest.json"),
+  roomArtifactPayload: (rootDir: string, roomId: string, artifactId: string) =>
+    join(rootDir, ".gaia", "rooms", roomId, "artifacts", artifactId, "payload"),
   piSessionsDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "pi-sessions"),
   /** Rewound-away transcript lines (edit/retry fork), append-only beside the transcript. */
   roomRewound: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "rewound.jsonl"),
