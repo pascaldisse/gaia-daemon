@@ -3,4 +3,4 @@
 	url = https://github.com/pascaldisse/unmute.git
 [submodule "design"]
 	path = design
-	url = file:///Users/pascaldisse/projects/gaia-design
+	url = https://github.com/pascaldisse/gaia-design.git
