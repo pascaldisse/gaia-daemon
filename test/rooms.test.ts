@@ -70,6 +70,7 @@ test("normalizeRoomState preserves queue hand-off markers across restart", () =>
       eventId: "evt_user_1",
       recorded: true,
       nativeCommand: true,
+      goalStartedAt: "2026-08-04T14:59:00.000Z",
     }],
   });
   assert.deepEqual(state.queue?.[0], {
@@ -80,6 +81,7 @@ test("normalizeRoomState preserves queue hand-off markers across restart", () =>
     eventId: "evt_user_1",
     recorded: true,
     nativeCommand: true,
+    goalStartedAt: "2026-08-04T14:59:00.000Z",
   });
 });
 

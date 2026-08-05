@@ -156,6 +156,9 @@ export interface SendMessageOptions {
   /** This turn was produced by room agent-dialogue (one agent addressing
    * another), not a human — it doesn't reset the dialogue hop count. */
   fromAgentDialogue?: boolean;
+  /** Internal identity for a resumed pinned-goal turn. Ordinary user and agent
+   * dialogue turns never carry it and therefore cannot advance a goal. */
+  goalStartedAt?: string;
   // --- context-gate resume knobs (set only when replaying a held turn) --------
   /** Force this target's starting cursor (last-N loads a tail; compact loads
    * nothing raw). Also signals "already decided" so the gate never re-triggers. */
@@ -564,9 +567,8 @@ export class RoomService {
 
     // Interrupted turn? Resume in the background — never blocks opening.
     if (state.pendingTurn) void this.resumePendingTurn(state.pendingTurn).catch(() => {});
-    // Durable queue survivors from a prior process: rebuild their task chips
-    // and drain once idle. Voice-channel synthetics are dropped — their call
-    // is gone.
+    // Durable queue survivors from a prior process: rebuild their task chips.
+    // Voice-channel synthetics are dropped — their call is gone.
     const queue = state.queue ?? [];
     if (queue.length > 0) {
       const stale = queue.filter((message) => message.channel === "voice");
@@ -589,7 +591,18 @@ export class RoomService {
           // Agent-authored hand-offs/summon callbacks aren't "user →" ghosts.
           ...(message.fromAgentDialogue ? { callback: true } : {}),
         }));
-      if (!this.activeTask) void this.drain();
+    }
+
+    // Goal recovery: every active goal owns either an in-flight WAL marker or
+    // one durable queue entry. If a process died after committing a reply but
+    // before enqueueing its successor, recreate that successor on boot.
+    const goal = state.goal;
+    const goalPending = goal && state.pendingTurn?.goalStartedAt === goal.startedAt;
+    const goalQueued = goal && queue.some((message) => message.goalStartedAt === goal.startedAt);
+    if (goal?.status === "active" && !goalPending && !goalQueued) {
+      await this.enqueueGoalTurn(goal, true, !state.pendingTurn);
+    } else if (!state.pendingTurn && this.queuedTasks.length > 0 && !this.activeTask) {
+      void this.drain();
     }
   }
 
@@ -832,7 +845,17 @@ export class RoomService {
   private async drain(onDecided?: () => void): Promise<void> {
     try {
       if (this.activeTask) return;
-      const next = await this.room.peekQueue();
+      let next = await this.room.peekQueue();
+      let droppedStaleGoal = false;
+      while (next?.goalStartedAt) {
+        const goal = (await this.room.state()).goal;
+        if (goal?.status === "active" && goal.startedAt === next.goalStartedAt) break;
+        await this.room.spliceQueued(next.taskId);
+        this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next?.taskId);
+        droppedStaleGoal = true;
+        next = await this.room.peekQueue();
+      }
+      if (droppedStaleGoal) void this.emitSnapshot();
       if (!next) return;
       const due = next.notBefore ? Date.parse(next.notBefore) : Number.NaN;
       if (Number.isFinite(due) && due > Date.now()) {
@@ -881,6 +904,7 @@ export class RoomService {
           ...(next.channel ? { channel: next.channel } : {}),
           ...(next.attachments?.length ? { attachments: next.attachments } : {}),
           ...(next.fromAgentDialogue ? { fromAgentDialogue: true, recordUserMessage: false } : {}),
+          ...(next.goalStartedAt ? { goalStartedAt: next.goalStartedAt } : {}),
           ...(next.recorded ? { recordUserMessage: false } : {}),
           ...(next.nativeCommand ? { nativeCommand: true } : {}),
           // Retried prompts are already on the transcript from the original
@@ -1008,15 +1032,32 @@ export class RoomService {
    * from outside; kick drain when idle). Marked `callback` so the client
    * renders no "user →" ghost — the driving text is an agent message/pointer,
    * not something a person typed. */
-  private async enqueueAgentDialogue(targets: string[], text: string): Promise<void> {
+  private async enqueueAgentDialogue(targets: string[], text: string, options: { goalStartedAt?: string; kick?: boolean } = {}): Promise<void> {
     const task = this.createTask(text, targets);
     task.status = "queued";
     task.callback = true;
-    await this.room.enqueue({ taskId: task.id, text, targets, fromAgentDialogue: true, queuedAt: task.startedAt });
+    await this.room.enqueue({
+      taskId: task.id,
+      text,
+      targets,
+      fromAgentDialogue: true,
+      ...(options.goalStartedAt ? { goalStartedAt: options.goalStartedAt } : {}),
+      queuedAt: task.startedAt,
+    });
     this.queuedTasks.push(task);
     this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task });
     void this.emitSnapshot();
-    if (!this.activeTask) void this.drain();
+    if (options.kick !== false && !this.activeTask) void this.drain();
+  }
+
+  /** Queue one synthetic goal turn through the ordinary durable agent path. */
+  private async enqueueGoalTurn(goal: RoomGoal, continuing: boolean, kick = true): Promise<void> {
+    const verb = continuing ? "Continue" : "Begin";
+    await this.enqueueAgentDialogue(
+      [goal.agentId],
+      `${verb} the pinned room goal: "${goal.objective}". Work autonomously from the room context. When — and only when — the goal is fully achieved, write ${GOAL_COMPLETE_SIGNAL} on its own line; otherwise keep working.`,
+      { goalStartedAt: goal.startedAt, kick },
+    );
   }
 
   /** Deliver a background worker's result into this room (the summon callback):
@@ -1344,6 +1385,7 @@ export class RoomService {
           agentId: target,
           partialReply: "",
           ...(channel ? { channel } : {}),
+          ...(options.goalStartedAt ? { goalStartedAt: options.goalStartedAt } : {}),
           startedAt: new Date().toISOString(),
         },
         options.queued ? { consumeQueuedTaskId: options.queued.taskId } : undefined,
@@ -1589,6 +1631,7 @@ export class RoomService {
               agentId: rest[0],
               partialReply: "",
               ...(channel ? { channel } : {}),
+              ...(options.goalStartedAt ? { goalStartedAt: options.goalStartedAt } : {}),
               startedAt: new Date().toISOString(),
             }
           : undefined;
@@ -1631,7 +1674,7 @@ export class RoomService {
       if (partialReply) await this.maybeDispatchAgentDialogue(target, partialReply);
       // Goal continuation runs ONLY here: past the failure/cancel returns, so a
       // stream error or a stop never counts as goal progress (and never loops).
-      if (partialReply) await this.maybeContinueGoal(target, partialReply);
+      if (partialReply && options.goalStartedAt) await this.maybeContinueGoal(target, partialReply, options.goalStartedAt);
     }
 
     if (!this.taskCancelled(task)) this.settleTask(task, "complete");
@@ -2322,8 +2365,9 @@ export class RoomService {
         updatedAt: now,
       };
       await this.updateGoal(() => goal);
+      await this.enqueueGoalTurn(goal, false);
       const budget = goal.tokenBudget ? ` Budget: ${goal.tokenBudget.toLocaleString()} tokens.` : "";
-      return `Goal pinned for @${target}: "${objective}".${budget} @${target} keeps working after each turn until it writes ${GOAL_COMPLETE_SIGNAL} in a reply (no marker = not done). /goal pause to hold, /goal clear to drop.`;
+      return `Goal pinned for @${target}: "${objective}".${budget} @${target} is starting now and keeps working until it writes ${GOAL_COMPLETE_SIGNAL} in a reply (no marker = not done). /goal pause to hold, /goal clear to drop.`;
     }
     const goal = (await this.room.state()).goal;
     if (command.sub === "status") {
@@ -2349,6 +2393,9 @@ export class RoomService {
       delete next.stoppedReason;
       return next;
     });
+    const resumed = { ...goal, status: "active" as const };
+    delete resumed.stoppedReason;
+    await this.enqueueGoalTurn(resumed, true);
     const note = goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget ? " Note: the token budget is already spent — raise it with /goal --tokens N <objective>." : "";
     return `Goal resumed: "${goal.objective}".${note}`;
   }
@@ -2366,9 +2413,9 @@ export class RoomService {
   /** After a CLEAN goal turn: stop on the explicit completion signal or an
    * exhausted budget, otherwise enqueue the next continuation on the durable
    * queue (restart-safe). Strict by design — no signal means NOT done. */
-  private async maybeContinueGoal(author: string, reply: string): Promise<void> {
+  private async maybeContinueGoal(author: string, reply: string, goalStartedAt: string): Promise<void> {
     const goal = (await this.room.state()).goal;
-    if (!goal || goal.status !== "active" || goal.agentId !== author) return;
+    if (!goal || goal.status !== "active" || goal.agentId !== author || goal.startedAt !== goalStartedAt) return;
     const spent = this.contextUsage[author]?.usedTokens ?? 0;
     const tokensUsed = goal.tokensUsed + spent;
     const iterations = goal.iterations + 1;
@@ -2385,10 +2432,7 @@ export class RoomService {
       return;
     }
     await this.updateGoal(() => base);
-    await this.enqueueAgentDialogue(
-      [author],
-      `Continue the pinned room goal: "${goal.objective}". Keep working from your last message. When — and only when — the goal is fully achieved, write ${GOAL_COMPLETE_SIGNAL} on its own line; otherwise just continue.`,
-    );
+    await this.enqueueGoalTurn(base, true);
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
@@ -2818,6 +2862,7 @@ export class RoomService {
         recordUserMessage: false,
         ...(pending.channel ? { channel: pending.channel } : {}),
         ...(pending.attachments?.length ? { attachments: pending.attachments } : {}),
+        ...(pending.goalStartedAt ? { goalStartedAt: pending.goalStartedAt } : {}),
       });
     }
   }

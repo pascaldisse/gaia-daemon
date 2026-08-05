@@ -9,7 +9,7 @@ import { MemoryStore } from "../src/domain/memory.js";
 import { DEFAULTS } from "../src/core/config.js";
 import { readJson } from "../src/core/store.js";
 import { workspacePaths } from "../src/core/paths.js";
-import type { AgentDef, AgentEvent, QueuedMessage, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
+import type { AgentDef, AgentEvent, QueuedMessage, RoomGoal, RoomState, SanitizeProposal, Snapshot, UiEvent, Workspace, WorkspaceConfig } from "../src/core/types.js";
 import "../src/harness/index.js"; // register Pi: its resolved SKILL.md commands are palette entries
 import { RunnerHost } from "../src/harness/host.js";
 import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
@@ -109,6 +109,8 @@ async function makeService(options: {
   roomId?: string;
   /** Seed the room's state.json as incognito before RoomService.open reads it. */
   incognito?: boolean;
+  /** Seed a pinned goal before RoomService.open (restart recovery tests). */
+  goal?: RoomGoal;
   /** Tool ids granted to every test agent (default none). */
   tools?: string[];
   /** Durable queue entries to seed before RoomService.open() runs boot drain. */
@@ -118,8 +120,18 @@ async function makeService(options: {
   const roomId = options.roomId ?? "default";
   await mkdir(join(root, ".gaia", "rooms", roomId), { recursive: true });
   await writeFile(join(root, ".gaia", "config.json"), "{}", "utf8");
-  if (options.incognito) {
-    await writeFile(workspacePaths.roomState(root, roomId), JSON.stringify({ activeRoles: {}, agentCursors: {}, incognito: true }), "utf8");
+  if (options.incognito || options.goal) {
+    await writeFile(
+      workspacePaths.roomState(root, roomId),
+      JSON.stringify({
+        activeRoles: {},
+        thinkingOverrides: {},
+        agentCursors: {},
+        ...(options.incognito ? { incognito: true } : {}),
+        ...(options.goal ? { goal: options.goal } : {}),
+      }),
+      "utf8",
+    );
   }
 
   const agentIds = options.agents ?? ["gaia", "terry"];
@@ -162,6 +174,17 @@ async function makeService(options: {
   const events: UiEvent[] = [];
   service.subscribe((event) => events.push(event));
   return { service, workspace, root, events, runtimes };
+}
+
+async function waitForState(root: string, predicate: (state: RoomState) => boolean, timeoutMs = 2_000): Promise<RoomState> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await (await RoomHandle.open(root, "default")).state();
+  while (Date.now() < deadline) {
+    last = await (await RoomHandle.open(root, "default")).state();
+    if (predicate(last)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for room state: ${JSON.stringify(last)}`);
 }
 
 /** Real RunnerHost child used by the durability regressions below. It speaks
@@ -1001,6 +1024,112 @@ test("slash commands emit a system room-event and settle synchronously", async (
   assert.ok(system, "system reply emitted");
   // Unclaimed slash commands are no longer daemon errors; the native-harness
   // regression below verifies their asynchronous command turn.
+});
+
+test("/goal starts immediately, continues durably, and stops only on GOAL-COMPLETE", async () => {
+  let sends = 0;
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    script: () => {
+      sends += 1;
+      return [{ type: "text-delta", delta: sends === 1 ? "first autonomous step" : "finished\nGOAL-COMPLETE" } as AgentEvent];
+    },
+  });
+
+  const command = await service.sendMessage("/goal ship the release");
+  assert.equal(command.status, "complete");
+  const state = await waitForState(root, (current) => current.goal?.status === "done");
+  assert.equal(sends, 2, "the command starts one turn and a missing marker schedules the next");
+  assert.equal(state.goal?.iterations, 2);
+  assert.equal(state.goal?.stoppedReason, "completed by @gaia");
+  assert.equal(state.queue, undefined, "completion leaves no successor queued");
+});
+
+test("an active /goal with no queue recovers its owed continuation on daemon open", async () => {
+  let sends = 0;
+  const startedAt = "2026-08-05T12:00:00.000Z";
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    goal: {
+      objective: "survive the restart",
+      agentId: "gaia",
+      status: "active",
+      tokensUsed: 10,
+      iterations: 1,
+      startedAt,
+      updatedAt: startedAt,
+    },
+    script: () => {
+      sends += 1;
+      return [{ type: "text-delta", delta: "recovered\nGOAL-COMPLETE" } as AgentEvent];
+    },
+  });
+
+  await service.getSnapshot(); // first real daemon use runs init/recovery
+  const state = await waitForState(root, (current) => current.goal?.status === "done");
+  assert.equal(sends, 1);
+  assert.equal(state.goal?.iterations, 2);
+  assert.equal(state.queue, undefined);
+});
+
+test("/goal pause invalidates an already-owed continuation; resume starts exactly one fresh turn", async () => {
+  let sends = 0;
+  let started!: () => void;
+  let release!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+  const firstRelease = new Promise<void>((resolve) => { release = resolve; });
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => []);
+      runtime.send = async function* () {
+        sends += 1;
+        if (sends === 1) {
+          started();
+          await firstRelease;
+          yield { type: "text-delta", delta: "not done yet" } as AgentEvent;
+        } else {
+          yield { type: "text-delta", delta: "done\nGOAL-COMPLETE" } as AgentEvent;
+        }
+      };
+      return runtime;
+    },
+  });
+
+  await service.sendMessage("/goal investigate the issue");
+  await firstStarted;
+  const pause = await service.sendMessage("/goal pause");
+  assert.equal(pause.status, "queued", "pause waits behind the in-flight goal turn");
+  release();
+  const paused = await waitForState(root, (state) => state.goal?.status === "paused" && !state.pendingTurn && !state.queue);
+  assert.equal(paused.goal?.iterations, 1);
+  assert.equal(sends, 1, "the stale continuation behind pause was discarded");
+
+  await service.sendMessage("/goal resume");
+  const done = await waitForState(root, (state) => state.goal?.status === "done");
+  assert.equal(done.goal?.iterations, 2);
+  assert.equal(sends, 2, "resume created one fresh goal-owned turn");
+});
+
+test("/goal token budget pauses after the first over-budget turn without another dispatch", async () => {
+  let sends = 0;
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    script: () => {
+      sends += 1;
+      return [
+        { type: "context-usage", usedTokens: 75, maxTokens: 1_000 } as AgentEvent,
+        { type: "text-delta", delta: "work remains" } as AgentEvent,
+      ];
+    },
+  });
+
+  await service.sendMessage("/goal --tokens 50 bounded work");
+  const paused = await waitForState(root, (state) => state.goal?.status === "paused");
+  assert.equal(paused.goal?.tokensUsed, 75);
+  assert.match(paused.goal?.stoppedReason ?? "", /token budget exhausted/);
+  assert.equal(paused.queue, undefined);
+  assert.equal(sends, 1);
 });
 
 test("unclaimed slash commands defer verbatim to the active native harness", async () => {

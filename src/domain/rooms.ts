@@ -310,6 +310,7 @@ function pendingTurnFrom(value: unknown): PendingTurn | undefined {
     agentId: value.agentId,
     partialReply: typeof value.partialReply === "string" ? value.partialReply : "",
     ...(value.channel === "voice" ? { channel: "voice" as const } : {}),
+    ...(typeof value.goalStartedAt === "string" && value.goalStartedAt.trim() ? { goalStartedAt: value.goalStartedAt } : {}),
     startedAt: typeof value.startedAt === "string" ? value.startedAt : "",
   };
 }
@@ -328,6 +329,7 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(raw.channel === "voice" ? { channel: "voice" as const } : {}),
       ...(attachments ? { attachments } : {}),
       ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
+      ...(typeof raw.goalStartedAt === "string" && raw.goalStartedAt.trim() ? { goalStartedAt: raw.goalStartedAt } : {}),
       ...(raw.nativeCommand === true ? { nativeCommand: true } : {}),
       // eventId/recorded are the queue→transcript crash-idempotency pair: drop
       // them and a restart re-appends a user event that is already on disk.

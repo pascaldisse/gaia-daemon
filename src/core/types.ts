@@ -170,6 +170,9 @@ export interface PendingTurn {
   /** Reply text streamed so far — flushed durably as it arrives. */
   partialReply: string;
   channel?: "voice";
+  /** Identity of the pinned goal that owns this turn. Preserved through WAL
+   * resume so only goal-authored turns can advance or continue that goal. */
+  goalStartedAt?: string;
   startedAt: string;
   /** This in-flight turn is a monad dispatch: boot resume must re-dispatch it
    * through the monad engine (targets omitted so routing re-derives from
@@ -190,6 +193,9 @@ export interface QueuedMessage {
    * another), not typed by a human — drain must treat it as plain text, never
    * parse it as a slash command, and it doesn't reset the dialogue hop count. */
   fromAgentDialogue?: boolean;
+  /** Identity of the pinned goal that created this synthetic queue entry.
+   * Drain drops it when that goal was paused, cleared, completed, or replaced. */
+  goalStartedAt?: string;
   /** A harness-native command (e.g. "/deep-research …") that queued behind a
    * busy turn — drain must run it as a command turn to its pinned target, not
    * re-parse it as a slash command (which would just error). */
