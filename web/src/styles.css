@@ -1086,6 +1086,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   bottom: calc(100% - 10px);
   display: grid;
   gap: 4px;
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
   padding: 7px;
   border: 1px solid var(--accent);
   background: var(--ink);

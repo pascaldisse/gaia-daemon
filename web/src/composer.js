@@ -696,7 +696,7 @@ function applyCompletion(completion, option) {
 
 /** @param {Completion} completion @returns {HTMLElement[]} */
 function AutocompleteRows(completion) {
-  const options = completion.options.slice(0, 8);
+  const options = completion.options;
   if (options.length === 0) {
     return [h("div", { class: "completion-row empty", text: `${completion.kind}${completion.query}  no matches` })];
   }

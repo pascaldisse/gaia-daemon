@@ -48,6 +48,11 @@ export function validateThinkingLevel(level: number): string | null {
 
 export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "help", type: "help", description: "show command help" },
+  {
+    name: "goal",
+    type: "goal",
+    description: "pin an autonomous objective on this room: /goal [--tokens N] <objective> | status | pause | resume | clear",
+  },
   { name: "agents", type: "agents", description: "list available agents" },
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
@@ -70,11 +75,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
   { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
   { name: "cancel", type: "cancel", description: "stop the running turn and drop queued messages", aliases: ["stop"] },
-  {
-    name: "goal",
-    type: "goal",
-    description: "pin an autonomous objective on this room: /goal [--tokens N] <objective> | status | pause | resume | clear",
-  },
   { name: "recall", type: "recall", description: "search memory + room history: /recall [@agent] <query>" },
   { name: "rewind", type: "rewind", description: "undo the last user turn(s) and their replies: /rewind [n]" },
   {
