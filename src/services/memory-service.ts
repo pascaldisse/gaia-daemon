@@ -35,7 +35,7 @@ import {
 import type { MemoryStore } from "../domain/memory.js";
 import { findHarness } from "../harness/spec.js";
 import type { ApplyDreamProposalResult, ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
-import { applyDreamProposal, runConsolidation } from "./consolidate.js";
+import { MAX_EPISODES_PER_RUN, applyDreamProposal, runConsolidation } from "./consolidate.js";
 import type { EmbedderDeps, ResolvedEmbedder, ResolvedReranker } from "./embeddings.js";
 import { resolveEmbedder, resolveReranker } from "./embeddings.js";
 
@@ -606,6 +606,19 @@ export class MemoryService {
 
   // --- consolidation -----------------------------------------------------------
 
+  /** Re-arm consolidation timers for every agent. Timers are ephemeral
+   * setTimeouts that only capture() used to set — a daemon restart (/rebuild)
+   * dropped every pending timer and nothing re-armed them until the next
+   * episode in the SAME workspace, so backlogs silently froze (observed
+   * 2026-08-01→05: 452 unconsolidated episodes). Called once when the
+   * workspace's MemoryService is built; consolidate() itself no-ops when
+   * nothing is new, so idle agents cost nothing but a cursor read. */
+  resumeConsolidation(): void {
+    for (const agentId of Object.keys(this.options.agents())) {
+      this.scheduleConsolidation(agentId);
+    }
+  }
+
   private scheduleConsolidation(agentId: string): void {
     const config = this.configFor(agentId).consolidate;
     if (!config.enabled || !this.options.llm) return;
@@ -619,6 +632,12 @@ export class MemoryService {
             this.log(
               `consolidated @${agentId}: ${result.episodesSeen} episodes → +${result.factsAdded} facts, ${result.factsInvalidated} superseded, ${result.memoryEdits} core edits`,
             );
+            // Backlog drain: a full page means more episodes are waiting past
+            // the cursor — re-arm so the backlog clears one idle-interval per
+            // page instead of stalling until the next capture. The daily cap
+            // in runConsolidation still bounds total runs (cap hit → ran:false
+            // → no reschedule).
+            if (result.episodesSeen >= MAX_EPISODES_PER_RUN) this.scheduleConsolidation(agentId);
           }
         },
         (error) => this.log(`consolidation failed for @${agentId}: ${error instanceof Error ? error.message : String(error)}`),

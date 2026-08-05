@@ -464,6 +464,9 @@ export class Daemon {
       },
     });
     this.memoryServices.set(workspaceId, { service, live });
+    // Restart resilience: consolidation timers are ephemeral — re-arm them for
+    // every agent so a /rebuild never freezes the episode→facts pipeline.
+    service.resumeConsolidation();
     return service;
   }
 
