@@ -1451,6 +1451,27 @@ export class GaiaWebServer {
       }
     }
 
+    // Design canvas commands — bridge between skill tools and browser UI
+    if (method === "POST" && path === "/api/canvas") {
+      const body = await parseBody(request);
+      const command = stringField(body, "command");
+      const params = (body && typeof body === "object" && "params" in body) ? body.params : {};
+      
+      if (!command) return json(response, 400, { error: "Missing command" });
+      
+      // Broadcast canvas command to all connected SSE clients
+      const event: UiEvent = {
+        type: "canvas-command",
+        command,
+        params
+      };
+      
+      this.broadcast(event);
+      
+      // Simple acknowledgment - actual result comes via canvas state update
+      return json(response, 200, { ok: true, command });
+    }
+
     json(response, 404, { error: "Not found" });
   }
 

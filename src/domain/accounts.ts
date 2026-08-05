@@ -18,6 +18,11 @@ export interface AccountRecord {
   /** Email address shown in the account manager. It is inferred from a login
    * when that harness exposes it, or supplied by the person managing it. */
   email?: string;
+  /** Workspace/category for grouping accounts (e.g., "Fenyx", "Paloptic"). */
+  workspace?: string;
+  /** Provider ids this account grants access to (e.g. ["anthropic"], ["openai-codex"]).
+   * Drives model gating in agent config: only providers listed here are offered. */
+  providers?: string[];
   /** Opaque credential bag; field meaning is the owning spec's (accounts.fields). */
   credentials: Record<string, string>;
 }
@@ -38,10 +43,14 @@ export function listAccounts(): AccountRecord[] {
   if (!existsSync(path)) return [];
   const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
   const list = Array.isArray(raw.accounts) ? raw.accounts : [];
-  return list.flatMap((entry) => {
+  return list.flatMap((entry, i) => {
     const record = entry as Partial<AccountRecord>;
-    if (typeof record.id !== "string" || !record.id.trim()) return [];
-    if (typeof record.harness !== "string" || !record.harness.trim()) return [];
+    if (typeof record.id !== "string" || !record.id.trim()) {
+      throw new Error(`Account record missing 'id' field at index ${i}: ${JSON.stringify(entry).slice(0, 200)}`);
+    }
+    if (typeof record.harness !== "string" || !record.harness.trim()) {
+      throw new Error(`Account record missing 'harness' field for id '${record.id}': ${JSON.stringify(entry).slice(0, 200)}`);
+    }
     const credentials: Record<string, string> = {};
     for (const [key, value] of Object.entries(record.credentials ?? {})) {
       if (typeof value === "string") credentials[key] = value;
@@ -52,6 +61,8 @@ export function listAccounts(): AccountRecord[] {
         harness: record.harness.trim(),
         ...(typeof record.label === "string" && record.label.trim() ? { label: record.label.trim() } : {}),
         ...(typeof record.email === "string" && record.email.trim() ? { email: record.email.trim() } : {}),
+        ...(typeof record.workspace === "string" && record.workspace.trim() ? { workspace: record.workspace.trim() } : {}),
+        ...(Array.isArray(record.providers) ? { providers: record.providers.filter((p): p is string => typeof p === "string") } : {}),
         credentials,
       },
     ];
@@ -63,8 +74,14 @@ export function findAccount(id: string): AccountRecord | undefined {
 }
 
 /** Redacted view for clients — never includes the credential bag. */
-export function redactedAccounts(): Array<{ id: string; harness: string; label?: string; email?: string }> {
-  return listAccounts().map(({ id, harness, label, email }) => ({ id, harness, ...(label ? { label } : {}), ...(email ? { email } : {}) }));
+export function redactedAccounts(): Array<{ id: string; harness: string; label?: string; email?: string; workspace?: string; providers?: string[] }> {
+  return listAccounts().map(({ id, harness, label, email, workspace, providers }) => ({
+    id, harness,
+    ...(label ? { label } : {}),
+    ...(email ? { email } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(providers?.length ? { providers } : {}),
+  }));
 }
 
 /** Update display-only account metadata without ever exposing or rewriting its

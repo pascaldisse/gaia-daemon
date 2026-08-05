@@ -3352,6 +3352,7 @@ export class RoomService {
           ...(agent.description ? { description: agent.description } : {}),
           ...(agent.avatarUrl ? { avatarUrl: agent.avatarUrl } : {}),
           icon: agent.icon,
+          ...(agent.workspace ? { workspace: agent.workspace } : {}),
           modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
           configuredModel: configuredModelLabel(agent.model, "default"),
           ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),

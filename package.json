@@ -1,7 +1,7 @@
 {
   "name": "gaia-daemon",
   "version": "2.0.0",
-  "description": "GAIA \u2014 local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
+  "description": "GAIA — local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
@@ -25,6 +25,7 @@
     "mobile:ios:device": "bun scripts/gaia-mobile.mjs device"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.3.0",
     "@earendil-works/pi-agent-core": "^0.80.3",
     "@earendil-works/pi-ai": "^0.80.3",
     "@earendil-works/pi-coding-agent": "^0.80.3",

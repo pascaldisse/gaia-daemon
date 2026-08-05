@@ -522,6 +522,7 @@ export interface AgentDef {
   description?: string;
   avatarUrl?: string;
   icon: string;
+  workspace?: string;
   voice?: string;
   /** Read-aloud TTS for the transcript play button (voice calls use `voice`). */
   tts?: AgentTtsConfig;
@@ -762,6 +763,8 @@ export interface UsageLimits {
   account: string;
   /** Optional plan/account label, e.g. the subscription tier. */
   plan?: string;
+  /** Email extracted from JWT for ambient accounts (named accounts get email from accounts.json). */
+  email?: string;
   /** Windows to show, most-relevant first. */
   windows: UsageWindow[];
   /** ISO 8601 instant this snapshot was fetched. */
@@ -862,6 +865,7 @@ export interface AgentStatus {
   description?: string;
   avatarUrl?: string;
   icon: string;
+  workspace?: string;
   modelLabel: string;
   /** The model agent.json asks for, e.g. `anthropic/fable`. `modelLabel`
    * tracks what live turns actually run; they diverge on a fallback. */
@@ -1120,6 +1124,7 @@ export type UiEvent =
   // is the steer's user RoomEvent (scope.eventId is, as always, the REPLY's).
   | ({ type: "steered"; steerEventId: string } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
+  | { type: "canvas-command"; command: string; params: unknown }
   | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
   // Workspace-TAGGED, globally DELIVERED (NO roomId): the room list of the named
   // workspace changed — a room started or finished a turn, or its activity

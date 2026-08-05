@@ -1236,7 +1236,7 @@ export class Daemon {
       models: this.hintSourcesCache.models,
       skills: skillHintOptions(skillWorkspace),
     };
-    return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
+    return buildFileHints({ label: file.label, kind: file.kind, content: file.content, workspaceId }, sources);
   }
 
   async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {

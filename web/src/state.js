@@ -36,6 +36,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   completionHidden: boolean,
  *   expandedActivities: Set<string>,
  *   expandedRooms: Set<string>,
+ *   expandedWorkspaceGroups: Set<string>,
  *   roomsShown: number,
  *   roomsFavoritesOnly: boolean,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
@@ -114,6 +115,8 @@ export const state = {
   // Which parent rooms are expanded in the sidebar's nested rooms tree. Summon
   // sub-rooms are collapsed under their parent by default.
   expandedRooms: new Set(),
+  // Which workspace groups are expanded in the panel's agent list. All expanded by default.
+  expandedWorkspaceGroups: new Set(["FENYX", "PERSONAL", "PALOPTIC", "General"]),
   // How many top-level rooms the sidebar list renders before "show more" —
   // rooms are chats, and a 100-chat history import must not flood the list.
   roomsShown: 25,

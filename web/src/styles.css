@@ -361,6 +361,25 @@ body.resizing { cursor: col-resize; user-select: none; }
 .nav-item, .nav-action, .file-tabs button, .segmented-tabs button { width: 100%; text-align: left; }
 .nav-item span, .file-tabs span, .segmented-tabs span { display: block; }
 
+/* Workspace group header in agent panel */
+.workspace-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  width: 100%;
+}
+.workspace-group-header:hover { background: var(--bg2); color: var(--fg); }
+.workspace-group-header strong { color: var(--accent); }
+
 /* A row of pill tabs (Settings modal's general/workspace/agents, and its nested
    agent config/persona/memory view) — one .active button at a time. */
 .segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1131,6 +1150,44 @@ body.resizing { cursor: col-resize; user-select: none; }
    tidy; the full path is still selectable in the file browser below. */
 .right .panel-head small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 
+/* Workspace group headers in the agent list */
+.workspace-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+.workspace-group-header:hover {
+  background: color-mix(in srgb, var(--bg3) 85%, var(--accent));
+  border-color: var(--accent);
+}
+.workspace-group-header:first-child { margin-top: 0; }
+.workspace-group-icon {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  transition: color 0.12s;
+}
+.workspace-group-header:hover .workspace-group-icon { color: var(--accent); }
+.workspace-group-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg);
+}
+.workspace-group-count {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .agent-row, .task { border: 1px solid var(--border); padding: 8px; background: var(--ink); }
 .agent-row { display: flex; align-items: stretch; width: 100%; padding: 0; }
 .agent-row.on-call { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
@@ -1442,7 +1499,14 @@ body.resizing { cursor: col-resize; user-select: none; }
    ============================================================ */
 .usage-popover { width: min(440px, calc(100vw - 40px)); }
 .usage-group + .usage-group { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
-.usage-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.usage-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.usage-switch-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 2px 6px; border-radius: 4px; cursor: pointer; margin-left: auto; font-size: 13px; }
+.usage-switch-btn:hover { background: var(--accent); color: var(--bg); }
+.usage-active-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.usage-active-dot.sev-normal { background: var(--accent); }
+.usage-active-dot.sev-warning { background: #f0c040; }
+.usage-active-dot.sev-critical { background: #e05555; }
+.usage-active-dot.sev-off { background: var(--muted); opacity: 0.4; }
 .usage-harness { color: var(--accent2); font-weight: 700; text-transform: uppercase; letter-spacing: 2px; font-size: 0.82em; }
 .usage-plan { color: var(--muted); font-size: 0.82em; }
 .usage-age { margin-left: auto; color: var(--muted); font-size: 0.78em; }
@@ -1461,6 +1525,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .usage-bar-fill.sev-warning { background: var(--warn); }
 .sev-critical { color: var(--danger); }
 .usage-bar-fill.sev-critical { background: var(--danger); }
+
+/* Account usage bar in panel (next to account dropdown) */
+.account-usage-bar { height: 3px; background: var(--ink); overflow: hidden; margin-top: 3px; border-radius: 2px; }
+.account-usage-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; min-width: 1px; }
+.account-usage-fill.sev-normal { background: var(--good); }
+.account-usage-fill.sev-warning { background: var(--warn); }
+.account-usage-fill.sev-critical { background: var(--danger); }
 
 /* ============================================================
    chat search overlay (Cmd/Ctrl+K)
@@ -1802,6 +1873,15 @@ body.resizing { cursor: col-resize; user-select: none; }
    column, a muted description line under the widget, compact vertical rhythm.
    No max-height/overflow here — the modal itself is the one scroll container. */
 .settings2-form { display: flex; flex-direction: column; padding-right: 2px; }
+.settings2-agent-summary {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px;
+}
+.settings2-agent-summary .summary-row {
+  display: flex; justify-content: space-between; font-size: 12px;
+}
+.settings2-agent-summary .summary-label { color: var(--muted); }
+.settings2-agent-summary .summary-value { color: var(--fg); font-weight: 500; }
 .settings2-field-row {
   display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; align-items: start;
   padding: 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
@@ -2004,4 +2084,152 @@ body.resizing { cursor: col-resize; user-select: none; }
 @media (max-width: 760px) {
   .rabbit-grid { grid-template-columns: 1fr; }
   .credential-row { grid-template-columns: 1fr 1fr; }
+}
+
+/* Design Canvas */
+.design-canvas-root {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 60%;
+  height: 100vh;
+  background: #0a0f0a;
+  border-left: 1px solid rgba(184, 255, 106, 0.2);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+.design-canvas-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.design-canvas-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: rgba(184, 255, 106, 0.05);
+  border-bottom: 1px solid rgba(184, 255, 106, 0.2);
+}
+
+.design-canvas-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #b8ff6a;
+}
+
+.canvas-element-count {
+  font-size: 12px;
+  color: rgba(234, 255, 222, 0.6);
+  font-weight: normal;
+}
+
+.design-canvas-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.design-canvas-controls button {
+  background: rgba(184, 255, 106, 0.1);
+  border: 1px solid rgba(184, 255, 106, 0.3);
+  color: #eaffde;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.design-canvas-controls button:hover {
+  background: rgba(184, 255, 106, 0.2);
+}
+
+.zoom-level {
+  font-size: 12px;
+  color: rgba(234, 255, 222, 0.7);
+  min-width: 40px;
+  text-align: center;
+}
+
+.design-canvas-viewport {
+  flex: 1;
+  overflow: hidden;
+  background: #0d120d;
+  position: relative;
+}
+
+.design-canvas-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-element {
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.canvas-element:hover {
+  filter: brightness(1.1);
+}
+
+.design-canvas-layers {
+  width: 200px;
+  border-top: 1px solid rgba(184, 255, 106, 0.2);
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+}
+
+.layers-title {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(234, 255, 222, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(184, 255, 106, 0.1);
+}
+
+.layers-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(184, 255, 106, 0.05);
+  font-size: 13px;
+}
+
+.layer-item:hover {
+  background: rgba(184, 255, 106, 0.08);
+}
+
+.layer-item.selected {
+  background: rgba(184, 255, 106, 0.15);
+  border-left: 2px solid #b8ff6a;
+}
+
+.layer-type {
+  font-size: 10px;
+  color: rgba(234, 255, 222, 0.5);
+  text-transform: uppercase;
+  min-width: 50px;
+}
+
+.layer-name {
+  color: #eaffde;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

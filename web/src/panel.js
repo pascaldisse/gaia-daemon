@@ -63,6 +63,16 @@ function renderPanel() {
   // or the workspace default when it has none yet. Marks the "active" row and
   // is who a bare next message goes to.
   const activeAgent = snapshot ? (snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent) : undefined;
+  
+  // Group agents by workspace
+  const agentsByWorkspace = new Map();
+  for (const agent of agents) {
+    const ws = agent.workspace || "GENERAL";
+    if (!agentsByWorkspace.has(ws)) agentsByWorkspace.set(ws, []);
+    agentsByWorkspace.get(ws).push(agent);
+  }
+  const workspaces = Array.from(agentsByWorkspace.keys()).sort();
+  
   const agentMenu = AgentContextMenu();
   panel.replaceChildren(
     h(
@@ -91,7 +101,25 @@ function renderPanel() {
     h(
       "div",
       { class: "agent-list" },
-      agents.map((agent) => {
+      workspaces.flatMap((workspace) => {
+        const wsAgents = agentsByWorkspace.get(workspace) || [];
+        const expanded = state.expandedWorkspaceGroups.has(workspace);
+        return [
+          h(
+            "button",
+            {
+              class: "workspace-group-header",
+              onclick: () => {
+                if (expanded) state.expandedWorkspaceGroups.delete(workspace);
+                else state.expandedWorkspaceGroups.add(workspace);
+                markDirty("panel");
+              },
+            },
+            h("span", { text: expanded ? "\u25bc" : "\u25b6" }),
+            h("strong", { text: workspace }),
+            h("small", { text: ` (${wsAgents.length})` }),
+          ),
+          ...(expanded ? wsAgents.map((/** @type {import("./types.js").AgentStatus} */ agent) => {
         const onCall = state.voice?.agentId === agent.id;
         const connecting = state.voicePendingAgentId === agent.id;
         const roles = agent.roles ?? [];
@@ -209,6 +237,8 @@ function renderPanel() {
             text: connecting ? "..." : onCall ? "⏹" : "📞",
           }),
         );
+      }) : []),
+        ];
       }),
     ),
     h("h3", { text: "tasks" }),
