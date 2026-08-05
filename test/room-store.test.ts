@@ -1,0 +1,61 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { V1FileRoomStore } from "../src/room/store.ts";
+import { createTempDir } from "./helpers/temp.ts";
+
+test("v1 room store opens existing history without rewriting it", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, ".gaia", "rooms");
+    const roomDir = join(roomsDir, "old-room");
+    const statePath = join(roomDir, "state.json");
+    const transcriptPath = join(roomDir, "transcript.jsonl");
+    const stateBytes = `${JSON.stringify({ activeRoles: { gaia: "plan" }, agentCursors: { gaia: 1 }, runtimeDetails: {} }, null, 4)}\n`;
+    const transcriptBytes = `${JSON.stringify({ timestamp: "1", author: "user", targets: ["gaia"], text: "old history" })}\n`;
+    await mkdir(roomDir, { recursive: true });
+    await writeFile(statePath, stateBytes, "utf8");
+    await writeFile(transcriptPath, transcriptBytes, "utf8");
+
+    const store = new V1FileRoomStore(roomsDir, "old-room");
+    assert.deepEqual(await store.readState(), {
+      activeRoles: { gaia: "plan" },
+      agentCursors: { gaia: 1 },
+      runtimeDetails: {},
+    });
+    assert.deepEqual((await store.eventsAfterCursor(0)).events.map((event) => [event.id, event.text]), [["legacy_0", "old history"]]);
+
+    assert.equal(await readFile(statePath, "utf8"), stateBytes);
+    assert.equal(await readFile(transcriptPath, "utf8"), transcriptBytes);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("v1 room store keeps the established state and transcript paths", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, ".gaia", "rooms");
+    const store = new V1FileRoomStore(roomsDir, "room-a");
+
+    await store.writeState({ activeRoles: {}, agentCursors: {}, runtimeDetails: {} });
+    await store.appendEvent({ id: "evt_1", timestamp: "1", author: "gaia", text: "hello" });
+
+    assert.equal(store.statePath, join(roomsDir, "room-a", "state.json"));
+    assert.equal(store.transcriptPath, join(roomsDir, "room-a", "transcript.jsonl"));
+    assert.deepEqual(JSON.parse(await readFile(store.statePath, "utf8")), {
+      activeRoles: {},
+      agentCursors: {},
+      runtimeDetails: {},
+    });
+    assert.deepEqual(JSON.parse((await readFile(store.transcriptPath, "utf8")).trim()), {
+      id: "evt_1",
+      timestamp: "1",
+      author: "gaia",
+      text: "hello",
+    });
+  } finally {
+    await temp.cleanup();
+  }
+});

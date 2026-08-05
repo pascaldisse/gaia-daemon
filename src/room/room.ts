@@ -1,32 +1,33 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import type { Workspace } from "../workspace/types.js";
-import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
-import { appendRoomEvent, newRoomEventId, readRecentRoomEvents, readRoomEventsAfterCursor, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
+import { type RoomState } from "./state.js";
+import { V1FileRoomStore, type RoomStore } from "./store.js";
+import { newRoomEventId, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
 export class Room {
   readonly id: string;
   readonly dir: string;
   readonly transcriptPath: string;
   readonly statePath: string;
+  private readonly store: RoomStore;
 
   // roomId defaults to the workspace's configured room; pass an explicit id to
   // address any other room in the workspace (e.g. a summon's child sub-room).
   constructor(
     private readonly workspace: Workspace,
     roomId: string = workspace.config.room,
+    store: RoomStore = new V1FileRoomStore(workspace.roomsDir, roomId),
   ) {
     this.id = roomId;
-    this.dir = join(workspace.roomsDir, this.id);
-    this.transcriptPath = join(workspace.roomsDir, this.id, "transcript.jsonl");
-    this.statePath = roomStatePath(workspace.roomsDir, this.id);
+    this.store = store;
+    this.dir = store.dir;
+    this.transcriptPath = store.transcriptPath;
+    this.statePath = store.statePath;
   }
 
   // Wipe the room transcript (backs /clear). Leaves the file present-but-empty
   // so readers see a clean room.
   async clearTranscript(): Promise<void> {
-    await mkdir(dirname(this.transcriptPath), { recursive: true });
-    await writeFile(this.transcriptPath, "", "utf8");
+    await this.store.clearTranscript();
   }
 
   async addUserMessage(text: string, targets: string[], channel?: string): Promise<UserRoomEvent> {
@@ -38,7 +39,7 @@ export class Room {
       text,
       ...(channel ? { channel } : {}),
     };
-    await appendRoomEvent(this.transcriptPath, event);
+    await this.store.appendEvent(event);
     return event;
   }
 
@@ -50,24 +51,24 @@ export class Room {
       text,
       ...(channel ? { channel } : {}),
     };
-    await appendRoomEvent(this.transcriptPath, event);
+    await this.store.appendEvent(event);
     return event;
   }
 
   async recentEvents(): Promise<RoomEvent[]> {
-    return readRecentRoomEvents(this.transcriptPath, this.workspace.config.transcriptWindow);
+    return this.store.recentEvents(this.workspace.config.transcriptWindow);
   }
 
   async eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }> {
-    return readRoomEventsAfterCursor(this.transcriptPath, cursor);
+    return this.store.eventsAfterCursor(cursor);
   }
 
   async readState(): Promise<RoomState> {
-    return readRoomState(this.statePath);
+    return this.store.readState();
   }
 
   async writeState(state: RoomState): Promise<void> {
-    await writeRoomState(this.statePath, state);
+    await this.store.writeState(state);
   }
 }
 
