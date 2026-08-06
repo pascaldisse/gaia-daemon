@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { readJsonFile, writeJsonFile } from "../lib/fs.js";
@@ -859,8 +859,9 @@ export class GaiaController {
   // history, leaving the branch amnesiac. Reset → replay → continuity.
   private async runForkCommand(): Promise<string> {
     const target = this.nextForkId(this.room.id);
+    // Directory creation lives in the store (copyTranscriptTo/writeState both
+    // mkdir -p) — the controller never touches the room layout itself.
     const dst = openRoomStore(this.workspace.roomsDir, target);
-    await mkdir(dst.dir, { recursive: true });
     try {
       await this.room.copyTranscriptTo(dst);
     } catch {
