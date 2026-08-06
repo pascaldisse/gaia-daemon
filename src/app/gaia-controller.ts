@@ -6,7 +6,8 @@ import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
-import { defaultRoomState, readRoomState, roomStatePath, writeRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
+import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
+import { openRoomStore } from "../room/store.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
@@ -300,7 +301,7 @@ export class GaiaController {
         .map(async (entry) => {
           // parentRoomId links a summon's child room to its spawner; read from
           // the room's own state so the sidebar can nest it under its parent.
-          const state = await readRoomState(roomStatePath(this.workspace.roomsDir, entry.name));
+          const state = await openRoomStore(this.workspace.roomsDir, entry.name).readState();
           return {
             id: entry.name,
             path: join(this.workspace.roomsDir, entry.name),
@@ -858,15 +859,15 @@ export class GaiaController {
   // history, leaving the branch amnesiac. Reset → replay → continuity.
   private async runForkCommand(): Promise<string> {
     const target = this.nextForkId(this.room.id);
-    const dstDir = join(this.workspace.roomsDir, target);
-    await mkdir(dstDir, { recursive: true });
+    const dst = openRoomStore(this.workspace.roomsDir, target);
+    await mkdir(dst.dir, { recursive: true });
     try {
-      await copyFile(join(this.room.dir, "transcript.jsonl"), join(dstDir, "transcript.jsonl"));
+      await copyFile(join(this.room.dir, "transcript.jsonl"), dst.transcriptPath);
     } catch {
       // Never-written transcript — nothing to copy; the branch starts empty.
     }
     const forked: RoomState = { activeRoles: { ...this.roomState.activeRoles }, agentCursors: {}, runtimeDetails: {} };
-    await writeRoomState(roomStatePath(this.workspace.roomsDir, target), forked);
+    await dst.writeState(forked);
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
   }
