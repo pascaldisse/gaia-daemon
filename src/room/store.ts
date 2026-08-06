@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
 import {
@@ -14,6 +14,7 @@ export interface RoomStore {
   readonly statePath: string;
 
   clearTranscript(): Promise<void>;
+  copyTranscriptTo(destination: RoomStore): Promise<void>;
   appendEvent(event: RoomEvent): Promise<void>;
   recentEvents(limit: number): Promise<RoomEvent[]>;
   eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }>;
@@ -37,6 +38,15 @@ export class V1FileRoomStore implements RoomStore {
   async clearTranscript(): Promise<void> {
     await mkdir(dirname(this.transcriptPath), { recursive: true });
     await writeFile(this.transcriptPath, "", "utf8");
+  }
+
+  async copyTranscriptTo(destination: RoomStore): Promise<void> {
+    await mkdir(destination.dir, { recursive: true });
+    try {
+      await copyFile(this.transcriptPath, destination.transcriptPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
   async appendEvent(event: RoomEvent): Promise<void> {

@@ -33,6 +33,27 @@ test("v1 room store opens existing history without rewriting it", async () => {
   }
 });
 
+test("copyTranscriptTo keeps transcript layout behind the room-store boundary", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, ".gaia", "rooms");
+    const source = openRoomStore(roomsDir, "source");
+    const destination = openRoomStore(roomsDir, "destination");
+    await source.appendEvent({ id: "evt_1", timestamp: "1", author: "gaia", text: "hello" });
+
+    await source.copyTranscriptTo(destination);
+
+    assert.deepEqual(await destination.recentEvents(10), [{
+      id: "evt_1",
+      timestamp: "1",
+      author: "gaia",
+      text: "hello",
+    }]);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("openRoomStore keeps the established v1 state and transcript paths", async () => {
   const temp = await createTempDir();
   try {

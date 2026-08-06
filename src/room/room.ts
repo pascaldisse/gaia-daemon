@@ -30,6 +30,10 @@ export class Room {
     await this.store.clearTranscript();
   }
 
+  async copyTranscriptTo(destination: RoomStore): Promise<void> {
+    await this.store.copyTranscriptTo(destination);
+  }
+
   async addUserMessage(text: string, targets: string[], channel?: string): Promise<UserRoomEvent> {
     const event: UserRoomEvent = {
       id: newRoomEventId(),

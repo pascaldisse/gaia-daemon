@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { readJsonFile, writeJsonFile } from "../lib/fs.js";
@@ -862,7 +862,7 @@ export class GaiaController {
     const dst = openRoomStore(this.workspace.roomsDir, target);
     await mkdir(dst.dir, { recursive: true });
     try {
-      await copyFile(join(this.room.dir, "transcript.jsonl"), dst.transcriptPath);
+      await this.room.copyTranscriptTo(dst);
     } catch {
       // Never-written transcript — nothing to copy; the branch starts empty.
     }
