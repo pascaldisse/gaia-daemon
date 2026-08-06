@@ -1,6 +1,0 @@
-[test]
-# Bun matches test path filters as substrings across the WHOLE tree, so
-# design/ (design-app snapshot) and dist/design/ copies of test files got
-# discovered too and failed on unresolvable relative imports. Daemon tests
-# live in test/ only.
-root = "test"
