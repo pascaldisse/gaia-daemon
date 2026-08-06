@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { V1FileRoomStore } from "../src/room/store.ts";
+import { openRoomStore } from "../src/room/store.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
 test("v1 room store opens existing history without rewriting it", async () => {
@@ -18,7 +18,7 @@ test("v1 room store opens existing history without rewriting it", async () => {
     await writeFile(statePath, stateBytes, "utf8");
     await writeFile(transcriptPath, transcriptBytes, "utf8");
 
-    const store = new V1FileRoomStore(roomsDir, "old-room");
+    const store = openRoomStore(roomsDir, "old-room");
     assert.deepEqual(await store.readState(), {
       activeRoles: { gaia: "plan" },
       agentCursors: { gaia: 1 },
@@ -33,22 +33,21 @@ test("v1 room store opens existing history without rewriting it", async () => {
   }
 });
 
-test("v1 room store keeps the established state and transcript paths", async () => {
+test("openRoomStore keeps the established v1 state and transcript paths", async () => {
   const temp = await createTempDir();
   try {
     const roomsDir = join(temp.path, ".gaia", "rooms");
-    const store = new V1FileRoomStore(roomsDir, "room-a");
-
-    await store.writeState({ activeRoles: {}, agentCursors: {}, runtimeDetails: {} });
-    await store.appendEvent({ id: "evt_1", timestamp: "1", author: "gaia", text: "hello" });
+    const store = openRoomStore(roomsDir, "room-a");
 
     assert.equal(store.statePath, join(roomsDir, "room-a", "state.json"));
     assert.equal(store.transcriptPath, join(roomsDir, "room-a", "transcript.jsonl"));
-    assert.deepEqual(JSON.parse(await readFile(store.statePath, "utf8")), {
-      activeRoles: {},
-      agentCursors: {},
-      runtimeDetails: {},
-    });
+
+    const state = { activeRoles: { gaia: "plan" }, agentCursors: { gaia: 4 }, runtimeDetails: {} };
+    await store.writeState(state);
+    assert.deepEqual(await store.readState(), state);
+    await store.appendEvent({ id: "evt_1", timestamp: "1", author: "gaia", text: "hello" });
+
+    assert.deepEqual(JSON.parse(await readFile(store.statePath, "utf8")), state);
     assert.deepEqual(JSON.parse((await readFile(store.transcriptPath, "utf8")).trim()), {
       id: "evt_1",
       timestamp: "1",
