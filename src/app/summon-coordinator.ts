@@ -1,4 +1,4 @@
-import { readRoomState, roomStatePath, writeRoomState } from "../room/state.js";
+import { openRoomStore } from "../room/store.js";
 import { ensureWorkspaceRoom } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 import type { GaiaController } from "./gaia-controller.js";
@@ -77,10 +77,10 @@ export class SummonCoordinator {
     // Stamp the parent link BEFORE the child controller reads state at init, so
     // it survives the controller's own state writes (and the nested rooms tree
     // sees it).
-    const statePath = roomStatePath(this.workspace.roomsDir, childRoomId);
-    const state = await readRoomState(statePath);
+    const store = openRoomStore(this.workspace.roomsDir, childRoomId);
+    const state = await store.readState();
     state.parentRoomId = parentRoomId;
-    await writeRoomState(statePath, state);
+    await store.writeState(state);
 
     const child = await this.controllerForRoom(childRoomId);
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task };

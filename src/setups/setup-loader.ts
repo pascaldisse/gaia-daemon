@@ -14,7 +14,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { readJsonFile, writeFileAtomic, writeJsonFile } from "../lib/fs.js";
 import { parseRoleMarkdown } from "../roles/roles.js";
 import { ensureWorkspaceRoom, gaiaHome } from "../workspace/workspace-loader.js";
-import { readRoomState, roomStatePath, writeRoomState } from "../room/state.js";
+import { openRoomStore } from "../room/store.js";
 import { parseRoutingPolicy } from "../runtime/monad/index.js";
 import type { MonadConfig, MonadSlot } from "../runtime/monad/types.js";
 import type { Workspace } from "../workspace/types.js";
@@ -257,14 +257,14 @@ export async function activateSetup(workspace: Workspace, idOrPath: string, room
   await ensureWorkspaceRoom(workspace.rootDir, roomId);
   const placedRoles = await placeRoleFiles(info.dir, manifest, workspace, slots);
 
-  const statePath = roomStatePath(workspace.roomsDir, roomId);
-  const state = await readRoomState(statePath);
+  const store = openRoomStore(workspace.roomsDir, roomId);
+  const state = await store.readState();
   const bindings: RawBinding[] = manifest.agents ?? slots.map((slot) => ({ ref: slot.agentId, role: slot.defaultRole }));
   for (const binding of bindings) {
     if (binding.ref && binding.role && workspace.agents[binding.ref]) state.activeRoles[binding.ref] = binding.role;
   }
   state.monad = monad;
-  await writeRoomState(statePath, state);
+  await store.writeState(state);
 
   await applyRoomDefaults(workspace, manifest);
 
@@ -273,17 +273,17 @@ export async function activateSetup(workspace: Workspace, idOrPath: string, room
 
 /** Read the active monad config for a room (or undefined when not a monad room). */
 export async function readRoomMonad(workspace: Workspace, roomId: string): Promise<MonadConfig | undefined> {
-  const state = await readRoomState(roomStatePath(workspace.roomsDir, roomId));
+  const state = await openRoomStore(workspace.roomsDir, roomId).readState();
   return state.monad;
 }
 
 /** Clear a room's monad block, returning it to a normal room. */
 export async function deactivateMonad(workspace: Workspace, roomId: string): Promise<boolean> {
-  const statePath = roomStatePath(workspace.roomsDir, roomId);
-  const state = await readRoomState(statePath);
+  const store = openRoomStore(workspace.roomsDir, roomId);
+  const state = await store.readState();
   if (!state.monad) return false;
   delete state.monad;
-  await writeRoomState(statePath, state);
+  await store.writeState(state);
   return true;
 }
 

@@ -59,3 +59,8 @@ export class V1FileRoomStore implements RoomStore {
     await writeRoomState(this.statePath, state);
   }
 }
+
+/** Single factory for room stores. Callers never name the backing layout. */
+export function openRoomStore(roomsDir: string, roomId: string): RoomStore {
+  return new V1FileRoomStore(roomsDir, roomId);
+}
