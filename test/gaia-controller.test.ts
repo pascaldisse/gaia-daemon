@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { readFile, readdir } from "node:fs/promises";
 import type { AgentDefinition } from "../src/agents/types.ts";
 import { GaiaController, type GaiaUiEvent } from "../src/app/gaia-controller.ts";
 import type { AgentInput, AgentRuntime } from "../src/runtime/types.ts";
 import { initWorkspace, loadWorkspace } from "../src/workspace/workspace-loader.ts";
 import { createTempDir } from "./helpers/temp.ts";
+import { writeJsonFile } from "../src/lib/fs.ts";
 
 class FakeRuntime implements AgentRuntime {
   readonly modelLabel = "fake/model";
@@ -507,6 +509,122 @@ test("/fork copies the transcript but resets cursors so the branch replays (not 
   }
 });
 
+test("persists room state atomically at the workspace room path and appends transcript events", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    const events: GaiaUiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+
+    const task = await controller.sendMessage("durable room event");
+    await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === task.id));
+
+    assert.equal(controller.roomId, workspace.config.room);
+    assert.equal((await controller.getSnapshot()).room.statePath, join(workspace.roomsDir, workspace.config.room, "state.json"));
+    const statePath = join(workspace.roomsDir, workspace.config.room, "state.json");
+    const transcriptPath = join(workspace.roomsDir, workspace.config.room, "transcript.jsonl");
+    const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const transcript = (await readFile(transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { text: string });
+    assert.deepEqual(state.pendingTurn, undefined);
+    assert.ok(transcript.some((event) => event.text === "durable room event"));
+    assert.ok(transcript.some((event) => /hello from gaia/.test(event.text)));
+    assert.ok((await readdir(join(workspace.roomsDir, workspace.config.room))).every((name) => !name.endsWith(".tmp")));
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("restores an interrupted pending turn and preserves its partial reply", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const statePath = join(workspace.roomsDir, workspace.config.room, "state.json");
+    await writeJsonFile(statePath, {
+      activeRoles: {},
+      agentCursors: {},
+      runtimeDetails: {},
+      pendingTurn: {
+        id: "interrupted-task",
+        prompt: "resume this",
+        targets: ["gaia"],
+        agentId: "gaia",
+        partialReply: "already streamed",
+        startedAt: new Date().toISOString(),
+      },
+    });
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+
+    await controller.init();
+    await waitForAsync(async () => {
+      const state = JSON.parse(await readFile(statePath, "utf8")) as { pendingTurn?: unknown };
+      return state.pendingTurn === undefined && (await controller.getSnapshot()).room.events.some((event) => event.text === "already streamed");
+    });
+    const transcript = (await readFile(join(workspace.roomsDir, workspace.config.room, "transcript.jsonl"), "utf8"));
+    assert.match(transcript, /already streamed/);
+    assert.equal(JSON.parse(await readFile(statePath, "utf8")).pendingTurn, undefined);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("keeps queued turns ordered and durable after the queue drains", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const gated = new Map<string, GatedRuntime>();
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => { const runtime = new GatedRuntime(agent); gated.set(agent.id, runtime); return runtime; },
+    });
+    const first = await controller.sendMessage("queue one");
+    await waitFor(() => controller.hasActiveTask);
+    const second = await controller.sendMessage("queue two");
+    assert.equal(second.status, "queued");
+    for (const runtime of gated.values()) runtime.release();
+    await waitFor(() => second.status === "complete");
+    const transcript = (await readFile(join(workspace.roomsDir, workspace.config.room, "transcript.jsonl"), "utf8"));
+    assert.ok(transcript.indexOf("queue one") < transcript.indexOf("queue two"));
+    assert.equal(JSON.parse(await readFile(join(workspace.roomsDir, workspace.config.room, "state.json"))).pendingTurn, undefined);
+    assert.equal(first.status, "complete");
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
 test("mutateAgentMemory writes through the controller's MemoryStore (the daemon single-writer path)", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;
@@ -539,6 +657,15 @@ test("mutateAgentMemory writes through the controller's MemoryStore (the daemon 
     await temp.cleanup();
   }
 });
+
+async function waitForAsync(predicate: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("Timed out waiting for async predicate");
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
