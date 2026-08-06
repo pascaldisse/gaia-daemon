@@ -435,7 +435,8 @@ export class GaiaWebServer {
             timeout: 120_000,
           });
           if (build.status === 0) {
-            // Build succeeded. Atomically swap web/ and setups/ from staging
+            // Build succeeded. Atomically swap the snapshotted asset dirs
+            // (BUNDLE_ASSET_DIRS: web/, setups/, design/) from staging
             // into plan.out. This is atomic from TCC's perspective — it never
             // sees the bundle in an inconsistent state.
             //
@@ -449,7 +450,7 @@ export class GaiaWebServer {
             // so it never hits ETXTBSY, and the process currently executing
             // out of the old (now unlinked-from-the-directory) inode keeps
             // running fine until it re-execs below. The from-source (tsx) dev
-            // flow is untouched: only web/setups swap, exactly as before.
+            // flow is untouched: only the asset dirs swap, exactly as before.
             const names = bundleSwapNames(fromSource);
             for (const name of names) {
               const src = join(stagingDir, name);
