@@ -12,6 +12,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
+import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
 import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
@@ -449,7 +450,7 @@ export class GaiaWebServer {
             // out of the old (now unlinked-from-the-directory) inode keeps
             // running fine until it re-execs below. The from-source (tsx) dev
             // flow is untouched: only web/setups swap, exactly as before.
-            const names = fromSource ? ["web", "setups"] : ["web", "setups", "gaia-daemon", "gaia-source.json"];
+            const names = bundleSwapNames(fromSource);
             for (const name of names) {
               const src = join(stagingDir, name);
               const dst = join(plan.out, name);

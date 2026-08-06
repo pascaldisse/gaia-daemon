@@ -16,6 +16,8 @@ import {
   statSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+// Single source of truth shared with the /rebuild atomic swap (src/server/http.ts).
+import { BUNDLE_ASSET_DIRS } from "../src/core/bundle-assets.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(scriptDir, "..");
@@ -71,7 +73,7 @@ timeStep("install-binary", () => {
   renameSync(binaryTmp, binaryFinal);
 });
 
-for (const name of ["web", "setups", "design"]) {
+for (const name of BUNDLE_ASSET_DIRS) {
   timeStep(`snapshot-${name}`, () => {
     const src = join(repoRoot, name);
     const dstTmp = join(outDir, `${name}.new`);
