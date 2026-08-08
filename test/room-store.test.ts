@@ -40,6 +40,8 @@ test("copyTranscriptTo keeps transcript layout behind the room-store boundary", 
     const source = openRoomStore(roomsDir, "source");
     const destination = openRoomStore(roomsDir, "destination");
     await source.appendEvent({ id: "evt_1", timestamp: "1", author: "gaia", text: "hello" });
+    assert.equal(await source.hasEvent("evt_1"), true);
+    assert.equal(await source.hasEvent("evt_missing"), false);
 
     await source.copyTranscriptTo(destination);
 

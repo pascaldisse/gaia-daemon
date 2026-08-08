@@ -18,9 +18,11 @@ export interface RoomState {
   // shutdown) and must be resumed — no progress is ever lost. The partial reply
   // streamed so far is persisted here as it arrives. See no-progress-lost.
   pendingTurn?: PendingTurn;
+  // Messages waiting behind the active turn. Optional for legacy rooms.
+  queue?: QueuedMessage[];
 }
 
-export interface PendingTurn {
+export interface PendingTurn extends Record<string, unknown> {
   /** Originating task id. */
   id: string;
   /** The user prompt that drove the turn — replayed verbatim to resume it. */
@@ -34,6 +36,18 @@ export interface PendingTurn {
   /** Voice turns resume as voice. */
   channel?: "voice";
   startedAt: string;
+}
+
+// Base queue protocol shared with current room state. Unknown properties stay
+// attached so a v1 mutation never strips custody metadata it cannot execute.
+export interface QueuedMessage extends Record<string, unknown> {
+  taskId: string;
+  text: string;
+  targets: string[];
+  channel?: "voice";
+  queuedAt: string;
+  eventId?: string;
+  recorded?: boolean;
 }
 
 export interface RuntimeToolDetails {
@@ -81,6 +95,23 @@ function cursorRecord(value: unknown): Record<string, number> {
       .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0)
       .map(([key, cursor]) => [key, Math.floor(cursor)]),
   );
+}
+
+function queueFrom(value: unknown): QueuedMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const queue: QueuedMessage[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || typeof raw.taskId !== "string" || typeof raw.text !== "string") continue;
+    const targets = Array.isArray(raw.targets) ? raw.targets.filter((target): target is string => typeof target === "string" && target.trim().length > 0) : [];
+    queue.push({
+      ...raw,
+      taskId: raw.taskId,
+      text: raw.text,
+      targets,
+      queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
+    } as QueuedMessage);
+  }
+  return queue.length > 0 ? queue : undefined;
 }
 
 function runtimeToolDetails(value: unknown): RuntimeToolDetails | undefined {
@@ -167,6 +198,7 @@ function pendingTurnFrom(value: unknown): PendingTurn | undefined {
   const targets = Array.isArray(value.targets) ? value.targets.filter((t): t is string => typeof t === "string" && t.trim().length > 0) : [];
   if (targets.length === 0) return undefined;
   return {
+    ...value,
     id: value.id,
     prompt: value.prompt,
     targets,
@@ -182,6 +214,7 @@ export function normalizeRoomState(value: unknown): RoomState {
 
   const monad = monadConfigFrom(value.monad);
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
+  const queue = queueFrom(value.queue);
   return {
     activeRoles: stringRecord(value.activeRoles),
     agentCursors: cursorRecord(value.agentCursors),
@@ -189,6 +222,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
     ...(monad ? { monad } : {}),
     ...(pendingTurn ? { pendingTurn } : {}),
+    ...(queue ? { queue } : {}),
   };
 }
 

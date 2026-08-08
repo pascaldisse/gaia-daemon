@@ -20,6 +20,7 @@ export interface RoomStore {
   clearTranscript(): Promise<void>;
   copyTranscriptTo(destination: RoomStore): Promise<void>;
   appendEvent(event: RoomEvent): Promise<void>;
+  hasEvent(eventId: string): Promise<boolean>;
   recentEvents(limit: number): Promise<RoomEvent[]>;
   eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }>;
   readState(): Promise<RoomState>;
@@ -74,6 +75,11 @@ export class V1FileRoomStore implements RoomStore {
 
   async appendEvent(event: RoomEvent): Promise<void> {
     await appendRoomEvent(this.transcriptPath, event);
+  }
+
+  async hasEvent(eventId: string): Promise<boolean> {
+    const { events } = await readRoomEventsAfterCursor(this.transcriptPath, 0);
+    return events.some((event) => event.id === eventId);
   }
 
   async recentEvents(limit: number): Promise<RoomEvent[]> {

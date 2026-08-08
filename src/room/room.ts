@@ -34,9 +34,9 @@ export class Room {
     await this.store.copyTranscriptTo(destination);
   }
 
-  async addUserMessage(text: string, targets: string[], channel?: string): Promise<UserRoomEvent> {
+  async addUserMessage(text: string, targets: string[], channel?: string, eventId = newRoomEventId()): Promise<UserRoomEvent> {
     const event: UserRoomEvent = {
-      id: newRoomEventId(),
+      id: eventId,
       timestamp: new Date().toISOString(),
       author: "user",
       targets,
@@ -57,6 +57,10 @@ export class Room {
     };
     await this.store.appendEvent(event);
     return event;
+  }
+
+  async hasEvent(eventId: string): Promise<boolean> {
+    return this.store.hasEvent(eventId);
   }
 
   async recentEvents(): Promise<RoomEvent[]> {

@@ -64,6 +64,7 @@ test("lifecycle uses an injected room-store adapter", async () => {
     async clearTranscript() {},
     async copyTranscriptTo() {},
     async appendEvent() {},
+    async hasEvent() { return false; },
     async recentEvents() { return []; },
     async eventsAfterCursor() { return { events: [], nextCursor: 0 }; },
     async readState() { return { activeRoles: {}, agentCursors: {}, runtimeDetails: {} }; },

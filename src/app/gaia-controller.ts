@@ -3,9 +3,9 @@ import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
-import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
+import { defaultRoomState, type QueuedMessage, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
 import { type RoomLifecycle } from "../workspace/room-lifecycle.js";
-import type { RoomEvent } from "../room/transcript.js";
+import { newRoomEventId, type RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
 import { createAgentRuntime } from "../runtime/runtime-factory.js";
@@ -151,6 +151,10 @@ export interface SendMessageOptions {
   recordUserMessage?: boolean;
   // Per-turn thinking level override (voice calls may force "off").
   thinking?: string;
+  // Internal durable-custody record supplied by drain().
+  queued?: QueuedMessage;
+  // Internal handoff from boot recovery; the existing marker is its custody.
+  resuming?: boolean;
 }
 
 // How many messages keep their thinking/tool details in room state. Details
@@ -180,6 +184,11 @@ export class GaiaController {
   // Messages sent while a turn is running queue here and drain on settle, so the
   // user can steer/stack instead of hitting "room already has an active task".
   private pending: Array<{ task: GaiaTask; text: string; command: ReturnType<typeof parseCommand>; options: SendMessageOptions }> = [];
+  private draining = false;
+  // True when a durable entry requires semantics this v1 controller does not
+  // implement. It remains on disk; later entries must not jump ahead of it.
+  private durableQueueBlocked = false;
+  private durableTurnBlocked = false;
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
 
@@ -236,7 +245,14 @@ export class GaiaController {
   // keys controllers per room and evicts idle ones; this guards a controller
   // from being torn down (and its background work killed) while it is live.
   get isBusy(): boolean {
-    return Boolean(this.activeTask) || Boolean(this.options.summonHost?.runningChildren(this.room.id).length);
+    return Boolean(
+      this.activeTask ||
+      this.draining ||
+      this.pending.length > 0 ||
+      Boolean(this.roomState.pendingTurn) ||
+      (this.roomState.queue?.length ?? 0) > 0 ||
+      this.options.summonHost?.runningChildren(this.room.id).length
+    );
   }
 
   get activeTaskId(): string | undefined {
@@ -250,11 +266,56 @@ export class GaiaController {
     );
     this.roomState = await this.room.readState();
     this.initialized = true;
+    this.hydrateDurableQueue();
 
     // A pendingTurn on a FRESH read means a prior process was interrupted mid-turn.
     // Resume it in the background (re-entrant: resume calls sendMessage, which awaits
     // init() — already true here, so no loop). Never blocks opening the room.
-    if (this.roomState.pendingTurn) void this.resumePendingTurn().catch(() => {});
+    if (this.roomState.pendingTurn) {
+      if (this.canRecoverPendingTurn(this.roomState.pendingTurn)) void this.resumePendingTurn().catch(() => {});
+      else this.durableTurnBlocked = true;
+    } else if (this.pending.length > 0) void this.drain();
+  }
+
+  private canRecoverPendingTurn(pending: NonNullable<RoomState["pendingTurn"]>): boolean {
+    const supported = new Set(["id", "prompt", "targets", "agentId", "partialReply", "channel", "startedAt"]);
+    if (Object.keys(pending).some((key) => !supported.has(key))) return false;
+    return pending.channel === undefined || pending.channel === "voice";
+  }
+
+  private canRecoverQueuedMessage(message: QueuedMessage): boolean {
+    const supported = new Set(["taskId", "text", "targets", "queuedAt", "eventId", "recorded"]);
+    if (Object.keys(message).some((key) => !supported.has(key))) return false;
+    if (this.roomState.monad || message.targets.length === 0) return false;
+    if (message.targets.some((target) => !this.workspace.agents[target])) return false;
+    return parseCommand(message.text).type === "message";
+  }
+
+  private hydrateDurableQueue(): void {
+    for (const message of this.roomState.queue ?? []) {
+      if (!this.canRecoverQueuedMessage(message)) {
+        this.durableQueueBlocked = true;
+        break;
+      }
+      const task: GaiaTask = {
+        id: message.taskId,
+        roomId: this.room.id,
+        text: message.text,
+        targets: [...message.targets],
+        status: "queued",
+        startedAt: message.queuedAt || new Date().toISOString(),
+      };
+      this.pending.push({
+        task,
+        text: message.text,
+        command: parseCommand(message.text),
+        options: {
+          targets: [...message.targets],
+          queued: message,
+          ...(message.recorded ? { recordUserMessage: false } : {}),
+        },
+      });
+    }
   }
 
   private async updateRoomState(
@@ -327,12 +388,35 @@ export class GaiaController {
 
     const task = this.createTask(text, targets);
 
-    // Busy? Queue and return — the message runs when the current turn settles.
-    if (this.activeTask) {
+    // Busy? Queue and return — message turns take durable custody before the
+    // in-memory task chip appears. Unsupported recovered queue entries stay at
+    // the head rather than being bypassed by newer work.
+    if (
+      this.activeTask ||
+      (!options.resuming && (this.draining || this.pending.length > 0 || this.roomState.pendingTurn || (this.roomState.queue?.length ?? 0) > 0))
+    ) {
+      if (this.durableQueueBlocked || this.durableTurnBlocked) throw new Error("This room has queued work that requires a newer daemon.");
       task.status = "queued";
-      this.pending.push({ task, text, command, options });
+      let queued: QueuedMessage | undefined;
+      // Monad dispatch needs a richer restart marker than the base queue
+      // record; keep its existing in-process behavior until that protocol lands.
+      if (command.type === "message" && !this.isMonadMessage(text, options)) {
+        queued = {
+          taskId: task.id,
+          text,
+          targets: [...targets],
+          ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
+          queuedAt: task.startedAt,
+          eventId: newRoomEventId(),
+        };
+        await this.updateRoomState((state) => {
+          state.queue = [...(state.queue ?? []), queued!];
+        });
+      }
+      this.pending.push({ task, text, command, options: queued ? { ...options, queued } : options });
       this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.room.id, task });
       void this.emitSnapshot();
+      if (!this.activeTask) void this.drain();
       return task;
     }
 
@@ -370,16 +454,46 @@ export class GaiaController {
     });
   }
 
-  // Dispatches the next queued message once the room goes idle.
-  private drain(): void {
-    if (this.activeTask) return;
-    const next = this.pending.shift();
+  // Dispatches the next queued message once the room goes idle. A recovered
+  // entry without an event id receives one durably before transcript append.
+  private async drain(): Promise<void> {
+    if (this.activeTask || this.draining) return;
+    const next = this.pending[0];
     if (!next) return;
+    this.draining = true;
+    let dispatched = false;
     try {
+      const queued = next.options.queued;
+      if (queued && !queued.eventId) {
+        const eventId = newRoomEventId();
+        let assigned = false;
+        await this.updateRoomState((state) => {
+          const entry = state.queue?.find((candidate) => candidate.taskId === queued.taskId);
+          if (!entry) return;
+          entry.eventId = eventId;
+          assigned = true;
+        });
+        if (!assigned) return;
+        next.options = { ...next.options, queued: { ...queued, eventId } };
+      }
+      this.pending.shift();
+      dispatched = true;
       this.startTask(next.task, next.text, next.command, next.options);
     } catch (error) {
-      this.settleTask(next.task, "error", error);
+      if (dispatched) this.settleTask(next.task, "error", error);
+      else {
+        this.emit({
+          type: "task-error",
+          workspaceId: this.workspaceId,
+          roomId: this.room.id,
+          task: next.task,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } finally {
+      this.draining = false;
     }
+    if (dispatched && !this.activeTask && this.pending.length > 0) void this.drain();
   }
 
   private routeTargets(text: string): string[] {
@@ -398,7 +512,7 @@ export class GaiaController {
     await this.init();
     // Panic stop clears the whole pipeline: drop queued messages first so the
     // drain after settling the active task doesn't immediately start one.
-    this.clearPending("cancelled");
+    await this.clearPending("cancelled");
 
     const task = this.activeTask;
     if (!task) return undefined;
@@ -413,9 +527,17 @@ export class GaiaController {
 
   // Drops every queued message, marking each as the given terminal status so the
   // UI clears its chip. Used by the panic stop.
-  private clearPending(status: "cancelled"): void {
+  private async clearPending(status: "cancelled"): Promise<void> {
     const dropped = this.pending;
     this.pending = [];
+    const durableIds = new Set(dropped.flatMap((item) => item.options.queued?.taskId ? [item.options.queued.taskId] : []));
+    if (durableIds.size > 0) {
+      await this.updateRoomState((state) => {
+        if (!state.queue) return;
+        state.queue = state.queue.filter((message) => !durableIds.has(message.taskId));
+        if (state.queue.length === 0) delete state.queue;
+      });
+    }
     for (const item of dropped) {
       item.task.status = status;
       item.task.endedAt = new Date().toISOString();
@@ -534,8 +656,12 @@ export class GaiaController {
 
     const channel = options.channel === "voice" ? "voice" : undefined;
     if (options.recordUserMessage !== false) {
-      const userEvent = await this.room.addUserMessage(text, task.targets, channel);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
+      const eventId = options.queued?.eventId;
+      const alreadyRecorded = Boolean(eventId && (await this.room.hasEvent(eventId)));
+      if (!alreadyRecorded) {
+        const userEvent = await this.room.addUserMessage(text, task.targets, channel, eventId);
+        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: userEvent });
+      }
     }
 
     // Targets still to run; the in-flight one stays here until it completes, so a
@@ -565,7 +691,7 @@ export class GaiaController {
 
       // Record the in-flight turn on disk BEFORE it streams, so an interruption
       // (crash, kill, abrupt shutdown) leaves a resumable marker — no progress lost.
-      await this.markPendingTurn(task, text, remaining, target, channel);
+      await this.markPendingTurn(task, text, remaining, target, channel, options.queued?.taskId);
       let lastFlush = 0;
 
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
@@ -634,7 +760,14 @@ export class GaiaController {
     }
   }
 
-  private async markPendingTurn(task: GaiaTask, prompt: string, remaining: string[], agentId: string, channel: "voice" | undefined): Promise<void> {
+  private async markPendingTurn(
+    task: GaiaTask,
+    prompt: string,
+    remaining: string[],
+    agentId: string,
+    channel: "voice" | undefined,
+    queuedTaskId?: string,
+  ): Promise<void> {
     await this.updateRoomState((state) => {
       state.pendingTurn = {
         id: task.id,
@@ -645,6 +778,11 @@ export class GaiaController {
         ...(channel ? { channel } : {}),
         startedAt: new Date().toISOString(),
       };
+      if (queuedTaskId && state.queue) {
+        const index = state.queue.findIndex((message) => message.taskId === queuedTaskId);
+        if (index >= 0) state.queue.splice(index, 1);
+        if (state.queue.length === 0) delete state.queue;
+      }
     });
   }
 
@@ -688,6 +826,7 @@ export class GaiaController {
       await this.sendMessage(pending.prompt, {
         targets: pending.targets,
         recordUserMessage: false,
+        resuming: true,
         ...(pending.channel ? { channel: pending.channel } : {}),
       });
     } else {
@@ -896,7 +1035,7 @@ export class GaiaController {
     }
     void this.emitSnapshot();
     // Now idle — start the next queued message, if any.
-    this.drain();
+    void this.drain();
   }
 
   private async emitSnapshot(): Promise<void> {

@@ -364,6 +364,12 @@ test("queues a message sent while a turn is running, then drains it (steer inste
     assert.equal(second.status, "queued");
     assert.notEqual(first.id, second.id);
     assert.ok((await controller.getSnapshot()).tasks.some((task) => task.id === second.id && task.status === "queued"));
+    const queuedState = JSON.parse(await readFile(join(workspace.roomsDir, workspace.config.room, "state.json"), "utf8")) as {
+      queue?: Array<{ taskId: string; text: string; eventId?: string }>;
+    };
+    assert.equal(queuedState.queue?.[0].taskId, second.id);
+    assert.equal(queuedState.queue?.[0].text, "second");
+    assert.ok(queuedState.queue?.[0].eventId, "queued user event id is reserved before dispatch");
 
     // Release: first finishes, then the queued second drains and runs.
     for (const runtime of gated.values()) runtime.release();
@@ -374,6 +380,138 @@ test("queues a message sent while a turn is running, then drains it (steer inste
     const texts = (await controller.getSnapshot()).room.events.map((event) => event.text);
     assert.ok(texts.includes("first"));
     assert.ok(texts.includes("second"));
+    assert.equal(JSON.parse(await readFile(join(workspace.roomsDir, workspace.config.room, "state.json"), "utf8")).queue, undefined);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("recovers the durable queue on restart without duplicating an already-appended user event", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const store = workspace.rooms.open(workspace.config.room);
+    await store.appendEvent({ id: "evt_already", timestamp: "1", author: "user", targets: ["gaia"], text: "already appended" });
+    await store.updateState((state) => {
+      state.queue = [
+        { taskId: "task_recover_1", text: "already appended", targets: ["gaia"], queuedAt: "1", eventId: "evt_already" },
+        { taskId: "task_recover_2", text: "survives restart", targets: ["gaia"], queuedAt: "2", eventId: "evt_later" },
+        { taskId: "task_recover_3", text: "legacy queue entry", targets: ["gaia"], queuedAt: "3" },
+      ];
+    });
+
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    await controller.init();
+    await waitForAsync(async () => {
+      const state = await store.readState();
+      return !state.pendingTurn && !state.queue && (await store.recentEvents(50)).filter((event) => event.author === "gaia").length === 3;
+    });
+
+    const transcript = await store.recentEvents(50);
+    const users = transcript.filter((event) => event.author === "user");
+    assert.deepEqual(users.map((event) => event.text), ["already appended", "survives restart", "legacy queue entry"]);
+    assert.equal(users[0].id, "evt_already");
+    assert.equal(users[1].id, "evt_later");
+    assert.match(users[2].id, /^evt_/);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("leaves newer queue entries untouched instead of executing them with v1 semantics", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const store = workspace.rooms.open(workspace.config.room);
+    const newer = {
+      taskId: "task_newer",
+      text: "inspect attachment",
+      targets: ["gaia"],
+      queuedAt: "1",
+      eventId: "evt_newer",
+      attachments: [{ name: "proof.txt", path: "/preserved/proof.txt", mime: "text/plain", size: 5 }],
+    };
+    await store.updateState((state) => {
+      state.queue = [newer];
+    });
+
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    await controller.init();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(controller.isBusy, true);
+    assert.deepEqual((await store.readState()).queue, [newer]);
+    assert.deepEqual(await store.recentEvents(50), []);
+    await assert.rejects(controller.sendMessage("do not jump ahead"), /requires a newer daemon/);
+    assert.deepEqual((await store.readState()).queue, [newer]);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("leaves a newer pending-turn protocol untouched instead of risking duplicate history", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const store = workspace.rooms.open(workspace.config.room);
+    const newerPending = {
+      id: "task_newer_pending",
+      eventId: "evt_reserved_reply",
+      prompt: "finish safely",
+      targets: ["gaia"],
+      agentId: "gaia",
+      partialReply: "already streamed",
+      startedAt: "1",
+    };
+    await store.updateState((state) => {
+      state.pendingTurn = newerPending;
+    });
+
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    await controller.init();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(controller.isBusy, true);
+    assert.deepEqual((await store.readState()).pendingTurn, newerPending);
+    assert.deepEqual(await store.recentEvents(50), []);
+    await assert.rejects(controller.sendMessage("do not duplicate the turn"), /requires a newer daemon/);
+    assert.deepEqual((await store.readState()).pendingTurn, newerPending);
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;
@@ -403,6 +541,10 @@ test("panic stop cancels the active turn AND clears the queued messages", async 
     await waitFor(() => events.some((event) => event.type === "task-start" && event.task.id === first.id));
     const second = await controller.sendMessage("second");
     assert.equal(second.status, "queued");
+    assert.equal(
+      JSON.parse(await readFile(join(workspace.roomsDir, workspace.config.room, "state.json"), "utf8")).queue?.[0]?.text,
+      "second",
+    );
 
     await controller.cancelActiveTask();
     await waitFor(() => events.some((event) => event.type === "task-end" && event.task.id === first.id && event.task.status === "cancelled"));
@@ -414,6 +556,7 @@ test("panic stop cancels the active turn AND clears the queued messages", async 
     const roomEvents = (await controller.getSnapshot()).room.events;
     assert.ok(!roomEvents.some((event) => event.text === "second"), "queued message must not run");
     assert.ok(!roomEvents.some((event) => event.author === "gaia"), "no agent reply after cancel");
+    assert.equal(JSON.parse(await readFile(join(workspace.roomsDir, workspace.config.room, "state.json"), "utf8")).queue, undefined);
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;

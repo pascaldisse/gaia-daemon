@@ -43,6 +43,7 @@ class FakeLifecycle implements RoomLifecycle {
         async clearTranscript() {},
         async copyTranscriptTo() {},
         async appendEvent() {},
+        async hasEvent() { return false; },
         async recentEvents() { return []; },
         async eventsAfterCursor(cursor) { return { events: [], nextCursor: cursor }; },
         async readState() { return structuredClone(state); },
