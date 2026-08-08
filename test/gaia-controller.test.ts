@@ -675,3 +675,99 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail("Timed out waiting for predicate");
 }
+
+test("listRooms enumerates sibling rooms sorted by id with parent links", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(workspace.roomsDir, "z-child"), { recursive: true });
+    await mkdir(join(workspace.roomsDir, "a-parent"), { recursive: true });
+    await writeJsonFile(join(workspace.roomsDir, "z-child", "state.json"), {
+      activeRoles: {},
+      agentCursors: {},
+      runtimeDetails: {},
+      parentRoomId: "a-parent",
+    });
+
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    const rooms = await controller.listRooms();
+    assert.deepEqual(
+      rooms.map((room) => room.id),
+      ["a-parent", controller.roomId, "z-child"].sort((a, b) => a.localeCompare(b)),
+    );
+    assert.deepEqual(
+      rooms.find((room) => room.id === "z-child"),
+      { id: "z-child", path: join(workspace.roomsDir, "z-child"), isCurrent: false, parentRoomId: "a-parent" },
+    );
+    assert.ok(rooms.find((room) => room.id === controller.roomId)?.isCurrent);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("listRooms falls back to the current room when the rooms dir is absent", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const missing = { ...workspace, roomsDir: join(temp.path, "no-such-rooms") };
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace: missing,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    assert.deepEqual(await controller.listRooms(), [
+      { id: controller.roomId, path: join(missing.roomsDir, controller.roomId), isCurrent: true },
+    ]);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("/fork skips taken fork ids and picks -fork-2", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    const base = controller.roomId;
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(workspace.roomsDir, `${base}-fork`), { recursive: true });
+
+    await controller.sendMessage("/fork");
+    assert.ok((await controller.listRooms()).some((room) => room.id === `${base}-fork-2`));
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});

@@ -1,13 +1,10 @@
-import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 import { readJsonFile, writeJsonFile } from "../lib/fs.js";
 import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
-import { openRoomStore } from "../room/store.js";
+import { openRoomDirectory, type RoomDirectory } from "../room/directory.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
@@ -173,6 +170,9 @@ export class GaiaController {
   // rooms (and their summons) run at once. Defaults to a private store when the
   // host (tests, standalone) does not supply one.
   private readonly memoryStore: MemoryStore;
+  // Room enumeration/existence/fork naming — workspace room-lifecycle concern,
+  // deliberately outside RoomStore (which owns one room's bytes).
+  private readonly roomDirectory: RoomDirectory;
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly listeners = new Set<(event: GaiaUiEvent) => void>();
   private roomState: RoomState = defaultRoomState();
@@ -186,6 +186,7 @@ export class GaiaController {
   constructor(private readonly options: GaiaControllerOptions) {
     this.room = new Room(options.workspace, options.roomId);
     this.memoryStore = options.memoryStore ?? new MemoryStore();
+    this.roomDirectory = openRoomDirectory(options.workspace.roomsDir);
 
     // Every agent runs in a uniform per-(room, agent) runner subprocess; its
     // tool I/O (memory writes, summon) reaches the daemon over the same HTTP
@@ -290,26 +291,23 @@ export class GaiaController {
   }
 
   async listRooms(): Promise<RoomSummary[]> {
-    const fallback = [{ id: this.room.id, path: join(this.workspace.roomsDir, this.room.id), isCurrent: true }];
-    if (!existsSync(this.workspace.roomsDir)) return fallback;
-    const entries = await readdir(this.workspace.roomsDir, { withFileTypes: true });
+    const fallback = [{ id: this.room.id, path: this.roomDirectory.roomPath(this.room.id), isCurrent: true }];
+    const roomIds = await this.roomDirectory.listRoomIds();
     // A summon whose first turn is still streaming, so the tree can flag it live.
     const running = new Set(this.options.summonHost?.runningChildren().map((child) => child.roomId) ?? []);
     const rooms = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory())
-        .map(async (entry) => {
-          // parentRoomId links a summon's child room to its spawner; read from
-          // the room's own state so the sidebar can nest it under its parent.
-          const state = await openRoomStore(this.workspace.roomsDir, entry.name).readState();
-          return {
-            id: entry.name,
-            path: join(this.workspace.roomsDir, entry.name),
-            isCurrent: entry.name === this.room.id,
-            ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-            ...(running.has(entry.name) ? { running: true } : {}),
-          };
-        }),
+      roomIds.map(async (roomId) => {
+        // parentRoomId links a summon's child room to its spawner; read from
+        // the room's own state so the sidebar can nest it under its parent.
+        const state = await this.roomDirectory.open(roomId).readState();
+        return {
+          id: roomId,
+          path: this.roomDirectory.roomPath(roomId),
+          isCurrent: roomId === this.room.id,
+          ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
+          ...(running.has(roomId) ? { running: true } : {}),
+        };
+      }),
     );
     rooms.sort((a, b) => a.id.localeCompare(b.id));
     return rooms.length > 0 ? rooms : fallback;
@@ -858,10 +856,10 @@ export class GaiaController {
   // copy-state-verbatim did) pointed every agent past the end of the copied
   // history, leaving the branch amnesiac. Reset → replay → continuity.
   private async runForkCommand(): Promise<string> {
-    const target = this.nextForkId(this.room.id);
+    const target = this.roomDirectory.nextForkId(this.room.id);
     // Directory creation lives in the store (copyTranscriptTo/writeState both
     // mkdir -p) — the controller never touches the room layout itself.
-    const dst = openRoomStore(this.workspace.roomsDir, target);
+    const dst = this.roomDirectory.open(target);
     try {
       await this.room.copyTranscriptTo(dst);
     } catch {
@@ -871,14 +869,6 @@ export class GaiaController {
     await dst.writeState(forked);
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
-  }
-
-  private nextForkId(base: string): string {
-    const exists = (id: string): boolean => existsSync(join(this.workspace.roomsDir, id));
-    let candidate = `${base}-fork`;
-    let n = 2;
-    while (exists(candidate)) candidate = `${base}-fork-${n++}`;
-    return candidate;
   }
 
   private createTask(text: string, targets: string[]): GaiaTask {
