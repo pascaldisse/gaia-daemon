@@ -8,7 +8,7 @@ import { jsonText, writeIfMissing, writeJsonFile } from "../lib/fs.js";
 import { parseHarness } from "../runtime/index.js";
 import { parseSandboxConfig } from "../runtime/sandbox/registry.js";
 import { discoverContextFiles } from "./context-files.js";
-import { openRoomLifecycle } from "./room-lifecycle.js";
+import { openRoomLifecycle, type RoomLifecycle } from "./room-lifecycle.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
 export const WORKSPACE_DIRNAME = ".gaia";
@@ -67,9 +67,9 @@ function assertRoomId(roomId: string): void {
   if (!isValidRoomId(roomId)) throw new Error("Room id must be 1-64 letters, numbers, dots, underscores, or hyphens, and cannot contain slashes.");
 }
 
-export async function ensureWorkspaceRoom(cwd: string, roomId: string): Promise<void> {
+export async function ensureWorkspaceRoom(cwd: string, roomId: string, rooms?: RoomLifecycle): Promise<void> {
   assertRoomId(roomId);
-  await openRoomLifecycle(workspaceFile(cwd, "rooms")).ensure(roomId);
+  await (rooms ?? openRoomLifecycle(workspaceFile(cwd, "rooms"))).ensure(roomId);
 }
 
 export async function setWorkspaceRoom(cwd: string, roomId: string): Promise<void> {
@@ -112,6 +112,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   const agentsOverrideDir = workspaceFile(cwd, "agents");
   const roomsDir = workspaceFile(cwd, "rooms");
   const globalAgentsDir = globalAgentsPath();
+  const rooms = openRoomLifecycle(roomsDir);
 
   if (!existsSync(configPath)) throw new Error(`Missing workspace config: ${configPath}`);
 
@@ -125,7 +126,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
     throw new Error(`Default agent not found: ${config.defaultAgent}`);
   }
 
-  await ensureWorkspaceRoom(cwd, config.room);
+  await ensureWorkspaceRoom(cwd, config.room, rooms);
 
   return {
     rootDir: cwd,
@@ -133,6 +134,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
     configPath,
     agentsOverrideDir,
     roomsDir,
+    rooms,
     globalAgentsDir,
     config,
     contextFiles,

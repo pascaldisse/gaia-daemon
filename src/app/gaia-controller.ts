@@ -4,7 +4,7 @@ import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
-import { openRoomLifecycle, type RoomLifecycle } from "../workspace/room-lifecycle.js";
+import { type RoomLifecycle } from "../workspace/room-lifecycle.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";
@@ -186,7 +186,7 @@ export class GaiaController {
   constructor(private readonly options: GaiaControllerOptions) {
     this.room = new Room(options.workspace, options.roomId);
     this.memoryStore = options.memoryStore ?? new MemoryStore();
-    this.roomLifecycle = openRoomLifecycle(options.workspace.roomsDir);
+    this.roomLifecycle = options.workspace.rooms;
 
     // Every agent runs in a uniform per-(room, agent) runner subprocess; its
     // tool I/O (memory writes, summon) reaches the daemon over the same HTTP

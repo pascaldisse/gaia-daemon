@@ -89,7 +89,13 @@ export class V1FileRoomStore implements RoomStore {
   }
 }
 
-/** Single factory for room stores. Callers never name the backing layout. */
+/** Adapter seam. Composition owns the backing layout; callers depend on this port. */
+export type RoomStoreFactory = (roomsDir: string, roomId: string) => RoomStore;
+
+/** v1 composition point. Keep adapter selection here, never at callers. */
+export const v1RoomStoreFactory: RoomStoreFactory = (roomsDir, roomId) => new V1FileRoomStore(roomsDir, roomId);
+
+/** Legacy-friendly v1 entry point. New composition passes RoomStoreFactory explicitly. */
 export function openRoomStore(roomsDir: string, roomId: string): RoomStore {
-  return new V1FileRoomStore(roomsDir, roomId);
+  return v1RoomStoreFactory(roomsDir, roomId);
 }

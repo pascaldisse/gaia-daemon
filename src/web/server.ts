@@ -737,7 +737,7 @@ export class GaiaWebServer {
       workspace,
       roomId: resolvedRoom,
       memoryStore: this.memoryStoreFor(workspaceId),
-      summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
+      summonHost: this.summonCoordinatorFor(workspaceId, workspace),
       setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, agentId, level)).message,
       harnessHost: this.harnessBridge ? (opts) => this.harnessBridge!.hostFor(workspaceId, opts) : undefined,
     });
@@ -787,12 +787,11 @@ export class GaiaWebServer {
   // One summon coordinator per workspace, persistent so it keeps tracking
   // running summons across room switches. Runs each summon as a child room
   // through that room's own controller (controllerFor).
-  private summonCoordinatorFor(workspaceId: string, workspace: Workspace, workspacePath: string): SummonCoordinator {
+  private summonCoordinatorFor(workspaceId: string, workspace: Workspace): SummonCoordinator {
     let coordinator = this.summonCoordinators.get(workspaceId);
     if (!coordinator) {
       coordinator = new SummonCoordinator(
         workspace,
-        workspacePath,
         (roomId) => this.controllerFor(workspaceId, roomId),
         workspace.config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom,
       );
@@ -809,7 +808,7 @@ export class GaiaWebServer {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     const workspace = await loadWorkspace(record.path);
-    return this.summonCoordinatorFor(workspaceId, workspace, record.path);
+    return this.summonCoordinatorFor(workspaceId, workspace);
   }
 
   // The gaia daemon tools an agent's EFFECTIVE harness declares (agent > workspace

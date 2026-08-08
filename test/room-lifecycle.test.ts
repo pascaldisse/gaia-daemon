@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { openRoomLifecycle } from "../src/workspace/room-lifecycle.ts";
-import { openRoomStore } from "../src/room/store.ts";
+import { openRoomStore, type RoomStore } from "../src/room/store.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
 async function makeRoom(roomsDir: string, id: string, state?: string): Promise<void> {
@@ -52,6 +52,31 @@ test("lifecycle keeps the room-store path and atomically reserves fork suffixes"
   } finally {
     await temp.cleanup();
   }
+});
+
+test("lifecycle uses an injected room-store adapter", async () => {
+  const opened: string[] = [];
+  const fakeStore = (roomId: string): RoomStore => ({
+    dir: `fake/${roomId}`,
+    transcriptPath: `fake/${roomId}/transcript`,
+    statePath: `fake/${roomId}/state`,
+    async initialize() {},
+    async clearTranscript() {},
+    async copyTranscriptTo() {},
+    async appendEvent() {},
+    async recentEvents() { return []; },
+    async eventsAfterCursor() { return { events: [], nextCursor: 0 }; },
+    async readState() { return { activeRoles: {}, agentCursors: {}, runtimeDetails: {} }; },
+    async writeState() {},
+  });
+  const lifecycle = openRoomLifecycle("ignored", (_roomsDir, roomId) => {
+    opened.push(roomId);
+    return fakeStore(roomId);
+  });
+
+  assert.equal(lifecycle.open("adapter-room").dir, "fake/adapter-room");
+  assert.equal((await lifecycle.ensure("ensured-room")).dir, "fake/ensured-room");
+  assert.deepEqual(opened, ["adapter-room", "ensured-room"]);
 });
 
 test("ensure creates the room through the lifecycle and is idempotent", async () => {

@@ -1,6 +1,6 @@
 import { existsSync, type Dirent } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
-import { openRoomStore, type RoomStore } from "../room/store.js";
+import { v1RoomStoreFactory, type RoomStore, type RoomStoreFactory } from "../room/store.js";
 
 /** Workspace-scoped room lifecycle. RoomStore remains the port for one room's
  * bytes; discovery and reservation belong to the room collection. */
@@ -29,7 +29,7 @@ export interface RoomLifecycle {
 }
 
 class V1FileRoomLifecycle implements RoomLifecycle {
-  constructor(readonly roomsDir: string) {}
+  constructor(readonly roomsDir: string, private readonly storeFactory: RoomStoreFactory) {}
 
   roomPath(roomId: string): string {
     return this.open(roomId).dir;
@@ -57,7 +57,7 @@ class V1FileRoomLifecycle implements RoomLifecycle {
   }
 
   open(roomId: string): RoomStore {
-    return openRoomStore(this.roomsDir, roomId);
+    return this.storeFactory(this.roomsDir, roomId);
   }
 
   async ensure(roomId: string): Promise<RoomStore> {
@@ -82,6 +82,6 @@ class V1FileRoomLifecycle implements RoomLifecycle {
 }
 
 /** Single factory — callers never name the backing layout. */
-export function openRoomLifecycle(roomsDir: string): RoomLifecycle {
-  return new V1FileRoomLifecycle(roomsDir);
+export function openRoomLifecycle(roomsDir: string, storeFactory: RoomStoreFactory = v1RoomStoreFactory): RoomLifecycle {
+  return new V1FileRoomLifecycle(roomsDir, storeFactory);
 }

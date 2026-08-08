@@ -6,6 +6,7 @@ import type { AgentDefinition } from "../src/agents/types.ts";
 import { GaiaController, type GaiaUiEvent } from "../src/app/gaia-controller.ts";
 import type { AgentInput, AgentRuntime } from "../src/runtime/types.ts";
 import { initWorkspace, loadWorkspace } from "../src/workspace/workspace-loader.ts";
+import { openRoomLifecycle } from "../src/workspace/room-lifecycle.ts";
 import { createTempDir } from "./helpers/temp.ts";
 import { writeJsonFile } from "../src/lib/fs.ts";
 
@@ -726,7 +727,8 @@ test("listRooms falls back to the current room when the rooms dir is absent", as
   try {
     await initWorkspace(temp.path);
     const workspace = await loadWorkspace(temp.path);
-    const missing = { ...workspace, roomsDir: join(temp.path, "no-such-rooms") };
+    const roomsDir = join(temp.path, "no-such-rooms");
+    const missing = { ...workspace, roomsDir, rooms: openRoomLifecycle(roomsDir) };
     const controller = new GaiaController({
       cwd: temp.path,
       workspaceId: "workspace",

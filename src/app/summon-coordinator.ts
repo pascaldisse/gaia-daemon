@@ -1,5 +1,3 @@
-import { openRoomStore } from "../room/store.js";
-import { ensureWorkspaceRoom } from "../workspace/workspace-loader.js";
 import type { Workspace } from "../workspace/types.js";
 import type { GaiaController } from "./gaia-controller.js";
 
@@ -42,7 +40,6 @@ export class SummonCoordinator {
 
   constructor(
     private readonly workspace: Workspace,
-    private readonly workspacePath: string,
     private readonly controllerForRoom: (roomId: string) => Promise<GaiaController>,
     private readonly maxPerRoom: number,
   ) {}
@@ -72,12 +69,9 @@ export class SummonCoordinator {
     }
 
     const childRoomId = `${agentId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 64);
-    await ensureWorkspaceRoom(this.workspacePath, childRoomId);
-
-    // Stamp the parent link BEFORE the child controller reads state at init, so
-    // it survives the controller's own state writes (and the nested rooms tree
-    // sees it).
-    const store = openRoomStore(this.workspace.roomsDir, childRoomId);
+    // Ensure and open through the workspace composition so the child link and
+    // its controller always use the same room adapter.
+    const store = await this.workspace.rooms.ensure(childRoomId);
     const state = await store.readState();
     state.parentRoomId = parentRoomId;
     await store.writeState(state);

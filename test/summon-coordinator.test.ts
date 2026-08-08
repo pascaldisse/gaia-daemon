@@ -67,7 +67,7 @@ test("a summon runs as a child room linked to its parent and returns the reply",
     let coordinator!: SummonCoordinator;
     const controllerForRoom = async (roomId: string) =>
       new GaiaController({ workspaceId: "workspace", workspace, roomId, runtimeFactory: (agent) => new ReplyRuntime(agent), summonHost: coordinator });
-    coordinator = new SummonCoordinator(workspace, path, controllerForRoom, 8);
+    coordinator = new SummonCoordinator(workspace, controllerForRoom, 8);
 
     const reply = await coordinator.summonAndWait("default", agentId, "do a thing");
     assert.match(reply, /done by @/);
@@ -99,7 +99,7 @@ test("enforces the per-room summon cap", async () => {
         },
         summonHost: coordinator,
       });
-    coordinator = new SummonCoordinator(workspace, path, controllerForRoom, 1);
+    coordinator = new SummonCoordinator(workspace, controllerForRoom, 1);
 
     await coordinator.summon("default", agentId, "first"); // stays running (blocked)
     assert.equal(coordinator.runningChildren("default").length, 1);

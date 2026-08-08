@@ -84,7 +84,7 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
     controllers.set(roomId, controller);
     return controller;
   };
-  coordinator = new SummonCoordinator(workspace, cwd, controllerForRoom, workspace.config.maxSummonsPerRoom ?? 8);
+  coordinator = new SummonCoordinator(workspace, controllerForRoom, workspace.config.maxSummonsPerRoom ?? 8);
 
   await ensureWorkspaceRoom(cwd, room);
 

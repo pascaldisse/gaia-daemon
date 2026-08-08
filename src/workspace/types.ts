@@ -1,6 +1,7 @@
 import type { AgentDefinition } from "../agents/types.js";
 import type { AgentHarness } from "../runtime/capabilities.js";
 import type { SandboxConfig } from "../runtime/sandbox/registry.js";
+import type { RoomLifecycle } from "./room-lifecycle.js";
 
 export interface WorkspaceConfig {
   defaultAgent: string;
@@ -25,6 +26,8 @@ export interface Workspace {
   configPath: string;
   agentsOverrideDir: string;
   roomsDir: string;
+  /** Workspace room composition: all room consumers share this lifecycle. */
+  rooms: RoomLifecycle;
   globalAgentsDir: string;
   config: WorkspaceConfig;
   contextFiles: ContextFile[];

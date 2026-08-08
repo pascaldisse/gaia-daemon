@@ -1,6 +1,6 @@
 import type { Workspace } from "../workspace/types.js";
 import { type RoomState } from "./state.js";
-import { V1FileRoomStore, type RoomStore } from "./store.js";
+import { type RoomStore } from "./store.js";
 import { newRoomEventId, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
 export class Room {
@@ -15,7 +15,7 @@ export class Room {
   constructor(
     private readonly workspace: Workspace,
     roomId: string = workspace.config.room,
-    store: RoomStore = new V1FileRoomStore(workspace.roomsDir, roomId),
+    store: RoomStore = workspace.rooms.open(roomId),
   ) {
     this.id = roomId;
     this.store = store;
