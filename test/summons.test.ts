@@ -106,9 +106,15 @@ function fakeRoom(reply: string): SummonRoomAccess & {
   delivered: { from: string; reply: string; delivery: SummonResultDelivery }[];
   markedDelivered: number;
   settle: (status?: string, error?: string) => void;
+  holdPending: () => void;
+  releasePending: (reply?: string) => void;
 } {
   const listeners = new Set<(event: SummonTaskEvent) => void>();
   const task = { id: "t1", status: "running" as string, error: undefined as string | undefined };
+  let currentReply = reply;
+  let pending = false;
+  let pendingDone = Promise.resolve();
+  let finishPending = (): void => {};
   const room = {
     sent: [] as string[],
     delivered: [] as { from: string; reply: string; delivery: SummonResultDelivery }[],
@@ -117,6 +123,17 @@ function fakeRoom(reply: string): SummonRoomAccess & {
       task.status = status;
       task.error = error;
       for (const listener of listeners) listener({ type: status === "error" ? "task-error" : "task-end", task: { id: task.id } });
+    },
+    holdPending() {
+      pending = true;
+      pendingDone = new Promise<void>((resolve) => {
+        finishPending = resolve;
+      });
+    },
+    releasePending(nextReply?: string) {
+      if (nextReply !== undefined) currentReply = nextReply;
+      pending = false;
+      finishPending();
     },
     async sendMessage(text: string) {
       room.sent.push(text);
@@ -127,11 +144,13 @@ function fakeRoom(reply: string): SummonRoomAccess & {
       return () => listeners.delete(listener);
     },
     async latestReplyFrom() {
-      return reply;
+      return currentReply;
     },
-    async waitForSettled() {},
+    async waitForSettled() {
+      await pendingDone;
+    },
     async hasPendingWork() {
-      return false;
+      return pending;
     },
     async getSnapshot() {
       return { tasks: [task] };
@@ -204,6 +223,59 @@ test("background summon never blocks: launch resolves first, then the result is 
   assert.equal(parent.delivered[0].delivery.failed, false);
   assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia"); // the subagent callback re-invokes the caller
   assert.equal(child.markedDelivered, 1);
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("a parent summon stays live until nested workers return and its callback settles", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const root = fakeRoom("");
+  const outer = fakeRoom("children launched");
+  const leaf = fakeRoom("leaf result");
+  const originalDelivery = outer.deliverAgentResult.bind(outer);
+  outer.deliverAgentResult = async (from, reply, delivery) => {
+    await originalDelivery(from, reply, delivery);
+    // Real RoomService delivery queues a callback turn before returning.
+    outer.holdPending();
+  };
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async (roomId) => {
+      if (roomId === "default") return root;
+      return roomId.startsWith("terry-") ? outer : leaf;
+    },
+    async () => 8,
+    () => {},
+  );
+
+  const outerRun = await coordinator.launch("default", "terry", "build through children", { deliver: "turn", callerAgentId: "gaia" });
+  const leafRun = await coordinator.launch(outerRun.roomId, "gaia", "inspect one atom", { deliver: "turn", callerAgentId: "terry" });
+  let outerSettled = false;
+  void outerRun.done.finally(() => {
+    outerSettled = true;
+  });
+
+  // The delegation-only first reply must not close or deliver the outer lane.
+  outer.settle();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(outerSettled, false);
+  assert.equal(root.delivered.length, 0);
+  assert.equal(coordinator.runningChildren("default").length, 1);
+
+  // Even after the leaf delivers, its callback turn still belongs to the outer
+  // lane's lifetime and must settle before the final upstream result.
+  leaf.settle();
+  await leafRun.done;
+  assert.equal(outer.delivered.length, 1);
+  assert.equal(outerSettled, false);
+  assert.equal(outer.markedDelivered, 0);
+  assert.equal(root.delivered.length, 0);
+
+  outer.releasePending("integrated leaf result");
+  await outerRun.done;
+  assert.equal(outer.markedDelivered, 1);
+  assert.equal(root.delivered.length, 1);
+  assert.match(root.delivered[0].reply, /integrated leaf result/);
   assert.equal(coordinator.runningChildren().length, 0);
 });
 
@@ -337,6 +409,75 @@ test("recoverUndelivered re-arms a stranded summon and delivers its surviving re
   assert.match(parent.delivered[0].reply, /recovered result/);
   assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
   assert.equal(child.markedDelivered, 1);
+});
+
+test("recoverUndelivered reconstructs a nested tree before delivering its parent", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const outerRoomId = "terry-outer-stranded";
+  const leafRoomId = "gaia-leaf-stranded";
+  for (const [roomId, state] of [
+    [
+      outerRoomId,
+      {
+        activeRoles: {},
+        agentCursors: {},
+        parentRoomId: "default",
+        summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "running", launchedAt: new Date().toISOString() },
+      },
+    ],
+    [
+      leafRoomId,
+      {
+        activeRoles: {},
+        agentCursors: {},
+        parentRoomId: outerRoomId,
+        summon: { agentId: "gaia", deliver: "turn", callerAgentId: "terry", status: "running", launchedAt: new Date().toISOString() },
+      },
+    ],
+  ] as const) {
+    await mkdir(join(workspace.roomsDir, roomId), { recursive: true });
+    await writeJsonAtomic(workspacePaths.roomState(path, roomId), state);
+  }
+
+  const root = fakeRoom("");
+  const outer = fakeRoom("delegated before restart");
+  const leaf = fakeRoom("recovered leaf result");
+  outer.settle();
+  leaf.settle();
+  const originalDelivery = outer.deliverAgentResult.bind(outer);
+  outer.deliverAgentResult = async (from, reply, delivery) => {
+    await originalDelivery(from, reply, delivery);
+    outer.holdPending();
+  };
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", root],
+    [outerRoomId, outer],
+    [leafRoomId, leaf],
+  ]);
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async (roomId) => {
+      const room = services.get(roomId);
+      if (!room) throw new Error(`unexpected room: ${roomId}`);
+      return room;
+    },
+    async () => 8,
+    () => {},
+  );
+
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 100 && outer.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(outer.delivered.length, 1);
+  assert.equal(root.delivered.length, 0);
+  assert.equal(outer.markedDelivered, 0);
+
+  outer.releasePending("integrated after recovery");
+  for (let i = 0; i < 100 && root.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(root.delivered.length, 1);
+  assert.match(root.delivered[0].reply, /integrated after recovery/);
+  assert.equal(outer.markedDelivered, 1);
+  assert.equal(leaf.markedDelivered, 1);
 });
 
 test("recoverUndelivered skips delivered records and non-summon rooms", async () => {

@@ -364,6 +364,10 @@ export class SummonCoordinator implements SummonHost {
   /** childRoomId -> info, for summons whose first turn is still running (the
    * cap + live snapshot). Completed summons live on as child rooms on disk. */
   private readonly running = new Map<string, SummonChild>();
+  /** Completion for every live child. A parent summon waits on its direct
+   * children, then on the callback turns they enqueue, before it can itself
+   * settle and deliver upstream. */
+  private readonly completions = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly workspace: Workspace,
@@ -460,8 +464,10 @@ export class SummonCoordinator implements SummonHost {
     );
     const done = ledgered.finally(() => {
       this.running.delete(childRoomId);
+      this.completions.delete(childRoomId);
       this.notifyParentRoomsChanged(parentRoomId);
     });
+    this.completions.set(childRoomId, done);
     // Don't crash on background summons whose result no one awaits.
     done.catch(() => {});
     return { roomId: childRoomId, done };
@@ -501,6 +507,26 @@ export class SummonCoordinator implements SummonHost {
     return reply;
   }
 
+  /** A delegation turn is not a completed worker. Wait for every direct child
+   * summon and then for the callback turns those children enqueue. Repeat:
+   * a callback may launch another wave. This keeps the outer summon live until
+   * its whole delegation subtree has been integrated. */
+  private async waitForDelegatedWork(room: SummonRoomAccess, roomId: string): Promise<void> {
+    for (;;) {
+      const direct = this.runningChildren(roomId);
+      const completions = direct
+        .map((child) => this.completions.get(child.roomId))
+        .filter((completion): completion is Promise<unknown> => completion !== undefined);
+      if (completions.length > 0) await Promise.allSettled(completions);
+      else if (direct.length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Delivery queues (or starts) the parent callback before the child leaves
+      // the running set. Waiting here therefore closes the hand-off race.
+      await room.waitForSettled();
+      if (this.runningChildren(roomId).length === 0 && !(await room.hasPendingWork())) return;
+    }
+  }
+
   /** Summons run autonomously: the context gate (a human decision modal) must
    * never hold a worker's first turn. */
   private async runFirstTurn(child: SummonRoomAccess, agentId: string, task: string, roomId: string): Promise<string> {
@@ -518,6 +544,10 @@ export class SummonCoordinator implements SummonHost {
     }
     if (turn.status === "error" && (await child.hasPendingWork())) {
       await child.waitForSettled();
+      turn = (await child.getSnapshot()).tasks.at(-1) ?? turn;
+    }
+    if (turn.status !== "error" && turn.status !== "cancelled") {
+      await this.waitForDelegatedWork(child, roomId);
       turn = (await child.getSnapshot()).tasks.at(-1) ?? turn;
     }
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
@@ -575,6 +605,7 @@ export class SummonCoordinator implements SummonHost {
     } catch {
       return;
     }
+    const pending: Array<{ info: SummonChild; record: SummonDelivery }> = [];
     for (const roomId of roomIds) {
       if (this.running.has(roomId)) continue;
       let record: SummonDelivery | undefined;
@@ -591,19 +622,27 @@ export class SummonCoordinator implements SummonHost {
       if (!record || record.status !== "running" || !parentRoomId) continue;
       const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: "", untrusted };
       this.running.set(roomId, info);
-      this.log(`summon recovery: re-arming '${roomId}' (@${record.agentId} → '${parentRoomId}')`);
-      void this.recoverOne(info, record)
-        .catch((error) => this.log(`summon recovery for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
+      pending.push({ info, record });
+    }
+    // Register the entire recovered tree before any lane can settle. Otherwise
+    // a parent discovered first can miss its still-undelivered child.
+    for (const { info, record } of pending) {
+      this.log(`summon recovery: re-arming '${info.roomId}' (@${record.agentId} → '${info.parentRoomId}')`);
+      const completion = this.recoverOne(info, record)
+        .catch((error) => this.log(`summon recovery for '${info.roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
-          this.running.delete(roomId);
-          this.notifyParentRoomsChanged(parentRoomId);
+          this.running.delete(info.roomId);
+          this.completions.delete(info.roomId);
+          this.notifyParentRoomsChanged(info.parentRoomId);
         });
+      this.completions.set(info.roomId, completion);
+      void completion;
     }
   }
 
   private async recoverOne(info: SummonChild, record: SummonDelivery): Promise<void> {
     const child = await this.serviceForRoom(info.roomId); // init() resumes the WAL turn / queue
-    await child.waitForSettled();
+    await this.waitForDelegatedWork(child, info.roomId);
     let lastTask = (await child.getSnapshot()).tasks.at(-1);
     while (lastTask?.status === "error" && (await child.hasPendingWork())) {
       await child.waitForSettled();
