@@ -22,7 +22,7 @@ export interface RoomLifecycle {
   /** Includes currentRoomId when its directory has not been created yet. */
   list(currentRoomId?: string): Promise<RoomRecord[]>;
   open(roomId: string): RoomStore;
-  /** Opens a room and creates only its missing established files. */
+  /** Create the room's files when missing; existing bytes are never touched. */
   ensure(roomId: string): Promise<RoomStore>;
   /** Atomically reserve the first available `<base>-fork[-N]` directory. */
   reserveFork(base: string): Promise<ReservedRoom>;

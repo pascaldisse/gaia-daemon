@@ -101,3 +101,44 @@ test("openRoomStore keeps the established v1 state and transcript paths", async 
     await temp.cleanup();
   }
 });
+
+test("initialize creates default room files and never touches existing bytes", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, "deep", "nested", ".gaia", "rooms");
+    const store = openRoomStore(roomsDir, "fresh");
+    await store.initialize();
+    assert.equal(await readFile(store.transcriptPath, "utf8"), "");
+    assert.equal(
+      await readFile(store.statePath, "utf8"),
+      `${JSON.stringify({ activeRoles: {}, agentCursors: {}, runtimeDetails: {} }, null, 2)}\n`,
+    );
+
+    const stateBytes = `${JSON.stringify({ activeRoles: { gaia: "plan" }, agentCursors: {}, runtimeDetails: {} }, null, 4)}\n`;
+    const transcriptBytes = `${JSON.stringify({ timestamp: "1", author: "user", targets: [], text: "keep" })}\n`;
+    await writeFile(store.statePath, stateBytes, "utf8");
+    await writeFile(store.transcriptPath, transcriptBytes, "utf8");
+    await store.initialize();
+    assert.equal(await readFile(store.statePath, "utf8"), stateBytes);
+    assert.equal(await readFile(store.transcriptPath, "utf8"), transcriptBytes);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("initialize repairs a partially existing room and survives concurrency", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, ".gaia", "rooms");
+    const store = openRoomStore(roomsDir, "partial");
+    await mkdir(store.dir, { recursive: true });
+    const transcriptBytes = `${JSON.stringify({ timestamp: "1", author: "user", targets: [], text: "half" })}\n`;
+    await writeFile(store.transcriptPath, transcriptBytes, "utf8");
+
+    await Promise.all(Array.from({ length: 8 }, () => openRoomStore(roomsDir, "partial").initialize()));
+    assert.equal(await readFile(store.transcriptPath, "utf8"), transcriptBytes);
+    assert.deepEqual(await store.readState(), { activeRoles: {}, agentCursors: {}, runtimeDetails: {} });
+  } finally {
+    await temp.cleanup();
+  }
+});

@@ -1,6 +1,6 @@
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { jsonText, writeIfMissing } from "../lib/fs.js";
+import { jsonText } from "../lib/fs.js";
 import { defaultRoomState, readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
 import {
   appendRoomEvent,
@@ -14,7 +14,7 @@ export interface RoomStore {
   readonly transcriptPath: string;
   readonly statePath: string;
 
-  /** Creates the established files when absent; never rewrites existing bytes. */
+  /** Create missing room files with defaults. Never touches existing bytes. */
   initialize(): Promise<void>;
   clearTranscript(): Promise<void>;
   copyTranscriptTo(destination: RoomStore): Promise<void>;
@@ -23,6 +23,16 @@ export interface RoomStore {
   eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }>;
   readState(): Promise<RoomState>;
   writeState(state: RoomState): Promise<void>;
+}
+
+/** Exclusive create: concurrent initializers never truncate an existing file. */
+async function createIfMissing(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    await writeFile(path, content, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
 }
 
 /** Direct adapter for the existing v1 room layout. Opening a room never
@@ -39,8 +49,9 @@ export class V1FileRoomStore implements RoomStore {
   }
 
   async initialize(): Promise<void> {
-    await writeIfMissing(this.transcriptPath, "");
-    await writeIfMissing(this.statePath, jsonText(defaultRoomState()));
+    await mkdir(this.dir, { recursive: true });
+    await createIfMissing(this.transcriptPath, "");
+    await createIfMissing(this.statePath, jsonText(defaultRoomState()));
   }
 
   async clearTranscript(): Promise<void> {
