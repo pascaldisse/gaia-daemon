@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
@@ -63,8 +63,14 @@ function rolePath(dir: string | undefined, name: string): string | undefined {
 }
 
 async function roleNamesInDir(dir: string | undefined): Promise<string[]> {
-  if (!dir || !existsSync(dir)) return [];
-  const entries = await readdir(dir, { withFileTypes: true });
+  if (!dir) return [];
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
     .map((entry) => basename(entry.name, ".md"))

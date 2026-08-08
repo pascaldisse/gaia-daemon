@@ -45,11 +45,12 @@ class FakeLifecycle implements RoomLifecycle {
         async appendEvent() {},
         async recentEvents() { return []; },
         async eventsAfterCursor(cursor) { return { events: [], nextCursor: cursor }; },
-        async readState() { return state; },
-        async writeState(next) { state = next; },
+        async readState() { return structuredClone(state); },
+        async writeState(next) { state = structuredClone(next); },
         async updateState(mutate) {
-          state = (await mutate(state)) ?? state;
-          return state;
+          const working = structuredClone(state);
+          state = structuredClone((await mutate(working)) ?? working);
+          return structuredClone(state);
         },
       };
       this.stores.set(roomId, store);
@@ -88,6 +89,35 @@ test("GaiaController lists rooms through the workspace room composition", async 
 
     assert.deepEqual(await controller.listRooms(), [{ id: "fake-room", path: "fake://rooms/fake-room", isCurrent: false }]);
     assert.deepEqual(lifecycle.listed, [workspace.config.room]);
+  });
+});
+
+test("GaiaController mutations preserve state committed after controller initialization", async () => {
+  await withWorkspace(async (workspace) => {
+    const lifecycle = new FakeLifecycle();
+    const roomId = workspace.config.room;
+    const controller = new GaiaControllerClass({
+      workspaceId: "workspace",
+      workspace: { ...workspace, rooms: lifecycle },
+    });
+    await controller.init();
+
+    const store = lifecycle.open(roomId);
+    await store.updateState((state) => {
+      state.activeRoles.gaia = "plan";
+      state.activeRoles.sidia = "review";
+      state.agentCursors.gaia = 17;
+      state.runtimeDetails.evt_external = { model: "external/model" };
+      state.parentRoomId = "parent-room";
+    });
+
+    assert.equal(await controller.setRole("gaia", "none"), "Cleared role for @gaia.");
+    const committed = await store.readState();
+    assert.deepEqual(committed.activeRoles, { sidia: "review" });
+    assert.equal(committed.agentCursors.gaia, 17);
+    assert.deepEqual(committed.runtimeDetails.evt_external, { model: "external/model" });
+    assert.equal(committed.parentRoomId, "parent-room");
+    controller.dispose();
   });
 });
 

@@ -257,6 +257,13 @@ export class GaiaController {
     if (this.roomState.pendingTurn) void this.resumePendingTurn().catch(() => {});
   }
 
+  private async updateRoomState(
+    mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>,
+  ): Promise<RoomState> {
+    this.roomState = await this.room.updateState(mutate);
+    return this.roomState;
+  }
+
   subscribe(listener: (event: GaiaUiEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -472,8 +479,9 @@ export class GaiaController {
     if (!agent) return this.unknownAgentMessage(targetId);
 
     if (role === "none") {
-      delete this.roomState.activeRoles[agent.id];
-      await this.room.writeState(this.roomState);
+      await this.updateRoomState((state) => {
+        delete state.activeRoles[agent.id];
+      });
       await this.emitSnapshot();
       return `Cleared role for @${agent.id}.`;
     }
@@ -483,8 +491,9 @@ export class GaiaController {
       return `Unknown role for @${agent.id}: ${role}\nAvailable roles: ${roles.length > 0 ? roles.join(", ") : "none"}`;
     }
 
-    this.roomState.activeRoles[agent.id] = role;
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      state.activeRoles[agent.id] = role;
+    });
     await this.emitSnapshot();
     return `Set @${agent.id} role to ${role}.`;
   }
@@ -613,43 +622,43 @@ export class GaiaController {
     channel: "voice" | undefined,
     nextCursor: number,
   ): Promise<void> {
-    let appended = 0;
-    if (reply.trim()) {
-      const agentEvent = await this.room.addAgentMessage(agentId, reply.trim(), channel);
-      this.persistRuntimeDetails(agentEvent, details);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
-      appended = 1;
-    }
+    const agentEvent = reply.trim() ? await this.room.addAgentMessage(agentId, reply.trim(), channel) : undefined;
     // The room is single-writer while a task runs, so the new cursor is the line
     // count at read time plus this agent's own reply.
-    this.roomState.agentCursors[agentId] = nextCursor + appended;
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      state.agentCursors[agentId] = nextCursor + (agentEvent ? 1 : 0);
+      if (agentEvent) this.persistRuntimeDetails(state, agentEvent, details);
+    });
+    if (agentEvent) {
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.room.id, event: this.withRuntimeDetails(agentEvent) });
+    }
   }
 
   private async markPendingTurn(task: GaiaTask, prompt: string, remaining: string[], agentId: string, channel: "voice" | undefined): Promise<void> {
-    this.roomState.pendingTurn = {
-      id: task.id,
-      prompt,
-      targets: [...remaining],
-      agentId,
-      partialReply: "",
-      ...(channel ? { channel } : {}),
-      startedAt: new Date().toISOString(),
-    };
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      state.pendingTurn = {
+        id: task.id,
+        prompt,
+        targets: [...remaining],
+        agentId,
+        partialReply: "",
+        ...(channel ? { channel } : {}),
+        startedAt: new Date().toISOString(),
+      };
+    });
   }
 
   // Throttled durable flush of the reply streamed so far (throttle lives in the caller).
   private async flushPartialReply(reply: string): Promise<void> {
-    if (!this.roomState.pendingTurn) return;
-    this.roomState.pendingTurn.partialReply = reply;
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      if (state.pendingTurn) state.pendingTurn.partialReply = reply;
+    });
   }
 
   private async clearPendingTurn(): Promise<void> {
-    if (!this.roomState.pendingTurn) return;
-    delete this.roomState.pendingTurn;
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      delete state.pendingTurn;
+    });
   }
 
   // Resume a turn that a prior process left in-flight (its pendingTurn survived).
@@ -658,10 +667,6 @@ export class GaiaController {
   private async resumePendingTurn(): Promise<void> {
     const pending = this.roomState.pendingTurn;
     if (!pending) return;
-    // Take the marker first so a crash during resume re-marks cleanly instead of
-    // looping on this stale record.
-    delete this.roomState.pendingTurn;
-    await this.room.writeState(this.roomState);
 
     if (pending.partialReply.trim()) {
       const cursor = this.roomState.agentCursors[pending.agentId] ?? 0;
@@ -671,6 +676,12 @@ export class GaiaController {
     }
 
     if (pending.targets.length > 0) {
+      // Keep a marker present throughout the handoff. Once the partial is in the
+      // transcript, clear its marker copy; markPendingTurn replaces this marker
+      // when the resumed runtime starts.
+      await this.updateRoomState((state) => {
+        if (state.pendingTurn?.id === pending.id) state.pendingTurn.partialReply = "";
+      });
       // The user prompt is already on disk — replay it to the unfinished targets
       // without re-recording it. This re-enters the normal turn path (and re-marks
       // a fresh pendingTurn), so an interrupted resume is itself resumable.
@@ -679,6 +690,8 @@ export class GaiaController {
         recordUserMessage: false,
         ...(pending.channel ? { channel: pending.channel } : {}),
       });
+    } else {
+      await this.clearPendingTurn();
     }
   }
 
@@ -824,9 +837,10 @@ export class GaiaController {
   private async runClearCommand(): Promise<string> {
     for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.room.id);
     await this.room.clearTranscript();
-    this.roomState.agentCursors = {};
-    this.roomState.runtimeDetails = {};
-    await this.room.writeState(this.roomState);
+    await this.updateRoomState((state) => {
+      state.agentCursors = {};
+      state.runtimeDetails = {};
+    });
     this.recentTasks = [];
     await this.emitSnapshot();
     return "Cleared room history and reset all agent sessions.";
@@ -851,6 +865,7 @@ export class GaiaController {
     } catch {
       // Never-written transcript — nothing to copy; the branch starts empty.
     }
+    this.roomState = await this.room.readState();
     const forked: RoomState = { activeRoles: { ...this.roomState.activeRoles }, agentCursors: {}, runtimeDetails: {} };
     await dst.writeState(forked);
     await this.emitSnapshot();
@@ -901,12 +916,12 @@ export class GaiaController {
     };
   }
 
-  private persistRuntimeDetails(event: RoomEvent, details: RuntimeMessageDetails): void {
+  private persistRuntimeDetails(state: RoomState, event: RoomEvent, details: RuntimeMessageDetails): void {
     if (!details.model && !details.thinkingStarted && !details.thinking && !details.tools?.length) return;
-    this.roomState.runtimeDetails[event.id] = details;
-    const keys = Object.keys(this.roomState.runtimeDetails);
+    state.runtimeDetails[event.id] = details;
+    const keys = Object.keys(state.runtimeDetails);
     for (const key of keys.slice(0, Math.max(0, keys.length - RUNTIME_DETAILS_LIMIT))) {
-      delete this.roomState.runtimeDetails[key];
+      delete state.runtimeDetails[key];
     }
   }
 

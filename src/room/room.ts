@@ -74,6 +74,10 @@ export class Room {
   async writeState(state: RoomState): Promise<void> {
     await this.store.writeState(state);
   }
+
+  async updateState(mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>): Promise<RoomState> {
+    return this.store.updateState(mutate);
+  }
 }
 
 export function renderRoomTranscript(events: RoomEvent[]): string {
