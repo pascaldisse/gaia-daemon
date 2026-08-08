@@ -53,3 +53,18 @@ test("lifecycle keeps the room-store path and atomically reserves fork suffixes"
     await temp.cleanup();
   }
 });
+
+test("ensure creates the room through the lifecycle and is idempotent", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, ".gaia", "rooms");
+    const lifecycle = openRoomLifecycle(roomsDir);
+    const store = await lifecycle.ensure("lab");
+    assert.equal(lifecycle.exists("lab"), true);
+    assert.equal(store.dir, join(roomsDir, "lab"));
+    await lifecycle.ensure("lab");
+    assert.deepEqual(await store.readState(), { activeRoles: {}, agentCursors: {}, runtimeDetails: {} });
+  } finally {
+    await temp.cleanup();
+  }
+});
