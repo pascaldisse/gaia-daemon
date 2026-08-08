@@ -4,7 +4,7 @@ import { newId } from "../lib/ids.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../memory/memory-store.js";
 import { Room } from "../room/room.js";
 import { defaultRoomState, type RoomState, type RuntimeMessageDetails, type RuntimeToolDetails } from "../room/state.js";
-import { openRoomDirectory, type RoomDirectory } from "../room/directory.js";
+import { openRoomDirectory, type RoomDirectory } from "../workspace/room-lifecycle.js";
 import type { RoomEvent } from "../room/transcript.js";
 import { planMentionRoute } from "../router/mention-router.js";
 import { listAgentRoles, resolveAgentRole } from "../roles/roles.js";

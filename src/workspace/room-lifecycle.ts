@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { openRoomStore, type RoomStore } from "./store.js";
+import { openRoomStore, type RoomStore } from "../room/store.js";
 
 /** Room-lifecycle surface of a workspace: which rooms exist, where they live,
  * and how a new room id is chosen. One room's own bytes stay with RoomStore —
