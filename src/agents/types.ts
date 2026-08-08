@@ -59,6 +59,8 @@ export interface AgentDefinition {
    * (see mayNestSummon).
    */
   allowNestedSummon?: boolean;
+  /** Raw agent.json keys this version cannot honor; turns stay blocked. */
+  unsupportedConfigFields?: string[];
   projectDir?: string;
   projectConfigPath?: string;
   projectPersonaDir?: string;

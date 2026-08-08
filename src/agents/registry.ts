@@ -8,6 +8,22 @@ import { parseSandboxConfig } from "../runtime/sandbox/registry.js";
 import { agentConfigTemplate, normalizePermissionMode } from "./scaffold.js";
 import type { AgentDefinition, AgentModelConfig } from "./types.js";
 
+const V1_AGENT_CONFIG_FIELDS = new Set([
+  "id",
+  "displayName",
+  "icon",
+  "voice",
+  "tools",
+  "model",
+  "thinking",
+  "harness",
+  "runtime",
+  "permissionMode",
+  "sandbox",
+  "trust",
+  "allowNestedSummon",
+]);
+
 interface RawAgentConfig {
   id?: string;
   displayName?: string;
@@ -152,7 +168,12 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
     const projectIntentPath = join(projectPersonaDir, "INTENT.md");
     const projectRolesDir = join(projectPersonaDir, "roles");
 
-    const raw = mergeAgentConfig(await readAgentConfig(configPath), await readAgentConfig(projectConfigPath));
+    const baseConfig = await readAgentConfig(configPath);
+    const projectConfig = await readAgentConfig(projectConfigPath);
+    const raw = mergeAgentConfig(baseConfig, projectConfig);
+    const unsupportedConfigFields = [...new Set(
+      [...Object.keys(baseConfig), ...Object.keys(projectConfig)].filter((field) => !V1_AGENT_CONFIG_FIELDS.has(field)),
+    )].sort();
     const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : entry.name;
     const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : id;
 
@@ -176,6 +197,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       sandbox: parseSandboxConfig((raw as { sandbox?: unknown }).sandbox),
       trust: (raw as { trust?: unknown }).trust === false ? false : undefined,
       allowNestedSummon: (raw as { allowNestedSummon?: unknown }).allowNestedSummon === true,
+      ...(unsupportedConfigFields.length > 0 ? { unsupportedConfigFields } : {}),
       permissionMode: normalizePermissionMode(raw.permissionMode),
       projectDir: existsSync(projectDir) ? projectDir : undefined,
       projectConfigPath: existsSync(projectConfigPath) ? projectConfigPath : undefined,

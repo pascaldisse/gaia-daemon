@@ -183,6 +183,39 @@ test("globalAgentsPath with empty string home falls back to gaiaHome default", (
   }
 });
 
+test("loadWorkspace reports current config fields this version cannot honor", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  try {
+    await initWorkspace(temp.path);
+    const { loadWorkspace } = await import("../src/workspace/workspace-loader.ts");
+    const configPath = join(temp.path, ".gaia", "config.json");
+    const raw = {
+      defaultAgent: "gaia",
+      room: "default",
+      transcriptWindow: 200,
+      maxSummonsPerRoom: 8,
+      collab: { isolation: "worktree", branchPrefix: "gaia/" },
+      memory: { enabled: true },
+    };
+    const bytes = `${JSON.stringify(raw, null, 4)}\n`;
+    const globalConfigPath = join(temp.path, "home", "config.json");
+    const globalBytes = `${JSON.stringify({ env: { BRAVE_API_KEY: "preserved" } }, null, 4)}\n`;
+    await writeFile(configPath, bytes, "utf8");
+    await writeFile(globalConfigPath, globalBytes, "utf8");
+
+    const workspace = await loadWorkspace(temp.path);
+    assert.deepEqual(workspace.unsupportedConfigFields, ["collab", "global.env", "memory"]);
+    assert.equal(await readFile(configPath, "utf8"), bytes);
+    assert.equal(await readFile(globalConfigPath, "utf8"), globalBytes);
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
 test("loadWorkspace parses harness from config.json", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;

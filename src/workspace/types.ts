@@ -30,6 +30,8 @@ export interface Workspace {
   rooms: RoomLifecycle;
   globalAgentsDir: string;
   config: WorkspaceConfig;
+  /** Raw config keys this version cannot honor; controllers stay read-only. */
+  unsupportedConfigFields?: string[];
   contextFiles: ContextFile[];
   agents: Record<string, AgentDefinition>;
 }

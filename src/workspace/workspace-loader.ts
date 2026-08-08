@@ -14,6 +14,15 @@ import type { Workspace, WorkspaceConfig } from "./types.js";
 export const WORKSPACE_DIRNAME = ".gaia";
 export const DEFAULT_ROOM = DEFAULTS.room;
 
+const V1_WORKSPACE_CONFIG_FIELDS = new Set([
+  "defaultAgent",
+  "room",
+  "transcriptWindow",
+  "harness",
+  "sandbox",
+  "maxSummonsPerRoom",
+]);
+
 export function gaiaHome(): string {
   const env = process.env.GAIA_HOME?.trim();
   return resolve(env ? env : join(homedir(), ".gaia"));
@@ -118,7 +127,23 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
 
   await ensureGlobalDefaultAgents(globalAgentsDir);
 
-  const config = mergeConfig(JSON.parse(await readFile(configPath, "utf8")));
+  const rawConfig = JSON.parse(await readFile(configPath, "utf8")) as unknown;
+  const config = mergeConfig(rawConfig);
+  const unsupportedConfigFields = rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig)
+    ? Object.keys(rawConfig).filter((field) => !V1_WORKSPACE_CONFIG_FIELDS.has(field))
+    : ["$document"];
+  const globalConfigPath = join(gaiaHome(), "config.json");
+  if (resolve(globalConfigPath) !== resolve(configPath) && existsSync(globalConfigPath)) {
+    try {
+      const globalRaw = JSON.parse(await readFile(globalConfigPath, "utf8")) as unknown;
+      if (globalRaw && typeof globalRaw === "object" && !Array.isArray(globalRaw) && "env" in globalRaw) {
+        unsupportedConfigFields.push("global.env");
+      }
+    } catch {
+      // Current config parsing also ignores malformed optional global env.
+    }
+  }
+  unsupportedConfigFields.sort();
   const contextFiles = await discoverContextFiles(cwd);
   const agents = await loadAgentDefinitions(globalAgentsDir, agentsOverrideDir);
 
@@ -137,6 +162,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
     rooms,
     globalAgentsDir,
     config,
+    ...(unsupportedConfigFields.length > 0 ? { unsupportedConfigFields } : {}),
     contextFiles,
     agents,
   };

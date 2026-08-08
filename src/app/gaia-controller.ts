@@ -190,6 +190,7 @@ export class GaiaController {
   private durableQueueBlocked = false;
   private durableTurnBlocked = false;
   private unsupportedStateFields: string[] = [];
+  private readonly unsupportedRuntimeSettings: string[];
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
 
@@ -197,6 +198,12 @@ export class GaiaController {
     this.room = new Room(options.workspace, options.roomId);
     this.memoryStore = options.memoryStore ?? new MemoryStore();
     this.roomLifecycle = options.workspace.rooms;
+    this.unsupportedRuntimeSettings = [
+      ...(options.workspace.unsupportedConfigFields ?? []).map((field) => `config.${field}`),
+      ...Object.values(options.workspace.agents).flatMap((agent) =>
+        (agent.unsupportedConfigFields ?? []).map((field) => `agent.${agent.id}.${field}`),
+      ),
+    ].sort();
 
     // Every agent runs in a uniform per-(room, agent) runner subprocess; its
     // tool I/O (memory writes, summon) reaches the daemon over the same HTTP
@@ -268,7 +275,7 @@ export class GaiaController {
     ]);
     this.roomState = roomState;
     this.unsupportedStateFields = compatibility.unsupportedFields;
-    if (this.unsupportedStateFields.length > 0) {
+    if (this.unsupportedStateFields.length > 0 || this.unsupportedRuntimeSettings.length > 0) {
       this.initialized = true;
       return;
     }
@@ -329,8 +336,12 @@ export class GaiaController {
   }
 
   private assertRoomWritable(): void {
-    if (this.unsupportedStateFields.length === 0) return;
-    throw new Error(`Room state requires a newer daemon (unsupported fields: ${this.unsupportedStateFields.join(", ")}).`);
+    if (this.unsupportedRuntimeSettings.length > 0) {
+      throw new Error(`Workspace requires a newer daemon (unsupported settings: ${this.unsupportedRuntimeSettings.join(", ")}).`);
+    }
+    if (this.unsupportedStateFields.length > 0) {
+      throw new Error(`Room state requires a newer daemon (unsupported fields: ${this.unsupportedStateFields.join(", ")}).`);
+    }
   }
 
   private async updateRoomState(
@@ -565,6 +576,7 @@ export class GaiaController {
   /** Resolves when no task is running; rejects after timeoutMs (when given). */
   async waitForIdle(timeoutMs?: number): Promise<void> {
     await this.init();
+    this.assertRoomWritable();
     if (!this.activeTask) return;
     await new Promise<void>((resolveIdle, reject) => {
       const timer =

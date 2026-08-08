@@ -73,10 +73,14 @@ class FakeLifecycle implements RoomLifecycle {
 
 async function withWorkspace<T>(run: (workspace: Awaited<ReturnType<typeof loadWorkspace>>) => Promise<T>): Promise<T> {
   const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = `${temp.path}/home`;
   try {
     await initWorkspace(temp.path);
     return await run(await loadWorkspace(temp.path));
   } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
     await temp.cleanup();
   }
 }

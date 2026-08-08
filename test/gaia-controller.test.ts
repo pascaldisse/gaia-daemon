@@ -569,6 +569,50 @@ test("opens current room state read-only and refuses to ignore unsupported setti
   }
 });
 
+test("opens workspaces with newer config and agent settings read-only", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const configPath = join(temp.path, ".gaia", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    config.collab = { isolation: "worktree", branchPrefix: "gaia/" };
+    config.memory = { enabled: true };
+    const configBytes = `${JSON.stringify(config, null, 4)}\n`;
+    await writeFile(configPath, configBytes, "utf8");
+
+    const agentPath = join(temp.path, "home", "agents", "gaia", "agent.json");
+    const agent = JSON.parse(await readFile(agentPath, "utf8")) as Record<string, unknown>;
+    agent.skills = ["research"];
+    agent.account = "chatgpt";
+    const agentBytes = `${JSON.stringify(agent, null, 4)}\n`;
+    await writeFile(agentPath, agentBytes, "utf8");
+
+    const workspace = await loadWorkspace(temp.path);
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (definition) => new FakeRuntime(definition),
+    });
+    await controller.getSnapshot();
+    await assert.rejects(
+      controller.sendMessage("must honor every active setting"),
+      /unsupported settings: agent.gaia.account, agent.gaia.skills, config.collab, config.memory/,
+    );
+    await assert.rejects(controller.mutateAgentMemory("gaia", "MEMORY.md", "add", { content: "blocked" }), /Workspace requires a newer daemon/);
+    assert.equal(await readFile(configPath, "utf8"), configBytes);
+    assert.equal(await readFile(agentPath, "utf8"), agentBytes);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
 test("panic stop cancels the active turn AND clears the queued messages", async () => {
   const temp = await createTempDir();
   const originalHome = process.env.GAIA_HOME;

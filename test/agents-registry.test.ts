@@ -203,6 +203,32 @@ test("parses and validates permissionMode", async () => {
   }
 });
 
+test("reports current agent settings this version cannot honor without rewriting them", async () => {
+  const temp = await createTempDir();
+  try {
+    const agentsDir = join(temp.path, "agents");
+    const projectAgentsDir = join(temp.path, "project", ".gaia", "agents");
+    const personaDir = join(agentsDir, "rex", "persona");
+    const projectDir = join(projectAgentsDir, "rex");
+    await mkdir(personaDir, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    const basePath = join(agentsDir, "rex", "agent.json");
+    const projectPath = join(projectDir, "agent.json");
+    const baseBytes = `${JSON.stringify({ id: "rex", displayName: "Rex", skills: ["research"], account: "chatgpt" }, null, 4)}\n`;
+    const projectBytes = `${JSON.stringify({ promptLaw: "always verify", mcpServers: { docs: { url: "https://example.test" } } }, null, 4)}\n`;
+    await writeFile(basePath, baseBytes, "utf8");
+    await writeFile(projectPath, projectBytes, "utf8");
+    await writeFile(join(personaDir, "SOUL.md"), "# Rex\n", "utf8");
+
+    const agents = await loadAgentDefinitions(agentsDir, projectAgentsDir);
+    assert.deepEqual(agents.rex?.unsupportedConfigFields, ["account", "mcpServers", "promptLaw", "skills"]);
+    assert.equal(await readFile(basePath, "utf8"), baseBytes);
+    assert.equal(await readFile(projectPath, "utf8"), projectBytes);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("ignores invalid harness values", async () => {
   const temp = await createTempDir();
   try {
