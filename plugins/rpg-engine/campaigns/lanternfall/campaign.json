@@ -1,0 +1,11 @@
+{
+  "start": { "scene": "isles" },
+  "title": "Lanternfall — The Drowned Kingdom",
+  "blurb": "A storm-lashed island kingdom where the lighthouses have gone dark, ships wreck on singing reefs, and something beneath the tide has begun buying souls. Generated once by the worldgen pipeline (24 locations, 6 regions, 5 quests) — then frozen to data, like every world this engine runs.",
+  "scenes": {
+    "isles": {
+      "name": "The Drowned Kingdom",
+      "description": "Six regions along the drowned road: from the last lit harbor to the dark at the far end of the tide."
+    }
+  }
+}

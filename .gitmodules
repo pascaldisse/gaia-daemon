@@ -1,0 +1,6 @@
+[submodule "unmute"]
+	path = unmute
+	url = https://github.com/pascaldisse/unmute.git
+[submodule "design"]
+	path = design
+	url = https://github.com/pascaldisse/gaia-design.git

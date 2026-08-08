@@ -88,7 +88,10 @@ v1's GaiaController (1,044 lines) and server.ts (1,228 lines) become:
   unknown agents fail at parse time, not dispatch time.
 - `commands.ts` — `Record<string, CommandHandler>`; each handler is small,
   testable, and registered — adding a command is one entry.
-- `summons.ts` — child rooms, caps, trust/nesting gates.
+- `summons.ts` — background subagents: child rooms, caps, trust/nesting gates,
+  and the durable result callback (launch never blocks; the worker's result is
+  delivered back into the calling room and re-invokes the caller; a restart
+  re-arms undelivered summons from the child room's state).
 - `monad.ts` + `policies/` — the engine loop + 3 policies (prompt-driven,
   trinity-head, conductor-dag), ported.
 - `voice.ts` — ONE voice module: stack lifecycle + call session + unmute

@@ -1,54 +1,63 @@
-#!/usr/bin/env node
-import { scaffoldGlobalAgent } from "./agents/scaffold.js";
-import { runHarnessCommand } from "./cli-harness.js";
-import { globalAgentsPath, initWorkspace } from "./workspace/workspace-loader.js";
+#!/usr/bin/env bun
+// The one entrypoint. Lightweight subcommands (mem/recall/summon, init, agent
+// create) never pull in the web-server graph — heavy modules load lazily.
+
+import { hardenPath } from "./core/env.js";
+import { scaffoldGlobalAgent } from "./domain/agents.js";
+import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
+
+// Before anything else: repair PATH so harness CLIs resolve no matter what
+// launched us (terminal, native app shell, launchd). Children inherit it.
+hardenPath();
 
 function usage(): void {
-  console.log(`gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|summon …     agent memory/recall/summon (used inside a turn)\n  gaia --dev                   enable local development reload hooks\n  gaia --help                  show help`);
+  console.log(
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --help                  show help`,
+  );
 }
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
 
-  // Hidden: the shared confinement entrypoint. `gaia __sandbox-exec … -- argv`
-  // runs the child argv inside the SAME sandbox the daemon uses (one source of
-  // truth; the pi skill and any future harness call this instead of rolling
-  // their own profile). Parsed from rawArgs so flags meant for the CHILD (after
-  // `--`) are never touched — not even by the --dev filter below.
+  // Hidden: the shared confinement entrypoint. Parsed from rawArgs so flags
+  // meant for the CHILD (after `--`) are never touched by the --dev filter.
   if (rawArgs[0] === "__sandbox-exec") {
-    const { runSandboxExec } = await import("./runtime/sandbox/exec-cli.js");
+    const { runSandboxExec } = await import("./harness/sandbox/cli.js");
     process.exitCode = await runSandboxExec(rawArgs.slice(1));
     return;
   }
 
-  const devMode = rawArgs.includes("--dev");
+  if (rawArgs.includes("--dev")) {
+    console.warn("[gaia] --dev is retired: dev mode was deleted 2026-07-11; running normally.");
+  }
   const args = rawArgs.filter((arg) => arg !== "--dev");
   if (args.includes("--help") || args.includes("-h")) {
     usage();
     return;
   }
 
-  // Hidden: the per-(room, agent) runner subprocess the daemon spawns for every
-  // harness. Long-lived; talks the runner protocol over stdio (see RunnerHost).
+  // Hidden: the per-(room, agent) runner subprocess the daemon spawns for
+  // every harness. Long-lived; speaks the runner protocol over stdio.
   if (args[0] === "__run-agent") {
-    const { runAgentRunner } = await import("./runtime/agent-runner.js");
+    const { runAgentRunner } = await import("./harness/runner.js");
     await runAgentRunner();
     return;
   }
 
-  if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "summon") {
+  if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "artifact" || args[0] === "summon" || args[0] === "resume" || args[0] === "caryll" || args[0] === "dream") {
+    const { runHarnessCommand } = await import("./services/cli-tools.js");
     process.exitCode = await runHarnessCommand(args);
     return;
   }
 
   if (args[0] === "setup") {
-    const { runSetupCli } = await import("./setups/setup-cli.js");
+    const { runSetupCli } = await import("./services/setups.js");
     process.exitCode = await runSetupCli(args.slice(1));
     return;
   }
 
   if (args[0] === "serve") {
-    const { runServeCli } = await import("./setups/serve-cli.js");
+    const { runServeCli } = await import("./services/setups.js");
     process.exitCode = await runServeCli(args.slice(1));
     return;
   }
@@ -61,7 +70,6 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-
     try {
       const result = await scaffoldGlobalAgent(globalAgentsPath(), id, { displayName });
       console.log(`Agent created: ${result.agentDir}`);
@@ -69,12 +77,11 @@ async function main(): Promise<void> {
       console.log(`Soul: ${result.soulPath}`);
       console.log(`Memory: ${result.memoryDir}`);
       console.log(`Roles: ${result.rolesDir}`);
-      return;
     } catch (error) {
       console.error(`gaia: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
-      return;
     }
+    return;
   }
 
   if (args[0] === "init") {
@@ -91,10 +98,12 @@ async function main(): Promise<void> {
   }
 
   try {
-    // Imported lazily so lightweight subcommands (mem/recall/summon, init,
-    // agent create) don't pull in the web server graph (and node:sqlite).
-    const { startWebServer } = await import("./web/server.js");
-    const server = await startWebServer({ cwd: process.cwd(), dev: devMode });
+    // Register every harness + sandbox backend + routing policy exactly once,
+    // then start the server.
+    await import("./harness/index.js");
+    await import("./services/policies/index.js");
+    const { startWebServer } = await import("./server/http.js");
+    const server = await startWebServer({ cwd: process.cwd() });
     console.log(`GAIA web UI: ${server.url}`);
     console.log("Press Ctrl+C to stop.");
     await new Promise<void>((resolve) => {
@@ -107,8 +116,7 @@ async function main(): Promise<void> {
       process.on("SIGTERM", stop);
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`gaia: ${message}`);
+    console.error(`gaia: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
 }

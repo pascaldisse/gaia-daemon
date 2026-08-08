@@ -5,7 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CircuitBreaker } from "../src/runtime/circuit-breaker.ts";
+import { CircuitBreaker } from "../src/harness/breaker.js";
 
 function clock() {
   let t = 1_000;

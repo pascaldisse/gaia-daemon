@@ -1,0 +1,295 @@
+// Slash-command parsing + @mention routing. Pure functions — no room state,
+// no I/O. Handlers live in room-service.ts as a registry keyed by these types.
+
+import type { SlashCommandDefinition } from "../core/types.js";
+
+export type SlashCommand =
+  | { type: "help" }
+  | { type: "agents" }
+  | { type: "roles"; agent?: string }
+  | { type: "role"; agent?: string; role?: string }
+  | { type: "summon"; agent?: string; task?: string }
+  | { type: "thinking"; agent?: string; level?: string }
+  | { type: "thinking-level"; level: number }
+  | { type: "model"; agent?: string; spec?: string }
+  | { type: "pet"; action: "set"; agent?: string; package?: string }
+  | { type: "pet"; action: "off"; agent?: string }
+  | { type: "pet"; action: "list" }
+  | { type: "clear" }
+  | { type: "refresh" }
+  | { type: "fork" }
+  | { type: "setup"; sub?: string; id?: string; room?: string }
+  | { type: "consolidate"; agent?: string }
+  | { type: "dream"; agent?: string; apply?: boolean }
+  | { type: "compact"; agent?: string }
+  | { type: "schedule"; sub: "list" | "run"; id?: string }
+  | { type: "steer"; text?: string }
+  | { type: "cancel" }
+  | { type: "goal"; sub: "set"; objective: string; tokens?: number }
+  | { type: "goal"; sub: "status" | "pause" | "resume" | "clear" }
+  | { type: "recall"; agent?: string; query?: string }
+  | { type: "rewind"; count?: string }
+  | { type: "thanks-dario"; sub: "on" | "off" | "run" }
+  | { type: "reload" }
+  | { type: "unknown"; command: string }
+  | { type: "message"; text: string };
+
+/** Max GAIA-THINK protocol level (`/thinking N`). Levels are integers 0-N. */
+export const THINKING_LEVEL_MAX = 10;
+
+/** Reject out-of-range protocol levels (mirrors setRoomThinking's reject
+ * style): returns an error message, or null when `level` is a valid 0-MAX. */
+export function validateThinkingLevel(level: number): string | null {
+  if (!Number.isInteger(level) || level < 0 || level > THINKING_LEVEL_MAX) {
+    return `Invalid thinking level: ${level}. Use an integer 0-${THINKING_LEVEL_MAX} (or 'off').`;
+  }
+  return null;
+}
+
+export const SLASH_COMMANDS: SlashCommandDefinition[] = [
+  { name: "help", type: "help", description: "show command help" },
+  {
+    name: "goal",
+    type: "goal",
+    description: "pin an autonomous objective on this room: /goal [--tokens N] <objective> | status | pause | resume | clear",
+  },
+  { name: "agents", type: "agents", description: "list available agents" },
+  { name: "roles", type: "roles", description: "list roles for an agent" },
+  { name: "role", type: "role", description: "set or clear an agent role" },
+  { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
+  { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>, or GAIA-THINK protocol level: /thinking <0-10|off>" },
+  { name: "design", type: "design", description: "toggle artifacts, or /design <request> to ask the active agent" },
+  { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
+  { name: "pet", type: "pet", description: "manage native desktop pets: /pet | /pet <package> | /pet @agent [<package>] | off [@agent] | list" },
+  { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
+  {
+    name: "refresh",
+    type: "refresh",
+    description: "re-read context files (soul, AGENTS.md, skills) into agents' system prompts — applies on each agent's next turn",
+  },
+  { name: "fork", type: "fork", description: "fork this room into a new branch you can switch to" },
+  { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
+  { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
+  { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
+  { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent]" },
+  { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
+  { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
+  { name: "cancel", type: "cancel", description: "stop the running turn and drop queued messages", aliases: ["stop"] },
+  { name: "recall", type: "recall", description: "search memory + room history: /recall [@agent] <query>" },
+  { name: "rewind", type: "rewind", description: "undo the last user turn(s) and their replies: /rewind [n]" },
+  {
+    name: "thanks-dario",
+    type: "thanks-dario",
+    description: "have Dario review recent messages for safeguard triggers and propose redactions: /thanks-dario [run|on|off]",
+    aliases: ["dario"],
+  },
+  { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)" },
+];
+
+const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
+  SLASH_COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => [name, command] as const)),
+);
+
+export function parseCommand(input: string): SlashCommand {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return { type: "message", text: input };
+
+  const [name = "", ...args] = trimmed.slice(1).split(/\s+/);
+  const command = COMMAND_BY_NAME.get(name);
+  if (!command) {
+    // A leading "/" only STARTS a command when the first token is actually
+    // command-SHAPED (letters/digits/_/-, like every real command name). Plenty
+    // of real messages start with "/" too — a pasted path ("/Users/.../x.png"),
+    // code, a regex. Routing those through the command parser is exactly how a
+    // user message got swallowed into an "Unknown command" reply and lost. So a
+    // non-command-shaped token is delivered as the message it is; only a
+    // command-shaped token stays "unknown" (harness-native passthrough and the
+    // typo hint still need that). A user message may never disappear.
+    return /^[A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z][A-Za-z0-9_-]*)?$/.test(name) ? { type: "unknown", command: name } : { type: "message", text: input };
+  }
+
+  const stripped = args.map((arg) => arg.replace(/^@/, ""));
+  switch (command.type) {
+    case "roles":
+      return { type: "roles", agent: stripped[0] };
+    case "role":
+      // "/role matriarch" targets the default agent; "/role ari matriarch" names one.
+      return stripped.length >= 2 ? { type: "role", agent: stripped[0], role: stripped[1] } : { type: "role", role: stripped[0] };
+    case "summon":
+      return { type: "summon", agent: stripped[0] || undefined, task: args.slice(1).join(" ") || undefined };
+    case "thinking": {
+      // Two-token form (`/thinking @agent low`) stays the per-agent SDK
+      // reasoning-EFFORT command. A single numeric token or bare `off`
+      // (`/thinking 7`, `/thinking off`) is the room-wide GAIA-THINK protocol
+      // level 0-10 ("off" = 0); word levels (`/thinking low`) stay SDK effort.
+      if (stripped.length >= 2) return { type: "thinking", agent: stripped[0], level: stripped[1] };
+      const arg = stripped[0];
+      if (arg !== undefined) {
+        if (arg.toLowerCase() === "off") return { type: "thinking-level", level: 0 };
+        if (/^\d+$/.test(arg)) return { type: "thinking-level", level: Number(arg) };
+      }
+      return { type: "thinking", level: arg };
+    }
+    case "model":
+      // "/model fable" targets the default agent; "/model nyari fable" names one.
+      // The spec keeps its slash intact (provider/name) — split(/\s+/) only breaks on whitespace.
+      return stripped.length >= 2 ? { type: "model", agent: stripped[0], spec: stripped[1] } : { type: "model", spec: stripped[0] };
+    case "pet": {
+      const first = args[0];
+      if (first?.toLowerCase() === "list") return { type: "pet", action: "list" };
+      if (first?.toLowerCase() === "off") {
+        return { type: "pet", action: "off", agent: args[1]?.startsWith("@") ? stripped[1] : undefined };
+      }
+      const explicitAgent = first?.startsWith("@") ?? false;
+      return {
+        type: "pet",
+        action: "set",
+        agent: explicitAgent ? stripped[0] : undefined,
+        package: explicitAgent ? stripped[1] : stripped[0],
+      };
+    }
+    case "consolidate":
+      return { type: "consolidate", agent: stripped[0] || undefined };
+    case "dream": {
+      const apply = args.some((arg) => arg.toLowerCase() === "--apply");
+      const agent = stripped.find((arg) => arg.toLowerCase() !== "--apply");
+      return { type: "dream", agent: agent || undefined, apply };
+    }
+    case "compact":
+      return { type: "compact", agent: stripped[0] || undefined };
+    case "schedule":
+      return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
+    case "steer":
+      return { type: "steer", text: args.join(" ") || undefined };
+    case "recall": {
+      // Only an explicit @-prefix names an agent; anything else is the query.
+      const hasAgent = args[0]?.startsWith("@") ?? false;
+      return {
+        type: "recall",
+        agent: hasAgent ? stripped[0] : undefined,
+        query: args.slice(hasAgent ? 1 : 0).join(" ") || undefined,
+      };
+    }
+    case "rewind":
+      return { type: "rewind", count: stripped[0] };
+    case "goal": {
+      // Sub-commands are exact single words; anything else is the objective
+      // (a real objective may of course start with the word "status" — only a
+      // LONE token counts as the sub-command).
+      const sub = args.length === 1 ? args[0]?.toLowerCase() : undefined;
+      if (sub === "status" || sub === "pause" || sub === "resume" || sub === "clear") return { type: "goal", sub };
+      if (args.length === 0) return { type: "goal", sub: "status" };
+      // `--tokens N` (or `--tokens=N`) anywhere in the args, stripped from the objective.
+      let tokens: number | undefined;
+      const rest: string[] = [];
+      for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i] ?? "";
+        const inline = /^--tokens=(\d+)$/.exec(arg);
+        if (inline) {
+          tokens = Number(inline[1]);
+          continue;
+        }
+        if (arg === "--tokens" && /^\d+$/.test(args[i + 1] ?? "")) {
+          tokens = Number(args[i + 1]);
+          i += 1;
+          continue;
+        }
+        rest.push(arg);
+      }
+      const objective = rest.join(" ").trim();
+      return { type: "goal", sub: "set", objective, ...(tokens && tokens > 0 ? { tokens } : {}) };
+    }
+    case "thanks-dario": {
+      const sub = args[0]?.toLowerCase();
+      return { type: "thanks-dario", sub: sub === "on" || sub === "off" ? sub : "run" };
+    }
+    case "setup": {
+      const sub = args[0]?.toLowerCase();
+      if (sub === "activate") return { type: "setup", sub: "activate", id: args[1], room: args[2] };
+      if (sub === "status" || sub === "off" || sub === "list") return { type: "setup", sub };
+      return { type: "setup", sub: sub ? "unknown" : "list", ...(sub ? { id: args[0] } : {}) };
+    }
+    default:
+      return { type: command.type } as SlashCommand;
+  }
+}
+
+export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(
+  "\n",
+)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet                       spawn the default pet for the agent you're talking to\n  /pet <package>             spawn a specific pet package instead\n  /pet @agent [package]      target a different agent (defaults if package omitted)\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nGoal commands:\n  /goal <objective>          pin an objective; the room's agent keeps working until it emits GOAL-COMPLETE\n  /goal --tokens N <obj>     same, with a token budget (reaching it pauses the goal)\n  /goal status               show the pinned goal, its progress and budget\n  /goal pause|resume         hold or restart the continuation loop\n  /goal clear                drop the goal\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+
+// --- mention routing -----------------------------------------------------------
+//
+// Mentions are ADDRESSES, not references: only the run of consecutive @id
+// tokens heading the message routes it ("@gaia @terry compare ..."), exactly
+// the /help examples. Past the first non-mention token, "@" is plain text —
+// pasted emails, npm scopes (@earendil-works/pi), decorators and quoted logs
+// must never reroute or reject a message. A leading token that LOOKS like an
+// address ("@nyri hello") still errors when unknown: that's a typo to catch,
+// not prose. Terminators: whitespace/end, optionally one comma or colon
+// ("@terry: do it"); anything else glued on (@scope/pkg, @user.name) reads as
+// prose, not an address.
+
+const LEADING_MENTION = /^@([a-z0-9_-]+)[,:]?(?=\s|$)/i;
+
+/** "system" and "user" are reserved transcript AUTHORS (not agents) and must
+ * never be treated as @mentions: stripped here, at the shared extraction
+ * layer, before any agent resolution runs. */
+export const RESERVED_AUTHORS = new Set(["system", "user"]);
+
+/** The @id tokens heading the message, lowercased, with reserved authors
+ * stripped ([] when it opens with prose or with only reserved mentions). */
+function leadingMentions(message: string): string[] {
+  const ids: string[] = [];
+  let rest = message.trimStart();
+  for (;;) {
+    const match = LEADING_MENTION.exec(rest);
+    if (!match) return ids;
+    const id = match[1].toLowerCase();
+    if (!RESERVED_AUTHORS.has(id)) ids.push(id);
+    rest = rest.slice(match[0].length).trimStart();
+  }
+}
+
+export type RouteResult = { ok: true; targets: string[] } | { ok: false; unknown: string[] };
+
+export function planMentionRoute(message: string, agentIds: string[], defaultAgent: string): RouteResult {
+  const known = new Set(agentIds);
+  const targets: string[] = [];
+  const unknown: string[] = [];
+
+  for (const id of leadingMentions(message)) {
+    if (!known.has(id)) {
+      if (!unknown.includes(id)) unknown.push(id);
+      continue;
+    }
+    if (!targets.includes(id)) targets.push(id);
+  }
+
+  if (unknown.length > 0) return { ok: false, unknown };
+  return { ok: true, targets: targets.length > 0 ? targets : [defaultAgent] };
+}
+
+/** Did the user explicitly ADDRESS a known agent? (Leading mentions only —
+ * backs edit-rerouting and the monad bypass, same address semantics as
+ * planMentionRoute.) */
+export function hasExplicitMention(text: string, agentIds: Set<string>): boolean {
+  return leadingMentions(text).some((id) => agentIds.has(id));
+}
+
+// A known agent @mentioned ANYWHERE in the text. The `(?<![\w@])` guard skips
+// email locals (pascal@ari.com) and `@@` so only genuine addresses count.
+const ANY_MENTION = /(?<![\w@])@([a-z0-9_-]+)/gi;
+
+/** Every known agent @mentioned anywhere in `text`, lowercased and deduped in
+ * first-appearance order. Backs room agent-dialogue: an agent naming another
+ * agent anywhere in its reply hands off to them (unlike routing, which only
+ * honours the LEADING run). */
+export function mentionedAgents(text: string, agentIds: Set<string>): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(ANY_MENTION)) {
+    const id = match[1].toLowerCase();
+    if (agentIds.has(id) && !found.includes(id)) found.push(id);
+  }
+  return found;
+}

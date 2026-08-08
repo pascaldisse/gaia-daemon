@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "gaia-daemon",
+  "version": "0.1.0",
+  "identifier": "com.gaia.daemon",
+  "build": {
+    "frontendDist": "../web",
+    "devUrl": "http://127.0.0.1:8787"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": [],
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "bundle/macos/Info.plist"
+    }
+  }
+}

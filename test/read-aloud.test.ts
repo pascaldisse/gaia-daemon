@@ -1,0 +1,749 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parseTtsConfig } from "../src/core/config.js";
+import {
+  findTtsEngine,
+  packMessage,
+  pcmToWav,
+  readAloud,
+  readAloudStream,
+  registerTtsEngine,
+  resolveTtsChoice,
+  speakableText,
+  splitSpeechChunks,
+  ttsEngineIds,
+  unpackMessage,
+  type TtsStream,
+  type TtsSynthesisContext,
+} from "../src/services/read-aloud.js";
+import { VOICE_SETTINGS_DEFAULTS, VoiceStackManager, type SpawnedService, type VoiceSettings, type VoiceStackSettings } from "../src/services/voice.js";
+import { createTempDir } from "./helpers/temp.js";
+
+function voiceSettings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
+  return { ...VOICE_SETTINGS_DEFAULTS, ...overrides };
+}
+
+async function waitForHealthy(baseUrl: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      if (response.ok) return;
+    } catch {
+      // Not listening yet.
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`server did not become healthy at ${baseUrl}`);
+}
+
+function listeningPids(port: number): number[] {
+  const result = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return [];
+  return result.stdout
+    .split(/\s+/)
+    .map((pid) => Number(pid))
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function killRandomTestPort(port: number): Promise<void> {
+  for (const pid of listeningPids(port)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Best effort cleanup on a random test port.
+    }
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (!listeningPids(port).length) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  for (const pid of listeningPids(port)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Best effort cleanup on a random test port.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// speakableText — deterministic markdown→speech formatting
+
+test("speakableText: code fences are omitted, inline code keeps its content", () => {
+  const text = speakableText("Run `npm test` first.\n\n```ts\nconst x = 1;\n```\n\nDone.");
+  assert.equal(text, "Run npm test first.\n(ts code omitted)\nDone.");
+});
+
+test("speakableText: links speak their label, bare URLs collapse, images speak alt text", () => {
+  const text = speakableText("See [the docs](https://example.com/a?b=1) and https://example.com/raw plus ![a chart](img.png).");
+  assert.equal(text, "See the docs and (link) plus a chart.");
+});
+
+test("speakableText: headings, lists, blockquotes, emphasis and rules are stripped", () => {
+  const text = speakableText("# Title\n\n> quoted\n\n- **bold item**\n2) _second_\n\n---\n\nplain ~~gone~~ end");
+  assert.equal(text, "Title\nquoted\nbold item\nsecond\nplain gone end");
+});
+
+test("speakableText: tables turn into comma pauses without separator rows", () => {
+  const text = speakableText("| name | value |\n| --- | --- |\n| a | 1 |");
+  assert.equal(text, "name, value\na, 1");
+});
+
+test("speakableText: emojis vanish and whitespace collapses", () => {
+  assert.equal(speakableText("Ship it 🚀🔥   now\n\n\nplease ✨"), "Ship it now\nplease");
+  assert.equal(speakableText("🚀 ✨"), "");
+});
+
+test("speakableText: long messages are spoken in full, never truncated (like the desktop app)", () => {
+  const text = speakableText(`${"word ".repeat(3000)}tail`);
+  assert.ok(text.length > 14_000);
+  assert.ok(text.endsWith("tail"));
+  assert.ok(!text.includes("truncated"));
+});
+
+// ---------------------------------------------------------------------------
+// msgpack — the unmute TTS wire subset
+
+test("msgpack: pack/unpack round-trips string maps (incl. long strings)", () => {
+  const short = { type: "Text", text: "héllo wörld" };
+  assert.deepEqual(unpackMessage(packMessage(short)), short);
+  const long = { type: "Text", text: "x".repeat(70_000) };
+  assert.deepEqual(unpackMessage(packMessage(long)), long);
+});
+
+test("msgpack: decodes the server's Audio frames (fixmap + array + float32)", () => {
+  // {type:"Audio", pcm:[0.5, -0.25]} exactly as msgpack-python packs it with
+  // use_single_float=True.
+  const bytes = Buffer.concat([
+    Buffer.from([0x82]),
+    Buffer.from([0xa4]),
+    Buffer.from("type", "utf8"),
+    Buffer.from([0xa5]),
+    Buffer.from("Audio", "utf8"),
+    Buffer.from([0xa3]),
+    Buffer.from("pcm", "utf8"),
+    Buffer.from([0x92]),
+    (() => {
+      const buffer = Buffer.alloc(10);
+      buffer[0] = 0xca;
+      buffer.writeFloatBE(0.5, 1);
+      buffer[5] = 0xca;
+      buffer.writeFloatBE(-0.25, 6);
+      return buffer;
+    })(),
+  ]);
+  assert.deepEqual(unpackMessage(bytes), { type: "Audio", pcm: [0.5, -0.25] });
+});
+
+test("msgpack: decodes ints, negative fixints, bools, nil and float64", () => {
+  const bytes = Buffer.concat([
+    Buffer.from([0x95]), // fixarray(5)
+    Buffer.from([0x07]), // 7
+    Buffer.from([0xe0]), // -32
+    Buffer.from([0xc3]), // true
+    Buffer.from([0xc0]), // nil
+    (() => {
+      const buffer = Buffer.alloc(9);
+      buffer[0] = 0xcb;
+      buffer.writeDoubleBE(1.5, 1);
+      return buffer;
+    })(),
+  ]);
+  assert.deepEqual(unpackMessage(bytes), [7, -32, true, null, 1.5]);
+});
+
+// ---------------------------------------------------------------------------
+// WAV wrapping
+
+test("pcmToWav: writes a correct RIFF header around the samples", () => {
+  const pcm = Buffer.alloc(4800);
+  const wav = pcmToWav(pcm, 24_000);
+  assert.equal(wav.length, 44 + pcm.length);
+  assert.equal(wav.toString("ascii", 0, 4), "RIFF");
+  assert.equal(wav.toString("ascii", 8, 12), "WAVE");
+  assert.equal(wav.readUInt32LE(24), 24_000);
+  assert.equal(wav.readUInt32LE(28), 48_000); // byte rate = rate * 2 bytes mono
+  assert.equal(wav.readUInt32LE(40), pcm.length);
+});
+
+// ---------------------------------------------------------------------------
+// engine resolution — engines are data, resolution never branches on ids
+
+test("engines: kyutai, claude and elevenlabs are registered", () => {
+  assert.ok(ttsEngineIds().includes("kyutai"));
+  assert.ok(ttsEngineIds().includes("claude"));
+  assert.ok(ttsEngineIds().includes("elevenlabs"));
+});
+
+// ---------------------------------------------------------------------------
+// elevenlabs — the ElevenLabs cloud engine (fetch stubbed; no network)
+
+function elevenLabsContext(overrides: Partial<TtsSynthesisContext> = {}): TtsSynthesisContext {
+  return {
+    text: "Come here. [moans]",
+    voice: "VOICEXYZ",
+    settings: voiceSettings({ elevenLabsApiKey: "sk_test", elevenLabsModel: "eleven_v3" }),
+    ensureTts: async () => ({ ttsUrl: "" }),
+    log: () => {},
+    ...overrides,
+  };
+}
+
+test("elevenlabs: streams whole-message PCM and can drive live calls (callBridge)", () => {
+  const spec = findTtsEngine("elevenlabs");
+  assert.ok(spec, "elevenlabs engine registered");
+  assert.ok(spec?.synthesizeStream, "declares a streaming path");
+  assert.equal(spec?.callBridge, true);
+});
+
+test("elevenlabs synthesize: POSTs text+model to the voice endpoint, wraps PCM as WAV", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec) throw new Error("elevenlabs not registered");
+  const calls: { url: string; init: RequestInit }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]), { status: 200, headers: { "content-type": "audio/pcm" } });
+  }) as typeof fetch;
+  try {
+    const audio = await spec.synthesize(elevenLabsContext());
+    assert.equal(audio.contentType, "audio/wav");
+    assert.equal(audio.audio.toString("ascii", 0, 4), "RIFF");
+    // 44-byte WAV header wrapped around the 8 PCM bytes.
+    assert.equal(audio.audio.length, 44 + 8);
+
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes("/v1/text-to-speech/VOICEXYZ"));
+    assert.ok(!calls[0].url.includes("/stream"));
+    assert.ok(calls[0].url.includes("output_format=pcm_24000"));
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers["xi-api-key"], "sk_test");
+    const body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.text, "Come here. [moans]"); // audio tags pass through untouched
+    assert.equal(body.model_id, "eleven_v3");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("elevenlabs synthesizeStream: hits the /stream endpoint and yields raw PCM frames", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec?.synthesizeStream) throw new Error("elevenlabs streaming not registered");
+  const urls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    urls.push(String(url));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([9, 0]));
+        controller.enqueue(new Uint8Array([8, 0]));
+        controller.close();
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "audio/pcm" } });
+  }) as typeof fetch;
+  try {
+    const stream = await spec.synthesizeStream(elevenLabsContext());
+    assert.deepEqual(stream.format, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    assert.equal((await collect(stream.frames)).length, 4);
+    assert.ok(urls[0].includes("/v1/text-to-speech/VOICEXYZ/stream"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("elevenlabs: a missing API key is a clear, actionable error", async () => {
+  const spec = findTtsEngine("elevenlabs");
+  if (!spec) throw new Error("elevenlabs not registered");
+  const prev = process.env.ELEVENLABS_API_KEY;
+  delete process.env.ELEVENLABS_API_KEY;
+  try {
+    await assert.rejects(
+      () => spec.synthesize(elevenLabsContext({ settings: voiceSettings() })),
+      /ElevenLabs API key not set/,
+    );
+  } finally {
+    if (prev !== undefined) process.env.ELEVENLABS_API_KEY = prev;
+  }
+});
+
+test("resolveTtsChoice: workspace default engine, agent tts override, voice fallback chain", () => {
+  const settings = voiceSettings();
+  assert.equal(resolveTtsChoice(undefined, settings).engine.id, "kyutai");
+
+  const agent = { voice: "unmute-prod-website/p329_022.wav", tts: { engine: "claude", voice: "airy" } };
+  const choice = resolveTtsChoice(agent, settings);
+  assert.equal(choice.engine.id, "claude");
+  assert.equal(choice.voice, "airy");
+
+  // No tts.voice → the agent's call voice doubles as the read-aloud voice.
+  assert.equal(resolveTtsChoice({ voice: "some-voice" }, settings).voice, "some-voice");
+  assert.throws(() => resolveTtsChoice({ tts: { engine: "nope" } }, settings), /Unknown TTS engine "nope"/);
+});
+
+test("parseTtsConfig: object form, string shorthand, junk rejected", () => {
+  assert.deepEqual(parseTtsConfig({ engine: " claude ", voice: "airy" }), { engine: "claude", voice: "airy" });
+  assert.deepEqual(parseTtsConfig("claude:airy"), { engine: "claude", voice: "airy" });
+  assert.deepEqual(parseTtsConfig("kyutai"), { engine: "kyutai" });
+  assert.equal(parseTtsConfig(42), undefined);
+  assert.equal(parseTtsConfig({}), undefined);
+  assert.equal(parseTtsConfig({ engine: 3 }), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// speech chunking — long messages play as sentence-packed pieces
+
+test("splitSpeechChunks: short text is one chunk, sentences never split", () => {
+  assert.deepEqual(splitSpeechChunks("Hello world."), ["Hello world."]);
+  const chunks = splitSpeechChunks("One two three. Four five six! Seven eight?", 20);
+  assert.deepEqual(chunks, ["One two three.", "Four five six!", "Seven eight?"]);
+});
+
+test("splitSpeechChunks: sentences pack up to the cap and overlong sentences break on commas/spaces", () => {
+  const packed = splitSpeechChunks("Aaa. Bbb. Ccc. Ddd.", 10);
+  assert.deepEqual(packed, ["Aaa. Bbb.", "Ccc. Ddd."]);
+
+  const long = `${"word ".repeat(200)}end.`;
+  const chunks = splitSpeechChunks(long, 400);
+  assert.ok(chunks.length >= 3);
+  assert.ok(chunks.every((chunk) => chunk.length <= 400));
+  assert.equal(chunks.join(" ").replace(/\s+/g, " "), long.replace(/\s+/g, " ").trim());
+});
+
+test("splitSpeechChunks: the first chunks ramp up small so playback starts fast", () => {
+  const chunks = splitSpeechChunks(`${"word ".repeat(200)}end.`);
+  assert.ok(chunks[0].length <= 120);
+  assert.ok(chunks[1].length <= 200);
+  assert.ok(chunks[2].length <= 300);
+  // An explicit cap below the ramp wins everywhere.
+  assert.ok(splitSpeechChunks("word ".repeat(30), 40).every((chunk) => chunk.length <= 40));
+});
+
+// ---------------------------------------------------------------------------
+// the shared read-aloud path
+
+test("readAloud: refuses user messages and empty speakable text, then routes to the engine", async () => {
+  const temp = await createTempDir();
+  const calls: TtsSynthesisContext[] = [];
+  registerTtsEngine({
+    id: "test-fake",
+    voices: [],
+    synthesize: async (context) => {
+      calls.push(context);
+      return { audio: Buffer.from("AUDIO"), contentType: "audio/test" };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-fake" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+
+  try {
+    await assert.rejects(() => readAloud({ event: { author: "user", text: "hi" }, settings, ensureTts }), /Only agent messages/);
+    await assert.rejects(() => readAloud({ event: { author: "gaia", text: "🚀" }, settings, ensureTts }), /Nothing to read aloud/);
+
+    const result = await readAloud({
+      event: { author: "gaia", text: "**Hello** `world`" },
+      agent: { tts: { voice: "airy" } },
+      settings,
+      ensureTts,
+      cacheDir: temp.path,
+    });
+    assert.equal(result.contentType, "audio/test");
+    assert.equal(result.chunks, 1);
+    assert.equal(result.chunk, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].text, "Hello world");
+    assert.equal(calls[0].voice, "airy");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloud: archives new renders without replacing the first archived hash", async () => {
+  const cache = await createTempDir();
+  const archive = await createTempDir("gaia2-tts-archive-");
+  let renders = 0;
+  registerTtsEngine({
+    id: "test-archive-tee",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from(`AUDIO:${++renders}`), contentType: "audio/test" }),
+  });
+  const settings = voiceSettings({ ttsEngine: "test-archive-tee" });
+  const request = {
+    event: { author: "gaia", text: "Archive this new render." },
+    settings,
+    ensureTts: async () => ({ ttsUrl: "http://127.0.0.1:1" }),
+    cacheDir: cache.path,
+    archiveDir: archive.path,
+  };
+
+  try {
+    await readAloud(request);
+    const names = (await readdir(archive.path)).sort();
+    assert.equal(names.length, 2);
+    assert.match(names[0], /^[a-f0-9]{64}\.(audio|json)$/);
+    assert.equal(names[0].replace(/\.(audio|json)$/, ""), names[1].replace(/\.(audio|json)$/, ""));
+    const audioName = names.find((name) => name.endsWith(".audio"));
+    const metadataName = names.find((name) => name.endsWith(".json"));
+    assert.ok(audioName);
+    assert.ok(metadataName);
+    assert.equal((await readFile(join(archive.path, audioName))).toString(), "AUDIO:1");
+    assert.deepEqual(JSON.parse(await readFile(join(archive.path, metadataName), "utf8")), { contentType: "audio/test" });
+
+    // A regeneration overwrites the LRU cache but never the durable archive.
+    await readAloud({ ...request, regenerate: true });
+    assert.equal((await readFile(join(archive.path, audioName))).toString(), "AUDIO:1");
+  } finally {
+    await archive.cleanup();
+    await cache.cleanup();
+  }
+});
+
+test("readAloud: chunked messages synthesize per chunk, cache replays without the engine", async () => {
+  const temp = await createTempDir();
+  const spoken: string[] = [];
+  registerTtsEngine({
+    id: "test-chunky",
+    voices: [],
+    synthesize: async (context) => {
+      spoken.push(context.text);
+      return { audio: Buffer.from(`AUDIO:${context.text}`), contentType: "audio/test" };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-chunky" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  // Well past one chunk (first chunks ramp up small, so several pieces).
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const first = await readAloud({ ...request, chunk: 0 });
+    assert.ok(first.chunks > 1);
+    const second = await readAloud({ ...request, chunk: 1 });
+    assert.equal(second.chunk, 1);
+    assert.deepEqual(spoken.length, 2);
+    assert.notEqual(first.audio.toString(), second.audio.toString());
+
+    // Replay: both chunks come from the disk cache; the engine stays silent.
+    const replay = await readAloud({ ...request, chunk: 0 });
+    assert.equal(replay.audio.toString(), first.audio.toString());
+    assert.equal(replay.contentType, "audio/test");
+    assert.equal(spoken.length, 2);
+
+    await assert.rejects(
+      () => readAloud({ ...request, chunk: 99 }),
+      new RegExp(`Unknown chunk 99 \\(message has ${first.chunks}\\)`),
+    );
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// readAloudStream — the desktop-app streaming path, dispatched on the engine's
+// capability (never its id)
+
+async function collect(frames: AsyncIterable<Buffer>): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  for await (const frame of frames) parts.push(Buffer.from(frame));
+  return Buffer.concat(parts);
+}
+
+test("readAloudStream: a batch-only engine reports chunks, so the client keeps the per-chunk path", async () => {
+  const temp = await createTempDir();
+  registerTtsEngine({
+    id: "test-batch-only",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+  });
+  const settings = voiceSettings({ ttsEngine: "test-batch-only" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+
+  try {
+    const delivery = await readAloudStream({ event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path });
+    assert.equal(delivery.mode, "chunks");
+    if (delivery.mode !== "chunks") throw new Error("unreachable");
+    assert.equal(delivery.chunks, splitSpeechChunks(speakableText(text)).length);
+    assert.ok(delivery.chunks > 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloudStream: a streaming engine synthesizes the whole message once, frames stream through, then replay hits the cache", async () => {
+  const temp = await createTempDir();
+  let synths = 0;
+  const seen: string[] = [];
+  registerTtsEngine({
+    id: "test-streamer",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+    synthesizeStream: async (context): Promise<TtsStream> => {
+      synths++;
+      seen.push(context.text);
+      const pcm = Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]); // 4 s16le samples
+      return {
+        format: { sampleRate: 16000, channels: 1, bitsPerSample: 16 },
+        frames: (async function* () {
+          yield pcm.subarray(0, 4);
+          yield pcm.subarray(4, 8);
+        })(),
+      };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-streamer" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  // Long enough that the batch path WOULD have chunked it — proving the stream
+  // path speaks the whole message in one pass instead.
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const first = await readAloudStream(request);
+    assert.equal(first.mode, "stream");
+    if (first.mode !== "stream") throw new Error("unreachable");
+    assert.deepEqual(first.format, { sampleRate: 16000, channels: 1, bitsPerSample: 16 });
+    const audio = await collect(first.frames);
+    assert.equal(audio.length, 8);
+    assert.equal(synths, 1);
+    assert.equal(seen[0], speakableText(text)); // whole message, not a chunk
+
+    // Replay: the whole-message PCM comes from the disk cache; no re-synthesis.
+    const replay = await readAloudStream(request);
+    assert.equal(replay.mode, "stream");
+    if (replay.mode !== "stream") throw new Error("unreachable");
+    assert.equal((await collect(replay.frames)).toString("hex"), audio.toString("hex"));
+    assert.equal(synths, 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloudStream: an aborted stream is not cached (no truncated replay)", async () => {
+  const temp = await createTempDir();
+  let synths = 0;
+  registerTtsEngine({
+    id: "test-streamer-abort",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+    synthesizeStream: async (): Promise<TtsStream> => {
+      synths++;
+      return {
+        format: { sampleRate: 16000, channels: 1, bitsPerSample: 16 },
+        frames: (async function* () {
+          yield Buffer.from([1, 0]);
+          yield Buffer.from([2, 0]);
+          yield Buffer.from([3, 0]);
+        })(),
+      };
+    },
+  });
+  const settings = voiceSettings({ ttsEngine: "test-streamer-abort" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const request = { event: { author: "gaia", text: "Hello there friend." }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const first = await readAloudStream(request);
+    if (first.mode !== "stream") throw new Error("expected stream");
+    // Consume only the first frame, then break — simulates a client hang-up.
+    for await (const _frame of first.frames) break;
+
+    // Nothing was cached, so a second call re-synthesizes (no partial replay).
+    const second = await readAloudStream(request);
+    if (second.mode !== "stream") throw new Error("expected stream");
+    assert.equal((await collect(second.frames)).length, 6);
+    assert.equal(synths, 2);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("claude readAloudStream waits for browser-session readiness before opening stream", async () => {
+  const temp = await createTempDir();
+  let streamHits = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":false}'); return; }
+    if (req.url === "/stream") streamHits++;
+    res.writeHead(500); res.end("stream should not be called while the browser session is not ready");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: "", startTimeoutSec: 0.03 });
+  try {
+    await assert.rejects(
+      () => readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path }),
+      /browser session is not ready/,
+    );
+    assert.equal(streamHits, 0);
+  } finally {
+    server.close();
+    await temp.cleanup();
+  }
+});
+
+test("claude readAloudStream kills pre-existing claude-voice daemon when claudeVoiceDir is set", async () => {
+  const temp = await createTempDir();
+  const daemonDir = await createTempDir();
+  const portHolder = http.createServer();
+  await new Promise<void>((resolve) => portHolder.listen(0, "127.0.0.1", resolve));
+  const port = (portHolder.address() as AddressInfo).port;
+  await new Promise<void>((resolve, reject) => portHolder.close((error) => (error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const foreign = spawn(process.execPath, ["-e", `
+    const http = require("node:http");
+    const server = http.createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, loggedIn: true }));
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+    server.listen(${port}, "127.0.0.1");
+  `], { stdio: "ignore" });
+  const foreignExit = once(foreign, "exit");
+
+  try {
+    await waitForHealthy(baseUrl);
+    const voicedPath = join(daemonDir.path, "voiced.js");
+    // The real voiced.js is spawned by exec'ing its own path (shebang-driven,
+    // like the unmute service scripts) rather than `process.execPath [script]`
+    // — see read-aloud.ts. Mirror that here: a real shebang + chmod +x.
+    await writeFile(voicedPath, `#!/usr/bin/env node
+      const http = require("node:http");
+      const server = http.createServer((req, res) => {
+        if (req.url === "/health") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, loggedIn: true }));
+          return;
+        }
+        if (req.url === "/stream") {
+          res.writeHead(200, {
+            "content-type": "audio/pcm",
+            "x-tts-rate": "16000",
+            "x-tts-channels": "1",
+            "x-tts-bits": "16",
+          });
+          res.end(Buffer.from([1, 0, 2, 0]));
+          return;
+        }
+        res.writeHead(404);
+        res.end("not found");
+      });
+      server.listen(${port}, "127.0.0.1");
+    `);
+    await chmod(voicedPath, 0o755);
+
+    const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: baseUrl, claudeVoiceDir: daemonDir.path, startTimeoutSec: 3 });
+    const delivery = await readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path });
+    assert.equal(delivery.mode, "stream");
+    if (delivery.mode !== "stream") throw new Error("unreachable");
+    assert.equal((await collect(delivery.frames)).toString("hex"), "01000200");
+
+    const [, signal] = (await Promise.race([
+      foreignExit,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("foreign claude-voice daemon was not killed")), 2000)),
+    ])) as [number | null, NodeJS.Signals | null];
+    assert.equal(signal, "SIGTERM");
+  } finally {
+    try {
+      foreign.kill("SIGTERM");
+    } catch {
+      // Already killed by the lifecycle policy.
+    }
+    await killRandomTestPort(port);
+    await daemonDir.cleanup();
+    await temp.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// stack: ensureTts (the kyutai engine's service bring-up)
+
+class FakeService implements SpawnedService {
+  pid = 123;
+  exited = false;
+  killed = false;
+  kill(): void {
+    this.killed = true;
+    this.exited = true;
+  }
+  onExit(): void {}
+}
+
+function stackSettings(overrides: Partial<VoiceStackSettings> = {}): VoiceStackSettings {
+  return {
+    unmuteDir: "/tmp/does-not-matter",
+    unmuteUrl: "ws://127.0.0.1:8000",
+    autoStart: true,
+    startTimeoutMs: 2000,
+    ...overrides,
+  };
+}
+
+test("ensureTts: reuses an external TTS service without spawning", async () => {
+  const temp = await createTempDir();
+  try {
+    const spawned: string[] = [];
+    const manager = new VoiceStackManager(temp.path, {
+      probePort: async () => true,
+      probeHttpOk: async () => true,
+      spawnService: (spec) => {
+        spawned.push(spec.name);
+        return new FakeService();
+      },
+    });
+    const result = await manager.ensureTts(stackSettings(), () => {});
+    assert.equal(result.ttsUrl, "http://127.0.0.1:8089");
+    assert.deepEqual(spawned, []);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ensureTts: spawns the TTS service when its port is free and waits for health", async () => {
+  const temp = await createTempDir();
+  const unmute = await createTempDir();
+  try {
+    await mkdir(join(unmute.path, "macos"), { recursive: true });
+    let up = false;
+    const spawned: string[] = [];
+    const manager = new VoiceStackManager(temp.path, {
+      probePort: async () => false,
+      probeHttpOk: async () => up,
+      pollIntervalMs: 5,
+      spawnService: (spec) => {
+        spawned.push(spec.name);
+        setTimeout(() => (up = true), 10);
+        return new FakeService();
+      },
+    });
+    const result = await manager.ensureTts(stackSettings({ unmuteDir: unmute.path }), () => {});
+    assert.equal(result.ttsUrl, "http://127.0.0.1:8089");
+    assert.deepEqual(spawned, ["tts"]);
+    assert.deepEqual(manager.spawnedServices, ["tts"]);
+  } finally {
+    await unmute.cleanup();
+    await temp.cleanup();
+  }
+});
+
+test("ensureTts: refuses to spawn when auto-start is disabled", async () => {
+  const temp = await createTempDir();
+  try {
+    const manager = new VoiceStackManager(temp.path, { probePort: async () => false, probeHttpOk: async () => false });
+    await assert.rejects(() => manager.ensureTts(stackSettings({ autoStart: false }), () => {}), /auto-start is disabled/);
+  } finally {
+    await temp.cleanup();
+  }
+});

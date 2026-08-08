@@ -1,0 +1,116 @@
+// Wire protocol between the daemon-side RunnerHost and the `gaia __run-agent`
+// subprocess. One newline-delimited JSON object per line, both directions.
+// The runner is single-flight: at most one active turn per runner.
+
+import type { AgentEvent, CompactProgressUpdate, MessageAttachment } from "../core/types.js";
+import type { AgentInput } from "./spec.js";
+
+/** Daemon -> runner. */
+export type RunnerCommand =
+  | { type: "turn"; input: AgentInput }
+  | { type: "abort" }
+  | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
+  | { type: "compact"; roomId: string }
+  | { type: "fork"; roomId: string; originEventId: string; userOrdinal: number }
+  | { type: "reset"; roomId: string }
+  | { type: "refresh"; roomId: string }
+  | { type: "dispose" };
+
+/** Runner -> daemon. */
+export type RunnerMessage =
+  | { type: "ready"; modelLabel: string }
+  | { type: "event"; event: AgentEvent }
+  | { type: "model-label"; modelLabel: string }
+  // Exactly one of these terminates every turn. `turn-end` means the runtime's
+  // iterable exhausted after a proper harness completion record; every
+  // abnormal teardown is `turn-error`, even an underlying process exit 0.
+  | { type: "turn-end" }
+  | { type: "turn-error"; message: string }
+  | { type: "steer-result"; ok: boolean }
+  | ({ type: "compact-progress" } & CompactProgressUpdate)
+  // `ok` = the pass ran without error; `compacted` = history was actually
+  // evicted into a summary (false for a no-op). The daemon draws the visible
+  // boundary from `compacted`, never from the message text.
+  | { type: "compact-result"; ok: boolean; compacted: boolean; message: string; summary?: string }
+  // Result of a `fork` command — see AgentRuntime.forkAtMessage.
+  | { type: "fork-result"; ok: boolean; message: string };
+
+/** Serialize one protocol frame for the newline-delimited wire.
+ *
+ * JSON.stringify leaves U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH
+ * SEPARATOR) RAW inside strings, and node's readline treats them as line
+ * breaks — so a frame carrying user content with one of them (pasted rich
+ * text has them constantly) reaches the peer split into fragments, every
+ * fragment fails JSON.parse, and the frame silently vanishes: the turn never
+ * starts and the daemon waits on it forever. Escaping them is value-identical
+ * after parse and keeps every frame exactly one line regardless of content.
+ * BOTH directions must use this — a reply containing U+2028 would poison
+ * runner→daemon the same way. */
+export function encodeFrame(frame: RunnerCommand | RunnerMessage): string {
+  return JSON.stringify(frame).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+/** The mount the in-daemon LLM credential proxy is served under. Part of the
+ * daemon↔subprocess wire contract: a redirected harness's base URL is exactly
+ * this path on the daemon, presented with the per-turn token. */
+export const LLM_PROXY_MOUNT = "/api/harness/llm";
+
+/** Env keys the daemon sets when spawning a runner (read by the runner). */
+export const RUNNER_ENV = {
+  workspacePath: "GAIA_RUNNER_WORKSPACE",
+  agentId: "GAIA_RUNNER_AGENT",
+  harness: "GAIA_RUNNER_HARNESS",
+  roomId: "GAIA_ROOM_ID",
+  daemonUrl: "GAIA_DAEMON_URL",
+  daemonToken: "GAIA_DAEMON_TOKEN",
+  memoryDir: "GAIA_MEMORY_DIR",
+  roomDir: "GAIA_ROOM_DIR",
+  /** The agent's PUBLIC id for the gaia-CLI bridge (read by `gaia mem`/`recall`
+   * inside a turn — see services/cli-tools.ts). Part of the uniform bridge env
+   * every harness subprocess inherits; distinct from the runner-internal
+   * selector `agentId` above. */
+  agentIdPublic: "GAIA_AGENT_ID",
+  /** Set to "1" ONLY when the room is incognito: the runner strips the memory +
+   * recall tools from the loaded agent before building the harness runtime, so
+   * the strip applies uniformly to every harness (the agent is re-loaded from
+   * disk in the subprocess, so a daemon-side strip alone would never reach it). */
+  incognito: "GAIA_RUNNER_INCOGNITO",
+  /** Set ONLY when the credential proxy is enabled for this turn. */
+  llmProxyUrl: "GAIA_LLM_PROXY_URL",
+} as const;
+
+export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const msg = raw as Record<string, unknown>;
+  switch (msg.type) {
+    case "ready":
+    case "model-label":
+      return typeof msg.modelLabel === "string" ? ({ type: msg.type, modelLabel: msg.modelLabel } as RunnerMessage) : undefined;
+    case "event":
+      return msg.event && typeof msg.event === "object" ? ({ type: "event", event: msg.event as AgentEvent } as RunnerMessage) : undefined;
+    case "turn-end":
+      return { type: "turn-end" };
+    case "turn-error":
+      return { type: "turn-error", message: typeof msg.message === "string" ? msg.message : "turn failed" };
+    case "steer-result":
+      return { type: "steer-result", ok: msg.ok === true };
+    case "compact-progress":
+      return {
+        type: "compact-progress",
+        ...(typeof msg.contextTokens === "number" ? { contextTokens: msg.contextTokens } : {}),
+        ...(typeof msg.outputTokens === "number" ? { outputTokens: msg.outputTokens } : {}),
+      };
+    case "compact-result":
+      return {
+        type: "compact-result",
+        ok: msg.ok === true,
+        compacted: msg.compacted === true,
+        message: typeof msg.message === "string" ? msg.message : "",
+        ...(typeof msg.summary === "string" ? { summary: msg.summary } : {}),
+      };
+    case "fork-result":
+      return { type: "fork-result", ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : "" };
+    default:
+      return undefined;
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "start": { "scene": "weyhersbrunn" },
+  "ruleset": "dsa5",
+  "title": "Der Finsterwald — Die alte Mühle",
+  "blurb": "A dark-fairy-tale scenario at the edge of the Finsterwald. Goblins have driven Miller Bodo from his mill, and something in the woods has made them bold. A sword, a talent probe, and too much courage — that's all you have.",
+  "scenes": {
+    "weyhersbrunn": {
+      "name": "Weyhersbrunn am Finsterwald",
+      "description": "A rain-soaked village on the forest's edge: an inn, a square, a path into the dark trees, and an old mill that no longer grinds."
+    }
+  }
+}

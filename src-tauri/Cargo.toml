@@ -1,0 +1,42 @@
+[package]
+name = "gaia-shell"
+version = "0.1.0"
+description = "GAIA native shell (Tauri) — thin client for the local gaia daemon UI"
+authors = ["GAIA"]
+edition = "2021"
+rust-version = "1.77"
+
+# The lib is shared by the desktop entry point (main.rs) and the mobile
+# entry points that tauri-ios / tauri-android generate. Keep run() here.
+[lib]
+name = "gaia_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# macos-private-api is required by Tauri's transparent native-window builder;
+# pet windows are frameless/transparent by product contract.
+tauri = { version = "2", features = ["devtools", "macos-private-api"] }
+# Native OS notifications (dock/notification-center banner when an agent turn
+# finishes). Called from Rust via NotificationExt, so no plugin JS/ACL surface.
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = "0.24"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# Raw objc message-send, shared by the macOS media-capture patch and the iOS
+# WKWebView scroll-inset fix below.
+objc2 = "0.6.4"
+# Completion-handler block for WKWebView.takeSnapshotWithConfiguration: — the
+# in-process webview snapshot the debug server uses instead of shelling out to
+# `screencapture` (which needs Screen Recording permission; a WKWebView self-
+# snapshot needs none).
+block2 = "0.6"
+
+[features]
+default = ["webkit"]
+# Small/iOS-compatible Tauri path: native system webview (WKWebView on macOS).
+webkit = ["tauri/custom-protocol"]

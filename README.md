@@ -4,6 +4,15 @@
 
 `gaia` is a local-first multi-agent workspace built on the Pi SDK.
 
+> **v2.** This is the from-scratch rewrite: same concepts, same on-disk
+> formats (v1 workspaces open unchanged), same HTTP+SSE surface — restructured
+> into strict layers (`core → domain → harness → services → daemon → server`),
+> with durability guaranteed by protocol (a write-ahead turn journal and a
+> persisted message queue), runtime details stored on transcript events
+> forever, and a web client that is honest, typed JavaScript. The autopsy of
+> v1 is in [CRITIQUE.md](CRITIQUE.md); the architecture in
+> [DESIGN.md](DESIGN.md).
+
 Its main idea is simple:
 
 - **Agent = hard control**: harness, model, tools, and sandbox/permission policy.
@@ -36,12 +45,40 @@ Personas are durable. Projects add local context.
 - summons run as nested child rooms (a `/summon` or the `summon` tool opens a
   sub-room in the tree); fan several out at once for a swarm — see **Summons**
 - model switching through Pi's registry (API-key, subscription/OAuth, local);
-  each agent message shows the model that actually produced it
-- voice calls per agent through the vendored unmute stack (`unmute/`)
-- sample global agents: `@gaia`, `@sidia`, `@terry`
+  each agent message shows the model that actually produced it, and the
+  composer shows the target agent's live model + context-window usage — with
+  a warning chip when the provider switched models mid-turn (e.g. a Fable →
+  Opus capacity/safety fallback)
+- voice calls per agent through the unmute submodule (`unmute/`)
+- sample global agents: `@gaia`, `@sidia`, `@terry` (plus `@dario`, the
+  thanks-dario reviewer — see below)
 - slash commands: `/help`, `/agents`, `/roles`, `/role`, `/summon`,
-  `/thinking`, `/clear`, `/fork`
+  `/thinking`, `/clear`, `/fork`, `/setup`, `/consolidate`, `/compact`,
+  `/recall`, `/schedule`, `/steer`, `/cancel` (alias `/stop`), `/rewind`,
+  `/thanks-dario` (alias `/dario`)
+  (`/compact` invokes the harness's own session compaction — pi
+  `session.compact()`, claude's headless `/compact`, codex
+  `thread/compact/start` — never a gaia re-implementation)
+- claude.ai-style message forking, uniform across harnesses: ✎ edit any user
+  message (re-sends from that point) or ⟳ retry any reply (regenerates it);
+  later events are rewound — preserved in the room's `rewound.jsonl`, never
+  deleted — sessions reset, and the kept transcript window replays
+- paste images & files straight into the composer (plain system paste, no
+  button): previews above the input, bytes stored durably under the room's
+  `files/` dir, and every harness gets them uniformly — images natively
+  (pi prompt images, claude stream-json image blocks, codex `localImage`
+  items), everything else as on-disk path breadcrumbs any agent can open
+  with its file tools
 - dynamic selectable previews for `/` commands and `@` agents
+- **thanks-dario mode**: when a provider-side safety classifier keeps
+  rerouting a room's model (e.g. Fable → Opus), `/thanks-dario` summons
+  `@dario` — a seeded reviewer persona (DeepSeek by default, repointable with
+  `/model @dario …`) — who reads the replay window and proposes minimal
+  redactions; a popup shows his strategy options and a before/after diff, and
+  only approved edits are applied: originals are preserved in the room's
+  `redactions.jsonl` (rewritten messages carry a ✂ tag), sessions reset, and
+  the next turn replays the sanitized history. `/thanks-dario on` auto-runs
+  the review whenever a model-fallback lands in the room
 - settings stay plain text files; the formatted view renders smart controls
   from server-computed hints
 
@@ -52,10 +89,16 @@ port `0` picks a free one).
 ## Setup
 
 ```bash
+git clone --recursive https://github.com/pascaldisse/gaia-daemon
 npm install
 npm run build
 npm link   # optional, exposes `gaia`
 ```
+
+The `unmute/` voice stack is a git submodule and is only needed for voice
+calls. If you cloned without `--recursive`, pull it later with
+`git submodule update --init unmute` — or skip it entirely; the rest of the
+daemon runs without it.
 
 Configure Pi auth the same way you configure Pi itself.
 For example: `pi /login` or provider API-key environment variables.
@@ -177,9 +220,10 @@ room transcript as typed messages. The agent's text replies still appear in
 the chat (marked 🎙), you can still type, and what you say is transcribed
 live into the composer box.
 
-unmute ships inside this repo under `unmute/` (MIT licensed, Copyright 2025
-Kyutai — see `unmute/LICENSE`), including the macOS port that runs STT on
-Metal and TTS on MLX. Voice needs two host tools: `uv` (runs the Python
+unmute is a git submodule at `unmute/` — a fork of
+[kyutai-labs/unmute](https://github.com/kyutai-labs/unmute) (MIT licensed,
+Copyright 2025 Kyutai — see `unmute/LICENSE`) that adds the macOS port running
+STT on Metal and TTS on MLX. Voice needs two host tools: `uv` (runs the Python
 services) and `cargo` (builds `moshi-server` for STT on first use).
 
 There is nothing to start by hand. Clicking the call button boots whatever
@@ -210,10 +254,51 @@ runs the service on a free port instead.
 - `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
   detect and reuse it instead of starting its own)
 
+### Read aloud (the transcript play button)
+
+Every committed agent message carries a ▶ button that speaks it: the server
+strips markdown for speech (code blocks, links, tables, emoji; tool calls are
+never part of the text), synthesizes with the author's TTS engine, and streams
+a WAV back. Engines are registered as data (`src/services/read-aloud.ts`) and
+selected per agent:
+
+- `kyutai` (default) — the bundled unmute TTS service, auto-started on demand
+- `claude` — a local claude-voice daemon (separate project) speaking with the
+  claude.ai "Read aloud" voices (`airy | buttery | mellow | glassy | rounded`)
+  through your own account; GAIA calls its `POST /synthesize` endpoint
+
+Per-agent choice lives in `agent.json`:
+
+```json
+"tts": { "engine": "claude", "voice": "airy" }
+```
+
+Global defaults live in `~/.gaia/voice.json`: `ttsEngine` (fallback engine),
+`claudeVoiceUrl` (default `http://127.0.0.1:8778`) and `claudeVoiceDir` (a
+claude-voice checkout to auto-start when its daemon is down; empty = never).
+
+The same `tts.engine` also drives **voice calls**: if it declares `callBridge`
+(claude does), GAIA stands up a tiny protocol bridge
+(`src/services/voice-tts-bridge.ts`) that makes the engine look like a native
+unmute TTS server — so a call speaks with your claude-voice voice instead of the
+bundled TTS. The bridge speaks unmute's `/api/tts_streaming` msgpack socket on
+one side and streams `engine.synthesizeStream` (resampled to 24 kHz) on the
+other; a barge-in aborts generation. Engines without `callBridge` (kyutai) use
+the native unmute TTS, unchanged. No new config — an agent's `tts.engine`
+governs both surfaces.
+
 ## Roles
 
-A role is a markdown prompt overlay for an agent.
-It can request Pi skills through frontmatter.
+A role is a markdown prompt overlay for an agent. It can also provide default
+tools and skills through frontmatter. The agent's own Tools/Skills checkboxes
+in Settings always win: change one and it becomes that agent's explicit
+override of the role default.
+
+Shared role (available to every agent):
+
+```text
+~/.gaia/roles/ghoul.md
+```
 
 Global role:
 
@@ -233,6 +318,12 @@ Example role:
 
 ```md
 ---
+tools:
+  - web
+  - bash
+  - read
+  - write
+  - edit
 skills:
   - brainstorm
   - web
@@ -241,6 +332,10 @@ skills:
 
 Explore options. Notice patterns. Ask crisp questions.
 ```
+
+`ghoul` is seeded as a shared role. Its five-tool worker surface is useful for
+summons; every summon child room is incognito by default, so neither its
+transcript nor its worker turns enter recall or episodic memory.
 
 Room commands:
 
@@ -300,21 +395,23 @@ keeping the daemon the single writer.
 - **`codex`** — drives your installed `codex` app-server, riding your **Codex
   subscription** (`codex` must be on `PATH`). It honors `tools` coarsely through
   a workspace sandbox: `write`/`edit`/`bash` → `workspace-write`, otherwise
-  `read-only`. `memory` works (via the `gaia` CLI); `recall` and `summon` are
-  not available under Codex yet.
+  `read-only`. `memory`, `recall`, and `summon` are real Codex tools: the same
+  tool implementations pi uses are declared as `dynamicTools` on the thread and
+  executed in-process by the daemon when Codex calls them.
 
-For the `claude` and `codex` harnesses, `memory`/`recall`/`summon` are delivered
-through a small `gaia` CLI the agent runs (reads go straight to disk; writes and
-summon call back to the running daemon, which stays the single writer) — no MCP.
-The `claude`/`codex` providers are locked in the settings UI to Anthropic /
-OpenAI-Codex models respectively.
+For the `claude` harness, `memory`/`recall`/`summon` are delivered through a
+small `gaia` CLI the agent runs (reads go straight to disk; writes and summon
+call back to the running daemon, which stays the single writer) — no MCP
+required for gaia's own tools, though external `mcpServers` from settings are
+passed through. The `claude`/`codex` providers are locked in the settings UI to
+Anthropic / OpenAI-Codex models respectively.
 
 ## Sandbox
 
 Because every harness runs a turn in the same `gaia __run-agent` subprocess, the
 daemon can wrap that one process in an OS-level sandbox — uniformly, with no
 knowledge of which harness is inside. Backends are swappable: adding one is a new
-`src/runtime/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
+`src/harness/sandbox/<name>.ts` that calls `registerSandbox(...)` plus one import
 line, the daemon analogue of a single-file container-runtime swap.
 
 Two backends ship (plus the swap seam for more):
@@ -364,16 +461,32 @@ turn defaults to `none` (the trusted lead runs wide open).
 
 ## Summons
 
-A summon is a private worker turn that runs as a **nested child room**. Trigger
-one from the composer with `/summon <agent> <task>`, or give an agent the
-`summon` tool and let it call workers itself. Each summon opens a sub-room under
-the calling room in the tabs tree; its transcript is its own, and the parent sees
-the worker's final result.
+A summon is a background worker turn that runs as a **nested child room** —
+gaia's subagent, and the ONE fan-out primitive for every harness. Trigger one
+from the composer with `/summon <agent> <task>`, or give an agent the `summon`
+tool and let it call workers itself. Launching **never blocks**: the caller's
+turn continues immediately, the worker runs in the background, and you can
+watch it live by opening its sub-room under the calling room in the tabs tree.
+
+When a worker finishes, its result is **delivered back into the calling room**:
+posted as a message from the worker, and — for agent-initiated summons — a turn
+is queued so the calling agent is re-invoked with the result (the callback).
+Failures are delivered the same way, loudly. Delivery is durable: it is stamped
+on the child room's state at launch, and a daemon restart resumes the worker's
+turn from the WAL and re-arms the delivery — a summon result is never lost.
 
 Fan several summons out at once and they run in parallel — that is the swarm.
 `maxSummonsPerRoom` in `.gaia/config.json` (default 8) bounds how many run
 concurrently per room. Summoned workers run sandboxed by default (see
 **Sandbox**).
+
+A harness's own subagent surface is suppressed and routed here instead: each
+harness declares its native fan-out tool names as data on its spec
+(`fanOutTools` — claude: Task/Agent/Workflow, what `/deep-research` used to
+fan out through), and its runtime disallows them on every turn. Opaque
+in-harness workers — invisible, unresumable, blocking the room for hours —
+don't exist anymore; all fan-out gets sub-rooms, durability, the sandbox +
+trust tier, and the callback.
 
 A summoned worker **cannot summon further workers by default** — it gets a scoped
 task, not the keys to spawn its own swarm (this bounds runaway fan-out). An agent
@@ -413,6 +526,9 @@ Optional `agent.json` fields:
 - `thinking`: thinking effort (`off`...`xhigh`); also changeable from the
   composer's `💭 #level` control and `/thinking`
 - `voice`: TTS voice for calls (an unmute `voices.yaml` entry)
+- `tts`: read-aloud engine + voice for the transcript play button, e.g.
+  `{ "engine": "claude", "voice": "airy" }` (string shorthand `"claude:airy"`
+  also works); default engine comes from `voice.json`'s `ttsEngine`
 - `harness`: which backend runs the agent — `pi` (default), `codex`, or
   `claude`; falls back to `.gaia/config.json`'s `harness`, then `pi` (see
   **Harnesses**)

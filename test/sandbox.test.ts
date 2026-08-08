@@ -1,3 +1,7 @@
+// Sandbox layer: trust-tier policy resolution (untrusted can never weaken to
+// naked), fail-closed launches, the Seatbelt profile's write-allowlist /
+// read-denylist posture, and the `gaia __sandbox-exec` confinement entrypoint.
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -5,23 +9,27 @@ import {
   resolveSandboxLaunch,
   resolveSandboxPolicy,
   sandboxBackendIds,
-} from "../src/runtime/sandbox/index.ts";
-import { buildSeatbeltProfile } from "../src/runtime/sandbox/macos-seatbelt.ts";
+} from "../src/harness/sandbox/spec.js";
+import { buildSeatbeltProfile } from "../src/harness/sandbox/seatbelt.js";
+import "../src/harness/sandbox/none.js";
 
 const ARGV = ["/usr/bin/node", "cli.js", "__run-agent"];
 const DARWIN = { platform: "darwin" };
 
-test("resolveSandboxPolicy: trusted top-level off, trusted summon on with a real backend", () => {
+test("resolveSandboxPolicy: trusted agents run unsandboxed — top-level AND summons", () => {
   assert.equal(resolveSandboxPolicy(undefined, undefined, false, DARWIN).enabled, false);
+  // A summon is no longer confined just for being a summon: a trusted agent's
+  // background worker runs with the same reach it has (so a summoned
+  // subscription-OAuth turn can read its keychain login).
   const summon = resolveSandboxPolicy(undefined, undefined, true, DARWIN);
-  assert.equal(summon.enabled, true);
-  assert.equal(summon.backend, "macos-seatbelt"); // never "none" by default — summons are never naked
+  assert.equal(summon.enabled, false);
+  assert.equal(summon.backend, "none");
 });
 
-test("resolveSandboxPolicy: a trusted agent may still override a summon back to none", () => {
-  const policy = resolveSandboxPolicy(undefined, { enabled: false, backend: "none" }, true, DARWIN);
-  assert.equal(policy.enabled, false);
-  assert.equal(policy.backend, "none");
+test("resolveSandboxPolicy: a trusted agent may opt INTO a sandbox explicitly", () => {
+  const policy = resolveSandboxPolicy(undefined, { enabled: true, backend: "macos-seatbelt" }, true, DARWIN);
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.backend, "macos-seatbelt");
 });
 
 test("resolveSandboxPolicy: untrusted agents are forced into a real backend, top-level included", () => {
@@ -32,7 +40,12 @@ test("resolveSandboxPolicy: untrusted agents are forced into a real backend, top
 
 test("resolveSandboxPolicy: an untrusted agent CANNOT configure its way out of the sandbox", () => {
   // Every attempt to weaken isolation is ignored for an untrusted agent.
-  const off = resolveSandboxPolicy({ enabled: false, backend: "none" }, { enabled: false, backend: "none" }, false, { ...DARWIN, trusted: false });
+  const off = resolveSandboxPolicy(
+    { enabled: false, backend: "none" },
+    { enabled: false, backend: "none" },
+    false,
+    { ...DARWIN, trusted: false },
+  );
   assert.equal(off.enabled, true);
   assert.equal(off.backend, "macos-seatbelt");
 });
@@ -103,21 +116,31 @@ test("the default backends are registered; apple-container is gone", () => {
   assert.ok(!ids.includes("apple-container")); // dropped
 });
 
-test("buildSeatbeltProfile: confines writes to the workspace, carves out policy files + auth, honours net", () => {
+test("buildSeatbeltProfile: confines writes to the workspace, carves out policy files + declared credential stores, honours net", () => {
+  // The state dir + its credential store arrive via spec.writable/readonly —
+  // declared per harness as HarnessSpec.sandboxPaths data, never named here.
   const profile = buildSeatbeltProfile({
     argv: ARGV,
     cwd: "/work",
-    writable: ["/scratch"],
-    readonly: ["/work/.gaia/config.json"],
+    writable: ["/scratch", "/home/u/.harness-state"],
+    readonly: ["/work/.gaia/config.json", "/home/u/.harness-state/auth.json"],
     net: "none",
   });
   assert.match(profile, /\(allow default\)/);
   assert.match(profile, /\(deny file-write\*\)/); // writes denied by default...
   assert.match(profile, /\(allow file-write\*[^\n]*subpath "\/work"/); // ...except the workspace
   assert.match(profile, /subpath "\/scratch"/); // ...and extra writable
+  assert.match(profile, /allow file-write\*[^\n]*subpath "\/home\/u\/.harness-state"/); // ...and the declared state dir
   assert.match(profile, /deny file-write\*[^\n]*subpath "\/work\/.gaia\/config.json"/); // ...but never the policy file
-  assert.match(profile, /deny file-write\*[^\n]*auth\.json/); // ...nor the pi credential store
+  assert.match(profile, /deny file-write\*[^\n]*auth\.json/); // ...nor the declared credential store
+  assert.doesNotMatch(profile, /\.pi\b/); // the backend hardcodes NO harness's paths (RULE #0)
   assert.match(profile, /\(deny network\*\)/); // net: none
+});
+
+test("buildSeatbeltProfile: an empty readonly list emits no bare write-deny (which would re-deny the workspace)", () => {
+  const profile = buildSeatbeltProfile({ argv: ARGV, cwd: "/work", writable: [], readonly: [], net: "full" });
+  const denies = profile.split("\n").filter((line) => line.startsWith("(deny file-write*"));
+  assert.deepEqual(denies, ["(deny file-write*)"], "exactly the ONE deny-all that precedes the workspace allow");
 });
 
 test("buildSeatbeltProfile: leaves network alone when net is full", () => {
@@ -145,20 +168,20 @@ test("buildSeatbeltProfile: cwdWritable=false keeps the repo read-only but still
 });
 
 test("__sandbox-exec: backend none runs the child directly and propagates its exit code", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   const code = await runSandboxExec(["--backend", "none", "--", process.execPath, "-e", "process.exit(7)"]);
   assert.equal(code, 7);
 });
 
 test("__sandbox-exec: fails closed (child never runs) when the backend is unavailable", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   registerSandbox({ id: "exec-down", available: () => false, wrap: (spec) => ({ command: spec.argv[0], args: [] }) });
   const code = await runSandboxExec(["--backend", "exec-down", "--", process.execPath, "-e", "process.exit(0)"]);
   assert.equal(code, 1); // refused; the child (which would exit 0) never ran
 });
 
 test("__sandbox-exec: requires a -- separator before the child command", async () => {
-  const { runSandboxExec } = await import("../src/runtime/sandbox/exec-cli.ts");
+  const { runSandboxExec } = await import("../src/harness/sandbox/cli.js");
   assert.equal(await runSandboxExec(["--backend", "none"]), 2);
 });
 

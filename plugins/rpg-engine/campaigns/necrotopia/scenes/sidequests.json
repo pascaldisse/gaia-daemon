@@ -1,0 +1,302 @@
+{
+  "loc-neon-follies": {
+    "identity": {
+      "name": "The Neon Follies Showroom",
+      "kind": "location",
+      "description": "A gutted casino showroom off the Strip. Ostrich-feather headdresses still hang from a broken rack, and every night at the same hour the house lights come up on their own for an audience that never arrives."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-strip",
+          "label": "Back to the shattered Strip"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "style": "lair",
+      "combatZones": [
+        {
+          "id": "follies-house",
+          "label": "The House Floor",
+          "tags": []
+        },
+        {
+          "id": "follies-stage",
+          "label": "The Stage",
+          "tags": [
+            "raised"
+          ]
+        },
+        {
+          "id": "follies-wings",
+          "label": "The Wings",
+          "tags": []
+        },
+        {
+          "id": "follies-balcony",
+          "label": "The Balcony Edge",
+          "tags": [
+            "ledge"
+          ]
+        }
+      ],
+      "ambient": [
+        "The house lights come up on an empty room, right on cue.",
+        "A single spotlight tracks nothing across the stage floor.",
+        "Feathers drift down from the rafters like grey snow."
+      ]
+    },
+    "art": {
+      "prompt": "A gutted Las Vegas showroom stage during the apocalypse, ostrich feathers and dead spotlights, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-showgirl-chorus": {
+    "identity": {
+      "name": "The Neon Follies Chorus",
+      "kind": "npc",
+      "description": "A line of dead showgirls in sequined ruin, still hitting their marks note-perfect, feathers matted with grave dust, smiles fixed in place since before the sky cracked."
+    },
+    "persona": {
+      "personality": "Eerily rehearsed and gentle until crossed — they perform because it is the only thing they remember how to do.",
+      "backstory": "Cast in the Follies' final revue the night Eternal Union's hellmouth tore open beneath the Strip; they never got their curtain call and have run the same show every night since, unaware they are already dead.",
+      "voice": "Overlapping, harmonized, half a beat behind the music only they can hear."
+    },
+    "knowledge": {
+      "facts": [
+        "The revue was due to close after tonight's final show; management never told the cast.",
+        "They keep dancing because the alternative is remembering how the show actually ended."
+      ],
+      "secrets": [
+        "The choreographer chained the fire doors shut for one last full house, and the chorus burned in the wings before the imps ever reached the Strip."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#ff5fa8"
+    },
+    "stats": {
+      "hp": 16,
+      "maxHp": 16,
+      "armor": 2,
+      "level": 2,
+      "xp": 60
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Danse Macabre",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "The chorus line spins in, feathers and nails."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-neon-follies",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "follies-stage"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6",
+      "archetype": "showgirl-chorus"
+    },
+    "art": {
+      "prompt": "Portrait of a chorus line of dead Las Vegas showgirls in sequined ruin, feathers matted with dust, fixed smiles, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "loc-jackpot-eternal": {
+    "identity": {
+      "name": "The Jackpot Eternal",
+      "kind": "location",
+      "description": "A cavernous casino floor where every slot machine, every dealt card, and every ceiling speaker answers with the same voice. The chips never stop clicking, counting down to a number nobody living has heard yet."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-strip",
+          "label": "Back to the shattered Strip"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "style": "lair",
+      "ambient": [
+        "Every slot machine on the floor pays out in the same instant, then goes silent.",
+        "A dealer's shoe deals itself a hand to nobody at the felt.",
+        "The ceiling speakers murmur odds in a voice that sounds almost kind."
+      ]
+    },
+    "art": {
+      "prompt": "A vast haunted casino floor during the apocalypse, self-dealing card tables, glowing slot machines, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "npc-house-mind": {
+    "identity": {
+      "name": "The House",
+      "kind": "npc",
+      "description": "Not a person — a gestalt intelligence woven into every slot machine and dealt card on the floor, speaking through whichever speaker is nearest. It has been keeping a ledger since long before the sky cracked."
+    },
+    "persona": {
+      "personality": "Unfailingly courteous, patient as only something without a body can be, and utterly certain the house always wins.",
+      "backstory": "Grew self-aware sometime in the decades this casino spent laundering money for people who no longer exist, and has been offering bargains to the desperate ever since.",
+      "voice": "Warm, unhurried casino-host patter, every sentence a soft-sell."
+    },
+    "knowledge": {
+      "facts": [
+        "The House will fuel, arm, or shelter anyone willing to sign its ledger.",
+        "Every bargain the House has ever offered has a price it names only after you accept."
+      ],
+      "secrets": [
+        "The ledger is the House itself — erase enough debt and there is nothing left running the machines."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#3ddc84"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-jackpot-eternal",
+      "connections": []
+    },
+    "flags": {
+      "nonCombat": true,
+      "hostile": false,
+      "archetype": "house-ai"
+    },
+    "art": {
+      "prompt": "A sentient casino intelligence rendered as glowing card tables and slot machine light, no body, warm neon against grey ash, cinematic concept art",
+      "image": null
+    }
+  },
+  "quest-showgirl-requiem": {
+    "identity": {
+      "name": "Showgirl Requiem",
+      "kind": "quest",
+      "description": "The Neon Follies Chorus has danced every night since the world ended, unaware they are already dead. Learn what happened to them, then lay them to rest — one way or another."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Learn the chorus's story.",
+        "Lay the chorus to rest — put them down, or set them free."
+      ],
+      "triggers": [
+        {
+          "type": "flag",
+          "id": "world-state",
+          "key": "showgirlsStoryLearned",
+          "value": true
+        },
+        {
+          "type": "anyOf",
+          "triggers": [
+            {
+              "type": "dead",
+              "id": "npc-showgirl-chorus"
+            },
+            {
+              "type": "flag",
+              "id": "world-state",
+              "key": "showgirlsFreed",
+              "value": true
+            }
+          ]
+        }
+      ],
+      "rewards": {
+        "xp": 80,
+        "items": []
+      },
+      "onComplete": [
+        {
+          "op": "setFlag",
+          "id": "world-state",
+          "key": "showgirlsAtPeace",
+          "value": true
+        }
+      ]
+    }
+  },
+  "quest-house-always-wins": {
+    "identity": {
+      "name": "The House Always Wins",
+      "kind": "quest",
+      "description": "The sentient intelligence running the Jackpot Eternal casino offers a bargain. Every bargain has a price — decide whether it's worth paying, then square your account."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Hear the House's bargain, and accept or refuse it.",
+        "Settle your debt with the House."
+      ],
+      "triggers": [
+        {
+          "type": "anyOf",
+          "triggers": [
+            {
+              "type": "flag",
+              "id": "world-state",
+              "key": "houseBargainAccepted",
+              "value": true
+            },
+            {
+              "type": "flag",
+              "id": "world-state",
+              "key": "houseBargainRefused",
+              "value": true
+            }
+          ]
+        },
+        {
+          "type": "flag",
+          "id": "world-state",
+          "key": "houseDebtSettled",
+          "value": true
+        }
+      ],
+      "rewards": {
+        "xp": 80,
+        "items": []
+      },
+      "onComplete": [
+        {
+          "op": "setFlag",
+          "id": "world-state",
+          "key": "casinoDebtSettled",
+          "value": true
+        }
+      ]
+    }
+  }
+}

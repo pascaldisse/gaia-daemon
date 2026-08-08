@@ -1,0 +1,1664 @@
+{
+  "loc-1": {
+    "identity": {
+      "name": "The Drowned Porch",
+      "kind": "location",
+      "description": "A sloping stone stairway half-swallowed by black sand and sea-wrack, leading down from the cliff path to a rusted iron door set into the sheer rock face. The door is etched with waves and a single unblinking eye; at low tide, saltwater seeps from its keyhole."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-2",
+          "label": "To Drowned Anchorage"
+        },
+        {
+          "targetId": "loc-3",
+          "label": "To Salt-Gnaw Wharf"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A weathered stone staircase descending toward a rusted iron door in a seaside cliff, with dark sand, seaweed, and a single eye motif on the door.",
+      "image": null
+    }
+  },
+  "loc-2": {
+    "identity": {
+      "name": "Drowned Anchorage",
+      "kind": "location",
+      "description": "A crescent of jagged stone and collapsed piers, where the sea has chewed away the old moorings. The only light is a crusted lantern hanging from a crooked mast, kept burning with oil skimmed from shipwrecks. The survivors trade in fishhooks, dried kelp, and whispered prayers to keep their names off the tide's ledger."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-1",
+          "label": "To The Drowned Porch"
+        },
+        {
+          "targetId": "loc-3",
+          "label": "To Salt-Gnaw Wharf"
+        },
+        {
+          "targetId": "loc-5",
+          "label": "To The Skull-Fang Breakers"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A stormy shoreline with a crooked mast bearing a single flickering lantern, surrounded by salt-crusted cottages and broken piers. Dark sea churns below, with faint phosphorescent foam.",
+      "image": null
+    }
+  },
+  "loc-3": {
+    "identity": {
+      "name": "Salt-Gnaw Wharf",
+      "kind": "location",
+      "description": "A crescent of splintered docks and collapsing boathouses, where the only working lamp gutters on a rusted anchor. Fisherfolk mend nets woven with human hair, and the air tastes of brine and iron. The cobbles are slick with blackweed, and every door bears a carved warding eye against the Drowned Price."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-2",
+          "label": "To Drowned Anchorage"
+        },
+        {
+          "targetId": "loc-4",
+          "label": "To The Last Hanging Lamp"
+        },
+        {
+          "targetId": "loc-1",
+          "label": "To The Drowned Porch"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A storm-battered seaside hamlet at twilight, with a single flickering oil lamp hanging from a giant anchor. Mossy docks, broken boats, and cottages with warding eyes carved into their doors. Dark waves crash against a reef shaped like a ribcage.",
+      "image": null
+    }
+  },
+  "loc-4": {
+    "identity": {
+      "name": "The Last Hanging Lamp",
+      "kind": "location",
+      "description": "A single, crooked lighthouse tower leaning over a crescent cove. Below, salt-crusted cottages huddle around a flickering oil lamp suspended from a rusted gallows. The air smells of brine and burnt tallow. At low tide, the Singing Reefs are audible as a low, mournful hum from beyond the fog."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-3",
+          "label": "To Salt-Gnaw Wharf"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A stormy seaside settlement with a crooked lighthouse, one hanging oil lamp on a gallows, and salt-crusted cottages in a crescent cove.",
+      "image": null
+    }
+  },
+  "loc-5": {
+    "identity": {
+      "name": "The Skull-Fang Breakers",
+      "kind": "location",
+      "description": "A jagged maze of sea-stacks and half-submerged reefs that claw up from the frothing tide like the broken teeth of a leviathan. The wind howls through natural arches and blowholes, producing a discordant wail that can be heard for miles. Tangled in the crevices are the rib cages of ships, draped with black seaweed that pulses faintly with a sickly phosphorescence."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-6",
+          "label": "To The Bone Scree"
+        },
+        {
+          "targetId": "loc-7",
+          "label": "To The Bonebreaker Shallows"
+        },
+        {
+          "targetId": "loc-2",
+          "label": "To Drowned Anchorage"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A stormy coastal scene with jagged sea-stacks like skeletal teeth, waves crashing against them, shipwreck bones festooned with glowing black seaweed, and a gloomy sky with gulls circling.",
+      "image": null
+    }
+  },
+  "loc-6": {
+    "identity": {
+      "name": "The Bone Scree",
+      "kind": "location",
+      "description": "A vast, sloping expanse of shattered ship timbers, whale ribs, and splintered masts, piled like the wreck of a thousand vessels. The wind here moans through hollow bones and rotted wood, creating a mournful melody that drives travelers to despair. Jagged splinters and rusted nails litter the ground, and the tide of seaweed and salt mist creeps up the slope twice daily, dragging bones back into the deep."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-5",
+          "label": "To The Skull-Fang Breakers"
+        },
+        {
+          "targetId": "loc-7",
+          "label": "To The Bonebreaker Shallows"
+        },
+        {
+          "targetId": "loc-11",
+          "label": "To The Drowned Bell"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A moonlit scene of a steep, debris-covered slope made of broken ship parts and whale bones under a stormy sky. The wind-blown sea mist swirls around the jagged remains, and faint ghostly lights flicker among the wreckage.",
+      "image": null
+    }
+  },
+  "loc-7": {
+    "identity": {
+      "name": "The Bonebreaker Shallows",
+      "kind": "location",
+      "description": "A jagged expanse of tidal pools and ship ribcages, where the wind keens through splintered masts and the rocks are slick with brine and barnacles. The wreck-strewn ground slopes toward a black, restless sea, and in the shallows, phosphorescent crabs scuttle over half-buried figureheads."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-6",
+          "label": "To The Bone Scree"
+        },
+        {
+          "targetId": "loc-8",
+          "label": "To The Cradle of Wrecks"
+        },
+        {
+          "targetId": "loc-5",
+          "label": "To The Skull-Fang Breakers"
+        },
+        {
+          "targetId": "loc-9",
+          "label": "To The Chasm of Drowned Bells"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A stormy moorland littered with broken ships, jagged rocks, and tide pools under a gray sky. In the distance, a lighthouse is dark. The scene is eerie and windswept.",
+      "image": null
+    }
+  },
+  "loc-8": {
+    "identity": {
+      "name": "The Cradle of Wrecks",
+      "kind": "location",
+      "description": "A vast, boggy depression in the heath where dozens of ship skeletons lie half-sunk in peat and brackish water. The bones creak in the wind, and tangled rigging hangs from shattered masts like gallows rope. Faint, mournful singing rises from the ground after dark."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-7",
+          "label": "To The Bonebreaker Shallows"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A misty moorland hollow filled with the skeletal remains of old sailing ships, half-buried in dark peat and murky water. Tangled rigging and broken masts create a haunting silhouette against a stormy twilight sky. Pale wisps of fog drift between the wrecks.",
+      "image": null
+    }
+  },
+  "loc-9": {
+    "identity": {
+      "name": "The Chasm of Drowned Bells",
+      "kind": "location",
+      "description": "A vertical shaft plunging through the Singing Reef's core, its walls lined with ancient, barnacle-encrusted bells that toll in the current. The chasm floor is a graveyard of shipwrecks and bone, where phosphorescent kelp sways and the water pressure has begun to warp reality—whispers promise safe passage through the reef in exchange for a memory or a name."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-10",
+          "label": "To The Gasping Maw"
+        },
+        {
+          "targetId": "loc-11",
+          "label": "To The Drowned Bell"
+        },
+        {
+          "targetId": "loc-7",
+          "label": "To The Bonebreaker Shallows"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A deep underwater chasm with vertical walls covered in old brass bells encrusted with barnacles. Bioluminescent kelp glows green at the bottom among shattered ship hulls and scattered bones. Dim light filters from above, casting eerie shadows as the bells sway silently.",
+      "image": null
+    }
+  },
+  "loc-10": {
+    "identity": {
+      "name": "The Gasping Maw",
+      "kind": "location",
+      "description": "A vast, half-submerged cavern beneath a crumbling lighthouse, where the floor is slick with brine and the walls are veined with phosphorescent fungus. The air reeks of rot and salt, and the constant drip-drip-drip echoes like a dying heartbeat. At the center, a black stone altar rises from a pool of stagnant water, carved with symbols that writhe in the gloom."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-9",
+          "label": "To The Chasm of Drowned Bells"
+        },
+        {
+          "targetId": "loc-11",
+          "label": "To The Drowned Bell"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A dark, water-filled cavern under a ruined lighthouse, with phosphorescent fungi on the walls, a black stone altar in the center, and a sense of oppressive dread.",
+      "image": null
+    }
+  },
+  "loc-11": {
+    "identity": {
+      "name": "The Drowned Bell",
+      "kind": "location",
+      "description": "A collapsed lighthouse tower half-submerged in a tidal pool, its bronze bell still intact but warped by the sea. Inside, flooded chambers spiral downward into a sunken crypt where the bell's toll echoes unnervingly through the stone. The water here is unnaturally cold and tastes of rust and salt."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-10",
+          "label": "To The Gasping Maw"
+        },
+        {
+          "targetId": "loc-12",
+          "label": "To The Sundered Spire"
+        },
+        {
+          "targetId": "loc-9",
+          "label": "To The Chasm of Drowned Bells"
+        },
+        {
+          "targetId": "loc-13",
+          "label": "To Saltgrave"
+        },
+        {
+          "targetId": "loc-6",
+          "label": "To The Bone Scree"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A ruined lighthouse tower standing in a dark tidal pool, its top broken off, a large bronze bell hanging crookedly inside. Water levels rise and fall with a strange phosphorescent glow. Jagged black coral surrounds the base.",
+      "image": null
+    }
+  },
+  "loc-12": {
+    "identity": {
+      "name": "The Sundered Spire",
+      "kind": "location",
+      "description": "A colossal lighthouse of black iron and bleached bone, snapped at its base and tilted into the sea. Its cracked lens still glows with a sickly green light, attracting ships to their doom. Inside, spiral staircases are encrusted with barnacles and salt, and the lower levels are flooded with brine where something ancient stirs."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-11",
+          "label": "To The Drowned Bell"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A broken black iron lighthouse leaning into stormy seas, green light pulsing from its cracked lens, surrounded by jagged black coral and kelp. Night sky with lightning.",
+      "image": null
+    }
+  },
+  "loc-13": {
+    "identity": {
+      "name": "Saltgrave",
+      "kind": "location",
+      "description": "A fortified town of black stone and sea-worn timbers, clinging to jagged cliffs above a churning bay. The lighthouse stands dark, its fuel stores mysteriously drained, and the only light comes from glowworm lamps and the occasional corpse-light drifting in from the Singing Reefs. A tidal pool in the town square serves as the altar for salt-water bargains, and the air smells of brine, rot, and ozone."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-14",
+          "label": "To Keel-Fall"
+        },
+        {
+          "targetId": "loc-11",
+          "label": "To The Drowned Bell"
+        },
+        {
+          "targetId": "loc-17",
+          "label": "To The Weeping Wicker"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A stormy seaside cliff town with a dark, silent lighthouse, black stone buildings, and a central tidal pool altar lit by eerie blue-green glowworms. Dark clouds and churning waves below, Singing Reefs in the distance.",
+      "image": null
+    }
+  },
+  "loc-14": {
+    "identity": {
+      "name": "Keel-Fall",
+      "kind": "location",
+      "description": "A cluster of salt-crusted stone houses huddled around a black-rock cove, where the only light comes from phosphorescent barnacles scraped from the reef. The tide-pools here are used as bargaining tables—each deal sealed by dipping a hand into the icy brine. The lighthouse tower above gapes empty, its lantern cage rusted and dark."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-13",
+          "label": "To Saltgrave"
+        },
+        {
+          "targetId": "loc-15",
+          "label": "To The Wreck-Haven Market"
+        },
+        {
+          "targetId": "loc-16",
+          "label": "To Salt-Kettle Harbor"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A storm-battered cliffside settlement with a dark lighthouse, stone houses aglow with faint green phosphorescence, and tide-pools reflecting a gloomy sky.",
+      "image": null
+    }
+  },
+  "loc-15": {
+    "identity": {
+      "name": "The Wreck-Haven Market",
+      "kind": "location",
+      "description": "A cramped, fog-shrouded market square cobbled together from shipwreck timbers and driftwood, perched on a ledge below the dark lighthouse. Salt-stained merchants trade in salvaged goods, strange coral trinkets, and whispered pacts sealed with a cup of seawater. The air smells of brine and rust, and the only light comes from hissing oil lamps that never burn out."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-14",
+          "label": "To Keel-Fall"
+        },
+        {
+          "targetId": "loc-16",
+          "label": "To Salt-Kettle Harbor"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A foggy, clifftop market built from shipwreck debris, with a dark lighthouse looming above, oil lamps glowing, merchants in oilskins trading strange coral objects and old nautical gear, storm clouds gathering offshore.",
+      "image": null
+    }
+  },
+  "loc-16": {
+    "identity": {
+      "name": "Salt-Kettle Harbor",
+      "kind": "location",
+      "description": "A clifftop settlement of salt-bleached shacks and a single stone jetty, where the ocean gnaws at the foundations. The harbor is named for the great iron kettle that once boiled seawater for salt, now cold and half-buried in barnacles. The people here trade in salvage and strange favors, and every bargain is sealed with a sip of brine."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-15",
+          "label": "To The Wreck-Haven Market"
+        },
+        {
+          "targetId": "loc-14",
+          "label": "To Keel-Fall"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A storm-bitten clifftop village with a stone jetty, an iron kettle rusted and barnacle-encrusted in the foreground, dark clouds and crashing waves, eerie green glow from the sea.",
+      "image": null
+    }
+  },
+  "loc-17": {
+    "identity": {
+      "name": "The Weeping Wicker",
+      "kind": "location",
+      "description": "A drowned copse where skeletal willow trees weep brackish water into stagnant pools. The ground is a spongy mat of roots and bones, and the air hums with the drone of spectral flies. At the copse's heart, a twisted wicker cage hangs from a branch, rattling with wind and faint whispers."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-18",
+          "label": "To The Gasping Mire"
+        },
+        {
+          "targetId": "loc-13",
+          "label": "To Saltgrave"
+        },
+        {
+          "targetId": "loc-21",
+          "label": "To The Lungs of the Leviathan"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A dark, misty wetland with half-submerged willow trees draped in moss. In the center, a large wicker cage hangs from a branch, swaying. The water is murky, with bones visible. A faint green glow emanates from the cage.",
+      "image": null
+    }
+  },
+  "loc-18": {
+    "identity": {
+      "name": "The Gasping Mire",
+      "kind": "location",
+      "description": "A sprawling, stinking bog where bloated trees weep amber sap into black water. The air shimmers with will-o'-the-wisps that pulse in time with a distant, arrhythmic heartbeat felt through the soles. The mud bears the imprints of countless bare feet, all leading toward the same sunken grove."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-17",
+          "label": "To The Weeping Wicker"
+        },
+        {
+          "targetId": "loc-19",
+          "label": "To The Whistling Mire"
+        },
+        {
+          "targetId": "loc-20",
+          "label": "To The Wailing Shallows"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A misty swamp at twilight, with will-o'-the-wisps floating over still black water. Gnarled, half-rotten trees with hanging moss. Footprints in the mud leading toward a dark grove.",
+      "image": null
+    }
+  },
+  "loc-19": {
+    "identity": {
+      "name": "The Whistling Mire",
+      "kind": "location",
+      "description": "A vast, shallow marsh where black water seeps through tangles of skeletal mangroves. The mud burbles with escaping gas, and the air hums with a low, musical drone — the sound of drowned souls singing their regrets. Jagged coral heads break the surface, covered in phosphorescent slime that pulses like a sick heartbeat."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-18",
+          "label": "To The Gasping Mire"
+        },
+        {
+          "targetId": "loc-20",
+          "label": "To The Wailing Shallows"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A misty, eerie marsh at twilight, with twisted dead mangrove trees rising from black water, glowing green patches on coral heads, and a faint blue light in the distance. The sky is heavy with storm clouds, and the water ripples with unseen movement.",
+      "image": null
+    }
+  },
+  "loc-20": {
+    "identity": {
+      "name": "The Wailing Shallows",
+      "kind": "location",
+      "description": "A stretch of knee-deep, brine-soaked mudflats where the reeds grow in thorny clumps and the water never fully recedes. The air hums with a low, mournful drone—the sound of trapped souls vibrating through the muck. Skeletal wreckage of small boats protrudes at odd angles, and phosphorescent bubbles rise from unseen vents, popping with tiny screams."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-19",
+          "label": "To The Whistling Mire"
+        },
+        {
+          "targetId": "loc-18",
+          "label": "To The Gasping Mire"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A misty salt marsh under a stormy sky, with twisted reeds, half-buried boats, and eerie blue-green lights flickering in the mud.",
+      "image": null
+    }
+  },
+  "loc-21": {
+    "identity": {
+      "name": "The Lungs of the Leviathan",
+      "kind": "location",
+      "description": "A series of cavernous chambers once part of the Tide Lord's fortress, now submerged and repurposed as an organic maze of whalebone and coral. The air is thick with brine and the distant song of the reef. Each room is a bubble of stale air, connected by narrow tunnels that descend into black water. The walls pulse with bioluminescent algae, casting an eerie blue glow."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-22",
+          "label": "To The Brineheart Vault"
+        },
+        {
+          "targetId": "loc-23",
+          "label": "To The Inner Brineheart Vault"
+        },
+        {
+          "targetId": "loc-17",
+          "label": "To The Weeping Wicker"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "An underwater cavern with whalebone arches, glowing coral, and dark water pools, lit by bioluminescent algae, oppressive and beautiful.",
+      "image": null
+    }
+  },
+  "loc-22": {
+    "identity": {
+      "name": "The Brineheart Vault",
+      "kind": "location",
+      "description": "The grand throne room of the Tide Lord, now flooded to chest height with freezing, salt-heavy water. Faded tapestries of drowned kings sway in unseen currents, and a shattered chandelier of barnacle-encrusted crystal hangs overhead. At the far end, the Tide Lord's throne of black coral rises from the depths, pulsing with a faint, sickly light."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-21",
+          "label": "To The Lungs of the Leviathan"
+        },
+        {
+          "targetId": "loc-23",
+          "label": "To The Inner Brineheart Vault"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A dimly lit, flooded throne room with black coral throne, barnacle-encrusted chandelier, and tapestries underwater swaying in currents, moody and eerie.",
+      "image": null
+    }
+  },
+  "loc-23": {
+    "identity": {
+      "name": "The Inner Brineheart Vault",
+      "kind": "location",
+      "description": "A series of chambers within the Sunken Spire's drowned bellows, where walls weep salt and the floor is paved with crushed shells. Stale air pockets form bubbles between flooded rooms, and the central hall contains a massive iron heart—a pump that once regulated the tides but now lies still, choked with coral and barnacles."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-22",
+          "label": "To The Brineheart Vault"
+        },
+        {
+          "targetId": "loc-24",
+          "label": "To The Chthonic Bell"
+        },
+        {
+          "targetId": "loc-21",
+          "label": "To The Lungs of the Leviathan"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A vast, circular chamber with a towering iron heart mechanism at the center, encrusted with barnacles and glowing faintly with bioluminescent algae. Water pools on the shell-paved floor, reflecting dim light from cracks above. Stalactites of salt hang from the ceiling.",
+      "image": null
+    }
+  },
+  "loc-24": {
+    "identity": {
+      "name": "The Chthonic Bell",
+      "kind": "location",
+      "description": "A vast, domed chamber at the sunken fortress's base, where a massive bronze bell hangs inverted from the ceiling, half-submerged in black, briny water. The bell tolls slowly, each ring releasing a cloud of bubbles that form into shapes of screaming faces before dissolving. The air is thick with salt and despair."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-23",
+          "label": "To The Inner Brineheart Vault"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A dark underwater cavern with a giant bronze bell hanging upside down, half in black water, bubbles rising around it, eerie blue-green light filtering from above, stone walls covered in barnacles and glowing runes.",
+      "image": null
+    }
+  },
+  "pc-hero": {
+    "identity": {
+      "name": "Finnian Murkwood",
+      "kind": "pc",
+      "description": "A scruffy young sailor with salt-crusted hair, a weathered map case slung across his back, and a restless look in his grey eyes—he’s always scanning the horizon as if expecting something to emerge from the foam."
+    },
+    "stats": {
+      "str": 14,
+      "dex": 14,
+      "con": 12,
+      "int": 13,
+      "wis": 13,
+      "cha": 13,
+      "hp": 18,
+      "maxHp": 18,
+      "ac": 12,
+      "proficiency": 2,
+      "level": 1,
+      "xp": 0
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-1",
+      "connections": []
+    },
+    "inventory": {
+      "items": [
+        {
+          "id": "item-startgear",
+          "name": "Traveler's Pack",
+          "qty": 1
+        }
+      ]
+    },
+    "flags": {}
+  },
+  "npc-1": {
+    "identity": {
+      "name": "Lira Corvine",
+      "kind": "npc",
+      "description": "A wiry, weather-beaten woman in her forties with a salt-crusted braid and a patch over one eye. She smells of smoked fish and tar, and her hands are calloused from hauling nets."
+    },
+    "persona": {
+      "personality": "Blunt but not unkind, with a sardonic humor that masks deep grief. She hoards every scrap of gossip as if it might buy her safety.",
+      "backstory": "Lira lost her husband and son to the singing reefs three years ago. Since then, she has refused to set foot on a boat, instead mending nets for others and listening to the tide's whispers for clues to their fate.",
+      "voice": "Raspy, with a tendency to pause as if listening to something far off. She coughs dryly after every sentence."
+    },
+    "knowledge": {
+      "facts": [
+        "The Drowned Price only comes for those who speak their true name three times into a still pool at midnight.",
+        "A knotted cord of red seaweed worn around the left wrist can ward off the call of the reefs for one tide cycle.",
+        "The last lighthouse keeper, old Merrick, went mad before the light died—he swore he saw a door open in the waves."
+      ],
+      "secrets": [
+        "She knows the Drowned Price's real name (a string of bubbles that sounds like 'Kael-oth') but will never utter it, lest it claim her.",
+        "She buried a speaking shell beneath her hearthstone—if held to the ear, it plays a whispered bargain her husband made before he vanished."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#e6194b"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-3",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-2": {
+    "identity": {
+      "name": "Miren Salt-Cough",
+      "kind": "npc",
+      "description": "A wiry woman in her forties with a sailor's gait and a scarf perpetually wrapped over her mouth. Her hands are scarred from hauling nets, and her eyes are the color of winter sea."
+    },
+    "persona": {
+      "personality": "Wry and cautious, with a sharp tongue and a hidden kindness. She hoards information like dried fish and only shares it for a price or a genuine need.",
+      "backstory": "Miren was the lighthouse keeper's apprentice before the lights went dark. She watched the keeper walk into the tide one night, murmuring 'they have my name.' Now she tends the anchor lantern and keeps a list of the dead.",
+      "voice": "Hoarse, with a rasp like gravel in a wave. She pauses often to cough, then resumes as if nothing happened."
+    },
+    "knowledge": {
+      "facts": [
+        "The tide brings strange coins—silver with no mark—and those who pick them up are never seen again.",
+        "The singing reefs only sing at night, and the song changes just before a ship wrecks.",
+        "There are fewer than forty souls left in Drowned Anchorage, and not all of them have names."
+      ],
+      "secrets": [
+        "Miren has a fragment of the old lighthouse lens hidden under her floorboards. It glows faintly when the tide is rising.",
+        "She knows the name of the thing beneath the tide—it was once a lighthouse keeper who tried to barter his soul for the sea's silence."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#3cb44b"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-2",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-3": {
+    "identity": {
+      "name": "Maren Keelsplitter",
+      "kind": "npc",
+      "description": "A wiry woman in her forties with a patch over one eye and a salt-stained coat, her fingers stained black from curing nets. She carries a copper lantern that never goes out, even in the storm."
+    },
+    "persona": {
+      "personality": "Gruff but kind-hearted, she speaks in clipped nautical terms and never wastes a word. She’s fiercely protective of newcomers who look lost.",
+      "backstory": "Once a lighthouse keeper on the outer reefs, she survived the night the lights died by diving into the sea and swimming blind through the singing reefs. Now she guides travelers and trades secrets for safe passage.",
+      "voice": "Low and gravelly, with a faint accent like grinding pebbles, pausing at unexpected places."
+    },
+    "knowledge": {
+      "facts": [
+        "The Drowned Porch was built before the lighthouses, by a people who worshipped the tide.",
+        "Maren keeps the only working lantern in Gullhaven; she claims it was charged by a dying star.",
+        "The singing reefs are coral formations that hum when the tide turns—sailors say they lure ships to their doom."
+      ],
+      "secrets": [
+        "Maren once saw a hand reach out of the keyhole and snatch a coin from a sailor’s pocket—she never told anyone.",
+        "The eye on the door belonged to a drowned god; if you press your ear to the iron at midnight, you can hear it whisper names."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#ffe119"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-1",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-4": {
+    "identity": {
+      "name": "Old Barnacle Bet",
+      "kind": "npc",
+      "description": "A wiry woman in a tattered oilskin coat, her face weathered like driftwood, with a single glass eye that glows faintly with captured starlight."
+    },
+    "persona": {
+      "personality": "Wry and pragmatic, but with a deep well of sorrow. She speaks in riddles and spits tobacco juice.",
+      "backstory": "Once a shipwright, she survived a wreck on the singing reefs by trading her soul, but the deal left her bound to the shore as a guide for the lost.",
+      "voice": "Cracked, with a raspy laugh like whetstone on steel."
+    },
+    "knowledge": {
+      "facts": [
+        "She knows the paths through the shallows that won't cut your feet.",
+        "The singing reefs are alive; they hum when a soul is near.",
+        "The lighthouse was extinguished by the Tide-King's hand."
+      ],
+      "secrets": [
+        "Her glass eye can see the invisible trails of soul-trade magic.",
+        "She knows a safe cave where the Tide-King's minions cannot enter."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#4363d8"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-7",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-5": {
+    "identity": {
+      "name": "Eirik Salt-Tongue",
+      "kind": "npc",
+      "description": "A wiry old fisherman with a patch over one eye, hands stained black from handling squid ink."
+    },
+    "persona": {
+      "personality": "Canny and superstitious, but genuinely helpful to those who respect the sea's dangers.",
+      "backstory": "Eirik was a pilot until a reef-wraith took his eye. Now he reads the tides and keeps the kettle's fire banked.",
+      "voice": "Gravelly, with a rhythmic cadence like waves; often mutters proverbs about the deep."
+    },
+    "knowledge": {
+      "facts": [
+        "The kettle was used to seal soul-bargains before the lighthouse died.",
+        "Eirik knows the location of three hidden sea-caves with fresh water.",
+        "He claims the reef sings in voices, not just wind."
+      ],
+      "secrets": [
+        "He keeps a jar of glowing brine that can reveal hidden runes.",
+        "His missing eye was traded to a tide-spirit for safe passage—he still sees with it in dreams."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#f58231"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-16",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-6": {
+    "identity": {
+      "name": "Greta Vane",
+      "kind": "npc",
+      "description": "A wiry woman in a sealskin coat, her left hand wrapped in salt-crusted bandages. She tends the tide-pools and keeps the village records of soul-bargains."
+    },
+    "persona": {
+      "personality": "Brusque but fair, with a dark laugh at misfortune. She trusts no one and nothing—except salt and tally marks.",
+      "backstory": "Greta was a shipwright's daughter until her father sold his soul for calm seas; the ship later wrecked anyway. Now she writes down every bargain, hoping to one day find a loophole.",
+      "voice": "Hoarse, with a clipped accent; she pauses to click her tongue before answering a question."
+    },
+    "knowledge": {
+      "facts": [
+        "The Tide-Pool Ledger records every bargain made with the Deep Ones for the past thirty years.",
+        "Phosphorescent barnacles can keep a candle burning underground for a month if ground into paste.",
+        "The lighthouse went dark when the Keeper refused a bargain—the Deep Ones then smothered the flame with a wave."
+      ],
+      "secrets": [
+        "Greta knows the Keeper's name was Elias and that he is now chained in an underwater cave, still alive.",
+        "She has a vial of water from the Mouth of Regret (a whirlpool off the coast) that can temporarily reverse a soul-bargain."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#911eb4"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-14",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-7": {
+    "identity": {
+      "name": "Ursa Ironcatch",
+      "kind": "npc",
+      "description": "An elderly woman with a leathery face, wiry gray braids, and a brass spyglass always slung across her back. She wears a patched oilskin coat and carries a gaff hook as a walking stick."
+    },
+    "persona": {
+      "personality": "Gruff but warm, with a dry wit and a deep, abiding sorrow. She speaks in short, gruff bursts, often punctuated by a snort or a sigh.",
+      "backstory": "Ursa was the lighthouse keeper for forty years, until the fuel went missing and the light died. She now lives in a cramped stone cottage overlooking the bay, scanning the sea obsessively for any ship that might need warning.",
+      "voice": "Low, raspy, with a weary chuckle. She says things like 'Aye, the sea's a hungry mistress' and 'The tide takes what it wants.'"
+    },
+    "knowledge": {
+      "facts": [
+        "The lighthouse was fueled with rendered blubber from deep‑sea leviathans.",
+        "Three nights before the light died, a strange ship with black sails anchored offshore and left before dawn.",
+        "The singing reefs' song grows louder and more discordant whenever a ship approaches."
+      ],
+      "secrets": [
+        "Ursa suspects the town's own elders made a bargain with the tide-creature, trading the lighthouse fuel for protection from the reefs.",
+        "She has a hidden cache of leviathan oil in a sea cave beneath her cottage, enough to relight the beacon for one night."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#42d4f4"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-13",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "npc-8": {
+    "identity": {
+      "name": "Sallow Tern",
+      "kind": "npc",
+      "description": "A gaunt, elderly warden in a tattered oilskin coat, his face lined with salt and sorrow. He carries a long pole used to probe the mire's depths."
+    },
+    "persona": {
+      "personality": "Weary but sharp-tongued, he has seen too much to be shocked, but still holds a flicker of hope.",
+      "backstory": "Sallow was once a lighthouse keeper on the coast until his light went out. He now wanders the Fens, looking for the source of the darkness and paying his own debts by guiding lost souls.",
+      "voice": "Hollow and rasping, like wind through reeds, with a tendency to mutter old sea shanties under his breath."
+    },
+    "knowledge": {
+      "facts": [
+        "The singing reefs are actually the remains of an ancient city, now a graveyard of ships and souls.",
+        "The drowned choir only sings when someone with an unpaid debt passes near.",
+        "A creature called the Tide-Hag is said to lurk in the deepest parts of the mire, counting souls."
+      ],
+      "secrets": [
+        "Sallow carries a key that unlocks the door to the Tide-Hag's sunken sanctum.",
+        "He knows the exact location of a cache of salvaged lighthouse lenses hidden beneath a dead mangrove."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#f032e6"
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-19",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0
+    }
+  },
+  "enemy-1": {
+    "identity": {
+      "name": "The Bone-Harbinger",
+      "kind": "npc",
+      "description": "A gaunt, tide-bleached figure draped in tattered oilskins, its face a mask of salt-crusted skin stretched over a skull. It drags a harpoon with a barbed head of fused bone and iron, and its voice is the sound of pebbles grinding in the surf."
+    },
+    "persona": {
+      "personality": "Methodical and mocking, it speaks in riddles about the 'ledger of souls' and delights in pointing out the exact spot where each wreck victim breathed their last."
+    },
+    "stats": {
+      "str": 13,
+      "dex": 9,
+      "con": 13,
+      "int": 12,
+      "wis": 9,
+      "cha": 8,
+      "hp": 11,
+      "maxHp": 11,
+      "ac": 11,
+      "xp": 46
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-6",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    }
+  },
+  "enemy-2": {
+    "identity": {
+      "name": "Reef-Caller",
+      "kind": "npc",
+      "description": "A slick, amphibious creature with translucent skin, webbed hands, and phosphorescent eyes. Its mouth is a circular ring of needle-like teeth, and it can emit a low-frequency hum that causes disorientation and nosebleeds."
+    },
+    "persona": {
+      "personality": "Curious and cruel, it likes to toy with prey, circling slowly and humming fragments of sea shanties before attacking. It speaks in gurgles and clicks."
+    },
+    "stats": {
+      "str": 9,
+      "dex": 11,
+      "con": 13,
+      "int": 8,
+      "wis": 11,
+      "cha": 8,
+      "hp": 10,
+      "maxHp": 10,
+      "ac": 12,
+      "xp": 41
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-6",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d8"
+    }
+  },
+  "enemy-3": {
+    "identity": {
+      "name": "The Drowned Whispers",
+      "kind": "npc",
+      "description": "A shifting mass of kelp, bone, and humanoid faces that float in the water, mouths agape, singing a low, hypnotic melody that tugs at the soul."
+    },
+    "persona": {
+      "personality": "Patient and malevolent, it delights in luring victims deeper into the water before dragging them under."
+    },
+    "stats": {
+      "str": 10,
+      "dex": 8,
+      "con": 13,
+      "int": 10,
+      "wis": 11,
+      "cha": 9,
+      "hp": 10,
+      "maxHp": 10,
+      "ac": 12,
+      "xp": 34
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-10",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d8"
+    }
+  },
+  "enemy-4": {
+    "identity": {
+      "name": "The Toll Collector",
+      "kind": "npc",
+      "description": "A hulking, hunched figure of fused coral and tide-bloated flesh, its face a mass of barnacle-encrusted ears. It glides through the water with unnatural silence, dragging a rusted anchor chain that clinks like a muffled bell. Its touch siphons memories, leaving victims slack-jawed and adrift."
+    },
+    "persona": {
+      "personality": "Patient and predatory, it delights in the terror of its prey, savoring the moments before it feeds. It speaks in the slow, rhythmic toll of a distant bell, each word resonating in the mind."
+    },
+    "stats": {
+      "str": 12,
+      "dex": 12,
+      "con": 8,
+      "int": 9,
+      "wis": 9,
+      "cha": 12,
+      "hp": 7,
+      "maxHp": 7,
+      "ac": 13,
+      "xp": 41
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-9",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    }
+  },
+  "enemy-5": {
+    "identity": {
+      "name": "Drowned Lamplighter",
+      "kind": "npc",
+      "description": "A bloated, waterlogged corpse in oilskins, its skull fused to the lighthouse controls. It shuffles through the spire, dripping saltwater and muttering navigational rhymes."
+    },
+    "persona": {
+      "personality": "Mindlessly hostile, attacks any intruder with rusted iron hooks, but pauses if you recite the old lighthouse keeper's prayer."
+    },
+    "stats": {
+      "str": 11,
+      "dex": 10,
+      "con": 11,
+      "int": 8,
+      "wis": 12,
+      "cha": 9,
+      "hp": 11,
+      "maxHp": 11,
+      "ac": 12,
+      "xp": 28
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-12",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d4"
+    }
+  },
+  "enemy-6": {
+    "identity": {
+      "name": "Drowned Chorus",
+      "kind": "npc",
+      "description": "A mass of bloated, waterlogged corpses fused together into a writhing knot of limbs and faces, their mouths open in a silent scream that vibrates through the air."
+    },
+    "persona": {
+      "personality": "Mindless and relentless, driven only by the pain of unfinished debts."
+    },
+    "stats": {
+      "str": 8,
+      "dex": 11,
+      "con": 12,
+      "int": 12,
+      "wis": 12,
+      "cha": 10,
+      "hp": 10,
+      "maxHp": 10,
+      "ac": 12,
+      "xp": 39
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-19",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    }
+  },
+  "enemy-7": {
+    "identity": {
+      "name": "Reef Stalker",
+      "kind": "npc",
+      "description": "A humanoid creature with pale, slick skin and sharp coral spines jutting from its shoulders and spine. Its eyes are black pearls, and its fingers end in serrated shells."
+    },
+    "persona": {
+      "personality": "Cunning and patient, it toys with prey before dragging them beneath the mire."
+    },
+    "stats": {
+      "str": 12,
+      "dex": 12,
+      "con": 14,
+      "int": 11,
+      "wis": 8,
+      "cha": 8,
+      "hp": 7,
+      "maxHp": 7,
+      "ac": 12,
+      "xp": 50
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-19",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    }
+  },
+  "enemy-8": {
+    "identity": {
+      "name": "Drowned Sentinel",
+      "kind": "npc",
+      "description": "A towering figure clad in rusted armor encrusted with barnacles and seaweed. Its helmet is a shattered cage of bone and iron, revealing a face of water—constantly shifting, featureless, with two pinprick lights for eyes. It wields a massive anchor chain as a flail."
+    },
+    "persona": {
+      "personality": "Silent and methodical, it moves with the slow inevitability of the tide. It does not speak, only points and swings."
+    },
+    "stats": {
+      "str": 14,
+      "dex": 13,
+      "con": 13,
+      "int": 8,
+      "wis": 9,
+      "cha": 11,
+      "hp": 26,
+      "maxHp": 26,
+      "ac": 14,
+      "xp": 150
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-24",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d8"
+    }
+  },
+  "enemy-9": {
+    "identity": {
+      "name": "Chorus of the Depths",
+      "kind": "npc",
+      "description": "A swarm of translucent, jellyfish-like creatures, each about the size of a human head, with glowing internal organs that pulse in unison. They drift through the water, singing a haunting, multi-layered harmony that induces drowsiness and despair."
+    },
+    "persona": {
+      "personality": "Collective and mindless, they act as a single entity drawn to sound and emotion. They are curious but deadly."
+    },
+    "stats": {
+      "str": 9,
+      "dex": 13,
+      "con": 10,
+      "int": 8,
+      "wis": 10,
+      "cha": 9,
+      "hp": 11,
+      "maxHp": 11,
+      "ac": 11,
+      "xp": 46
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-24",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d8"
+    }
+  },
+  "enemy-10": {
+    "identity": {
+      "name": "Chokewater Kraken",
+      "kind": "npc",
+      "description": "A juvenile kraken with pale, translucent skin and eyes like drowned coins. Its tentacles are lined with suckers that secrete a numbing toxin, and it skulks in the flooded lower chambers, waiting to drag prey into the depths."
+    },
+    "persona": {
+      "personality": "Patient and cunning, it toys with its victims, coiling tentacles slowly before striking."
+    },
+    "stats": {
+      "str": 11,
+      "dex": 13,
+      "con": 11,
+      "int": 11,
+      "wis": 11,
+      "cha": 8,
+      "hp": 7,
+      "maxHp": 7,
+      "ac": 12,
+      "xp": 37
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-23",
+      "connections": []
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d4"
+    }
+  },
+  "item-1": {
+    "identity": {
+      "name": "Object 1",
+      "kind": "item",
+      "description": ""
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-24",
+      "connections": []
+    }
+  },
+  "item-2": {
+    "identity": {
+      "name": "The Wreck-Price Scales",
+      "kind": "item",
+      "description": "A set of brass scales, pitted and green with verdigris, sitting on a heavy driftwood table. One pan holds a nautilus shell; the other is empty. Locals say if you place a coin in the empty pan and speak a name, the scales will balance if that person's soul is forfeit."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-4",
+      "connections": []
+    }
+  },
+  "item-3": {
+    "identity": {
+      "name": "The Singing Buoy",
+      "kind": "item",
+      "description": "A corroded iron buoy, barnacle-encrusted, that bobs among the breakers. Its clapper is a human skull, and every time a wave rocks it, the skull knocks against the iron, producing a single, mournful chime that carries across the water."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-5",
+      "connections": []
+    }
+  },
+  "item-4": {
+    "identity": {
+      "name": "Bell-Forged Anchor Chain",
+      "kind": "item",
+      "description": "A length of chain forged from melted-down lighthouse bells, each link etched with a name of a drowned sailor. It hums with a faint dissonant chord and can be used to grapple or bind, but touching it too long causes one to hear the whispers of the dead."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-9",
+      "connections": []
+    }
+  },
+  "item-5": {
+    "identity": {
+      "name": "Barnacle-Bound Sigil",
+      "kind": "item",
+      "description": "A fist-sized stone carved with a spiral, encrusted with barnacles that pulse with a faint bioluminescence. When held, it emits a low hum that resonates with the singing reefs."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-16",
+      "connections": []
+    }
+  },
+  "item-6": {
+    "identity": {
+      "name": "Coral Bell of Whispers",
+      "kind": "item",
+      "description": "A fist-sized, spiraled coral that, when held to the ear, reveals fragments of conversations spoken by the drowned. It can be used to learn a secret from a corpse or a willing spirit."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-19",
+      "connections": []
+    }
+  },
+  "quest-1": {
+    "identity": {
+      "name": "Drown the Bell's Toll",
+      "kind": "quest",
+      "description": "The Drowned Sentinel has extinguished the lighthouses and deals in souls; you must descend to the Chthonic Bell, slay the sentinel, and seize the bell's clapper to restore the light."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Reach the Chthonic Bell, a submerged grotto beneath the singing reefs accessible only through the Drowned Porch at low tide.",
+        "Defeat the Drowned Sentinel, a tide-warped horror that commands the chthonic currents and echoes the bell's toll.",
+        "Seize the Object 1: the Bell's Crystal Clapper, the resonant soul-bargain anchor that can rekindle the lighthouses."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-24"
+        },
+        {
+          "type": "allDead",
+          "ids": [
+            "enemy-8",
+            "enemy-9",
+            "enemy-10"
+          ]
+        },
+        {
+          "type": "hasItem",
+          "id": "item-1"
+        }
+      ],
+      "rewards": {
+        "xp": 250,
+        "items": []
+      }
+    }
+  },
+  "quest-2": {
+    "identity": {
+      "name": "Silence the Bone-Harbinger",
+      "kind": "quest",
+      "description": "The Wailing Heaths' air is thick with salt and sorrow; a coral-etched monstrosity called the Bone-Harbinger lures ships to their doom with a melody of grinding bones. Track it to its reef-lair and shatter its song forever."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Follow the sound of singing bones through the mist-wreathed heaths, past the wreck of the 'Siren's Kiss', to the hidden cove where the Bone-Harbinger dwells among the jagged reefs.",
+        "Destroy the Bone-Harbinger by silencing its chorus of skulls and shattering its coral heart, ending the curse that feeds its soul-buying."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-6"
+        },
+        {
+          "type": "allDead",
+          "ids": [
+            "enemy-1",
+            "enemy-2"
+          ]
+        }
+      ],
+      "rewards": {
+        "xp": 80,
+        "items": []
+      }
+    }
+  },
+  "quest-3": {
+    "identity": {
+      "name": "Silence the Shoal's Debt Collector",
+      "kind": "quest",
+      "description": "The Singing Reef's eerie chorus has vanished, replaced by the clink of coins and whispers of a creature that trades safe passage for souls. Find the toll collector and end its grim business."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Track the Drowned Lamplighter to the reef's heart by following the trail of salt-crusted coins that line the sea caves.",
+        "Destroy the Toll Collector with silver-blessed harpoons before it closes its ledgers and adds your name to its contracts."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-10"
+        },
+        {
+          "type": "allDead",
+          "ids": [
+            "enemy-3",
+            "enemy-4",
+            "enemy-5"
+          ]
+        }
+      ],
+      "rewards": {
+        "xp": 80,
+        "items": []
+      }
+    }
+  },
+  "quest-4": {
+    "identity": {
+      "name": "Silence the Drowned Chorus",
+      "kind": "quest",
+      "description": "A bounty has been posted on the creature haunting the Drowned Fens—a Reef Stalker that lures victims with its hypnotic song. The fens have become a graveyard of broken ships and whispered debt."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Track the creature through the flooded channels, following the eerie harmonies that echo among the sunken trees and wreckage.",
+        "Find the Reef Stalker's lair in the heart of the fens and destroy it before it adds another soul to its chorus."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-19"
+        },
+        {
+          "type": "allDead",
+          "ids": [
+            "enemy-6",
+            "enemy-7"
+          ]
+        }
+      ],
+      "rewards": {
+        "xp": 80,
+        "items": []
+      }
+    }
+  },
+  "quest-5": {
+    "identity": {
+      "name": "To Salvage the Sunken Bell-Chain",
+      "kind": "quest",
+      "description": "The Bell-Forged Anchor Chain, which once bound the reef's song to safe hymn, lies locked in the drowned bell-tower at the reef's heart. Find the entrance through the Tide-Torn Grotto, then dive for the chain while the reef's chorus lures the soul-buyers below."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Navigate the tide-caves of the Tide-Torn Grotto to locate the submerged bell-tower's entrance.",
+        "Retrieve the Bell-Forged Anchor Chain from the central chamber before the Singing Reef's song attracts the Drowned Debt-Collectors."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-9"
+        },
+        {
+          "type": "hasItem",
+          "id": "item-4"
+        }
+      ],
+      "rewards": {
+        "xp": 60,
+        "items": []
+      }
+    }
+  },
+  "world-state": {
+    "flags": {
+      "artStyle": "dark maritime fantasy oil painting, storm light, drowned greens and bruised greys"
+    }
+  }
+}

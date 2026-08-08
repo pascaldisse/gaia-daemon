@@ -1,3 +1,0 @@
-# This is part of a hack to get dependencies needed for the TTS Rust server, because it integrates a Python component.
-pyproject.toml
-uv.lock

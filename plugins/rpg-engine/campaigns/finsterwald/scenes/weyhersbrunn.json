@@ -1,0 +1,783 @@
+{
+  "loc-gasthaus": {
+    "identity": {
+      "name": "Gasthaus Zum Lahmen Greifen",
+      "kind": "location",
+      "description": "The village inn: low beams black with a century of smoke, a fire spitting in the hearth, rain drumming the shutters. Wirtin Travine polishes a mug that is already clean and watches the door. Above the bar hangs a griffin carved with only one leg — nobody remembers why."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-dorfplatz",
+          "label": "Out onto the village square"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "combatZones": [
+        {
+          "id": "schankraum",
+          "label": "Der Schankraum",
+          "tags": []
+        },
+        {
+          "id": "tresen",
+          "label": "Hinter dem Tresen",
+          "tags": []
+        },
+        {
+          "id": "treppe",
+          "label": "Die Treppe",
+          "tags": [
+            "raised"
+          ]
+        }
+      ],
+      "ambient": {
+        "morning": [
+          "The smell of porridge and woodsmoke fills the taproom."
+        ],
+        "afternoon": [
+          "A pair of woodcutters argue softly over watered beer."
+        ],
+        "evening": [
+          "Travine lights the tallow candles one by one."
+        ],
+        "night": [
+          "The fire burns low; the one-legged griffin's shadow dances on the beams."
+        ]
+      }
+    },
+    "art": {
+      "prompt": "Interior of a medieval German tavern at night, low black beams, hearth fire, rain on shutters, a stern innkeeper woman behind the bar, carved one-legged griffin sign, dark fairy tale, oil painting style, warm candlelight against deep shadow",
+      "image": null
+    }
+  },
+  "loc-dorfplatz": {
+    "identity": {
+      "name": "Dorfplatz von Weyhersbrunn",
+      "kind": "location",
+      "description": "A muddy square around a moss-eaten well. Timbered houses lean together under the rain; a shrine of the Twelve stands by the well, its candles drowned. To the east, past the last fence, the Finsterwald begins like a wall of night. Miller Bodo stands under the shrine roof, wringing his cap."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-gasthaus",
+          "label": "Into the inn Zum Lahmen Greifen"
+        },
+        {
+          "targetId": "loc-waldpfad",
+          "label": "East, onto the forest path into the Finsterwald"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "art": {
+      "prompt": "A muddy medieval German village square in rain, moss-covered well, half-timbered houses, small roadside shrine with drowned candles, a dark forest wall in the background, dark fairy tale, oil painting style",
+      "image": null
+    },
+    "flags": {
+      "ambient": {
+        "morning": [
+          "Chickens pick between the cobbles; somewhere a well-rope creaks."
+        ],
+        "afternoon": [
+          "A cart rattles across the square and is gone."
+        ],
+        "evening": [
+          "The shrine candles gutter as the light fails."
+        ],
+        "night": [
+          "Rain and darkness own the square; every shutter is barred."
+        ]
+      }
+    }
+  },
+  "loc-waldpfad": {
+    "identity": {
+      "name": "Waldpfad im Finsterwald",
+      "kind": "location",
+      "description": "The path into the Finsterwald: firs so tall they swallow the sky, roots like knuckles, resin and rot. Goblin tracks — small, clawed, many — cross the mud and lead toward the old mill. Somewhere off the path, something keeps pace with you."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-dorfplatz",
+          "label": "Back west to the village"
+        },
+        {
+          "targetId": "loc-muehle",
+          "label": "Down the overgrown track to the old mill"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "combatZones": [
+        {
+          "id": "pfad",
+          "label": "Der Pfad",
+          "tags": []
+        },
+        {
+          "id": "unterholz",
+          "label": "Das Unterholz",
+          "tags": []
+        },
+        {
+          "id": "windwurf",
+          "label": "Der Windwurf",
+          "tags": [
+            "raised"
+          ]
+        }
+      ],
+      "ambient": [
+        "Something keeps pace with you off the path, then stops.",
+        "A jay screams once, deep in the firs.",
+        "Resin drips; the woods breathe cold."
+      ]
+    },
+    "art": {
+      "prompt": "A dark path through an ancient German fir forest, towering black trees, twisted roots, mist, small clawed goblin tracks in mud, ominous dark fairy tale mood, oil painting style",
+      "image": null
+    }
+  },
+  "loc-muehle": {
+    "identity": {
+      "name": "Die alte Mühle",
+      "kind": "location",
+      "description": "Bodo's mill hunches over its stream, wheel stopped, sails of cobweb in the doorway. Goblin filth is smeared on the millstones and something has scratched spiral marks into the door — again and again, as if in fear. Smoke curls from a hole in the roof: someone is living in there."
+    },
+    "place": {
+      "connections": [
+        {
+          "targetId": "loc-waldpfad",
+          "label": "Back up the track into the forest"
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "flags": {
+      "combatZones": [
+        {
+          "id": "muehlenhof",
+          "label": "Der Mühlenhof",
+          "tags": []
+        },
+        {
+          "id": "mahlwerk",
+          "label": "Das Mahlwerk",
+          "tags": [
+            "raised"
+          ]
+        },
+        {
+          "id": "steg",
+          "label": "Der Steg überm Bach",
+          "tags": [
+            "ledge"
+          ]
+        }
+      ],
+      "ambient": [
+        "The stopped wheel groans against the stream.",
+        "The spiral scratches on the door seem fresher than they should."
+      ]
+    },
+    "art": {
+      "prompt": "An abandoned medieval water mill in a dark forest clearing at dusk, stopped water wheel, cobwebbed doorway, smoke from a hole in the roof, strange spiral scratches on the door, dark fairy tale, oil painting style",
+      "image": null
+    }
+  },
+  "pc-hero": {
+    "identity": {
+      "name": "Alrik",
+      "kind": "pc",
+      "description": "A young warrior out of Gareth with a plain arming sword, a patched cloak, and debts that made the road look attractive. The Wirtin's notice said 'goblins'; the pay said 'enough'."
+    },
+    "stats": {
+      "hp": 30,
+      "maxHp": 30,
+      "mu": 13,
+      "kl": 11,
+      "in": 12,
+      "ch": 11,
+      "ff": 11,
+      "ge": 13,
+      "ko": 12,
+      "kk": 13,
+      "at": 12,
+      "pa": 9,
+      "rs": 1,
+      "ini": 12,
+      "level": 1,
+      "xp": 0,
+      "talente": {
+        "Sinnesschärfe": 5,
+        "Klettern": 4,
+        "Körperbeherrschung": 4,
+        "Kraftakt": 4,
+        "Schleichen": 5,
+        "Überreden": 3,
+        "Einschüchtern": 4,
+        "Fährtensuchen": 4,
+        "Heilkunde": 2,
+        "Wildnisleben": 4,
+        "Zechen": 4,
+        "Sagen & Legenden": 2
+      }
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Schwerthieb",
+          "type": "damage",
+          "damage": "1d6+2",
+          "cost": 1,
+          "special": "A clean cut with the arming sword."
+        },
+        {
+          "name": "Wuchtschlag",
+          "type": "damage",
+          "damage": "1d6+4",
+          "cost": 2,
+          "special": "Everything behind one blow — slower, but it lands like a falling beam."
+        },
+        {
+          "name": "Finte",
+          "type": "stun",
+          "duration": 1,
+          "cost": 1,
+          "special": "A feint that leaves the enemy stumbling past you."
+        },
+        {
+          "name": "Verband anlegen",
+          "type": "heal",
+          "damage": "1d6",
+          "cost": 2,
+          "special": "Field dressing — recover 1d6 LeP."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-gasthaus",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "schankraum"
+    },
+    "inventory": {
+      "items": [
+        {
+          "id": "item-schwert",
+          "name": "Anderthalbhänder",
+          "qty": 1
+        }
+      ]
+    },
+    "flags": {
+      "damage": "1d6+2"
+    },
+    "art": {
+      "prompt": "Portrait of a young medieval German swordsman, patched traveling cloak, plain arming sword, determined tired eyes",
+      "image": null
+    }
+  },
+  "item-schwert": {
+    "identity": {
+      "name": "Anderthalbhänder",
+      "kind": "item",
+      "description": "A plain, honest hand-and-a-half sword, pommel worn smooth. It has outlived two owners; Alrik intends to break the pattern."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-gasthaus",
+      "connections": []
+    },
+    "flags": {
+      "weapon": true,
+      "damage": "1d6+2"
+    }
+  },
+  "item-heiltrank": {
+    "identity": {
+      "name": "Heiltrank",
+      "kind": "item",
+      "description": "A stoppered clay flask of Travine's 'good schnapps' — which is, in fact, a genuine healing draught worth more than the inn. Restores 2d6 LeP."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-gasthaus",
+      "connections": []
+    },
+    "flags": {
+      "consumable": true,
+      "heal": "2d6"
+    }
+  },
+  "npc-travine": {
+    "identity": {
+      "name": "Wirtin Travine",
+      "kind": "npc",
+      "description": "The innkeeper of the Lame Griffin: grey braid, forearms like a smith, an apron that has seen knife fights. She posted the notice that brought you here."
+    },
+    "persona": {
+      "personality": "Dry, practical, protective of her village. Trades information for coin or usefulness, kindness for neither.",
+      "backstory": "Ran the inn alone since her husband walked into the Finsterwald twelve winters ago and came back wrong for three days before dying. She does not talk about it sober.",
+      "voice": "Clipped rural Garethi; calls everyone 'Held' (hero) with an audible eye-roll."
+    },
+    "knowledge": {
+      "facts": [
+        "The goblins took over Bodo's mill about a moon ago — before that, they never dared leave the deep woods.",
+        "Miller Bodo is out on the square wringing his cap; the mill deed and his mother's amulet are still inside the mill.",
+        "Twenty silver thalers for whoever clears the mill — village council's word, and she holds the purse."
+      ],
+      "secrets": [
+        "Old Mother Sanne says the goblins are not squatting in the mill — they are HIDING in it, from something deeper in the forest.",
+        "The 'schnapps' behind the bar is a real healing draught; she'll part with it only if she likes you or fears for you."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#b8874a"
+    },
+    "stats": {
+      "hp": 14,
+      "maxHp": 14,
+      "mu": 12,
+      "kl": 12,
+      "in": 13,
+      "ch": 11,
+      "ff": 12,
+      "ge": 10,
+      "ko": 12,
+      "kk": 12,
+      "at": 9,
+      "pa": 7,
+      "rs": 0,
+      "ini": 10,
+      "level": 1
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Fäusterprobe",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "A barkeep's right hook, well practiced."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-gasthaus",
+      "connections": []
+    },
+    "position": {
+      "zoneId": "tresen"
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0,
+      "ally": true,
+      "damage": "1d3"
+    },
+    "art": {
+      "prompt": "Portrait of a stern middle-aged medieval German innkeeper woman, grey braid, strong forearms, worn apron, tavern candlelight",
+      "image": null
+    }
+  },
+  "npc-bodo": {
+    "identity": {
+      "name": "Müller Bodo",
+      "kind": "npc",
+      "description": "A flour-pale, heavyset miller with red-rimmed eyes and a cap he has wrung into a rope. His mill is his whole life, and something with yellow eyes is sleeping in it."
+    },
+    "persona": {
+      "personality": "Anxious, honest, embarrassingly grateful for any kindness. Wrings his cap when he lies, which is rarely and badly.",
+      "backstory": "Third-generation miller. Fled the mill in the night a moon ago when the goblins came — left everything, including his late mother's amulet, which he is ashamed to admit he wants back more than the mill.",
+      "voice": "Soft, stumbling, apologizes mid-sentence."
+    },
+    "knowledge": {
+      "facts": [
+        "There are at least three goblins in the mill — he counted the eyes in the dark and stopped at six.",
+        "The mill's side door by the stream — the steg — doesn't latch; you can slip in over the footbridge.",
+        "His mother's amulet hangs on a nail by the grindstone — bronze, shaped like a wheel of Travia."
+      ],
+      "secrets": [
+        "The night he fled, he heard the goblins SCREAMING in the deep woods first — they came to the mill running FROM something.",
+        "He has drawn the spiral mark he saw scratched on his door before — on the old boundary stone deep in the Finsterwald, when he was a boy."
+      ]
+    },
+    "agent": {
+      "enabled": true,
+      "controller": "ai",
+      "accent": "#c9c0a0"
+    },
+    "stats": {
+      "hp": 12,
+      "maxHp": 12,
+      "mu": 9,
+      "kl": 10,
+      "in": 11,
+      "ch": 10,
+      "ff": 12,
+      "ge": 9,
+      "ko": 12,
+      "kk": 13,
+      "at": 8,
+      "pa": 6,
+      "rs": 0,
+      "ini": 8,
+      "level": 1
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Mehlsack-Schwinger",
+          "type": "damage",
+          "damage": "1d3",
+          "cost": 1,
+          "special": "Panic and a miller's shoulders."
+        }
+      ]
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-dorfplatz",
+      "connections": []
+    },
+    "inventory": {
+      "items": []
+    },
+    "flags": {
+      "trust_player": 0,
+      "ally": true,
+      "damage": "1d3"
+    },
+    "schedule": {
+      "morning": "loc-dorfplatz",
+      "afternoon": "loc-dorfplatz",
+      "evening": "loc-gasthaus",
+      "night": "loc-gasthaus"
+    },
+    "art": {
+      "prompt": "Portrait of an anxious heavyset medieval miller, flour-pale face, red-rimmed eyes, wrung woolen cap in his hands, rain-wet",
+      "image": null
+    }
+  },
+  "npc-goblin-1": {
+    "identity": {
+      "name": "Goblin-Anführer Rratz",
+      "kind": "npc",
+      "description": "The biggest of the mill goblins — which is not saying much — wearing Bodo's Sunday hat and carrying a cleaver like a sword. His yellow eyes keep darting to the forest, not the door."
+    },
+    "persona": {
+      "personality": "Bullying, twitchy, more afraid of the woods than of you — and that fear makes him vicious.",
+      "voice": "Shrill broken Garethi: 'Weg! Mühle UNSER! Draußen SCHLIMMER!'"
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#7a9a3b"
+    },
+    "knowledge": {
+      "facts": [
+        "The mill is ours now. The village-things are soft."
+      ],
+      "secrets": [
+        "We ran from the spiral-thing at the boundary stone. The mill's iron and running water keep it out. We are NOT leaving."
+      ]
+    },
+    "stats": {
+      "hp": 12,
+      "maxHp": 12,
+      "mu": 11,
+      "kl": 9,
+      "in": 12,
+      "ch": 9,
+      "ff": 11,
+      "ge": 12,
+      "ko": 12,
+      "kk": 11,
+      "at": 11,
+      "pa": 7,
+      "rs": 1,
+      "ini": 12,
+      "level": 2,
+      "xp": 40
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-muehle",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Hackbeil",
+          "type": "damage",
+          "damage": "1d6+1",
+          "cost": 1,
+          "special": "Bodo's meat cleaver, swung with spite."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "mahlwerk"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6+1"
+    },
+    "art": {
+      "prompt": "Portrait of a snarling red-furred goblin chief wearing a stolen Sunday hat, yellow darting eyes, cleaver over shoulder",
+      "image": null
+    }
+  },
+  "npc-goblin-2": {
+    "identity": {
+      "name": "Goblin Fetz",
+      "kind": "npc",
+      "description": "A scrawny goblin draped in stolen flour sacks, fast as a rat and about as brave."
+    },
+    "persona": {
+      "personality": "Cowardly, sneaky, goes for the back of your knee.",
+      "voice": "Hissing giggles; two words of Garethi, both insults."
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#7a9a3b"
+    },
+    "knowledge": {
+      "facts": [
+        "Rratz says fight, Fetz fights. A little."
+      ],
+      "secrets": [
+        "If Rratz falls, Fetz runs. Fetz has ALWAYS been a runner."
+      ]
+    },
+    "stats": {
+      "hp": 8,
+      "maxHp": 8,
+      "mu": 9,
+      "kl": 8,
+      "in": 12,
+      "ch": 8,
+      "ff": 11,
+      "ge": 13,
+      "ko": 10,
+      "kk": 9,
+      "at": 10,
+      "pa": 6,
+      "rs": 0,
+      "ini": 13,
+      "level": 1,
+      "xp": 25
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-muehle",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Rostiger Dolch",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "A rusty stab from behind a millstone."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "muehlenhof"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    },
+    "art": {
+      "prompt": "Portrait of a scrawny cowardly goblin draped in flour sacks, hissing grin, one ear notched",
+      "image": null
+    }
+  },
+  "npc-goblin-3": {
+    "identity": {
+      "name": "Goblin Knirps",
+      "kind": "npc",
+      "description": "The runt: one ear, one club, both notched. It sleeps on the footbridge and bites anything that crosses."
+    },
+    "persona": {
+      "personality": "Dim, loyal to Rratz, fights until Rratz doesn't.",
+      "voice": "Grunts. The occasional 'MEINS!'"
+    },
+    "agent": {
+      "enabled": true,
+      "accent": "#7a9a3b"
+    },
+    "knowledge": {
+      "facts": [
+        "Bridge is MINE."
+      ],
+      "secrets": [
+        "The water under the bridge is the only place the spiral-dreams don't reach."
+      ]
+    },
+    "stats": {
+      "hp": 8,
+      "maxHp": 8,
+      "mu": 10,
+      "kl": 7,
+      "in": 11,
+      "ch": 7,
+      "ff": 10,
+      "ge": 12,
+      "ko": 11,
+      "kk": 10,
+      "at": 10,
+      "pa": 6,
+      "rs": 1,
+      "ini": 11,
+      "level": 1,
+      "xp": 25
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-muehle",
+      "connections": []
+    },
+    "moves": {
+      "list": [
+        {
+          "name": "Knüppelhieb",
+          "type": "damage",
+          "damage": "1d6",
+          "cost": 1,
+          "special": "A crude club swung low."
+        }
+      ]
+    },
+    "position": {
+      "zoneId": "steg"
+    },
+    "flags": {
+      "hostile": true,
+      "damage": "1d6"
+    },
+    "art": {
+      "prompt": "Portrait of a dim one-eared runt goblin clutching a notched club, guarding a footbridge",
+      "image": null
+    }
+  },
+  "item-amulett": {
+    "identity": {
+      "name": "Travia-Amulett",
+      "kind": "item",
+      "description": "A bronze amulet shaped like Travia's wheel, hanging on a nail by the grindstone — Bodo's mother wore it for fifty years of good bread and bad winters. It is warm to the touch, which a hanging piece of bronze in a cold mill should not be."
+    },
+    "status": {
+      "alive": true,
+      "conditions": []
+    },
+    "place": {
+      "locationId": "loc-muehle",
+      "connections": []
+    },
+    "flags": {
+      "amulet": true,
+      "warm": true
+    }
+  },
+  "quest-muehle": {
+    "identity": {
+      "name": "Die alte Mühle",
+      "kind": "quest",
+      "description": "Goblins have driven Miller Bodo from his mill at the edge of the Finsterwald. Clear them out, recover his mother's amulet — and find out what made forest goblins bold enough, or desperate enough, to move into a human mill."
+    },
+    "quest": {
+      "phase": "active",
+      "currentStep": 0,
+      "steps": [
+        "Reach the old mill beyond the forest path.",
+        "Drive the goblins from the mill.",
+        "Recover Bodo's Travia amulet from the grindstone."
+      ],
+      "triggers": [
+        {
+          "type": "atLocation",
+          "id": "loc-muehle"
+        },
+        {
+          "type": "allDead",
+          "ids": [
+            "npc-goblin-1",
+            "npc-goblin-2",
+            "npc-goblin-3"
+          ]
+        },
+        {
+          "type": "hasItem",
+          "id": "item-amulett"
+        }
+      ],
+      "rewards": {
+        "xp": 120,
+        "items": [
+          {
+            "id": "item-amulett",
+            "name": "Travia-Amulett"
+          }
+        ]
+      }
+    }
+  },
+  "world-state": {
+    "flags": {
+      "artStyle": "dark fairy tale oil painting, muted earthy palette, Grimm brothers mood, candlelight"
+    }
+  }
+}

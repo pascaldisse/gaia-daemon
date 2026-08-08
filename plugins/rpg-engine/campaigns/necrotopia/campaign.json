@@ -1,0 +1,19 @@
+{
+  "start": {
+    "scene": "vegas"
+  },
+  "ruleset": "necrotopia",
+  "title": "Necrotopia — Apocalypse in Las Vegas",
+  "blurb": "A complete three-act apocalyptic Vegas road story: escape the chapel, choose the Silver Egg, and seal the hellmouth beneath Eternal Union.",
+  "scenes": {
+    "vegas": {
+      "name": "Las Vegas — The Apocalypse",
+      "description": "Neon and fire. The Strip is coming apart as the war between Heaven and Hell pours onto Earth."
+    },
+    "sidequests": {
+      "name": "Act II — Vegas Side Stories",
+      "description": "Optional detours off the Strip: lay the Neon Follies chorus to rest, and settle accounts with the sentient casino known as the House."
+    }
+  },
+  "artStyle": "gritty apocalyptic Las Vegas, cinematic concept art, warm neon against grey ash"
+}

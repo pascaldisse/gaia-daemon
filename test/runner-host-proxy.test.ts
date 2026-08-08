@@ -9,22 +9,25 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import "../src/runtime/index.ts"; // register the real harnesses + their credentialProxy descriptors
-import { RunnerHost } from "../src/runtime/runner-host.ts";
-import type { SandboxPolicy } from "../src/runtime/sandbox/index.ts";
+import type { AgentDef, Workspace } from "../src/core/types.js";
+import "../src/harness/index.js"; // register the real harnesses + their credentialProxy descriptors
+import { RunnerHost } from "../src/harness/host.js";
+import type { SandboxPolicy } from "../src/harness/sandbox/spec.js";
 
-function makeHost(harness: string, root: string): RunnerHost {
+function makeHost(harness: string, root: string, incognito = false, configEnv?: Record<string, string>): RunnerHost {
   const workspace = {
     rootDir: root,
     roomsDir: join(root, ".gaia", "rooms"),
     configPath: join(root, ".gaia", "config.json"),
     agentsOverrideDir: join(root, ".gaia", "agents"),
-  } as never;
-  const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as never;
+    ...(configEnv ? { config: { env: configEnv } } : {}),
+  } as unknown as Workspace;
+  const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as unknown as AgentDef;
   return new RunnerHost({
     workspace,
     agent,
     harness,
+    ...(incognito ? { incognito: true } : {}),
     harnessHost: () => ({ baseUrl: "http://127.0.0.1:9999", llmProxyUrl: "http://127.0.0.1:9999/api/harness/llm", mintToken: () => "tok-123" }),
     allowSummon: () => true,
     sandbox: () => ({ enabled: true, backend: "macos-seatbelt" }),
@@ -87,7 +90,7 @@ test("proxy ON, codex: SAME mechanism — strips keys, plus codex's declared OPE
     assert.equal(env.DEEPSEEK_API_KEY, undefined);
     assert.equal(env.GAIA_LLM_PROXY_URL, "http://127.0.0.1:9999/api/harness/llm");
     assert.equal(env.OPENAI_BASE_URL, "http://127.0.0.1:9999/api/harness/llm"); // codex's egress redirect
-    assert.equal(env.OPENAI_API_KEY, "tok-123"); // token in place of the real key
+    assert.equal(env.OPENAI_API_KEY, "tok-123"); // token in place of the real key (wiring applies AFTER the strip)
   });
 });
 
@@ -104,4 +107,48 @@ test("proxy OFF: every harness keeps its provider keys and no proxy wiring is ad
       assert.equal(env.PI_CODING_AGENT_DIR, undefined);
     });
   }
+});
+
+test("the runner env carries the uniform RUNNER_ENV keys for any harness", () => {
+  withTemp((root) => {
+    const env = envFor(makeHost("pi", root), "room1", PROXY_OFF);
+    assert.equal(env.GAIA_RUNNER_WORKSPACE, root);
+    assert.equal(env.GAIA_RUNNER_AGENT, "scout");
+    assert.equal(env.GAIA_RUNNER_HARNESS, "pi");
+    assert.equal(env.GAIA_ROOM_ID, "room1");
+    assert.equal(env.GAIA_MEMORY_DIR, join(root, "mem"));
+    assert.equal(env.GAIA_ROOM_DIR, join(root, ".gaia", "rooms", "room1"));
+    assert.equal(env.GAIA_AGENT_ID, "scout"); // the gaia-CLI bridge's public agent id — set HERE, once, for every harness
+
+    assert.equal(env.GAIA_DAEMON_URL, "http://127.0.0.1:9999"); // bridge target rides even without the proxy
+    assert.equal(env.GAIA_DAEMON_TOKEN, "tok-123");
+    // A normal room does NOT set the incognito flag.
+    assert.equal(env.GAIA_RUNNER_INCOGNITO, undefined);
+  });
+});
+
+test("config.json `env` passthrough reaches the child, but a provider key placed there is still stripped when the proxy is on", () => {
+  withTemp((root) => {
+    const configEnv = { BRAVE_API_KEY: "skill-key-abc", OPENAI_API_KEY: "sneaky-smuggled-key" };
+    const env = envFor(makeHost("pi", root, false, configEnv), "room1", PROXY_ON);
+    assert.equal(env.BRAVE_API_KEY, "skill-key-abc"); // generic passthrough reaches the harness subprocess
+    assert.equal(env.OPENAI_API_KEY, undefined); // config env cannot smuggle a provider key past the credential proxy
+  });
+});
+
+test("config.json `env` passthrough reaches the child when the proxy is off too", () => {
+  withTemp((root) => {
+    const configEnv = { BRAVE_API_KEY: "skill-key-abc" };
+    const env = envFor(makeHost("pi", root, false, configEnv), "room1", PROXY_OFF);
+    assert.equal(env.BRAVE_API_KEY, "skill-key-abc");
+  });
+});
+
+test("an incognito room sets GAIA_RUNNER_INCOGNITO=1 so the runner strips memory/recall (any harness)", () => {
+  withTemp((root) => {
+    for (const harness of ["pi", "claude", "codex"]) {
+      const env = envFor(makeHost(harness, root, true), "room1", PROXY_OFF);
+      assert.equal(env.GAIA_RUNNER_INCOGNITO, "1", `${harness}: incognito flag reaches the runner env`);
+    }
+  });
 });

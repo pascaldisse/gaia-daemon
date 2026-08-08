@@ -1,0 +1,809 @@
+// The status region: topbar (workspace identity + call indicator), the error
+// banner, and the signature powerline status bar. Every segment is one fact
+// about the session; arrows are pure CSS so no Nerd Font is required. Also
+// owns the omarchy-style theme palette (the "theme" region).
+import { selectRoom } from "./actions.js";
+import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
+import { api } from "./api.js";
+import { $, h } from "./dom.js";
+import { LinkedText, PathText } from "./links.js";
+import { stopReadAloud } from "./readaloud.js";
+import { clearError, markDirty, registerRegion, setError } from "./render.js";
+import { openSearch } from "./search.js";
+import { runningSummonRooms, state } from "./state.js";
+import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
+import { jumpToEvent } from "./transcript.js";
+
+/** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
+/** @typedef {import("./types.js").Snapshot} Snapshot */
+
+function renderStatus() {
+  renderTopbar();
+  renderErrorBanner();
+  renderStatusbar();
+}
+
+registerRegion("status", renderStatus);
+
+function renderTopbar() {
+  const topbar = $("#topbar");
+  if (!topbar) return;
+  const snapshot = state.snapshot;
+  topbar.replaceChildren(
+    h(
+      "div",
+      {},
+      h("strong", {}, snapshot ? PathText(snapshot.workspace.rootDir) : LinkedText("No workspace selected")),
+      h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
+    ),
+    h(
+      "div",
+      { class: "topbar-right" },
+      // Search THIS chat — the same overlay as ⌘K, pre-scoped to the open room.
+      snapshot
+        ? h("button", {
+            class: "topbar-search",
+            type: "button",
+            title: "search this chat (⌘F)",
+            "aria-label": "search this chat",
+            onclick: () => openSearch("room"),
+            text: "⌕",
+          })
+        : null,
+      h("div", {
+        class: state.voice || state.voiceStatusText ? "status on-call" : "status",
+        text: state.voiceStatusText
+          ? state.voiceStatusText
+          : snapshot
+            ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
+            : "idle",
+      }),
+    ),
+  );
+}
+
+function renderErrorBanner() {
+  const banner = $("#error");
+  if (!banner) return;
+  banner.hidden = !state.error;
+  banner.replaceChildren(
+    h("span", { class: "error-text", text: state.error }),
+    h("button", {
+      class: "error-close",
+      type: "button",
+      title: "dismiss",
+      "aria-label": "dismiss error",
+      text: "✕",
+      onclick: () => clearError(),
+    }),
+  );
+}
+
+function renderStatusbar() {
+  const footer = $("#statusbar");
+  if (!footer) return;
+  const snapshot = state.snapshot;
+  /** @type {Seg[]} */
+  const segs = [];
+  if (snapshot) {
+    // One live turn = one running room, however many agents it targets — an
+    // agent's own status is derived from the SAME active task as its room's
+    // `running` flag (see room-service.ts's snapshot builder), so summing
+    // "running agents" with "running rooms" double-counts every turn. Count
+    // rooms only; that's the true number of concurrent turns (this room's own
+    // plus any live summon sub-rooms).
+    const running = (snapshot.rooms ?? []).filter((room) => room.running).length;
+    const activeRoom = snapshot.rooms?.find((room) => room.id === snapshot.room.id);
+    const activeRoomLabel = activeRoom?.title ?? snapshot.room.id;
+    segs.push({ text: snapshot.workspace.rootDir.split("/").filter(Boolean).pop() ?? snapshot.workspace.id, cls: "seg-head", title: snapshot.workspace.rootDir });
+    segs.push({ text: `⊞ ${activeRoomLabel}`, cls: "seg-a", title: `active room: ${snapshot.room.id}` });
+    segs.push({ text: `${snapshot.rooms?.length ?? 0} rooms`, cls: "seg-b" });
+    segs.push({
+      text: running ? `● ${running} running` : "○ idle",
+      cls: running ? "seg-run on" : "seg-run",
+      title: "rooms with a live turn (this room + any running summons)",
+    });
+    if (state.voice) segs.push({ text: `🎙 @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
+  } else {
+    segs.push({ text: "no workspace", cls: "seg-head" });
+  }
+  segs.push({ spacer: true });
+  // Read-aloud "now playing": a message may keep speaking after you switch
+  // rooms, so a lit chip shows which room it's in — click to jump to that
+  // message, ■ to stop. Absent when nothing is playing.
+  const playing = state.readAloud;
+  if (playing) {
+    // Only "playing"/"loading" pulse; a paused or ended message keeps a steady
+    // chip so you can still jump to it (its player stays up by the composer).
+    const icon = playing.phase === "loading" ? "◌" : playing.phase === "playing" ? "▶" : playing.phase === "paused" ? "⏸" : "⏹";
+    const idle = playing.phase === "paused" || playing.phase === "ended";
+    segs.push({
+      text: `${icon} ${shortRoom(playing.roomId)}`,
+      cls: `seg-nowplaying on${playing.phase === "loading" ? " loading" : ""}${idle ? " idle" : ""}`,
+      title: `read-aloud in ${playing.roomId} — click to jump to it`,
+      onclick: () => void jumpToPlaying(playing),
+    });
+    segs.push({ text: "■", cls: "seg-nowplaying stop on", title: "stop playback", onclick: stopReadAloud });
+  }
+  const usage = usageChipSeg();
+  if (usage) segs.push(usage);
+  const bg = bgChipSeg();
+  if (bg) segs.push(bg);
+  segs.push({
+    text: artifactPanelOpen() ? "◫ artifacts" : "□ artifacts",
+    cls: artifactPanelOpen() ? "seg-artifacts on" : "seg-artifacts",
+    title: "toggle artifacts",
+    onclick: toggleArtifactPanel,
+  });
+  const theme = themeById(currentThemeId());
+  segs.push({ text: `◈ ${theme.name}`, cls: "seg-theme", title: "themes (Alt+T)", onclick: openThemePalette });
+  segs.push({ text: clockText(), cls: "seg-clock", id: "statusClock" });
+  segs.push({ text: "^T new · ^B panes", cls: "seg-keys", title: "Ctrl+T new room · Ctrl+B/G toggle panes" });
+
+  footer.replaceChildren(
+    ...segs.map((seg) =>
+      seg.spacer
+        ? h("div", { class: "seg spacer" })
+        : h(seg.onclick ? "button" : "div", {
+            class: `seg ${seg.cls}`,
+            id: seg.id ?? null,
+            title: seg.title ?? null,
+            text: seg.text,
+            onclick: seg.onclick ?? null,
+          }),
+    ),
+  );
+}
+
+export function clockText() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Status bar visibility — a purely client-side display preference (mobile
+// always hides it via CSS regardless; this only gates the desktop bar).
+// Persisted so a reload keeps the choice; applied by toggling a class on #app
+// rather than a region re-render, so it takes effect instantly with no dirty
+// region plumbing.
+
+const STATUSBAR_STORAGE_KEY = "gaia.statusbar";
+
+/** @returns {boolean} true unless the user has explicitly hidden it */
+export function statusbarVisible() {
+  try {
+    return localStorage.getItem(STATUSBAR_STORAGE_KEY) !== "hidden";
+  } catch {
+    return true;
+  }
+}
+
+/** @param {boolean} visible */
+function applyStatusbarVisibility(visible) {
+  const app = $("#app");
+  if (app) app.classList.toggle("statusbar-hidden", !visible);
+}
+
+/** @param {boolean} visible */
+export function setStatusbarVisible(visible) {
+  applyStatusbarVisibility(visible);
+  try {
+    localStorage.setItem(STATUSBAR_STORAGE_KEY, visible ? "shown" : "hidden");
+  } catch {
+    // private mode / storage disabled — the choice just won't persist.
+  }
+}
+
+// Restore before first paint so there is no flash of the status bar.
+export function initStatusbarPref() {
+  applyStatusbarVisibility(statusbarVisible());
+}
+
+// ---------------------------------------------------------------------------
+// Account usage chip — subscription session/weekly caps per ACCOUNT
+// ("anthropic", "openai"), fed by whatever harness can currently read that
+// account's credentials and cached on disk by the daemon so it survives
+// restarts and provider outages. The room snapshot carries the exact account
+// keys its selected/running agents can spend from; never guess from a provider
+// model token, and never fall back to another account's cache.
+
+/** The cached usage groups relevant to this room's actual account bindings.
+ * A room with no usage-capable active agent intentionally displays nothing;
+ * showing a provider-wide fallback is how an old login escaped into the UI.
+ * @returns {import("./types.js").UsageLimits[]} */
+function visibleUsageGroups() {
+  const accounts = state.snapshot?.room.usageAccounts ?? [];
+  return accounts.map((account) => state.usage[account]).filter(Boolean);
+}
+
+/** @returns {import("./types.js").UsageWindow[]} every window across the visible accounts */
+function allUsageWindows() {
+  return visibleUsageGroups()
+    .flatMap((limits) => limits.windows)
+    .filter((win) => win && typeof win.percent === "number");
+}
+
+/** Model identifiers for the open room's active agent, lowercased — both the
+ * configured model ("anthropic/fable") and the live label ("…claude-fable-5…"),
+ * so a provider display name like "Fable" can be matched against either.
+ * @returns {string[]} */
+function activeRoomModelTokens() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return [];
+  const accounts = new Set(snapshot.room.usageAccounts ?? []);
+  return (snapshot.agents ?? [])
+    .filter((agent) => agent.usageAccount !== undefined && accounts.has(agent.usageAccount))
+    .flatMap((agent) => [agent.configuredModel, agent.modelLabel])
+    .filter(Boolean)
+    .map((token) => token.toLowerCase());
+}
+
+/** A window is shown when it's account-wide (session, all-models weekly) OR it's
+ * scoped to the model the open room is actively using. A dormant per-model cap
+ * (e.g. Fable's weekly at 100% while you're on Opus) stays hidden.
+ * @param {import("./types.js").UsageWindow} win @param {string[]} activeTokens */
+function isUsageWindowVisible(win, activeTokens) {
+  if (!win.model) return true;
+  const needle = win.model.toLowerCase();
+  return activeTokens.some((token) => token.includes(needle));
+}
+
+/** @returns {import("./types.js").UsageWindow[]} windows relevant to the open room */
+function visibleUsageWindows() {
+  const activeTokens = activeRoomModelTokens();
+  return allUsageWindows().filter((win) => isUsageWindowVisible(win, activeTokens));
+}
+
+/** @param {import("./types.js").UsageWindow[]} windows @returns {"normal"|"warning"|"critical"} */
+function worstSeverity(windows) {
+  if (windows.some((win) => win.severity === "critical")) return "critical";
+  if (windows.some((win) => win.severity === "warning")) return "warning";
+  return "normal";
+}
+
+/** Relative "resets in …" for a window's reset instant (empty when unknown).
+ * @param {string|undefined} iso */
+function formatReset(iso) {
+  if (!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "resetting…";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `resets in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  if (hours < 24) return remMin ? `resets in ${hours}h ${remMin}m` : `resets in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHr = hours % 24;
+  return remHr ? `resets in ${days}d ${remHr}h` : `resets in ${days}d`;
+}
+
+/** The compact status-bar segment, or null when no harness reports usage. Shows
+ * session + all-models weekly by default; a per-model weekly cap is appended
+ * only when that model is active in the open room (labelled with the model).
+ * @returns {Seg|null} */
+function usageChipSeg() {
+  const windows = visibleUsageWindows();
+  if (windows.length === 0) return null;
+  const session = windows.find((win) => win.kind === "session");
+  const weeklyAll = windows.find((win) => win.kind === "weekly_all");
+  const scoped = windows.filter((win) => win.kind === "weekly_scoped");
+  const parts = [];
+  if (session) parts.push(`${session.percent}%`);
+  if (weeklyAll) parts.push(`${weeklyAll.percent}%w`);
+  for (const win of scoped) parts.push(`${win.percent}% ${win.model}`);
+  if (parts.length === 0) return null;
+  const severity = worstSeverity(windows);
+  const title = windows.map((win) => `${win.label}: ${win.percent}%${win.resetsAt ? ` · ${formatReset(win.resetsAt)}` : ""}`).join("\n");
+  return {
+    text: `◔ ${parts.join(" · ")}`,
+    cls: `seg-usage${severity === "critical" ? " crit" : severity === "warning" ? " warn" : ""}`,
+    title: `usage — click for the breakdown\n${title}`,
+    onclick: openUsagePopover,
+  };
+}
+
+export function openUsagePopover() {
+  state.usagePopoverOpen = true;
+  markDirty("usage");
+}
+
+export function closeUsagePopover() {
+  state.usagePopoverOpen = false;
+  markDirty("usage");
+}
+
+// ---------------------------------------------------------------------------
+// Background-process tray — the status-bar chip counts running agent turns
+// plus harness-reported process starts (which are not claimed to still be
+// alive); a click opens a palette with elapsed time and available output.
+
+// `snapshot.tasks` is this room's OWN task history/queue/active-task \u2014 the
+// room you're currently looking at, whose turn is already streaming right
+// there in the transcript. That's foreground, not background; only a task
+// belonging to some OTHER room would actually be a background process (and
+// today the true source for those is `runningSummonRooms` below). Filtering
+// on roomId keeps this correct even if a future snapshot ever merges other
+// rooms' tasks in here. Shared by the chip and the popover so the chip's
+// count always equals the number of rows the popover actually renders.
+/** @param {Snapshot} snapshot */
+function bgPopoverCounts(snapshot) {
+  const runningTasks = (snapshot.tasks ?? []).filter((task) => task.status === "running" && task.roomId !== snapshot.room.id);
+  const summons = runningSummonRooms(snapshot);
+  const backgroundTasks = snapshot.backgroundTasks ?? [];
+  return { runningTasks, summons, backgroundTasks };
+}
+
+/** @returns {Seg|null} */
+function bgChipSeg() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return null;
+  const { runningTasks, summons, backgroundTasks } = bgPopoverCounts(snapshot);
+  const n = runningTasks.length + summons.length + backgroundTasks.length;
+  if (n === 0) return null;
+  return {
+    text: `\u2699 ${n} bg`,
+    cls: `seg-run on`,
+    title: "agents and tracked background processes",
+    onclick: openBgTasks,
+  };
+}
+
+export function openBgTasks() {
+  state.bgTasksOpen = true;
+  // Prime liveness for every currently-listed background task (see
+  // loadBackgroundOutput) so the status word can render "running"/"ended" as
+  // soon as it's known, not just for whichever one gets clicked.
+  for (const task of state.snapshot?.backgroundTasks ?? []) void loadBackgroundOutput(task.taskId);
+  markDirty("bgtasks");
+}
+
+/** @typedef {{ loading: boolean, text?: string, error?: string, running?: boolean }} BgOutput */
+/** Per-task fetched output/liveness, keyed by taskId — a Map (not the single
+ * last-clicked slot v1 had) because liveness is now primed for every listed
+ * task at once. @type {Map<string, BgOutput>} */
+const backgroundOutputs = new Map();
+/** Per-task request counter — the same stale-response guard as before, just
+ * scoped per taskId so concurrent fetches for different tasks don't clobber
+ * each other. @type {Map<string, number>} */
+const backgroundOutputRequests = new Map();
+
+export function closeBgTasks() {
+  state.bgTasksOpen = false;
+  backgroundOutputs.clear();
+  backgroundOutputRequests.clear();
+  markDirty("bgtasks");
+}
+
+/** @param {string} text @param {number} max */
+function truncate(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** @param {string} taskId */
+async function loadBackgroundOutput(taskId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const request = (backgroundOutputRequests.get(taskId) ?? 0) + 1;
+  backgroundOutputRequests.set(taskId, request);
+  backgroundOutputs.set(taskId, { loading: true });
+  markDirty("bgtasks");
+  try {
+    const body = await api(
+      `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/background-tasks/${encodeURIComponent(taskId)}/output`,
+    );
+    if (backgroundOutputRequests.get(taskId) !== request) return;
+    backgroundOutputs.set(taskId, { loading: false, text: typeof body.text === "string" ? body.text : "", running: body.running === true });
+  } catch (error) {
+    if (backgroundOutputRequests.get(taskId) !== request) return;
+    backgroundOutputs.set(taskId, { loading: false, error: error instanceof Error ? error.message : String(error) });
+  }
+  markDirty("bgtasks");
+}
+
+/** Stop (still running) or dismiss (already ended) a tracked background task,
+ * then refresh the tray. @param {string} workspaceId @param {string} roomId @param {string} taskId */
+async function stopOrDismissBackgroundTask(workspaceId, roomId, taskId) {
+  try {
+    await api(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/background-tasks/${encodeURIComponent(taskId)}`,
+      { method: "DELETE", body: "{}" },
+    );
+  } catch (error) {
+    setError(error);
+  }
+  markDirty("bgtasks");
+}
+
+function renderBgTasks() {
+  const slot = $("#overlay-bgtasks");
+  if (!slot) return;
+  if (!state.bgTasksOpen) slot.replaceChildren();
+  else {
+    const popover = BgTasksPopover();
+    slot.replaceChildren(...(popover ? [popover] : []));
+  }
+}
+
+registerRegion("bgtasks", renderBgTasks);
+
+/** Format elapsed ms as a short human string. @param {number} ms @returns {string} */
+function elapsed(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m`;
+}
+
+/** @param {string} roomId @param {string|undefined} [agentId] */
+function runningAgentLabel(roomId, agentId) {
+  return `@${agentId || roomId.replace(/-[0-9a-z]+$/i, "")} — ${roomId}`;
+}
+
+function BgTasksPopover() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return null;
+  const { runningTasks, summons, backgroundTasks } = bgPopoverCounts(snapshot);
+  const agentCount = runningTasks.length + summons.length;
+  const now = Date.now();
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeBgTasks();
+      },
+    },
+    h(
+      "div",
+      { class: "palette usage-popover" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "running agents" }),
+        h("small", { text: `${agentCount} running · ${backgroundTasks.length} started · esc to close` }),
+      ),
+      agentCount > 0
+        ? h(
+            "div",
+            { class: "usage-group" },
+            // Running task rows
+            ...runningTasks.map((task) =>
+              h(
+                "div",
+                { class: "usage-row" },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", {
+                    class: "usage-label",
+                    text: runningAgentLabel(task.roomId, /** @type {{ agentId?: string }} */ (task).agentId),
+                  }),
+                  h("span", { class: "usage-pct sev-normal", text: task.startedAt ? elapsed(now - new Date(task.startedAt).getTime()) : "" }),
+                ),
+                task.targets?.length ? h("small", { class: "usage-reset", text: `target: ${task.targets.join(", ")}` }) : null,
+              ),
+            ),
+            // Running summon room rows — clickable, jump to live output
+            ...summons.map((room) =>
+              h(
+                "button",
+                {
+                  class: "usage-row",
+                  style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);margin-top:6px;cursor:pointer;",
+                  onclick: () => {
+                    selectRoom(snapshot.workspace.id, room.id);
+                    closeBgTasks();
+                  },
+                },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", { class: "usage-label", text: runningAgentLabel(room.id) }),
+                  h("span", { class: "usage-pct sev-normal", text: room.lastActivity ? elapsed(now - new Date(room.lastActivity).getTime()) : "" }),
+                ),
+                room.running ? h("small", { class: "usage-reset", text: "streaming · click to watch" }) : null,
+              ),
+            ),
+          )
+        : null,
+      backgroundTasks.length > 0
+        ? h(
+            "div",
+            { class: "usage-group" },
+            h("div", { class: "usage-group-head" }, h("span", { class: "usage-harness", text: "background processes" })),
+            ...backgroundTasks.map((task) => {
+              const output = backgroundOutputs.get(task.taskId);
+              const age = elapsed(now - new Date(task.startedAt).getTime());
+              const label = task.description || task.command || `${task.toolName} ${task.taskId}`;
+              // Status is unknown until loadBackgroundOutput (primed on popover
+              // open) resolves — while loading/errored, the word is withheld
+              // and the stop/dismiss button defaults to the safe "dismiss".
+              const known = Boolean(output) && output?.loading === false && !output?.error;
+              const running = known && output?.running === true;
+              return h(
+                "button",
+                {
+                  type: "button",
+                  class: "usage-row",
+                  style: "width:100%;text-align:left;background:var(--bg3);border:1px solid var(--border);padding:9px;cursor:pointer;color:inherit;font:inherit;",
+                  title: task.command ?? task.description ?? task.taskId,
+                  onclick: () => {
+                    selectRoom(snapshot.workspace.id, task.roomId);
+                    closeBgTasks();
+                  },
+                },
+                h(
+                  "div",
+                  { class: "usage-row-top" },
+                  h("span", { class: "usage-label", text: truncate(label, 60) }),
+                  h(
+                    "div",
+                    { style: "display:flex;align-items:baseline;gap:8px;" },
+                    known ? h("span", { class: `usage-pct ${running ? "sev-normal" : "muted"}`, text: running ? "running" : "ended" }) : null,
+                    h("span", { class: "usage-pct sev-normal", text: age ? `started ${age} ago` : "started just now" }),
+                    h("span", {
+                      class: "usage-pct",
+                      style: "cursor:pointer;",
+                      text: running ? "■ stop" : "✕ dismiss",
+                      title: running ? "stop this background process" : "dismiss this entry",
+                      onclick: (event) => {
+                        event.stopPropagation();
+                        void stopOrDismissBackgroundTask(snapshot.workspace.id, snapshot.room.id, task.taskId);
+                      },
+                    }),
+                  ),
+                ),
+                h("small", { class: "usage-reset", text: `@${task.agentId} · ${task.toolName} · room ${task.roomId}` }),
+                output && !output.loading
+                  ? h("pre", {
+                      style: "max-height:220px;overflow:auto;margin:6px 0 0;padding:9px;background:var(--ink);border:1px solid var(--border);white-space:pre-wrap;",
+                      text: output.error ? `Error: ${output.error}` : output.text || "(no output yet)",
+                    })
+                  : null,
+              );
+            }),
+          )
+        : null,
+      agentCount === 0 && backgroundTasks.length === 0
+        ? h("div", { class: "search-empty", text: "No agents running in the background." })
+        : null,
+    ),
+  );
+}
+
+/** @type {number|null} */
+let usageAgeTimer = null;
+// The popover fully rebuilds every second to tick the age + reset countdowns.
+// Only animate the entrance on the first render after opening — otherwise the
+// `palette-pop` keyframe replays on every tick and the whole panel pulses.
+let usagePopoverWasOpen = false;
+
+function renderUsagePopover() {
+  const slot = $("#overlay-usage");
+  if (!slot) return;
+  const shouldShow = state.usagePopoverOpen && visibleUsageGroups().length > 0;
+  if (!shouldShow) {
+    slot.replaceChildren();
+    usagePopoverWasOpen = false;
+    if (usageAgeTimer !== null) {
+      clearInterval(usageAgeTimer);
+      usageAgeTimer = null;
+    }
+    return;
+  }
+  if (usageAgeTimer === null) {
+    usageAgeTimer = window.setInterval(() => markDirty("usage"), 1000);
+  }
+  const firstRender = !usagePopoverWasOpen;
+  usagePopoverWasOpen = true;
+  slot.replaceChildren(UsagePopover(firstRender));
+}
+
+registerRegion("usage", renderUsagePopover);
+
+/** @param {boolean} [animate] Play the entrance pop — only on first open, not on the 1s refresh tick. */
+function UsagePopover(animate = false) {
+  const activeTokens = activeRoomModelTokens();
+  const groups = visibleUsageGroups().map((limits) => {
+    const visible = limits.windows.filter((win) => isUsageWindowVisible(win, activeTokens));
+    return { limits, windows: visible.length > 0 ? visible : limits.windows };
+  });
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeUsagePopover();
+      },
+    },
+    h(
+      "div",
+      { class: animate ? "palette usage-popover" : "palette usage-popover no-anim" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "usage" }),
+        h("small", { text: "subscription limits · esc to close" }),
+        h("button", {
+          class: "usage-refresh",
+          type: "button",
+          title: "refresh from provider",
+          disabled: state.usageRefreshing,
+          text: state.usageRefreshing ? "…" : "↻",
+          onclick: () => void refreshUsageNow(),
+        }),
+      ),
+      ...groups.map(({ limits, windows }) =>
+        h(
+          "div",
+          { class: "usage-group" },
+          h(
+            "div",
+            { class: "usage-group-head" },
+            h("span", { class: "usage-harness", text: limits.account }),
+            limits.plan ? h("span", { class: "usage-plan", text: limits.plan }) : null,
+            h("span", { class: "usage-age", text: formatAge(limits.fetchedAt) }),
+          ),
+          ...windows.map((win) =>
+            h(
+              "div",
+              { class: "usage-row" },
+              h(
+                "div",
+                { class: "usage-row-top" },
+                h("span", { class: "usage-label", text: win.label }),
+                h("span", { class: `usage-pct sev-${win.severity}`, text: `${win.percent}%` }),
+              ),
+              h("div", { class: "usage-bar" }, h("div", { class: `usage-bar-fill sev-${win.severity}`, style: `width:${win.percent}%` })),
+              win.resetsAt ? h("small", { class: "usage-reset", text: formatReset(win.resetsAt) }) : null,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+async function refreshUsageNow() {
+  if (state.usageRefreshing) return;
+  state.usageRefreshing = true;
+  markDirty("usage");
+  try {
+    const response = await api("/api/usage/refresh", { method: "POST" });
+    const accounts = /** @type {Record<string, import("./types.js").UsageLimits>} */ (response?.accounts ?? {});
+    for (const account of Object.keys(state.usage)) {
+      if (!(account in accounts)) delete state.usage[account];
+    }
+    for (const [account, limits] of Object.entries(accounts)) {
+      state.usage[account] = limits;
+    }
+  } catch {
+    // Keep the cached meter visible if the manual refresh endpoint/provider hiccups.
+  } finally {
+    state.usageRefreshing = false;
+    markDirty("status", "usage");
+  }
+}
+
+/** Relative fetch age for an account snapshot (empty when unknown).
+ * @param {string|undefined} iso */
+function formatAge(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  if (hours < 24) return `${hours}h ${remMin}m ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Short room label for the now-playing chip (room ids can be long imports).
+ * @param {string} id */
+function shortRoom(id) {
+  return id.length > 14 ? `${id.slice(0, 13)}…` : id;
+}
+
+/** Jump to the room+message the read-aloud chip points at: switch rooms if
+ * needed, then scroll the message into view and flash it (same landing as a
+ * chat-search hit).
+ * @param {NonNullable<typeof state.readAloud>} playing */
+async function jumpToPlaying(playing) {
+  const snapshot = state.snapshot;
+  if (!snapshot || snapshot.workspace.id !== playing.workspaceId || snapshot.room.id !== playing.roomId) {
+    await selectRoom(playing.workspaceId, playing.roomId);
+  }
+  await jumpToEvent(playing.eventId);
+}
+
+// ---------------------------------------------------------------------------
+// Omarchy-style theme palette. Hover previews live (instant recolour via the
+// html[data-theme] attribute, no re-render); click commits; Esc or backdrop
+// cancels back to where you were.
+
+/** @type {string|null} */
+let themeCommitted = null;
+
+export function openThemePalette() {
+  themeCommitted = currentThemeId();
+  state.themePaletteOpen = true;
+  markDirty("theme", "status");
+}
+
+/** @param {boolean} commit */
+export function closeThemePalette(commit) {
+  if (!commit && themeCommitted) applyTheme(themeCommitted);
+  state.themePaletteOpen = false;
+  themeCommitted = null;
+  markDirty("theme", "status");
+}
+
+function renderThemePalette() {
+  const slot = $("#overlay-theme");
+  if (!slot) return;
+  if (!state.themePaletteOpen) slot.replaceChildren();
+  else slot.replaceChildren(ThemePalette());
+}
+
+registerRegion("theme", renderThemePalette);
+
+function ThemePalette() {
+  return h(
+    "div",
+    {
+      class: "palette-backdrop",
+      onclick: (event) => {
+        if (event.target === event.currentTarget) closeThemePalette(false);
+      },
+    },
+    h(
+      "div",
+      { class: "palette" },
+      h(
+        "div",
+        { class: "palette-head" },
+        h("strong", { text: "themes" }),
+        h("small", { text: "hover to preview · click to apply · esc to cancel" }),
+      ),
+      h(
+        "div",
+        { class: "palette-grid" },
+        THEMES.map((theme) =>
+          // Each swatch carries its own data-theme attribute, so the palette
+          // variables in styles.css recolour it without a second copy of any
+          // theme colour existing in JS.
+          h(
+            "button",
+            {
+              class: `swatch ${theme.id === currentThemeId() ? "active" : ""}`,
+              "data-theme": theme.id,
+              onmouseenter: () => applyTheme(theme.id),
+              onclick: () => {
+                applyTheme(theme.id);
+                themeCommitted = theme.id;
+                closeThemePalette(true);
+              },
+            },
+            h(
+              "span",
+              { class: "sw-preview" },
+              h("span", { class: "sw-dot sw-accent" }),
+              h("span", { class: "sw-dot sw-accent2" }),
+              h("span", { class: "sw-dot sw-good" }),
+              h("span", { class: "sw-dot sw-danger" }),
+            ),
+            h("span", { class: "sw-name", text: theme.name }),
+          ),
+        ),
+      ),
+    ),
+  );
+}

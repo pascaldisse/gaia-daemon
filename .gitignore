@@ -1,13 +1,28 @@
-node_modules/
+node_modules
 dist/
 src/.bin/
+
+# Tauri (native shell) build artifacts — feat/tauri-shell branch
+src-tauri/target/
+src-tauri/gen/
+
+# baked mobile daemon URL (contains a secret auth token) — file-driven bake input
+src-tauri/mobile-daemon-url.txt
+
+# dev tooling artifacts (tools/)
+tools/cdp/node_modules/
+tools/cdp/out/
+tools/calayer-poc/renderer
+tools/calayer-poc/host
+tools/calayer-poc/*.dSYM/
+
 .env
 .env.*
 .DS_Store
 npm-debug.log*
 tmp/
 
-# unmute runtime artifacts (the source is vendored; these are rebuilt locally)
-unmute/.uv-cache/
-unmute/.uv-python/
-unmute/models/
+# gaia runtime + user-specific data — chat history, agent memory, sessions,
+# recall/index dbs. Lives under a workspace's .gaia/ (or ~/.gaia, outside the
+# repo). NEVER commit: it is per-user and often private.
+.gaia/
