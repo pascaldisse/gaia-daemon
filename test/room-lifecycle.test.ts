@@ -68,6 +68,7 @@ test("lifecycle uses an injected room-store adapter", async () => {
     async recentEvents() { return []; },
     async eventsAfterCursor() { return { events: [], nextCursor: 0 }; },
     async readState() { return { activeRoles: {}, agentCursors: {}, runtimeDetails: {} }; },
+    async stateCompatibility() { return { writable: true, unsupportedFields: [] }; },
     async writeState() {},
     async updateState(mutate) {
       const state = { activeRoles: {}, agentCursors: {}, runtimeDetails: {} };

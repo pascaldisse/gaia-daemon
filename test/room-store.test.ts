@@ -63,6 +63,7 @@ test("room store initializes missing files without rewriting established bytes",
     const store = openRoomStore(roomsDir, "room-a");
 
     await store.initialize();
+    assert.deepEqual(await store.stateCompatibility(), { writable: true, unsupportedFields: [] });
     assert.equal(await readFile(store.transcriptPath, "utf8"), "");
     assert.deepEqual(JSON.parse(await readFile(store.statePath, "utf8")), {
       activeRoles: {}, agentCursors: {}, runtimeDetails: {},
@@ -181,6 +182,12 @@ test("state mutations preserve unknown current fields and no-op bytes", async ()
       futureRootField: { nested: [1, 2, 3] },
     };
     await writeFile(store.statePath, `${JSON.stringify(currentState, null, 4)}\n`, "utf8");
+    assert.deepEqual(await store.stateCompatibility(), {
+      writable: false,
+      unsupportedFields: [
+        "activeAgent", "contextUsage", "futureRootField", "goal", "incognito", "summon", "thinkingOverrides", "title", "workDir",
+      ],
+    });
     const transcriptBytes = `${JSON.stringify({ id: "evt_1", timestamp: "1", author: "user", text: "history" })}\n`;
     await writeFile(store.transcriptPath, transcriptBytes, "utf8");
 

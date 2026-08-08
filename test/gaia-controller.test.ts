@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import type { AgentDefinition } from "../src/agents/types.ts";
 import { GaiaController, type GaiaUiEvent } from "../src/app/gaia-controller.ts";
 import type { AgentInput, AgentRuntime } from "../src/runtime/types.ts";
@@ -512,6 +512,55 @@ test("leaves a newer pending-turn protocol untouched instead of risking duplicat
     assert.deepEqual(await store.recentEvents(50), []);
     await assert.rejects(controller.sendMessage("do not duplicate the turn"), /requires a newer daemon/);
     assert.deepEqual((await store.readState()).pendingTurn, newerPending);
+    controller.dispose();
+  } finally {
+    if (originalHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = originalHome;
+    await temp.cleanup();
+  }
+});
+
+test("opens current room state read-only and refuses to ignore unsupported settings", async () => {
+  const temp = await createTempDir();
+  const originalHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+
+  try {
+    await initWorkspace(temp.path);
+    const workspace = await loadWorkspace(temp.path);
+    const store = workspace.rooms.open(workspace.config.room);
+    const currentState = {
+      activeRoles: {},
+      agentCursors: {},
+      runtimeDetails: {},
+      activeAgent: "gaia",
+      thinkingOverrides: { gaia: "high" },
+      contextUsage: { gaia: { usedTokens: 100, maxTokens: 1000 } },
+      workDir: "/preserved/worktree",
+      title: "Current room",
+      incognito: true,
+    };
+    const stateBytes = `${JSON.stringify(currentState, null, 4)}\n`;
+    const transcriptBytes = `${JSON.stringify({ id: "evt_existing", timestamp: "1", author: "user", targets: ["gaia"], text: "keep history" })}\n`;
+    await writeFile(store.statePath, stateBytes, "utf8");
+    await writeFile(store.transcriptPath, transcriptBytes, "utf8");
+
+    const controller = new GaiaController({
+      cwd: temp.path,
+      workspaceId: "workspace",
+      workspace,
+      runtimeFactory: (agent) => new FakeRuntime(agent),
+    });
+    const snapshot = await controller.getSnapshot();
+    assert.equal(snapshot.room.events[0]?.text, "keep history");
+    await assert.rejects(
+      controller.sendMessage("must not run under ignored settings"),
+      /unsupported fields: activeAgent, contextUsage, incognito, thinkingOverrides, title, workDir/,
+    );
+    await assert.rejects(controller.setRole("gaia", "none"), /Room state requires a newer daemon/);
+    await assert.rejects(controller.mutateAgentMemory("gaia", "MEMORY.md", "add", { content: "must not leak" }), /Room state requires a newer daemon/);
+    assert.equal(await readFile(store.statePath, "utf8"), stateBytes);
+    assert.equal(await readFile(store.transcriptPath, "utf8"), transcriptBytes);
     controller.dispose();
   } finally {
     if (originalHome === undefined) delete process.env.GAIA_HOME;

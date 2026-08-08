@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { defaultRoomState, readRoomState, roomStatePath, writeRoomState } from "../src/room/state.ts";
+import { defaultRoomState, readRoomState, readRoomStateCompatibility, roomStatePath, writeRoomState } from "../src/room/state.ts";
 import { initWorkspace, loadWorkspace } from "../src/workspace/workspace-loader.ts";
 import { createTempDir } from "./helpers/temp.ts";
 
 test("missing room state reads as safe defaults", async () => {
   const temp = await createTempDir();
   try {
-    assert.deepEqual(await readRoomState(join(temp.path, "missing.json")), defaultRoomState());
+    const path = join(temp.path, "missing.json");
+    assert.deepEqual(await readRoomState(path), defaultRoomState());
+    assert.deepEqual(await readRoomStateCompatibility(path), { writable: true, unsupportedFields: [] });
   } finally {
     await temp.cleanup();
   }
@@ -73,6 +75,7 @@ test("malformed room state reads as defaults", async () => {
     await writeFile(path, "not json", "utf8");
 
     assert.deepEqual(await readRoomState(path), defaultRoomState());
+    assert.deepEqual(await readRoomStateCompatibility(path), { writable: false, unsupportedFields: ["$document"] });
   } finally {
     await temp.cleanup();
   }

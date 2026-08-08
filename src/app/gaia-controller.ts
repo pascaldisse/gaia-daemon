@@ -189,6 +189,7 @@ export class GaiaController {
   // implement. It remains on disk; later entries must not jump ahead of it.
   private durableQueueBlocked = false;
   private durableTurnBlocked = false;
+  private unsupportedStateFields: string[] = [];
   private recentTasks: GaiaTask[] = [];
   private initialized = false;
 
@@ -261,10 +262,19 @@ export class GaiaController {
 
   async init(): Promise<void> {
     if (this.initialized) return;
+    const [roomState, compatibility] = await Promise.all([
+      this.room.readState(),
+      this.room.stateCompatibility(),
+    ]);
+    this.roomState = roomState;
+    this.unsupportedStateFields = compatibility.unsupportedFields;
+    if (this.unsupportedStateFields.length > 0) {
+      this.initialized = true;
+      return;
+    }
     await Promise.all(
       Object.values(this.workspace.agents).map((agent) => this.memoryStore.init(agent.memoryDir, agent.displayName)),
     );
-    this.roomState = await this.room.readState();
     this.initialized = true;
     this.hydrateDurableQueue();
 
@@ -316,6 +326,11 @@ export class GaiaController {
         },
       });
     }
+  }
+
+  private assertRoomWritable(): void {
+    if (this.unsupportedStateFields.length === 0) return;
+    throw new Error(`Room state requires a newer daemon (unsupported fields: ${this.unsupportedStateFields.join(", ")}).`);
   }
 
   private async updateRoomState(
@@ -371,6 +386,7 @@ export class GaiaController {
 
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<GaiaTask> {
     await this.init();
+    this.assertRoomWritable();
 
     const command = parseCommand(text);
     // Validate message routing up-front so unknown-agent errors surface
@@ -595,6 +611,7 @@ export class GaiaController {
 
   async setRole(agentId: string | undefined, role: string | undefined): Promise<string> {
     await this.init();
+    this.assertRoomWritable();
     if (!role) return "Usage: /role [agent] <role|none>";
     const targetId = agentId ?? this.workspace.config.defaultAgent;
     const agent = this.workspace.agents[targetId];
@@ -1087,6 +1104,8 @@ export class GaiaController {
   }
 
   async runSummonCommand(agentId: string | undefined, task: string | undefined): Promise<string> {
+    await this.init();
+    this.assertRoomWritable();
     if (!this.options.summonHost) return "Summon system is not available.";
     if (!agentId || !task) return "Usage: /summon <agent> <task>";
     const agent = this.workspace.agents[agentId];
@@ -1099,7 +1118,9 @@ export class GaiaController {
   // Activation writes the monad block onto room state; this controller then
   // re-reads its own state so the next plain message routes through the engine.
   async runSetupCommand(command: { sub?: string; id?: string; room?: string }): Promise<string> {
+    await this.init();
     const sub = command.sub ?? "list";
+    if (sub === "activate" || sub === "off") this.assertRoomWritable();
 
     if (sub === "list") {
       const setups = await discoverSetups(this.workspace.rootDir);
@@ -1163,6 +1184,8 @@ export class GaiaController {
     action: MemoryAction,
     options: { content?: string; oldText?: string },
   ): Promise<MemoryMutationResult> {
+    await this.init();
+    this.assertRoomWritable();
     const agent = this.workspace.agents[agentId];
     if (!agent) throw new Error(this.unknownAgentMessage(agentId));
     return this.memoryStore.mutate(agent.memoryDir, file, action, options);

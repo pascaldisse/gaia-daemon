@@ -2,7 +2,16 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { jsonText } from "../lib/fs.js";
-import { defaultRoomState, readRoomState, roomStatePath, updateRoomState, writeRoomState, type RoomState } from "./state.js";
+import {
+  defaultRoomState,
+  readRoomState,
+  readRoomStateCompatibility,
+  roomStatePath,
+  updateRoomState,
+  writeRoomState,
+  type RoomState,
+  type RoomStateCompatibility,
+} from "./state.js";
 import {
   appendRoomEvent,
   readRecentRoomEvents,
@@ -24,6 +33,7 @@ export interface RoomStore {
   recentEvents(limit: number): Promise<RoomEvent[]>;
   eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }>;
   readState(): Promise<RoomState>;
+  stateCompatibility(): Promise<RoomStateCompatibility>;
   writeState(state: RoomState): Promise<void>;
   /** Serialize read-modify-write mutations for this room store instance. */
   updateState(mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>): Promise<RoomState>;
@@ -92,6 +102,10 @@ export class V1FileRoomStore implements RoomStore {
 
   async readState(): Promise<RoomState> {
     return readRoomState(this.statePath);
+  }
+
+  async stateCompatibility(): Promise<RoomStateCompatibility> {
+    return readRoomStateCompatibility(this.statePath);
   }
 
   async writeState(state: RoomState): Promise<void> {

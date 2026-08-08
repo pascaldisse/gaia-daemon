@@ -1,5 +1,5 @@
 import type { Workspace } from "../workspace/types.js";
-import { type RoomState } from "./state.js";
+import { type RoomState, type RoomStateCompatibility } from "./state.js";
 import { type RoomStore } from "./store.js";
 import { newRoomEventId, type AgentRoomEvent, type RoomEvent, type UserRoomEvent } from "./transcript.js";
 
@@ -73,6 +73,10 @@ export class Room {
 
   async readState(): Promise<RoomState> {
     return this.store.readState();
+  }
+
+  async stateCompatibility(): Promise<RoomStateCompatibility> {
+    return this.store.stateCompatibility();
   }
 
   async writeState(state: RoomState): Promise<void> {

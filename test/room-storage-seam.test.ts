@@ -47,6 +47,7 @@ class FakeLifecycle implements RoomLifecycle {
         async recentEvents() { return []; },
         async eventsAfterCursor(cursor) { return { events: [], nextCursor: cursor }; },
         async readState() { return structuredClone(state); },
+        async stateCompatibility() { return { writable: true, unsupportedFields: [] }; },
         async writeState(next) { state = structuredClone(next); },
         async updateState(mutate) {
           const working = structuredClone(state);

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { jsonText, readJsonFile, writeFileAtomic } from "../lib/fs.js";
 import type { MonadConfig, MonadSlot } from "../runtime/monad/types.js";
@@ -228,6 +229,34 @@ export function normalizeRoomState(value: unknown): RoomState {
 
 export async function readRoomState(path: string): Promise<RoomState> {
   return normalizeRoomState(await readJsonFile(path));
+}
+
+export interface RoomStateCompatibility {
+  writable: boolean;
+  unsupportedFields: string[];
+}
+
+const V1_ROOM_STATE_FIELDS = new Set([
+  "activeRoles",
+  "agentCursors",
+  "runtimeDetails",
+  "parentRoomId",
+  "monad",
+  "pendingTurn",
+  "queue",
+]);
+
+export async function readRoomStateCompatibility(path: string): Promise<RoomStateCompatibility> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { writable: true, unsupportedFields: [] };
+    return { writable: false, unsupportedFields: ["$document"] };
+  }
+  if (!isRecord(raw)) return { writable: false, unsupportedFields: ["$document"] };
+  const unsupportedFields = Object.keys(raw).filter((field) => !V1_ROOM_STATE_FIELDS.has(field)).sort();
+  return { writable: unsupportedFields.length === 0, unsupportedFields };
 }
 
 function sameJsonValue(left: unknown, right: unknown): boolean {
