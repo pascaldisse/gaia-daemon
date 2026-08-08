@@ -196,8 +196,47 @@ export async function readRoomState(path: string): Promise<RoomState> {
   return normalizeRoomState(await readJsonFile(path));
 }
 
-// State is normalized on read; in-process mutations keep the shape, so writes
-// serialize directly instead of deep-rebuilding the whole map every turn.
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+// Apply only changes visible through the v1 RoomState schema. Raw fields that
+// this version does not understand survive unchanged, including nested fields
+// inside known objects.
+function patchNormalizedState(raw: unknown, before: unknown, after: unknown): unknown {
+  if (sameJsonValue(before, after)) return raw;
+  if (!isRecord(before) || !isRecord(after)) return after;
+
+  const patched: Record<string, unknown> = isRecord(raw) ? { ...raw } : {};
+  for (const key of Object.keys(before)) {
+    if (!(key in after)) delete patched[key];
+  }
+  for (const [key, value] of Object.entries(after)) {
+    if (!(key in before)) {
+      patched[key] = value;
+      continue;
+    }
+    patched[key] = patchNormalizedState(patched[key], before[key], value);
+  }
+  return patched;
+}
+
+async function writePatchedRoomState(path: string, before: RoomState, after: RoomState): Promise<void> {
+  const raw = await readJsonFile(path);
+  const patched = isRecord(raw) ? patchNormalizedState(raw, before, after) : after;
+  await writeFileAtomic(path, jsonText(patched));
+}
+
+// Full typed replacement + passthrough for fields outside the v1 schema.
 export async function writeRoomState(path: string, state: RoomState): Promise<void> {
-  await writeFileAtomic(path, jsonText(state));
+  const raw = await readJsonFile(path);
+  const before = normalizeRoomState(raw);
+  const patched = isRecord(raw) ? patchNormalizedState(raw, before, state) : state;
+  await writeFileAtomic(path, jsonText(patched));
+}
+
+// Mutation commit: apply its typed delta over the latest raw document so an
+// unrelated newer field is never erased by the v1 adapter.
+export async function updateRoomState(path: string, before: RoomState, after: RoomState): Promise<void> {
+  await writePatchedRoomState(path, before, after);
 }

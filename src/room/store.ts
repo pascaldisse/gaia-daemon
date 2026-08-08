@@ -1,7 +1,8 @@
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { jsonText } from "../lib/fs.js";
-import { defaultRoomState, readRoomState, roomStatePath, writeRoomState, type RoomState } from "./state.js";
+import { defaultRoomState, readRoomState, roomStatePath, updateRoomState, writeRoomState, type RoomState } from "./state.js";
 import {
   appendRoomEvent,
   readRecentRoomEvents,
@@ -94,9 +95,10 @@ export class V1FileRoomStore implements RoomStore {
   updateState(mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>): Promise<RoomState> {
     const run = async (): Promise<RoomState> => {
       const state = await this.readState();
-      const next = await mutate(state);
-      await this.writeState(next ?? state);
-      return next ?? state;
+      const before = structuredClone(state);
+      const next = (await mutate(state)) ?? state;
+      if (!isDeepStrictEqual(before, next)) await updateRoomState(this.statePath, before, next);
+      return next;
     };
     const update = this.stateUpdates.then(run, run);
     this.stateUpdates = update.then(() => undefined, () => undefined);

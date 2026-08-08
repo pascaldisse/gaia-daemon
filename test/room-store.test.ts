@@ -148,6 +148,75 @@ test("updateState serializes concurrent mutations and recovers after failure", a
   }
 });
 
+test("state mutations preserve unknown current fields and no-op bytes", async () => {
+  const temp = await createTempDir();
+  try {
+    const store = openRoomStore(join(temp.path, ".gaia", "rooms"), "room-a");
+    await store.initialize();
+
+    const currentState = {
+      activeRoles: { gaia: "plan" },
+      agentCursors: { gaia: 4 },
+      runtimeDetails: { evt_1: { model: "openai/test", futureRuntimeField: { keep: true } } },
+      pendingTurn: {
+        id: "task_1",
+        eventId: "reserved_1",
+        prompt: "continue",
+        targets: ["gaia"],
+        agentId: "gaia",
+        partialReply: "part",
+        startedAt: "1",
+      },
+      activeAgent: "gaia",
+      thinkingOverrides: { gaia: "high" },
+      contextUsage: { tokens: 123 },
+      workDir: "/workspace",
+      title: "Preserved room",
+      incognito: true,
+      queue: [{ id: "queued_1", text: "next" }],
+      summon: { status: "running", futureProtocol: 2 },
+      goal: { status: "active", text: "preserve data" },
+      futureRootField: { nested: [1, 2, 3] },
+    };
+    await writeFile(store.statePath, `${JSON.stringify(currentState, null, 4)}\n`, "utf8");
+    const transcriptBytes = `${JSON.stringify({ id: "evt_1", timestamp: "1", author: "user", text: "history" })}\n`;
+    await writeFile(store.transcriptPath, transcriptBytes, "utf8");
+
+    await store.updateState((state) => {
+      state.activeRoles.gaia = "review";
+      if (state.pendingTurn) state.pendingTurn.partialReply = "more";
+    });
+
+    const updated = JSON.parse(await readFile(store.statePath, "utf8")) as typeof currentState;
+    assert.equal(updated.activeRoles.gaia, "review");
+    assert.equal(updated.pendingTurn.partialReply, "more");
+    assert.equal(updated.pendingTurn.eventId, "reserved_1");
+    assert.deepEqual(updated.runtimeDetails.evt_1.futureRuntimeField, { keep: true });
+    for (const key of [
+      "activeAgent", "thinkingOverrides", "contextUsage", "workDir", "title", "incognito", "queue", "summon", "goal", "futureRootField",
+    ]) {
+      assert.deepEqual((updated as Record<string, unknown>)[key], (currentState as Record<string, unknown>)[key]);
+    }
+    assert.equal(await readFile(store.transcriptPath, "utf8"), transcriptBytes);
+
+    const mutatedBytes = await readFile(store.statePath, "utf8");
+    await store.updateState(() => {});
+    assert.equal(await readFile(store.statePath, "utf8"), mutatedBytes);
+
+    const typed = await store.readState();
+    typed.parentRoomId = "parent-room";
+    await store.writeState(typed);
+    const directlyWritten = JSON.parse(await readFile(store.statePath, "utf8")) as typeof currentState & { parentRoomId: string };
+    assert.equal(directlyWritten.parentRoomId, "parent-room");
+    assert.equal(directlyWritten.pendingTurn.eventId, "reserved_1");
+    assert.deepEqual(directlyWritten.queue, currentState.queue);
+    assert.deepEqual(directlyWritten.goal, currentState.goal);
+    assert.deepEqual(directlyWritten.futureRootField, currentState.futureRootField);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("initialize repairs a partially existing room and survives concurrency", async () => {
   const temp = await createTempDir();
   try {
