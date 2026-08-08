@@ -22,6 +22,8 @@ export interface RoomLifecycle {
   /** Includes currentRoomId when its directory has not been created yet. */
   list(currentRoomId?: string): Promise<RoomRecord[]>;
   open(roomId: string): RoomStore;
+  /** Create the room's files when missing; existing bytes are never touched. */
+  ensure(roomId: string): Promise<RoomStore>;
   /** Atomically reserve the first available `<base>-fork[-N]` directory. */
   reserveFork(base: string): Promise<ReservedRoom>;
 }
@@ -56,6 +58,12 @@ class V1FileRoomLifecycle implements RoomLifecycle {
 
   open(roomId: string): RoomStore {
     return openRoomStore(this.roomsDir, roomId);
+  }
+
+  async ensure(roomId: string): Promise<RoomStore> {
+    const store = this.open(roomId);
+    await store.initialize();
+    return store;
   }
 
   async reserveFork(base: string): Promise<ReservedRoom> {
