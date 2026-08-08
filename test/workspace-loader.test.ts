@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ensureWorkspaceRoom, initWorkspace, isValidRoomId, setWorkspaceRoom, gaiaHome, globalAgentsPath } from "../src/workspace/workspace-loader.ts";
 import { createTempDir } from "./helpers/temp.ts";
@@ -47,6 +47,24 @@ test("ensureWorkspaceRoom creates transcript and state files", async () => {
     const state = JSON.parse(await readFile(statePath, "utf8"));
     assert.ok(state && typeof state === "object");
     assert.ok("activeRoles" in state);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("ensureWorkspaceRoom preserves established room files", async () => {
+  const temp = await createTempDir();
+  try {
+    await initWorkspace(temp.path);
+    const roomDir = join(temp.path, ".gaia", "rooms", "lab");
+    await mkdir(roomDir, { recursive: true });
+    await writeFile(join(roomDir, "transcript.jsonl"), "existing transcript\n", "utf8");
+    await writeFile(join(roomDir, "state.json"), '{"existing":true}\n', "utf8");
+
+    await ensureWorkspaceRoom(temp.path, "lab");
+
+    assert.equal(await readFile(join(roomDir, "transcript.jsonl"), "utf8"), "existing transcript\n");
+    assert.equal(await readFile(join(roomDir, "state.json"), "utf8"), '{"existing":true}\n');
   } finally {
     await temp.cleanup();
   }

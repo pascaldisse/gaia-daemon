@@ -54,6 +54,28 @@ test("copyTranscriptTo keeps transcript layout behind the room-store boundary", 
   }
 });
 
+test("room store initializes missing files without rewriting established bytes", async () => {
+  const temp = await createTempDir();
+  try {
+    const roomsDir = join(temp.path, "rooms");
+    const store = openRoomStore(roomsDir, "room-a");
+
+    await store.initialize();
+    assert.equal(await readFile(store.transcriptPath, "utf8"), "");
+    assert.deepEqual(JSON.parse(await readFile(store.statePath, "utf8")), {
+      activeRoles: {}, agentCursors: {}, runtimeDetails: {},
+    });
+
+    await writeFile(store.transcriptPath, "history\n", "utf8");
+    await writeFile(store.statePath, '{"preserved":true}\n', "utf8");
+    await store.initialize();
+    assert.equal(await readFile(store.transcriptPath, "utf8"), "history\n");
+    assert.equal(await readFile(store.statePath, "utf8"), '{"preserved":true}\n');
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("openRoomStore keeps the established v1 state and transcript paths", async () => {
   const temp = await createTempDir();
   try {

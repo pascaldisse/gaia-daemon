@@ -5,10 +5,10 @@ import { join, resolve } from "node:path";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "../agents/registry.js";
 import { DEFAULTS } from "../config/defaults.js";
 import { jsonText, writeIfMissing, writeJsonFile } from "../lib/fs.js";
-import { defaultRoomState } from "../room/state.js";
 import { parseHarness } from "../runtime/index.js";
 import { parseSandboxConfig } from "../runtime/sandbox/registry.js";
 import { discoverContextFiles } from "./context-files.js";
+import { openRoomLifecycle } from "./room-lifecycle.js";
 import type { Workspace, WorkspaceConfig } from "./types.js";
 
 export const WORKSPACE_DIRNAME = ".gaia";
@@ -69,8 +69,7 @@ function assertRoomId(roomId: string): void {
 
 export async function ensureWorkspaceRoom(cwd: string, roomId: string): Promise<void> {
   assertRoomId(roomId);
-  await writeIfMissing(workspaceFile(cwd, "rooms", roomId, "transcript.jsonl"), "");
-  await writeIfMissing(workspaceFile(cwd, "rooms", roomId, "state.json"), jsonText(defaultRoomState()));
+  await openRoomLifecycle(workspaceFile(cwd, "rooms")).ensure(roomId);
 }
 
 export async function setWorkspaceRoom(cwd: string, roomId: string): Promise<void> {
