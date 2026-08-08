@@ -23,6 +23,8 @@ export interface RoomStore {
   eventsAfterCursor(cursor: number): Promise<{ events: RoomEvent[]; nextCursor: number }>;
   readState(): Promise<RoomState>;
   writeState(state: RoomState): Promise<void>;
+  /** Serialize read-modify-write mutations for this room store instance. */
+  updateState(mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>): Promise<RoomState>;
 }
 
 /** Exclusive create: concurrent initializers never truncate an existing file. */
@@ -41,6 +43,7 @@ export class V1FileRoomStore implements RoomStore {
   readonly dir: string;
   readonly transcriptPath: string;
   readonly statePath: string;
+  private stateUpdates: Promise<void> = Promise.resolve();
 
   constructor(roomsDir: string, roomId: string) {
     this.dir = join(roomsDir, roomId);
@@ -86,6 +89,18 @@ export class V1FileRoomStore implements RoomStore {
 
   async writeState(state: RoomState): Promise<void> {
     await writeRoomState(this.statePath, state);
+  }
+
+  updateState(mutate: (state: RoomState) => void | RoomState | Promise<void | RoomState>): Promise<RoomState> {
+    const run = async (): Promise<RoomState> => {
+      const state = await this.readState();
+      const next = await mutate(state);
+      await this.writeState(next ?? state);
+      return next ?? state;
+    };
+    const update = this.stateUpdates.then(run, run);
+    this.stateUpdates = update.then(() => undefined, () => undefined);
+    return update;
   }
 }
 

@@ -126,6 +126,28 @@ test("initialize creates default room files and never touches existing bytes", a
   }
 });
 
+test("updateState serializes concurrent mutations and recovers after failure", async () => {
+  const temp = await createTempDir();
+  try {
+    const store = openRoomStore(join(temp.path, ".gaia", "rooms"), "room-a");
+    await store.initialize();
+
+    await Promise.all(Array.from({ length: 20 }, (_, index) => store.updateState(async (state) => {
+      const agentId = `agent-${index}`;
+      state.agentCursors[agentId] = index;
+    })));
+
+    const concurrent = await store.readState();
+    assert.deepEqual(Object.keys(concurrent.agentCursors).sort(), Array.from({ length: 20 }, (_, index) => `agent-${index}`).sort());
+
+    await assert.rejects(store.updateState(() => { throw new Error("boom"); }), /boom/);
+    await store.updateState((state) => { state.activeRoles.gaia = "plan"; });
+    assert.equal((await store.readState()).activeRoles.gaia, "plan");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("initialize repairs a partially existing room and survives concurrency", async () => {
   const temp = await createTempDir();
   try {

@@ -68,13 +68,19 @@ test("lifecycle uses an injected room-store adapter", async () => {
     async eventsAfterCursor() { return { events: [], nextCursor: 0 }; },
     async readState() { return { activeRoles: {}, agentCursors: {}, runtimeDetails: {} }; },
     async writeState() {},
+    async updateState(mutate) {
+      const state = { activeRoles: {}, agentCursors: {}, runtimeDetails: {} };
+      return (await mutate(state)) ?? state;
+    },
   });
   const lifecycle = openRoomLifecycle("ignored", (_roomsDir, roomId) => {
     opened.push(roomId);
     return fakeStore(roomId);
   });
 
-  assert.equal(lifecycle.open("adapter-room").dir, "fake/adapter-room");
+  const openedStore = lifecycle.open("adapter-room");
+  assert.equal(openedStore.dir, "fake/adapter-room");
+  assert.equal(lifecycle.open("adapter-room"), openedStore);
   assert.equal((await lifecycle.ensure("ensured-room")).dir, "fake/ensured-room");
   assert.deepEqual(opened, ["adapter-room", "ensured-room"]);
 });

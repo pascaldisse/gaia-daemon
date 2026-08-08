@@ -72,9 +72,9 @@ export class SummonCoordinator {
     // Ensure and open through the workspace composition so the child link and
     // its controller always use the same room adapter.
     const store = await this.workspace.rooms.ensure(childRoomId);
-    const state = await store.readState();
-    state.parentRoomId = parentRoomId;
-    await store.writeState(state);
+    await store.updateState((state) => {
+      state.parentRoomId = parentRoomId;
+    });
 
     const child = await this.controllerForRoom(childRoomId);
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task };

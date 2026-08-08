@@ -257,13 +257,13 @@ export async function activateSetup(workspace: Workspace, idOrPath: string, room
   const placedRoles = await placeRoleFiles(info.dir, manifest, workspace, slots);
 
   const store = workspace.rooms.open(roomId);
-  const state = await store.readState();
   const bindings: RawBinding[] = manifest.agents ?? slots.map((slot) => ({ ref: slot.agentId, role: slot.defaultRole }));
-  for (const binding of bindings) {
-    if (binding.ref && binding.role && workspace.agents[binding.ref]) state.activeRoles[binding.ref] = binding.role;
-  }
-  state.monad = monad;
-  await store.writeState(state);
+  await store.updateState((state) => {
+    for (const binding of bindings) {
+      if (binding.ref && binding.role && workspace.agents[binding.ref]) state.activeRoles[binding.ref] = binding.role;
+    }
+    state.monad = monad;
+  });
 
   await applyRoomDefaults(workspace, manifest);
 
@@ -279,10 +279,12 @@ export async function readRoomMonad(workspace: Workspace, roomId: string): Promi
 /** Clear a room's monad block, returning it to a normal room. */
 export async function deactivateMonad(workspace: Workspace, roomId: string): Promise<boolean> {
   const store = workspace.rooms.open(roomId);
-  const state = await store.readState();
-  if (!state.monad) return false;
-  delete state.monad;
-  await store.writeState(state);
-  return true;
+  let deactivated = false;
+  await store.updateState((state) => {
+    if (!state.monad) return;
+    delete state.monad;
+    deactivated = true;
+  });
+  return deactivated;
 }
 

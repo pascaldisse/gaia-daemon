@@ -47,6 +47,10 @@ class FakeLifecycle implements RoomLifecycle {
         async eventsAfterCursor(cursor) { return { events: [], nextCursor: cursor }; },
         async readState() { return state; },
         async writeState(next) { state = next; },
+        async updateState(mutate) {
+          state = (await mutate(state)) ?? state;
+          return state;
+        },
       };
       this.stores.set(roomId, store);
     }

@@ -29,6 +29,8 @@ export interface RoomLifecycle {
 }
 
 class V1FileRoomLifecycle implements RoomLifecycle {
+  private readonly stores = new Map<string, RoomStore>();
+
   constructor(readonly roomsDir: string, private readonly storeFactory: RoomStoreFactory) {}
 
   roomPath(roomId: string): string {
@@ -57,7 +59,12 @@ class V1FileRoomLifecycle implements RoomLifecycle {
   }
 
   open(roomId: string): RoomStore {
-    return this.storeFactory(this.roomsDir, roomId);
+    let store = this.stores.get(roomId);
+    if (!store) {
+      store = this.storeFactory(this.roomsDir, roomId);
+      this.stores.set(roomId, store);
+    }
+    return store;
   }
 
   async ensure(roomId: string): Promise<RoomStore> {
