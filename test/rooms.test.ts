@@ -298,6 +298,18 @@ test("transcript: pre-id lines get stable legacy ids; bad lines are skipped but 
   assert.equal(page.events[0].id, "evt_new");
 });
 
+test("commitTurn appends after legacy and damaged lines without rewriting them", async () => {
+  const room = await openRoom();
+  const legacy = `${JSON.stringify({ timestamp: "t", author: "user", targets: [], text: "legacy" })}\nnot json\n`;
+  await writeFile(room.transcriptPath, legacy, "utf8");
+  await room.markPendingTurn({ id: "legacy-task", eventId: "legacy-reply", prompt: "p", targets: ["gaia"], agentId: "gaia", partialReply: "", startedAt: "t" });
+  await room.commitTurn({ id: "legacy-reply", timestamp: "t", author: "gaia", text: "continued" });
+
+  assert.ok((await readFile(room.transcriptPath, "utf8")).startsWith(legacy), "legacy bytes were rewritten");
+  assert.deepEqual((await room.eventsFrom(0)).events.map((event) => event.text), ["legacy", "continued"]);
+  assert.equal((await room.state()).pendingTurn, undefined);
+});
+
 test("clearRoom empties the log; unrelated state survives", async () => {
   const room = await openRoom();
   await room.addUserMessage("hello", ["gaia"]);

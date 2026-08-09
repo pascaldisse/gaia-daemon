@@ -714,8 +714,12 @@ export class RoomHandle {
    * state, or see their state delta paired with the old transcript. */
   async replaceImportedRoom(events: RoomEvent[], state?: RoomState, options?: { refuseIfNonempty?: boolean }): Promise<boolean> {
     return this.withRoomLock(async () => {
+      // Occupancy is a byte-level question, checked inside the lock. A legacy
+      // or future transcript may not parse under this daemon, but non-force
+      // import must still refuse it rather than trying to normalize it.
+      const raw = (await readText(this.transcriptPath)) ?? "";
+      if (options?.refuseIfNonempty && raw.trim()) return false;
       const { events: existing } = await this.readEventsLocked();
-      if (options?.refuseIfNonempty && existing.length > 0) return false;
       await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), existing);
       await writeTextAtomic(this.transcriptPath, serializeEvents(events));
       if (state) await this.replaceStateLocked(state);
@@ -947,10 +951,15 @@ export class RoomHandle {
     return this.hasEventLocked(eventId);
   }
 
-  /** hasEvent for callers already holding the room lock (never re-acquires). */
+  /** hasEvent for callers already holding the room lock (never re-acquires).
+   * This is intentionally LENIENT: appending a new reserved event must remain
+   * possible after legacy/pre-id or damaged lines. Strict validation belongs
+   * only to operations that rewrite existing bytes. */
   private async hasEventLocked(eventId: string): Promise<boolean> {
-    const { events } = await this.readEventsLocked();
-    return events.some((event) => event.id === eventId);
+    const page = await readJsonlFrom<boolean>(this.transcriptPath, 0, (raw) =>
+      raw && typeof raw === "object" && (raw as { id?: unknown }).id === eventId ? true : undefined,
+    );
+    return page.items.length > 0;
   }
 
   // --- durable queue -----------------------------------------------------------
