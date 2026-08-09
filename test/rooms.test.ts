@@ -1,14 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
-import { withSqliteImmediateLock } from "../src/core/sqlite.js";
+import { openSqlite, withSqliteImmediateLock } from "../src/core/sqlite.js";
+import { workspacePaths } from "../src/core/paths.js";
 
 async function openRoom(): Promise<RoomHandle> {
   const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
@@ -362,6 +363,63 @@ test("cross-process updateState retains every independently written delta", asyn
   assert.deepEqual(survivors, agents, `every concurrent delta survives: wrote ${agents.length}, persisted ${survivors.length}`);
 });
 
+test("cross-process same-key increments lose no update", async () => {
+  const room = await openRoom();
+  const barrier = join(room.workspaceRoot, "inc-barrier");
+  await mkdir(barrier);
+  const agents = Array.from({ length: 16 }, (_, index) => `inc${index}`);
+  const worker = join(import.meta.dir, "helpers", "room-update-racer.ts");
+  const racers = agents.map((agent) => Bun.spawn([process.execPath, worker, room.workspaceRoot, agent, barrier, "increment"]));
+
+  const deadline = Date.now() + 5_000;
+  while (agents.some((agent) => !existsSync(join(barrier, `${agent}.ready`)))) {
+    assert.ok(Date.now() < deadline, "all child processes reached the pre-update barrier");
+    await Bun.sleep(5);
+  }
+  await writeFile(join(barrier, "release"), "", "utf8");
+  assert.deepEqual(await Promise.all(racers.map((racer) => racer.exited)), agents.map(() => 0));
+
+  const persisted = await RoomHandle.open(room.workspaceRoot, room.roomId).then((handle) => handle.state());
+  assert.equal(persisted.agentCursors.total, agents.length, "read-modify-write increments serialize across processes");
+});
+
+test("opening an existing room is read-only: no lock sidecar, no state rewrite", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  await rm(lockPath, { force: true });
+  const bytes = await readFile(room.statePath, "utf8");
+
+  const roomDir = join(room.statePath, "..");
+  await chmod(roomDir, 0o555);
+  try {
+    const reopened = await RoomHandle.open(room.workspaceRoot, room.roomId);
+    assert.deepEqual(await reopened.state(), normalizeRoomState(JSON.parse(bytes)));
+  } finally {
+    await chmod(roomDir, 0o755);
+  }
+  assert.equal(await readFile(room.statePath, "utf8"), bytes, "opening an existing room rewrites no bytes");
+  assert.equal(existsSync(lockPath), false, "no lock database is created just to read a room");
+});
+
+test("updateState preserves the lock sidecar's journal mode and ignores unknown keys", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  await room.updateState((state) => { state.agentCursors.first = 1; });
+  const db = openSqlite(lockPath);
+  try { db.exec("PRAGMA journal_mode = WAL"); } finally { db.close(); }
+
+  await room.updateState((state) => { state.agentCursors.second = 2; });
+  const check = openSqlite(lockPath);
+  let mode: unknown;
+  try { mode = (check.prepare("PRAGMA journal_mode").get() as { journal_mode?: string }).journal_mode; } finally { check.close(); }
+  assert.equal(String(mode).toLowerCase(), "wal", "the lock sidecar keeps its configured journal mode");
+
+  const before = await readFile(room.statePath, "utf8");
+  await room.updateState(() => { /* no-op */ });
+  assert.equal(await readFile(room.statePath, "utf8"), before, "a no-op mutation writes no bytes");
+  assert.equal((await room.state()).agentCursors.unknown, undefined);
+});
+
 test("state reads a foreign process write instead of a stale cache", async () => {
   const room = await openRoom();
   await room.state();
@@ -395,6 +453,35 @@ test("SQLite state lock releases after its owner is killed and reports bounded c
   await holder.exited;
   await room.updateState((state) => { state.agentCursors.successor = 1; });
   assert.equal((await room.state()).agentCursors.successor, 1);
+});
+
+test("an exhausted lock budget runs the callback zero times", async () => {
+  const room = await openRoom();
+  let runs = 0;
+  await assert.rejects(
+    withSqliteImmediateLock(`${room.statePath}.lock.sqlite`, async () => { runs++; }, { timeoutMs: 0 }),
+    /SQLite lock contention timed out after 0ms/,
+  );
+  assert.equal(runs, 0, "a caller past its deadline never runs late work");
+});
+
+test("a throwing callback releases the lock for the next holder", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  await assert.rejects(withSqliteImmediateLock(lockPath, async () => { throw new Error("callback boom"); }), /callback boom/);
+  assert.equal(await withSqliteImmediateLock(lockPath, async () => "successor", { timeoutMs: 500 }), "successor");
+});
+
+test("a transcript-only room gains state without touching the transcript", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
+  const transcriptPath = workspacePaths.transcript(root, "legacy");
+  await mkdir(join(transcriptPath, ".."), { recursive: true });
+  const line = `${JSON.stringify({ id: "e1", author: "user", text: "hi", ts: "1" })}\n`;
+  await writeFile(transcriptPath, line, "utf8");
+
+  const opened = await RoomHandle.open(root, "legacy");
+  assert.deepEqual(await opened.state(), normalizeRoomState(undefined));
+  assert.equal(await readFile(opened.transcriptPath, "utf8"), line, "seeding state never rewrites an existing transcript");
 });
 
 test("malformed existing state rejects without replacing recoverable bytes", async () => {

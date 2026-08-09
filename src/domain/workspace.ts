@@ -8,9 +8,9 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
-import { jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
+import { jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
-import { normalizeRoomState } from "./rooms.js";
+import { RoomHandle, normalizeRoomState } from "./rooms.js";
 import { removeRoomWorktree } from "./worktree.js";
 import { ensureGlobalDefaultAgents, loadAgentDefinitions } from "./agents.js";
 
@@ -35,20 +35,15 @@ function assertRoomId(roomId: string): void {
   if (!isValidRoomId(roomId)) throw new Error("Room id must be 1-64 letters, numbers, dots, underscores, or hyphens, and cannot contain slashes.");
 }
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (existsSync(path)) return;
-  await writeText(path, content);
-}
-
 export async function ensureWorkspaceRoom(cwd: string, roomId: string, opts?: { incognito?: boolean }): Promise<void> {
   assertRoomId(roomId);
-  await writeIfMissing(workspacePaths.transcript(cwd, roomId), "");
-  // `incognito` is seeded here and ONLY here — writeIfMissing means it lands in
-  // the initial state of a brand-new room and is never rewritten, so the flag is
-  // immutable (a room is incognito or it isn't). Selecting an existing room with
-  // incognito set is a no-op, which is why the daemon can pass the flag freely.
-  const initial = normalizeRoomState(opts?.incognito ? { incognito: true } : undefined);
-  await writeIfMissing(workspacePaths.roomState(cwd, roomId), jsonText(initial));
+  await writeTextIfMissing(workspacePaths.transcript(cwd, roomId), "");
+  // `incognito` is seeded here and ONLY here, and the seed goes through
+  // RoomHandle — the sole serialized state writer. The flag lands in the
+  // creating call's initial document under the create lock and is never
+  // rewritten (a room is incognito or it isn't), so selecting an existing room
+  // with the flag is a no-op and the daemon can pass it freely.
+  await RoomHandle.open(cwd, roomId, opts?.incognito ? { incognito: true } : undefined);
 }
 
 /** Reversible room delete: move the whole room dir (transcript + state + files +
@@ -73,7 +68,7 @@ export async function trashWorkspaceRoom(cwd: string, roomId: string, stamp: str
 /** Scaffold schedules.json so proactive runs are one settings edit away —
  * written on load too, so pre-scheduler workspaces gain the file. */
 async function ensureScheduleFile(cwd: string): Promise<void> {
-  await writeIfMissing(workspacePaths.schedules(cwd), jsonText({ enabled: true, jobs: [] }));
+  await writeTextIfMissing(workspacePaths.schedules(cwd), jsonText({ enabled: true, jobs: [] }));
 }
 
 async function updateConfigField(cwd: string, mutate: (config: Record<string, unknown>) => void): Promise<void> {
@@ -114,8 +109,8 @@ export async function initWorkspace(cwd: string): Promise<{ workspaceDir: string
   const agentsDir = globalAgentsPath();
 
   await ensureGlobalDefaultAgents(agentsDir);
-  await writeIfMissing(workspacePaths.config(cwd), jsonText(defaultConfigJson()));
-  await writeIfMissing(
+  await writeTextIfMissing(workspacePaths.config(cwd), jsonText(defaultConfigJson()));
+  await writeTextIfMissing(
     join(cwd, "AGENTS.md"),
     `# Project Instructions\n\nThis file is project-local context for GAIA agents.\n\nAdd repo conventions, commands, constraints, and preferences here.\nCanonical agent identity lives in global personas under ~/.gaia/agents/.\n`,
   );

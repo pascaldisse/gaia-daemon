@@ -120,6 +120,23 @@ export async function readText(path: string): Promise<string | undefined> {
   }
 }
 
+/** Create-if-missing, exclusively: the ONLY sanctioned way to seed a file that
+ * must never clobber bytes it does not own. `existsSync` + write is a TOCTOU —
+ * every concurrent seeder observes the gap and writes. `wx` lets the kernel
+ * pick one winner; every loser sees EEXIST and is a no-op. Returns whether
+ * THIS call created the file (first-winner semantics for callers that seed
+ * initial content). */
+export async function writeTextIfMissing(path: string, content: string): Promise<boolean> {
+  await ensureDir(dirname(path));
+  try {
+    await writeFile(path, content, { encoding: "utf8", flag: "wx" });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
 export async function writeText(path: string, content: string): Promise<void> {
   await ensureDir(dirname(path));
   await writeFile(path, content, "utf8");

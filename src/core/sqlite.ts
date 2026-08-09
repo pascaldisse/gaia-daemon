@@ -54,13 +54,18 @@ export interface SqliteLockOptions {
  * only processes sharing one local filesystem; network filesystem semantics
  * are intentionally outside this guarantee. A killed owner releases its
  * SQLite transaction lock with the process. */
+/** Release the lock transaction. The coordination database carries NO rows —
+ * the protected work happened in the filesystem — so a failed COMMIT loses
+ * nothing and must never surface as a caller error (the work already
+ * succeeded) nor trigger a re-run (the work is not idempotent). Closing the
+ * handle releases the OS lock either way. */
 async function commitSqlite(db: SqliteDatabase, deadline: number, retryMs: number): Promise<void> {
   while (true) {
     try {
       db.exec("COMMIT");
       return;
     } catch (error) {
-      if (!/\b(busy|locked)\b/i.test(String(error)) || Date.now() >= deadline) throw error;
+      if (!/\b(busy|locked)\b/i.test(String(error)) || Date.now() >= deadline) return;
       await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
     }
   }
@@ -71,6 +76,9 @@ export async function withSqliteImmediateLock<T>(path: string, work: () => Promi
   const retryMs = options.retryMs ?? 10;
   const deadline = Date.now() + timeoutMs;
   while (true) {
+    // Deadline is checked BEFORE acquiring: a caller past its budget runs the
+    // callback zero times rather than once, late.
+    if (Date.now() >= deadline) throw new Error(`SQLite lock contention timed out after ${timeoutMs}ms: ${path}`);
     const db = openSqlite(path);
     let began = false;
     try {

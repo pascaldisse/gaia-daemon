@@ -533,14 +533,21 @@ export class RoomHandle {
     readonly roomId: string,
   ) {}
 
-  static async open(workspaceRoot: string, roomId: string): Promise<RoomHandle> {
+  /** `seed` is applied ONLY when this call is the one that creates the room's
+   * state document, inside the create lock: first winner keeps its seed, later
+   * openers (with or without a seed) never rewrite it. */
+  static async open(workspaceRoot: string, roomId: string, seed?: { incognito?: boolean }): Promise<RoomHandle> {
     const handle = new RoomHandle(workspaceRoot, roomId);
+    // Read-only fast path: an existing room needs no directory write and no
+    // lock database. Opening a room to READ it must never create a sidecar
+    // (read-only checkouts, snapshots, archived workspaces stay openable).
+    if (existsSync(handle.statePath)) return handle;
     await ensureDir(workspacePaths.roomDir(workspaceRoot, roomId));
     const shared = sharedRoomState(handle.statePath);
     const initialize = shared.chain.then(async () => {
       await withSqliteImmediateLock(handle.stateLockPath, async () => {
         if (existsSync(handle.statePath)) return;
-        await writeJsonAtomic(handle.statePath, normalizeRoomState(undefined));
+        await writeJsonAtomic(handle.statePath, normalizeRoomState(seed?.incognito ? { incognito: true } : undefined));
         shared.version++;
       });
     });

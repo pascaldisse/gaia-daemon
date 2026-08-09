@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtempSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverContextFiles, ensureWorkspaceRoom } from "../src/domain/workspace.js";
@@ -39,6 +39,48 @@ test("incognito is immutable: re-ensuring never flips an existing room either wa
   await ensureWorkspaceRoom(root, "vault", { incognito: true });
   await ensureWorkspaceRoom(root, "vault");
   assert.equal((await readState(root, "vault")).incognito, true, "existing incognito room never loses the flag");
+});
+
+test("concurrent ensureWorkspaceRoom keeps the first winner's seed (no create TOCTOU)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-ws-"));
+  const statePath = workspacePaths.roomState(root, "vault");
+  await mkdir(join(statePath, ".."), { recursive: true });
+  // Interleave a foreign winner into the check→write gap: ensure observes a
+  // missing file, the peer creates it, and a check-then-write seeder then
+  // clobbers bytes it never owned. Create-if-missing must be exclusive.
+  const seeding = ensureWorkspaceRoom(root, "vault", { incognito: true });
+  await writeFile(statePath, `${JSON.stringify({ activeRoles: {}, agentCursors: {}, thinkingOverrides: {}, incognito: true, futureField: "first-winner" }, null, 2)}\n`, "utf8");
+  await seeding;
+  const state = (await readState(root, "vault")) as { incognito?: unknown; futureField?: unknown };
+  assert.equal(state.futureField, "first-winner", "an existing state document is never re-created");
+  assert.equal(state.incognito, true);
+});
+
+test("concurrent room seeding creates state.json exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-ws-"));
+  const statePath = workspacePaths.roomState(root, "vault");
+  await mkdir(join(statePath, ".."), { recursive: true });
+  // Count filesystem writes to state.json: a check-then-write seeder lets every
+  // concurrent caller write (each sees the file missing), an exclusive create
+  // lets exactly one through.
+  let writes = 0;
+  const watcher = watch(join(statePath, ".."), (_event, name) => { if (name === "state.json") writes++; });
+  try {
+    await Promise.all(Array.from({ length: 8 }, (_, index) => ensureWorkspaceRoom(root, "vault", index === 0 ? { incognito: true } : undefined)));
+    await new Promise((resolveTimer) => setTimeout(resolveTimer, 50));
+  } finally {
+    watcher.close();
+  }
+  assert.ok(writes <= 1, `state.json written ${writes} times by 8 concurrent seeders`);
+});
+
+test("ensureWorkspaceRoom never overwrites existing transcript bytes under concurrency", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-ws-"));
+  await ensureWorkspaceRoom(root, "lobby");
+  const transcript = workspacePaths.transcript(root, "lobby");
+  await writeFile(transcript, "{\"id\":\"e1\"}\n", "utf8");
+  await Promise.all(Array.from({ length: 8 }, () => ensureWorkspaceRoom(root, "lobby")));
+  assert.equal(await readFile(transcript, "utf8"), "{\"id\":\"e1\"}\n");
 });
 
 test("workspace context never inherits AGENTS.md from parent directories", async () => {

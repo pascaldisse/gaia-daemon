@@ -112,11 +112,15 @@ test("(b) deactivateMonad (same read->normalize->write shape as summon seeding) 
 
 // (b2) Source guard, independent path: NO module outside domain/rooms.ts may
 // write a room's state.json directly — RoomHandle is the sole serialized
-// writer (core/types.ts:283). Direct atomic, promise-FS, and Bun writes all
-// bypass serialization when their target is roomState(...).
+// writer (core/types.ts:283). Scope covers src/ AND scripts/, and every text
+// write alias, not just the atomic JSON one: workspace.ts used to seed state
+// through writeText and slipped straight through the old pattern. The only
+// sanctioned non-RoomHandle path is exclusive create (writeTextIfMissing),
+// which cannot clobber bytes — and even that is no longer used for state.
 test("(b2) no module outside domain/rooms.ts writes roomState directly", async () => {
   const src = join(import.meta.dirname, "..", "src");
-  const proc = Bun.spawnSync(["grep", "-rnE", "(writeJsonAtomic|writeFile|Bun\\.write)\\(", src]);
+  const scripts = join(import.meta.dirname, "..", "scripts");
+  const proc = Bun.spawnSync(["grep", "-rnE", "(writeJsonAtomic|writeTextAtomic|writeBytesAtomic|writeText|writeFile|writeFileSync|Bun\\.write)\\(", src, scripts]);
   const candidates = new TextDecoder()
     .decode(proc.stdout)
     .split("\n")
@@ -124,7 +128,7 @@ test("(b2) no module outside domain/rooms.ts writes roomState directly", async (
   const hits: string[] = [];
   for (const line of candidates) {
     const file = line.slice(0, line.indexOf(":"));
-    const match = line.match(/(?:writeJsonAtomic|writeFile|Bun\.write)\(([^,)]*)/);
+    const match = line.match(/(?:writeJsonAtomic|writeTextAtomic|writeBytesAtomic|writeText|writeFile|writeFileSync|Bun\.write)\(([^,)]*)/);
     const arg = match?.[1]?.trim() ?? "";
     if (!arg) continue;
     const body = await readFile(file, "utf8");

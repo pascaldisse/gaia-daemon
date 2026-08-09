@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
 import { agentPaths, globalPaths } from "../core/paths.js";
-import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText } from "../core/store.js";
+import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import { MemoryStore } from "./memory.js";
 
 interface RawAgentConfig {
@@ -65,9 +65,8 @@ function stringList(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
 }
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (!existsSync(path)) await writeText(path, content);
-}
+// Create-only seeding lives in core/store (exclusive `wx`, no TOCTOU).
+const writeIfMissing = writeTextIfMissing;
 
 // --- scaffold (`gaia agent create` + the seeded defaults) --------------------
 

@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { ensureDir, readText, writeText, writeTextAtomic } from "../core/store.js";
+import { ensureDir, readText, writeText, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 
 export type MemoryAction = "add" | "replace" | "remove";
 
@@ -103,9 +103,8 @@ function pathInside(path: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (!existsSync(path)) await writeText(path, content);
-}
+// Create-only seeding lives in core/store (exclusive `wx`, no TOCTOU).
+const writeIfMissing = writeTextIfMissing;
 
 export class MemoryStore {
   /** At-capacity failure streaks per `${dir}:${file}` (circuit breaker, §5). */

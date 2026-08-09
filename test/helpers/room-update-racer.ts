@@ -13,12 +13,13 @@ if (args[0] === "hold-lock") {
     await new Promise<void>(() => {});
   });
 } else {
-  const [workspaceRoot, agentId, barrierDir] = args;
-  if (!workspaceRoot || !agentId || !barrierDir) throw new Error("usage: room-update-racer <workspace-root> <agent-id> <barrier-dir>");
+  const [workspaceRoot, agentId, barrierDir, mode] = args;
+  if (!workspaceRoot || !agentId || !barrierDir) throw new Error("usage: room-update-racer <workspace-root> <agent-id> <barrier-dir> [increment]");
   const room = await RoomHandle.open(workspaceRoot, "default");
   await writeFile(join(barrierDir, `${agentId}.ready`), "", "utf8");
   while (!existsSync(join(barrierDir, "release"))) await Bun.sleep(2);
   await room.updateState((state) => {
-    state.agentCursors[agentId] = 1;
+    if (mode === "increment") state.agentCursors.total = (state.agentCursors.total ?? 0) + 1;
+    else state.agentCursors[agentId] = 1;
   });
 }
