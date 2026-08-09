@@ -18,7 +18,10 @@ import { RoomHandle } from "../src/domain/rooms.js";
 import { initWorkspace } from "../src/domain/workspace.js";
 import { workspacePaths } from "../src/core/paths.js";
 
-const ROOMS_MODULE = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "domain", "rooms.ts");
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOMS_MODULE = join(REPO, "src", "domain", "rooms.ts");
+const SQLITE_MODULE = join(REPO, "src", "core", "sqlite.ts");
+const IMPORT_SCRIPT = join(REPO, "scripts", "import-claude-export.ts");
 const ROOM_ID = "default";
 
 interface Fixture {
@@ -32,6 +35,7 @@ interface Fixture {
  * writer operation, then exits — one process per writer, as in production. */
 const RUNNER = `
 import { RoomHandle } from ${JSON.stringify(ROOMS_MODULE)};
+import { withSqliteImmediateLock } from ${JSON.stringify(SQLITE_MODULE)};
 
 const [proj, roomId, op, arg] = process.argv.slice(2);
 const room = await RoomHandle.open(proj, roomId);
@@ -45,6 +49,11 @@ if (op === "commit") {
   await room.rewindTranscript(Number(arg));
 } else if (op === "clear") {
   await room.clearRoom();
+} else if (op === "hold-lock") {
+  await withSqliteImmediateLock(room.statePath + ".lock.sqlite", async () => {
+    console.log("locked");
+    await new Promise(() => {});
+  });
 } else {
   throw new Error("unknown op " + op);
 }
@@ -73,14 +82,33 @@ async function fixture(prefix: string): Promise<Fixture> {
   };
 }
 
-function run(fx: Fixture, op: string, arg: string): Promise<number> {
+function childExit(child: ReturnType<typeof spawn>): Promise<{ code: number; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [fx.runner, fx.proj, ROOM_ID, op, arg], {
-      stdio: ["ignore", "ignore", "inherit"],
-      env: { ...process.env },
+    child.on("error", reject);
+    child.on("exit", (code, signal) => resolve({ code: code ?? -1, signal }));
+  });
+}
+
+function start(fx: Fixture, op: string, arg: string, stdout: "ignore" | "pipe" = "ignore") {
+  return spawn(process.execPath, [fx.runner, fx.proj, ROOM_ID, op, arg], {
+    stdio: ["ignore", stdout, "inherit"],
+    env: { ...process.env },
+  });
+}
+
+async function run(fx: Fixture, op: string, arg: string): Promise<number> {
+  return (await childExit(start(fx, op, arg))).code;
+}
+
+async function waitForStdout(child: ReturnType<typeof spawn>, text: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes(text)) resolve();
     });
     child.on("error", reject);
-    child.on("exit", (code) => resolve(code ?? -1));
+    child.on("exit", (code, signal) => reject(new Error(`child exited before ${text}: ${code}/${signal}`)));
   });
 }
 
@@ -88,6 +116,23 @@ async function lines(path: string): Promise<string[]> {
   const text = await readFile(path, "utf8").catch(() => "");
   return text.split("\n").filter((line) => line.trim());
 }
+
+// (g) SQLite's OS lock is released when its owning process is killed: a
+// successor does not wait for the killed owner's five-second acquisition budget.
+test("(g) SIGKILL lock owner releases append successor", async () => {
+  const fx = await fixture("gaia-xproc-kill-lock-");
+  try {
+    const owner = start(fx, "hold-lock", "", "pipe");
+    await waitForStdout(owner, "locked");
+    owner.kill("SIGKILL");
+    assert.equal((await childExit(owner)).signal, "SIGKILL");
+
+    assert.equal(await run(fx, "append", "after-killed-owner"), 0);
+    assert.equal((JSON.parse((await lines(fx.transcript)).at(-1)!) as { id: string }).id, "after-killed-owner");
+  } finally {
+    await fx.cleanup();
+  }
+});
 
 // (b) append-once: the WAL reserves one event id; a replay in another process
 // must NOT produce a second copy of the committed reply.
@@ -238,6 +283,71 @@ test("(1) append to an unterminated transcript inserts a separator, keeps the by
     const written = await lines(fx.transcript);
     assert.equal(written.length, 2, "the new event was glued onto the unterminated tail");
     assert.equal((JSON.parse(written[1]) as { id: string }).id, "after-torn");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// (2) This invokes the real importer, rather than calling replaceTranscript
+// directly. Every racing append must survive either in its new live transcript
+// or in the import's rewound archive.
+test("(2) import --force racing appends keeps every append live or archived", async () => {
+  const fx = await fixture("gaia-xproc-force-import-");
+  try {
+    await seed(fx, 4, "before-import");
+    const exportDir = join(fx.proj, "claude-export");
+    await mkdir(exportDir);
+    await writeFile(join(exportDir, "conversations.json"), JSON.stringify([{
+      uuid: "import-chat",
+      name: "imported",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:01.000Z",
+      chat_messages: [{ uuid: "import-message", sender: "human", created_at: "2026-01-01T00:00:00.000Z", text: "from export" }],
+    }]), "utf8");
+    const importer = spawn(process.execPath, [IMPORT_SCRIPT, "--export", exportDir, "--workspace", fx.proj, "--agent", "importer", "--room", ROOM_ID, "--force"], {
+      stdio: ["ignore", "ignore", "inherit"], env: { ...process.env },
+    });
+    const ids = Array.from({ length: 32 }, (_, i) => `during-force-${i}`);
+    const result = await Promise.all([childExit(importer), ...ids.map((id) => run(fx, "append", id))]);
+    assert.equal(result[0].code, 0, `import failed: ${JSON.stringify(result[0])}`);
+    assert.ok(result.slice(1).every((code) => code === 0), `append exit codes: ${result.slice(1).join(",")}`);
+    const surviving = await survivingIds(fx);
+    assert.deepEqual(ids.filter((id) => !surviving.has(id)), [], "--force import erased a concurrent append");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// (3) commitTurn's child is SIGKILLed only after its new transcript record is
+// observable. The large valid prelude holds it in the cursor scan between the
+// fsynced append and the following state write; this is a real process crash,
+// not a mocked filesystem or state writer. It proves that a crash there leaves
+// durable transcript history while pendingTurn remains resumable. Power-loss
+// persistence past the kernel/fsync contract remains intentionally unprovable.
+test("(3) WAL transcript is observable before commitTurn state acknowledgement", async () => {
+  const fx = await fixture("gaia-xproc-wal-order-");
+  try {
+    const room = await RoomHandle.open(fx.proj, ROOM_ID);
+    const eventId = "wal-before-state";
+    await room.markPendingTurn({ id: "wal-task", eventId, prompt: "p", targets: ["agent"], agentId: "agent", partialReply: "", startedAt: "now" });
+    const prelude = Array.from({ length: 50_000 }, (_, i) => JSON.stringify({ id: `prelude-${i}`, timestamp: "t", author: "user", targets: [], text: "p" })).join("\n") + "\n";
+    await writeFile(fx.transcript, prelude, "utf8");
+
+    const committer = start(fx, "commit", eventId);
+    let observed = false;
+    for (let tries = 0; tries < 100; tries++) {
+      if ((await readFile(fx.transcript, "utf8")).includes(`"id":"${eventId}"`)) {
+        observed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.ok(observed, "the child never made its WAL record observable");
+    committer.kill("SIGKILL");
+    assert.equal((await childExit(committer)).signal, "SIGKILL");
+
+    assert.ok((await readFile(fx.transcript, "utf8")).includes(`"id":"${eventId}"`), "SIGKILL lost the observable WAL record");
+    assert.equal((await room.state()).pendingTurn?.eventId, eventId, "state acknowledgement happened before the crash window");
   } finally {
     await fx.cleanup();
   }
