@@ -19,9 +19,11 @@ test("packaged swap covers asset dirs + binary artifacts", () => {
   }
 });
 
-test("design/ is bundled and therefore swapped (regression: blank packaged app)", () => {
-  assert.ok(BUNDLE_ASSET_DIRS.includes("design"));
-  assert.ok(bundleSwapNames(false).includes("design"));
+test("design/ and addons/ are bundled and therefore swapped", () => {
+  for (const asset of ["design", "addons"]) {
+    assert.ok(BUNDLE_ASSET_DIRS.includes(asset));
+    assert.ok(bundleSwapNames(false).includes(asset));
+  }
 });
 
 test("build script and reload swap read the same constant, no re-listed names", () => {

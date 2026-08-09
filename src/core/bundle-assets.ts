@@ -1,7 +1,7 @@
 // Bundle runtime inventory → one source for build snapshot + /rebuild swap.
 
 /** Asset directories snapshotted next to the binary, swapped on every rebuild. */
-export const BUNDLE_ASSET_DIRS = ["web", "setups", "design"] as const;
+export const BUNDLE_ASSET_DIRS = ["web", "setups", "design", "addons"] as const;
 
 /** Artifacts that only exist in a packaged (compiled) install. */
 export const BUNDLE_BINARY_ARTIFACTS = ["gaia-daemon", "gaia-source.json"] as const;
