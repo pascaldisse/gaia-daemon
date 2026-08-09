@@ -11,6 +11,7 @@ import {
   evaluatePluginEngine,
   readPluginManifest,
   readPluginManifests,
+  revalidatePluginManifest,
   validatePluginManifest,
 } from "../src/services/plugin-manifest.js";
 
@@ -164,6 +165,17 @@ test("requires plugin.json in one real direct child and rejects package and mani
     await rejectsManifest(() => readPluginManifest(fx.manifestPath, options(fx.addonsRoot)), /inside its declared root/);
   } finally {
     await rm(outside, { recursive: true, force: true });
+    await fx.cleanup();
+  }
+});
+
+test("revalidation immediately before import rejects a changed manifest", async () => {
+  const fx = await fixture();
+  try {
+    const plugin = await readPluginManifest(fx.manifestPath, options(fx.addonsRoot));
+    await writeFile(fx.manifestPath, JSON.stringify({ ...valid, version: "1.2.4" }));
+    await rejectsManifest(() => revalidatePluginManifest(plugin), /changed after inventory/);
+  } finally {
     await fx.cleanup();
   }
 });

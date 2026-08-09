@@ -1,46 +1,47 @@
-import type { BundledPluginInventoryItem } from "./bundled-plugins.js";
-import type { ValidatedPluginManifest } from "./plugin-manifest.js";
+import {
+  bundledPluginNamespace,
+  type BundledPluginCompatible,
+  type BundledPluginInventoryItem,
+} from "./bundled-plugins.js";
+import {
+  revalidatePluginManifest,
+  type PluginManifest,
+  type ValidatedPluginManifest,
+} from "./plugin-manifest.js";
 
-/**
- * Disconnected generic plugin lifecycle host.
- *
- * Nothing here is wired to the app, rooms, HTTP, or the legacy plugin loaders.
- * The host only turns a manifest inventory into a registered generation and
- * back again. It never imports anything by itself: every module arrives through
- * the injected importer, so callers own the module resolution policy.
- *
- * Declared permissions and requiredCaps are carried as data. The host grants no
- * authority; a future integration must authorize every operation separately.
- */
-
-/** Module shape the host expects behind an entrypoint. */
-export interface PluginModule {
-  readonly register?: (context: PluginRegisterContext) => unknown | Promise<unknown>;
-}
-
-/** Everything a plugin learns at registration. Data only, never authority. */
+/** Registration remains disconnected from app/room/HTTP and legacy loaders. */
 export interface PluginRegisterContext {
-  readonly name: string;
-  readonly version: string;
+  readonly manifest: PluginManifest;
   readonly namespace: string;
   readonly packageRoot: string;
-  readonly entrypointPath: string;
-  /** Declaration only: authorizing these is a caller's job, not the host's. */
-  readonly permissions: readonly string[];
-  /** Declaration only: the host never provisions capabilities. */
-  readonly requiredCaps: readonly string[];
   readonly generation: number;
 }
 
-/** Injected module resolution. The host has no default dynamic import. */
-export type PluginImporter = (entrypointPath: string, plugin: ValidatedPluginManifest) => Promise<unknown>;
+export interface PluginRegistration {
+  readonly status: "available" | "unavailable";
+  readonly unavailableReason?: string;
+  readonly services?: Readonly<Record<string, unknown>>;
+  readonly dispose?: () => void | Promise<void>;
+}
 
-export type PluginDispose = () => unknown | Promise<unknown>;
+export type PluginRegister = (context: PluginRegisterContext) => PluginRegistration | Promise<PluginRegistration>;
+
+export interface PluginModule {
+  readonly default?: PluginRegister | { readonly register?: PluginRegister };
+  readonly register?: PluginRegister;
+}
+
+/** Required injection: the host performs zero module resolution by itself. */
+export type PluginImporter = (entrypointPath: string, plugin: ValidatedPluginManifest) => Promise<unknown>;
+export type PluginRevalidator = (plugin: ValidatedPluginManifest) => Promise<ValidatedPluginManifest>;
 
 export interface RegisteredPlugin {
   readonly namespace: string;
   readonly name: string;
   readonly version: string;
+  readonly status: "available" | "unavailable";
+  readonly unavailableReason?: string;
+  /** Declarations only; neither field grants authority. */
   readonly permissions: readonly string[];
   readonly requiredCaps: readonly string[];
 }
@@ -58,15 +59,16 @@ export interface PluginGeneration {
 }
 
 export interface PluginHostOptions {
-  /** Required: the host performs zero module resolution of its own. */
   readonly importer: PluginImporter;
-  /** Optional observability sink; failures inside it never affect lifecycle. */
+  /** Default = full manifest/path re-read immediately before importer call. */
+  readonly revalidate?: PluginRevalidator;
+  /** Observability only; sink failures never affect lifecycle. */
   readonly onEvent?: (event: PluginHostEvent) => void;
 }
 
 export type PluginHostEvent =
   | { readonly kind: "skipped"; readonly generation: number; readonly reason: string; readonly namespace?: string }
-  | { readonly kind: "registered"; readonly generation: number; readonly namespace: string }
+  | { readonly kind: "registered"; readonly generation: number; readonly namespace: string; readonly status: "available" | "unavailable" }
   | { readonly kind: "disposed"; readonly generation: number; readonly namespace: string }
   | { readonly kind: "dispose-failed"; readonly generation: number; readonly namespace: string; readonly reason: string };
 
@@ -82,43 +84,48 @@ export class PluginHostError extends Error {
 
 interface LiveEntry {
   readonly summary: RegisteredPlugin;
-  readonly dispose?: PluginDispose;
+  readonly services: Readonly<Record<string, unknown>>;
+  readonly dispose?: () => void | Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function disposeOf(result: unknown, namespace: string): PluginDispose | undefined {
-  if (result === undefined || result === null) return undefined;
-  if (typeof result === "function") return result as PluginDispose;
-  if (isRecord(result)) {
-    const candidate = result.dispose;
-    if (candidate === undefined) return undefined;
-    if (typeof candidate !== "function") {
-      throw new PluginHostError("dispose must be a function", namespace);
-    }
-    return candidate.bind(result) as PluginDispose;
-  }
-  throw new PluginHostError("register returned an unsupported value", namespace);
-}
-
-function reason(error: unknown): string {
+function errorReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Last exactly representable generation id; ids are never reused or wrapped. */
+function moduleRegister(moduleNamespace: unknown, namespace: string): PluginRegister {
+  if (!isRecord(moduleNamespace)) throw new PluginHostError("entrypoint did not export a module object", namespace);
+  const candidate = (moduleNamespace as PluginModule).default ?? moduleNamespace;
+  if (typeof candidate === "function") return candidate as PluginRegister;
+  if (isRecord(candidate) && typeof candidate.register === "function") return candidate.register as PluginRegister;
+  if (typeof (moduleNamespace as PluginModule).register === "function") return (moduleNamespace as PluginModule).register as PluginRegister;
+  throw new PluginHostError("entrypoint must export a register function", namespace);
+}
+
+function registrationValue(value: unknown, namespace: string): PluginRegistration {
+  if (!isRecord(value) || (value.status !== "available" && value.status !== "unavailable")) {
+    throw new PluginHostError("register must return an available or unavailable registration", namespace);
+  }
+  if (value.status === "unavailable" && (typeof value.unavailableReason !== "string" || value.unavailableReason.trim().length === 0)) {
+    throw new PluginHostError("unavailable registration requires a reason", namespace);
+  }
+  if (value.status === "available" && value.unavailableReason !== undefined) {
+    throw new PluginHostError("available registration cannot include an unavailable reason", namespace);
+  }
+  if (value.services !== undefined && !isRecord(value.services)) throw new PluginHostError("services must be an object", namespace);
+  if (value.dispose !== undefined && typeof value.dispose !== "function") throw new PluginHostError("dispose must be a function", namespace);
+  return value as unknown as PluginRegistration;
+}
+
 const MAX_GENERATION_ID = Number.MAX_SAFE_INTEGER;
 
-/**
- * Generic lifecycle host over a manifest inventory.
- *
- * Registration is strictly sequential so plugins observe a deterministic order,
- * and a partial failure unwinds by disposing already-registered plugins in
- * reverse order, leaving the host empty rather than half-loaded.
- */
+/** Sequential registration + atomic quiet-boundary generation swaps. */
 export class PluginHost {
   readonly #importer: PluginImporter;
+  readonly #revalidate: PluginRevalidator;
   readonly #onEvent?: (event: PluginHostEvent) => void;
   #entries: readonly LiveEntry[] = Object.freeze([]);
   #current: PluginGeneration = Object.freeze({ generation: 0, registered: Object.freeze([]), skipped: Object.freeze([]) });
@@ -126,16 +133,16 @@ export class PluginHost {
   #leases = 0;
   #busy = false;
   #closed = false;
+  #shutdownPromise: Promise<void> | undefined;
 
   constructor(options: PluginHostOptions) {
-    if (typeof options.importer !== "function") {
-      throw new PluginHostError("an importer must be injected");
-    }
+    if (typeof options.importer !== "function") throw new PluginHostError("an importer must be injected");
+    if (options.revalidate !== undefined && typeof options.revalidate !== "function") throw new PluginHostError("revalidate must be a function");
     this.#importer = options.importer;
+    this.#revalidate = options.revalidate ?? revalidatePluginManifest;
     this.#onEvent = options.onEvent;
   }
 
-  /** The active generation. Swapped atomically, never observed half-built. */
   get current(): PluginGeneration {
     return this.#current;
   }
@@ -144,9 +151,7 @@ export class PluginHost {
     return this.#leases;
   }
 
-  /** Hold while a turn runs: reload is refused until every lease is released. */
   acquireTurnLease(): () => void {
-    // Terminal state: a closed host owns no generation to lease.
     if (this.#closed) throw new PluginHostError("turn leases are refused after shutdown");
     this.#leases += 1;
     let released = false;
@@ -157,54 +162,47 @@ export class PluginHost {
     };
   }
 
-  /**
-   * Build a new generation and swap it in.
-   *
-   * Only inventory entries the manifest layer already marked compatible are
-   * eligible: unavailable or invalid packages are recorded as skipped and their
-   * code is never imported, so an incompatible engine cannot execute anything.
-   */
   async reload(inventory: readonly BundledPluginInventoryItem[]): Promise<PluginGeneration> {
     if (this.#closed) throw new PluginHostError("reload is refused after shutdown");
     if (this.#busy) throw new PluginHostError("a lifecycle operation is already in progress");
     if (this.#leases !== 0) throw new PluginHostError("reload requires zero active turn leases");
-    if (this.#generation >= MAX_GENERATION_ID) {
-      throw new PluginHostError("generation id space exhausted; create a new plugin host");
-    }
+    if (this.#generation >= MAX_GENERATION_ID) throw new PluginHostError("generation id space exhausted; create a new plugin host");
     this.#busy = true;
     try {
-      // Allocated up front and never rolled back: a failed attempt burns its
-      // id so no two plugin instances ever observe the same generation.
-      this.#generation += 1;
+      this.#generation += 1; // attempts that execute plugin code never reuse an id
       const generation = this.#generation;
       const previousGeneration = this.#current.generation;
       const skipped: SkippedPlugin[] = [];
-      const eligible: BundledPluginInventoryItem[] = [];
+      const eligible: BundledPluginCompatible[] = [];
+      const namespaces = new Map<string, string>();
       for (const item of inventory) {
-        if (item.status === "compatible") {
-          eligible.push(item);
+        if (item.status !== "compatible") {
+          const entry: SkippedPlugin = item.status === "invalid"
+            ? { manifestPath: item.manifestPath, reason: item.reason }
+            : { namespace: item.namespace, reason: item.reason };
+          skipped.push(Object.freeze(entry));
+          this.#emit({ kind: "skipped", generation, reason: entry.reason, namespace: entry.namespace });
           continue;
         }
-        const entry: SkippedPlugin = item.status === "invalid"
-          ? { manifestPath: item.manifestPath, reason: item.reason }
-          : { namespace: item.namespace, reason: item.reason };
-        skipped.push(Object.freeze(entry));
-        this.#emit({ kind: "skipped", generation, reason: entry.reason, namespace: entry.namespace });
+        const expected = bundledPluginNamespace(item.plugin.manifest.name);
+        if (item.namespace !== expected) throw new PluginHostError(`non-canonical plugin namespace; expected ${expected}`, item.namespace);
+        const previousPath = namespaces.get(item.namespace);
+        if (previousPath) {
+          throw new PluginHostError(`duplicate plugin namespace: ${previousPath} and ${item.plugin.manifestPath}`, item.namespace);
+        }
+        namespaces.set(item.namespace, item.plugin.manifestPath);
+        eligible.push(item);
       }
 
       const built: LiveEntry[] = [];
       try {
-        for (const item of eligible) {
-          if (item.status !== "compatible") continue;
-          built.push(await this.#register(item.namespace, item.plugin, generation));
-        }
+        for (const item of eligible) built.push(await this.#register(item, generation));
       } catch (error) {
         await this.#disposeAll(built, generation);
-        throw error instanceof PluginHostError ? error : new PluginHostError(reason(error), undefined, { cause: error });
+        throw error instanceof PluginHostError ? error : new PluginHostError(errorReason(error), undefined, { cause: error });
       }
 
-      // Importing and registering may yield, so a turn can acquire a lease
-      // after the initial guard. Recheck at the atomic swap boundary.
+      // Import/register can yield; recheck immediately before the synchronous swap.
       if (this.#leases !== 0) {
         await this.#disposeAll(built, generation);
         throw new PluginHostError("reload requires zero active turn leases");
@@ -225,91 +223,94 @@ export class PluginHost {
     }
   }
 
-  /** Dispose everything in reverse registration order and permanently close the host. */
-  async shutdown(): Promise<void> {
-    // Idempotent: once closed there is nothing left to tear down.
-    if (this.#closed) return;
-    if (this.#busy) throw new PluginHostError("a lifecycle operation is already in progress");
-    // Symmetric with reload: a live turn must never lose its plugins.
-    if (this.#leases !== 0) throw new PluginHostError("shutdown requires zero active turn leases");
+  /** Refuse active leases; concurrent successful callers await one teardown. */
+  shutdown(): Promise<void> {
+    if (this.#shutdownPromise) return this.#shutdownPromise;
+    if (this.#busy) return Promise.reject(new PluginHostError("a lifecycle operation is already in progress"));
+    if (this.#leases !== 0) return Promise.reject(new PluginHostError("shutdown requires zero active turn leases"));
     this.#busy = true;
     this.#closed = true;
+    this.#shutdownPromise = this.#performShutdown();
+    return this.#shutdownPromise;
+  }
+
+  async #performShutdown(): Promise<void> {
     try {
       const previous = this.#entries;
       const generation = this.#current.generation;
       this.#entries = Object.freeze([]);
-      this.#current = Object.freeze({ generation, registered: Object.freeze([]), skipped: this.#current.skipped });
+      this.#current = Object.freeze({ generation, registered: Object.freeze([]), skipped: Object.freeze([]) });
       await this.#disposeAll(previous, generation);
     } finally {
       this.#busy = false;
     }
   }
 
-  async #register(namespace: string, plugin: ValidatedPluginManifest, generation: number): Promise<LiveEntry> {
-    let module: unknown;
+  async #register(item: BundledPluginCompatible, generation: number): Promise<LiveEntry> {
+    const namespace = item.namespace;
+    let plugin: ValidatedPluginManifest;
+    let moduleNamespace: unknown;
     try {
-      module = await this.#importer(plugin.entrypointPath, plugin);
+      plugin = await this.#revalidate(item.plugin);
+      if (!plugin.engineCompatibility.compatible) throw new Error(plugin.engineCompatibility.reason ?? "engine became incompatible");
+      moduleNamespace = await this.#importer(plugin.entrypointPath, plugin);
     } catch (error) {
-      throw new PluginHostError(`import failed: ${reason(error)}`, namespace, { cause: error });
+      throw new PluginHostError(`import preflight failed: ${errorReason(error)}`, namespace, { cause: error });
     }
-    if (!isRecord(module)) throw new PluginHostError("entrypoint did not export a module object", namespace);
-    const register = (module as PluginModule).register;
-    if (register !== undefined && typeof register !== "function") {
-      throw new PluginHostError("register must be a function", namespace);
-    }
-
+    const register = moduleRegister(moduleNamespace, namespace);
     const context: PluginRegisterContext = Object.freeze({
-      name: plugin.manifest.name,
-      version: plugin.manifest.version,
+      manifest: plugin.manifest,
       namespace,
       packageRoot: plugin.packageRoot,
-      entrypointPath: plugin.entrypointPath,
-      permissions: plugin.manifest.permissions,
-      requiredCaps: plugin.manifest.requiredCaps,
       generation,
     });
 
-    let result: unknown;
-    if (register) {
-      try {
-        result = await register.call(module, context);
-      } catch (error) {
-        throw new PluginHostError(`register failed: ${reason(error)}`, namespace, { cause: error });
+    let raw: unknown;
+    try {
+      raw = await register.call(moduleNamespace, context);
+      const registration = registrationValue(raw, namespace);
+      const summary: RegisteredPlugin = Object.freeze({
+        namespace,
+        name: plugin.manifest.name,
+        version: plugin.manifest.version,
+        status: registration.status,
+        ...(registration.unavailableReason ? { unavailableReason: registration.unavailableReason } : {}),
+        permissions: plugin.manifest.permissions,
+        requiredCaps: plugin.manifest.requiredCaps,
+      });
+      this.#emit({ kind: "registered", generation, namespace, status: registration.status });
+      return {
+        summary,
+        services: Object.freeze({ ...(registration.services ?? {}) }),
+        ...(registration.dispose ? { dispose: registration.dispose } : {}),
+      };
+    } catch (error) {
+      // A malformed registration may still expose a valid cleanup function.
+      if (isRecord(raw) && typeof raw.dispose === "function") {
+        try { await raw.dispose(); } catch { /* original registration failure remains authoritative */ }
       }
+      throw error instanceof PluginHostError
+        ? error
+        : new PluginHostError(`register failed: ${errorReason(error)}`, namespace, { cause: error });
     }
-
-    const summary: RegisteredPlugin = Object.freeze({
-      namespace,
-      name: plugin.manifest.name,
-      version: plugin.manifest.version,
-      permissions: plugin.manifest.permissions,
-      requiredCaps: plugin.manifest.requiredCaps,
-    });
-    this.#emit({ kind: "registered", generation, namespace });
-    return { summary, dispose: disposeOf(result, namespace) };
   }
 
   async #disposeAll(entries: readonly LiveEntry[], generation: number): Promise<void> {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
-      if (!entry) continue;
+      if (!entry?.dispose) continue;
       const namespace = entry.summary.namespace;
-      if (!entry.dispose) continue;
       try {
         await entry.dispose();
         this.#emit({ kind: "disposed", generation, namespace });
       } catch (error) {
-        this.#emit({ kind: "dispose-failed", generation, namespace, reason: reason(error) });
+        this.#emit({ kind: "dispose-failed", generation, namespace, reason: errorReason(error) });
       }
     }
   }
 
   #emit(event: PluginHostEvent): void {
     if (!this.#onEvent) return;
-    try {
-      this.#onEvent(event);
-    } catch {
-      // Observability must never change lifecycle behaviour.
-    }
+    try { this.#onEvent(event); } catch { /* observability never changes lifecycle */ }
   }
 }

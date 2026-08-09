@@ -46,6 +46,8 @@ export interface PluginEngineCompatibility {
 export interface ValidatedPluginManifest {
   readonly manifestPath: string;
   readonly packageRoot: string;
+  readonly addonsRoot: string;
+  readonly daemonVersion: string;
   /** Canonical candidate path only; the loader must revalidate immediately before import. */
   readonly entrypointPath: string;
   readonly manifest: PluginManifest;
@@ -367,11 +369,29 @@ export async function readPluginManifest(manifestPath: string, options: PluginMa
   return Object.freeze({
     manifestPath: canonicalManifest,
     packageRoot,
+    addonsRoot: canonicalRoot,
+    daemonVersion: options.daemonVersion,
     entrypointPath,
     manifest,
     engineCompatibility: Object.freeze(evaluatePluginEngine(manifest.engine, options.daemonVersion)),
     order: options.order ?? 0,
   });
+}
+
+/** Re-read a validated package immediately before import; any semantic or path change fails closed. */
+export async function revalidatePluginManifest(previous: ValidatedPluginManifest): Promise<ValidatedPluginManifest> {
+  const current = await readPluginManifest(previous.manifestPath, {
+    addonsRoot: previous.addonsRoot,
+    daemonVersion: previous.daemonVersion,
+    order: previous.order,
+  });
+  const changed = current.packageRoot !== previous.packageRoot
+    || current.entrypointPath !== previous.entrypointPath
+    || current.manifestPath !== previous.manifestPath
+    || JSON.stringify(current.manifest) !== JSON.stringify(previous.manifest)
+    || current.engineCompatibility.compatible !== previous.engineCompatibility.compatible;
+  if (changed) throw new PluginManifestError("plugin package changed after inventory validation", previous.manifestPath);
+  return current;
 }
 
 /** Validate the complete set before any future loader imports an entrypoint. */
