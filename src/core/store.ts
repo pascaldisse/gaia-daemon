@@ -61,6 +61,26 @@ export async function appendJsonl(path: string, value: unknown): Promise<void> {
  * damaged one. Separator and record go out in ONE write: two writes let a
  * concurrent O_APPEND writer land between them, which injects blank lines and
  * breaks the "1 event = 1 JSON line" contract every cursor is counted in. */
+/** Minimal surface of node's FileHandle.write used by writeAll — kept local so
+ * fault injection can drive the short-write loop without a real fd. */
+export interface ByteWriter {
+  write(buffer: Uint8Array, offset: number, length: number): Promise<{ bytesWritten: number }>;
+}
+
+/** write(2) may write FEWER bytes than asked and still succeed. Unretried, the
+ * remainder is silently dropped, yet fsync then reports success and the caller
+ * publishes a truncated archive. Loop until the whole buffer is out; zero
+ * progress means the fd can no longer accept bytes and must not look durable. */
+export async function writeAll(handle: ByteWriter, text: string): Promise<void> {
+  const buf = Buffer.from(text, "utf8");
+  let off = 0;
+  while (off < buf.length) {
+    const { bytesWritten } = await handle.write(buf, off, buf.length - off);
+    if (!(bytesWritten > 0)) throw new Error(`short write: no progress at byte ${off}/${buf.length}`);
+    off += bytesWritten;
+  }
+}
+
 export async function appendJsonlDurable(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
   const handle = await open(path, "a+");
@@ -72,7 +92,7 @@ export async function appendJsonlDurable(path: string, value: unknown): Promise<
       await handle.read(tail, 0, 1, size - 1);
       if (tail[0] !== 0x0a) prefix = "\n";
     }
-    await handle.write(`${prefix}${JSON.stringify(value)}\n`, null, "utf8");
+    await writeAll(handle, `${prefix}${JSON.stringify(value)}\n`);
     await handle.sync();
   } finally {
     await handle.close();
@@ -102,11 +122,11 @@ export async function appendJsonlBatchDurable(path: string, values: readonly unk
     for (const value of values) {
       pending += `${JSON.stringify(value)}\n`;
       if (pending.length >= 1 << 20) {
-        await handle.write(pending, null, "utf8");
+        await writeAll(handle, pending);
         pending = "";
       }
     }
-    if (pending.length > 0) await handle.write(pending, null, "utf8");
+    if (pending.length > 0) await writeAll(handle, pending);
     await handle.sync();
   } finally {
     await handle.close();
