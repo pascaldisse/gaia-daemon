@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "name": "gaia.discovery-fixture",
-  "version": "1.0.0",
-  "engine": "gaia-daemon@>=2.0.0",
-  "entrypoint": "./malicious.mjs",
-  "permissions": [],
-  "requiredCaps": []
-}

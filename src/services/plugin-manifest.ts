@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { constants as fsConstants } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -84,8 +85,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
+}
+
 function stringField(record: Readonly<Record<string, unknown>>, key: string, path: string): string {
-  const value = record[key];
+  const value = Object.hasOwn(record, key) ? record[key] : undefined;
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     throw new PluginManifestError(`${key} must be a non-empty trimmed string`, path);
   }
@@ -98,7 +105,7 @@ function declaredIdentifiers(
   allowed: ReadonlySet<string>,
   path: string,
 ): readonly string[] {
-  const value = key in record ? record[key] : [];
+  const value = Object.hasOwn(record, key) ? record[key] : [];
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && allowed.has(item))) {
     throw new PluginManifestError(`${key} contains an unknown or reserved identifier`, path);
   }
@@ -249,7 +256,9 @@ function assertDepth(value: unknown, maximum: number, manifestPath: string): voi
 }
 
 async function readBoundedManifest(path: string, maximum: number): Promise<string> {
-  const handle = await open(path, "r");
+  // O_NONBLOCK lets us acquire and fstat a hostile FIFO without hanging.
+  // O_NOFOLLOW rejects a final-component symlink swapped in after realpath.
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
   try {
     const details = await handle.stat();
     if (!details.isFile()) throw new PluginManifestError("plugin.json must be a regular file", path);
@@ -272,10 +281,12 @@ async function readBoundedManifest(path: string, maximum: number): Promise<strin
 
 /** Parse a manifest. Declarations are vocabulary, never authority grants. */
 export function validatePluginManifest(value: unknown, manifestPath: string): PluginManifest {
-  if (!isRecord(value)) throw new PluginManifestError("manifest must be a JSON object", manifestPath);
+  if (!isPlainRecord(value)) throw new PluginManifestError("manifest must be a plain JSON object", manifestPath);
   const unknown = Object.keys(value).filter((key) => !MANIFEST_KEYS.has(key));
   if (unknown.length > 0) throw new PluginManifestError(`unknown manifest fields: ${unknown.join(", ")}`, manifestPath);
-  if (value.schema !== PLUGIN_MANIFEST_SCHEMA) throw new PluginManifestError(`schema must be ${PLUGIN_MANIFEST_SCHEMA}`, manifestPath);
+  if (!Object.hasOwn(value, "schema") || value.schema !== PLUGIN_MANIFEST_SCHEMA) {
+    throw new PluginManifestError(`schema must be ${PLUGIN_MANIFEST_SCHEMA}`, manifestPath);
+  }
 
   const name = stringField(value, "name", manifestPath);
   const version = stringField(value, "version", manifestPath);

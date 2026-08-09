@@ -104,6 +104,12 @@ test("engine ranges exclude prereleases unless the comparator names the same pre
   assert.equal(evaluatePluginEngine("gaia-daemon@>=1.2.3-alpha.1", "1.2.3-beta.1").compatible, true);
 });
 
+test("rejects inherited manifest fields instead of reading through a hostile prototype", () => {
+  const inherited = Object.create(valid) as Record<string, unknown>;
+  inherited.schema = PLUGIN_MANIFEST_SCHEMA;
+  assert.throws(() => validatePluginManifest(inherited, "plugin.json"), /plain JSON object/);
+});
+
 test("permissions and capabilities are fixed declarations, never arbitrary trust knobs", () => {
   assert.throws(() => validatePluginManifest({ ...valid, permissions: ["trust.enable"] }, "plugin.json"), /unknown or reserved/);
   assert.throws(() => validatePluginManifest({ ...valid, requiredCaps: ["sandbox.disable"] }, "plugin.json"), /unknown or reserved/);
@@ -194,6 +200,24 @@ test("discovers only direct directories in deterministic UTF-8 byte order", asyn
     assert.deepEqual(await discoverPluginManifests(join(root, "missing")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a plugin.json FIFO is rejected without blocking discovery", async () => {
+  if (process.platform === "win32") return;
+  const fx = await fixture();
+  try {
+    await rm(fx.manifestPath);
+    const process = Bun.spawn(["mkfifo", fx.manifestPath], { stdout: "ignore", stderr: "pipe" });
+    assert.equal(await process.exited, 0, await new Response(process.stderr).text());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("FIFO read blocked")), 1000);
+    });
+    await assert.rejects(Promise.race([readPluginManifest(fx.manifestPath, options(fx.addonsRoot)), timeout]), /regular file/);
+    if (timer) clearTimeout(timer);
+  } finally {
+    await fx.cleanup();
   }
 });
 
