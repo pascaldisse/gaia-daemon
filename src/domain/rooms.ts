@@ -838,16 +838,16 @@ export class RoomHandle {
     const raw = await readText(this.transcriptPath);
     if (raw) {
       if (!raw.endsWith("\n")) throw new Error("Transcript rewrite refused: noncanonical raw tail");
-      const eventKeys = new Set(["id", "timestamp", "author", "targets", "text", "channel", "redacted", "kind", "details", "attachments"]);
       let index = 0;
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         let value: unknown;
         try { value = JSON.parse(line); } catch { throw new Error("Transcript rewrite refused: malformed raw line"); }
         const event = roomEventFrom(value, index++);
-        // Structural mutations serialize typed events. Never silently drop an
-        // unknown top-level field, invalid shape, alternate encoding, or tail.
-        if (!event || line.endsWith("\r") || !isRecord(value) || Object.keys(value).some((key) => !eventKeys.has(key)))
+        // Compare parsed structures, not JSON text: key order is irrelevant,
+        // while unknown or normalized-away nested metadata would be destroyed
+        // by a rewrite and therefore fails closed.
+        if (!event || line.endsWith("\r") || !isDeepStrictEqual(value, event))
           throw new Error("Transcript rewrite refused: noncanonical raw line");
       }
     }

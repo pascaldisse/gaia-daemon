@@ -317,6 +317,20 @@ test("clearRoom fails closed on malformed bytes", async () => {
   assert.equal(await readFile(room.transcriptPath, "utf8"), raw);
 });
 
+test("transcript rewrites fail closed on future nested event metadata", async () => {
+  const room = await openRoom();
+  const raw = `${JSON.stringify({
+    id: "future-details",
+    timestamp: "t",
+    author: "gaia",
+    text: "keep all metadata",
+    details: { model: "test", futureProtocol: { version: 2 } },
+  })}\n`;
+  await writeFile(room.transcriptPath, raw);
+  await assert.rejects(room.clearRoom(), /noncanonical raw line/);
+  assert.equal(await readFile(room.transcriptPath, "utf8"), raw);
+});
+
 test("single-writer: concurrent state updates serialize", async () => {
   const room = await openRoom();
   await Promise.all(
