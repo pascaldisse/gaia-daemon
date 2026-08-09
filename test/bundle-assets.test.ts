@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BUNDLE_ASSET_DIRS, BUNDLE_BINARY_ARTIFACTS, bundleSwapNames } from "../src/core/bundle-assets.js";
+import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES, BUNDLE_BINARY_ARTIFACTS, bundleSwapNames } from "../src/core/bundle-assets.js";
 
 const repoRoot = join(import.meta.dirname, "..");
 
@@ -26,10 +26,15 @@ test("design/ and addons/ are bundled and therefore swapped", () => {
   }
 });
 
+test("compiled design assets omit source-only tests", () => {
+  assert.deepEqual(BUNDLE_ASSET_EXCLUDES.design, ["test"]);
+});
+
 test("build script and reload swap read the same constant, no re-listed names", () => {
   const build = readFileSync(join(repoRoot, "scripts/build-daemon.mjs"), "utf8");
-  assert.match(build, /import \{ BUNDLE_ASSET_DIRS \} from "\.\.\/src\/core\/bundle-assets\.ts"/);
+  assert.match(build, /import \{ BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES \} from "\.\.\/src\/core\/bundle-assets\.ts"/);
   assert.match(build, /for \(const name of BUNDLE_ASSET_DIRS\)/);
+  assert.match(build, /BUNDLE_ASSET_EXCLUDES\[name\]/);
 
   const http = readFileSync(join(repoRoot, "src/server/http.ts"), "utf8");
   assert.match(http, /const names = bundleSwapNames\(fromSource\)/);

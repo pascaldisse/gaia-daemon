@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 // Single source of truth shared with the /rebuild atomic swap (src/server/http.ts).
-import { BUNDLE_ASSET_DIRS } from "../src/core/bundle-assets.ts";
+import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES } from "../src/core/bundle-assets.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(scriptDir, "..");
@@ -80,6 +80,9 @@ for (const name of BUNDLE_ASSET_DIRS) {
     const dstFinal = join(outDir, name);
     rmSync(dstTmp, { recursive: true, force: true });
     cpSync(src, dstTmp, { recursive: true });
+    for (const relative of BUNDLE_ASSET_EXCLUDES[name] ?? []) {
+      rmSync(join(dstTmp, relative), { recursive: true, force: true });
+    }
     rmSync(dstFinal, { recursive: true, force: true });
     renameSync(dstTmp, dstFinal);
   });

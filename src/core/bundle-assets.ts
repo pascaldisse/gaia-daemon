@@ -3,6 +3,11 @@
 /** Asset directories snapshotted next to the binary, swapped on every rebuild. */
 export const BUNDLE_ASSET_DIRS = ["web", "setups", "design", "addons"] as const;
 
+/** Source-only content removed from compiled asset snapshots. */
+export const BUNDLE_ASSET_EXCLUDES: Readonly<Partial<Record<(typeof BUNDLE_ASSET_DIRS)[number], readonly string[]>>> = {
+  design: ["test"],
+};
+
 /** Artifacts that only exist in a packaged (compiled) install. */
 export const BUNDLE_BINARY_ARTIFACTS = ["gaia-daemon", "gaia-source.json"] as const;
 
