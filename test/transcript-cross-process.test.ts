@@ -49,6 +49,10 @@ if (op === "commit") {
   await room.rewindTranscript(Number(arg));
 } else if (op === "clear") {
   await room.clearRoom();
+} else if (op === "fork") {
+  const snapshot = await room.snapshotTranscript();
+  const target = await RoomHandle.open(proj, arg);
+  if (!(await target.seedTranscript(snapshot))) process.exitCode = 17;
 } else if (op === "hold-lock") {
   await withSqliteImmediateLock(room.statePath + ".lock.sqlite", async () => {
     console.log("locked");
@@ -315,6 +319,92 @@ test("(2) import --force racing appends keeps every append live or archived", as
     assert.deepEqual(ids.filter((id) => !surviving.has(id)), [], "--force import erased a concurrent append");
   } finally {
     await fx.cleanup();
+  }
+});
+
+// (3) commitTurn's child is SIGKILLed only after its new transcript record is
+// observable. The large valid prelude holds it in the cursor scan between the
+// fsynced append and the following state write; this is a real process crash,
+// not a mocked filesystem or state writer. It proves that a crash there leaves
+// durable transcript history while pendingTurn remains resumable. Power-loss
+// persistence past the kernel/fsync contract remains intentionally unprovable.
+// (2') Two independently-invoked /forks take a locked source snapshot and
+// exclusive-create separate targets. A target collision is a clean failure:
+// it may not mutate either source or occupied destination.
+test("(2') concurrent forks preserve source, seed both targets, and refuse an occupied target", async () => {
+  const fx = await fixture("gaia-xproc-fork-");
+  try {
+    const sourceIds = await seed(fx, 8, "source");
+    const sourceBefore = await readFile(fx.transcript, "utf8");
+    assert.deepEqual(await Promise.all([run(fx, "fork", "branch-a"), run(fx, "fork", "branch-b")]), [0, 0]);
+    for (const target of ["branch-a", "branch-b"]) {
+      const copied = await readFile(workspacePaths.transcript(fx.proj, target), "utf8");
+      assert.equal(copied, sourceBefore, `${target} is not the source snapshot`);
+      const targetRoom = await RoomHandle.open(fx.proj, target);
+      assert.deepEqual((await targetRoom.eventsFrom(0)).events.map((event) => event.id), sourceIds);
+    }
+    assert.equal(await readFile(fx.transcript, "utf8"), sourceBefore, "fork mutated source history");
+
+    const occupied = await RoomHandle.open(fx.proj, "occupied");
+    await occupied.appendEvent({ id: "occupied-only", timestamp: "t", author: "user", targets: [], text: "keep" });
+    const occupiedBefore = await readFile(occupied.transcriptPath, "utf8");
+    const [freshCode, occupiedCode] = await Promise.all([run(fx, "fork", "branch-c"), run(fx, "fork", "occupied")]);
+    assert.equal(freshCode, 0, "concurrent successful fork failed beside occupied target");
+    assert.equal(occupiedCode, 17, "occupied target did not report exclusive-create failure");
+    assert.equal(await readFile(workspacePaths.transcript(fx.proj, "branch-c"), "utf8"), sourceBefore, "successful peer fork has wrong seed");
+    assert.equal(await readFile(occupied.transcriptPath, "utf8"), occupiedBefore, "failed fork clobbered target");
+    assert.equal(await readFile(fx.transcript, "utf8"), sourceBefore, "failed fork mutated source");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// (2'') Two real --force import processes serialize their archive+replace
+// critical sections. Every pre-import/imported record remains live or archived;
+// rewound.jsonl stays parseable under the concurrent archive writers.
+test("(2'') concurrent --force imports preserve both imported histories and archive", async () => {
+  const fx = await fixture("gaia-xproc-double-force-import-");
+  try {
+    const before = await seed(fx, 4, "before");
+    const exports = await Promise.all(["left", "right"].map(async (side) => {
+      const dir = join(fx.proj, `export-${side}`);
+      await mkdir(dir);
+      await writeFile(join(dir, "conversations.json"), JSON.stringify([{
+        uuid: `chat-${side}`, name: side, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:01.000Z",
+        chat_messages: [{ uuid: `message-${side}`, sender: "human", created_at: "2026-01-01T00:00:00.000Z", text: side }],
+      }]), "utf8");
+      return dir;
+    }));
+    const exits = await Promise.all(exports.map((dir) => childExit(spawn(process.execPath, [IMPORT_SCRIPT, "--export", dir, "--workspace", fx.proj, "--agent", "importer", "--room", ROOM_ID, "--force"], {
+      stdio: ["ignore", "ignore", "inherit"], env: { ...process.env },
+    }))));
+    assert.ok(exits.every((exit) => exit.code === 0), `import exits: ${JSON.stringify(exits)}`);
+    const all = await survivingIds(fx);
+    assert.deepEqual(before.filter((id) => !all.has(id)), [], "concurrent import erased pre-existing event");
+    const records = (await Promise.all([fx.transcript, join(fx.transcript, "..", "rewound.jsonl")].map(lines))).flat().map((line) => JSON.parse(line) as { id: string; text: string });
+    for (const text of ["left", "right"]) assert.ok(records.some((record) => record.text === text), `imported event missing: ${text}`);
+    assert.ok(all.size >= before.length + 2, "live/archive did not retain both imports");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// (2''') Structural writers are one room-lock domain: clearing twice archives
+// only the first snapshot; clear/rewind archive disjoint snapshots (or one is a
+// no-op). Neither schedule may lose or duplicate an original event.
+test("(2''') concurrent clear/clear and clear/rewind retain each original once", async () => {
+  for (const [label, ops] of [["clear-clear", ["clear", "clear"]], ["clear-rewind", ["clear", "rewind"]]] as const) {
+    const fx = await fixture(`gaia-xproc-${label}-`);
+    try {
+      const ids = await seed(fx, 8, label);
+      const codes = await Promise.all(ops.map((op) => run(fx, op, op === "rewind" ? "1" : "")));
+      assert.deepEqual([...new Set(codes)], [0], `${label} exit codes: ${codes.join(",")}`);
+      const locations = [fx.transcript, join(fx.transcript, "..", "rewound.jsonl")];
+      const recorded = (await Promise.all(locations.map(lines))).flat().map((line) => (JSON.parse(line) as { id: string }).id);
+      for (const id of ids) assert.equal(recorded.filter((candidate) => candidate === id).length, 1, `${label}: ${id} missing or doubly archived`);
+    } finally {
+      await fx.cleanup();
+    }
   }
 });
 
