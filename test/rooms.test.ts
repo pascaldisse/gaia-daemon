@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
@@ -334,6 +335,28 @@ test("independent room handles share one failure-safe state writer", async () =>
   await assert.rejects(first.updateState(() => { throw new Error("boom"); }), /boom/);
   await second.updateState((state) => { state.activeRoles.gaia = "review"; });
   assert.equal((await first.state()).activeRoles.gaia, "review");
+});
+
+test("cross-process updateState loses one independently written delta without an inter-process lock", async () => {
+  const room = await openRoom();
+  const barrier = join(room.workspaceRoot, "barrier");
+  await mkdir(barrier);
+  const agents = Array.from({ length: 16 }, (_, index) => `process${index}`);
+  const worker = join(import.meta.dir, "helpers", "room-update-racer.ts");
+  const racers = agents.map((agent) => Bun.spawn([process.execPath, worker, room.workspaceRoot, agent, barrier]));
+
+  const deadline = Date.now() + 5_000;
+  while (agents.some((agent) => !existsSync(join(barrier, `${agent}.ready`)))) {
+    assert.ok(Date.now() < deadline, "all child processes reached the pre-update barrier");
+    await Bun.sleep(5);
+  }
+  await writeFile(join(barrier, "release"), "", "utf8");
+  const exits = await Promise.all(racers.map((racer) => racer.exited));
+  assert.deepEqual(exits, agents.map(() => 0));
+
+  const persisted = await RoomHandle.open(room.workspaceRoot, room.roomId).then((handle) => handle.state());
+  const survivors = agents.filter((agent) => persisted.agentCursors[agent] === 1);
+  assert.ok(survivors.length < agents.length, `lost update reproduced: wrote ${agents.length}, persisted ${survivors.length}`);
 });
 
 test("state updates preserve future metadata and no-op bytes", async () => {
