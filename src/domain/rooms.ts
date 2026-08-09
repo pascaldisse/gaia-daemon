@@ -672,17 +672,6 @@ export class RoomHandle {
     return event;
   }
 
-  /** Wipe the transcript (backs /clear). State is the caller's to reset.
-   * Existing events are fsynced into rewound.jsonl before the atomic publish;
-   * malformed raw bytes fail closed rather than being silently erased. */
-  async clearTranscript(): Promise<void> {
-    await this.withRoomLock(async () => {
-      const { events } = await this.readEventsLocked();
-      await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), events);
-      await writeTextAtomic(this.transcriptPath, "");
-    });
-  }
-
   /** /clear as ONE critical section: archive → wipe transcript → reset the
    * state that describes it (cursors, legacy runtimeDetails), under a single
    * acquisition of the room lock. Split across two acquisitions, a concurrent
@@ -719,15 +708,18 @@ export class RoomHandle {
     await this.replaceImportedRoom(events);
   }
 
-  /** Force-import transcript + optional selected state as one room-lock
-   * transaction. No observer can append against the old transcript and then
-   * patch the new state (or vice versa). */
-  async replaceImportedRoom(events: RoomEvent[], state?: RoomState): Promise<void> {
-    await this.withRoomLock(async () => {
+  /** Import transcript + selected state as one room-lock transaction. A
+   * non-force caller tests occupancy INSIDE that lock; false means no bytes
+   * changed. No observer can append against old transcript then patch new
+   * state, or see their state delta paired with the old transcript. */
+  async replaceImportedRoom(events: RoomEvent[], state?: RoomState, options?: { refuseIfNonempty?: boolean }): Promise<boolean> {
+    return this.withRoomLock(async () => {
       const { events: existing } = await this.readEventsLocked();
+      if (options?.refuseIfNonempty && existing.length > 0) return false;
       await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), existing);
       await writeTextAtomic(this.transcriptPath, serializeEvents(events));
       if (state) await this.replaceStateLocked(state);
+      return true;
     });
   }
 
@@ -845,12 +837,31 @@ export class RoomHandle {
   private async readEventsLocked(): Promise<RoomPage> {
     const raw = await readText(this.transcriptPath);
     if (raw) {
+      if (!raw.endsWith("\n")) throw new Error("Transcript rewrite refused: noncanonical raw tail");
+      const eventKeys = new Set(["id", "timestamp", "author", "targets", "text", "channel", "redacted", "kind", "details", "attachments"]);
+      let index = 0;
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
-        try { JSON.parse(line); } catch { throw new Error("Transcript rewrite refused: malformed raw line"); }
+        let value: unknown;
+        try { value = JSON.parse(line); } catch { throw new Error("Transcript rewrite refused: malformed raw line"); }
+        const event = roomEventFrom(value, index++);
+        // Structural mutations serialize typed events. Never silently drop an
+        // unknown top-level field, invalid shape, alternate encoding, or tail.
+        if (!event || line.endsWith("\r") || !isRecord(value) || Object.keys(value).some((key) => !eventKeys.has(key)))
+          throw new Error("Transcript rewrite refused: noncanonical raw line");
       }
     }
     return this.eventsFrom(0);
+  }
+
+  /** Physical raw-line cursor: all durable cursors count JSONL lines, not
+   * parsed events. Invalid lines remain visible to cursor arithmetic. */
+  async transcriptCursor(eventId?: string): Promise<number | undefined> {
+    const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
+      eventId === undefined || (raw && typeof raw === "object" && (raw as { id?: unknown }).id === eventId)
+        ? lineIndex + 1 : undefined,
+    );
+    return eventId === undefined ? page.nextCursor : page.items.at(-1);
   }
 
   /** Archive events that a rewrite is about to remove from the live file, and

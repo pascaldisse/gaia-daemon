@@ -240,12 +240,6 @@ async function main(): Promise<void> {
   if (singleRoomId) {
     await ensureWorkspaceRoom(workspaceDir, singleRoomId);
     const transcriptPath = workspacePaths.transcript(workspaceDir, singleRoomId);
-    const existingTranscript = await readFile(transcriptPath, "utf8");
-    // Default = refuse. --force = rewrite, and RoomHandle.replaceTranscript
-    // archives whatever was there into rewound.jsonl first, so the flag never
-    // means "destroy history".
-    if (existingTranscript.trim() && !force) fail(`room ${singleRoomId} already has history (use --force to rewrite; the old transcript is archived to rewound.jsonl): ${transcriptPath}`);
-
     const events: RoomEvent[] = [];
     for (const conversation of conversations) events.push(...conversationEvents(conversation, agentId, true));
 
@@ -254,7 +248,8 @@ async function main(): Promise<void> {
     // Transcript + state replacement share ONE room lock: an explicit --force
     // import cannot expose a half-old transcript/state pair to live writers.
     const room = await RoomHandle.open(workspaceDir, singleRoomId);
-    await room.replaceImportedRoom(events, state);
+    if (!(await room.replaceImportedRoom(events, state, { refuseIfNonempty: !force })))
+      fail(`room ${singleRoomId} already has history (use --force to rewrite; the old transcript is archived to rewound.jsonl): ${transcriptPath}`);
     await setWorkspaceRoom(workspaceDir, singleRoomId);
     console.log(`room ${singleRoomId}: ${events.length} events from ${conversations.length} conversations`);
   } else {
@@ -268,23 +263,20 @@ async function main(): Promise<void> {
       roomIdFor.set(conversation.uuid, roomId);
       await ensureWorkspaceRoom(workspaceDir, roomId);
       const transcriptPath = workspacePaths.transcript(workspaceDir, roomId);
-      const existingTranscript = await readFile(transcriptPath, "utf8");
-      if (existingTranscript.trim() && !force) {
-        skipped += 1;
-        continue;
-      }
       const state = normalizeRoomState(undefined);
       state.title = conversation.name || "untitled";
       state.imported = conversation.created_at;
       state.agentCursors[agentId] = Math.max(0, events.length - window);
       const room = await RoomHandle.open(workspaceDir, roomId);
-      await room.replaceTranscript(events);
+      if (!(await room.replaceImportedRoom(events, state, { refuseIfNonempty: !force }))) {
+        skipped += 1;
+        continue;
+      }
       // Stamp the chat's own last-activity time onto the transcript: the
       // rooms list sorts by mtime (a chat list), so archives sit at their
       // historical position instead of flooding the top on import day.
       const activity = new Date(conversation.updated_at || conversation.created_at);
       if (!Number.isNaN(activity.getTime())) await utimes(transcriptPath, activity, activity);
-      await room.replaceState(state);
       imported += 1;
     }
     console.log(`rooms: ${imported} imported, ${skipped} already present (skipped)`);

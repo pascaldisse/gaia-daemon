@@ -298,22 +298,22 @@ test("transcript: pre-id lines get stable legacy ids; bad lines are skipped but 
   assert.equal(page.events[0].id, "evt_new");
 });
 
-test("clearTranscript empties the log; state survives", async () => {
+test("clearRoom empties the log; unrelated state survives", async () => {
   const room = await openRoom();
   await room.addUserMessage("hello", ["gaia"]);
   await room.updateState((state) => {
     state.activeRoles.gaia = "planner";
   });
-  await room.clearTranscript();
+  await room.clearRoom();
   assert.equal((await readFile(room.transcriptPath, "utf8")).trim(), "");
   assert.equal((await room.state()).activeRoles.gaia, "planner");
 });
 
-test("clearTranscript fails closed on malformed bytes", async () => {
+test("clearRoom fails closed on malformed bytes", async () => {
   const room = await openRoom();
   const raw = '{"id":"good","timestamp":"t","author":"user","targets":[],"text":"kept"}\nnot json\n';
   await writeFile(room.transcriptPath, raw);
-  await assert.rejects(room.clearTranscript(), /malformed raw line/);
+  await assert.rejects(room.clearRoom(), /malformed raw line/);
   assert.equal(await readFile(room.transcriptPath, "utf8"), raw);
 });
 

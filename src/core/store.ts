@@ -51,7 +51,10 @@ export async function appendJsonl(path: string, value: unknown): Promise<void> {
 /** Append one JSONL record and fsync before returning — for logs whose caller
  * publishes a durable decision about them afterwards (the WAL: the transcript
  * line must survive a power cut that the following state write also survives,
- * or resume would replay a turn as if it had never committed).
+ * or resume would replay a turn as if it had never committed). This is NOT a
+ * concurrent transcript protocol: callers must hold their room lock across
+ * check/append/rewrite/state pairing. It only makes this caller's completed
+ * append durable.
  *
  * A file whose last byte is not a newline is left EXACTLY as it is except for
  * one inserted separator newline: the tail may be a valid legacy line written

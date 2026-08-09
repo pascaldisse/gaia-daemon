@@ -1363,7 +1363,7 @@ export class RoomService {
         options.cursorOverride === undefined &&
         desiredCursor > 0 &&
         (desiredCursor > page.nextCursor ||
-          (options.recordUserMessage !== false && page.events.length === 0 && page.nextCursor > 0));
+          (options.recordUserMessage !== false && page.nextCursor <= desiredCursor));
       const cursor = staleCursor ? 0 : desiredCursor;
       if (cursor !== desiredCursor) {
         page = await this.room.eventsFrom(cursor);
@@ -2619,9 +2619,9 @@ export class RoomService {
     // session yet replays the WHOLE conversation (never a shrunken window). The
     // cut is the first REWRITTEN index: any session that read past it saw the
     // original text and must re-seed.
-    const { events: sanitized } = await this.room.eventsFrom(0);
-    const firstEdited = sanitized.findIndex((event) => next.has(event.id));
-    await this.resetAfterTruncation("reset-keep-context", firstEdited >= 0 ? firstEdited : 0);
+    const editedCursors = await Promise.all([...next.keys()].map((id) => this.room.transcriptCursor(id)));
+    const firstEdited = editedCursors.filter((cursor): cursor is number => cursor !== undefined).reduce((first, cursor) => Math.min(first, cursor - 1), Infinity);
+    await this.resetAfterTruncation("reset-keep-context", Number.isFinite(firstEdited) ? firstEdited : 0);
     this.emit({
       type: "room-event",
       workspaceId: this.workspaceId,
@@ -2766,7 +2766,7 @@ export class RoomService {
     cut?: number,
     forkOrigin?: { id: string; userOrdinal: number },
   ): Promise<void> {
-    const kept = (await this.room.eventsFrom(0)).events.length;
+    const kept = (await this.room.transcriptCursor()) ?? 0;
     const affectedAbove = Math.min(cut ?? kept, kept);
     const base = Math.max(0, kept - this.workspace.config.transcriptWindow);
     const state = await this.room.state();
