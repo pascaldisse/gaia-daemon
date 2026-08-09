@@ -191,16 +191,24 @@ export function sharedMemorySource(workspaceRoot: string): AgentMemoryRef {
 }
 
 /** True when a room's state.json marks it incognito — such rooms are invisible
- * to recall, so their transcripts are never indexed. Best-effort: a room whose
- * state can't be read (missing, mid-write, corrupt) is treated as NON-incognito,
- * i.e. indexed — failing open keeps normal rooms recallable, and an incognito
- * room's state is written once at creation before any turn exists to index. */
+ * to recall, so their transcripts are never indexed. FAIL-CLOSED on unreadable
+ * bytes: a state document that exists but cannot be parsed (corrupt, torn
+ * mid-write) may be an incognito room, and treating it as public would leak a
+ * private transcript into recall — privacy loss is unrecoverable, a skipped
+ * index entry is not. A MISSING state file is not a room at all (nothing was
+ * ever created here), so it stays indexable. */
 function roomIsIncognito(workspaceRoot: string, roomId: string): boolean {
+  let raw: string;
   try {
-    const raw = readFileSync(workspacePaths.roomState(workspaceRoot, roomId), "utf8");
+    raw = readFileSync(workspacePaths.roomState(workspaceRoot, roomId), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    return true;
+  }
+  try {
     return (JSON.parse(raw) as { incognito?: unknown }).incognito === true;
   } catch {
-    return false;
+    return true;
   }
 }
 

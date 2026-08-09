@@ -198,6 +198,19 @@ test("incognito rooms are omitted from workspaceRoomRefs, so their transcripts n
   }
 });
 
+test("a corrupt room state fails CLOSED: unreadable privacy bits keep a room out of recall", async () => {
+  const { root } = await makeWorkspace([
+    { roomId: "kitchen", events: [{ author: "user", text: "the sourdough needs a longer autolyse", id: "k0" }] },
+    { roomId: "vault", incognito: true, events: [{ author: "user", text: "the autolyse secret is a longer overnight rest", id: "v0" }] },
+  ]);
+  // A torn / corrupt state document could be an incognito room. Reading it as
+  // public would publish a private transcript — unrecoverable; skipping the
+  // index entry is not.
+  await writeFile(join(root, ".gaia", "rooms", "vault", "state.json"), "{not valid JSON\n", "utf8");
+  const refs = workspaceRoomRefs(root).map((ref) => ref.roomId).sort();
+  assert.deepEqual(refs, ["kitchen"], "a room whose privacy bit cannot be read is not indexed");
+});
+
 test("searchTranscripts: roomId scopes to a single chat (in-chat search)", async () => {
   const { root, sources } = await makeWorkspace([
     { roomId: "kitchen", events: [{ author: "user", text: "the sourdough needs a longer autolyse", id: "k0" }] },
