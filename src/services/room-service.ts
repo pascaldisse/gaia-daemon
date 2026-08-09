@@ -1342,9 +1342,32 @@ export class RoomService {
       const floor = state.contextFloors?.[target] ?? 0;
       const storedCompaction = sessionLost && floor > 0 ? await this.room.readCompaction(target) : undefined;
       const replaySummary = storedCompaction && storedCompaction.floorIdx === floor ? storedCompaction.summary : undefined;
-      const cursor =
+      const desiredCursor =
         options.cursorOverride ?? (replaySummary !== undefined ? floor : sessionLost ? 0 : (state.agentCursors[target] ?? 0));
-      const { events: rawEvents } = await this.room.eventsFrom(cursor);
+      let page = await this.room.eventsFrom(desiredCursor);
+      // Fail-safe for a cursor that points PAST the end of the transcript: the
+      // file shrank under it (an out-of-band rewrite, a restored backup, an
+      // older transcript copied in). Read from there and the agent silently
+      // sees an empty room forever, with no error anywhere. Replay from 0 and
+      // reset the stored cursor instead — over-replay is recoverable, amnesia
+      // is not. (nextCursor is the physical line count.)
+      // Two shapes of the same corruption: the cursor is past EOF, or it is
+      // within the file but leaves the agent nothing to answer (its own
+      // triggering message included) — both mean the line space it was
+      // recorded against no longer exists. An explicit cursorOverride is a
+      // deliberate seed and is never second-guessed.
+      const staleCursor =
+        options.cursorOverride === undefined &&
+        desiredCursor > 0 &&
+        (desiredCursor > page.nextCursor || (page.events.length === 0 && page.nextCursor > 0));
+      const cursor = staleCursor ? 0 : desiredCursor;
+      if (cursor !== desiredCursor) {
+        page = await this.room.eventsFrom(cursor);
+        await this.room.updateState((current) => {
+          current.agentCursors[target] = 0;
+        });
+      }
+      const rawEvents = page.events;
       // System events (slash-command replies) are persisted for the human UI
       // but are room chrome, not conversation — keep them out of what the agent
       // sees so /help, /recall, /compact results never pollute its context.
@@ -3342,11 +3365,9 @@ export class RoomService {
    * harness session for this room. Role assignments are configuration — kept. */
   async runClearCommand(): Promise<string> {
     for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.roomId);
-    await this.room.clearTranscript();
-    await this.room.updateState((state) => {
-      state.agentCursors = {};
-      delete state.runtimeDetails;
-    });
+    // One composite call: wiping the transcript and resetting the cursors that
+    // index it must not be observable half-done by another process.
+    await this.room.clearRoom();
     this.recentTasks = [];
     await this.emitSnapshot();
     return "Cleared room history and reset all agent sessions.";
@@ -3365,11 +3386,12 @@ export class RoomService {
     const target = this.nextForkId(this.roomId);
     const dstDir = workspacePaths.roomDir(this.workspace.rootDir, target);
     await mkdir(dstDir, { recursive: true });
-    // Snapshot under the room lock: a raw copyFile racing a concurrent append
-    // can land a half-written last line in the branch.
-    await this.room.snapshotTranscriptTo(join(dstDir, "transcript.jsonl"));
+    // Source snapshot under the source lock, then RELEASE; the target is
+    // seeded under its own lock. Never both locks at once.
+    const snapshot = await this.room.snapshotTranscript();
     const state = await this.room.state();
     const branch = await RoomHandle.open(this.workspace.rootDir, target);
+    await branch.seedTranscript(snapshot);
     await branch.updateState((next) => {
       next.activeRoles = { ...state.activeRoles };
       next.thinkingOverrides = { ...state.thinkingOverrides };

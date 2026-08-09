@@ -3126,3 +3126,40 @@ test("resume: a message that arrives while the target room is mid-turn STEERS it
   const finalState = await room.state();
   assert.equal(finalState.queue ?? undefined, undefined, "resume-as-steer never lands in the durable queue");
 });
+
+// A persisted cursor that points PAST the end of the transcript (an
+// out-of-band rewrite, a restored older backup, a transcript copied in from
+// elsewhere) is silent amnesia: reading from it yields nothing, forever, with
+// no error. The service must clamp and replay instead.
+test("a cursor beyond the transcript's physical lines replays from 0 instead of feeding the agent nothing", async () => {
+  const seen: number[] = [];
+  const script = () => [{ type: "text-delta", delta: "reply" } as AgentEvent];
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, script);
+      const send = runtime.send.bind(runtime);
+      runtime.send = (input) => {
+        seen.push(input.transcript.length);
+        return send(input);
+      };
+      return runtime;
+    },
+  });
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+
+  // Shrink the transcript behind the cursor, exactly as an external rewrite
+  // would, leaving agentCursors.gaia pointing past EOF.
+  const room = await RoomHandle.open(root, "default");
+  const before = (await room.eventsFrom(0)).events;
+  assert.ok((await room.state()).agentCursors.gaia > 1, "precondition: cursor advanced past the first line");
+  await writeFile(workspacePaths.transcript(root, "default"), `${JSON.stringify(before[0])}\n`, "utf8");
+
+  seen.length = 0;
+  await service.sendMessage("second question");
+  await service.waitForIdle();
+
+  assert.ok(seen[0] >= 2, `agent got ${seen[0]} events — a stale cursor silently emptied its context`);
+  assert.equal((await room.state()).agentCursors.gaia, 3, "the impossible cursor was not reset");
+});

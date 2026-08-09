@@ -241,7 +241,10 @@ async function main(): Promise<void> {
     await ensureWorkspaceRoom(workspaceDir, singleRoomId);
     const transcriptPath = workspacePaths.transcript(workspaceDir, singleRoomId);
     const existingTranscript = await readFile(transcriptPath, "utf8");
-    if (existingTranscript.trim() && !force) fail(`room ${singleRoomId} already has history (use --force to rewrite): ${transcriptPath}`);
+    // Default = refuse. --force = rewrite, and RoomHandle.replaceTranscript
+    // archives whatever was there into rewound.jsonl first, so the flag never
+    // means "destroy history".
+    if (existingTranscript.trim() && !force) fail(`room ${singleRoomId} already has history (use --force to rewrite; the old transcript is archived to rewound.jsonl): ${transcriptPath}`);
 
     const events: RoomEvent[] = [];
     for (const conversation of conversations) events.push(...conversationEvents(conversation, agentId, true));

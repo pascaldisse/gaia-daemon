@@ -2,7 +2,7 @@
 // (temp file + rename on the same volume), JSONL append/scan, and dir helpers.
 
 import { closeSync, existsSync, fsyncSync, openSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export async function ensureDir(path: string): Promise<void> {
@@ -46,6 +46,38 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
 export async function appendJsonl(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
   await appendFile(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+/** Append one JSONL record and fsync before returning — for logs whose caller
+ * publishes a durable decision about them afterwards (the WAL: the transcript
+ * line must survive a power cut that the following state write also survives,
+ * or resume would replay a turn as if it had never committed).
+ *
+ * A file whose last byte is not a newline is left EXACTLY as it is except for
+ * one inserted separator newline: the tail may be a valid legacy line written
+ * without a terminator, or torn bytes from a pre-fsync crash. Either way it is
+ * committed history — never repaired, never truncated — but the new record
+ * must not be glued onto it, which would corrupt a good line or hide the
+ * damaged one. O_APPEND keeps both writes at the true end of file even when
+ * another process appends concurrently. */
+export async function appendJsonlDurable(path: string, value: unknown): Promise<void> {
+  await ensureDir(dirname(path));
+  const handle = await open(path, "a+");
+  try {
+    const { size } = await handle.stat();
+    if (size > 0) {
+      const tail = Buffer.alloc(1);
+      await handle.read(tail, 0, 1, size - 1);
+      if (tail[0] !== 0x0a) {
+        await handle.write("\n", null, "utf8");
+        await handle.sync();
+      }
+    }
+    await handle.write(`${JSON.stringify(value)}\n`, null, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Atomic full-file text write (tmp + fsync + rename) — for the rare case a

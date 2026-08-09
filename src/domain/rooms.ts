@@ -21,7 +21,7 @@ import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
-import { appendJsonl, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
+import { appendJsonl, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { withSqliteImmediateLock } from "../core/sqlite.js";
@@ -611,26 +611,27 @@ export class RoomHandle {
   /** Apply one typed delta over the latest raw document. Every handle for this
    * room shares the same chain; unknown future fields survive unchanged. */
   async updateState(mutate: (state: RoomState) => void): Promise<RoomState> {
+    return this.withRoomLock(() => this.updateStateLocked(mutate));
+  }
+
+  /** The state delta itself, WITHOUT acquiring the room lock — for composite
+   * operations that already hold it (clearRoom). Lock spans read → typed patch
+   * → atomic rename. It is deliberately a sidecar lock: state.json remains the
+   * source of truth and preserves unknown fields and its established bytes for
+   * no-op mutations. */
+  private async updateStateLocked(mutate: (state: RoomState) => void): Promise<RoomState> {
     const shared = sharedRoomState(this.statePath);
-    const run = async (): Promise<RoomState> => withSqliteImmediateLock(this.stateLockPath, async () => {
-      // Lock spans read → typed patch → atomic rename. It is deliberately a
-      // sidecar lock: state.json remains the source of truth and preserves
-      // unknown fields and its established bytes for no-op mutations.
-      const raw = await readRoomState(this.statePath);
-      const before = normalizeRoomState(raw);
-      const state = structuredClone(before);
-      mutate(state);
-      if (!isDeepStrictEqual(before, state)) {
-        await writeJsonAtomic(this.statePath, patchNormalizedState(raw, before, state));
-        shared.version++;
-      }
-      this.stateCache = state;
-      this.stateCacheVersion = shared.version;
-      return state;
-    });
-    const next = shared.chain.then(run, run);
-    shared.chain = next.catch(() => {});
-    return next;
+    const raw = await readRoomState(this.statePath);
+    const before = normalizeRoomState(raw);
+    const state = structuredClone(before);
+    mutate(state);
+    if (!isDeepStrictEqual(before, state)) {
+      await writeJsonAtomic(this.statePath, patchNormalizedState(raw, before, state));
+      shared.version++;
+    }
+    this.stateCache = state;
+    this.stateCacheVersion = shared.version;
+    return state;
   }
 
   /** Replace the known state document under the same process-wide lock. Use
@@ -657,7 +658,7 @@ export class RoomHandle {
   // --- transcript ------------------------------------------------------------
 
   async appendEvent(event: RoomEvent): Promise<void> {
-    await this.withRoomLock(() => appendJsonl(this.transcriptPath, event));
+    await this.withRoomLock(() => appendJsonlDurable(this.transcriptPath, event));
   }
 
   /** `id` pre-assigns the event id — the queue→transcript hand-off reserves it
@@ -682,24 +683,63 @@ export class RoomHandle {
     await this.withRoomLock(() => writeText(this.transcriptPath, ""));
   }
 
-  /** Replace the whole transcript with `events` (backs explicit import
-   * --force / restore). The ONE history-rewrite entry point besides
-   * clear/rewind/redact: importers must come through here instead of writing
-   * transcript.jsonl behind the room lock's back. */
-  async replaceTranscript(events: RoomEvent[]): Promise<void> {
-    await this.withRoomLock(() => writeTextAtomic(this.transcriptPath, serializeEvents(events)));
+  /** /clear as ONE critical section: archive → wipe transcript → reset the
+   * state that describes it (cursors, legacy runtimeDetails), under a single
+   * acquisition of the room lock. Split across two acquisitions, a concurrent
+   * process can commit a turn in between and leave cursors pointing past a
+   * transcript that no longer has those lines (silent amnesia / replay).
+   *
+   * pending/queue are deliberately NOT touched: a queued message is owed work
+   * that survives history wipes, and a pendingTurn is another writer's live
+   * WAL record — clearing it here would strand or double-run that turn. /clear
+   * is therefore safe on a BUSY room, not only an idle one; the turn in flight
+   * commits its reply onto the fresh transcript. */
+  async clearRoom(): Promise<void> {
+    await this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), events);
+      await writeText(this.transcriptPath, "");
+      await this.updateStateLocked((state) => {
+        state.agentCursors = {};
+        delete state.runtimeDetails;
+      });
+    });
   }
 
-  /** Copy the transcript verbatim to `destPath` under the room lock (backs
-   * /fork): a snapshot taken while another process appends must be a whole
-   * number of lines, never a torn tail. No-op when nothing was ever written. */
-  async snapshotTranscriptTo(destPath: string): Promise<boolean> {
-    return this.withRoomLock(async () => {
-      const text = await readText(this.transcriptPath);
-      if (text === undefined) return false;
-      await writeTextAtomic(destPath, text);
-      return true;
+  /** Replace the whole transcript with `events` (backs explicit import
+   * --force). The ONE history-rewrite entry point besides clear/rewind/redact:
+   * importers must come through here instead of writing transcript.jsonl
+   * behind the room lock's back.
+   *
+   * Conservative by construction: whatever was there — including lines a
+   * concurrent process appended while the import was reading its export — is
+   * archived to rewound.jsonl and fsynced BEFORE the replacement publishes. A
+   * --force import destroys no history, it only stops replaying it. */
+  async replaceTranscript(events: RoomEvent[]): Promise<void> {
+    await this.withRoomLock(async () => {
+      const { events: existing } = await this.readEventsLocked();
+      await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), existing);
+      await writeTextAtomic(this.transcriptPath, serializeEvents(events));
     });
+  }
+
+  /** The transcript's bytes, read under the room lock (backs /fork's source
+   * side): an unlocked read can catch a full rewrite mid-publish or an append
+   * mid-line. Returns "" for a room that never wrote one.
+   *
+   * Lock order: the snapshot is taken and the lock RELEASED before the target
+   * room's handle is touched. Source and target locks are never held at the
+   * same time, so two rooms forking into each other cannot deadlock. */
+  async snapshotTranscript(): Promise<string> {
+    return this.withRoomLock(async () => (await readText(this.transcriptPath)) ?? "");
+  }
+
+  /** Seed this (new) room's transcript with `text`, exclusively: `wx`, so the
+   * fork target is created by exactly one writer and an existing room's
+   * history can never be clobbered by a fork/import landing on its id.
+   * Returns whether this call created it. */
+  async seedTranscript(text: string): Promise<boolean> {
+    return this.withRoomLock(() => writeTextIfMissing(this.transcriptPath, text));
   }
 
   /** Rewind: drop the last `userTurns` user messages and every event after
@@ -745,8 +785,7 @@ export class RoomHandle {
   private async truncateAt(events: RoomEvent[], cut: number): Promise<RoomEvent[]> {
     const kept = events.slice(0, cut);
     const dropped = events.slice(cut);
-    const rewoundPath = workspacePaths.roomRewound(this.workspaceRoot, this.roomId);
-    for (const event of dropped) await appendJsonl(rewoundPath, event);
+    await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), dropped);
     // Atomic: the kept head has no other copy — a torn rewrite would be
     // permanent loss of committed history.
     await writeTextAtomic(this.transcriptPath, serializeEvents(kept));
@@ -764,12 +803,14 @@ export class RoomHandle {
     const { events } = await this.readEventsLocked();
     const edited = new Set<string>();
     const redactionsPath = workspacePaths.roomRedactions(this.workspaceRoot, this.roomId);
+    const originals: RoomEvent[] = [];
     for (const event of events) {
       const text = edits.get(event.id);
       if (text === undefined || text === event.text) continue;
-      await appendJsonl(redactionsPath, event);
+      originals.push(event);
       edited.add(event.id);
     }
+    await this.archiveLocked(redactionsPath, originals);
     if (edited.size === 0) return [];
     const next = events.map((event) => (edited.has(event.id) ? { ...event, text: edits.get(event.id)!, redacted: true } : event));
     // Atomic: every unedited event exists only on this line — a torn rewrite
@@ -785,6 +826,22 @@ export class RoomHandle {
    * document, so no nested acquisition happens here. */
   private async readEventsLocked(): Promise<RoomPage> {
     return this.eventsFrom(0);
+  }
+
+  /** Archive events that a rewrite is about to remove from the live file, and
+   * make them durable BEFORE the rewrite publishes — the archive is their only
+   * remaining copy, so "written but not yet on disk" is exactly the window in
+   * which a power cut turns a rewind into deletion.
+   *
+   * Retry note: a crash midway leaves a PARTIAL archive, and re-running the
+   * operation appends those events a second time. Duplicate archive lines are
+   * accepted deliberately — the invariant this file must carry is "every event
+   * that ever existed is in live ∪ archive", which duplication cannot break,
+   * while dedup keying (an operation id per rewrite) would add a second
+   * durable record to keep consistent for a cosmetic gain. Readers of
+   * rewound/redactions must therefore treat repeated ids as one event. */
+  private async archiveLocked(path: string, events: RoomEvent[]): Promise<void> {
+    for (const event of events) await appendJsonlDurable(path, event);
   }
 
   // --- durable compaction summaries -------------------------------------------
@@ -952,7 +1009,11 @@ export class RoomHandle {
     // append duplicates it). The cursor scan stays inside too, so the offset
     // matches the file this turn actually committed against.
     const cursorAfter = await this.withRoomLock(async () => {
-      if (!(await this.hasEventLocked(event.id))) await appendJsonl(this.transcriptPath, event);
+      // fsynced here, BEFORE the state write below clears pendingTurn and
+      // advances the cursor: the WAL's ordering is only real if the append is
+      // durable first — otherwise a power cut can leave a state that says
+      // "committed" over a transcript that lost the reply.
+      if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
       // Line offsets, not parsed-array indexes: unparseable lines are skipped
       // from items but still count toward the cursor space.
       const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
