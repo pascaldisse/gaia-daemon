@@ -146,6 +146,8 @@ export class PluginHost {
 
   /** Hold while a turn runs: reload is refused until every lease is released. */
   acquireTurnLease(): () => void {
+    // Terminal state: a closed host owns no generation to lease.
+    if (this.#closed) throw new PluginHostError("turn leases are refused after shutdown");
     this.#leases += 1;
     let released = false;
     return () => {
@@ -164,7 +166,7 @@ export class PluginHost {
    */
   async reload(inventory: readonly BundledPluginInventoryItem[]): Promise<PluginGeneration> {
     if (this.#closed) throw new PluginHostError("reload is refused after shutdown");
-    if (this.#busy) throw new PluginHostError("a reload is already in progress");
+    if (this.#busy) throw new PluginHostError("a lifecycle operation is already in progress");
     if (this.#leases !== 0) throw new PluginHostError("reload requires zero active turn leases");
     if (this.#generation >= MAX_GENERATION_ID) {
       throw new PluginHostError("generation id space exhausted; create a new plugin host");
@@ -225,6 +227,8 @@ export class PluginHost {
 
   /** Dispose everything in reverse registration order and permanently close the host. */
   async shutdown(): Promise<void> {
+    // Idempotent: once closed there is nothing left to tear down.
+    if (this.#closed) return;
     if (this.#busy) throw new PluginHostError("a lifecycle operation is already in progress");
     // Symmetric with reload: a live turn must never lose its plugins.
     if (this.#leases !== 0) throw new PluginHostError("shutdown requires zero active turn leases");
