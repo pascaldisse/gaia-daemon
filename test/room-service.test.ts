@@ -3163,3 +3163,71 @@ test("a cursor beyond the transcript's physical lines replays from 0 instead of 
   assert.ok(seen[0] >= 2, `agent got ${seen[0]} events — a stale cursor silently emptied its context`);
   assert.equal((await room.state()).agentCursors.gaia, 3, "the impossible cursor was not reset");
 });
+
+// A cursor that equals EOF is the HEALTHY steady state, not corruption: a
+// continuation turn that records no new user event (goal continuations, agent
+// hand-offs, resume — recordUserMessage:false) legitimately starts with zero
+// new events. Treating "empty page" as a stale cursor replayed the entire
+// history into the model and reset the stored cursor to 0 forever.
+test("a continuation turn whose cursor sits exactly at EOF replays nothing and keeps its cursor", async () => {
+  const seen: number[] = [];
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "reply" } as AgentEvent]);
+      const send = runtime.send.bind(runtime);
+      runtime.send = (input) => {
+        seen.push(input.transcript.length);
+        return send(input);
+      };
+      return runtime;
+    },
+  });
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const eof = (await room.eventsFrom(0)).nextCursor;
+  await room.updateState((state) => {
+    state.agentCursors.gaia = eof;
+  });
+
+  // Continuation: nothing new is recorded, so the page IS legitimately empty.
+  seen.length = 0;
+  await service.sendMessage("continue", { recordUserMessage: false });
+  await service.waitForIdle();
+
+  assert.equal(seen[0], 0, `continuation replayed ${seen[0]} events — cursor==EOF was mistaken for corruption`);
+  assert.ok((await room.state()).agentCursors.gaia >= eof, "the healthy cursor was rewritten backwards");
+});
+
+// The genuine corruption must still clamp: a cursor PAST EOF (transcript
+// shrank out of band) replays from 0 rather than feeding the agent nothing.
+test("a cursor past EOF still clamps to a full replay", async () => {
+  const seen: number[] = [];
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "reply" } as AgentEvent]);
+      const send = runtime.send.bind(runtime);
+      runtime.send = (input) => {
+        seen.push(input.transcript.length);
+        return send(input);
+      };
+      return runtime;
+    },
+  });
+  await service.sendMessage("first question");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  await room.updateState((state) => {
+    state.agentCursors.gaia = 9999;
+  });
+  seen.length = 0;
+  await service.sendMessage("second question");
+  await service.waitForIdle();
+
+  assert.ok(seen[0]! >= 3, `agent got ${seen[0]} events — the impossible cursor was not clamped`);
+  assert.equal((await room.state()).agentCursors.gaia, (await room.eventsFrom(0)).events.length, "cursor left impossible");
+});

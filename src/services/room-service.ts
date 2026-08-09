@@ -1351,15 +1351,19 @@ export class RoomService {
       // sees an empty room forever, with no error anywhere. Replay from 0 and
       // reset the stored cursor instead — over-replay is recoverable, amnesia
       // is not. (nextCursor is the physical line count.)
-      // Two shapes of the same corruption: the cursor is past EOF, or it is
-      // within the file but leaves the agent nothing to answer (its own
-      // triggering message included) — both mean the line space it was
-      // recorded against no longer exists. An explicit cursorOverride is a
-      // deliberate seed and is never second-guessed.
+      // Past EOF is always corruption. An EMPTY page at cursor == EOF is only
+      // corruption when THIS turn recorded a user message: that line must be
+      // visible, so seeing nothing means the line space the cursor was recorded
+      // against is gone. Continuation turns record nothing by design (goal
+      // continuations, agent hand-offs, resume — recordUserMessage:false) and
+      // legitimately start at EOF with zero new events; flagging those replayed
+      // the whole history and reset the cursor to 0 permanently. An explicit
+      // cursorOverride is a deliberate seed and is never second-guessed.
       const staleCursor =
         options.cursorOverride === undefined &&
         desiredCursor > 0 &&
-        (desiredCursor > page.nextCursor || (page.events.length === 0 && page.nextCursor > 0));
+        (desiredCursor > page.nextCursor ||
+          (options.recordUserMessage !== false && page.events.length === 0 && page.nextCursor > 0));
       const cursor = staleCursor ? 0 : desiredCursor;
       if (cursor !== desiredCursor) {
         page = await this.room.eventsFrom(cursor);
@@ -3391,7 +3395,10 @@ export class RoomService {
     const snapshot = await this.room.snapshotTranscript();
     const state = await this.room.state();
     const branch = await RoomHandle.open(this.workspace.rootDir, target);
-    await branch.seedTranscript(snapshot);
+    // Exclusive create: false means a room already owns that id, so the
+    // snapshot was NOT written. Never report a fork that did not happen.
+    if (!(await branch.seedTranscript(snapshot)))
+      return `Fork aborted: room '${target}' already has a transcript — nothing was copied.`;
     await branch.updateState((next) => {
       next.activeRoles = { ...state.activeRoles };
       next.thinkingOverrides = { ...state.thinkingOverrides };
