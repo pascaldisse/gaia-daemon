@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import "../design/test/artifact-canvas-style.test.js";
 
 const served = join(dirname(fileURLToPath(import.meta.url)), "..", "web", "src", "design", "artifact-canvas.js");
 const servedModel = join(dirname(fileURLToPath(import.meta.url)), "..", "web", "src", "design", "canvas-model.js");
