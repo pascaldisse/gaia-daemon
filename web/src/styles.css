@@ -1599,6 +1599,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .artifact-list { display: flex; gap: 5px; overflow-x: auto; padding: 8px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg3) 68%, transparent); }
 .artifact-tab { flex: 0 0 auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; color: var(--muted); background: var(--ink); }
 .artifact-tab.active { color: var(--accent); border-color: var(--accent); }
+.artifact-tab { display: grid; gap: 1px; text-align: left; line-height: 1.2; }
+.artifact-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-tab-meta { font-size: 0.82em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-tab.active .artifact-tab-meta { color: var(--accent); opacity: 0.8; }
 .artifact-list .empty { padding: 2px 0; white-space: nowrap; }
 .artifact-view { min-height: 0; overflow: auto; padding: 12px; background: var(--bg); }
 .artifact-empty { display: grid; height: 100%; place-items: center; color: var(--muted); }
