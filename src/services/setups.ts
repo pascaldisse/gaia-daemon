@@ -20,7 +20,7 @@ import { bundledDir, globalPaths, workspacePaths } from "../core/paths.js";
 import { readJson, writeJsonAtomic, writeTextAtomic } from "../core/store.js";
 import { json, parseBody } from "../core/http.js";
 import type { ChatMessage, MonadConfig, MonadSlot, Workspace } from "../core/types.js";
-import { normalizeRoomState } from "../domain/rooms.js";
+import { RoomHandle, normalizeRoomState } from "../domain/rooms.js";
 import { parseRoleMarkdown, resolveAgentRole } from "../domain/roles.js";
 import { ensureWorkspaceRoom, liveMaxSummonsPerRoom, loadWorkspace } from "../domain/workspace.js";
 import { MemoryStore } from "../domain/memory.js";
@@ -262,13 +262,13 @@ export async function activateSetup(workspace: Workspace, idOrPath: string, room
   await ensureWorkspaceRoom(workspace.rootDir, roomId);
   const placedRoles = await placeRoleFiles(info.dir, manifest, workspace, slots);
 
-  const statePath = workspacePaths.roomState(workspace.rootDir, roomId);
-  const state = normalizeRoomState(await readJson(statePath));
-  for (const binding of roleBindings(manifest, slots)) {
-    if (binding.ref && binding.role && workspace.agents[binding.ref]) state.activeRoles[binding.ref] = binding.role;
-  }
-  state.monad = monad;
-  await writeJsonAtomic(statePath, state);
+  const room = await RoomHandle.open(workspace.rootDir, roomId);
+  await room.updateState((state) => {
+    for (const binding of roleBindings(manifest, slots)) {
+      if (binding.ref && binding.role && workspace.agents[binding.ref]) state.activeRoles[binding.ref] = binding.role;
+    }
+    state.monad = monad;
+  });
 
   await applyRoomDefaults(workspace, manifest);
 
@@ -283,12 +283,14 @@ export async function readRoomMonad(workspace: Workspace, roomId: string): Promi
 
 /** Clear a room's monad block, returning it to a normal room. */
 export async function deactivateMonad(workspace: Workspace, roomId: string): Promise<boolean> {
-  const statePath = workspacePaths.roomState(workspace.rootDir, roomId);
-  const state = normalizeRoomState(await readJson(statePath));
-  if (!state.monad) return false;
-  delete state.monad;
-  await writeJsonAtomic(statePath, state);
-  return true;
+  const room = await RoomHandle.open(workspace.rootDir, roomId);
+  let cleared = false;
+  await room.updateState((state) => {
+    if (!state.monad) return;
+    delete state.monad;
+    cleared = true;
+  });
+  return cleared;
 }
 
 // ---------------------------------------------------------------------------
