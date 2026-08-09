@@ -24,12 +24,12 @@ import { join } from "node:path";
 import { DEFAULTS } from "../src/core/config.js";
 import { agentPaths, workspacePaths } from "../src/core/paths.js";
 import { newId } from "../src/core/ids.js";
-import { writeJsonAtomic, writeText } from "../src/core/store.js";
+import { writeText } from "../src/core/store.js";
 import type { AgentRoomEvent, RoomEvent, UserRoomEvent } from "../src/core/types.js";
 import { scaffoldGlobalAgent } from "../src/domain/agents.js";
 import { appendEpisode } from "../src/domain/episodes.js";
 import { appendFactOp } from "../src/domain/facts.js";
-import { newRoomEventId, normalizeRoomState } from "../src/domain/rooms.js";
+import { newRoomEventId, normalizeRoomState, RoomHandle } from "../src/domain/rooms.js";
 import {
   ensureWorkspaceRoom,
   globalAgentsPath,
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
     await writeText(transcriptPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
     const state = normalizeRoomState(undefined);
     state.agentCursors[agentId] = Math.max(0, events.length - window);
-    await writeJsonAtomic(workspacePaths.roomState(workspaceDir, singleRoomId), state);
+    await RoomHandle.open(workspaceDir, singleRoomId).then((room) => room.replaceState(state));
     await setWorkspaceRoom(workspaceDir, singleRoomId);
     console.log(`room ${singleRoomId}: ${events.length} events from ${conversations.length} conversations`);
   } else {
@@ -278,7 +278,7 @@ async function main(): Promise<void> {
       // historical position instead of flooding the top on import day.
       const activity = new Date(conversation.updated_at || conversation.created_at);
       if (!Number.isNaN(activity.getTime())) await utimes(transcriptPath, activity, activity);
-      await writeJsonAtomic(workspacePaths.roomState(workspaceDir, roomId), state);
+      await RoomHandle.open(workspaceDir, roomId).then((room) => room.replaceState(state));
       imported += 1;
     }
     console.log(`rooms: ${imported} imported, ${skipped} already present (skipped)`);

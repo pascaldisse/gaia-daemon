@@ -112,11 +112,11 @@ test("(b) deactivateMonad (same read->normalize->write shape as summon seeding) 
 
 // (b2) Source guard, independent path: NO module outside domain/rooms.ts may
 // write a room's state.json directly — RoomHandle is the sole serialized
-// writer (core/types.ts:283). A direct writeJsonAtomic(roomState(...)) both
-// races the handle's chain and drops unknown fields.
+// writer (core/types.ts:283). Direct atomic, promise-FS, and Bun writes all
+// bypass serialization when their target is roomState(...).
 test("(b2) no module outside domain/rooms.ts writes roomState directly", async () => {
   const src = join(import.meta.dirname, "..", "src");
-  const proc = Bun.spawnSync(["grep", "-rn", "writeJsonAtomic(", src]);
+  const proc = Bun.spawnSync(["grep", "-rnE", "(writeJsonAtomic|writeFile|Bun\\.write)\\(", src]);
   const candidates = new TextDecoder()
     .decode(proc.stdout)
     .split("\n")
@@ -124,7 +124,8 @@ test("(b2) no module outside domain/rooms.ts writes roomState directly", async (
   const hits: string[] = [];
   for (const line of candidates) {
     const file = line.slice(0, line.indexOf(":"));
-    const arg = line.slice(line.indexOf("writeJsonAtomic(") + "writeJsonAtomic(".length).split(/[,)]/)[0]?.trim() ?? "";
+    const match = line.match(/(?:writeJsonAtomic|writeFile|Bun\.write)\(([^,)]*)/);
+    const arg = match?.[1]?.trim() ?? "";
     if (!arg) continue;
     const body = await readFile(file, "utf8");
     // Direct target, or a local bound to workspacePaths.roomState(...).

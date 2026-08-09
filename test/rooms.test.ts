@@ -8,6 +8,7 @@ import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoo
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
+import { withSqliteImmediateLock } from "../src/core/sqlite.js";
 
 async function openRoom(): Promise<RoomHandle> {
   const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
@@ -339,7 +340,7 @@ test("independent room handles share one failure-safe state writer", async () =>
   assert.equal((await first.state()).activeRoles.gaia, "review");
 });
 
-test("cross-process updateState loses one independently written delta without an inter-process lock", async () => {
+test("cross-process updateState retains every independently written delta", async () => {
   const room = await openRoom();
   const barrier = join(room.workspaceRoot, "barrier");
   await mkdir(barrier);
@@ -358,7 +359,51 @@ test("cross-process updateState loses one independently written delta without an
 
   const persisted = await RoomHandle.open(room.workspaceRoot, room.roomId).then((handle) => handle.state());
   const survivors = agents.filter((agent) => persisted.agentCursors[agent] === 1);
-  assert.ok(survivors.length < agents.length, `lost update reproduced: wrote ${agents.length}, persisted ${survivors.length}`);
+  assert.deepEqual(survivors, agents, `every concurrent delta survives: wrote ${agents.length}, persisted ${survivors.length}`);
+});
+
+test("state reads a foreign process write instead of a stale cache", async () => {
+  const room = await openRoom();
+  await room.state();
+  const barrier = join(room.workspaceRoot, "foreign-cache-barrier");
+  await mkdir(barrier);
+  const worker = join(import.meta.dir, "helpers", "room-update-racer.ts");
+  const racer = Bun.spawn([process.execPath, worker, room.workspaceRoot, "foreign", barrier]);
+  while (!existsSync(join(barrier, "foreign.ready"))) await Bun.sleep(2);
+  await writeFile(join(barrier, "release"), "", "utf8");
+  assert.equal(await racer.exited, 0);
+  assert.equal((await room.state()).agentCursors.foreign, 1);
+});
+
+test("SQLite state lock releases after its owner is killed and reports bounded contention", async () => {
+  const room = await openRoom();
+  const barrier = join(room.workspaceRoot, "lock-barrier");
+  await mkdir(barrier);
+  const worker = join(import.meta.dir, "helpers", "room-update-racer.ts");
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  const holder = Bun.spawn([process.execPath, worker, "hold-lock", lockPath, barrier]);
+  while (!existsSync(join(barrier, "locked"))) await Bun.sleep(2);
+
+  const original = await readFile(room.statePath, "utf8");
+  await assert.rejects(
+    withSqliteImmediateLock(lockPath, async () => undefined, { timeoutMs: 40, retryMs: 2 }),
+    /SQLite lock contention timed out after 40ms/,
+  );
+  assert.equal(await readFile(room.statePath, "utf8"), original, "a timed-out contender changes no state bytes");
+
+  holder.kill("SIGKILL");
+  await holder.exited;
+  await room.updateState((state) => { state.agentCursors.successor = 1; });
+  assert.equal((await room.state()).agentCursors.successor, 1);
+});
+
+test("malformed existing state rejects without replacing recoverable bytes", async () => {
+  const room = await openRoom();
+  const corrupt = "{not valid JSON\n";
+  await writeFile(room.statePath, corrupt, "utf8");
+  await assert.rejects(room.state(), SyntaxError);
+  await assert.rejects(room.updateState((state) => { state.agentCursors.never = 1; }), SyntaxError);
+  assert.equal(await readFile(room.statePath, "utf8"), corrupt);
 });
 
 test("state updates preserve future metadata and no-op bytes", async () => {

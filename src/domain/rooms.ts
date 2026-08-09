@@ -16,6 +16,7 @@
 //      re-run the turn from partialReply. Idempotent either way.
 
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
@@ -23,6 +24,7 @@ import { normalizePetBindings } from "./pets.js";
 import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
+import { withSqliteImmediateLock } from "../core/sqlite.js";
 
 export function newRoomEventId(): string {
   return newId("evt");
@@ -477,6 +479,12 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
   return { ...base, author: raw.author, ...(kind ? { kind } : {}), ...(details ? { details } : {}) };
 }
 
+async function readRoomState(path: string): Promise<unknown> {
+  // State exists after RoomHandle.open. Parse failure is durability corruption,
+  // not an empty document: rewriting it would destroy recoverable bytes.
+  return JSON.parse(await readFile(path, "utf8")) as unknown;
+}
+
 function patchNormalizedState(raw: unknown, before: unknown, after: unknown): unknown {
   if (isDeepStrictEqual(before, after)) return raw;
   if (!isRecord(before) || !isRecord(after)) return after;
@@ -530,9 +538,11 @@ export class RoomHandle {
     await ensureDir(workspacePaths.roomDir(workspaceRoot, roomId));
     const shared = sharedRoomState(handle.statePath);
     const initialize = shared.chain.then(async () => {
-      if (existsSync(handle.statePath)) return;
-      await writeJsonAtomic(handle.statePath, normalizeRoomState(undefined));
-      shared.version++;
+      await withSqliteImmediateLock(handle.stateLockPath, async () => {
+        if (existsSync(handle.statePath)) return;
+        await writeJsonAtomic(handle.statePath, normalizeRoomState(undefined));
+        shared.version++;
+      });
     });
     shared.chain = initialize.catch(() => {});
     await initialize;
@@ -547,12 +557,16 @@ export class RoomHandle {
     return workspacePaths.roomState(this.workspaceRoot, this.roomId);
   }
 
+  private get stateLockPath(): string {
+    return `${this.statePath}.lock.sqlite`;
+  }
+
   async state(): Promise<RoomState> {
+    // A peer process has no access to sharedRoomStates/version. Read the
+    // atomically-renamed document on every public observation instead.
     const shared = sharedRoomState(this.statePath);
-    if (!this.stateCache || this.stateCacheVersion !== shared.version) {
-      this.stateCache = normalizeRoomState(await readJson(this.statePath));
-      this.stateCacheVersion = shared.version;
-    }
+    this.stateCache = normalizeRoomState(await readRoomState(this.statePath));
+    this.stateCacheVersion = shared.version;
     return this.stateCache;
   }
 
@@ -560,8 +574,11 @@ export class RoomHandle {
    * room shares the same chain; unknown future fields survive unchanged. */
   async updateState(mutate: (state: RoomState) => void): Promise<RoomState> {
     const shared = sharedRoomState(this.statePath);
-    const run = async (): Promise<RoomState> => {
-      const raw = await readJson(this.statePath);
+    const run = async (): Promise<RoomState> => withSqliteImmediateLock(this.stateLockPath, async () => {
+      // Lock spans read → typed patch → atomic rename. It is deliberately a
+      // sidecar lock: state.json remains the source of truth and preserves
+      // unknown fields and its established bytes for no-op mutations.
+      const raw = await readRoomState(this.statePath);
       const before = normalizeRoomState(raw);
       const state = structuredClone(before);
       mutate(state);
@@ -572,14 +589,29 @@ export class RoomHandle {
       this.stateCache = state;
       this.stateCacheVersion = shared.version;
       return state;
-    };
+    });
     const next = shared.chain.then(run, run);
     shared.chain = next.catch(() => {});
     return next;
   }
 
-  /** Drop the in-memory cache so the next read hits disk (used by tests and
-   * by anything that must observe a foreign write — there should be none). */
+  /** Replace the known state document under the same process-wide lock. Use
+   * only for explicit reset/import semantics; normal callers use deltas. */
+  async replaceState(state: RoomState): Promise<void> {
+    const shared = sharedRoomState(this.statePath);
+    const run = async (): Promise<void> => withSqliteImmediateLock(this.stateLockPath, async () => {
+      await writeJsonAtomic(this.statePath, state);
+      shared.version++;
+      this.stateCache = state;
+      this.stateCacheVersion = shared.version;
+    });
+    const next = shared.chain.then(run, run);
+    shared.chain = next.catch(() => {});
+    await next;
+  }
+
+  /** Drop the in-memory cache retained for an update result. Public state()
+   * already reads disk so foreign-process writers are observable. */
   invalidate(): void {
     this.stateCache = undefined;
   }
