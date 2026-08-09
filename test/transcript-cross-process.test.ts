@@ -9,7 +9,7 @@
 //   (c) a full rewrite (redact) racing appends -> lost or torn lines
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -328,6 +328,37 @@ test("(2) import --force racing appends keeps every append live or archived", as
 // not a mocked filesystem or state writer. It proves that a crash there leaves
 // durable transcript history while pendingTurn remains resumable. Power-loss
 // persistence past the kernel/fsync contract remains intentionally unprovable.
+test("(2m) multi-room import uses the composite transcript/state path", async () => {
+  const fx = await fixture("gaia-xproc-multi-import-");
+  try {
+    const exportDir = join(fx.proj, "multi-export");
+    await mkdir(exportDir);
+    const conversations = ["left", "right"].map((name, index) => ({
+      uuid: `multi-${name}`,
+      name,
+      created_at: `2026-01-0${index + 1}T00:00:00.000Z`,
+      updated_at: `2026-01-0${index + 1}T00:00:01.000Z`,
+      chat_messages: [{ uuid: `message-${name}`, sender: "human", created_at: `2026-01-0${index + 1}T00:00:00.000Z`, text: name }],
+    }));
+    await writeFile(join(exportDir, "conversations.json"), JSON.stringify(conversations), "utf8");
+    const imported = await childExit(spawn(process.execPath, [IMPORT_SCRIPT, "--export", exportDir, "--workspace", fx.proj, "--agent", "importer", "--per-chat"], {
+      stdio: ["ignore", "ignore", "inherit"], env: { ...process.env },
+    }));
+    assert.equal(imported.code, 0, `multi-room import failed: ${JSON.stringify(imported)}`);
+
+    const roomIds = (await readdir(workspacePaths.roomsDir(fx.proj))).filter((id) => id.startsWith("claude-2026"));
+    assert.equal(roomIds.length, 2);
+    const snapshots = await Promise.all(roomIds.map(async (roomId) => {
+      const room = await RoomHandle.open(fx.proj, roomId);
+      return { state: await room.state(), events: (await room.eventsFrom(0)).events };
+    }));
+    assert.deepEqual(new Set(snapshots.map(({ state }) => state.title)), new Set(["left", "right"]));
+    assert.ok(snapshots.every(({ events }) => events.length === 1), "every imported room has its matching transcript");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // (2') Two independently-invoked /forks take a locked source snapshot and
 // exclusive-create separate targets. A target collision is a clean failure:
 // it may not mutate either source or occupied destination.
