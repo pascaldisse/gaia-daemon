@@ -163,7 +163,11 @@ export class PluginHost {
     if (this.#leases !== 0) throw new PluginHostError("reload requires zero active turn leases");
     this.#busy = true;
     try {
-      const generation = this.#generation + 1;
+      // Allocated up front and never rolled back: a failed attempt burns its
+      // id so no two plugin instances ever observe the same generation.
+      this.#generation += 1;
+      const generation = this.#generation;
+      const previousGeneration = this.#current.generation;
       const skipped: SkippedPlugin[] = [];
       const eligible: BundledPluginInventoryItem[] = [];
       for (const item of inventory) {
@@ -204,8 +208,7 @@ export class PluginHost {
       });
       this.#entries = Object.freeze([...built]);
       this.#current = next;
-      this.#generation = generation;
-      await this.#disposeAll(previous, generation - 1);
+      await this.#disposeAll(previous, previousGeneration);
       return next;
     } finally {
       this.#busy = false;
@@ -215,8 +218,10 @@ export class PluginHost {
   /** Dispose everything in reverse registration order and empty the host. */
   async shutdown(): Promise<void> {
     if (this.#busy) throw new PluginHostError("a reload is already in progress");
+    // Symmetric with reload: a live turn must never lose its plugins.
+    if (this.#leases !== 0) throw new PluginHostError("shutdown requires zero active turn leases");
     const previous = this.#entries;
-    const generation = this.#generation;
+    const generation = this.#current.generation;
     this.#entries = Object.freeze([]);
     this.#current = Object.freeze({ generation, registered: Object.freeze([]), skipped: this.#current.skipped });
     await this.#disposeAll(previous, generation);
