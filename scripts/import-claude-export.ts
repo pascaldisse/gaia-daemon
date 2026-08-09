@@ -246,10 +246,13 @@ async function main(): Promise<void> {
     const events: RoomEvent[] = [];
     for (const conversation of conversations) events.push(...conversationEvents(conversation, agentId, true));
 
-    await writeText(transcriptPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
     const state = normalizeRoomState(undefined);
     state.agentCursors[agentId] = Math.max(0, events.length - window);
-    await RoomHandle.open(workspaceDir, singleRoomId).then((room) => room.replaceState(state));
+    // Through the room handle: an explicit --force rewrite still takes the
+    // room lock, so it can't interleave with a live daemon appending.
+    const room = await RoomHandle.open(workspaceDir, singleRoomId);
+    await room.replaceTranscript(events);
+    await room.replaceState(state);
     await setWorkspaceRoom(workspaceDir, singleRoomId);
     console.log(`room ${singleRoomId}: ${events.length} events from ${conversations.length} conversations`);
   } else {
@@ -272,13 +275,14 @@ async function main(): Promise<void> {
       state.title = conversation.name || "untitled";
       state.imported = conversation.created_at;
       state.agentCursors[agentId] = Math.max(0, events.length - window);
-      await writeText(transcriptPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      const room = await RoomHandle.open(workspaceDir, roomId);
+      await room.replaceTranscript(events);
       // Stamp the chat's own last-activity time onto the transcript: the
       // rooms list sorts by mtime (a chat list), so archives sit at their
       // historical position instead of flooding the top on import day.
       const activity = new Date(conversation.updated_at || conversation.created_at);
       if (!Number.isNaN(activity.getTime())) await utimes(transcriptPath, activity, activity);
-      await RoomHandle.open(workspaceDir, roomId).then((room) => room.replaceState(state));
+      await room.replaceState(state);
       imported += 1;
     }
     console.log(`rooms: ${imported} imported, ${skipped} already present (skipped)`);

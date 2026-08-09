@@ -15,7 +15,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -3365,11 +3365,9 @@ export class RoomService {
     const target = this.nextForkId(this.roomId);
     const dstDir = workspacePaths.roomDir(this.workspace.rootDir, target);
     await mkdir(dstDir, { recursive: true });
-    try {
-      await copyFile(this.room.transcriptPath, join(dstDir, "transcript.jsonl"));
-    } catch {
-      // Never-written transcript — the branch starts empty.
-    }
+    // Snapshot under the room lock: a raw copyFile racing a concurrent append
+    // can land a half-written last line in the branch.
+    await this.room.snapshotTranscriptTo(join(dstDir, "transcript.jsonl"));
     const state = await this.room.state();
     const branch = await RoomHandle.open(this.workspace.rootDir, target);
     await branch.updateState((next) => {

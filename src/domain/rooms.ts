@@ -21,10 +21,17 @@ import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
-import { appendJsonl, ensureDir, readJson, readJsonlFrom, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
+import { appendJsonl, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { withSqliteImmediateLock } from "../core/sqlite.js";
+
+/** The one transcript.jsonl serializer: one JSON line per event, trailing
+ * newline, empty file for no events — byte-identical to what appendJsonl
+ * produces, so a rewrite never changes the format. */
+function serializeEvents(events: RoomEvent[]): string {
+  return events.length ? events.map((event) => JSON.stringify(event)).join("\n") + "\n" : "";
+}
 
 export function newRoomEventId(): string {
   return newId("evt");
@@ -572,8 +579,24 @@ export class RoomHandle {
     return workspacePaths.roomState(this.workspaceRoot, this.roomId);
   }
 
+  /** ONE lock per room, shared by state.json and transcript.jsonl writers.
+   * Cross-process mutual exclusion of the two files must be the SAME lock or
+   * a transcript rewrite could interleave with a state commit; a second lock
+   * would also open a lock-ordering deadlock. Never acquired nested. */
   private get stateLockPath(): string {
     return `${this.statePath}.lock.sqlite`;
+  }
+
+  /** Run `work` under the room lock, serialized in-process on the same chain
+   * as state writes. `work` MUST NOT call any public method that acquires the
+   * lock again (updateState/appendEvent/...): the chain makes that a deadlock,
+   * by design — nesting is a bug, not a slow path. */
+  private async withRoomLock<T>(work: () => Promise<T>): Promise<T> {
+    const shared = sharedRoomState(this.statePath);
+    const run = (): Promise<T> => withSqliteImmediateLock(this.stateLockPath, work);
+    const next = shared.chain.then(run, run);
+    shared.chain = next.catch(() => {});
+    return next;
   }
 
   async state(): Promise<RoomState> {
@@ -634,7 +657,7 @@ export class RoomHandle {
   // --- transcript ------------------------------------------------------------
 
   async appendEvent(event: RoomEvent): Promise<void> {
-    await appendJsonl(this.transcriptPath, event);
+    await this.withRoomLock(() => appendJsonl(this.transcriptPath, event));
   }
 
   /** `id` pre-assigns the event id — the queue→transcript hand-off reserves it
@@ -656,7 +679,27 @@ export class RoomHandle {
 
   /** Wipe the transcript (backs /clear). State is the caller's to reset. */
   async clearTranscript(): Promise<void> {
-    await writeText(this.transcriptPath, "");
+    await this.withRoomLock(() => writeText(this.transcriptPath, ""));
+  }
+
+  /** Replace the whole transcript with `events` (backs explicit import
+   * --force / restore). The ONE history-rewrite entry point besides
+   * clear/rewind/redact: importers must come through here instead of writing
+   * transcript.jsonl behind the room lock's back. */
+  async replaceTranscript(events: RoomEvent[]): Promise<void> {
+    await this.withRoomLock(() => writeTextAtomic(this.transcriptPath, serializeEvents(events)));
+  }
+
+  /** Copy the transcript verbatim to `destPath` under the room lock (backs
+   * /fork): a snapshot taken while another process appends must be a whole
+   * number of lines, never a torn tail. No-op when nothing was ever written. */
+  async snapshotTranscriptTo(destPath: string): Promise<boolean> {
+    return this.withRoomLock(async () => {
+      const text = await readText(this.transcriptPath);
+      if (text === undefined) return false;
+      await writeTextAtomic(destPath, text);
+      return true;
+    });
   }
 
   /** Rewind: drop the last `userTurns` user messages and every event after
@@ -665,7 +708,8 @@ export class RoomHandle {
    * fewer user messages. Cursors/sessions are the caller's to reset; the
    * per-room recall index rebuilds itself on shrink. */
   async rewindTranscript(userTurns: number): Promise<RoomEvent[] | undefined> {
-    const { events } = await this.eventsFrom(0);
+    return this.withRoomLock(async () => {
+    const { events } = await this.readEventsLocked();
     let cut = -1;
     let seen = 0;
     for (let i = events.length - 1; i >= 0; i--) {
@@ -678,21 +722,26 @@ export class RoomHandle {
     }
     if (cut < 0) return undefined;
     return this.truncateAt(events, cut);
+    });
   }
 
   /** Rewind to a specific event: drop it and everything after (backs message
    * edit and reply retry — the fork-from-here primitive). Returns the dropped
    * events, or undefined when the id is not in the transcript. */
   async rewindToEvent(eventId: string): Promise<RoomEvent[] | undefined> {
-    const { events } = await this.eventsFrom(0);
-    const cut = events.findIndex((event) => event.id === eventId);
-    if (cut < 0) return undefined;
-    return this.truncateAt(events, cut);
+    return this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      const cut = events.findIndex((event) => event.id === eventId);
+      if (cut < 0) return undefined;
+      return this.truncateAt(events, cut);
+    });
   }
 
   /** All transcript truncation funnels through here. Dropped events are
    * preserved append-only in rewound.jsonl beside the transcript — a rewind
-   * discards them from the conversation, never from disk. */
+   * discards them from the conversation, never from disk. Caller holds the
+   * room lock: read → archive → publish is one critical section, so a
+   * concurrent append can neither be silently dropped nor half-written. */
   private async truncateAt(events: RoomEvent[], cut: number): Promise<RoomEvent[]> {
     const kept = events.slice(0, cut);
     const dropped = events.slice(cut);
@@ -700,7 +749,7 @@ export class RoomHandle {
     for (const event of dropped) await appendJsonl(rewoundPath, event);
     // Atomic: the kept head has no other copy — a torn rewrite would be
     // permanent loss of committed history.
-    await writeTextAtomic(this.transcriptPath, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""));
+    await writeTextAtomic(this.transcriptPath, serializeEvents(kept));
     return dropped;
   }
 
@@ -711,7 +760,8 @@ export class RoomHandle {
    * count is unchanged, so every existing cursor stays valid. Returns the
    * ids actually edited (unknown ids and no-op texts are ignored). */
   async redactEvents(edits: Map<string, string>): Promise<string[]> {
-    const { events } = await this.eventsFrom(0);
+    return this.withRoomLock(async () => {
+    const { events } = await this.readEventsLocked();
     const edited = new Set<string>();
     const redactionsPath = workspacePaths.roomRedactions(this.workspaceRoot, this.roomId);
     for (const event of events) {
@@ -724,8 +774,17 @@ export class RoomHandle {
     const next = events.map((event) => (edited.has(event.id) ? { ...event, text: edits.get(event.id)!, redacted: true } : event));
     // Atomic: every unedited event exists only on this line — a torn rewrite
     // would destroy committed history far beyond the redaction.
-    await writeTextAtomic(this.transcriptPath, next.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    await writeTextAtomic(this.transcriptPath, serializeEvents(next));
     return [...edited];
+    });
+  }
+
+  /** Transcript read for a mutation already holding the room lock. Identical
+   * parse to the public eventsFrom (same format, same legacy-details merge)
+   * and lock-free itself — state() only reads the atomically-renamed
+   * document, so no nested acquisition happens here. */
+  private async readEventsLocked(): Promise<RoomPage> {
+    return this.eventsFrom(0);
   }
 
   // --- durable compaction summaries -------------------------------------------
@@ -787,7 +846,12 @@ export class RoomHandle {
   }
 
   async hasEvent(eventId: string): Promise<boolean> {
-    const { events } = await this.eventsFrom(0);
+    return this.hasEventLocked(eventId);
+  }
+
+  /** hasEvent for callers already holding the room lock (never re-acquires). */
+  private async hasEventLocked(eventId: string): Promise<boolean> {
+    const { events } = await this.readEventsLocked();
     return events.some((event) => event.id === eventId);
   }
 
@@ -883,13 +947,22 @@ export class RoomHandle {
    * replaying the agent's own reply (and any later steer) as fresh context.
    */
   async commitTurn(event: RoomEvent, nextPending?: PendingTurn): Promise<void> {
-    if (!(await this.hasEvent(event.id))) await this.appendEvent(event);
-    // Line offsets, not parsed-array indexes: unparseable lines are skipped
-    // from items but still count toward the cursor space.
-    const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
-      raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
-    );
-    const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
+    // has → append is ONE critical section: two processes replaying the same
+    // reserved event id must produce exactly one line (an unlocked check-then-
+    // append duplicates it). The cursor scan stays inside too, so the offset
+    // matches the file this turn actually committed against.
+    const cursorAfter = await this.withRoomLock(async () => {
+      if (!(await this.hasEventLocked(event.id))) await appendJsonl(this.transcriptPath, event);
+      // Line offsets, not parsed-array indexes: unparseable lines are skipped
+      // from items but still count toward the cursor space.
+      const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
+        raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
+      );
+      return page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
+    });
+    // Lock RELEASED before the state write: updateState takes the same lock,
+    // and the WAL only requires append-then-state ordering, never atomicity of
+    // the pair (a crash between them is exactly the "finish-commit" resume).
     await this.updateState((state) => {
       if (nextPending) state.pendingTurn = nextPending;
       else delete state.pendingTurn;
