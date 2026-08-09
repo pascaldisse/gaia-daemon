@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -328,6 +328,16 @@ test("summon refuses unknown agents and enforces the per-room cap", async () => 
   room.settle();
 });
 
+test("trust:false worker remains sandboxed when a recovered legacy room lacks the tier marker", () => {
+  const worker = agent({ trust: false, sandbox: { enabled: false, backend: "none" } });
+  // Pre-tier state has no summonUntrusted field, hence recoveredTier=false.
+  // The worker's own durable trust boundary must still force a real sandbox.
+  const recoveredTier = false;
+  const policy = resolveSandboxPolicy(undefined, worker.sandbox, true, { trusted: effectiveTrust(worker, recoveredTier) });
+  assert.equal(policy.enabled, true);
+  assert.notEqual(policy.backend, "none");
+});
+
 test("an untrusted caller's summon runs under the untrusted tier — forced sandbox regardless of the worker's own trust", async () => {
   // caller 'shady' is trust:false; worker 'naked' is TRUSTED and even
   // configures its own sandbox off — the exact escape the tier must close.
@@ -409,6 +419,77 @@ test("recoverUndelivered re-arms a stranded summon and delivers its surviving re
   assert.match(parent.delivered[0].reply, /recovered result/);
   assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
   assert.equal(child.markedDelivered, 1);
+});
+
+test("recoverUndelivered skips corrupt child state rather than laundering its untrusted tier", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "untrusted-corrupt";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeFile(workspacePaths.roomState(path, childRoomId), "{ corrupt state\n", "utf8");
+  const logs: string[] = [];
+  let opened = false;
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async () => {
+      opened = true;
+      throw new Error("corrupt child must never be recovered as trusted");
+    },
+    async () => 8,
+    (line) => logs.push(line),
+  );
+
+  await coordinator.recoverUndelivered();
+  assert.equal(opened, false, "corrupt state never reaches service recovery");
+  assert.ok(logs.some((line) => line.includes("skipped unsafe 'untrusted-corrupt'")), "recovery skip is logged");
+  assert.equal(await readFile(workspacePaths.roomState(path, childRoomId), "utf8"), "{ corrupt state\n", "recovery preserves corrupt bytes for repair");
+});
+
+test("recoverUndelivered skips a corrupt room but continues its valid sibling", async () => {
+  const { workspace, path } = await makeWorkspace();
+  await mkdir(join(workspace.roomsDir, "corrupt"), { recursive: true });
+  await writeFile(workspacePaths.roomState(path, "corrupt"), "null", "utf8");
+  await mkdir(join(workspace.roomsDir, "valid"), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, "valid"), {
+    activeRoles: {}, agentCursors: {}, parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "running", launchedAt: new Date().toISOString() },
+  });
+  const parent = fakeRoom("");
+  const child = fakeRoom("valid sibling recovered");
+  const logs: string[] = [];
+  const services = new Map<string, SummonRoomAccess>([["default", parent], ["valid", child]]);
+  const coordinator = new SummonCoordinator(workspace, path, async (id) => {
+    const service = services.get(id);
+    if (!service) throw new Error(`unexpected recovery service: ${id}`);
+    return service;
+  }, async () => 8, (line) => logs.push(line));
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1, "the valid sibling still recovers");
+  assert.ok(logs.some((line) => line.includes("skipped unsafe 'corrupt'")));
+  assert.equal(await readFile(workspacePaths.roomState(path, "corrupt"), "utf8"), "null");
+});
+
+test("recoverUndelivered preserves an explicit untrusted tier", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "untrusted-recovery";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summonUntrusted: true,
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "running", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("still working");
+  child.holdPending();
+  const coordinator = new SummonCoordinator(workspace, path, async () => child, async () => 8, () => {});
+
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 20 && coordinator.runningChildren().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(coordinator.runningChildren()[0]?.untrusted, true, "explicit durable tier is retained during recovery");
+
+  child.releasePending();
 });
 
 test("recoverUndelivered reconstructs a nested tree before delivering its parent", async () => {

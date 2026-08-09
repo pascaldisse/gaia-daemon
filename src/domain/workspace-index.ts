@@ -206,7 +206,12 @@ function roomIsIncognito(workspaceRoot: string, roomId: string): boolean {
     return true;
   }
   try {
-    return (JSON.parse(raw) as { incognito?: unknown }).incognito === true;
+    const state = JSON.parse(raw) as unknown;
+    // A present malformed privacy bit is not evidence of public visibility.
+    // Keep it private even though the room normalizer would drop that value.
+    if (!state || typeof state !== "object" || Array.isArray(state)) return true;
+    const fields = state as Record<string, unknown>;
+    return ("incognito" in fields && typeof fields.incognito !== "boolean") || fields.incognito === true;
   } catch {
     return true;
   }

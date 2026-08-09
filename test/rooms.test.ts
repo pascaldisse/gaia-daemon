@@ -472,6 +472,66 @@ test("a throwing callback releases the lock for the next holder", async () => {
   assert.equal(await withSqliteImmediateLock(lockPath, async () => "successor", { timeoutMs: 500 }), "successor");
 });
 
+test("lock timeout bounds acquisition only, not an acquired callback", async () => {
+  const room = await openRoom();
+  const start = Date.now();
+  const result = await withSqliteImmediateLock(
+    `${room.statePath}.lock.sqlite`,
+    async () => {
+      await Bun.sleep(30);
+      return "completed after budget";
+    },
+    { timeoutMs: 1 },
+  );
+  assert.equal(result, "completed after budget");
+  assert.ok(Date.now() - start >= 25, "an acquired callback is not cancelled at the acquisition deadline");
+});
+
+test("the coordination database stores no rows and the callback runs exactly once", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  let runs = 0;
+  assert.equal(await withSqliteImmediateLock(lockPath, async () => { runs++; return "once"; }), "once");
+  assert.equal(runs, 1, "a successful acquisition never re-runs the callback");
+  const db = openSqlite(lockPath);
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master").all();
+    assert.deepEqual(tables, [], "the lock sidecar carries no schema and no rows");
+  } finally { db.close(); }
+});
+
+test("a failed release is not a caller failure and never re-runs the work", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  let runs = 0;
+  const result = await withSqliteImmediateLock(lockPath, async () => {
+    runs++;
+    // Yank the coordination file out from under the open transaction: the
+    // protected work already happened, so a broken COMMIT must stay invisible.
+    await rm(lockPath, { force: true });
+    await rm(`${lockPath}-journal`, { force: true });
+    return "work done";
+  }, { timeoutMs: 200, retryMs: 2 });
+  assert.equal(result, "work done");
+  assert.equal(runs, 1, "a release anomaly never re-runs non-idempotent work");
+});
+
+test("sixteen contenders on one key serialize without a spurious failure", async () => {
+  const room = await openRoom();
+  const lockPath = `${room.statePath}.lock.sqlite`;
+  let inside = 0;
+  let peak = 0;
+  const results = await Promise.all(Array.from({ length: 16 }, (_, index) => withSqliteImmediateLock(lockPath, async () => {
+    inside++;
+    peak = Math.max(peak, inside);
+    await Bun.sleep(1);
+    inside--;
+    return index;
+  }, { timeoutMs: 5_000, retryMs: 2 })));
+  assert.deepEqual(results.sort((a, b) => a - b), Array.from({ length: 16 }, (_, index) => index));
+  assert.equal(peak, 1, "holders of one key never overlap");
+});
+
 test("a transcript-only room gains state without touching the transcript", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
   const transcriptPath = workspacePaths.transcript(root, "legacy");
@@ -491,6 +551,24 @@ test("malformed existing state rejects without replacing recoverable bytes", asy
   await assert.rejects(room.state(), SyntaxError);
   await assert.rejects(room.updateState((state) => { state.agentCursors.never = 1; }), SyntaxError);
   assert.equal(await readFile(room.statePath, "utf8"), corrupt);
+});
+
+test("persisted malformed trust and privacy bits reject without rewriting bytes", async () => {
+  for (const bit of ["summonUntrusted", "incognito"] as const) {
+    const room = await openRoom();
+    const bytes = JSON.stringify({ activeRoles: {}, agentCursors: {}, [bit]: "yes" });
+    await writeFile(room.statePath, bytes, "utf8");
+    await assert.rejects(room.state(), new RegExp(`invalid persisted ${bit} bit`));
+    assert.equal(await readFile(room.statePath, "utf8"), bytes);
+  }
+  for (const invalid of ["null", "[]", "42"]) {
+    const room = await openRoom();
+    await writeFile(room.statePath, invalid, "utf8");
+    await assert.rejects(room.state(), /invalid persisted room state/);
+  }
+  // The input normalizer's compatibility contract remains lenient.
+  assert.equal(normalizeRoomState({ summonUntrusted: "yes", incognito: "yes" }).summonUntrusted, undefined);
+  assert.equal(normalizeRoomState({ summonUntrusted: "yes", incognito: "yes" }).incognito, undefined);
 });
 
 test("state updates preserve future metadata and no-op bytes", async () => {

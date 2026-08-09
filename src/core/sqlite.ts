@@ -54,23 +54,10 @@ export interface SqliteLockOptions {
  * only processes sharing one local filesystem; network filesystem semantics
  * are intentionally outside this guarantee. A killed owner releases its
  * SQLite transaction lock with the process. */
-/** Release the lock transaction. The coordination database carries NO rows —
- * the protected work happened in the filesystem — so a failed COMMIT loses
- * nothing and must never surface as a caller error (the work already
- * succeeded) nor trigger a re-run (the work is not idempotent). Closing the
- * handle releases the OS lock either way. */
-async function commitSqlite(db: SqliteDatabase, deadline: number, retryMs: number): Promise<void> {
-  while (true) {
-    try {
-      db.exec("COMMIT");
-      return;
-    } catch (error) {
-      if (!/\b(busy|locked)\b/i.test(String(error)) || Date.now() >= deadline) return;
-      await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
-    }
-  }
-}
-
+/** Acquire a SQLite OS lock, then run `work` while held. `timeoutMs` bounds
+ * acquisition only: after BEGIN IMMEDIATE succeeds, `work` has no cancellation
+ * channel and may hold the lock without bound. Callers needing a work deadline
+ * must make `work` cooperative; this helper cannot safely abort it. */
 export async function withSqliteImmediateLock<T>(path: string, work: () => Promise<T>, options: SqliteLockOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 5_000;
   const retryMs = options.retryMs ?? 10;
@@ -85,20 +72,21 @@ export async function withSqliteImmediateLock<T>(path: string, work: () => Promi
       db.exec("PRAGMA busy_timeout = 0");
       db.exec("BEGIN IMMEDIATE");
       began = true;
-      const result = await work();
-      await commitSqlite(db, deadline, retryMs);
-      return result;
+      return await work();
     } catch (error) {
-      if (began) {
-        try { db.exec("ROLLBACK"); } catch { /* transaction already closed */ }
-      }
       const busy = /\b(busy|locked)\b/i.test(String(error));
       if (began || !busy || Date.now() >= deadline) {
         if (busy && !began) throw new Error(`SQLite lock contention timed out after ${timeoutMs}ms: ${String(error)}`, { cause: error });
         throw error;
       }
     } finally {
-      db.close();
+      // This database is solely a lock carrier: its transaction must never
+      // commit. Roll it back explicitly, then close; either release anomaly is
+      // invisible after work has completed and can never re-run that work.
+      if (began) {
+        try { db.exec("ROLLBACK"); } catch { /* release best-effort */ }
+      }
+      try { db.close(); } catch { /* release best-effort */ }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
   }

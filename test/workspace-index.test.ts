@@ -206,9 +206,12 @@ test("a corrupt room state fails CLOSED: unreadable privacy bits keep a room out
   // A torn / corrupt state document could be an incognito room. Reading it as
   // public would publish a private transcript — unrecoverable; skipping the
   // index entry is not.
-  await writeFile(join(root, ".gaia", "rooms", "vault", "state.json"), "{not valid JSON\n", "utf8");
-  const refs = workspaceRoomRefs(root).map((ref) => ref.roomId).sort();
-  assert.deepEqual(refs, ["kitchen"], "a room whose privacy bit cannot be read is not indexed");
+  const statePath = join(root, ".gaia", "rooms", "vault", "state.json");
+  for (const unsafe of ["{not valid JSON\n", JSON.stringify({ incognito: "yes" }), "null", "[]", "42"]) {
+    await writeFile(statePath, unsafe, "utf8");
+    const refs = workspaceRoomRefs(root).map((ref) => ref.roomId).sort();
+    assert.deepEqual(refs, ["kitchen"], "a room whose privacy bit cannot be read is not indexed");
+  }
 });
 
 test("searchTranscripts: roomId scopes to a single chat (in-chat search)", async () => {

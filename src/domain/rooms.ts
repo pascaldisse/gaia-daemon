@@ -482,7 +482,15 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
 async function readRoomState(path: string): Promise<unknown> {
   // State exists after RoomHandle.open. Parse failure is durability corruption,
   // not an empty document: rewriting it would destroy recoverable bytes.
-  return JSON.parse(await readFile(path, "utf8")) as unknown;
+  const state = JSON.parse(await readFile(path, "utf8")) as unknown;
+  // Normalization remains lenient for callers handling arbitrary input, but a
+  // persisted non-object or malformed privacy/trust bit is unsafe: never
+  // silently weaken it.
+  if (!isRecord(state)) throw new Error(`invalid persisted room state: ${path}`);
+  for (const bit of ["summonUntrusted", "incognito"] as const) {
+    if (bit in state && typeof state[bit] !== "boolean") throw new Error(`invalid persisted ${bit} bit: ${path}`);
+  }
+  return state;
 }
 
 function patchNormalizedState(raw: unknown, before: unknown, after: unknown): unknown {

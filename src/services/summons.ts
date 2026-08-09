@@ -44,10 +44,9 @@ export interface SummonResultDelivery {
   triggerTarget?: string;
 }
 
-import { RoomHandle, normalizeRoomState } from "../domain/rooms.js";
+import { RoomHandle } from "../domain/rooms.js";
 import { ensureRoomWorktree, resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
-import { readJson } from "../core/store.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
 
 export function isTrusted(agent: AgentDef): boolean {
@@ -618,11 +617,16 @@ export class SummonCoordinator implements SummonHost {
       let parentRoomId: string | undefined;
       let untrusted = false;
       try {
-        const state = normalizeRoomState(await readJson(workspacePaths.roomState(this.workspace.rootDir, roomId)));
+        // Strict RoomHandle.state() refuses malformed bytes. Recovery must not
+        // guess a missing summonUntrusted bit as trusted and weaken its sandbox.
+        const state = await RoomHandle.open(this.workspace.rootDir, roomId).then((room) => room.state());
         record = state.summon;
         parentRoomId = state.parentRoomId;
         untrusted = state.summonUntrusted === true;
-      } catch {
+      } catch (error) {
+        // One corrupt child cannot block recovery of every other child, but it
+        // must never reach a service with its security state guessed.
+        this.log(`summon recovery skipped unsafe '${roomId}': ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
       if (!record || record.status !== "running" || !parentRoomId) continue;
