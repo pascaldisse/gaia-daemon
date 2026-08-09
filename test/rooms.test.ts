@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
+import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
+import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
 
 async function openRoom(): Promise<RoomHandle> {
@@ -399,6 +401,38 @@ test("state updates preserve future metadata and no-op bytes", async () => {
   assert.deepEqual(persisted.queue[0].futureCustody, raw.queue[0].futureCustody);
   assert.equal(persisted.queue[0].attachments[0].futureAttachment, true);
   assert.equal((await room.state()).thinkingOverrides.gaia, "high", "peer writes invalidate this handle's cache");
+});
+
+test("setup activation applies its delta over current room state and invalidates peer caches", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-setup-room-"));
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(root, "home");
+  try {
+    await initWorkspace(root);
+    const workspace = await loadWorkspace(root);
+    const room = await RoomHandle.open(root, "default");
+    const raw = {
+      activeRoles: {},
+      thinkingOverrides: {},
+      agentCursors: { runner: 7 },
+      runtimeDetails: {},
+      futureRoot: { protocol: 2 },
+    };
+    await writeFile(room.statePath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    room.invalidate();
+    await room.state(); // cache the pre-setup document in a live room handle
+
+    await activateSetup(workspace, "monad", "default");
+
+    const persisted = JSON.parse(await readFile(room.statePath, "utf8")) as typeof raw & { monad?: unknown };
+    assert.deepEqual(persisted.futureRoot, raw.futureRoot, "setup delta retains unknown root fields");
+    assert.equal(persisted.agentCursors.runner, 7, "setup delta retains concurrent runtime progress");
+    assert.ok(persisted.monad, "setup delta adds the monad block");
+    assert.ok((await room.state()).monad, "setup write invalidates a peer handle's stale cache");
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+  }
 });
 
 test("attachments survive normalization on pendingTurn and queue; malformed entries drop", () => {
