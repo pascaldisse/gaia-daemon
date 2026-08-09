@@ -776,3 +776,22 @@ test("normalizeRoomState: per-agent contextUsage survives the whitelist, malform
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, contextUsage: { x: 1 } }).contextUsage, undefined);
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).contextUsage, undefined);
 });
+
+// seedTranscript is exclusive-create: a fork/import landing on an id that
+// already has history must REFUSE, and say so through its return value — a
+// caller that ignores the false silently drops the snapshot it thought it
+// copied.
+test("seedTranscript refuses an occupied room and never clobbers its history", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-rooms-seed-"));
+  const room = await RoomHandle.open(root, "target");
+  await room.addUserMessage("original history", []);
+  const before = await readFile(workspacePaths.transcript(root, "target"), "utf8");
+
+  assert.equal(await room.seedTranscript('{"id":"intruder","author":"user","text":"nope","timestamp":"t"}\n'), false);
+  assert.equal(await readFile(workspacePaths.transcript(root, "target"), "utf8"), before, "an occupied transcript was rewritten");
+
+  const empty = await RoomHandle.open(root, "fresh");
+  assert.equal(await empty.seedTranscript(before), true, "a free id is seeded");
+  assert.equal((await empty.eventsFrom(0)).events[0]!.text, "original history");
+  await rm(root, { recursive: true, force: true });
+});

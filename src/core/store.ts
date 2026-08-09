@@ -58,22 +58,55 @@ export async function appendJsonl(path: string, value: unknown): Promise<void> {
  * without a terminator, or torn bytes from a pre-fsync crash. Either way it is
  * committed history — never repaired, never truncated — but the new record
  * must not be glued onto it, which would corrupt a good line or hide the
- * damaged one. O_APPEND keeps both writes at the true end of file even when
- * another process appends concurrently. */
+ * damaged one. Separator and record go out in ONE write: two writes let a
+ * concurrent O_APPEND writer land between them, which injects blank lines and
+ * breaks the "1 event = 1 JSON line" contract every cursor is counted in. */
 export async function appendJsonlDurable(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
   const handle = await open(path, "a+");
   try {
     const { size } = await handle.stat();
+    let prefix = "";
     if (size > 0) {
       const tail = Buffer.alloc(1);
       await handle.read(tail, 0, 1, size - 1);
-      if (tail[0] !== 0x0a) {
-        await handle.write("\n", null, "utf8");
-        await handle.sync();
+      if (tail[0] !== 0x0a) prefix = "\n";
+    }
+    await handle.write(`${prefix}${JSON.stringify(value)}\n`, null, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Append MANY JSONL records with ONE write and ONE fsync — same durability
+ * contract and same separator-newline handling as appendJsonlDurable, but the
+ * cost is O(1) syncs instead of O(n). Archiving a rewrite's dropped events is
+ * done under the room lock, so a per-event fsync makes lock hold time grow
+ * linearly with history (5k events ≈ 0.9s, 30k ≈ the sqlite lock timeout) and
+ * concurrent appends start failing. Records are chunked only to bound memory;
+ * the single sync happens after the last chunk, which is what makes the whole
+ * batch durable before the caller publishes its rewrite. */
+export async function appendJsonlBatchDurable(path: string, values: readonly unknown[]): Promise<void> {
+  if (values.length === 0) return;
+  await ensureDir(dirname(path));
+  const handle = await open(path, "a+");
+  try {
+    const { size } = await handle.stat();
+    let pending = "";
+    if (size > 0) {
+      const tail = Buffer.alloc(1);
+      await handle.read(tail, 0, 1, size - 1);
+      if (tail[0] !== 0x0a) pending = "\n";
+    }
+    for (const value of values) {
+      pending += `${JSON.stringify(value)}\n`;
+      if (pending.length >= 1 << 20) {
+        await handle.write(pending, null, "utf8");
+        pending = "";
       }
     }
-    await handle.write(`${JSON.stringify(value)}\n`, null, "utf8");
+    if (pending.length > 0) await handle.write(pending, null, "utf8");
     await handle.sync();
   } finally {
     await handle.close();

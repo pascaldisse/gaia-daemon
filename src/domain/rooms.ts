@@ -21,7 +21,7 @@ import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
-import { appendJsonl, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
+import { appendJsonl, appendJsonlBatchDurable, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { withSqliteImmediateLock } from "../core/sqlite.js";
@@ -838,10 +838,15 @@ export class RoomHandle {
    * accepted deliberately — the invariant this file must carry is "every event
    * that ever existed is in live ∪ archive", which duplication cannot break,
    * while dedup keying (an operation id per rewrite) would add a second
-   * durable record to keep consistent for a cosmetic gain. Readers of
-   * rewound/redactions must therefore treat repeated ids as one event. */
+   * durable record to keep consistent for a cosmetic gain. NO production
+   * reader of rewound/redactions exists today: whoever writes the first one
+   * MUST dedup by event id (repeated id = one event), or a retried rewrite
+   * shows history twice. */
   private async archiveLocked(path: string, events: RoomEvent[]): Promise<void> {
-    for (const event of events) await appendJsonlDurable(path, event);
+    // ONE write + ONE fsync for the whole batch: this runs inside the room
+    // lock, so a per-event sync made clear/rewind/import hold time linear in
+    // history and eventually collide with the lock timeout.
+    await appendJsonlBatchDurable(path, events);
   }
 
   // --- durable compaction summaries -------------------------------------------

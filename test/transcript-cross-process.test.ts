@@ -352,3 +352,45 @@ test("(3) WAL transcript is observable before commitTurn state acknowledgement",
     await fx.cleanup();
   }
 });
+
+// (h) The exported core primitive must keep "1 record = 1 JSON line" even for
+// callers OUTSIDE the room lock: separator newline and record used to go out
+// as TWO writes, so a concurrent O_APPEND writer could land between them and
+// glue/blank-split a record. One write closes that. What remains — and cannot
+// be closed without a lock — is several writers concurrently observing the
+// same unterminated legacy tail and each emitting its own separator: that
+// produces at most one blank line per racing writer, in the recovery case
+// only, and a blank line is skipped identically by every reader (it never
+// splits or hides a record). Real processes, no mocks.
+test("(h) 64 processes appending through appendJsonlDurable write only whole records", { timeout: 60_000 }, async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gaia-xproc-append-"));
+  try {
+    const path = join(tmp, "log.jsonl");
+    // Start from a file whose last byte is NOT a newline: the branch that used
+    // to emit a separate separator write.
+    await writeFile(path, '{"id":"legacy-no-terminator"}', "utf8");
+    const runner = join(tmp, "append.mjs");
+    await writeFile(
+      runner,
+      `import { appendJsonlDurable } from ${JSON.stringify(join(REPO, "src", "core", "store.ts"))};
+await appendJsonlDurable(process.argv[2], { id: process.argv[3], text: "x".repeat(200) });
+`,
+      "utf8",
+    );
+    // Attach the exit listener at spawn time: a child that exits before its
+    // promise is created would otherwise never be observed.
+    const exits = Array.from({ length: 64 }, (_, i) =>
+      childExit(spawn(process.execPath, [runner, path, `w${i}`], { stdio: ["ignore", "ignore", "inherit"], env: { ...process.env } })),
+    );
+    for (const exit of exits) assert.equal((await exit).code, 0);
+
+    const body = (await readFile(path, "utf8")).split("\n").filter((line) => line.trim());
+    for (const line of body) JSON.parse(line); // throws on a torn or glued record
+    const ids = body.map((line) => (JSON.parse(line) as { id: string }).id);
+    assert.equal(new Set(ids).size, ids.length, "a record was duplicated or glued onto another");
+    assert.equal(ids.length, 65, `expected 65 whole records, got ${ids.length}`);
+    for (let i = 0; i < 64; i++) assert.ok(ids.includes(`w${i}`), `record w${i} was lost`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
