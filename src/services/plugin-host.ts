@@ -189,6 +189,13 @@ export class PluginHost {
         throw error instanceof PluginHostError ? error : new PluginHostError(reason(error), undefined, { cause: error });
       }
 
+      // Importing and registering may yield, so a turn can acquire a lease
+      // after the initial guard. Recheck at the atomic swap boundary.
+      if (this.#leases !== 0) {
+        await this.#disposeAll(built, generation);
+        throw new PluginHostError("reload requires zero active turn leases");
+      }
+
       const previous = this.#entries;
       const next: PluginGeneration = Object.freeze({
         generation,
