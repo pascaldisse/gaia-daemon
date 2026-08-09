@@ -44,10 +44,10 @@ export interface SummonResultDelivery {
   triggerTarget?: string;
 }
 
-import { normalizeRoomState } from "../domain/rooms.js";
+import { RoomHandle, normalizeRoomState } from "../domain/rooms.js";
 import { ensureRoomWorktree, resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
-import { readJson, writeJsonAtomic } from "../core/store.js";
+import { readJson } from "../core/store.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
 
 export function isTrusted(agent: AgentDef): boolean {
@@ -420,13 +420,12 @@ export class SummonCoordinator implements SummonHost {
     // service reads state at init, so both survive the service's own state
     // writes. The delivery record is what makes the callback durable: a
     // restart finds it and re-arms (recoverUndelivered).
-    const statePath = workspacePaths.roomState(this.workspace.rootDir, childRoomId);
-    const state = normalizeRoomState(await readJson(statePath));
-    state.parentRoomId = parentRoomId;
-    // The tier rides the room's durable state (like incognito: stamped once at
-    // creation, immutable) so a daemon restart resumes the child's turn under
-    // the SAME forced sandbox instead of quietly promoting it to trusted.
-    if (untrusted) state.summonUntrusted = true;
+    // RoomHandle is the sole serialized writer of a room's state.json: the
+    // seeding below is a DELTA over the child's document, so unknown/future
+    // fields survive and no write races the child service's own chain.
+    const childRoom = await RoomHandle.open(this.workspace.rootDir, childRoomId);
+    const seeded = await childRoom.state();
+
     // Worktree isolation (collab.isolation "worktree"): summons inherit the
     // parent room's checkout by default. ownWorktree is an explicit opt-in for
     // a child-owned checkout; if that cannot be created, degrade to the normal
@@ -435,18 +434,25 @@ export class SummonCoordinator implements SummonHost {
     if (options.ownWorktree && this.workspace.config.collab?.isolation === "worktree") {
       workDir = ensureRoomWorktree(this.workspace.rootDir, childRoomId, this.workspace.config.collab.branchPrefix);
     }
-    workDir ??= await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, childRoomId);
-    if (workDir) state.workDir = workDir;
-    if (options.deliver) {
-      state.summon = {
-        agentId,
-        deliver: options.deliver,
-        ...(options.callerAgentId ? { callerAgentId: options.callerAgentId } : {}),
-        status: "running",
-        launchedAt: new Date().toISOString(),
-      };
-    }
-    await writeJsonAtomic(statePath, state);
+    workDir ??= await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, seeded, childRoomId);
+    const launchedAt = new Date().toISOString();
+    await childRoom.updateState((state) => {
+      state.parentRoomId = parentRoomId;
+      // The tier rides the room's durable state (like incognito: stamped once
+      // at creation, immutable) so a daemon restart resumes the child's turn
+      // under the SAME forced sandbox instead of quietly promoting it.
+      if (untrusted) state.summonUntrusted = true;
+      if (workDir) state.workDir = workDir;
+      if (options.deliver) {
+        state.summon = {
+          agentId,
+          deliver: options.deliver,
+          ...(options.callerAgentId ? { callerAgentId: options.callerAgentId } : {}),
+          status: "running",
+          launchedAt,
+        };
+      }
+    });
 
     const child = await this.serviceForRoom(childRoomId);
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };

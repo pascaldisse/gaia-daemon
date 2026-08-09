@@ -3371,10 +3371,11 @@ export class RoomService {
       // Never-written transcript — the branch starts empty.
     }
     const state = await this.room.state();
-    await writeJsonAtomic(
-      workspacePaths.roomState(this.workspace.rootDir, target),
-      normalizeRoomState({ activeRoles: { ...state.activeRoles }, thinkingOverrides: { ...state.thinkingOverrides } }),
-    );
+    const branch = await RoomHandle.open(this.workspace.rootDir, target);
+    await branch.updateState((next) => {
+      next.activeRoles = { ...state.activeRoles };
+      next.thinkingOverrides = { ...state.thinkingOverrides };
+    });
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
   }
