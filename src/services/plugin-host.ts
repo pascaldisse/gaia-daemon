@@ -107,6 +107,9 @@ function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Last exactly representable generation id; ids are never reused or wrapped. */
+const MAX_GENERATION_ID = Number.MAX_SAFE_INTEGER;
+
 /**
  * Generic lifecycle host over a manifest inventory.
  *
@@ -122,6 +125,7 @@ export class PluginHost {
   #generation = 0;
   #leases = 0;
   #busy = false;
+  #closed = false;
 
   constructor(options: PluginHostOptions) {
     if (typeof options.importer !== "function") {
@@ -159,8 +163,12 @@ export class PluginHost {
    * code is never imported, so an incompatible engine cannot execute anything.
    */
   async reload(inventory: readonly BundledPluginInventoryItem[]): Promise<PluginGeneration> {
+    if (this.#closed) throw new PluginHostError("reload is refused after shutdown");
     if (this.#busy) throw new PluginHostError("a reload is already in progress");
     if (this.#leases !== 0) throw new PluginHostError("reload requires zero active turn leases");
+    if (this.#generation >= MAX_GENERATION_ID) {
+      throw new PluginHostError("generation id space exhausted; create a new plugin host");
+    }
     this.#busy = true;
     try {
       // Allocated up front and never rolled back: a failed attempt burns its
@@ -215,16 +223,22 @@ export class PluginHost {
     }
   }
 
-  /** Dispose everything in reverse registration order and empty the host. */
+  /** Dispose everything in reverse registration order and permanently close the host. */
   async shutdown(): Promise<void> {
-    if (this.#busy) throw new PluginHostError("a reload is already in progress");
+    if (this.#busy) throw new PluginHostError("a lifecycle operation is already in progress");
     // Symmetric with reload: a live turn must never lose its plugins.
     if (this.#leases !== 0) throw new PluginHostError("shutdown requires zero active turn leases");
-    const previous = this.#entries;
-    const generation = this.#current.generation;
-    this.#entries = Object.freeze([]);
-    this.#current = Object.freeze({ generation, registered: Object.freeze([]), skipped: this.#current.skipped });
-    await this.#disposeAll(previous, generation);
+    this.#busy = true;
+    this.#closed = true;
+    try {
+      const previous = this.#entries;
+      const generation = this.#current.generation;
+      this.#entries = Object.freeze([]);
+      this.#current = Object.freeze({ generation, registered: Object.freeze([]), skipped: this.#current.skipped });
+      await this.#disposeAll(previous, generation);
+    } finally {
+      this.#busy = false;
+    }
   }
 
   async #register(namespace: string, plugin: ValidatedPluginManifest, generation: number): Promise<LiveEntry> {
