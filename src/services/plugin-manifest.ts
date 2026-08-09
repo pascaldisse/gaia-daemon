@@ -73,9 +73,10 @@ export class PluginManifestError extends Error {
 }
 
 interface SemVer {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
+  /** Decimal strings: SemVer numeric identifiers are intentionally unbounded. */
+  readonly major: string;
+  readonly minor: string;
+  readonly patch: string;
   readonly prerelease: readonly string[];
 }
 
@@ -97,7 +98,7 @@ function declaredIdentifiers(
   allowed: ReadonlySet<string>,
   path: string,
 ): readonly string[] {
-  const value = record[key] ?? [];
+  const value = key in record ? record[key] : [];
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && allowed.has(item))) {
     throw new PluginManifestError(`${key} contains an unknown or reserved identifier`, path);
   }
@@ -116,8 +117,8 @@ function parseSemVer(value: string): SemVer | undefined {
   const parts = core.split(".");
   if (parts.length !== 3 || !parts.every((part) => VERSION_NUMBER.test(part))) return undefined;
   if (prereleaseSource !== undefined && !validIdentifiers(prereleaseSource, true)) return undefined;
-  const [major, minor, patch] = parts.map(Number);
-  if (major === undefined || minor === undefined || patch === undefined || ![major, minor, patch].every(Number.isSafeInteger)) return undefined;
+  const [major, minor, patch] = parts;
+  if (major === undefined || minor === undefined || patch === undefined) return undefined;
   return Object.freeze({ major, minor, patch, prerelease: Object.freeze(prereleaseSource?.split(".") ?? []) });
 }
 
@@ -130,9 +131,33 @@ function validIdentifiers(source: string, forbidNumericLeadingZero: boolean): bo
   );
 }
 
+function compareDecimal(left: string, right: string): number {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function incrementDecimal(value: string): string {
+  const digits = value.split("");
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    const digit = digits[index];
+    if (digit === undefined) continue;
+    if (digit !== "9") {
+      digits[index] = String(Number(digit) + 1);
+      return digits.join("");
+    }
+    digits[index] = "0";
+  }
+  return `1${digits.join("")}`;
+}
+
+function sameCore(left: SemVer, right: SemVer): boolean {
+  return left.major === right.major && left.minor === right.minor && left.patch === right.patch;
+}
+
 function compareSemVer(left: SemVer, right: SemVer): number {
   for (const key of ["major", "minor", "patch"] as const) {
-    if (left[key] !== right[key]) return left[key] < right[key] ? -1 : 1;
+    const comparison = compareDecimal(left[key], right[key]);
+    if (comparison !== 0) return comparison;
   }
   if (left.prerelease.length === 0 || right.prerelease.length === 0) {
     return left.prerelease.length === right.prerelease.length ? 0 : left.prerelease.length === 0 ? 1 : -1;
@@ -144,7 +169,7 @@ function compareSemVer(left: SemVer, right: SemVer): number {
     if (a === b) continue;
     const aNumeric = NUMERIC_IDENTIFIER.test(a);
     const bNumeric = NUMERIC_IDENTIFIER.test(b);
-    if (aNumeric && bNumeric) return Number(a) < Number(b) ? -1 : 1;
+    if (aNumeric && bNumeric) return compareDecimal(a, b);
     if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
     return a < b ? -1 : 1;
   }
@@ -152,10 +177,10 @@ function compareSemVer(left: SemVer, right: SemVer): number {
 }
 
 function upperBoundFor(operator: "^" | "~", target: SemVer): SemVer {
-  if (operator === "~") return { major: target.major, minor: target.minor + 1, patch: 0, prerelease: [] };
-  if (target.major > 0) return { major: target.major + 1, minor: 0, patch: 0, prerelease: [] };
-  if (target.minor > 0) return { major: 0, minor: target.minor + 1, patch: 0, prerelease: [] };
-  return { major: 0, minor: 0, patch: target.patch + 1, prerelease: [] };
+  if (operator === "~") return { major: target.major, minor: incrementDecimal(target.minor), patch: "0", prerelease: [] };
+  if (target.major !== "0") return { major: incrementDecimal(target.major), minor: "0", patch: "0", prerelease: [] };
+  if (target.minor !== "0") return { major: "0", minor: incrementDecimal(target.minor), patch: "0", prerelease: [] };
+  return { major: "0", minor: "0", patch: incrementDecimal(target.patch), prerelease: [] };
 }
 
 /** Evaluate the deliberately small, explicit engine grammar: *, exact, comparator, ^, or ~ plus SemVer. */
@@ -164,11 +189,20 @@ export function evaluatePluginEngine(engine: string, daemonVersion: string): Plu
   if (!daemon) throw new PluginManifestError("daemon version is not valid SemVer", "<daemon>");
   if (!engine.startsWith(ENGINE_PREFIX)) return { compatible: false, reason: `engine must start with ${ENGINE_PREFIX}` };
   const range = engine.slice(ENGINE_PREFIX.length);
-  if (range === "*") return { compatible: true };
+  if (range === "*") {
+    return daemon.prerelease.length === 0
+      ? { compatible: true }
+      : { compatible: false, reason: `engine wildcard excludes daemon prerelease ${daemonVersion}` };
+  }
   const match = /^(>=|<=|>|<|=|\^|~)?(.+)$/.exec(range);
   const operator = match?.[1] ?? "=";
   const target = match?.[2] === undefined ? undefined : parseSemVer(match[2]);
   if (!target) return { compatible: false, reason: "engine range is not supported SemVer" };
+  // SemVer ranges exclude prereleases unless the comparator itself names a
+  // prerelease with the same major/minor/patch tuple.
+  if (daemon.prerelease.length > 0 && (target.prerelease.length === 0 || !sameCore(daemon, target))) {
+    return { compatible: false, reason: `requires ${engine}; daemon prerelease ${daemonVersion} is excluded` };
+  }
   const compared = compareSemVer(daemon, target);
   const compatible = operator === ">=" ? compared >= 0
     : operator === "<=" ? compared <= 0
@@ -219,8 +253,18 @@ async function readBoundedManifest(path: string, maximum: number): Promise<strin
   try {
     const details = await handle.stat();
     if (!details.isFile()) throw new PluginManifestError("plugin.json must be a regular file", path);
-    if (details.size > maximum) throw new PluginManifestError("plugin.json exceeds maximum byte size", path);
-    return await handle.readFile("utf8");
+    // Never call readFile after a size check: a concurrent append could make
+    // that allocation unbounded. This buffer is the allocation ceiling even
+    // when the inode changes size between stat and read.
+    const buffer = Buffer.allocUnsafe(maximum + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maximum) throw new PluginManifestError("plugin.json exceeds maximum byte size", path);
+    return buffer.toString("utf8", 0, offset);
   } finally {
     await handle.close();
   }

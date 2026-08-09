@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -62,11 +62,14 @@ test("reads a contained manifest without importing code and evaluates its engine
   }
 });
 
-test("uses real SemVer precedence and reports incompatible engines without loading failure", async () => {
+test("uses unbounded SemVer 2 precedence and reports incompatible engines without loading failure", async () => {
   assert.equal(evaluatePluginEngine("gaia-daemon@^2.1.0", "2.9.0").compatible, true);
   assert.equal(evaluatePluginEngine("gaia-daemon@^2.1.0", "3.0.0").compatible, false);
   assert.equal(evaluatePluginEngine("gaia-daemon@~2.1.0", "2.2.0").compatible, false);
   assert.equal(evaluatePluginEngine("gaia-daemon@>2.0.0-beta.1", "2.0.0").compatible, true);
+  const huge = "9".repeat(400);
+  assert.doesNotThrow(() => validatePluginManifest({ ...valid, version: `${huge}.0.0` }, "plugin.json"));
+  assert.equal(evaluatePluginEngine(`gaia-daemon@>${huge}.0.0-2`, `${huge}.0.0-10`).compatible, true);
 
   const fx = await fixture({ ...valid, engine: "gaia-daemon@>=3.0.0" });
   try {
@@ -93,9 +96,19 @@ test("rejects schema drift, invalid SemVer, unsupported engines, names, and unkn
   assert.throws(() => validatePluginManifest({ ...valid, unexpected: true }, "plugin.json"), /unknown manifest fields/);
 });
 
+test("engine ranges exclude prereleases unless the comparator names the same prerelease core", () => {
+  assert.equal(evaluatePluginEngine("gaia-daemon@^1.2.3", "2.0.0-rc.1").compatible, false);
+  assert.equal(evaluatePluginEngine("gaia-daemon@~1.2.3", "1.3.0-alpha.1").compatible, false);
+  assert.equal(evaluatePluginEngine("gaia-daemon@>=1.0.0", "1.2.3-alpha.1").compatible, false);
+  assert.equal(evaluatePluginEngine("gaia-daemon@*", "1.2.3-alpha.1").compatible, false);
+  assert.equal(evaluatePluginEngine("gaia-daemon@>=1.2.3-alpha.1", "1.2.3-beta.1").compatible, true);
+});
+
 test("permissions and capabilities are fixed declarations, never arbitrary trust knobs", () => {
   assert.throws(() => validatePluginManifest({ ...valid, permissions: ["trust.enable"] }, "plugin.json"), /unknown or reserved/);
   assert.throws(() => validatePluginManifest({ ...valid, requiredCaps: ["sandbox.disable"] }, "plugin.json"), /unknown or reserved/);
+  assert.throws(() => validatePluginManifest({ ...valid, permissions: null }, "plugin.json"), /unknown or reserved/);
+  assert.throws(() => validatePluginManifest({ ...valid, requiredCaps: null }, "plugin.json"), /unknown or reserved/);
   assert.throws(() => validatePluginManifest({ ...valid, requiredCaps: ["room.message", "room.message"] }, "plugin.json"), /duplicates/);
   const omitted = { ...valid } as Record<string, unknown>;
   delete omitted.permissions;
@@ -182,6 +195,12 @@ test("discovers only direct directories in deterministic UTF-8 byte order", asyn
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("bounded reader never follows a size check with unbounded readFile", async () => {
+  const source = await readFile(new URL("../src/services/plugin-manifest.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /handle\.readFile\(/);
+  assert.match(source, /Buffer\.allocUnsafe\(maximum \+ 1\)/);
 });
 
 test("bounds manifest bytes and JSON depth and does not permit callers to weaken limits", async () => {
