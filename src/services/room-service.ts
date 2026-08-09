@@ -3389,19 +3389,26 @@ export class RoomService {
   async runForkCommand(): Promise<string> {
     const target = this.nextForkId(this.roomId);
     const dstDir = workspacePaths.roomDir(this.workspace.rootDir, target);
-    await mkdir(dstDir, { recursive: true });
-    // Source snapshot under the source lock, then RELEASE; the target is
-    // seeded under its own lock. Never both locks at once.
-    const snapshot = await this.room.snapshotTranscript();
-    const state = await this.room.state();
+    // Reserve the target directory exclusively before touching it: a stale
+    // nextForkId observation must abort, never seed over another fork.
+    try {
+      await mkdir(dstDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        return `Fork aborted: room '${target}' was reserved concurrently — nothing was copied.`;
+      throw error;
+    }
+    // Source transcript + state share one lock snapshot; release it before
+    // opening the reserved target, so reciprocal forks never dual-lock.
+    const snapshot = await this.room.snapshotRoom();
     const branch = await RoomHandle.open(this.workspace.rootDir, target);
     // Exclusive create: false means a room already owns that id, so the
     // snapshot was NOT written. Never report a fork that did not happen.
-    if (!(await branch.seedTranscript(snapshot)))
+    if (!(await branch.seedTranscript(snapshot.transcript)))
       return `Fork aborted: room '${target}' already has a transcript — nothing was copied.`;
     await branch.updateState((next) => {
-      next.activeRoles = { ...state.activeRoles };
-      next.thinkingOverrides = { ...state.thinkingOverrides };
+      next.activeRoles = { ...snapshot.state.activeRoles };
+      next.thinkingOverrides = { ...snapshot.state.thinkingOverrides };
     });
     await this.emitSnapshot();
     return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;

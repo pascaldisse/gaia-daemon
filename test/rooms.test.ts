@@ -309,6 +309,14 @@ test("clearTranscript empties the log; state survives", async () => {
   assert.equal((await room.state()).activeRoles.gaia, "planner");
 });
 
+test("clearTranscript fails closed on malformed bytes", async () => {
+  const room = await openRoom();
+  const raw = '{"id":"good","timestamp":"t","author":"user","targets":[],"text":"kept"}\nnot json\n';
+  await writeFile(room.transcriptPath, raw);
+  await assert.rejects(room.clearTranscript(), /malformed raw line/);
+  assert.equal(await readFile(room.transcriptPath, "utf8"), raw);
+});
+
 test("single-writer: concurrent state updates serialize", async () => {
   const room = await openRoom();
   await Promise.all(

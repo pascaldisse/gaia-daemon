@@ -251,11 +251,10 @@ async function main(): Promise<void> {
 
     const state = normalizeRoomState(undefined);
     state.agentCursors[agentId] = Math.max(0, events.length - window);
-    // Through the room handle: an explicit --force rewrite still takes the
-    // room lock, so it can't interleave with a live daemon appending.
+    // Transcript + state replacement share ONE room lock: an explicit --force
+    // import cannot expose a half-old transcript/state pair to live writers.
     const room = await RoomHandle.open(workspaceDir, singleRoomId);
-    await room.replaceTranscript(events);
-    await room.replaceState(state);
+    await room.replaceImportedRoom(events, state);
     await setWorkspaceRoom(workspaceDir, singleRoomId);
     console.log(`room ${singleRoomId}: ${events.length} events from ${conversations.length} conversations`);
   } else {

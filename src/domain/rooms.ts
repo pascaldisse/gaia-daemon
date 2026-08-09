@@ -21,7 +21,7 @@ import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
-import { appendJsonl, appendJsonlBatchDurable, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeText, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
+import { appendJsonl, appendJsonlBatchDurable, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
 import { newId } from "../core/ids.js";
 import { withSqliteImmediateLock } from "../core/sqlite.js";
@@ -634,19 +634,13 @@ export class RoomHandle {
     return state;
   }
 
-  /** Replace the known state document under the same process-wide lock. Use
-   * only for explicit reset/import semantics; normal callers use deltas. */
-  async replaceState(state: RoomState): Promise<void> {
+  /** Exact state replacement for an import already holding the room lock. */
+  private async replaceStateLocked(state: RoomState): Promise<void> {
     const shared = sharedRoomState(this.statePath);
-    const run = async (): Promise<void> => withSqliteImmediateLock(this.stateLockPath, async () => {
-      await writeJsonAtomic(this.statePath, state);
-      shared.version++;
-      this.stateCache = state;
-      this.stateCacheVersion = shared.version;
-    });
-    const next = shared.chain.then(run, run);
-    shared.chain = next.catch(() => {});
-    await next;
+    await writeJsonAtomic(this.statePath, state);
+    shared.version++;
+    this.stateCache = state;
+    this.stateCacheVersion = shared.version;
   }
 
   /** Drop the in-memory cache retained for an update result. Public state()
@@ -678,9 +672,15 @@ export class RoomHandle {
     return event;
   }
 
-  /** Wipe the transcript (backs /clear). State is the caller's to reset. */
+  /** Wipe the transcript (backs /clear). State is the caller's to reset.
+   * Existing events are fsynced into rewound.jsonl before the atomic publish;
+   * malformed raw bytes fail closed rather than being silently erased. */
   async clearTranscript(): Promise<void> {
-    await this.withRoomLock(() => writeText(this.transcriptPath, ""));
+    await this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), events);
+      await writeTextAtomic(this.transcriptPath, "");
+    });
   }
 
   /** /clear as ONE critical section: archive → wipe transcript → reset the
@@ -698,7 +698,7 @@ export class RoomHandle {
     await this.withRoomLock(async () => {
       const { events } = await this.readEventsLocked();
       await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), events);
-      await writeText(this.transcriptPath, "");
+      await writeTextAtomic(this.transcriptPath, "");
       await this.updateStateLocked((state) => {
         state.agentCursors = {};
         delete state.runtimeDetails;
@@ -716,10 +716,18 @@ export class RoomHandle {
    * archived to rewound.jsonl and fsynced BEFORE the replacement publishes. A
    * --force import destroys no history, it only stops replaying it. */
   async replaceTranscript(events: RoomEvent[]): Promise<void> {
+    await this.replaceImportedRoom(events);
+  }
+
+  /** Force-import transcript + optional selected state as one room-lock
+   * transaction. No observer can append against the old transcript and then
+   * patch the new state (or vice versa). */
+  async replaceImportedRoom(events: RoomEvent[], state?: RoomState): Promise<void> {
     await this.withRoomLock(async () => {
       const { events: existing } = await this.readEventsLocked();
       await this.archiveLocked(workspacePaths.roomRewound(this.workspaceRoot, this.roomId), existing);
       await writeTextAtomic(this.transcriptPath, serializeEvents(events));
+      if (state) await this.replaceStateLocked(state);
     });
   }
 
@@ -731,7 +739,17 @@ export class RoomHandle {
    * room's handle is touched. Source and target locks are never held at the
    * same time, so two rooms forking into each other cannot deadlock. */
   async snapshotTranscript(): Promise<string> {
-    return this.withRoomLock(async () => (await readText(this.transcriptPath)) ?? "");
+    return (await this.snapshotRoom()).transcript;
+  }
+
+  /** Fork source snapshot: transcript and selected state share ONE source
+   * lock acquisition. Target reservation deliberately occurs afterwards;
+   * source/target locks are never held together. */
+  async snapshotRoom(): Promise<{ transcript: string; state: RoomState }> {
+    return this.withRoomLock(async () => ({
+      transcript: (await readText(this.transcriptPath)) ?? "",
+      state: await readRoomState(this.statePath).then(normalizeRoomState),
+    }));
   }
 
   /** Seed this (new) room's transcript with `text`, exclusively: `wx`, so the
@@ -825,6 +843,13 @@ export class RoomHandle {
    * and lock-free itself — state() only reads the atomically-renamed
    * document, so no nested acquisition happens here. */
   private async readEventsLocked(): Promise<RoomPage> {
+    const raw = await readText(this.transcriptPath);
+    if (raw) {
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try { JSON.parse(line); } catch { throw new Error("Transcript rewrite refused: malformed raw line"); }
+      }
+    }
     return this.eventsFrom(0);
   }
 
@@ -1013,26 +1038,23 @@ export class RoomHandle {
     // reserved event id must produce exactly one line (an unlocked check-then-
     // append duplicates it). The cursor scan stays inside too, so the offset
     // matches the file this turn actually committed against.
-    const cursorAfter = await this.withRoomLock(async () => {
+    await this.withRoomLock(async () => {
       // fsynced here, BEFORE the state write below clears pendingTurn and
       // advances the cursor: the WAL's ordering is only real if the append is
       // durable first — otherwise a power cut can leave a state that says
       // "committed" over a transcript that lost the reply.
       if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
-      // Line offsets, not parsed-array indexes: unparseable lines are skipped
-      // from items but still count toward the cursor space.
       const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
         raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
       );
-      return page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
-    });
-    // Lock RELEASED before the state write: updateState takes the same lock,
-    // and the WAL only requires append-then-state ordering, never atomicity of
-    // the pair (a crash between them is exactly the "finish-commit" resume).
-    await this.updateState((state) => {
-      if (nextPending) state.pendingTurn = nextPending;
-      else delete state.pendingTurn;
-      state.agentCursors[event.author] = cursorAfter;
+      const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
+      // Keep append→cursor scan→ack contiguous. A crash after append still
+      // retains pendingTurn and resumeMode performs finish-commit.
+      await this.updateStateLocked((state) => {
+        if (nextPending) state.pendingTurn = nextPending;
+        else delete state.pendingTurn;
+        state.agentCursors[event.author] = cursorAfter;
+      });
     });
   }
 
