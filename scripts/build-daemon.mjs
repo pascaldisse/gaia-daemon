@@ -2,7 +2,7 @@
 // Compiles the gaia daemon into a standalone binary via `bun build --compile`,
 // then snapshots the runtime assets (web/, setups/) alongside it.
 //
-// Usage: bun scripts/build-daemon.mjs [--out <dir>]
+// Usage: bun scripts/build-daemon.mjs [--out <dir>] [--target <bun-target>]
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -22,13 +22,19 @@ import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES } from "../src/core/bundle-ass
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(scriptDir, "..");
 
-function parseOutDir(argv) {
-  const i = argv.indexOf("--out");
-  if (i !== -1 && argv[i + 1]) return argv[i + 1];
-  return join(repoRoot, "dist");
+function option(argv, name, fallback) {
+  const i = argv.indexOf(name);
+  if (i === -1) return fallback;
+  const value = argv[i + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
 }
 
-const outDir = parseOutDir(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const outDir = option(argv, "--out", join(repoRoot, "dist"));
+// Native by default: /rebuild must replace its executable with one for its own
+// host. Release builds select a deploy target explicitly (e.g. bun-linux-x64).
+const target = option(argv, "--target", `bun-${process.platform}-${process.arch}`);
 
 const timings = [];
 function timeStep(label, fn) {
@@ -58,7 +64,7 @@ timeStep("bun-build-compile", () => {
   // 2026-07-11: /rebuild died instantly with no bundle/compile output at all.
   const res = spawnSync(
     process.execPath,
-    ["build", "--compile", join(repoRoot, "src/cli.ts"), "--outfile", binaryTmp],
+    ["build", "--compile", "--target", target, join(repoRoot, "src/cli.ts"), "--outfile", binaryTmp],
     { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
   );
   if (res.status !== 0) {
@@ -108,6 +114,7 @@ timeStep("write-source-json", () => {
         bun: process.execPath,
         commit,
         dirty: status !== null && status !== "",
+        target,
         builtAt: new Date().toISOString(),
       },
       null,
@@ -124,4 +131,5 @@ for (const [label, ms] of timings) {
   console.log(`${label}: ${ms.toFixed(1)}ms`);
 }
 console.log(`total: ${totalMs.toFixed(1)}ms`);
+console.log(`target: ${target}`);
 console.log(`binary: ${binaryFinal} (${binarySize} bytes)`);
