@@ -15,6 +15,7 @@
 //      banner. It is driven by a rAF loop while playing and by discrete repaints
 //      otherwise. The server still decides the mode; nothing here branches on an
 //      engine id (same law as the harness abstraction).
+import { apiUrl } from "./api.js";
 import { markDirty, setError } from "./render.js";
 import { h } from "./dom.js";
 import { state } from "./state.js";
@@ -317,7 +318,7 @@ async function startReadAloud(eventId, regenerate = false) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
 
-  const base = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}`;
+  const base = apiUrl(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}`);
   // Bind playback to the room it started in, so switching rooms mid-play never
   // re-points fetches and the now-playing chip can jump back to this message.
   const origin = { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id };

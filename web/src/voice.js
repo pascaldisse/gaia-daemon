@@ -3,7 +3,7 @@
 // module is the mouth and ears: it connects straight to the unmute backend,
 // streams mic audio out as opus, plays TTS audio back, and renders the live
 // speech transcription into the composer. Opus worklets load from ./vendor/.
-import { api } from "./api.js";
+import { api, apiUrl } from "./api.js";
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
@@ -153,7 +153,7 @@ export function installVoiceLifecycle() {
   window.addEventListener("pagehide", () => {
     const snapshot = state.snapshot;
     if (session && snapshot) {
-      navigator.sendBeacon(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/voice/stop`, "{}");
+      navigator.sendBeacon(apiUrl(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/voice/stop`), "{}");
     }
     teardownAudio();
   });

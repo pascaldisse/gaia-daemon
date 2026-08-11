@@ -1,7 +1,7 @@
 // Every server mutation goes through these small action functions: they call
 // the API, update state, and mark the affected regions. Views never mutate
 // state directly.
-import { api } from "./api.js";
+import { api, apiUrl } from "./api.js";
 import { connectEvents, seedLiveTurn } from "./events.js";
 import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
@@ -460,7 +460,7 @@ export async function deleteWorkspace(workspaceId) {
 export async function uploadAttachment(file, name) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error("No room selected");
-  const url = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files?name=${encodeURIComponent(name)}`;
+  const url = apiUrl(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files?name=${encodeURIComponent(name)}`);
   const response = await fetch(url, {
     method: "POST",
     ...(file.type ? { headers: { "content-type": file.type } } : {}),
