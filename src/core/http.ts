@@ -78,3 +78,24 @@ export function bearerToken(request: IncomingMessage): string | undefined {
   const auth = request.headers.authorization;
   return auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
 }
+
+/** One named cookie's value from the raw `Cookie` header, or undefined. */
+export function cookieValue(request: IncomingMessage, name: string): string | undefined {
+  const header = request.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return undefined;
+}
+
+/** `Set-Cookie` value: HttpOnly + SameSite=Lax always; `maxAgeSeconds` undefined
+ * clears it (session-scoped cookie, browser drops on close) — pass 0 to delete. */
+export function cookieHeader(name: string, value: string, maxAgeSeconds?: number): string {
+  const parts = [`${name}=${encodeURIComponent(value)}`, "Path=/", "HttpOnly", "SameSite=Lax"];
+  if (maxAgeSeconds !== undefined) parts.push(`Max-Age=${maxAgeSeconds}`);
+  return parts.join("; ");
+}

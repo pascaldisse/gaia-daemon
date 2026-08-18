@@ -35,6 +35,8 @@ import { state } from "./state.js";
  * @property {string} timestamp
  * @property {string} author
  * @property {string[]} targets
+ * @property {string} [humanLabel] Logged-in human's display name (multi-user
+ *   rooms) — absent for the default single-implicit-user path.
  * @property {AgentRoomEvent["kind"]} [kind]
  * @property {string} [channel]
  * @property {string} text
@@ -86,6 +88,7 @@ function viewOfEvent(event) {
     author: event.author,
     kind,
     targets: isUser ? (/** @type {UserRoomEvent} */ (event).targets ?? []) : [],
+    humanLabel: isUser ? (/** @type {UserRoomEvent} */ (event).humanLabel) : undefined,
     channel: event.channel,
     text: event.text,
     details: agentEvent?.details,
@@ -586,7 +589,9 @@ function Message(view) {
   if (view.kind === "compact-complete") return CompactBoundary(view);
   const isUser = view.author === "user";
   const isAgent = !isUser && view.author !== "system";
-  const label = isUser ? `user -> ${view.targets.map((target) => `@${target}`).join(", ")}` : `@${view.author}`;
+  const label = isUser
+    ? `${view.humanLabel ?? "user"} -> ${view.targets.map((target) => `@${target}`).join(", ")}`
+    : `@${view.author}`;
   const text = isUser ? stripLeadingRouteMentions(view.text, view.targets) : view.text;
   const details = view.details ?? {};
   // A summon worker's result lands as a collapsed, summon-labeled block (reusing

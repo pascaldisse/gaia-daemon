@@ -130,6 +130,12 @@ export interface UserRoomEvent {
   /** Text was rewritten by a sanitize apply; the original line lives in
    * redactions.jsonl beside the transcript. */
   redacted?: boolean;
+  /** Which logged-in human posted this (domain/users.ts). Absent = the default
+   * single-implicit-user path (macOS app, mobile, edge-token-only deploys) —
+   * author stays the literal "user" either way, this is purely additive
+   * display/attribution metadata for multi-human rooms. */
+  humanId?: string;
+  humanLabel?: string;
 }
 
 export type RoomEventKind = "compact-complete" | "turn-failed";
@@ -223,6 +229,9 @@ export interface QueuedMessage {
   authRetries?: number;
   /** Earliest ISO timestamp at which drain may dispatch this entry. */
   notBefore?: string;
+  /** Logged-in human who sent this (domain/users.ts) — see UserRoomEvent.humanId. */
+  humanId?: string;
+  humanLabel?: string;
 }
 
 /** Durable record on a summon CHILD room: how its result gets back to the

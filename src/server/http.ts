@@ -15,13 +15,14 @@ import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
-import { bearerToken, json, parseBody, readRawBody, text } from "../core/http.js";
+import { bearerToken, cookieHeader, cookieValue, json, parseBody, readRawBody, text } from "../core/http.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { installGitGuard } from "../domain/git-guard.js";
 import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
+import { authenticate, createUser, issueSessionToken, listUsers, verifySessionToken, type PublicUser } from "../domain/users.js";
 import { harnessSpecs } from "../harness/spec.js";
 import { agentRoster } from "../harness/tools.js";
 import { globalAgentsPath } from "../domain/workspace.js";
@@ -60,6 +61,8 @@ const MIME: Record<string, string> = {
 // A dictation clip is short spoken audio, not a media upload — a few MiB of
 // opus is minutes of speech. Cap well below the attachment limit.
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
+/** Session cookie name for human-user login (domain/users.ts). */
+const AUTH_COOKIE = "gaia_user";
 const bootId = randomUUID();
 const RELOAD_DELAY_MS = 250;
 // Upper bound on the graceful close inside a reload. closeServer awaits
@@ -786,6 +789,53 @@ export class GaiaWebServer {
 
     let params: string[] | null;
 
+    // Human user accounts (login/multi-user) — distinct from the provider
+    // credential `/api/accounts` block just below. Session = signed cookie,
+    // see domain/users.ts. First user ever created bootstraps with no auth
+    // required; every user after that requires an existing valid session
+    // (prevents an open internet-facing registration endpoint).
+    if (method === "GET" && path === "/api/auth/me") {
+      const token = cookieValue(request, AUTH_COOKIE);
+      const user = token ? verifySessionToken(token) : null;
+      return this.respond(response, async () => ({ user }));
+    }
+
+    if (method === "GET" && path === "/api/auth/users") {
+      const token = cookieValue(request, AUTH_COOKIE);
+      if (!token || !verifySessionToken(token)) return json(response, 401, { error: "Not logged in." });
+      return this.respond(response, async () => ({ users: listUsers() }));
+    }
+
+    if (method === "POST" && path === "/api/auth/users") {
+      const existing = listUsers();
+      if (existing.length > 0) {
+        const token = cookieValue(request, AUTH_COOKIE);
+        if (!token || !verifySessionToken(token)) return json(response, 401, { error: "Log in before adding another user." });
+      }
+      const body = await parseBody(request);
+      const username = stringField(body, "username");
+      const password = stringField(body, "password");
+      const displayName = stringField(body, "displayName");
+      if (!username?.trim() || !password) return json(response, 400, { error: "username and password required" });
+      return this.respond(response, async () => ({ user: createUser(username, password, displayName) }));
+    }
+
+    if (method === "POST" && path === "/api/auth/login") {
+      const body = await parseBody(request);
+      const username = stringField(body, "username");
+      const password = stringField(body, "password");
+      const user = username && password ? authenticate(username, password) : null;
+      if (!user) return json(response, 401, { error: "Invalid username or password." });
+      const token = issueSessionToken(user.id);
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, token, 30 * 24 * 60 * 60));
+      return this.respond(response, async () => ({ user }));
+    }
+
+    if (method === "POST" && path === "/api/auth/logout") {
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0));
+      return this.respond(response, async () => ({ ok: true }));
+    }
+
     // Named accounts. The login routes are registered BEFORE DELETE
     // /api/accounts/<id> so "login" is never mistaken for an account id.
     if (method === "GET" && path === "/api/accounts") {
@@ -1033,7 +1083,13 @@ export class GaiaWebServer {
       // queue:true is the Cmd/Ctrl+Enter opt-out of steer-by-default — force the
       // durable queue instead of injecting into the running turn.
       const queue = (body as { queue?: unknown }).queue === true;
-      const task = await service.sendMessage(textValue, { ...(attachments ? { attachments } : {}), ...(queue ? { queue } : {}) });
+      const sessionToken = cookieValue(request, AUTH_COOKIE);
+      const human: PublicUser | null = sessionToken ? verifySessionToken(sessionToken) : null;
+      const task = await service.sendMessage(textValue, {
+        ...(attachments ? { attachments } : {}),
+        ...(queue ? { queue } : {}),
+        ...(human ? { human: { id: human.id, label: human.displayName } } : {}),
+      });
       json(response, 202, { task });
       return;
     }

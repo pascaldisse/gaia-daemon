@@ -22,6 +22,11 @@ export const globalPaths = {
   /** Daemon-global app state (workspace registry, current workspace). */
   appSettings: () => join(gaiaHome(), "app.json"),
   accounts: () => join(gaiaHome(), "accounts.json"),
+  /** Human user accounts (login/multi-user), distinct from provider
+   * credential `accounts`. */
+  users: () => join(gaiaHome(), "users.json"),
+  /** HMAC secret signing session tokens issued at login. */
+  sessionSecret: () => join(gaiaHome(), "session-secret"),
   agentsDir: () => join(gaiaHome(), "agents"),
   /** Always-loaded global prompt protocols: every *.md here (sorted by
    * filename) loads verbatim into EVERY agent's system prompt as a

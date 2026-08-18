@@ -150,6 +150,10 @@ export interface SendMessageOptions {
   channel?: "text" | "voice";
   /** Synthetic prompts (call greetings, silence nudges) skip the user event. */
   recordUserMessage?: boolean;
+  /** Logged-in human posting this (domain/users.ts) — rides the RoomEvent as
+   * humanId/humanLabel for multi-human attribution. Absent = today's default
+   * single-implicit-user behavior, unchanged. */
+  human?: { id: string; label: string };
   thinking?: string;
   /** Files attached to the message (already stored in the room's files dir). */
   attachments?: MessageAttachment[];
@@ -736,7 +740,7 @@ export class RoomService {
       const runtime = this.runtimes[runner];
       const aimedAtRunner = targets.length > 0 && targets.every((id) => id === runner);
       if (aimedAtRunner && runtime?.capabilities.supportsSteer) {
-        const steered = await this.steerRunningTurn(runner, text, task, options.attachments);
+        const steered = await this.steerRunningTurn(runner, text, task, options.attachments, options.human);
         if (steered === true) return task;
         // The turn just ended under us: the guidance is ALREADY committed to
         // the transcript (persist-first). Fall through to the queue with the
@@ -807,6 +811,7 @@ export class RoomService {
       ...(options.nativeCommand ? { nativeCommand: true } : {}),
       ...(recordedEventId ? { eventId: recordedEventId } : {}),
       ...(recorded ? { recorded: true } : {}),
+      ...(options.human ? { humanId: options.human.id, humanLabel: options.human.label } : {}),
       queuedAt: task.startedAt,
     });
     this.queuedTasks.push(task);
@@ -911,6 +916,7 @@ export class RoomService {
           // run — never re-record them. `queued: next` above carries retry
           // metadata through to runAgentTask's options.
           ...(next.stallRetried || next.authRetries ? { recordUserMessage: false } : {}),
+          ...(next.humanId ? { human: { id: next.humanId, label: next.humanLabel ?? next.humanId } } : {}),
         });
       } catch (error) {
         this.settleTask(task, "error", error);
@@ -1283,7 +1289,7 @@ export class RoomService {
           eventId = newRoomEventId();
           await this.room.assignQueuedEventId(queued.taskId, eventId);
         }
-        userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments, eventId);
+        userEvent = await this.room.addUserMessage(text, task.targets, channel, attachments, eventId, options.human);
       }
       if (userEvent) {
         this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
@@ -2102,8 +2108,14 @@ export class RoomService {
    * renders the message inline right there, live and after commit), and the
    * steer task completes — the running turn's continued output IS the reply,
    * so there's no turn of its own. */
-  private async steerRunningTurn(target: string, text: string, task: Task, attachments?: MessageAttachment[]): Promise<true | string> {
-    const event = await this.room.addUserMessage(text, [target], undefined, attachments);
+  private async steerRunningTurn(
+    target: string,
+    text: string,
+    task: Task,
+    attachments?: MessageAttachment[],
+    human?: { id: string; label: string }
+  ): Promise<true | string> {
+    const event = await this.room.addUserMessage(text, [target], undefined, attachments, undefined, human);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
     // Attachments travel two ways, uniformly: the same breadcrumb lines the turn
     // prompt uses ride in the text (the file sits on disk at that path, openable

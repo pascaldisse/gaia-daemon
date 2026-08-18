@@ -5,6 +5,7 @@
 import { hardenPath } from "./core/env.js";
 import { scaffoldGlobalAgent } from "./domain/agents.js";
 import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
+import { createUser, listUsers, removeUser } from "./domain/users.js";
 
 // Before anything else: repair PATH so harness CLIs resolve no matter what
 // launched us (terminal, native app shell, launchd). Children inherit it.
@@ -12,7 +13,7 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --help                  show help`,
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --help                  show help`,
   );
 }
 
@@ -77,6 +78,43 @@ async function main(): Promise<void> {
       console.log(`Soul: ${result.soulPath}`);
       console.log(`Memory: ${result.memoryDir}`);
       console.log(`Roles: ${result.rolesDir}`);
+    } catch (error) {
+      console.error(`gaia: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args[0] === "user") {
+    const sub = args[1];
+    try {
+      if (sub === "create") {
+        const [username, password, ...rest] = args.slice(2);
+        if (!username || !password) {
+          console.error("Usage: gaia user create <username> <password> [display name]");
+          process.exitCode = 1;
+          return;
+        }
+        const user = createUser(username, password, rest.join(" ").trim() || undefined);
+        console.log(`User created: ${user.id} (${user.username})`);
+        return;
+      }
+      if (sub === "list") {
+        for (const user of listUsers()) console.log(`${user.id}\t${user.username}\t${user.displayName}`);
+        return;
+      }
+      if (sub === "remove") {
+        const id = args[2];
+        if (!id) {
+          console.error("Usage: gaia user remove <id>");
+          process.exitCode = 1;
+          return;
+        }
+        console.log(removeUser(id) ? `User removed: ${id}` : `No such user: ${id}`);
+        return;
+      }
+      console.error("Usage: gaia user create|list|remove ...");
+      process.exitCode = 1;
     } catch (error) {
       console.error(`gaia: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;

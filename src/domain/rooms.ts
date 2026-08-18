@@ -346,7 +346,7 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
     queue.push({
       ...unknownFields(raw, [
         "taskId", "text", "targets", "channel", "attachments", "fromAgentDialogue", "goalStartedAt", "nativeCommand", "eventId", "recorded",
-        "stallRetried", "authRetries", "notBefore", "queuedAt",
+        "stallRetried", "authRetries", "notBefore", "queuedAt", "humanId", "humanLabel",
       ]),
       taskId: raw.taskId,
       text: raw.text,
@@ -363,6 +363,8 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(raw.stallRetried === true ? { stallRetried: true } : {}),
       ...(typeof raw.authRetries === "number" ? { authRetries: raw.authRetries } : {}),
       ...(typeof raw.notBefore === "string" ? { notBefore: raw.notBefore } : {}),
+      ...(typeof raw.humanId === "string" && raw.humanId.trim() ? { humanId: raw.humanId } : {}),
+      ...(typeof raw.humanLabel === "string" && raw.humanLabel.trim() ? { humanLabel: raw.humanLabel } : {}),
       queuedAt: typeof raw.queuedAt === "string" ? raw.queuedAt : "",
     } as QueuedMessage);
   }
@@ -480,7 +482,16 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
   if (raw.author === "user") {
     const targets = Array.isArray(raw.targets) ? raw.targets.filter((t): t is string => typeof t === "string") : [];
     const attachments = attachmentsFrom(raw.attachments);
-    return { ...base, author: "user", targets, ...(attachments ? { attachments } : {}) };
+    const humanId = typeof raw.humanId === "string" && raw.humanId.trim() ? raw.humanId : undefined;
+    const humanLabel = typeof raw.humanLabel === "string" && raw.humanLabel.trim() ? raw.humanLabel : undefined;
+    return {
+      ...base,
+      author: "user",
+      targets,
+      ...(attachments ? { attachments } : {}),
+      ...(humanId ? { humanId } : {}),
+      ...(humanLabel ? { humanLabel } : {}),
+    };
   }
   const details = eventDetailsFrom(raw.details);
   return { ...base, author: raw.author, ...(kind ? { kind } : {}), ...(details ? { details } : {}) };
@@ -658,7 +669,14 @@ export class RoomHandle {
   /** `id` pre-assigns the event id — the queue→transcript hand-off reserves it
    * durably on the QueuedMessage first, so a crash-replayed append is
    * idempotent (see QueuedMessage.eventId). */
-  async addUserMessage(text: string, targets: string[], channel?: string, attachments?: MessageAttachment[], id?: string): Promise<RoomEvent> {
+  async addUserMessage(
+    text: string,
+    targets: string[],
+    channel?: string,
+    attachments?: MessageAttachment[],
+    id?: string,
+    human?: { id: string; label: string }
+  ): Promise<RoomEvent> {
     const event: RoomEvent = {
       id: id ?? newRoomEventId(),
       timestamp: new Date().toISOString(),
@@ -667,6 +685,7 @@ export class RoomHandle {
       text,
       ...(channel ? { channel } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(human ? { humanId: human.id, humanLabel: human.label } : {}),
     };
     await this.appendEvent(event);
     return event;
