@@ -3702,6 +3702,39 @@ export class RoomService {
     await this.emitRoomsChanged();
   }
 
+  /** Human-membership allowlist (RoomState.humans). Absent/empty = today's
+   * unrestricted default — enforcement (server/http.ts) only kicks in once a
+   * room has at least one human explicitly added. */
+  async roomHumans(): Promise<string[]> {
+    await this.init();
+    return (await this.room.state()).humans ?? [];
+  }
+
+  async inviteHuman(userId: string): Promise<string[]> {
+    await this.init();
+    const state = await this.room.updateState((state) => {
+      const set = new Set(state.humans ?? []);
+      set.add(userId);
+      state.humans = [...set];
+    });
+    await this.emitRoomsChanged();
+    return state.humans ?? [];
+  }
+
+  /** Removing the LAST member clears the allowlist back to unrestricted
+   * (empty array is never persisted — normalizeRoomState drops it), not a
+   * zero-human room nobody can post in. */
+  async removeHuman(userId: string): Promise<string[]> {
+    await this.init();
+    const state = await this.room.updateState((state) => {
+      const kept = (state.humans ?? []).filter((id) => id !== userId);
+      if (kept.length > 0) state.humans = kept;
+      else delete state.humans;
+    });
+    await this.emitRoomsChanged();
+    return state.humans ?? [];
+  }
+
   /** The most recent reply text from an agent in this room (summon results). */
   async latestReplyFrom(agentId: string): Promise<string> {
     await this.init();

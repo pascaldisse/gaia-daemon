@@ -63,6 +63,13 @@ const MIME: Record<string, string> = {
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 /** Session cookie name for human-user login (domain/users.ts). */
 const AUTH_COOKIE = "gaia_user";
+
+/** The logged-in human behind this request, or null — verifies the session
+ * cookie fresh against domain/users.ts every call (see verifySessionToken). */
+function requestingHuman(request: IncomingMessage): PublicUser | null {
+  const token = cookieValue(request, AUTH_COOKIE);
+  return token ? verifySessionToken(token) : null;
+}
 const bootId = randomUUID();
 const RELOAD_DELAY_MS = 250;
 // Upper bound on the graceful close inside a reload. closeServer awaits
@@ -795,23 +802,17 @@ export class GaiaWebServer {
     // required; every user after that requires an existing valid session
     // (prevents an open internet-facing registration endpoint).
     if (method === "GET" && path === "/api/auth/me") {
-      const token = cookieValue(request, AUTH_COOKIE);
-      const user = token ? verifySessionToken(token) : null;
-      return this.respond(response, async () => ({ user }));
+      return this.respond(response, async () => ({ user: requestingHuman(request) }));
     }
 
     if (method === "GET" && path === "/api/auth/users") {
-      const token = cookieValue(request, AUTH_COOKIE);
-      if (!token || !verifySessionToken(token)) return json(response, 401, { error: "Not logged in." });
+      if (!requestingHuman(request)) return json(response, 401, { error: "Not logged in." });
       return this.respond(response, async () => ({ users: listUsers() }));
     }
 
     if (method === "POST" && path === "/api/auth/users") {
       const existing = listUsers();
-      if (existing.length > 0) {
-        const token = cookieValue(request, AUTH_COOKIE);
-        if (!token || !verifySessionToken(token)) return json(response, 401, { error: "Log in before adding another user." });
-      }
+      if (existing.length > 0 && !requestingHuman(request)) return json(response, 401, { error: "Log in before adding another user." });
       const body = await parseBody(request);
       const username = stringField(body, "username");
       const password = stringField(body, "password");
@@ -1017,6 +1018,38 @@ export class GaiaWebServer {
       return this.respond(response, () => this.daemon.setRoomFavorite(params![0], params![1], favorite));
     }
 
+    // Room-level human membership (RoomState.humans). Absent/empty = today's
+    // unrestricted default for every existing room; a room only starts gating
+    // reads/posts (see the /messages and /events routes below) the moment it
+    // gets its first member. Every write here requires an authenticated human
+    // who is EITHER already a member OR the room has none yet (so someone can
+    // bootstrap membership on a room they otherwise already had full access to).
+    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      return this.respond(response, async () => ({ humans: await service.roomHumans() }));
+    }
+
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const requester = requestingHuman(request);
+      if (!requester) return json(response, 401, { error: "Log in before managing room membership." });
+      const existing = await service.roomHumans();
+      if (existing.length > 0 && !existing.includes(requester.id)) return json(response, 403, { error: "Not a member of this room." });
+      const body = await parseBody(request);
+      const userId = stringField(body, "userId");
+      if (!userId?.trim()) return json(response, 400, { error: "Missing userId" });
+      return this.respond(response, async () => ({ humans: await service.inviteHuman(userId.trim()) }));
+    }
+
+    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans\/([^/]+)$/))) {
+      const service = await this.daemon.serviceFor(params[0], params[1]);
+      const requester = requestingHuman(request);
+      if (!requester) return json(response, 401, { error: "Log in before managing room membership." });
+      const existing = await service.roomHumans();
+      if (existing.length > 0 && !existing.includes(requester.id)) return json(response, 403, { error: "Not a member of this room." });
+      return this.respond(response, async () => ({ humans: await service.removeHuman(params![2]) }));
+    }
+
     // Attachment upload: the pasted file's bytes as the raw body, original
     // filename in ?name=. Returns the server-issued id the client echoes back
     // on the message send. Serving is GET on the same path + /<id>.
@@ -1083,8 +1116,11 @@ export class GaiaWebServer {
       // queue:true is the Cmd/Ctrl+Enter opt-out of steer-by-default — force the
       // durable queue instead of injecting into the running turn.
       const queue = (body as { queue?: unknown }).queue === true;
-      const sessionToken = cookieValue(request, AUTH_COOKIE);
-      const human: PublicUser | null = sessionToken ? verifySessionToken(sessionToken) : null;
+      const human = requestingHuman(request);
+      const membership = await service.roomHumans();
+      if (membership.length > 0 && !membership.includes(human?.id ?? "")) {
+        return json(response, 403, { error: "Not a member of this room." });
+      }
       const task = await service.sendMessage(textValue, {
         ...(attachments ? { attachments } : {}),
         ...(queue ? { queue } : {}),
@@ -1125,6 +1161,10 @@ export class GaiaWebServer {
     // transcript): the events immediately before ?before=<eventId>.
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/))) {
       const service = await this.daemon.serviceFor(params[0], params[1]);
+      const membership = await service.roomHumans();
+      if (membership.length > 0 && !membership.includes(requestingHuman(request)?.id ?? "")) {
+        return json(response, 403, { error: "Not a member of this room." });
+      }
       const before = url.searchParams.get("before")?.trim() || undefined;
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
       return this.respond(response, async () => service.eventsBefore(before, limit));

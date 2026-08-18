@@ -763,6 +763,14 @@ test("normalizeRoomState: incognito flag survives the whitelist (only literal tr
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).incognito, undefined);
 });
 
+test("normalizeRoomState: humans allowlist survives the whitelist, dedupes, and empty never persists", () => {
+  const withHumans = normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: ["u_a", "u_b", "u_a"] });
+  assert.deepEqual(withHumans.humans, ["u_a", "u_b"]);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [] }).humans, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [1, null, "", "  "] }).humans, undefined);
+  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).humans, undefined);
+});
+
 test("normalizeRoomState: title metadata and imported survive the whitelist", () => {
   const state = normalizeRoomState({ activeRoles: {}, agentCursors: {}, title: "My chat", titleSource: "manual", imported: "2026-04-21T00:00:00Z" });
   assert.equal(state.title, "My chat");

@@ -92,6 +92,11 @@ function unknownFields(value: Record<string, unknown>, known: readonly string[])
   return unknown;
 }
 
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((v): v is string => typeof v === "string" && v.trim().length > 0))];
+}
+
 function stringRecord(value: unknown): Record<string, string> {
   if (!isRecord(value)) return {};
   return Object.fromEntries(Object.entries(value).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim().length > 0));
@@ -460,6 +465,7 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
     ...(value.incognito === true ? { incognito: true } : {}),
+    ...(stringArray(value.humans).length > 0 ? { humans: stringArray(value.humans) } : {}),
   };
 }
 

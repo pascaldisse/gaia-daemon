@@ -382,6 +382,12 @@ export interface RoomState {
    * ensureWorkspaceRoom only seeds it on a brand-new room. Off/absent = a normal
    * room that participates in memory. */
   incognito?: boolean;
+  /** Human-membership allowlist (domain/users.ts ids). Absent/empty = today's
+   * default: unrestricted, any request may read/post here regardless of
+   * login — unchanged behavior for every room that predates this field or
+   * never opts in. Non-empty = only these humans (by id) may read/post;
+   * enforced in server/http.ts, this is just the durable allowlist. */
+  humans?: string[];
 }
 
 /** A NEW agent was addressed in a room whose transcript would exceed the
