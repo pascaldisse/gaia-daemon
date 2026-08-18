@@ -15,6 +15,7 @@
 // server-side file after a crash/reload, with zero client-side storage.
 // A failed clip also stays in a module variable so the user can retry or
 // discard it without a round trip to the server.
+import { apiUrl } from "./api.js";
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
@@ -155,7 +156,7 @@ async function startDictation() {
     // failures are swallowed: the in-memory chunks array remains the source
     // of truth for the send path.
     current.uploadChain = current.uploadChain
-      .then(() => fetch(`/api/voice/clip/${current.clipId}/chunk`, { method: "POST", body: event.data }))
+      .then(() => fetch(apiUrl(`/api/voice/clip/${current.clipId}/chunk`), { method: "POST", body: event.data }))
       .then(() => undefined, () => undefined);
   };
   recorder.start(1000);
@@ -297,7 +298,7 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
       // so the partially-streamed .bin is now redundant — discard it (the
       // server renames it to discarded-*, never deletes) so it can't
       // resurface as a ghost recovered-recording chip.
-      if (clipId) void fetch(`/api/voice/clip/${clipId}`, { method: "DELETE" }).catch(() => {});
+      if (clipId) void fetch(apiUrl(`/api/voice/clip/${clipId}`), { method: "DELETE" }).catch(() => {});
       insertTranscript(result.text);
       lastFailedClip = null;
       state.dictationError = "";
@@ -329,7 +330,7 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
 async function postClipTranscribe(clipId, mimeType, signal) {
   const query = mimeType ? `?mime=${encodeURIComponent(mimeType)}` : "";
   try {
-    const response = await fetch(`/api/voice/clip/${clipId}/transcribe${query}`, { method: "POST", signal });
+    const response = await fetch(apiUrl(`/api/voice/clip/${clipId}/transcribe${query}`), { method: "POST", signal });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return { ok: false, text: "", engine: "", error: String(data.error ?? `transcription failed: ${response.status}`), status: response.status };
     return { ok: true, text: String(data.text ?? ""), engine: String(data.engine ?? ""), error: "", status: response.status };
@@ -350,7 +351,7 @@ async function postClip(blob, signal) {
   try {
     // Not via api.js: the body is raw audio, not JSON, so the content-type
     // must be the clip's MIME.
-    const response = await fetch("/api/voice/transcribe", {
+    const response = await fetch(apiUrl("/api/voice/transcribe"), {
       method: "POST",
       headers: { "content-type": blob.type || "application/octet-stream" },
       body: blob,
@@ -494,7 +495,7 @@ export function installDictationLifecycle() {
  */
 export async function refreshRecoveredClips() {
   try {
-    const response = await fetch("/api/voice/clips");
+    const response = await fetch(apiUrl("/api/voice/clips"));
     if (!response.ok) return;
     const data = await response.json().catch(() => ({}));
     /** @type {{id?: unknown, bytes?: unknown, mtimeMs?: unknown}[]} */
@@ -545,7 +546,7 @@ export async function transcribeRecoveredClip(id) {
  */
 export async function discardRecoveredClip(id) {
   try {
-    await fetch(`/api/voice/clip/${id}`, { method: "DELETE" });
+    await fetch(apiUrl(`/api/voice/clip/${id}`), { method: "DELETE" });
   } catch {
     // Offline — the server-side file just outlives this client's view of it.
   }

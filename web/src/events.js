@@ -2,7 +2,7 @@
 // id the reply will commit under — so runtime details are keyed directly by
 // event id in state.streams. No author+text snapshot-merge heuristic exists:
 // the final room-event with the same id simply replaces the stream entry.
-import { api } from "./api.js";
+import { api, apiUrl } from "./api.js";
 import { refreshAttention } from "./attention.js";
 import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
@@ -48,7 +48,7 @@ export function connectEvents(resyncOnReady = false) {
   syncLiveTimers();
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
-  const source = openEventChannel(`/api/events?${params}`);
+  const source = openEventChannel(apiUrl(`/api/events?${params}`));
   state.eventSource = source;
 
   /** @param {string} type @param {(event: { data: string }) => void} handler */

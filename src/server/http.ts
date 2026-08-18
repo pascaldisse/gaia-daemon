@@ -7,10 +7,10 @@ import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, wri
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULTS, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
+import { DEFAULTS, gaiaBasePath, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
@@ -1746,6 +1746,23 @@ export class GaiaWebServer {
     // silently ships old UI code on reload — notably in the native app's
     // WKWebView, which caches aggressively. Always require a fresh fetch.
     headers["cache-control"] = "no-store";
+
+    // Mounted under a reverse-proxy prefix (GAIA_BASE_PATH, e.g. Caddy
+    // `handle_path /gaia/*`)? The proxy strips the prefix before it ever
+    // reaches us, so routes/assets stay unprefixed on the wire — only the two
+    // HTML entry points need the prefix baked in, since the browser resolves
+    // their root-relative href/src against the *public* URL, not ours. Empty
+    // (root-mounted, the default) takes the exact pre-existing stream path.
+    const basePath = gaiaBasePath();
+    const isHtmlEntry = path.endsWith(`${sep}index.html`) || path.endsWith(`${sep}pet.html`);
+    if (basePath && isHtmlEntry) {
+      let html = await readFile(path, "utf8");
+      html = html.replace(/(href|src)="\/(src|vendor)\//g, `$1="${basePath}/$2/`);
+      html = html.replace("<head>", `<head>\n    <script>window.__GAIA_BASE_PATH__=${JSON.stringify(basePath)};</script>`);
+      response.writeHead(200, headers);
+      response.end(html);
+      return;
+    }
 
     response.writeHead(200, headers);
     createReadStream(path).pipe(response);

@@ -60,6 +60,21 @@ export function gaiaPort(): number {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.port;
 }
 
+/** GAIA_BASE_PATH: URL prefix the web client is mounted under behind a
+ * reverse proxy that strips the prefix before forwarding upstream (e.g.
+ * Caddy `handle_path /gaia/*`). Empty by default (root-mounted, today's
+ * behavior — macOS app, mobile). Normalized: leading slash, no trailing
+ * slash, "" for unset/"/". Only affects HTML asset hrefs + a client-side
+ * global (serveStatic) — routes themselves are always registered unprefixed;
+ * the proxy is responsible for stripping the prefix before the daemon ever
+ * sees the request. */
+export function gaiaBasePath(): string {
+  const raw = (env("GAIA_BASE_PATH") ?? "").trim();
+  if (!raw || raw === "/") return "";
+  const withLeading = raw.startsWith("/") ? raw : `/${raw}`;
+  return withLeading.length > 1 && withLeading.endsWith("/") ? withLeading.slice(0, -1) : withLeading;
+}
+
 /**
  * The codesign identity name to re-sign the .app bundle with on macOS
  * rebuild. GAIA_CODESIGN_IDENTITY overrides; otherwise DEFAULTS.codesignIdentity.

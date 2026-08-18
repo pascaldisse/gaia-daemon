@@ -2,6 +2,7 @@
 // Split out so both transcript.js (rendering a sent message) and
 // composer.js (rendering an in-progress edit of one) can use it without an
 // import cycle between the two.
+import { apiUrl } from "./api.js";
 import { state } from "./state.js";
 
 /** @typedef {import("./types.js").MessageAttachment} MessageAttachment */
@@ -15,5 +16,5 @@ export function attachmentUrl(file) {
   const snapshot = state.snapshot;
   if (!snapshot) return "#";
   const id = file.path.split("/").pop() ?? "";
-  return `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files/${encodeURIComponent(id)}`;
+  return apiUrl(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/files/${encodeURIComponent(id)}`);
 }
