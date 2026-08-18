@@ -1,12 +1,13 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
-import { accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { addRoomHuman, removeRoomHuman, roomHumans, accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
+import { api } from "./api.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
 
@@ -17,6 +18,15 @@ import { toggleCall } from "./voice.js";
 /** @type {import("./actions.js").AccountsCatalog | null} */
 let accountsCatalogValue = null;
 let accountsCatalogRequested = false;
+/** @type {string[]|null} */ let humanMembers = null;
+/** @type {{id:string,displayName:string,username:string}[]} */ let humans = [];
+let humansRequested = false;
+function ensureHumans() {
+  if (humansRequested || !state.snapshot) return; humansRequested = true;
+  void Promise.all([roomHumans(), api("/api/auth/users")]).then(([members, body]) => { humanMembers = members; humans = body.users ?? []; markDirty("panel"); }).catch(() => { humansRequested = false; });
+}
+async function inviteHuman(/** @type {string} */ id) { try { await addRoomHuman(id); humanMembers = await roomHumans(); markDirty("panel"); } catch (error) { markDirty("panel"); } }
+async function uninviteHuman(/** @type {string} */ id) { try { await removeRoomHuman(id); humanMembers = await roomHumans(); markDirty("panel"); } catch (error) { markDirty("panel"); } }
 
 function ensureAccountsCatalog() {
   if (accountsCatalogRequested) return;
@@ -56,8 +66,10 @@ function renderPanel() {
   const panel = $("#room-panel");
   if (!panel) return;
   ensureAccountsCatalog();
+  ensureHumans();
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
+  const memberIds = humanMembers ?? [];
   const tasks = snapshot?.tasks ?? [];
   // The agent this room is currently addressing: its remembered active agent,
   // or the workspace default when it has none yet. Marks the "active" row and
@@ -86,6 +98,13 @@ function renderPanel() {
             h("span", { text: "agents talk to each other" }),
           )
         : null,
+    ),
+    h("h3", { text: "people" }),
+    h("div", { class: "human-members" },
+      humanMembers === null ? h("small", { class: "muted", text: "sign in to manage access" }) :
+      memberIds.length === 0 ? h("small", { class: "muted", text: "shared room — everyone may enter" }) :
+      memberIds.map((id) => h("div", { class: "human-member" }, h("span", { text: humans.find((user) => user.id === id)?.displayName || id }), h("button", { title: "remove from room", onclick: () => void uninviteHuman(id), text: "×" }))),
+      humanMembers !== null ? h("select", { value: "", onchange: (event) => { const id = /** @type {HTMLSelectElement} */ (event.target).value; if (id) void inviteHuman(id); } }, h("option", { value: "", text: "invite person…" }), humans.filter((user) => !memberIds.includes(user.id)).map((user) => h("option", { value: user.id, text: user.displayName || user.username }))) : null,
     ),
     h("h3", { text: "agents" }),
     h(

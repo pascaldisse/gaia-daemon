@@ -1,6 +1,7 @@
 // Entry point. The daemon serves these modules directly (no bundler); they are
 // plain browser JavaScript, typechecked via JSDoc (web2/tsconfig.json).
 import { loadApp, selectRoom } from "./actions.js";
+import { loadHumanSession } from "./auth.js";
 import { installAttention } from "./attention.js";
 import { adoptRoomTab, closeCurrent, dockBack, isOverlayLayout, newIncognitoRoom, newTab, nextTab, prevTab, togglePanel, toggleSidebar } from "./chrome.js";
 import { focusComposerFromBackground, initComposer, installComposerRouting } from "./composer.js";
@@ -22,6 +23,7 @@ import "./panel.js";
 import "./plugins-panel.js";
 import "./search.js";
 import "./settings.js";
+import "./auth.js";
 import "./sidebar.js";
 import "./tabsbar.js";
 import "./transcript.js";
@@ -66,6 +68,7 @@ void boot();
 async function boot() {
   const last = launchIntent().mode === "torn" ? null : recallLocation();
   await loadApp(last?.workspaceId);
+  await loadHumanSession();
   if (last && state.snapshot && state.snapshot.room.id !== last.roomId && state.snapshot.rooms.some((room) => room.id === last.roomId)) {
     await selectRoom(state.snapshot.workspace.id, last.roomId);
   }

@@ -717,3 +717,25 @@ export async function setUserName(name) {
     setError(error);
   }
 }
+
+/** @returns {Promise<string[]>} */
+export async function roomHumans() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return [];
+  const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans`);
+  return body.humans ?? [];
+}
+
+/** @param {string} humanId */
+export async function addRoomHuman(humanId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans`, { method: "POST", body: JSON.stringify({ humanId }) });
+}
+
+/** @param {string} humanId */
+export async function removeRoomHuman(humanId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans/${encodeURIComponent(humanId)}`, { method: "DELETE", body: "{}" });
+}
