@@ -25,7 +25,12 @@ async function submit() {
     const path = mode === "login" ? "/api/auth/login" : "/api/auth/users";
     const body = mode === "login" ? { username, password } : { username, password, displayName };
     const result = await api(path, { method: "POST", body: JSON.stringify(body) });
-    current = result.user;
+    // Registration creates an identity; login mints the browser session cookie.
+    // Keep the two server contracts separate while making the form one action.
+    const session = mode === "register"
+      ? await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) })
+      : result;
+    current = session.user;
     password = "";
     await loadApp();
   } catch (error) { setError(error); }
