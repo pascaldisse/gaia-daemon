@@ -50,6 +50,12 @@ const QUERY_EMBED_TIMEOUT_MS = 800;
 const QUERY_EMBED_MAX_CHARS = 1_200;
 const EMBED_SYNC_DEBOUNCE_MS = 5_000;
 const INDEX_SYNC_BUDGET_MS = 1_000;
+// A resolve that settles OFF/DEAD (no embedder at all — sidecar still cold,
+// model still loading, a boot-time race) must not wedge the workspace forever
+// (see embedders cache comment below): retry after a cooldown instead of only
+// evicting on a later embed() throw, which never happens if embed() was never
+// reached in the first place.
+const EMBEDDER_RETRY_COOLDOWN_MS = 30_000;
 // A single search over budget is normal (a cold sidecar's first call, GPU
 // contention, an unusually large query) — not a fault. Only latch the loud
 // "recall degraded" chip once recall is slow this many times in a row, so the
@@ -115,8 +121,12 @@ export class MemoryService {
   // Embedders cache per embeddings-config value; a settings change is a new
   // key, so stale entries are simply never hit again. A FAILED call evicts its
   // entry, so the next search re-resolves — which re-ensures the sidecar
-  // (idle-stopped servers respawn instead of degrading forever).
+  // (idle-stopped servers respawn instead of degrading forever). This covers
+  // both a THROW mid-embed (evicted inline, see embedQuery) and a resolve that
+  // settled off/dead with no embedder at all (evicted here via cooldown — that
+  // path never reaches an embed() call, so it can't self-evict on a throw).
   private readonly embedders = new Map<string, Promise<ResolvedEmbedder>>();
+  private readonly embedderFailedAt = new Map<string, number>();
   private readonly rerankers = new Map<string, Promise<ResolvedReranker>>();
   private readonly consentWarned = new Set<string>();
   private readonly embedTimers = new Map<string, NodeJS.Timeout>();
@@ -455,11 +465,23 @@ export class MemoryService {
     const config = this.configFor(agentId).embeddings;
     const key = JSON.stringify(config);
     let cached = this.embedders.get(key);
+    // A cached OFF/DEAD resolve (no embedder — never reached embed(), so it
+    // never hit the throw-based eviction) is stale past the cooldown: evict so
+    // the next caller re-resolves instead of staying wedged until a restart.
+    if (cached) {
+      const failedAt = this.embedderFailedAt.get(key);
+      if (failedAt !== undefined && this.now().getTime() - failedAt >= EMBEDDER_RETRY_COOLDOWN_MS) {
+        this.embedders.delete(key);
+        cached = undefined;
+      }
+    }
     if (!cached) {
       cached = resolveEmbedder(config, this.options.embedderDeps)
         .catch((error): ResolvedEmbedder => ({ status: "dead", detail: error instanceof Error ? error.message : String(error) }))
         .then((resolved) => {
           this.recordEmbedderHealth(resolved);
+          if (resolved.status === "ok") this.embedderFailedAt.delete(key);
+          else this.embedderFailedAt.set(key, this.now().getTime());
           return resolved;
         });
       this.embedders.set(key, cached);

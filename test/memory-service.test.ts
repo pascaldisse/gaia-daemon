@@ -520,6 +520,51 @@ test("search self-heals an idle-stopped embedder: failed query embed → in-call
   service.dispose();
 });
 
+test("embedder wedged OFF at first resolve self-heals after the cooldown — not just after a later throw", async () => {
+  // Root cause (2026-08-18): a resolve that settles off/dead with NO embedder
+  // at all never reaches embed(), so the throw-based eviction in embedQuery's
+  // catch block never runs — it never even gets that far. Without the
+  // cooldown-gated eviction inside embedderFor itself, this cache entry sits
+  // forever and the composer's "embedder off" chip never clears until a full
+  // daemon restart, no matter how long the sidecar has been healthy again.
+  const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
+  let sidecarUp = false;
+  let now = new Date("2026-01-01T00:00:00Z");
+  const { service } = await makeMemoryService({
+    config: { embeddings: "auto" },
+    rooms: [{ roomId: "solo", events: [{ author: "user", text: `the marker phrase lives here.${pad}` }] }],
+    now: () => now,
+    embedderDeps: {
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        if (String(url).includes("embeddings")) {
+          const input = JSON.parse(init!.body as string).input as string[];
+          return new Response(JSON.stringify({ data: input.map(() => ({ embedding: [0.1, 0.2, 0.3] })) }), { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch,
+      // First resolve: sidecar genuinely not up yet — resolveEmbedder settles
+      // "off" without ever calling embed() at all.
+      ensureLocalSidecar: async () => (sidecarUp ? { baseUrl: "http://127.0.0.1:4244/v1", model: "embeddinggemma-300m" } : undefined),
+    },
+  });
+  const first = await service.search("gaia", "marker phrase");
+  assert.ok(first.degraded.some((note) => note.includes("lexical-only")), "first search: sidecar cold, honestly lexical-only");
+
+  // Sidecar comes up, but well within the cooldown window — must NOT hammer a
+  // fresh resolve on every single call; the wedge is expected to persist here.
+  sidecarUp = true;
+  now = new Date(now.getTime() + 5_000);
+  const stillWedged = await service.search("gaia", "marker phrase");
+  assert.ok(stillWedged.degraded.some((note) => note.includes("lexical-only")), "inside the cooldown: still cached off, by design");
+
+  // Past the cooldown: the next real search must self-heal, same as the
+  // already-correct reranker cache does immediately.
+  now = new Date(now.getTime() + 30_000);
+  const healed = await service.search("gaia", "marker phrase");
+  assert.ok(!healed.degraded.some((note) => note.includes("lexical-only")), `past cooldown: must self-heal (got ${JSON.stringify(healed.degraded)})`);
+  service.dispose();
+});
+
 test("an over-long query is capped to one physical batch: no 'input too large' 500, dense arm survives", async () => {
   const pad = " filler words to give this event enough mass to close a chunk cleanly.".repeat(10);
   // Stand-in for the non-causal embedder's physical batch: any single input
