@@ -730,7 +730,7 @@ export async function roomHumans() {
 export async function addRoomHuman(humanId) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans`, { method: "POST", body: JSON.stringify({ humanId }) });
+  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans`, { method: "POST", body: JSON.stringify({ userId: humanId }) });
 }
 
 /** @param {string} humanId */
