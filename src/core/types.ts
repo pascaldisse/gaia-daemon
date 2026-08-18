@@ -727,6 +727,8 @@ export interface WorkspaceRecord {
   name: string;
   lastOpenedAt: string;
   isInitialized: boolean;
+  /** Human owner for an isolated workspace. Absent = legacy shared scope. */
+  humanId?: string;
 }
 
 /** "Keep laptop awake while GAIA runs" — a daemon-managed (macOS-only)

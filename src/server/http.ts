@@ -609,9 +609,14 @@ export class GaiaWebServer {
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const method = request.method ?? "GET";
     const path = url.pathname;
+    const human = requestingHuman(request);
+    // Existing users without a workspace remain in the legacy shared scope.
+    // A configured workspace activates an owner-tagged, isolated registry.
+    const humanScope = human?.workspace ? human.id : undefined;
 
     if (method === "GET" && path === "/api/app") {
-      json(response, 200, await this.daemon.appPayload());
+      const owned = human?.workspace ? await this.daemon.addWorkspace(human.workspace, human.id) : undefined;
+      json(response, 200, await this.daemon.appPayload(owned?.id, humanScope));
       return;
     }
 
@@ -699,8 +704,11 @@ export class GaiaWebServer {
       const body = await parseBody(request);
       const workspacePathValue = stringField(body, "path");
       if (!workspacePathValue) return json(response, 400, { error: "Missing workspace path" });
-      const record = await this.daemon.addWorkspace(workspacePathValue);
-      json(response, 200, await this.daemon.appPayload(record.id));
+      if (human?.workspace && (!isAbsolute(workspacePathValue) || resolve(workspacePathValue) !== human.workspace)) {
+        return json(response, 403, { error: "Workspace is outside your assigned scope." });
+      }
+      const record = await this.daemon.addWorkspace(workspacePathValue, humanScope);
+      json(response, 200, await this.daemon.appPayload(record.id, humanScope));
       return;
     }
 
@@ -740,9 +748,14 @@ export class GaiaWebServer {
     }
 
     if (method === "GET" && path === "/api/events") {
+      const owned = human?.workspace ? await this.daemon.addWorkspace(human.workspace, human.id) : undefined;
+      const requestedWorkspaceId = url.searchParams.get("workspaceId") ?? undefined;
+      if (owned && requestedWorkspaceId && requestedWorkspaceId !== owned.id) {
+        return json(response, 403, { error: "Workspace is outside your assigned scope." });
+      }
       const client: SseClient = {
         id: newId("client"),
-        workspaceId: url.searchParams.get("workspaceId") ?? undefined,
+        workspaceId: owned?.id ?? requestedWorkspaceId,
         roomId: url.searchParams.get("roomId") ?? undefined,
         response,
       };
@@ -776,7 +789,12 @@ export class GaiaWebServer {
     // ?limit= caps results. Cross-workspace by default.
     if (method === "GET" && path === "/api/search") {
       const q = url.searchParams.get("q") ?? url.searchParams.get("query") ?? "";
-      const workspaceId = url.searchParams.get("workspace")?.trim();
+      const owned = human?.workspace ? await this.daemon.addWorkspace(human.workspace, human.id) : undefined;
+      const requestedWorkspaceId = url.searchParams.get("workspace")?.trim();
+      if (owned && requestedWorkspaceId && requestedWorkspaceId !== owned.id) {
+        return json(response, 403, { error: "Workspace is outside your assigned scope." });
+      }
+      const workspaceId = owned?.id ?? requestedWorkspaceId;
       const roomId = url.searchParams.get("room")?.trim();
       const limit = Number(url.searchParams.get("limit")) || undefined;
       return this.respond(response, () =>
@@ -802,23 +820,27 @@ export class GaiaWebServer {
     // required; every user after that requires an existing valid session
     // (prevents an open internet-facing registration endpoint).
     if (method === "GET" && path === "/api/auth/me") {
-      return this.respond(response, async () => ({ user: requestingHuman(request) }));
+      return this.respond(response, async () => ({ user: human }));
     }
 
     if (method === "GET" && path === "/api/auth/users") {
-      if (!requestingHuman(request)) return json(response, 401, { error: "Not logged in." });
+      if (!human) return json(response, 401, { error: "Not logged in." });
       return this.respond(response, async () => ({ users: listUsers() }));
     }
 
     if (method === "POST" && path === "/api/auth/users") {
       const existing = listUsers();
-      if (existing.length > 0 && !requestingHuman(request)) return json(response, 401, { error: "Log in before adding another user." });
+      if (existing.length > 0 && !human) return json(response, 401, { error: "Log in before adding another user." });
       const body = await parseBody(request);
       const username = stringField(body, "username");
       const password = stringField(body, "password");
       const displayName = stringField(body, "displayName");
       if (!username?.trim() || !password) return json(response, 400, { error: "username and password required" });
-      return this.respond(response, async () => ({ user: createUser(username, password, displayName) }));
+      const home = stringField(body, "home");
+      const workspace = stringField(body, "workspace");
+      if ((home && !workspace) || (!home && workspace)) return json(response, 400, { error: "home and workspace must be configured together" });
+      const ownership = home && workspace ? { home, workspace } : undefined;
+      return this.respond(response, async () => ({ user: createUser(username, password, displayName, ownership) }));
     }
 
     if (method === "POST" && path === "/api/auth/login") {
@@ -938,6 +960,17 @@ export class GaiaWebServer {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
+    }
+
+    // One ownership check covers the complete parameterized workspace route
+    // table below. Legacy/shared requests can only reach unowned records;
+    // assigned humans can only reach records carrying their own id.
+    const workspaceRoute = path.match(/^\/api\/workspaces\/([^/]+)/);
+    if (workspaceRoute) {
+      const workspaceId = decodeURIComponent(workspaceRoute[1] ?? "");
+      if (!(await this.daemon.registry.findForHuman(workspaceId, humanScope))) {
+        return json(response, 403, { error: "Workspace is outside your assigned scope." });
+      }
     }
 
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {
@@ -1236,7 +1269,7 @@ export class GaiaWebServer {
     // tears down its resident services. Files on disk are never touched. Returns
     // the fresh app payload (a remaining workspace selected, or none).
     if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)$/))) {
-      return this.respond(response, () => this.daemon.deleteWorkspace(params![0]));
+      return this.respond(response, () => this.daemon.deleteWorkspace(params![0], humanScope));
     }
 
     // Read-aloud: one committed agent message → speech audio (the transcript
@@ -1501,6 +1534,9 @@ export class GaiaWebServer {
     if ((params = match(/^\/api\/files\/([^/]+)$/))) {
       const fileId = params[0];
       const workspaceId = url.searchParams.get("workspaceId") ?? undefined;
+      if (workspaceId && !(await this.daemon.registry.findForHuman(workspaceId, humanScope))) {
+        return json(response, 403, { error: "Workspace is outside your assigned scope." });
+      }
       if (method === "GET") {
         const file = await this.daemon.files.read(fileId, workspaceId);
         json(response, 200, { file: { ...file, hints: await this.daemon.fileHints(file, workspaceId) } });

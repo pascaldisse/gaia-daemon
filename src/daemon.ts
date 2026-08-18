@@ -62,15 +62,18 @@ function pathId(path: string, length: number): string {
   return createHash("sha256").update(resolve(path)).digest("hex").slice(0, length);
 }
 
-function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString()): WorkspaceRecord {
+function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString(), humanId?: string): WorkspaceRecord {
   const resolved = resolve(path);
   const parts = resolved.split(/[\\/]/).filter(Boolean);
   return {
-    id: pathId(resolved, 16),
+    // Preserve every legacy/shared id; an owned record includes its owner so
+    // two scopes can never alias the same live-service/cache key.
+    id: pathId(humanId ? `${humanId}\0${resolved}` : resolved, 16),
     path: resolved,
     name: parts[parts.length - 1] ?? resolved,
     lastOpenedAt,
     isInitialized: existsSync(workspacePath(resolved)),
+    ...(humanId ? { humanId } : {}),
   };
 }
 
@@ -80,14 +83,19 @@ export class WorkspaceRegistry {
   async list(): Promise<WorkspaceRecord[]> {
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
     return (config.recentWorkspaces ?? [])
-      .map((record) => normalizeRecord(record.path, record.lastOpenedAt))
+      .map((record) => normalizeRecord(record.path, record.lastOpenedAt, record.humanId))
       .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt));
   }
 
-  async add(path: string): Promise<WorkspaceRecord> {
-    const record = normalizeRecord(path);
+  /** Human-visible registry slice. `undefined` is the legacy shared scope. */
+  async listForHuman(humanId?: string): Promise<WorkspaceRecord[]> {
+    return (await this.list()).filter((record) => record.humanId === humanId);
+  }
+
+  async add(path: string, humanId?: string): Promise<WorkspaceRecord> {
+    const record = normalizeRecord(path, undefined, humanId);
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
-    const next = [record, ...(config.recentWorkspaces ?? []).filter((item) => item.id !== record.id)].slice(0, 30);
+    const next = [record, ...(config.recentWorkspaces ?? []).filter((item) => item.id !== record.id || item.humanId !== humanId)].slice(0, 30);
     await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
     return record;
   }
@@ -96,13 +104,17 @@ export class WorkspaceRegistry {
     return (await this.list()).find((record) => record.id === id);
   }
 
+  async findForHuman(id: string, humanId?: string): Promise<WorkspaceRecord | undefined> {
+    return (await this.listForHuman(humanId)).find((record) => record.id === id);
+  }
+
   /** Drop a workspace from the recent-workspaces list. De-registration only —
    * the folder on disk (project files + .gaia data) is never touched, so
    * re-adding the path restores it. Returns false if the id wasn't listed. */
-  async remove(id: string): Promise<boolean> {
+  async remove(id: string, humanId?: string): Promise<boolean> {
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
     const list = config.recentWorkspaces ?? [];
-    const next = list.filter((item) => item.id !== id);
+    const next = list.filter((item) => item.id !== id || item.humanId !== humanId);
     if (next.length === list.length) return false;
     await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
     return true;
@@ -552,12 +564,12 @@ export class Daemon {
 
   // --- workspace/room operations ---------------------------------------------------
 
-  async addWorkspace(path: string): Promise<WorkspaceRecord> {
-    let record = await this.registry.add(path);
+  async addWorkspace(path: string, humanId?: string): Promise<WorkspaceRecord> {
+    let record = await this.registry.add(path, humanId);
     if (!record.isInitialized) {
       // Adding through the UI is an explicit "make this a GAIA workspace".
       await initWorkspace(record.path);
-      record = await this.registry.add(record.path);
+      record = await this.registry.add(record.path, humanId);
     }
     await this.serviceFor(record.id);
     return record;
@@ -682,7 +694,7 @@ export class Daemon {
    * everything. Refuses while a voice call is active in that workspace. Returns
    * the fresh app payload with a remaining workspace selected (or none, if this
    * was the last one). */
-  async deleteWorkspace(workspaceId: string): Promise<Awaited<ReturnType<Daemon["appPayload"]>>> {
+  async deleteWorkspace(workspaceId: string, humanId?: string): Promise<Awaited<ReturnType<Daemon["appPayload"]>>> {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     if (this.activeCall?.workspaceId === workspaceId) {
@@ -707,16 +719,16 @@ export class Daemon {
     this.summonCoordinators.delete(workspaceId);
     this.currentRoom.delete(workspaceId);
 
-    await this.registry.remove(workspaceId);
+    await this.registry.remove(workspaceId, humanId);
     // The workspace's files remain on disk, but it no longer belongs to this
     // shell process: close its native pet windows immediately.
     this.broadcast({ type: "pet-bindings", workspaceId, bindings: [] });
     this.log(`removed workspace ${record.name} (${workspaceId}) from the registry; files left on disk`);
 
     // Select a remaining initialized workspace (if any) for the returned payload.
-    const remaining = await this.registry.list();
+    const remaining = await this.registry.listForHuman(humanId);
     const nextCurrent = remaining.find((workspace) => workspace.isInitialized)?.id;
-    return this.appPayload(nextCurrent);
+    return this.appPayload(nextCurrent, humanId);
   }
 
   async setAgentRole(workspaceId: string, roomId: string, agentId: string, role: string): Promise<SelectionPayload & { message: string }> {
@@ -1361,7 +1373,7 @@ export class Daemon {
 
   // --- app payload -----------------------------------------------------------------------
 
-  async appPayload(currentWorkspaceId?: string): Promise<{
+  async appPayload(currentWorkspaceId?: string, humanId?: string): Promise<{
     workspaces: WorkspaceRecord[];
     currentWorkspaceId: string | undefined;
     globalFiles: EditableFileDescriptor[];
@@ -1372,7 +1384,7 @@ export class Daemon {
     keepAwake: KeepAwakeCapability;
     userName: string;
   }> {
-    const workspaces = await this.registry.list();
+    const workspaces = await this.registry.listForHuman(humanId);
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
     // Seed the sidebar's workspace-level running/unread dots: a disk-only room
     // scan per initialized workspace (no live services spun up), kept fresh
