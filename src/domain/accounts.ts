@@ -6,7 +6,8 @@
 // and a settings edit must take effect on the next turn without a daemon
 // bounce. Missing file = no accounts; a MALFORMED file throws loudly — a torn
 // credential store must never quietly demote an agent to the shared login.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { globalPaths } from "../core/paths.js";
 
 export interface AccountRecord {
@@ -30,6 +31,7 @@ export function accountsPath(): string {
 export function ensureAccountsFile(): void {
   const path = accountsPath();
   if (existsSync(path)) return;
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({ accounts: [] }, null, 2) + "\n", { mode: 0o600 });
 }
 
