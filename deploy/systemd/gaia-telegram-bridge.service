@@ -1,0 +1,23 @@
+[Unit]
+Description=GAIA Telegram bridge
+Documentation=https://github.com/earendil-works/gaia-daemon
+Wants=network-online.target
+After=network-online.target gaia-daemon.service
+
+[Service]
+Type=simple
+User=gaia
+Group=gaia
+WorkingDirectory=/opt/gaia
+EnvironmentFile=/etc/gaia/telegram.env
+Environment=GAIA_BASE_URL=http://127.0.0.1:8787
+ExecStart=/opt/gaia/gaia-telegram-bridge
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

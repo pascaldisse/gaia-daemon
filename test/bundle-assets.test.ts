@@ -35,6 +35,7 @@ test("build script and reload swap read the same constant, no re-listed names", 
   assert.match(build, /import \{ BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES \} from "\.\.\/src\/core\/bundle-assets\.ts"/);
   assert.match(build, /for \(const name of BUNDLE_ASSET_DIRS\)/);
   assert.match(build, /BUNDLE_ASSET_EXCLUDES\[name\]/);
+  assert.match(build, /compileBinary\("telegram-bridge", join\(repoRoot, "scripts\/telegram-bridge\.mjs"\), "gaia-telegram-bridge"\)/);
 
   const http = readFileSync(join(repoRoot, "src/server/http.ts"), "utf8");
   assert.match(http, /const names = bundleSwapNames\(fromSource\)/);

@@ -52,32 +52,36 @@ timeStep("mkdir-out", () => {
   mkdirSync(outDir, { recursive: true });
 });
 
-const binaryTmp = join(outDir, "gaia-daemon.new");
-const binaryFinal = join(outDir, "gaia-daemon");
-
-timeStep("bun-build-compile", () => {
+function compileBinary(label, entrypoint, outputName) {
+  const binaryTmp = join(outDir, `${outputName}.new`);
+  const binaryFinal = join(outDir, outputName);
   // process.execPath, never a bare "bun" — this script is itself run BY bun,
   // so execPath is always correct and needs no PATH lookup. A GUI-launched
   // app (Finder/Dock, no login-shell PATH) does not have ~/.bun/bin on PATH,
   // so a bare "bun" spawn here fails silently (ENOENT) the moment /rebuild
   // runs from the compiled app instead of a terminal — observed live
   // 2026-07-11: /rebuild died instantly with no bundle/compile output at all.
-  const res = spawnSync(
-    process.execPath,
-    ["build", "--compile", "--target", target, join(repoRoot, "src/cli.ts"), "--outfile", binaryTmp],
-    { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
-  );
-  if (res.status !== 0) {
-    console.error(res.stderr || res.stdout || `bun build exited ${res.status}`);
-    process.exit(1);
-  }
-  if (res.stdout) process.stdout.write(res.stdout);
-});
+  timeStep(`${label}-compile`, () => {
+    const res = spawnSync(
+      process.execPath,
+      ["build", "--compile", "--target", target, entrypoint, "--outfile", binaryTmp],
+      { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
+    );
+    if (res.status !== 0) {
+      console.error(res.stderr || res.stdout || `bun build exited ${res.status}`);
+      process.exit(1);
+    }
+    if (res.stdout) process.stdout.write(res.stdout);
+  });
 
-timeStep("install-binary", () => {
-  chmodSync(binaryTmp, 0o755);
-  renameSync(binaryTmp, binaryFinal);
-});
+  timeStep(`${label}-install`, () => {
+    chmodSync(binaryTmp, 0o755);
+    renameSync(binaryTmp, binaryFinal);
+  });
+}
+
+compileBinary("daemon", join(repoRoot, "src/cli.ts"), "gaia-daemon");
+compileBinary("telegram-bridge", join(repoRoot, "scripts/telegram-bridge.mjs"), "gaia-telegram-bridge");
 
 for (const name of BUNDLE_ASSET_DIRS) {
   timeStep(`snapshot-${name}`, () => {
@@ -124,7 +128,8 @@ timeStep("write-source-json", () => {
 });
 
 const totalMs = performance.now() - totalStart;
-const binarySize = statSync(binaryFinal).size;
+const binarySize = statSync(join(outDir, "gaia-daemon")).size;
+const telegramBridgeSize = statSync(join(outDir, "gaia-telegram-bridge")).size;
 
 console.log("---");
 for (const [label, ms] of timings) {
@@ -132,4 +137,5 @@ for (const [label, ms] of timings) {
 }
 console.log(`total: ${totalMs.toFixed(1)}ms`);
 console.log(`target: ${target}`);
-console.log(`binary: ${binaryFinal} (${binarySize} bytes)`);
+console.log(`binary: ${join(outDir, "gaia-daemon")} (${binarySize} bytes)`);
+console.log(`telegram-bridge: ${telegramBridgeSize} bytes`);

@@ -9,7 +9,7 @@ export const BUNDLE_ASSET_EXCLUDES: Readonly<Partial<Record<(typeof BUNDLE_ASSET
 };
 
 /** Artifacts that only exist in a packaged (compiled) install. */
-export const BUNDLE_BINARY_ARTIFACTS = ["gaia-daemon", "gaia-source.json"] as const;
+export const BUNDLE_BINARY_ARTIFACTS = ["gaia-daemon", "gaia-telegram-bridge", "gaia-source.json"] as const;
 
 /** From-source rebuild → assets only; packaged rebuild → assets + executable metadata. */
 export function bundleSwapNames(fromSource: boolean): string[] {
