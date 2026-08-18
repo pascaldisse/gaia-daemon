@@ -7,19 +7,54 @@
 // UserRoomEvent.humanId/humanLabel in core/types.ts).
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHmac } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { globalPaths } from "../core/paths.js";
 
 export interface HumanUser {
   id: string;
   username: string;
   displayName: string;
+  /** Optional per-human filesystem scope. Both fields are present together;
+   * absent on legacy/shared users for backwards compatibility. */
+  home?: string;
+  workspace?: string;
   /** "scrypt$<saltHex>$<hashHex>" — never leaves this module. */
   passwordHash: string;
   createdAt: string;
 }
 
-export type PublicUser = Pick<HumanUser, "id" | "username" | "displayName" | "createdAt">;
+export type PublicUser = Pick<HumanUser, "id" | "username" | "displayName" | "home" | "workspace" | "createdAt">;
+
+export interface UserWorkspaceOwnership {
+  home: string;
+  workspace: string;
+}
+
+/** Validate + normalize a user-owned filesystem scope. A configured workspace
+ * must be an absolute descendant of its absolute home. Traversal components
+ * are rejected even when `resolve()` would otherwise erase them: accepting
+ * `/safe/../foreign` would make the persisted ownership boundary misleading. */
+export function validateUserWorkspaceOwnership(home: string, workspace: string): UserWorkspaceOwnership {
+  if (!isAbsolute(home) || !isAbsolute(workspace)) throw new Error("user home and workspace must be absolute paths");
+  const hasTraversal = (path: string): boolean => path.split(/[\\/]+/).includes("..");
+  if (hasTraversal(home) || hasTraversal(workspace)) throw new Error("user home and workspace must not contain traversal components");
+
+  const normalizedHome = resolve(home);
+  const normalizedWorkspace = resolve(workspace);
+  const fromHome = relative(normalizedHome, normalizedWorkspace);
+  if (fromHome === ".." || fromHome.startsWith(`..${sep}`) || isAbsolute(fromHome)) {
+    throw new Error("user workspace must be inside user home");
+  }
+  return { home: normalizedHome, workspace: normalizedWorkspace };
+}
+
+function optionalOwnership(record: { home?: unknown; workspace?: unknown }): UserWorkspaceOwnership | undefined {
+  const home = typeof record.home === "string" && record.home.trim() ? record.home.trim() : undefined;
+  const workspace = typeof record.workspace === "string" && record.workspace.trim() ? record.workspace.trim() : undefined;
+  if (!home && !workspace) return undefined;
+  if (!home || !workspace) throw new Error("user home and workspace must be configured together");
+  return validateUserWorkspaceOwnership(home, workspace);
+}
 
 function usersPath(): string {
   return globalPaths.users();
@@ -42,11 +77,13 @@ function readAll(): HumanUser[] {
     if (typeof record.id !== "string" || !record.id.trim()) return [];
     if (typeof record.username !== "string" || !record.username.trim()) return [];
     if (typeof record.passwordHash !== "string" || !record.passwordHash.trim()) return [];
+    const ownership = optionalOwnership(record);
     return [
       {
         id: record.id.trim(),
         username: record.username.trim(),
         displayName: typeof record.displayName === "string" && record.displayName.trim() ? record.displayName.trim() : record.username.trim(),
+        ...(ownership ?? {}),
         passwordHash: record.passwordHash,
         createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : new Date(0).toISOString(),
       },
@@ -60,7 +97,13 @@ function writeAll(users: HumanUser[]): void {
 }
 
 function toPublic(user: HumanUser): PublicUser {
-  return { id: user.id, username: user.username, displayName: user.displayName, createdAt: user.createdAt };
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    ...(user.home && user.workspace ? { home: user.home, workspace: user.workspace } : {}),
+    createdAt: user.createdAt,
+  };
 }
 
 function hashPassword(password: string): string {
@@ -92,7 +135,7 @@ export function findUserById(id: string): HumanUser | undefined {
 }
 
 /** Throws on duplicate username (case-insensitive) or empty password. */
-export function createUser(username: string, password: string, displayName?: string): PublicUser {
+export function createUser(username: string, password: string, displayName?: string, ownership?: UserWorkspaceOwnership): PublicUser {
   const cleanUsername = username.trim();
   if (!cleanUsername) throw new Error("username required");
   if (!password) throw new Error("password required");
@@ -100,10 +143,15 @@ export function createUser(username: string, password: string, displayName?: str
   if (users.some((user) => user.username.toLowerCase() === cleanUsername.toLowerCase())) {
     throw new Error(`user '${cleanUsername}' already exists`);
   }
+  const normalizedOwnership = ownership ? validateUserWorkspaceOwnership(ownership.home, ownership.workspace) : undefined;
+  if (normalizedOwnership && users.some((user) => user.workspace === normalizedOwnership.workspace)) {
+    throw new Error(`workspace '${normalizedOwnership.workspace}' is already owned by another user`);
+  }
   const user: HumanUser = {
     id: `u_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
     username: cleanUsername,
     displayName: displayName?.trim() || cleanUsername,
+    ...(normalizedOwnership ?? {}),
     passwordHash: hashPassword(password),
     createdAt: new Date().toISOString(),
   };

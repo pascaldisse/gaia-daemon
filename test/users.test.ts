@@ -10,6 +10,7 @@ import {
   issueSessionToken,
   listUsers,
   removeUser,
+  validateUserWorkspaceOwnership,
   verifySessionToken,
 } from "../src/domain/users.js";
 
@@ -41,6 +42,42 @@ test("createUser round-trips + never leaks the hash", () => {
     const listed = listUsers();
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, created.id);
+  });
+});
+
+test("scoped user persists normalized absolute home/workspace and exposes ownership without the hash", () => {
+  withGaiaHome((gaiaHome) => {
+    const home = join(gaiaHome, "humans", "alice", ".");
+    const workspace = join(gaiaHome, "humans", "alice", "workspace", ".");
+    const created = createUser("Alice", "correct horse battery staple", "Alice A.", { home, workspace });
+    assert.equal(created.home, join(gaiaHome, "humans", "alice"));
+    assert.equal(created.workspace, join(gaiaHome, "humans", "alice", "workspace"));
+    assert.equal((created as unknown as { passwordHash?: string }).passwordHash, undefined);
+
+    const listed = listUsers()[0];
+    assert.equal(listed.home, created.home);
+    assert.equal(listed.workspace, created.workspace);
+    assert.equal(authenticate("alice", "correct horse battery staple")?.workspace, created.workspace);
+  });
+});
+
+test("workspace ownership rejects relative, traversal, and outside-home paths", () => {
+  withGaiaHome((gaiaHome) => {
+    const home = join(gaiaHome, "humans", "owner");
+    assert.throws(() => validateUserWorkspaceOwnership("relative/home", "relative/home/workspace"), /absolute paths/);
+    assert.throws(() => validateUserWorkspaceOwnership(home, `${home}/nested/../workspace`), /traversal/);
+    assert.throws(() => validateUserWorkspaceOwnership(home, join(gaiaHome, "foreign")), /inside user home/);
+  });
+});
+
+test("two users cannot own the same workspace", () => {
+  withGaiaHome((gaiaHome) => {
+    const workspace = join(gaiaHome, "humans", "alice", "workspace");
+    createUser("alice", "correct horse battery staple", undefined, { home: join(gaiaHome, "humans"), workspace });
+    assert.throws(
+      () => createUser("bob", "correct horse battery staple", undefined, { home: workspace, workspace }),
+      /already owned by another user/,
+    );
   });
 });
 
