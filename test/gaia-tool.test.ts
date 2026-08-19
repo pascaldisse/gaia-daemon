@@ -55,6 +55,57 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
   assert.deepEqual(calls, ["summon:worker:map", "resume:child:steer"]);
 });
 
+test("gaia edit verb: valid call validates and dispatches to the native edit tool", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-schema-"));
+  const file = join(dir, "note.txt");
+  await writeFile(file, "before");
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("e", { verb: "edit", args: { path: file, edits: [{ oldText: "before", newText: "after" }] }, raw: true });
+  assert.equal(await readFile(file, "utf8"), "after");
+  assert.doesNotMatch(text(result), /^ERROR/);
+});
+
+test("gaia edit verb: malformed args (missing newText) are rejected BEFORE dispatch with a precise, path-qualified corrective error", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-schema-"));
+  const file = join(dir, "note.txt");
+  await writeFile(file, "before");
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("e", { verb: "edit", args: { path: file, edits: [{ oldText: "before" }] }, raw: true });
+  const message = text(result);
+  assert.match(message, /^ERROR: gaia edit args invalid/);
+  assert.match(message, /edits\/0/);
+  assert.match(message, /newText/);
+  // Never dispatched to the native edit tool: file on disk is untouched.
+  assert.equal(await readFile(file, "utf8"), "before");
+});
+
+test("gaia edit verb: malformed args (path wrong type) are rejected with a precise error naming the field", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-schema-"));
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("e", { verb: "edit", args: { path: 42, edits: [{ oldText: "a", newText: "b" }] }, raw: true });
+  const message = text(result);
+  assert.match(message, /^ERROR: gaia edit args invalid/);
+  assert.match(message, /path/);
+});
+
+test("gaia tool's outer schema: verb enum lists every registered verb, and args stays a generic object at the schema root (Anthropic legacy-schema-flattening compat)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-schema-shape-"));
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const schema = tool.parameters as any;
+  assert.equal(schema.type, "object");
+  assert.deepEqual(schema.required, ["verb", "args"]);
+  assert.equal(schema.properties.args.type, "object");
+  assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"]);
+  // Per-verb typed branches ride as allOf/if-then — sibling to (never replacing)
+  // the top-level properties, so a consumer that only reads schema.properties/
+  // schema.required (pi-ai's Anthropic non-strict legacyInputSchema path) still
+  // sees a correct, non-empty object schema.
+  assert.ok(Array.isArray(schema.allOf) && schema.allOf.length >= 7);
+  const editBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "edit");
+  assert.ok(editBranch, "edit has a typed allOf/if-then branch");
+  assert.deepEqual(editBranch.then.properties.args.required, ["path", "edits"]);
+});
+
 test("gaia formats above the configurable threshold in deterministic gaiago and raw bypasses it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gaia-format-"));
   const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
