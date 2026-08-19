@@ -2,11 +2,12 @@
 // child room nests under its parent (via room.parentRoomId) and is collapsed
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
-import { addRoom, addWorkspace, deleteWorkspace, loadWorkspace, renameRoom, selectRoom, setRoomFavorite } from "./actions.js";
+import { addRoom, addWorkspace, deleteWorkspace, loadWorkspace, renameRoom, reorderWorkspaces, selectRoom, setRoomFavorite, setWorkspaceFavorite } from "./actions.js";
 import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { refreshAttention } from "./attention.js";
+import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { openSettings } from "./settings.js";
@@ -24,9 +25,23 @@ import {
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
+// Workspace drag-to-reorder: POINTER events (not HTML5 drag-and-drop), same
+// reason as the tab strip (tabsbar.js) — the native WKWebView shell fires no
+// HTML5 dragend/drop with real coordinates. Vertical list, no tear-off.
+/** @type {null | { workspaceId: string, startY: number, pointerId: number, el: HTMLElement, moved: boolean, dropIndex: number, touch: boolean, armed: boolean, timer: ReturnType<typeof setTimeout>|null }} */
+let wsDrag = null;
+// While a press is live the sidebar must NOT be rebuilt (same reasoning as
+// tabsbar's dragActive): the captured node + its imperative `.dragging` class
+// + the drop indicator all live in the current DOM.
+let wsDragActive = false;
+/** The accent caret showing where a reorder drop will land. @type {HTMLElement|null} */
+let wsDropIndicator = null;
+const WS_DRAG_THRESHOLD = 6;
+
 function renderSidebar() {
   const nav = $("#sidebar");
   if (!nav) return;
+  if (wsDragActive) return; // a live workspace drag owns the list DOM — don't rebuild it
   const scrollTop = nav.scrollTop;
   /** @type {(HTMLElement|null)[]} */
   const children = [
@@ -133,18 +148,19 @@ function WorkspaceList() {
       return h(
         "button",
         {
-          class: `nav-item ${workspace.id === currentId ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
+          class: `nav-item ws-item ${workspace.id === currentId ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
           title: workspace.path,
-          // Clicking selects/opens it. The muted state means its .gaia is
-          // missing. Removing a workspace is right-click -> "Remove
-          // workspace" ONLY — never the ⌘⌫/Del chord (that's rooms only,
-          // see keys.js), so an accidental keypress can't nuke a workspace.
-          onclick: () => {
-            state.sidebarFocus = { kind: "workspace", id: workspace.id };
-            if (workspace.isInitialized) void loadWorkspace(workspace.id);
-            else setError(`Missing .gaia workspace: ${workspace.path}`);
-            markDirty("sidebar");
-          },
+          // The muted state means its .gaia is missing. Removing a workspace is
+          // right-click -> "Remove workspace" ONLY — never the ⌘⌫/Del chord
+          // (that's rooms only, see keys.js), so an accidental keypress can't
+          // nuke a workspace. Open/select is driven from the pointer handlers
+          // below (a press that never crosses the drag threshold), not onclick
+          // — same split as the tab strip, so a real click and a reorder drag
+          // never both fire off one gesture.
+          onpointerdown: (/** @type {PointerEvent} */ event) => beginWorkspaceDrag(event, workspace.id),
+          onpointermove: (/** @type {PointerEvent} */ event) => moveWorkspaceDrag(event),
+          onpointerup: (/** @type {PointerEvent} */ event) => endWorkspaceDrag(event, workspace),
+          onpointercancel: (/** @type {PointerEvent} */ event) => cancelWorkspaceDrag(event),
           oncontextmenu: (/** @type {MouseEvent} */ event) => {
             event.preventDefault();
             state.workspaceContextMenu = { workspaceId: workspace.id, x: event.clientX, y: event.clientY };
@@ -159,6 +175,7 @@ function WorkspaceList() {
             : act.unread
               ? h("span", { class: "room-dot unread", title: "unread messages in this workspace" })
               : null,
+          workspace.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
           h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
         ),
         h("small", {}, PathText(workspace.path)),
@@ -436,6 +453,14 @@ function WorkspaceContextMenu() {
     h("div", { class: "room-menu-title", text: workspace.name }),
     h("button", {
       type: "button",
+      onclick: () => {
+        close();
+        void setWorkspaceFavorite(workspace.id, !workspace.favorite);
+      },
+      text: workspace.favorite ? "Remove favorite" : "Add favorite",
+    }),
+    h("button", {
+      type: "button",
       class: "danger",
       onclick: () => {
         close();
@@ -444,6 +469,153 @@ function WorkspaceContextMenu() {
       text: "Remove workspace",
     }),
   );
+}
+
+/** @param {PointerEvent} event @param {string} workspaceId */
+function beginWorkspaceDrag(event, workspaceId) {
+  if (event.button !== 0) return;
+  const el = /** @type {HTMLElement} */ (event.currentTarget);
+  const touch = isTouchPointer(event);
+  wsDrag = { workspaceId, startY: event.clientY, pointerId: event.pointerId, el, moved: false, dropIndex: -1, touch, armed: !touch, timer: null };
+  // Touch: this list is also the scroll surface → arm only after a still long
+  // press (press-drag.js); an earlier swipe stays a scroll.
+  if (touch) {
+    const d = wsDrag;
+    d.timer = setTimeout(() => {
+      if (wsDrag !== d) return;
+      d.armed = true;
+      d.timer = null;
+      holdTouchScroll();
+      hapticArm();
+    }, LONG_PRESS_MS);
+  }
+  // Freeze the list for the whole press so an unrelated re-render (activity
+  // dots, a background snapshot) can't detach the node we're about to capture.
+  wsDragActive = true;
+  try {
+    el.setPointerCapture(event.pointerId);
+  } catch {
+    // capture unsupported — the drag still works while the pointer stays inside.
+  }
+}
+
+/** @param {PointerEvent} event */
+function moveWorkspaceDrag(event) {
+  if (!wsDrag || event.pointerId !== wsDrag.pointerId) return;
+  if (!wsDrag.armed) {
+    if (Math.abs(event.clientY - wsDrag.startY) >= TOUCH_SLOP) abandonWorkspaceDrag();
+    return;
+  }
+  if (!wsDrag.moved) {
+    if (Math.abs(event.clientY - wsDrag.startY) < WS_DRAG_THRESHOLD) return;
+    wsDrag.moved = true;
+    wsDrag.el.classList.add("dragging");
+  }
+  updateWorkspaceDropTarget(event);
+}
+
+/** Where a release right now would land — the first OTHER item whose vertical
+ *  centre sits below the pointer; past them all, append. dropIndex is measured
+ *  against the list with the dragged item removed (what the splice below
+ *  expects). @param {PointerEvent} event */
+function updateWorkspaceDropTarget(event) {
+  if (!wsDrag) return;
+  const list = wsDrag.el.parentElement;
+  if (!list) return;
+  const rect = list.getBoundingClientRect();
+  const siblings = /** @type {HTMLElement[]} */ ([...list.querySelectorAll(".ws-item")]).filter((item) => item !== wsDrag?.el);
+  let index = siblings.length;
+  let boundary = siblings.length ? siblings[siblings.length - 1].getBoundingClientRect().bottom : rect.top;
+  for (let i = 0; i < siblings.length; i++) {
+    const r = siblings[i].getBoundingClientRect();
+    if (event.clientY < r.top + r.height / 2) {
+      index = i;
+      boundary = r.top;
+      break;
+    }
+  }
+  wsDrag.dropIndex = index;
+  showWorkspaceDropIndicator(list, rect, boundary);
+}
+
+/** @param {PointerEvent} event @param {import("./types.js").WorkspaceRecord} workspace */
+function endWorkspaceDrag(event, workspace) {
+  if (!wsDrag || event.pointerId !== wsDrag.pointerId) return;
+  const d = wsDrag;
+  wsDrag = null;
+  if (d.timer) clearTimeout(d.timer);
+  releaseTouchScroll();
+  try {
+    d.el.releasePointerCapture(event.pointerId);
+  } catch {
+    // nothing captured — fine.
+  }
+  // A press that never crossed the threshold is a click → open the workspace.
+  if (!d.moved) {
+    cleanupWorkspaceDrag(d.el);
+    state.sidebarFocus = { kind: "workspace", id: workspace.id };
+    if (workspace.isInitialized) void loadWorkspace(workspace.id);
+    else setError(`Missing .gaia workspace: ${workspace.path}`);
+    markDirty("sidebar");
+    return;
+  }
+  if (d.dropIndex >= 0) {
+    const ids = state.workspaces.map((w) => w.id).filter((id) => id !== d.workspaceId);
+    ids.splice(Math.max(0, Math.min(d.dropIndex, ids.length)), 0, d.workspaceId);
+    // Optimistic local reorder for instant feedback; the server response (still
+    // favorites-first, see WorkspaceRegistry.list) is the authority and
+    // overwrites this the moment it lands.
+    const byId = new Map(state.workspaces.map((w) => [w.id, w]));
+    state.workspaces = ids.map((id) => byId.get(id)).filter((w) => w !== undefined);
+    void reorderWorkspaces(ids);
+  }
+  cleanupWorkspaceDrag(d.el);
+}
+
+/** @param {PointerEvent} event */
+function cancelWorkspaceDrag(event) {
+  if (!wsDrag || event.pointerId !== wsDrag.pointerId) return;
+  abandonWorkspaceDrag();
+}
+
+/** Hand the gesture back to the browser (touch scroll won, or pointercancel). */
+function abandonWorkspaceDrag() {
+  if (!wsDrag) return;
+  const el = wsDrag.el;
+  const pointerId = wsDrag.pointerId;
+  if (wsDrag.timer) clearTimeout(wsDrag.timer);
+  wsDrag = null;
+  releaseTouchScroll();
+  try {
+    el.releasePointerCapture(pointerId);
+  } catch {
+    // nothing captured — fine.
+  }
+  cleanupWorkspaceDrag(el);
+}
+
+/** End-of-drag teardown: drop the indicator, clear the item's transient class,
+ *  release the render guard, and re-render once. @param {HTMLElement} el */
+function cleanupWorkspaceDrag(el) {
+  wsDragActive = false;
+  hideWorkspaceDropIndicator();
+  el.classList.remove("dragging");
+  markDirty("sidebar");
+}
+
+/** @param {HTMLElement} list @param {DOMRect} rect @param {number} clientY */
+function showWorkspaceDropIndicator(list, rect, clientY) {
+  if (!wsDropIndicator) {
+    wsDropIndicator = document.createElement("div");
+    wsDropIndicator.className = "workspace-drop-indicator";
+  }
+  if (wsDropIndicator.parentElement !== list) list.appendChild(wsDropIndicator);
+  const y = clientY - rect.top + list.scrollTop;
+  wsDropIndicator.style.top = `${Math.max(0, y - 1)}px`;
+}
+
+function hideWorkspaceDropIndicator() {
+  wsDropIndicator?.remove();
 }
 
 window.addEventListener("click", (event) => {

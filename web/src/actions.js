@@ -450,6 +450,39 @@ export async function deleteWorkspace(workspaceId) {
   }
 }
 
+/** Sidebar right-click "Add/Remove favorite" — favorites always sort first
+ * (server-side, see WorkspaceRegistry.list). @param {string} workspaceId @param {boolean} favorite */
+export async function setWorkspaceFavorite(workspaceId, favorite) {
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/favorite`, {
+      method: "POST",
+      body: JSON.stringify({ favorite }),
+    });
+    state.workspaces = body.workspaces ?? state.workspaces;
+    state.error = "";
+    markDirty("sidebar");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/**
+ * Persist a sidebar drag-drop reorder. `ids` is the FULL desired order (every
+ * workspace currently in the sidebar) — the server still pins favorites to the
+ * top regardless of position here (see WorkspaceRegistry.list).
+ * @param {string[]} ids
+ */
+export async function reorderWorkspaces(ids) {
+  try {
+    const body = await api("/api/workspaces/reorder", { method: "POST", body: JSON.stringify({ ids }) });
+    state.workspaces = body.workspaces ?? state.workspaces;
+    state.error = "";
+    markDirty("sidebar");
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /**
  * Upload one pasted file into the current room's files dir. Raw fetch, not
  * api(): the body is the file's bytes, not JSON.
