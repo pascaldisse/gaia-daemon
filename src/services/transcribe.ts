@@ -216,7 +216,7 @@ function replicateLanguage(language?: string): string {
     nl: "dutch", pl: "polish", ru: "russian", uk: "ukrainian", ja: "japanese", ko: "korean",
     zh: "chinese", ar: "arabic", hi: "hindi", tr: "turkish",
   };
-  return names[language?.trim().toLowerCase() ?? ""] ?? "None";
+  return names[language?.trim().toLowerCase() ?? ""] ?? "auto";
 }
 
 function replicateText(output: unknown): string {
