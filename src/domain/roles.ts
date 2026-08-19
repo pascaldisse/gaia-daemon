@@ -10,6 +10,7 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentDef } from "../core/types.js";
 import { globalPaths } from "../core/paths.js";
 import { readText } from "../core/store.js";
+import { gaiaOnlyTools } from "./agents.js";
 
 /** `message` is used verbatim (once, or every crossing if `repeat`). `messages`
  * — a non-empty list — overrides `message` and picks one at random each time,
@@ -162,8 +163,8 @@ export async function resolveAgentRole(agent: AgentDef, name: string): Promise<R
 }
 
 /** Role defaults are always subordinate to an explicit per-agent Settings value. */
-export function effectiveAgentTools(agent: Pick<AgentDef, "tools" | "toolOverride">, role: ResolvedRole | undefined): string[] {
-  return [...(agent.toolOverride ?? role?.tools ?? agent.tools)];
+export function effectiveAgentTools(agent: Pick<AgentDef, "tools" | "toolOverride" | "gaiaOnly">, role: ResolvedRole | undefined): string[] {
+  return gaiaOnlyTools(agent.toolOverride ?? role?.tools ?? agent.tools, agent.gaiaOnly !== false);
 }
 
 export function effectiveAgentSkills(agent: Pick<AgentDef, "skills" | "skillOverride">, role: ResolvedRole | undefined): string[] {

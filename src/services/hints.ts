@@ -486,6 +486,12 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
       hidden: hiddenByHarness.has("tools"),
       description: "Role defaults apply when this setting is untouched. Checking or unchecking any tool creates this agent's own override.",
     },
+    gaiaOnly: {
+      input: "boolean",
+      defaultValue: true,
+      label: "Unified Gaia tool only",
+      description: "Default: replace tools routed by gaia (bash/read/write/edit/web/memory/recall/summon/resume/artifact/caryll) with gaia. Set false to restore direct tool exposure.",
+    },
     skills: {
       input: "multiselect",
       options: selectSkillsForHarness(sources.skills, rawHarness),

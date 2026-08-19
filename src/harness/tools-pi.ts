@@ -4,11 +4,14 @@
 
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
+import { Value } from "typebox/value";
 import { createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, defineTool } from "@earendil-works/pi-coding-agent";
 import { gaiaToolCompressionBytes } from "../core/config.js";
+import { readGaiaImage, type ImageReadDetail, type ImageReadRegion } from "./image-read.js";
 import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
 import { compressCaryll, expandCaryll } from "../services/caryll.js";
+import { searchWeb, type WebSearchProvider } from "../services/web-search.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
@@ -343,8 +346,84 @@ export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext,
 }
 
 type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll";
-type GaiaResult = { content: Array<{ type: "text"; text: string }>; details: unknown };
+type GaiaResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details: unknown };
 type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
+
+const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"];
+
+/** Verbs with a real, reusable per-verb `args` schema (mirrors the retired
+ * typed native tools exactly — read/write/edit/bash/summon/mem/recall come
+ * straight from the Pi tool factories' own `.parameters`, never re-typed by
+ * hand, so this can never drift from what `native.<verb>.execute` actually
+ * accepts). resume/artifact/caryll stay hand-validated below (§ANCHOR
+ * gaiaHandLoop) — small enough that a schema would just duplicate the checks
+ * already in their handlers. */
+function verbSchemaEntries(schemas: Partial<Record<GaiaVerb, TSchema>>): Array<[GaiaVerb, TSchema]> {
+  return ALL_GAIA_VERBS.map((verb) => [verb, schemas[verb]] as const).filter((entry): entry is [GaiaVerb, TSchema] => entry[1] !== undefined);
+}
+
+/** Precise, path-qualified corrective error string for a malformed verb call —
+ * the self-healing-loop half of schema tightness: even when the outer
+ * tool schema's structural hint (allOf/if-then, see buildGaiaParameters) goes
+ * unenforced by a given provider or a pre-restart daemon still serving the old
+ * loose schema, this direct Value.Check/Value.Errors pass against the SAME
+ * per-verb schema still catches it before dispatch and hands the model back
+ * exactly which field is wrong instead of a generic native-tool crash. */
+function formatArgErrors(verb: GaiaVerb, schema: TSchema, args: unknown): string {
+  const errors = [...Value.Errors(schema, args)].slice(0, 8);
+  const detail = errors.length
+    ? errors.map((error) => `${error.instancePath || "/"}: ${error.message}`).join("; ")
+    : "does not match the expected shape";
+  const readDetailHint = verb === "read" && typeof (args as Record<string, unknown>)?.detail === "string" ? "; detail must be low, med, high, or full" : "";
+  return `ERROR: gaia ${verb} args invalid — ${detail}${readDetailHint}`;
+}
+
+/** The outer `gaia` tool schema: keeps a normal flat object (verb enum + a
+ * loose `args`) as the TOP-LEVEL type/properties/required — load-bearing,
+ * not cosmetic: pi-ai's Anthropic non-strict conversion path
+ * (convertTools → legacyInputSchema in @earendil-works/pi-ai's
+ * anthropic-messages.js) rebuilds `input_schema` from ONLY
+ * `schema.properties`/`schema.required` at the SCHEMA ROOT, discarding
+ * anything that lives inside a root-level `oneOf` branch instead of
+ * top-level `properties` — a genuine discriminated-union (option a) would
+ * silently degrade to an EMPTY `properties: {}` for every Claude call
+ * (verified against the installed pi-ai build, not a version assumption).
+ * `allOf` of `if`/`then` branches keyed on `verb` (option b) survives that
+ * rebuild untouched since it never touches `properties`/`required`/`type` —
+ * confirmed live: pi-agent-core's agent-loop calls
+ * `@earendil-works/pi-ai`'s `validateToolArguments(tool, toolCall)` against
+ * this exact `tool.parameters` (Compile+if/then honored, see tools-pi
+ * schema tests) BEFORE `execute()` ever runs, throwing a formatted error the
+ * loop turns into an error tool-result — i.e. Anthropic/OpenAI/etc. all see
+ * the same canonical schema pre-provider-transform. */
+function buildGaiaParameters(verbSchemas: Partial<Record<GaiaVerb, TSchema>>) {
+  const allOf = verbSchemaEntries(verbSchemas).map(([verb, schema]) => ({
+    if: { properties: { verb: { const: verb } }, required: ["verb"] },
+    then: { properties: { args: schema } },
+  }));
+  return Type.Unsafe<{
+    verb: GaiaVerb;
+    args: Record<string, unknown>;
+    raw?: boolean;
+    compress_above_bytes?: number;
+    translator?: "deterministic" | "llm";
+  }>({
+    type: "object",
+    required: ["verb", "args"],
+    properties: {
+      verb: { type: "string", enum: [...ALL_GAIA_VERBS], description: "Which gaia operation to run." },
+      args: {
+        type: "object",
+        description:
+          "Verb-specific arguments. Shape depends on `verb`: bash/read/write/edit/summon/mem/recall/web are strictly typed (see the matching allOf branch below, keyed on verb — mirrors the retired native tools exactly, e.g. edit wants { path, edits: [{ oldText, newText }] }); resume wants { roomId, message }; artifact wants { action, ... }; caryll wants { action, path, output? } — all three validated at call time with a corrective error on mismatch.",
+      },
+      raw: { type: "boolean", description: "Return native output unchanged." },
+      compress_above_bytes: { type: "number", minimum: 0, description: "Override configured gaiago formatting threshold in bytes." },
+      translator: { type: "string", enum: ["deterministic", "llm"], description: "llm reserved: translation hook is not wired yet." },
+    },
+    ...(allOf.length ? { allOf } : {}),
+  });
+}
 
 function resultText(result: GaiaResult): string {
   return result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
@@ -364,6 +443,21 @@ export function formatGaiagoResult(verb: GaiaVerb, text: string, details: unknow
   // compressor. Whitespace-only rows disappear only for bash list/test output.
   const payload = verb === "bash" ? lines.filter((line) => line.trim()).map((line, i) => `${i + 1}→${line.trim()}`).join("\n") : text;
   return { text: `${status} ${verb} · 行=${nonblank} · 詳=${detailKind}\n${payload || "∅"}`, formatter: "deterministic" };
+}
+
+async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<GaiaResult> {
+  const query = typeof args.query === "string" ? args.query : "";
+  // Preserve the pre-existing command-shaped curl escape hatch. Structured
+  // {query, provider?} calls use the daemon-owned provider fallback chain.
+  if (!query) return bash.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
+  const provider = args.provider;
+  if (provider !== undefined && provider !== "brave" && provider !== "tavily" && provider !== "serper") {
+    return { content: [{ type: "text", text: "ERROR: web provider must be brave, tavily, or serper." }], details: { ok: false } };
+  }
+  const maxResults = typeof args.maxResults === "number" ? args.maxResults : typeof args.max_results === "number" ? args.max_results : undefined;
+  const response = await searchWeb({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider: provider as WebSearchProvider }) });
+  const output = response.results.map((item, index) => `--- Result ${index + 1} ---\nTitle: ${item.title}\nLink: ${item.url}\nSnippet: ${item.snippet}`).join("\n\n");
+  return { content: [{ type: "text", text: `Provider: ${response.provider}\n${output}` }], details: response };
 }
 
 async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult> {
@@ -398,24 +492,72 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     write: createWriteToolDefinition(cwd),
     edit: createEditToolDefinition(cwd),
   };
+  // Deliberately hand-extended rather than mutating Pi's shared schema object:
+  // native:true preserves Pi exactly; all other image paths are rendered here.
+  const readArgsSchema = Type.Object({
+    path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
+    offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed); text files only." })),
+    limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read; text files only." })),
+    detail: Type.Optional(stringEnum(["low", "med", "high", "full"], "Image detail: low=768, med=1280, high=1568, full=original (provider byte cap still applies).")),
+    region: Type.Optional(Type.String({ pattern: "^[A-C][1-3]$", description: "Image grid cell to crop from original pixels, e.g. B2. A 768px full thumbnail is always also sent." })),
+    native: Type.Optional(Type.Boolean({ description: "Bypass GAIA image rendering and delegate unchanged to Pi native read." })),
+  });
   const memory = createMemoryTool(ctx.memoryStore, ctx.agent);
   const recall = createRecallTool(
     ctx.recallSearch ?? localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir, insight: ctx.agent.insight }),
     ctx.roomId,
   );
   const summon = ctx.summonCreate ? createSummonTool(ctx.summonCreate, ctx.roomId, ctx.availableAgents) : undefined;
+
+  // Web's args are a union: the {query, provider?, maxResults?} search shape,
+  // OR the bash-shaped {command, timeout?} curl escape hatch runWebVerb falls
+  // back to verbatim when `query` is absent — reuses native.bash's own schema
+  // rather than re-typing "command" by hand.
+  const webArgsSchema = Type.Union([
+    native.bash.parameters as TSchema,
+    Type.Object({
+      query: Type.Optional(Type.String({ description: "Search query text." })),
+      provider: Type.Optional(stringEnum(["brave", "tavily", "serper"], "Explicit provider override; default falls back Brave \u2192 Tavily \u2192 Serper.")),
+      maxResults: Type.Optional(Type.Number({ description: "Max results to return." })),
+      max_results: Type.Optional(Type.Number({ description: "Snake_case alias for maxResults." })),
+    }),
+  ]);
+
+  // Reused VERBATIM from the already-instantiated native/daemon tool objects
+  // — never hand-retyped — so this can't drift from what each verb's handler
+  // actually accepts (see verbSchemaEntries doc comment above).
+  const verbSchemas: Partial<Record<GaiaVerb, TSchema>> = {
+    bash: native.bash.parameters as TSchema,
+    read: readArgsSchema,
+    write: native.write.parameters as TSchema,
+    edit: native.edit.parameters as TSchema,
+    web: webArgsSchema,
+    mem: memory.parameters as TSchema,
+    recall: recall.parameters as TSchema,
+    ...(summon ? { summon: summon.parameters as TSchema } : {}),
+  };
+
   // Pi's exported tool definitions are the native implementations. The custom
   // wrapper deliberately calls their executor rather than copying filesystem or
   // shell semantics; they accept unused lifecycle arguments after call+params.
   const executeNative = (tool: any, args: Record<string, unknown>) => tool.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
   const registry: Record<GaiaVerb, GaiaHandler> = {
     bash: (args) => executeNative(native.bash, args),
-    read: (args) => executeNative(native.read, args),
+    read: async (args) => {
+      if (args.native === true || ctx.imageRead === "native") return executeNative(native.read, args);
+      const path = typeof args.path === "string" ? args.path : "";
+      try {
+        const image = await readGaiaImage(path, cwd, { detail: args.detail as ImageReadDetail | undefined, region: args.region as ImageReadRegion | undefined });
+        if (image) return image;
+      } catch (error) {
+        // An image decoder/encoder failure must never turn a read into a dead end.
+        console.warn(`[gaia image-read] falling back to Pi native read for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return executeNative(native.read, args);
+    },
     write: (args) => executeNative(native.write, args),
     edit: (args) => executeNative(native.edit, args),
-    // Pi's web path is the brave-search skill via bash; with only gaia active,
-    // use the same native bash backend as the explicit curl fallback.
-    web: (args) => executeNative(native.bash, args),
+    web: (args) => runWebVerb(args, native.bash),
     mem: (args) => executeNative(memory, args),
     recall: (args) => executeNative(recall, args),
     summon: (args) => (summon ? executeNative(summon, args) : Promise.resolve({ content: [{ type: "text", text: "ERROR: summon is unavailable for this room." }], details: { ok: false } })),
@@ -440,17 +582,16 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; only tool needed for files, commands, web curl, memory, artifacts, worker summons, and room steering.",
-    parameters: Type.Object({
-      verb: stringEnum(["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"]),
-      args: Type.Record(Type.String(), Type.Unknown()),
-      raw: Type.Optional(Type.Boolean({ description: "Return native output unchanged." })),
-      compress_above_bytes: Type.Optional(Type.Number({ minimum: 0, description: "Override configured gaiago formatting threshold in bytes." })),
-      translator: Type.Optional(stringEnum(["deterministic", "llm"], "llm reserved: translation hook is not wired yet.")),
-    }),
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search (Brave → Tavily → Serper; {query, provider?}) or curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; web accepts {query, provider?, maxResults?} and falls back Brave → Tavily → Serper; also files, commands, memory, artifacts, workers, steering.",
+    parameters: buildGaiaParameters(verbSchemas),
     execute: async (_toolCallId: string, params: { verb: GaiaVerb; args: Record<string, unknown>; raw?: boolean; compress_above_bytes?: number; translator?: "deterministic" | "llm" }) => {
       try {
+        const schema = verbSchemas[params.verb];
+        if (schema && !Value.Check(schema, params.args)) {
+          const text = formatArgErrors(params.verb, schema, params.args);
+          return { content: [{ type: "text" as const, text }], details: { ok: false, verb: params.verb } };
+        }
         const result = await registry[params.verb](params.args);
         const text = resultText(result);
         const threshold = Number.isFinite(params.compress_above_bytes) && (params.compress_above_bytes ?? 0) >= 0 ? (params.compress_above_bytes as number) : gaiaToolCompressionBytes();

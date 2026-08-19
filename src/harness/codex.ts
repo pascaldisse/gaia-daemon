@@ -1006,6 +1006,7 @@ export class CodexRuntime implements AgentRuntime {
       roomId,
       roomDir: workspacePaths.roomDir(this.cwd, roomId),
       workDir: this.workDir,
+      imageRead: this.workspace.config.imageRead,
       availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       resumeCreate: this.resumeCreate,

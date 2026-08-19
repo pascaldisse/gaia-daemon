@@ -614,6 +614,9 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Default true: direct tools dispatched by `gaia` are collapsed to `gaia`.
+   * Set `gaiaOnly: false` in agent.json to restore the explicit legacy list. */
+  gaiaOnly: boolean;
   /** Present only when agent.json explicitly sets `tools`. An unset tools key
    * inherits the active role's tool defaults (or the normal agent defaults). */
   toolOverride?: string[];
@@ -684,6 +687,8 @@ export interface WorkspaceConfig {
   memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;
+  /** Image reads via GAIA's progressive renderer (default) or Pi native read. */
+  imageRead?: "gaia" | "native";
   sandbox?: SandboxConfig;
   /** Multi-agent same-repo collaboration policy (.gaia/config.json `collab`).
    * Optional like `sandbox`: absent = `shared` = today's one-working-tree

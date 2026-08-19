@@ -19,6 +19,8 @@ export const globalPaths = {
    * etc.) — merged as the base under every workspace's own env, see
    * domain/workspace.ts loadWorkspace. */
   config: () => join(gaiaHome(), "config.json"),
+  /** Optional machine-local API credentials for daemon-owned integrations. */
+  secrets: () => join(gaiaHome(), "secrets.env"),
   /** Daemon-global app state (workspace registry, current workspace). */
   appSettings: () => join(gaiaHome(), "app.json"),
   accounts: () => join(gaiaHome(), "accounts.json"),

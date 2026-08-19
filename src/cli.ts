@@ -6,6 +6,7 @@ import { hardenPath } from "./core/env.js";
 import { scaffoldGlobalAgent } from "./domain/agents.js";
 import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
 import { createUser, listUsers, removeUser } from "./domain/users.js";
+import { searchWeb, type WebSearchProvider } from "./services/web-search.js";
 
 // Before anything else: repair PATH so harness CLIs resolve no matter what
 // launched us (terminal, native app shell, launchd). Children inherit it.
@@ -13,8 +14,39 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia --help                  show help`,
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia web <query> [-n N] [--provider name]             web search; Brave → Tavily → Serper\n  gaia --help                  show help`
   );
+}
+
+async function runWebCli(args: string[]): Promise<void> {
+  let provider: WebSearchProvider | undefined;
+  let maxResults: number | undefined;
+  const queryParts: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--provider") {
+      const value = args[++index];
+      if (value !== "brave" && value !== "tavily" && value !== "serper") throw new Error("web --provider must be brave, tavily, or serper");
+      provider = value;
+    } else if (arg === "-n" || arg === "--max-results") {
+      const value = Number.parseInt(args[++index] ?? "", 10);
+      if (!Number.isInteger(value) || value < 1) throw new Error("web -n must be a positive integer");
+      maxResults = value;
+    } else {
+      queryParts.push(arg);
+    }
+  }
+  const query = queryParts.join(" ").trim();
+  if (!query) throw new Error("Usage: gaia web <query> [-n N] [--provider brave|tavily|serper]");
+  const response = await searchWeb({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider }) });
+  console.log(`Provider: ${response.provider}`);
+  for (const [index, item] of response.results.entries()) {
+    console.log(`--- Result ${index + 1} ---`);
+    console.log(`Title: ${item.title}`);
+    console.log(`Link: ${item.url}`);
+    console.log(`Snippet: ${item.snippet}`);
+    console.log("");
+  }
 }
 
 async function main(): Promise<void> {
@@ -42,6 +74,16 @@ async function main(): Promise<void> {
   if (args[0] === "__run-agent") {
     const { runAgentRunner } = await import("./harness/runner.js");
     await runAgentRunner();
+    return;
+  }
+
+  if (args[0] === "web") {
+    try {
+      await runWebCli(args.slice(1));
+    } catch (error) {
+      console.error(`gaia web: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
