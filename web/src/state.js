@@ -118,7 +118,8 @@ export const state = {
   expandedRooms: new Set(),
   // How many top-level rooms the sidebar list renders before "show more" —
   // rooms are chats, and a 100-chat history import must not flood the list.
-  roomsShown: 25,
+  // Same cap as workspacesShown below, for the same reason.
+  roomsShown: 8,
   // Sidebar room-list filter: show just favorited rooms (plus their ancestor
   // containers so favorite summon subrooms stay reachable). Persisted per app.
   roomsFavoritesOnly: loadBoolean("gaia.roomsFavoritesOnly"),

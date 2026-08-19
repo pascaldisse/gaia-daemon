@@ -196,8 +196,9 @@ function WorkspaceList() {
 
 registerRegion("sidebar", renderSidebar);
 
-// How many top-level rooms each "show more" click adds to the list.
-const ROOMS_CHUNK = 25;
+// How many top-level rooms each "show more" click adds to the list. Same
+// chunk size as WORKSPACES_CHUNK above, for consistency.
+const ROOMS_CHUNK = 8;
 
 function RoomTree() {
   /** @type {RoomSummary[]} */
