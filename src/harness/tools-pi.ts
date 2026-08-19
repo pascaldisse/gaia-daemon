@@ -8,6 +8,7 @@ import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, defineTool } from "@earendil-works/pi-coding-agent";
 import { gaiaToolCompressionBytes } from "../core/config.js";
+import { readGaiaImage, type ImageReadDetail, type ImageReadRegion } from "./image-read.js";
 import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
 import { compressCaryll, expandCaryll } from "../services/caryll.js";
 import { searchWeb, type WebSearchProvider } from "../services/web-search.js";
@@ -345,7 +346,7 @@ export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext,
 }
 
 type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll";
-type GaiaResult = { content: Array<{ type: "text"; text: string }>; details: unknown };
+type GaiaResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details: unknown };
 type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
 
 const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"];
@@ -373,7 +374,8 @@ function formatArgErrors(verb: GaiaVerb, schema: TSchema, args: unknown): string
   const detail = errors.length
     ? errors.map((error) => `${error.instancePath || "/"}: ${error.message}`).join("; ")
     : "does not match the expected shape";
-  return `ERROR: gaia ${verb} args invalid — ${detail}`;
+  const readDetailHint = verb === "read" && typeof (args as Record<string, unknown>)?.detail === "string" ? "; detail must be low, med, high, or full" : "";
+  return `ERROR: gaia ${verb} args invalid — ${detail}${readDetailHint}`;
 }
 
 /** The outer `gaia` tool schema: keeps a normal flat object (verb enum + a
@@ -490,6 +492,16 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     write: createWriteToolDefinition(cwd),
     edit: createEditToolDefinition(cwd),
   };
+  // Deliberately hand-extended rather than mutating Pi's shared schema object:
+  // native:true preserves Pi exactly; all other image paths are rendered here.
+  const readArgsSchema = Type.Object({
+    path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
+    offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed); text files only." })),
+    limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read; text files only." })),
+    detail: Type.Optional(stringEnum(["low", "med", "high", "full"], "Image detail: low=768, med=1280, high=1568, full=original (provider byte cap still applies).")),
+    region: Type.Optional(Type.String({ pattern: "^[A-C][1-3]$", description: "Image grid cell to crop from original pixels, e.g. B2. A 768px full thumbnail is always also sent." })),
+    native: Type.Optional(Type.Boolean({ description: "Bypass GAIA image rendering and delegate unchanged to Pi native read." })),
+  });
   const memory = createMemoryTool(ctx.memoryStore, ctx.agent);
   const recall = createRecallTool(
     ctx.recallSearch ?? localRecallSearch(ctx.roomDir, ctx.roomId, { id: ctx.agent.id, memoryDir: ctx.agent.memoryDir, insight: ctx.agent.insight }),
@@ -516,7 +528,7 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   // actually accepts (see verbSchemaEntries doc comment above).
   const verbSchemas: Partial<Record<GaiaVerb, TSchema>> = {
     bash: native.bash.parameters as TSchema,
-    read: native.read.parameters as TSchema,
+    read: readArgsSchema,
     write: native.write.parameters as TSchema,
     edit: native.edit.parameters as TSchema,
     web: webArgsSchema,
@@ -531,7 +543,18 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   const executeNative = (tool: any, args: Record<string, unknown>) => tool.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
   const registry: Record<GaiaVerb, GaiaHandler> = {
     bash: (args) => executeNative(native.bash, args),
-    read: (args) => executeNative(native.read, args),
+    read: async (args) => {
+      if (args.native === true || ctx.imageRead === "native") return executeNative(native.read, args);
+      const path = typeof args.path === "string" ? args.path : "";
+      try {
+        const image = await readGaiaImage(path, cwd, { detail: args.detail as ImageReadDetail | undefined, region: args.region as ImageReadRegion | undefined });
+        if (image) return image;
+      } catch (error) {
+        // An image decoder/encoder failure must never turn a read into a dead end.
+        console.warn(`[gaia image-read] falling back to Pi native read for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return executeNative(native.read, args);
+    },
     write: (args) => executeNative(native.write, args),
     edit: (args) => executeNative(native.edit, args),
     web: (args) => runWebVerb(args, native.bash),

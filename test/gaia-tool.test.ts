@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { PhotonImage } from "@silvia-odwyer/photon-node";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGaiaTool } from "../src/harness/tools-pi.js";
@@ -10,6 +11,34 @@ import type { AgentDef } from "../src/core/types.js";
 
 function text(result: any): string {
   return result.content.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n");
+}
+
+async function writeTestPng(path: string): Promise<void> {
+  const width = 1800;
+  const height = 900;
+  const pixels = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 4;
+    pixels[i] = x % 256;
+    pixels[i + 1] = y % 256;
+    pixels[i + 2] = (x + y) % 256;
+    pixels[i + 3] = 255;
+  }
+  const image = new PhotonImage(pixels, width, height);
+  try {
+    await writeFile(path, image.get_bytes());
+  } finally {
+    image.free();
+  }
+}
+
+function imageDimensions(item: any): [number, number] {
+  const image = PhotonImage.new_from_byteslice(Buffer.from(item.data, "base64"));
+  try {
+    return [image.get_width(), image.get_height()];
+  } finally {
+    image.free();
+  }
 }
 
 test("gaia-only tool dispatches every phase-one verb to its native implementation", async () => {
@@ -53,6 +82,62 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
   assert.equal(text(await tool.execute("resume", { verb: "resume", args: { roomId: "child", message: "steer" }, raw: true })), "resumed");
   assert.match(text(await tool.execute("c", { verb: "caryll", args: { action: "stats", path: caryll }, raw: true })), /caryll\.stats/);
   assert.deepEqual(calls, ["summon:worker:map", "resume:child:steer"]);
+});
+
+test("gaia image read: default renders low detail with original-coordinate 3x3 legend", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-image-"));
+  const file = join(dir, "grid.png");
+  await writeTestPng(file);
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("image", { verb: "read", args: { path: file }, raw: true });
+  assert.match(text(result), /1800×900 → sent 768×384 \(detail=low, resize factor 0\.4267×\)/);
+  assert.match(text(result), /grid 3×3 · A1 B1 C1 \/ A2 B2 C2 \/ A3 B3 C3/);
+  assert.match(text(result), /A1=\(0,0,600,300\).*B2=\(600,300,600,300\).*C3=\(1200,600,600,300\)/);
+  const images = result.content.filter((item: any) => item.type === "image");
+  assert.equal(images.length, 1);
+  assert.deepEqual(imageDimensions(images[0]), [768, 384]);
+});
+
+test("gaia image read: region B2 returns original crop plus always-on thumbnail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-image-"));
+  const file = join(dir, "grid.png");
+  await writeTestPng(file);
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("image-region", { verb: "read", args: { path: file, region: "B2", detail: "high" }, raw: true });
+  assert.match(text(result), /crop B2 of 3×3, orig rect \(600,300,600,300\) → sent 600×300 \(detail=high\)/);
+  const images = result.content.filter((item: any) => item.type === "image");
+  assert.equal(images.length, 2);
+  assert.deepEqual(imageDimensions(images[0]), [768, 384], "global thumbnail comes first");
+  assert.deepEqual(imageDimensions(images[1]), [600, 300], "crop never upscales beyond original");
+});
+
+test("gaia image read: native:true bypasses the GAIA renderer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-image-"));
+  const file = join(dir, "grid.png");
+  await writeTestPng(file);
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("native-image", { verb: "read", args: { path: file, native: true }, raw: true });
+  assert.doesNotMatch(text(result), /grid 3×3|resize factor|zoom: read/);
+  assert.equal(result.content.filter((item: any) => item.type === "image").length, 1);
+});
+
+test("gaia image read: non-images stay on Pi native read", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-image-"));
+  const file = join(dir, "note.txt");
+  await writeFile(file, "native text\n");
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("text", { verb: "read", args: { path: file }, raw: true });
+  assert.equal(text(result), "native text\n");
+  assert.equal(result.content.filter((item: any) => item.type === "image").length, 0);
+});
+
+test("gaia image read: malformed detail is rejected with a precise corrective error", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-image-"));
+  const tool: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const result = await tool.execute("bad-detail", { verb: "read", args: { path: "missing.png", detail: "ultra" }, raw: true });
+  assert.match(text(result), /^ERROR: gaia read args invalid/);
+  assert.match(text(result), /detail/);
+  assert.match(text(result), /low.*med.*high.*full/);
 });
 
 test("gaia edit verb: valid call validates and dispatches to the native edit tool", async () => {
@@ -104,6 +189,11 @@ test("gaia tool's outer schema: verb enum lists every registered verb, and args 
   const editBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "edit");
   assert.ok(editBranch, "edit has a typed allOf/if-then branch");
   assert.deepEqual(editBranch.then.properties.args.required, ["path", "edits"]);
+  const readBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "read");
+  assert.ok(readBranch, "read has a typed allOf/if-then branch");
+  assert.deepEqual(readBranch.then.properties.args.properties.detail.enum, ["low", "med", "high", "full"]);
+  assert.equal(readBranch.then.properties.args.properties.region.pattern, "^[A-C][1-3]$");
+  assert.equal(readBranch.then.properties.args.properties.native.type, "boolean");
 });
 
 test("gaia formats above the configurable threshold in deterministic gaiago and raw bypasses it", async () => {

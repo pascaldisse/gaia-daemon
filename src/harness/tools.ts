@@ -37,6 +37,8 @@ export interface PiToolContext {
   roomDir: string;
   /** Harness execution cwd; native Pi tools resolve relative paths here. */
   workDir?: string;
+  /** Workspace image-read switch; omitted keeps GAIA's progressive renderer on. */
+  imageRead?: "gaia" | "native";
   /** Live workspace roster used to constrain self-describing tool schemas. */
   availableAgents?: readonly AgentRosterEntry[];
   summonCreate?: SummonCreate;

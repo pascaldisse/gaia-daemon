@@ -687,6 +687,8 @@ export interface WorkspaceConfig {
   memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;
+  /** Image reads via GAIA's progressive renderer (default) or Pi native read. */
+  imageRead?: "gaia" | "native";
   sandbox?: SandboxConfig;
   /** Multi-agent same-repo collaboration policy (.gaia/config.json `collab`).
    * Optional like `sandbox`: absent = `shared` = today's one-working-tree

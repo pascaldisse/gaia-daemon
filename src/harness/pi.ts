@@ -747,6 +747,7 @@ export class PiRuntime implements AgentRuntime {
       roomId,
       roomDir,
       workDir: this.workDir,
+      imageRead: this.workspace.config.imageRead,
       availableAgents: agentRoster(this.workspace),
       summonCreate: this.summonCreate,
       resumeCreate: this.resumeCreate,

@@ -15,6 +15,8 @@ export const DEFAULTS = {
   maxSummonsPerRoom: 8,
   /** Unified-tool gaiago formatting threshold; GAIA_TOOL_FORMAT_BYTES overrides. */
   toolCompressionBytes: 8_192,
+  /** Progressive image renderer for the unified read verb; one-line native escape hatch. */
+  imageRead: "gaia",
   host: "127.0.0.1",
   port: 8787,
   // Stable self-signed identity for macOS re-signing on /rebuild. Ad-hoc
@@ -267,6 +269,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   if (typeof obj.maxSummonsPerRoom === "number" && Number.isInteger(obj.maxSummonsPerRoom) && obj.maxSummonsPerRoom > 0) {
     config.maxSummonsPerRoom = obj.maxSummonsPerRoom;
   }
+  config.imageRead = obj.imageRead === "native" ? "native" : DEFAULTS.imageRead;
   const sandbox = parseSandboxConfig(obj.sandbox);
   if (sandbox) config.sandbox = sandbox;
   const collab = parseCollabConfig(obj.collab);
