@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import {
+  compact as generatePiCompaction,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
@@ -20,6 +21,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type ThinkingLevel, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
@@ -242,6 +244,62 @@ function readOnlyPiSettings(cwd: string): SettingsManager {
 
 function skillPathsKey(paths: string[]): string {
   return JSON.stringify(paths);
+}
+
+// Pascal 08-19: pi-ai's native session.compact() (backs /compact) always
+// summarizes using the SESSION'S OWN model. When that model is stuck in a
+// refusal loop (Fable/Opus tripping a provider safety filter mid-conversation
+// and repeating a "cyber warning" refusal on every turn), the summarization
+// call /compact makes is ALSO that same stuck model — so /compact fails too
+// and the room is unrecoverable (can't shrink context, can't get a fresh
+// model turn either). Fix: for anthropic-provider pi agents, register an
+// inline pi-ai extension (DefaultResourceLoaderOptions.extensionFactories —
+// loaded regardless of noExtensions, see resource-loader.js) that intercepts
+// the SDK's own `session_before_compact` event and reruns the SDK's OWN pure
+// `compact()` (compaction.ts — identical structured-summary format/behavior,
+// file tracking, split-turn merge) with a FIXED fallback model
+// (claude-sonnet-5 = Solas) instead of the room's own model. Same-provider
+// only: applyCredentialProxy() registers the sandboxed runner's token +
+// fetch-egress redirect keyed on the room agent's OWN provider, so a
+// cross-provider swap would have no credentials to call with. Any
+// resolution/auth/summarization failure returns undefined (no override), so
+// the SDK's default (possibly-stuck-model) compaction still runs unmodified —
+// this can only make /compact more reliable, never less.
+const COMPACT_FALLBACK_MODEL = { provider: "anthropic", name: "claude-sonnet-5" } as const;
+
+function compactionFallbackExtension(agentModelProvider: string | undefined): ExtensionFactory {
+  return (pi) => {
+    if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return;
+    pi.on("session_before_compact", async (event, ctx) => {
+      const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
+      if (!model) {
+        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} not in registry, using session's own model`);
+        return;
+      }
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok) {
+        console.warn(`compact-fallback: no credentials for ${COMPACT_FALLBACK_MODEL.provider} (${auth.error}), using session's own model`);
+        return;
+      }
+      try {
+        const result = await generatePiCompaction(
+          event.preparation,
+          model,
+          auth.apiKey,
+          auth.headers,
+          event.customInstructions,
+          event.signal,
+          undefined,
+          undefined,
+          auth.env,
+        );
+        return { compaction: result };
+      } catch (error) {
+        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${error instanceof Error ? error.message : error}), using session's own model`);
+        return;
+      }
+    });
+  };
 }
 
 /** Text payload from Pi's SDK user-message event. Skill expansion always emits
@@ -760,6 +818,9 @@ export class PiRuntime implements AgentRuntime {
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
       noExtensions: true,
+      // Loaded regardless of noExtensions (disk-discovered extensions stay
+      // off) — see compactionFallbackExtension above.
+      extensionFactories: [compactionFallbackExtension(model?.provider)],
       noSkills: true,
       // Keep Pi's template discovery enabled: AgentSession.prompt() expands
       // these itself when RoomService passes a native slash command through.
