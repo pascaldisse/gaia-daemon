@@ -62,7 +62,7 @@ function pathId(path: string, length: number): string {
   return createHash("sha256").update(resolve(path)).digest("hex").slice(0, length);
 }
 
-function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString(), humanId?: string): WorkspaceRecord {
+function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString(), humanId?: string, favorite?: boolean, order?: number): WorkspaceRecord {
   const resolved = resolve(path);
   const parts = resolved.split(/[\\/]/).filter(Boolean);
   return {
@@ -74,6 +74,8 @@ function normalizeRecord(path: string, lastOpenedAt = new Date().toISOString(), 
     lastOpenedAt,
     isInitialized: existsSync(workspacePath(resolved)),
     ...(humanId ? { humanId } : {}),
+    ...(favorite ? { favorite: true } : {}),
+    ...(order !== undefined ? { order } : {}),
   };
 }
 
@@ -83,8 +85,17 @@ export class WorkspaceRegistry {
   async list(): Promise<WorkspaceRecord[]> {
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
     return (config.recentWorkspaces ?? [])
-      .map((record) => normalizeRecord(record.path, record.lastOpenedAt, record.humanId))
-      .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt));
+      .map((record) => normalizeRecord(record.path, record.lastOpenedAt, record.humanId, record.favorite, record.order))
+      .sort((a, b) => {
+        // Favorites always lead (sidebar "favorites on top"), then explicit
+        // drag order (see reorder()), then most-recently-opened for anything
+        // never dragged.
+        if (!!a.favorite !== !!b.favorite) return a.favorite ? -1 : 1;
+        if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return b.lastOpenedAt.localeCompare(a.lastOpenedAt);
+      });
   }
 
   /** Human-visible registry slice. `undefined` is the legacy shared scope. */
@@ -93,8 +104,12 @@ export class WorkspaceRegistry {
   }
 
   async add(path: string, humanId?: string): Promise<WorkspaceRecord> {
-    const record = normalizeRecord(path, undefined, humanId);
+    const resolved = resolve(path);
     const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    // Re-adding an already-registered path (re-picking the same folder) must not
+    // wipe its favorite/manual order -- carry them over onto the bumped record.
+    const existing = (config.recentWorkspaces ?? []).find((item) => resolve(item.path) === resolved && item.humanId === humanId);
+    const record = normalizeRecord(path, undefined, humanId, existing?.favorite, existing?.order);
     const next = [record, ...(config.recentWorkspaces ?? []).filter((item) => item.id !== record.id || item.humanId !== humanId)].slice(0, 30);
     await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
     return record;
@@ -118,6 +133,40 @@ export class WorkspaceRegistry {
     if (next.length === list.length) return false;
     await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
     return true;
+  }
+
+  /** Mark/unmark a workspace favorite (sidebar right-click "Add/Remove
+   * favorite", same UX as room favorites) — display metadata only; sort order
+   * (favorites first) is applied in list(). Returns false if the id isn't
+   * registered for this human scope. */
+  async setFavorite(id: string, favorite: boolean, humanId?: string): Promise<boolean> {
+    const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    const list = config.recentWorkspaces ?? [];
+    const index = list.findIndex((item) => item.id === id && item.humanId === humanId);
+    if (index === -1) return false;
+    const next = [...list];
+    const { favorite: _drop, ...rest } = next[index];
+    next[index] = favorite ? { ...rest, favorite: true } : rest;
+    await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
+    return true;
+  }
+
+  /** Persist a sidebar drag-drop reorder: `ids` is the full desired order for
+   * this human scope (favorites-and-non alike — favorite-on-top is a separate
+   * sort pass in list(), so a drag can freely reorder within/across both).
+   * Ids outside this scope are left untouched; ids never passed here keep
+   * their prior order/lastOpenedAt-only ordering. */
+  async reorder(ids: string[], humanId?: string): Promise<void> {
+    const config = ((await readJson(this.configPath)) ?? {}) as { recentWorkspaces?: WorkspaceRecord[] };
+    const list = config.recentWorkspaces ?? [];
+    const position = new Map(ids.map((id, index) => [id, index]));
+    const next = list.map((item) => {
+      if (item.humanId !== humanId) return item;
+      const order = position.get(item.id);
+      if (order === undefined) return item;
+      return { ...item, order };
+    });
+    await writeJsonAtomic(this.configPath, { ...config, recentWorkspaces: next });
   }
 }
 
@@ -573,6 +622,20 @@ export class Daemon {
     }
     await this.serviceFor(record.id);
     return record;
+  }
+
+  /** Mark/unmark a workspace favorite (sidebar right-click). Display metadata
+   * only — see WorkspaceRegistry.setFavorite. */
+  async setWorkspaceFavorite(workspaceId: string, favorite: boolean, humanId?: string): Promise<{ workspaces: WorkspaceRecord[] }> {
+    const found = await this.registry.setFavorite(workspaceId, favorite, humanId);
+    if (!found) throw new Error(`Unknown workspace: ${workspaceId}`);
+    return { workspaces: await this.registry.listForHuman(humanId) };
+  }
+
+  /** Persist a sidebar drag-drop reorder of the workspace list. */
+  async reorderWorkspaces(ids: string[], humanId?: string): Promise<{ workspaces: WorkspaceRecord[] }> {
+    await this.registry.reorder(ids, humanId);
+    return { workspaces: await this.registry.listForHuman(humanId) };
   }
 
   async selectRoom(workspaceId: string, roomId: string, opts?: { incognito?: boolean }): Promise<SelectionPayload> {

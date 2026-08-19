@@ -275,10 +275,11 @@ body.resizing { cursor: col-resize; user-select: none; }
   cursor: pointer;
   white-space: nowrap;
   max-width: 240px;
-  /* Pointer-drag reorder/tear-off: keep the gesture from starting a text
-     selection or a touch-scroll so setPointerCapture owns the whole drag. */
+  /* Pointer-drag reorder/tear-off: no text selection. Touch keeps the strip's
+     own axis pannable (pan-x) so a swipe scrolls the tabs; the drag arms only
+     on a still long press and then swallows touchmove — see press-drag.js. */
   user-select: none;
-  touch-action: none;
+  touch-action: pan-x;
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
@@ -365,7 +366,30 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .nav-title-add:hover, .nav-title-add.active { color: var(--accent); }
 .nav-title-actions { display: inline-flex; align-items: center; gap: 4px; }
+/* position:relative anchors the reorder drop caret (.workspace-drop-indicator),
+   an absolutely-positioned child — see .ws-item drag handlers in sidebar.js. */
+.workspace-list { position: relative; }
 .workspace-list, .agent-list, .task-list, .file-tabs { display: grid; gap: 7px; }
+/* Pointer-drag reorder (sidebar.js, same technique as the tab strip): keep the
+   gesture from starting a text selection or a touch-scroll so
+   setPointerCapture owns the whole drag. */
+/* pan-y: a vertical swipe scrolls the sidebar; reorder arms on long press (press-drag.js). */
+.ws-item { user-select: none; touch-action: pan-y; }
+.ws-item.dragging { opacity: 0.5; cursor: grabbing; background: var(--bg3); }
+/* The reorder drop caret — an accent bar at the vertical slot the workspace
+   will land in. Absolutely placed in the (position:relative) list; never a
+   hit target. */
+.workspace-drop-indicator {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--glow);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 2;
+}
 .nav-item, .nav-action, .file-tabs button, .segmented-tabs button { width: 100%; text-align: left; }
 .nav-item span, .file-tabs span, .segmented-tabs span { display: block; }
 

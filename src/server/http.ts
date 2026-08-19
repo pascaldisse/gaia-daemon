@@ -712,6 +712,17 @@ export class GaiaWebServer {
       return;
     }
 
+    // Sidebar drag-drop reorder: `ids` is the full new order for this human's
+    // workspace list. Not a per-id route (it spans the whole list), so it lives
+    // ahead of the parameterized-route ownership gate below.
+    if (method === "POST" && path === "/api/workspaces/reorder") {
+      const body = await parseBody(request);
+      const ids = Array.isArray((body as { ids?: unknown }).ids)
+        ? (body as { ids: unknown[] }).ids.filter((id): id is string => typeof id === "string")
+        : [];
+      return this.respond(response, () => this.daemon.reorderWorkspaces(ids, humanScope));
+    }
+
     if (method === "POST" && path === "/api/agents") {
       const body = await parseBody(request);
       const id = stringField(body, "id");
@@ -1270,6 +1281,13 @@ export class GaiaWebServer {
     // the fresh app payload (a remaining workspace selected, or none).
     if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)$/))) {
       return this.respond(response, () => this.daemon.deleteWorkspace(params![0], humanScope));
+    }
+
+    // Sidebar right-click "Add/Remove favorite" — same mechanic as room
+    // favorites, pins the workspace to the top of the list (see registry.list).
+    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/favorite$/))) {
+      const favorite = ((await parseBody(request)) as { favorite?: unknown }).favorite === true;
+      return this.respond(response, () => this.daemon.setWorkspaceFavorite(params![0], favorite, humanScope));
     }
 
     // Read-aloud: one committed agent message → speech audio (the transcript

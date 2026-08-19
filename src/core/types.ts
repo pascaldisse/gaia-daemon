@@ -734,6 +734,14 @@ export interface WorkspaceRecord {
   isInitialized: boolean;
   /** Human owner for an isolated workspace. Absent = legacy shared scope. */
   humanId?: string;
+  /** Sidebar-pinned to the top of the workspace list, ahead of every non-favorite
+   * (right-click "Add favorite", same UX as RoomState.favorite). Display metadata
+   * only. */
+  favorite?: boolean;
+  /** Manual drag-drop sort key set by the sidebar reorder gesture. Absent =
+   * never dragged; those sort after every explicitly-ordered record, by
+   * `lastOpenedAt` among themselves (see WorkspaceRegistry.list). */
+  order?: number;
 }
 
 /** "Keep laptop awake while GAIA runs" — a daemon-managed (macOS-only)

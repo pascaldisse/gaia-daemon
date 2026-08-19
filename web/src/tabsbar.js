@@ -13,6 +13,7 @@ import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
 import { tearOff } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { isNative } from "./native.js";
+import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 import { moveTabToIndex, visibleTabs } from "./tabs.js";
@@ -21,7 +22,7 @@ import { moveTabToIndex, visibleTabs } from "./tabs.js";
 
 // The live pointer-drag, or null. Module-scoped (one drag at a time) so the
 // element handlers, the render guard, and the drop indicator all share it.
-/** @type {null | { roomId: string, wsId: string, startX: number, startY: number, pointerId: number, el: HTMLElement, moved: boolean, tearing: boolean, dropIndex: number }} */
+/** @type {null | { roomId: string, wsId: string, startX: number, startY: number, pointerId: number, el: HTMLElement, moved: boolean, tearing: boolean, dropIndex: number, touch: boolean, armed: boolean, timer: ReturnType<typeof setTimeout>|null }} */
 let drag = null;
 
 // While a press is live the strip must NOT be rebuilt: the captured tab node, its
@@ -118,7 +119,20 @@ function beginDrag(event, roomId, wsId) {
   // A press on the × is a close, not a drag — leave it to the button's onclick.
   if (/** @type {HTMLElement} */ (event.target).closest(".tab-close")) return;
   const el = /** @type {HTMLElement} */ (event.currentTarget);
-  drag = { roomId, wsId, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId, el, moved: false, tearing: false, dropIndex: -1 };
+  const touch = isTouchPointer(event);
+  drag = { roomId, wsId, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId, el, moved: false, tearing: false, dropIndex: -1, touch, armed: !touch, timer: null };
+  // Touch: the strip is also the scroll surface → the drag only arms after a
+  // still long press (see press-drag.js); until then a swipe must scroll.
+  if (touch) {
+    const d = drag;
+    d.timer = setTimeout(() => {
+      if (drag !== d) return;
+      d.armed = true;
+      d.timer = null;
+      holdTouchScroll();
+      hapticArm();
+    }, LONG_PRESS_MS);
+  }
   // Freeze the strip for the whole press so an unrelated re-render can't detach
   // the node we're about to capture (cleared in end/cancel).
   dragActive = true;
@@ -134,6 +148,11 @@ function beginDrag(event, roomId, wsId) {
 /** @param {PointerEvent} event */
 function moveDrag(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
+  if (!drag.armed) {
+    // Finger moved before the long press landed → this is a scroll, not a drag.
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= TOUCH_SLOP) abandonDrag();
+    return;
+  }
   if (!drag.moved) {
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD) return;
     drag.moved = true;
@@ -189,6 +208,8 @@ function endDrag(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
   const d = drag;
   drag = null;
+  if (d.timer) clearTimeout(d.timer);
+  releaseTouchScroll();
   try {
     d.el.releasePointerCapture(event.pointerId);
   } catch {
@@ -219,8 +240,23 @@ function endDrag(event) {
 /** @param {PointerEvent} event */
 function cancelDrag(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
+  abandonDrag();
+}
+
+/** Give the gesture back to the browser (touch scroll won, or pointercancel):
+ *  drop all drag state and let the list behave natively. */
+function abandonDrag() {
+  if (!drag) return;
   const el = drag.el;
+  const pointerId = drag.pointerId;
+  if (drag.timer) clearTimeout(drag.timer);
   drag = null;
+  releaseTouchScroll();
+  try {
+    el.releasePointerCapture(pointerId);
+  } catch {
+    // nothing captured — fine.
+  }
   cleanupDrag(el);
 }
 
