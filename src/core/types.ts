@@ -614,6 +614,9 @@ export interface AgentDef {
   projectIntentPath?: string;
   // Hard control.
   tools: string[];
+  /** Default true: direct tools dispatched by `gaia` are collapsed to `gaia`.
+   * Set `gaiaOnly: false` in agent.json to restore the explicit legacy list. */
+  gaiaOnly: boolean;
   /** Present only when agent.json explicitly sets `tools`. An unset tools key
    * inherits the active role's tool defaults (or the normal agent defaults). */
   toolOverride?: string[];

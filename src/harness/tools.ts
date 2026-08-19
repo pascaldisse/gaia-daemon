@@ -1,4 +1,4 @@
-// The single registry of GAIA daemon tools (memory / recall / summon). Add a
+// The single registry of GAIA daemon tools (unified gaia / memory / recall / summon). Add a
 // tool = one entry here and it appears in-process (Pi), as a Claude grant, in
 // the system-prompt pointer, in the `gaia` CLI dispatch, and in the settings
 // UI at once.
@@ -64,7 +64,9 @@ export const GAIA_TOOLS: GaiaToolSpec[] = [
   {
     id: "gaia",
     cliVerbs: [],
-    grant: "",
+    // Claude reaches this custom Pi/Codex tool through its locked `gaia` CLI
+    // prefix; other direct GAIA tools retain their narrower legacy grants.
+    grant: "Bash(gaia:*)",
     pointer: "- `gaia` custom tool — unified verb dispatcher: bash/read/write/edit/web/summon/resume/mem/recall/artifact/caryll; set raw:true for unformatted output.",
     makePiTool: async (ctx) => (await import("./tools-pi.js")).createGaiaTool(ctx),
   },

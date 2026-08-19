@@ -40,6 +40,8 @@ test("agent.json gets tools multiselect and grouped model dropdowns", () => {
   assert.ok(hints);
   assert.equal(hint(hints, "tools").input, "multiselect");
   assert.deepEqual(hint(hints, "tools").options?.map((option) => option.value), ["read", "bash", "memory"]);
+  assert.equal(hint(hints, "gaiaOnly").input, "boolean");
+  assert.equal(hint(hints, "gaiaOnly").defaultValue, true);
 
   assert.equal(hint(hints, "model.provider").input, "select");
   assert.equal(hint(hints, "model.provider").optional, true);

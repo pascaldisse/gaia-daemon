@@ -116,6 +116,12 @@ test("buildClaudeToolGrant: write/edit expose and auto-approve their tools", () 
   assert.deepEqual(grant.allowedTools, ["Write", "Edit"]);
 });
 
+test("buildClaudeToolGrant: unified gaia grants its locked CLI prefix", () => {
+  const grant = buildClaudeToolGrant(["gaia"]);
+  assert.deepEqual(grant.tools, ["Bash"]);
+  assert.deepEqual(grant.allowedTools, ["Bash(gaia:*)"]);
+});
+
 test("buildClaudeToolGrant: memory/recall grant the narrow gaia CLI, not a general shell", () => {
   const grant = buildClaudeToolGrant(["read", "write", "edit", "memory", "recall"]);
   // Bash is present (to invoke gaia) but general Bash is NOT auto-approved.
@@ -1004,7 +1010,9 @@ test("ClaudeRuntime adds no gaia pointer when the agent has no gaia tools", asyn
 
     const args = fake.calls[0].args;
     const systemPrompt = args[args.indexOf("--system-prompt") + 1];
-    assert.ok(!/gaia mem/.test(systemPrompt), "no gaia pointer without gaia tools");
+    // HARNESS_LAW always documents the CLI; only the per-agent GAIA-tool
+    // section must stay absent for a tool-less agent.
+    assert.ok(!systemPrompt.includes("# GAIA tools (run via shell)"), "no per-agent gaia pointer without gaia tools");
     runtime.dispose();
   } finally {
     await fx.cleanup();
