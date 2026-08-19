@@ -129,6 +129,32 @@ function renderSidebar() {
 // fixes). The current workspace is always kept visible even past the cap.
 const WORKSPACES_CHUNK = 8;
 
+/**
+ * Star + running/unread-dot, each in its own fixed-width slot so a row's name
+ * always starts at the same x whether or not either icon is present — the
+ * icon appears/vanishes INSIDE its slot, the slot itself never does. Pass
+ * `incognito` (room rows only; omit for workspace rows) to render a third
+ * slot the same way, ordered star → dot → incognito → name.
+ * @param {{favorite?: boolean, running?: boolean, unread?: boolean, incognito?: boolean, runningTitle?: string, unreadTitle?: string}} opts
+ */
+function StatusIcons({ favorite, running, unread, incognito, runningTitle = "agent running", unreadTitle = "unread messages" }) {
+  return [
+    h("span", { class: "room-icon-slot" }, favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null),
+    h(
+      "span",
+      { class: "room-icon-slot" },
+      running
+        ? h("span", { class: "room-dot running", title: runningTitle })
+        : unread
+          ? h("span", { class: "room-dot unread", title: unreadTitle })
+          : null,
+    ),
+    incognito === undefined
+      ? null
+      : h("span", { class: "room-icon-slot" }, incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null),
+  ];
+}
+
 function WorkspaceList() {
   const currentId = state.snapshot?.workspace.id;
   const focus = effectiveSidebarFocus();
@@ -170,12 +196,13 @@ function WorkspaceList() {
         h(
           "span",
           { class: "room-label" },
-          act.running
-            ? h("span", { class: "room-dot running", title: "agent running in this workspace" })
-            : act.unread
-              ? h("span", { class: "room-dot unread", title: "unread messages in this workspace" })
-              : null,
-          workspace.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
+          ...StatusIcons({
+            favorite: workspace.favorite,
+            running: act.running,
+            unread: act.unread,
+            runningTitle: "agent running in this workspace",
+            unreadTitle: "unread messages in this workspace",
+          }),
           h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
         ),
         h("small", {}, PathText(workspace.path)),
@@ -362,15 +389,7 @@ function RoomNode(room, childrenOf, depth) {
         h(
           "span",
           { class: "room-label" },
-          // One status slot: a green blinking dot while an agent is working in
-          // the room, else an accent dot when it has unread replies, else empty.
-          room.running
-            ? h("span", { class: "room-dot running", title: "agent running" })
-            : roomUnread(room)
-              ? h("span", { class: "room-dot unread", title: "unread messages" })
-              : null,
-          room.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
-          room.incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null,
+          ...StatusIcons({ favorite: room.favorite, running: room.running, unread: roomUnread(room), incognito: room.incognito }),
           h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
