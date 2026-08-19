@@ -9,6 +9,7 @@ import { createBashToolDefinition, createEditToolDefinition, createReadToolDefin
 import { gaiaToolCompressionBytes } from "../core/config.js";
 import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
 import { compressCaryll, expandCaryll } from "../services/caryll.js";
+import { searchWeb, type WebSearchProvider } from "../services/web-search.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
@@ -366,6 +367,21 @@ export function formatGaiagoResult(verb: GaiaVerb, text: string, details: unknow
   return { text: `${status} ${verb} · 行=${nonblank} · 詳=${detailKind}\n${payload || "∅"}`, formatter: "deterministic" };
 }
 
+async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<GaiaResult> {
+  const query = typeof args.query === "string" ? args.query : "";
+  // Preserve the pre-existing command-shaped curl escape hatch. Structured
+  // {query, provider?} calls use the daemon-owned provider fallback chain.
+  if (!query) return bash.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
+  const provider = args.provider;
+  if (provider !== undefined && provider !== "brave" && provider !== "tavily" && provider !== "serper") {
+    return { content: [{ type: "text", text: "ERROR: web provider must be brave, tavily, or serper." }], details: { ok: false } };
+  }
+  const maxResults = typeof args.maxResults === "number" ? args.maxResults : typeof args.max_results === "number" ? args.max_results : undefined;
+  const response = await searchWeb({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider: provider as WebSearchProvider }) });
+  const output = response.results.map((item, index) => `--- Result ${index + 1} ---\nTitle: ${item.title}\nLink: ${item.url}\nSnippet: ${item.snippet}`).join("\n\n");
+  return { content: [{ type: "text", text: `Provider: ${response.provider}\n${output}` }], details: response };
+}
+
 async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult> {
   const action = args.action;
   const path = typeof args.path === "string" ? args.path : "";
@@ -413,9 +429,7 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     read: (args) => executeNative(native.read, args),
     write: (args) => executeNative(native.write, args),
     edit: (args) => executeNative(native.edit, args),
-    // Pi's web path is the brave-search skill via bash; with only gaia active,
-    // use the same native bash backend as the explicit curl fallback.
-    web: (args) => executeNative(native.bash, args),
+    web: (args) => runWebVerb(args, native.bash),
     mem: (args) => executeNative(memory, args),
     recall: (args) => executeNative(recall, args),
     summon: (args) => (summon ? executeNative(summon, args) : Promise.resolve({ content: [{ type: "text", text: "ERROR: summon is unavailable for this room." }], details: { ok: false } })),
@@ -440,8 +454,8 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; only tool needed for files, commands, web curl, memory, artifacts, worker summons, and room steering.",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search (Brave → Tavily → Serper; {query, provider?}) or curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; web accepts {query, provider?, maxResults?} and falls back Brave → Tavily → Serper; also files, commands, memory, artifacts, workers, steering.",
     parameters: Type.Object({
       verb: stringEnum(["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"]),
       args: Type.Record(Type.String(), Type.Unknown()),
