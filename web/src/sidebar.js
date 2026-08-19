@@ -10,7 +10,17 @@ import { refreshAttention } from "./attention.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { openSettings } from "./settings.js";
-import { effectiveSidebarFocus, markRoomRead, markRoomUnread, persistRoomsFavoritesOnly, roomUnread, state, workspaceActivity } from "./state.js";
+import {
+  effectiveSidebarFocus,
+  markRoomRead,
+  markRoomUnread,
+  persistRoomsCollapsed,
+  persistRoomsFavoritesOnly,
+  persistWorkspacesCollapsed,
+  roomUnread,
+  state,
+  workspaceActivity,
+} from "./state.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -18,9 +28,6 @@ function renderSidebar() {
   const nav = $("#sidebar");
   if (!nav) return;
   const scrollTop = nav.scrollTop;
-  const current = state.snapshot?.workspace.id;
-  // The delete target: which workspace/room the OS delete chord will remove.
-  const focus = effectiveSidebarFocus();
   /** @type {(HTMLElement|null)[]} */
   const children = [
     h("button", {
@@ -33,58 +40,28 @@ function renderSidebar() {
       "div",
       { class: "nav-title nav-title-row" },
       h("span", { text: "workspaces" }),
-      // Inline + next to the header, same UI element as "rooms"'s new-room +
-      // — one click from the top, no separate full-width button buried under
-      // the workspace list.
       h(
         "span",
         { class: "nav-title-actions" },
+        // Minimise the whole workspace list — a long history of workspaces
+        // otherwise pushes "rooms" (and everything under it) off-screen.
+        h("button", {
+          class: "nav-title-add nav-title-collapse",
+          title: state.workspacesCollapsed ? "show workspaces" : "collapse workspaces",
+          onclick: () => {
+            state.workspacesCollapsed = !state.workspacesCollapsed;
+            persistWorkspacesCollapsed();
+            markDirty("sidebar");
+          },
+          text: state.workspacesCollapsed ? "▸" : "▾",
+        }),
+        // Inline + next to the header, same UI element as "rooms"'s new-room +
+        // — one click from the top, no separate full-width button buried under
+        // the workspace list.
         h("button", { class: "nav-title-add", title: "add workspace", onclick: () => void addWorkspace(), text: "+" }),
       ),
     ),
-    h(
-      "div",
-      { class: "workspace-list" },
-      state.workspaces.map((workspace) => {
-        // Roll the workspace's rooms up to one dot so activity in a workspace
-        // you're NOT viewing is still visible: green (pulsing) while any room in
-        // it has an agent running, else accent while any has unread replies.
-        const act = workspaceActivity(workspace.id);
-        return h(
-          "button",
-          {
-            class: `nav-item ${workspace.id === current ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
-            title: workspace.path,
-            // Clicking selects/opens it. The muted state means its .gaia is
-            // missing. Removing a workspace is right-click -> "Remove
-            // workspace" ONLY — never the ⌘⌫/Del chord (that's rooms only,
-            // see keys.js), so an accidental keypress can't nuke a workspace.
-            onclick: () => {
-              state.sidebarFocus = { kind: "workspace", id: workspace.id };
-              if (workspace.isInitialized) void loadWorkspace(workspace.id);
-              else setError(`Missing .gaia workspace: ${workspace.path}`);
-              markDirty("sidebar");
-            },
-            oncontextmenu: (/** @type {MouseEvent} */ event) => {
-              event.preventDefault();
-              state.workspaceContextMenu = { workspaceId: workspace.id, x: event.clientX, y: event.clientY };
-              markDirty("sidebar");
-            },
-          },
-          h(
-            "span",
-            { class: "room-label" },
-            act.running
-              ? h("span", { class: "room-dot running", title: "agent running in this workspace" })
-              : act.unread
-                ? h("span", { class: "room-dot unread", title: "unread messages in this workspace" })
-                : null,
-            h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
-          ),
-          h("small", {}, PathText(workspace.path)),
-        );
-      }),
-    ),
+    state.workspacesCollapsed ? null : WorkspaceList(),
     WorkspaceContextMenu(),
     h(
       "div",
@@ -96,6 +73,18 @@ function renderSidebar() {
         ? h(
             "span",
             { class: "nav-title-actions" },
+            // Same minimise affordance as workspaces above — collapses the
+            // whole room tree behind the header.
+            h("button", {
+              class: "nav-title-add nav-title-collapse",
+              title: state.roomsCollapsed ? "show rooms" : "collapse rooms",
+              onclick: () => {
+                state.roomsCollapsed = !state.roomsCollapsed;
+                persistRoomsCollapsed();
+                markDirty("sidebar");
+              },
+              text: state.roomsCollapsed ? "▸" : "▾",
+            }),
             h("button", {
               class: `nav-title-add ${state.roomsFavoritesOnly ? "active" : ""}`,
               title: state.roomsFavoritesOnly ? "show all rooms" : "show favorites only",
@@ -110,13 +99,82 @@ function renderSidebar() {
           )
         : null,
     ),
-    RoomTree(),
+    state.roomsCollapsed ? null : RoomTree(),
     RoomContextMenu(),
     h("div", { class: "spacer" }),
     h("button", { class: "nav-action", onclick: () => openSettings(), text: "settings" }),
   ];
   nav.replaceChildren(...children.filter((child) => child !== null));
   if (scrollTop) nav.scrollTop = scrollTop;
+}
+
+// How many workspaces the sidebar list renders before "show more" — mirrors
+// ROOMS_CHUNK below: a long-lived install accumulates dozens of workspaces,
+// and an unpaginated list buries the rooms section under them (the bug this
+// fixes). The current workspace is always kept visible even past the cap.
+const WORKSPACES_CHUNK = 8;
+
+function WorkspaceList() {
+  const currentId = state.snapshot?.workspace.id;
+  const focus = effectiveSidebarFocus();
+  const all = state.workspaces;
+  const visible = all.slice(0, state.workspacesShown);
+  const current = all.find((workspace) => workspace.id === currentId);
+  if (current && !visible.includes(current)) visible.push(current);
+  const remaining = all.length - visible.length;
+  return h(
+    "div",
+    { class: "workspace-list" },
+    visible.map((workspace) => {
+      // Roll the workspace's rooms up to one dot so activity in a workspace
+      // you're NOT viewing is still visible: green (pulsing) while any room in
+      // it has an agent running, else accent while any has unread replies.
+      const act = workspaceActivity(workspace.id);
+      return h(
+        "button",
+        {
+          class: `nav-item ${workspace.id === currentId ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focus?.kind === "workspace" && focus.id === workspace.id ? "focused" : ""}`,
+          title: workspace.path,
+          // Clicking selects/opens it. The muted state means its .gaia is
+          // missing. Removing a workspace is right-click -> "Remove
+          // workspace" ONLY — never the ⌘⌫/Del chord (that's rooms only,
+          // see keys.js), so an accidental keypress can't nuke a workspace.
+          onclick: () => {
+            state.sidebarFocus = { kind: "workspace", id: workspace.id };
+            if (workspace.isInitialized) void loadWorkspace(workspace.id);
+            else setError(`Missing .gaia workspace: ${workspace.path}`);
+            markDirty("sidebar");
+          },
+          oncontextmenu: (/** @type {MouseEvent} */ event) => {
+            event.preventDefault();
+            state.workspaceContextMenu = { workspaceId: workspace.id, x: event.clientX, y: event.clientY };
+            markDirty("sidebar");
+          },
+        },
+        h(
+          "span",
+          { class: "room-label" },
+          act.running
+            ? h("span", { class: "room-dot running", title: "agent running in this workspace" })
+            : act.unread
+              ? h("span", { class: "room-dot unread", title: "unread messages in this workspace" })
+              : null,
+          h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
+        ),
+        h("small", {}, PathText(workspace.path)),
+      );
+    }),
+    remaining > 0
+      ? h("button", {
+          class: "nav-action rooms-more",
+          text: `↓ show ${Math.min(WORKSPACES_CHUNK, remaining)} more (${remaining} left)`,
+          onclick: () => {
+            state.workspacesShown += WORKSPACES_CHUNK;
+            markDirty("sidebar");
+          },
+        })
+      : null,
+  );
 }
 
 registerRegion("sidebar", renderSidebar);

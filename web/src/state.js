@@ -38,6 +38,9 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   expandedRooms: Set<string>,
  *   roomsShown: number,
  *   roomsFavoritesOnly: boolean,
+ *   roomsCollapsed: boolean,
+ *   workspacesShown: number,
+ *   workspacesCollapsed: boolean,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
  *   openTabs: string[],
  *   sidebarCollapsed: boolean,
@@ -119,6 +122,14 @@ export const state = {
   // Sidebar room-list filter: show just favorited rooms (plus their ancestor
   // containers so favorite summon subrooms stay reachable). Persisted per app.
   roomsFavoritesOnly: loadBoolean("gaia.roomsFavoritesOnly"),
+  // Minimise the whole rooms tree behind its header. Persisted per app.
+  roomsCollapsed: loadBoolean("gaia.roomsCollapsed"),
+  // Same pagination idea as roomsShown, for the workspace list above it — a
+  // long-lived install accumulates dozens of workspaces, which otherwise
+  // buries the rooms section under an unpaginated list.
+  workspacesShown: 8,
+  // Minimise the whole workspace list behind its header. Persisted per app.
+  workspacesCollapsed: loadBoolean("gaia.workspacesCollapsed"),
   // Older committed events paged in by the transcript's "load older" button,
   // strictly preceding the snapshot's tail window. Cleared on room switch and
   // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
@@ -287,6 +298,22 @@ export function persistRoomsFavoritesOnly() {
     localStorage.setItem("gaia.roomsFavoritesOnly", state.roomsFavoritesOnly ? "true" : "false");
   } catch {
     // storage disabled — the filter just won't survive a reload.
+  }
+}
+
+export function persistRoomsCollapsed() {
+  try {
+    localStorage.setItem("gaia.roomsCollapsed", state.roomsCollapsed ? "true" : "false");
+  } catch {
+    // storage disabled — the collapsed state just won't survive a reload.
+  }
+}
+
+export function persistWorkspacesCollapsed() {
+  try {
+    localStorage.setItem("gaia.workspacesCollapsed", state.workspacesCollapsed ? "true" : "false");
+  } catch {
+    // storage disabled — the collapsed state just won't survive a reload.
   }
 }
 
