@@ -12,6 +12,7 @@ import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
+import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
 
 // --- what a runtime consumes and produces ------------------------------------
 
@@ -54,6 +55,10 @@ export interface AgentInput {
    * shared transcript renderer uses for the human's own messages, in place of
    * the anonymous "user" token. "" / absent keeps that default. */
   userName?: string;
+  /** Context-diet policy for this turn (09-MEMORY-CONTEXT, /diet room command
+   * — services/context-policy-store.ts). Absent, or `preset:false`, renders
+   * the turn prompt IDENTICALLY to no diet at all: default OFF, IRON. */
+  dietPolicy?: ContextDietPolicy;
 }
 
 export interface AgentRuntime {
@@ -237,6 +242,40 @@ export interface RuntimeCreateContext {
   harnessHost?: HarnessHost;
   /** Hybrid memory search (facts + episodes + room history), daemon-side. */
   recallSearch?: RecallSearch;
+  /** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
+   * tool-call stub back by (eventId, toolId) — backs the `tool_result_fetch`
+   * gaia-tool verb (09-MEMORY-CONTEXT). Absent — as in an incognito/no-bridge
+   * run — makes the verb unavailable rather than erroring the whole tool. */
+  toolResultFetch?: ToolResultFetch;
+  /** Read/patch the context-diet policy (workspace default + this room's
+   * override) — backs the `diet` gaia-tool verb and the `/diet` room command;
+   * ONE implementation, two surfaces. */
+  contextDiet?: ContextDietAccess;
+}
+
+/** Pages a diet-collapsed own tool-call stub's original content back, 32k
+ * chars/page (mirrors gaia-daemon-v2's tool_result_fetch guarded tool). */
+export interface ToolResultFetch {
+  (params: { sessionId: string; entryId: string; offset: number; limit: number }): Promise<{
+    text: string;
+    totalLength: number;
+    hasMore: boolean;
+  }>;
+}
+
+/** Effective policy plus this room's raw overrides (for display) — what both
+ * the gaia-tool `diet` verb and the `/diet` room command read and mutate. */
+export interface ContextDietView {
+  effective: ContextDietPolicy;
+  roomOverrides: ContextDietOverrides;
+}
+
+export interface ContextDietAccess {
+  get(): Promise<ContextDietView>;
+  /** `scope: "room"` patches this room's override document; `"workspace"`
+   * patches the workspace-wide default every room without its own override
+   * inherits. */
+  set(params: { scope: "room" | "workspace"; patch: ContextDietOverrides }): Promise<ContextDietView>;
 }
 
 /** Search long-term memory; hits are pre-ranked (see domain/workspace-index).

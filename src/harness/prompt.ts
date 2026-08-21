@@ -9,11 +9,12 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { globalPaths } from "../core/paths.js";
-import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, Workspace } from "../core/types.js";
+import type { AgentDef, ContextFile, MessageAttachment, RoomEvent, ToolDetail, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import { discoverContextFiles } from "../domain/workspace.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
+import type { ContextDietPolicy } from "../domain/context-diet.js";
 import type { AgentInput } from "./spec.js";
 import { harnessIdFor, nativeCommandsFor } from "./spec.js";
 import { GAIA_TOOLS, gaiaToolIds, type GaiaToolSpec, type PointerContext } from "./tools.js";
@@ -90,6 +91,17 @@ export interface TurnPromptInput {
   /** Agent-declared law line (agent.json `turnLaw`) appended as the very last
    * tokens of the composed turn prompt so it is always freshest. */
   turnLaw?: string;
+  /** Context-diet policy (09-MEMORY-CONTEXT, /diet room command). Absent or
+   * `preset:false` renders IDENTICALLY to no diet at all — default OFF, IRON. */
+  dietPolicy?: ContextDietPolicy;
+}
+
+/** Render-time diet context for renderRoomTranscript: which agent "owns" a
+ * room event's tool activity (own vs. another agent's), used only when
+ * `policy.preset` is true. */
+export interface DietRenderContext {
+  policy: ContextDietPolicy;
+  currentAgentId: string;
 }
 
 // Turn-level overlay (not the system prompt) so entering/leaving a call never
@@ -128,13 +140,80 @@ export function renderAttachmentLines(attachments: MessageAttachment[]): string 
   return attachments.map((file) => `[attached file: ${file.name} (${file.mime}, ${humanSize(file.size)}) at ${file.path}]`).join("\n");
 }
 
-/** Render room events for a turn prompt (v1's room.ts renderer, verbatim).
- * `userName` labels the human's own messages (Settings ▸ General ▸ "Your
- * name" — services/user-name.ts); "" or omitted falls back to the anonymous
- * "user" token this always used before that setting existed. */
-export function renderRoomTranscript(events: RoomEvent[], userName?: string): string {
+/** Best-effort readable text for a tool's raw JSON result — the same
+ * `{content:[{type:"text",text}]}` shape every gaia tool returns; anything
+ * else is stringified rather than dropped (never silently discard a result). */
+function toolResultPreviewText(result: unknown): string {
+  if (result && typeof result === "object" && Array.isArray((result as { content?: unknown }).content)) {
+    const blocks = (result as { content: unknown[] }).content;
+    const text = blocks
+      .filter((block): block is { type: "text"; text: string } => Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string")
+      .map((block) => block.text)
+      .join("\n");
+    if (text) return text;
+  }
+  if (typeof result === "string") return result;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
+
+/** One tool call's full, uncollapsed preview: call signature line + result
+ * text (multi-line result stays multi-line — boundedActivityPreview below is
+ * what trims/collapses it, never this). */
+function toolDetailPreview(tool: ToolDetail): string {
+  const args = tool.args !== undefined ? (() => { try { return JSON.stringify(tool.args); } catch { return String(tool.args); } })() : "";
+  const header = `${tool.toolName}(${args})`;
+  const resultText = tool.result !== undefined ? toolResultPreviewText(tool.result) : tool.status === "running" ? "(running)" : "";
+  return resultText ? `${header}\n${resultText}` : header;
+}
+
+/** Own-vs-other diet projection (09-MEMORY-CONTEXT "Diet projection", ported
+ * from gaia-daemon-v2 pi-agent-runtime.ts boundedActivityPreview): own tool
+ * calls stay full while recent (within `fullTurnWindow` room events) or when
+ * `keepAllToolCalls` is set; own tool calls OLDER than the window collapse to
+ * a one-line stub carrying the room event id + tool id so a `tool_result_fetch`
+ * gaia-tool call can page the original back (never silent deletion — the full
+ * ToolDetail stays durable on the canonical RoomEvent regardless of what this
+ * render-time projection shows). Another agent's activity is always a
+ * bounded-tail compact stub, independent of recency. */
+function boundedActivityPreview(preview: string, policy: ContextDietPolicy, isOwn: boolean, isRecentEvent: boolean, eventId: string, toolId: string): string {
+  if (!policy.preset) return preview;
+  if (isOwn && (policy.keepAllToolCalls || isRecentEvent)) return preview;
+  if (isOwn) {
+    const firstLine = preview.split("\n", 1)[0]?.trim() ?? "";
+    return `${firstLine} … [collapsed — page the original with tool_result_fetch(sessionId="${eventId}", entryId="${toolId}")]`;
+  }
+  return preview.split("\n").slice(-Math.max(1, policy.toolTailLines)).join("\n");
+}
+
+/** Last `windowSize` distinct agent-authored event ids (nearest the end of
+ * `events`, i.e. nearest the current turn) count as "recent" for the own-tool
+ * diet rule; `windowSize<=0` recognizes none as recent. */
+function recentAgentEventIds(events: readonly RoomEvent[], windowSize: number): ReadonlySet<string> {
+  if (windowSize <= 0) return new Set();
+  const ids = events.filter((event) => !("targets" in event)).map((event) => event.id);
+  return new Set(ids.slice(-windowSize));
+}
+
+/** Render room events for a turn prompt (v1's room.ts renderer, verbatim when
+ * `diet` is absent or its policy is off). `userName` labels the human's own
+ * messages (Settings ▸ General ▸ "Your name" — services/user-name.ts); "" or
+ * omitted falls back to the anonymous "user" token this always used before
+ * that setting existed.
+ *
+ * `diet` (09-MEMORY-CONTEXT, opt-in — see ContextPolicyStore, default OFF):
+ * when its policy.preset is true, each agent event's tool-call activity
+ * (RoomEvent.details.tools — never shown before this) is additionally
+ * rendered under a `[gaia.activity]` block, decayed per boundedActivityPreview.
+ * The canonical RoomEvent is never mutated — this is a render-time projection
+ * only, exactly like v2's diet projection. */
+export function renderRoomTranscript(events: RoomEvent[], userName?: string, diet?: DietRenderContext): string {
   if (events.length === 0) return "(empty room)";
   const who = userName?.trim() || "user";
+  const recent = diet?.policy.preset ? recentAgentEventIds(events, diet.policy.fullTurnWindow) : undefined;
 
   return events
     .map((event) => {
@@ -143,7 +222,17 @@ export function renderRoomTranscript(events: RoomEvent[], userName?: string): st
           ? `${who} -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
       const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
-      return `[${formatEventTimestamp(event.timestamp)}] ${header}:\n${event.text}${attachments}`;
+      const tools = !("targets" in event) ? event.details?.tools : undefined;
+      const activity =
+        diet?.policy.preset && tools?.length
+          ? (() => {
+              const isOwn = event.author === diet.currentAgentId;
+              const isRecentEvent = recent?.has(event.id) ?? false;
+              const lines = tools.map((tool) => `${tool.toolName} · ${tool.status} · ${boundedActivityPreview(toolDetailPreview(tool), diet.policy, isOwn, isRecentEvent, event.id, tool.id)}`);
+              return `\n\n[gaia.activity owner=${isOwn ? "self" : "other"}]\n${lines.join("\n")}`;
+            })()
+          : "";
+      return `[${formatEventTimestamp(event.timestamp)}] ${header}:\n${event.text}${attachments}${activity}`;
     })
     .join("\n\n");
 }
@@ -317,6 +406,7 @@ export async function buildTurnPromptFor(
     agentId: agent.id,
     message: input.message,
     events: input.transcript,
+    dietPolicy: input.dietPolicy,
     memory: memoryChanged ? memory : undefined,
     recall: input.recall,
     pluginContext: input.pluginContext,
@@ -343,7 +433,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     input.recall?.trim() ?? "",
     input.pluginContext?.trim() ?? "",
     "New room events since your last turn:",
-    renderRoomTranscript(input.events, input.userName),
+    renderRoomTranscript(input.events, input.userName, input.dietPolicy ? { policy: input.dietPolicy, currentAgentId: input.agentId } : undefined),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
     input.turnLaw?.trim() ?? "",

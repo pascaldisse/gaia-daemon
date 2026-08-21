@@ -9,9 +9,11 @@ import {
   buildTurnPrompt,
   promptCacheKey,
   readProtocolsText,
+  renderRoomTranscript,
   type SystemPromptInput,
 } from "../src/harness/prompt.js";
-import type { AgentDef } from "../src/core/types.js";
+import type { AgentDef, AgentRoomEvent, ToolDetail } from "../src/core/types.js";
+import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietPolicy } from "../src/domain/context-diet.js";
 
 const AGENT = { id: "tester" } as unknown as AgentDef;
 
@@ -100,4 +102,61 @@ test("buildTurnPrompt: turnLaw lands as the very last tokens", () => {
   // without turnLaw nothing is appended
   const bare = buildTurnPrompt({ roomId: "room-1", agentId: "tester", message: "hello", events: [] });
   assert.doesNotMatch(bare, /LAW LINE/);
+});
+
+// --- context-diet render-time decay (09-MEMORY-CONTEXT, ported from v2) -----
+
+const LONG_PREVIEW = ["line one", "line two", "line three", "line four", "line five (newest)"].join("\n");
+
+function toolResult(text: string): unknown {
+  return { content: [{ type: "text", text }] };
+}
+
+function toolCall(id: string, text = LONG_PREVIEW): ToolDetail {
+  return { id, toolName: "bash", status: "complete", args: { command: "x" }, result: toolResult(text) };
+}
+
+function agentEvent(id: string, author: string, timestamp: string, tools: ToolDetail[]): AgentRoomEvent {
+  return { id, timestamp, author, text: `${author}'s turn`, details: { tools } };
+}
+
+const DIET_POLICY: ContextDietPolicy = { preset: true, keepAllToolCalls: false, fullTurnWindow: 1, toolTailLines: 2 };
+
+test("renderRoomTranscript: diet absent/off renders IDENTICALLY to no [gaia.activity] block (default OFF, IRON)", () => {
+  const events = [agentEvent("e1", "gaia", "2026-07-20T00:00:00.000Z", [toolCall("tool_1")])];
+  const withoutDiet = renderRoomTranscript(events, undefined);
+  const withOffPolicy = renderRoomTranscript(events, undefined, { policy: { ...DEFAULT_CONTEXT_DIET_POLICY, preset: false }, currentAgentId: "gaia" });
+  assert.doesNotMatch(withoutDiet, /gaia\.activity/);
+  assert.equal(withOffPolicy, withoutDiet);
+});
+
+test("renderRoomTranscript diet projection: own tool calls stay full within fullTurnWindow, collapse when older; another agent's activity is always a bounded tail", () => {
+  const ownOld = agentEvent("e_own_old", "gaia", "2026-07-20T00:00:00.000Z", [toolCall("tool_own_old")]);
+  const otherRecent = agentEvent("e_other", "scribe", "2026-07-20T00:01:00.000Z", [toolCall("tool_other")]);
+  const ownRecent = agentEvent("e_own_recent", "gaia", "2026-07-20T00:02:00.000Z", [toolCall("tool_own_recent")]);
+  const rendered = renderRoomTranscript([ownOld, otherRecent, ownRecent], undefined, { policy: DIET_POLICY, currentAgentId: "gaia" });
+  // Each event's rendering starts with its own "[<timestamp>]" header — split there for a clean per-event block, in event order (ownOld, otherRecent, ownRecent).
+  const [oldBlock, otherBlock, ownRecentBlock] = rendered.split(/(?=\[2026)/);
+
+  // own + recent (last event, within fullTurnWindow=1): full preview, every line present verbatim.
+  assert.match(ownRecentBlock, /owner=self/);
+  assert.ok(ownRecentBlock.includes(LONG_PREVIEW), "full longPreview must appear verbatim for the recent own turn");
+
+  // other agent (regardless of recency): bounded to toolTailLines=2 — only the tail lines, never the earlier ones.
+  assert.match(otherBlock, /owner=other/);
+  assert.match(otherBlock, /line four\nline five \(newest\)/);
+  assert.doesNotMatch(otherBlock, /line one/);
+  assert.doesNotMatch(otherBlock, /line three\nline four/);
+
+  // own + older than the window: collapsed to a one-line stub carrying (eventId, toolId) for tool_result_fetch — never silently deleted.
+  assert.match(oldBlock, /collapsed — page the original with tool_result_fetch\(sessionId="e_own_old", entryId="tool_own_old"\)/);
+  assert.doesNotMatch(oldBlock, /line two/);
+  assert.ok(!oldBlock.includes(LONG_PREVIEW));
+});
+
+test("renderRoomTranscript diet: keepAllToolCalls keeps own activity full regardless of recency", () => {
+  const ownOld = agentEvent("e_own_old", "gaia", "2026-07-20T00:00:00.000Z", [toolCall("tool_own_old")]);
+  const rendered = renderRoomTranscript([ownOld], undefined, { policy: { ...DIET_POLICY, fullTurnWindow: 0, keepAllToolCalls: true }, currentAgentId: "gaia" });
+  assert.doesNotMatch(rendered, /collapsed — page the original/);
+  assert.ok(rendered.includes(LONG_PREVIEW));
 });
