@@ -15,6 +15,22 @@ export const DEFAULTS = {
   maxSummonsPerRoom: 8,
   /** Unified-tool gaiago formatting threshold; GAIA_TOOL_FORMAT_BYTES overrides. */
   toolCompressionBytes: 8_192,
+  /** gaia web fetch: extracted-text truncation cap; GAIA_WEB_FETCH_MAX_BYTES overrides. */
+  webFetchMaxBytes: 50_000,
+  /** gaia web fetch: per-request timeout; GAIA_WEB_FETCH_TIMEOUT_MS overrides. */
+  webFetchTimeoutMs: 15_000,
+  /** gaia web fetch: include video transcript by default when the url matches
+   * a known video provider; GAIA_WEB_FETCH_TRANSCRIPT overrides, {transcript}
+   * per-call arg overrides both. */
+  webFetchTranscriptDefault: true,
+  /** Preferred caption/transcript language (skill's original default); GAIA_VIDEO_TRANSCRIPT_LANG overrides. */
+  videoTranscriptLang: "en",
+  /** gaia web fetch: top-level video comments are opt-in (token-heavy) --
+   * {comments} defaults off; GAIA_WEB_FETCH_COMMENTS overrides. */
+  webFetchCommentsDefault: false,
+  /** Comment count when {comments: true} without an explicit number;
+   * GAIA_WEB_FETCH_COMMENTS_MAX overrides, {comments: N} always wins. */
+  webFetchCommentsMax: 20,
   /** Progressive image renderer for the unified read verb; one-line native escape hatch. */
   imageRead: "gaia",
   host: "127.0.0.1",
@@ -52,6 +68,52 @@ export function gaiaHost(): string {
 export function gaiaToolCompressionBytes(): number {
   const parsed = Number.parseInt(env("GAIA_TOOL_FORMAT_BYTES") ?? "", 10);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : DEFAULTS.toolCompressionBytes;
+}
+
+/** Byte cap for `gaia web fetch` extracted text (and video transcript text);
+ * GAIA_WEB_FETCH_MAX_BYTES overrides, per-call {maxBytes} wins over both. */
+export function gaiaWebFetchMaxBytes(): number {
+  const parsed = Number.parseInt(env("GAIA_WEB_FETCH_MAX_BYTES") ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULTS.webFetchMaxBytes;
+}
+
+/** Request timeout for `gaia web fetch` (page fetch + video-transcript calls);
+ * GAIA_WEB_FETCH_TIMEOUT_MS overrides, per-call {timeoutMs} wins over both. */
+export function gaiaWebFetchTimeoutMs(): number {
+  const parsed = Number.parseInt(env("GAIA_WEB_FETCH_TIMEOUT_MS") ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULTS.webFetchTimeoutMs;
+}
+
+/** Whether `gaia web fetch` attaches a video transcript by default when the
+ * url matches a known video provider. GAIA_WEB_FETCH_TRANSCRIPT overrides;
+ * per-call {transcript: boolean} always wins. */
+export function gaiaWebFetchTranscriptDefault(): boolean {
+  const raw = env("GAIA_WEB_FETCH_TRANSCRIPT")?.trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "off") return false;
+  if (raw === "true" || raw === "1" || raw === "on") return true;
+  return DEFAULTS.webFetchTranscriptDefault;
+}
+
+/** Default caption/transcript language for video-transcript providers.
+ * GAIA_VIDEO_TRANSCRIPT_LANG overrides; per-call {lang} always wins. */
+export function gaiaVideoTranscriptDefaultLang(): string {
+  return env("GAIA_VIDEO_TRANSCRIPT_LANG")?.trim() || DEFAULTS.videoTranscriptLang;
+}
+
+/** Whether `gaia web fetch` attaches video comments by default (token-heavy --
+ * default OFF). GAIA_WEB_FETCH_COMMENTS overrides; per-call {comments} always wins. */
+export function gaiaWebFetchCommentsDefault(): boolean {
+  const raw = env("GAIA_WEB_FETCH_COMMENTS")?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "off") return false;
+  return DEFAULTS.webFetchCommentsDefault;
+}
+
+/** Comment count fetched when {comments: true} without an explicit number.
+ * GAIA_WEB_FETCH_COMMENTS_MAX overrides; per-call {comments: N} always wins. */
+export function gaiaWebFetchCommentsMax(): number {
+  const parsed = Number.parseInt(env("GAIA_WEB_FETCH_COMMENTS_MAX") ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULTS.webFetchCommentsMax;
 }
 
 /** GAIA_PORT overrides (0 = pick a free port). */
