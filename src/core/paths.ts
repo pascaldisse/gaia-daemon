@@ -123,6 +123,10 @@ export const workspacePaths = {
   /** Per-room writable scratch a credential-proxied harness may relocate its
    * store into (see HarnessSpec.credentialProxy) — generic, harness-declared. */
   roomProxyScratch: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "proxy-scratch"),
+  /** Context-diet (09-MEMORY-CONTEXT): workspace-wide default policy, room
+   * overrides layer on top (services/context-policy-store.ts). Default OFF. */
+  contextDietPolicy: (rootDir: string) => join(rootDir, ".gaia", "context-diet.json"),
+  roomContextDietPolicy: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId, "context-diet.json"),
 };
 
 /** Invert workspacePaths.roomDir: <root>/.gaia/rooms/<id> → <root>. The bare
