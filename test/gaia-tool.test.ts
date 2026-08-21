@@ -76,6 +76,11 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
   assert.equal(await readFile(file, "utf8"), "after");
   assert.match(text(await tool.execute("b", { verb: "bash", args: { command: "printf bash-ok" }, raw: true })), /bash-ok/);
   assert.match(text(await tool.execute("web", { verb: "web", args: { command: "printf web-curl-fallback" }, raw: true })), /web-curl-fallback/);
+  // {url} dispatches to the fetch path (distinct from {query} search and the
+  // curl escape hatch above) -- an invalid url proves routing without hitting
+  // the network, matching runWebFetchVerb's own error message.
+  assert.match(text(await tool.execute("web", { verb: "web", args: { url: "not a url" }, raw: true })), /ERROR: invalid url: not a url/);
+  assert.match(text(await tool.execute("web", { verb: "web", args: { url: "file:///etc/passwd" }, raw: true })), /ERROR: unsupported url scheme: file:/);
   assert.match(text(await tool.execute("mem", { verb: "mem", args: { action: "list" }, raw: true })), /no memory files/);
   assert.match(text(await tool.execute("recall", { verb: "recall", args: { query: "nothing" }, raw: true })), /no matches|ERROR/);
   assert.equal(text(await tool.execute("summon", { verb: "summon", args: { agent: "worker", task: "map" }, raw: true })), "summoned");

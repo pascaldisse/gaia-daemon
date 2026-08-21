@@ -12,6 +12,7 @@ import { readGaiaImage, type ImageReadDetail, type ImageReadRegion } from "./ima
 import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
 import { compressCaryll, expandCaryll } from "../services/caryll.js";
 import { searchWeb, type WebSearchProvider } from "../services/web-search.js";
+import { fetchWeb } from "../services/web-fetch.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
@@ -445,11 +446,8 @@ export function formatGaiagoResult(verb: GaiaVerb, text: string, details: unknow
   return { text: `${status} ${verb} · 行=${nonblank} · 詳=${detailKind}\n${payload || "∅"}`, formatter: "deterministic" };
 }
 
-async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<GaiaResult> {
+async function runWebSearchVerb(args: Record<string, unknown>): Promise<GaiaResult> {
   const query = typeof args.query === "string" ? args.query : "";
-  // Preserve the pre-existing command-shaped curl escape hatch. Structured
-  // {query, provider?} calls use the daemon-owned provider fallback chain.
-  if (!query) return bash.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
   const provider = args.provider;
   if (provider !== undefined && provider !== "brave" && provider !== "tavily" && provider !== "serper") {
     return { content: [{ type: "text", text: "ERROR: web provider must be brave, tavily, or serper." }], details: { ok: false } };
@@ -458,6 +456,53 @@ async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<Gai
   const response = await searchWeb({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider: provider as WebSearchProvider }) });
   const output = response.results.map((item, index) => `--- Result ${index + 1} ---\nTitle: ${item.title}\nLink: ${item.url}\nSnippet: ${item.snippet}`).join("\n\n");
   return { content: [{ type: "text", text: `Provider: ${response.provider}\n${output}` }], details: response };
+}
+
+/** Clean extracted page text (title + main content, chrome stripped) instead
+ * of raw HTML -- the low-token alternative to curl. YouTube urls additionally
+ * get a transcript (default on) and, opt-in, top-level comments. */
+async function runWebFetchVerb(args: Record<string, unknown>): Promise<GaiaResult> {
+  const url = typeof args.url === "string" ? args.url : "";
+  const maxBytes = typeof args.maxBytes === "number" ? args.maxBytes : typeof args.max_bytes === "number" ? args.max_bytes : undefined;
+  const transcript = typeof args.transcript === "boolean" ? args.transcript : undefined;
+  const lang = typeof args.lang === "string" ? args.lang : undefined;
+  const comments = typeof args.comments === "boolean" || typeof args.comments === "number" ? args.comments : undefined;
+  try {
+    const response = await fetchWeb({
+      url,
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+      ...(transcript === undefined ? {} : { transcript }),
+      ...(lang === undefined ? {} : { lang }),
+      ...(comments === undefined ? {} : { comments }),
+    });
+    const lines = [`Title: ${response.title}`, `URL: ${response.url}`];
+    if (response.video) {
+      lines.push(`Video: ${response.video.provider} ${response.video.videoId} (${response.video.lang})`);
+      if (response.video.channel) lines.push(`Channel: ${response.video.channel}`);
+      if (response.video.description) lines.push(`Description: ${response.video.description}`);
+    }
+    lines.push("", response.text);
+    if (response.video) {
+      lines.push("", `--- Transcript (${response.video.entries} entries${response.video.truncated ? ", truncated" : ""}) ---`, response.video.transcript);
+      if (response.video.comments) {
+        lines.push("", `--- Comments (${response.video.comments.length}) ---`);
+        for (const c of response.video.comments) lines.push(`${c.author}${c.likes !== undefined ? ` (${c.likes} likes)` : ""}: ${c.text}`);
+      } else if (response.video.commentsUnavailable) {
+        lines.push("", `Comments unavailable: ${response.video.commentsUnavailable}`);
+      }
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }], details: response };
+  } catch (error) {
+    return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+  }
+}
+
+async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<GaiaResult> {
+  if (typeof args.url === "string" && args.url) return runWebFetchVerb(args);
+  if (typeof args.query === "string" && args.query) return runWebSearchVerb(args);
+  // Preserve the pre-existing command-shaped curl escape hatch for anything
+  // that is neither a search nor a fetch call.
+  return bash.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
 }
 
 async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult> {
@@ -509,10 +554,16 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   );
   const summon = ctx.summonCreate ? createSummonTool(ctx.summonCreate, ctx.roomId, ctx.availableAgents) : undefined;
 
-  // Web's args are a union: the {query, provider?, maxResults?} search shape,
-  // OR the bash-shaped {command, timeout?} curl escape hatch runWebVerb falls
-  // back to verbatim when `query` is absent — reuses native.bash's own schema
-  // rather than re-typing "command" by hand.
+  // Web's args are a union of three shapes, told apart by which key is
+  // present (runWebVerb dispatches on that, not on this schema): the
+  // {query, provider?, maxResults?} SEARCH shape (Brave\u2192Tavily\u2192Serper,
+  // unchanged), the {url, maxBytes?, transcript?, lang?, comments?} FETCH shape
+  // (clean extracted page text -- title+main content, chrome stripped, NOT raw
+  // HTML; youtube urls also get a transcript by default and, opt-in, top-level
+  // comments), OR the bash-shaped {command, timeout?} curl escape hatch
+  // runWebVerb falls back to verbatim when neither `query` nor `url` is
+  // present -- reuses native.bash's own schema rather than re-typing "command"
+  // by hand.
   const webArgsSchema = Type.Union([
     native.bash.parameters as TSchema,
     Type.Object({
@@ -520,6 +571,14 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
       provider: Type.Optional(stringEnum(["brave", "tavily", "serper"], "Explicit provider override; default falls back Brave \u2192 Tavily \u2192 Serper.")),
       maxResults: Type.Optional(Type.Number({ description: "Max results to return." })),
       max_results: Type.Optional(Type.Number({ description: "Snake_case alias for maxResults." })),
+    }),
+    Type.Object({
+      url: Type.String({ description: "Page url to fetch and extract clean readable content from (title + main text, chrome stripped) -- NOT raw HTML, no curl needed." }),
+      maxBytes: Type.Optional(Type.Number({ description: "Truncate extracted text to this many UTF-8 bytes. Default is deployment-configured (GAIA_WEB_FETCH_MAX_BYTES)." })),
+      max_bytes: Type.Optional(Type.Number({ description: "Snake_case alias for maxBytes." })),
+      transcript: Type.Optional(Type.Boolean({ description: "Attach a video transcript when the url is a known video provider (currently YouTube). Default true." })),
+      lang: Type.Optional(Type.String({ description: "Preferred caption/transcript language code, e.g. en, de. Default en." })),
+      comments: Type.Optional(Type.Union([Type.Boolean(), Type.Number()], { description: "Attach top-level video comments: true for the default count, or a number for an explicit count. Default off (token-heavy)." })),
     }),
   ]);
 
@@ -582,8 +641,8 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search (Brave → Tavily → Serper; {query, provider?}) or curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; web accepts {query, provider?, maxResults?} and falls back Brave → Tavily → Serper; also files, commands, memory, artifacts, workers, steering.",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search ({query, provider?}, Brave → Tavily → Serper), web fetch ({url, maxBytes?, transcript?, lang?, comments?} -- clean extracted page text, not raw HTML; youtube urls get a transcript by default + opt-in top-level comments) or curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; web search {query, provider?, maxResults?} falls back Brave → Tavily → Serper; web fetch {url, maxBytes?, transcript?, comments?} returns clean extracted text (youtube: transcript on by default, comments opt-in); also files, commands, memory, artifacts, workers, steering.",
     parameters: buildGaiaParameters(verbSchemas),
     execute: async (_toolCallId: string, params: { verb: GaiaVerb; args: Record<string, unknown>; raw?: boolean; compress_above_bytes?: number; translator?: "deterministic" | "llm" }) => {
       try {
