@@ -83,6 +83,28 @@ function compileBinary(label, entrypoint, outputName) {
 compileBinary("daemon", join(repoRoot, "src/cli.ts"), "gaia-daemon");
 compileBinary("telegram-bridge", join(repoRoot, "scripts/telegram-bridge.mjs"), "gaia-telegram-bridge");
 
+// server/graphql.ts is deliberately excluded from cli.ts's `bun build
+// --compile` module graph (non-literal dynamic import — see cli.ts +
+// tsconfig.json's exclude comment: keeps graphql-yoga's DOM-polluting types
+// out of the main tsc program). So the compiled gaia-daemon binary never has
+// it on disk — pre-bundle it here instead (bun build, non-compile) into a
+// single self-contained ESM file shipped next to the binary
+// (core/bundle-assets.ts BUNDLE_BINARY_ARTIFACTS, core/paths.ts
+// graphqlAssetPath). A from-source run has no such file and falls back to
+// importing graphql.ts directly (cli.ts).
+timeStep("graphql-bundle", () => {
+  const res = spawnSync(
+    process.execPath,
+    ["build", "--target", "bun", "--format", "esm", join(repoRoot, "src/server/graphql.ts"), "--outfile", join(outDir, "graphql.js")],
+    { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
+  );
+  if (res.status !== 0) {
+    console.error(res.stderr || res.stdout || `bun build exited ${res.status}`);
+    process.exit(1);
+  }
+  if (res.stdout) process.stdout.write(res.stdout);
+});
+
 for (const name of BUNDLE_ASSET_DIRS) {
   timeStep(`snapshot-${name}`, () => {
     const src = join(repoRoot, name);
@@ -130,6 +152,7 @@ timeStep("write-source-json", () => {
 const totalMs = performance.now() - totalStart;
 const binarySize = statSync(join(outDir, "gaia-daemon")).size;
 const telegramBridgeSize = statSync(join(outDir, "gaia-telegram-bridge")).size;
+const graphqlAssetSize = statSync(join(outDir, "graphql.js")).size;
 
 console.log("---");
 for (const [label, ms] of timings) {
@@ -139,3 +162,4 @@ console.log(`total: ${totalMs.toFixed(1)}ms`);
 console.log(`target: ${target}`);
 console.log(`binary: ${join(outDir, "gaia-daemon")} (${binarySize} bytes)`);
 console.log(`telegram-bridge: ${telegramBridgeSize} bytes`);
+console.log(`graphql asset: ${join(outDir, "graphql.js")} (${graphqlAssetSize} bytes)`);

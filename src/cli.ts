@@ -2,8 +2,10 @@
 // The one entrypoint. Lightweight subcommands (mem/recall/summon, init, agent
 // create) never pull in the web-server graph — heavy modules load lazily.
 
+import { pathToFileURL } from "node:url";
 import { hardenPath } from "./core/env.js";
 import { gaiaGraphqlEnabled } from "./core/config.js";
+import { graphqlAssetPath } from "./core/paths.js";
 import { scaffoldGlobalAgent } from "./domain/agents.js";
 import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
 import { createUser, listUsers, removeUser } from "./domain/users.js";
@@ -193,7 +195,16 @@ async function main(): Promise<void> {
     // into this whole tsc program the moment tsc can statically resolve a
     // dynamic import() target — verified live 2026-08-21 (see
     // tsconfig.json's exclude comment + src/server/graphql.tsconfig.json).
-    const graphqlModulePath = "./server/graphql.js";
+    // Same non-literal-ness also keeps it OUT of `bun build --compile`'s
+    // module graph, so a compiled binary never has graphql.ts on disk to
+    // resolve at runtime — it instead loads a separately pre-bundled
+    // graphql.js asset shipped next to the executable (graphqlAssetPath,
+    // scripts/build-daemon.mjs "graphql-bundle" step). A from-source run has
+    // no such asset (graphqlAssetPath returns undefined) and falls back to
+    // the plain relative specifier, which bun resolves straight off
+    // graphql.ts, exactly as before.
+    const graphqlAsset = graphqlAssetPath();
+    const graphqlModulePath = graphqlAsset ? pathToFileURL(graphqlAsset).href : "./server/graphql.js";
     const graphql = gaiaGraphqlEnabled() ? await (await import(graphqlModulePath)).startGraphqlServer({ cwd: process.cwd() }) : undefined;
     if (graphql) console.log(`GAIA GraphQL test surface: ${graphql.url}`);
     console.log("Press Ctrl+C to stop.");

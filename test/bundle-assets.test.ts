@@ -30,6 +30,23 @@ test("compiled design assets omit source-only tests", () => {
   assert.deepEqual(BUNDLE_ASSET_EXCLUDES.design, ["test"]);
 });
 
+test("graphql.js is a packaged-only binary artifact, swapped alongside the binary but never in a from-source dev swap", () => {
+  assert.ok(BUNDLE_BINARY_ARTIFACTS.includes("graphql.js"));
+  assert.ok(!bundleSwapNames(true).includes("graphql.js"));
+  assert.ok(bundleSwapNames(false).includes("graphql.js"));
+});
+
+test("build script pre-bundles server/graphql.ts into a standalone graphql.js asset (bun build, non-compile)", () => {
+  const build = readFileSync(join(repoRoot, "scripts/build-daemon.mjs"), "utf8");
+  assert.match(build, /\["build", "--target", "bun", "--format", "esm", join\(repoRoot, "src\/server\/graphql\.ts"\), "--outfile", join\(outDir, "graphql\.js"\)\]/);
+});
+
+test("cli.ts resolves the pre-bundled graphql.js asset when present, falling back to the relative source import from a checkout", () => {
+  const cli = readFileSync(join(repoRoot, "src/cli.ts"), "utf8");
+  assert.match(cli, /const graphqlAsset = graphqlAssetPath\(\);/);
+  assert.match(cli, /graphqlAsset \? pathToFileURL\(graphqlAsset\)\.href : "\.\/server\/graphql\.js"/);
+});
+
 test("build script and reload swap read the same constant, no re-listed names", () => {
   const build = readFileSync(join(repoRoot, "scripts/build-daemon.mjs"), "utf8");
   assert.match(build, /import \{ BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES \} from "\.\.\/src\/core\/bundle-assets\.ts"/);

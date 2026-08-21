@@ -160,3 +160,14 @@ const bundleRoot: string = (() => {
 export function bundledDir(...segments: string[]): string {
   return resolve(bundleRoot, ...segments);
 }
+
+/** Compiled binary's pre-bundled server/graphql.ts asset (see
+ * bundle-assets.ts BUNDLE_BINARY_ARTIFACTS doc + scripts/build-daemon.mjs
+ * "graphql-bundle" step), or undefined when running from source (bundleRoot
+ * === the repo checkout itself, which has no graphql.js next to gaia-daemon
+ * because none was ever built there — cli.ts falls back to importing
+ * graphql.ts directly in that case). */
+export function graphqlAssetPath(): string | undefined {
+  const candidate = bundledDir("graphql.js");
+  return existsSync(candidate) ? candidate : undefined;
+}
