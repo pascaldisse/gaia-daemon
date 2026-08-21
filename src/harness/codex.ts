@@ -29,6 +29,8 @@ import {
   registerHarness,
   type RuntimeCreateContext,
   type SummonCreate,
+  type ContextDietAccess,
+  type ToolResultFetch,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
 import { fileSessionStore, SessionMap } from "./sessions.js";
@@ -363,6 +365,8 @@ export class CodexRuntime implements AgentRuntime {
   private readonly summonCreate?: SummonCreate;
   private readonly resumeCreate?: ResumeCreate;
   private readonly recallSearch?: RecallSearch;
+  private readonly toolResultFetch?: ToolResultFetch;
+  private readonly contextDiet?: ContextDietAccess;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
@@ -390,6 +394,8 @@ export class CodexRuntime implements AgentRuntime {
     this.summonCreate = options.summonCreate;
     this.resumeCreate = options.resumeCreate;
     this.recallSearch = options.recallSearch;
+    this.toolResultFetch = options.toolResultFetch;
+    this.contextDiet = options.contextDiet;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex", this.agent.id));
@@ -1011,6 +1017,8 @@ export class CodexRuntime implements AgentRuntime {
       summonCreate: this.summonCreate,
       resumeCreate: this.resumeCreate,
       recallSearch: this.recallSearch,
+      toolResultFetch: this.toolResultFetch,
+      contextDiet: this.contextDiet,
     })) as PiToolLike[];
     const tools = new Map(built.map((tool) => [tool.name, tool]));
     this.roomTools.set(roomId, tools);

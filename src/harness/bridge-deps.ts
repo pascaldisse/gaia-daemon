@@ -6,8 +6,9 @@
 import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
+import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
 import { LLM_PROXY_MOUNT } from "./protocol.js";
-import type { HarnessHost, RecallSearch, ResumeCreate, SummonCreate } from "./spec.js";
+import type { ContextDietAccess, ContextDietView, HarnessHost, RecallSearch, ResumeCreate, SummonCreate, ToolResultFetch } from "./spec.js";
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
 export class BridgeMemoryStore extends MemoryStore {
@@ -89,6 +90,43 @@ export function bridgeResumeCreate(target: DaemonTarget): ResumeCreate {
     const { ok, payload } = await daemonPost(target, "/api/harness/resume", { room: roomId, message });
     if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "resume failed");
     return typeof payload.result === "string" ? payload.result : "resume queued";
+  };
+}
+
+/** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
+ * tool-call stub back — backs the `tool_result_fetch` gaia-tool verb
+ * (09-MEMORY-CONTEXT). Same daemon bridge shape as every other harness dep. */
+export function bridgeToolResultFetch(target: DaemonTarget): ToolResultFetch {
+  return async ({ sessionId, entryId, offset, limit }) => {
+    const { ok, payload } = await daemonPost(target, "/api/harness/tool-result-fetch", { sessionId, entryId, offset, limit });
+    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "tool_result_fetch failed");
+    return {
+      text: typeof payload.text === "string" ? payload.text : "",
+      totalLength: typeof payload.totalLength === "number" ? payload.totalLength : 0,
+      hasMore: payload.hasMore === true,
+    };
+  };
+}
+
+/** Read/patch the context-diet policy — backs the `diet` gaia-tool verb (the
+ * `/diet` room command reaches the SAME daemon-side RoomService methods
+ * in-process, without this bridge). */
+export function bridgeContextDiet(target: DaemonTarget): ContextDietAccess {
+  const parseView = (payload: Record<string, unknown>): ContextDietView => ({
+    effective: payload.effective as ContextDietPolicy,
+    roomOverrides: (payload.roomOverrides ?? {}) as ContextDietOverrides,
+  });
+  return {
+    get: async () => {
+      const { ok, payload } = await daemonPost(target, "/api/harness/context-diet", {});
+      if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "context-diet read failed");
+      return parseView(payload);
+    },
+    set: async ({ scope, patch }) => {
+      const { ok, payload } = await daemonPost(target, "/api/harness/context-diet", { scope, patch });
+      if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "context-diet write failed");
+      return parseView(payload);
+    },
   };
 }
 

@@ -10,7 +10,7 @@
 import type { AgentDef, Workspace } from "../core/types.js";
 import type { ResumeCreate } from "./spec.js";
 import type { MemoryStore } from "../domain/memory.js";
-import type { GaiaTool, RecallSearch, SummonCreate } from "../harness/spec.js";
+import type { ContextDietAccess, GaiaTool, RecallSearch, SummonCreate, ToolResultFetch } from "../harness/spec.js";
 
 /** Everything the in-process Pi tool factories might need. */
 export interface AgentRosterEntry {
@@ -47,6 +47,12 @@ export interface PiToolContext {
   /** Daemon-side hybrid search; absent → the tool falls back to the local
    * transcript index (works without a bridge, lexical room-only). */
   recallSearch?: RecallSearch;
+  /** Backs the `gaia` tool's `tool_result_fetch` verb (09-MEMORY-CONTEXT);
+   * absent — no bridge — makes the verb unavailable, not the whole tool. */
+  toolResultFetch?: ToolResultFetch;
+  /** Backs the `gaia` tool's `diet` verb (09-MEMORY-CONTEXT); same store the
+   * `/diet` room command uses daemon-side. */
+  contextDiet?: ContextDietAccess;
 }
 
 export interface GaiaToolSpec {

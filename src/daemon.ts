@@ -14,7 +14,8 @@ import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
 import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, PetBinding, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
-import { capabilitiesFor, type GaiaTool, harnessIdFor } from "./harness/spec.js";
+import { capabilitiesFor, type ContextDietView, type GaiaTool, harnessIdFor } from "./harness/spec.js";
+import type { ContextDietOverrides } from "./domain/context-diet.js";
 import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
@@ -1060,6 +1061,38 @@ export class Daemon {
     if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
     const window = await scrollTranscriptWindow(record.path, hitId, options);
     return window ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`;
+  }
+
+  /** tool_result_fetch (09-MEMORY-CONTEXT): pages the ORIGINAL, uncollapsed
+   * call/args/result for a diet-collapsed own tool-call stub back by
+   * (sessionId, entryId) — v1 names these the room event id and the tool id
+   * within its details.tools[] (see RoomService#toolResultSlice). Scoped to
+   * the CALLING room only — a stub only ever names an event in its own room. */
+  async harnessToolResultFetch(
+    claims: HarnessTokenClaims,
+    sessionId: string,
+    entryId: string,
+    offset: number,
+    limit: number,
+  ): Promise<{ text: string; totalLength: number; hasMore: boolean }> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    const slice = await service.toolResultSlice(sessionId, entryId, offset, limit);
+    if (!slice) throw new Error(`No stored tool call for session ${sessionId} entry ${entryId}`);
+    return slice;
+  }
+
+  /** Context-diet policy (09-MEMORY-CONTEXT): read/patch the calling room's
+   * effective policy — the daemon-side half of BOTH the `diet` gaia-tool verb
+   * and the `/diet` room command (RoomService#dietView/dietSet is the one
+   * shared implementation). */
+  async harnessContextDietGet(claims: HarnessTokenClaims): Promise<ContextDietView> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.dietView();
+  }
+
+  async harnessContextDietSet(claims: HarnessTokenClaims, scope: "room" | "workspace", patch: ContextDietOverrides): Promise<ContextDietView> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.dietSet({ scope, patch });
   }
 
   /** INSIGHT "full" tier, decree 2026-07-28 part 3: direct, pull-based read of

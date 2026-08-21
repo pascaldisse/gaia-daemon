@@ -19,11 +19,12 @@ import { bearerToken, cookieHeader, cookieValue, json, parseBody, readRawBody, t
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import type { UiEvent } from "../core/types.js";
 import type { MemoryAction } from "../domain/memory.js";
+import { parseContextDietOverrides } from "../domain/context-diet.js";
 import { scaffoldGlobalAgent } from "../domain/agents.js";
 import { installGitGuard } from "../domain/git-guard.js";
 import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../domain/accounts.js";
 import { authenticate, createUser, issueSessionToken, listUsers, verifySessionToken, type PublicUser } from "../domain/users.js";
-import { harnessSpecs } from "../harness/spec.js";
+import { harnessSpecs, type GaiaTool } from "../harness/spec.js";
 import { agentRoster } from "../harness/tools.js";
 import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
@@ -126,6 +127,12 @@ function stringField(body: unknown, field: string): string | undefined {
 function boolField(body: unknown, field: string): boolean {
   if (!body || typeof body !== "object") return false;
   return (body as Record<string, unknown>)[field] === true;
+}
+
+function numberField(body: unknown, field: string): number | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 /** An array-of-strings field, present (even empty) vs. absent distinguished —
@@ -680,7 +687,9 @@ export class GaiaWebServer {
           path === "/api/harness/summon" ||
           path === "/api/harness/recall" ||
           path === "/api/harness/dream" ||
-          path === "/api/harness/resume"))
+          path === "/api/harness/resume" ||
+          path === "/api/harness/tool-result-fetch" ||
+          path === "/api/harness/context-diet"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1604,9 +1613,15 @@ export class GaiaWebServer {
       return json(response, 200, { agents: agentRoster(workspace) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume";
-    if (verb !== "dream" && !this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(verb)) {
-      return json(response, 403, { error: `This agent's harness does not grant the ${verb} tool.` });
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume" | "tool-result-fetch" | "context-diet";
+    // tool-result-fetch/context-diet are VERBS of the unified `gaia` tool
+    // (09-MEMORY-CONTEXT), not separate GaiaTool ids like memory/summon/recall
+    // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
+    if (verb !== "dream") {
+      const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" ? "gaia" : verb;
+      if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
+        return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
+      }
     }
 
     const body = await parseBody(request);
@@ -1745,6 +1760,47 @@ export class GaiaWebServer {
         const service = await this.daemon.serviceFor(claims.workspaceId, room);
         await service.sendMessage(message, { recordUserMessage: true });
         json(response, 200, { roomId: room, result: `Resumed room '${room}' with a follow-up message.` });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/tool-result-fetch (09-MEMORY-CONTEXT): pages the ORIGINAL,
+    // uncollapsed call/args/result for a diet-collapsed own tool-call stub back
+    // by (sessionId, entryId) — the daemon-side half of the `tool_result_fetch`
+    // gaia-tool verb; scoped strictly to the CALLER's own room (claims.roomId).
+    if (pathname === "/api/harness/tool-result-fetch") {
+      const sessionId = stringField(body, "sessionId")?.trim();
+      const entryId = stringField(body, "entryId")?.trim();
+      const offset = numberField(body, "offset") ?? 0;
+      const limit = numberField(body, "limit") ?? 32_000;
+      if (!sessionId || !entryId) return json(response, 400, { error: "Missing sessionId or entryId" });
+      if (!Number.isSafeInteger(offset) || offset < 0) return json(response, 400, { error: "offset must be non-negative" });
+      if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 32_000) return json(response, 400, { error: "limit must be between 1 and 32000" });
+      try {
+        const slice = await this.daemon.harnessToolResultFetch(claims, sessionId, entryId, offset, limit);
+        json(response, 200, { ok: true, ...slice });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/context-diet (09-MEMORY-CONTEXT): read/patch the calling
+    // room's context-diet policy — the daemon-side half of BOTH the `diet`
+    // gaia-tool verb and the `/diet` room command (one implementation).
+    // `{}` (no `patch`/`scope`) is a read; a `patch` present is a write.
+    if (pathname === "/api/harness/context-diet") {
+      const rawPatch = (body as Record<string, unknown>).patch;
+      const scope = stringField(body, "scope") === "workspace" ? "workspace" : "room";
+      try {
+        if (rawPatch === undefined) {
+          json(response, 200, { ok: true, ...(await this.daemon.harnessContextDietGet(claims)) });
+          return;
+        }
+        const patch = parseContextDietOverrides(rawPatch);
+        json(response, 200, { ok: true, ...(await this.daemon.harnessContextDietSet(claims, scope, patch)) });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

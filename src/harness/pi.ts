@@ -38,6 +38,8 @@ import {
   type RecallSearch,
   type ResumeCreate,
   type SummonCreate,
+  type ContextDietAccess,
+  type ToolResultFetch,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
 import { SessionMap } from "./sessions.js";
@@ -360,6 +362,8 @@ export class PiRuntime implements AgentRuntime {
   private readonly summonCreate?: SummonCreate;
   private readonly resumeCreate?: ResumeCreate;
   private readonly recallSearch?: RecallSearch;
+  private readonly toolResultFetch?: ToolResultFetch;
+  private readonly contextDiet?: ContextDietAccess;
   // ModelRuntime.create() is async (it can touch the network for catalog
   // refresh), but HarnessSpec.create() must return synchronously — so
   // construction kicks it off here and every path that touches the registry
@@ -387,6 +391,8 @@ export class PiRuntime implements AgentRuntime {
     this.summonCreate = options.summonCreate;
     this.resumeCreate = options.resumeCreate;
     this.recallSearch = options.recallSearch;
+    this.toolResultFetch = options.toolResultFetch;
+    this.contextDiet = options.contextDiet;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
@@ -810,6 +816,8 @@ export class PiRuntime implements AgentRuntime {
       summonCreate: this.summonCreate,
       resumeCreate: this.resumeCreate,
       recallSearch: this.recallSearch,
+      toolResultFetch: this.toolResultFetch,
+      contextDiet: this.contextDiet,
     });
     const systemPromptRef = { current: systemPrompt };
 
