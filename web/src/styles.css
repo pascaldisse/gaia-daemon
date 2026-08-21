@@ -1646,15 +1646,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .artifact-prompt-input { min-width: 0; }
 .artifact-prompt-send { flex: none; color: var(--accent); }
 /* design canvas: quiet chrome, one accent, everything else is the artwork */
-.artifact-canvas { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 420px; outline: none; border: 1px solid var(--border); background: var(--bg2); }
+.artifact-canvas { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 280px; outline: none; border: 1px solid var(--border); background: var(--bg2); }
 .artifact-canvas:focus-visible { border-color: var(--accent); }
 .artifact-canvas.panning .canvas-viewport, .artifact-canvas.tool-hand .canvas-viewport { cursor: grab; }
 .artifact-canvas.tool-box .canvas-stage,
 .artifact-canvas.tool-ellipse .canvas-stage,
 .artifact-canvas.tool-text .canvas-stage { cursor: crosshair; }
-.canvas-toolbar { position: relative; display: flex; align-items: center; gap: 14px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg3) 60%, transparent); }
+.canvas-toolbar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg3) 60%, transparent); }
 .canvas-tools, .canvas-group { display: flex; align-items: center; gap: 2px; }
 .canvas-group.right { margin-left: auto; }
+.canvas-group + .canvas-group::before, .canvas-tools + .canvas-group::before { align-self: stretch; width: 1px; margin-right: 8px; background: var(--border); content: ""; }
 .canvas-tool, .canvas-act { width: 26px; height: 24px; padding: 0; color: var(--muted); background: transparent; border: 1px solid transparent; box-shadow: none; font-size: 12px; line-height: 1; }
 .canvas-act { width: auto; min-width: 24px; padding: 0 5px; }
 .canvas-tool:hover:not(:disabled), .canvas-act:hover:not(:disabled) { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent); }
