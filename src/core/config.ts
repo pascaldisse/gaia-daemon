@@ -1,8 +1,10 @@
 // Every value a fresh install falls back to, in one place, plus the parser
 // for .gaia/config.json. Anything env-overridable is a function.
 
+import { readFileSync } from "node:fs";
 import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
+import { workspacePaths } from "./paths.js";
 
 export const DEFAULTS = {
   harness: "pi",
@@ -128,23 +130,45 @@ export function gaiaPort(): number {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.port;
 }
 
-/** Off-by-default toggle for the /graphql test surface. GAIA_GRAPHQL_ENABLED
- * overrides ("true"/"1"/"on" enables, anything else falsy leaves it off). */
-export function gaiaGraphqlEnabled(): boolean {
+/** Off-by-default toggle for the /graphql test surface. Precedence:
+ * GAIA_GRAPHQL_ENABLED env ("true"/"1"/"on" enables, "false"/"0"/"off" disables)
+ * > `.gaia/config.json` { graphql: { enabled } } (parsed by parseGraphqlConfig)
+ * > DEFAULTS.graphqlEnabled (off). `cwd` defaults to process.cwd() — every
+ * caller today (cli.ts, graphql.ts) runs from the workspace root already. */
+export function gaiaGraphqlEnabled(cwd: string = process.cwd()): boolean {
   const raw = env("GAIA_GRAPHQL_ENABLED")?.trim().toLowerCase();
   if (raw === "true" || raw === "1" || raw === "on") return true;
   if (raw === "false" || raw === "0" || raw === "off") return false;
-  return DEFAULTS.graphqlEnabled;
+  const fileEnabled = readGraphqlConfigFile(cwd)?.enabled;
+  return fileEnabled ?? DEFAULTS.graphqlEnabled;
 }
 
-/** GAIA_GRAPHQL_PORT overrides (0 = pick a free port). Kept separate from
+/** GAIA_GRAPHQL_PORT env overrides, then `.gaia/config.json` { graphql: { port } },
+ * then DEFAULTS.graphqlPort (0 = pick a free port). Kept separate from
  * gaiaPort()/the main daemon port on purpose: a distinct admin/testing
  * surface, never sharing a listener with the primary UI+API port. */
-export function gaiaGraphqlPort(): number {
+export function gaiaGraphqlPort(cwd: string = process.cwd()): number {
   const raw = env("GAIA_GRAPHQL_PORT");
-  if (!raw) return DEFAULTS.graphqlPort;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.graphqlPort;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535) return parsed;
+  }
+  const filePort = readGraphqlConfigFile(cwd)?.port;
+  return filePort ?? DEFAULTS.graphqlPort;
+}
+
+/** Live sync read of the `graphql` section straight off `<cwd>/.gaia/config.json`
+ * (mirrors domain/workspace.ts's liveMaxSummonsPerRoom: hot-reloadable, no
+ * daemon restart, deliberately bypasses any cached Workspace). Sync because
+ * gaiaGraphqlEnabled/gaiaGraphqlPort are called from sync call sites; missing
+ * workspace, missing file, or bad JSON all resolve to undefined tolerantly. */
+function readGraphqlConfigFile(cwd: string): { enabled?: boolean; port?: number } | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(workspacePaths.config(cwd), "utf8")) as unknown;
+    return isRecord(raw) ? parseGraphqlConfig(raw.graphql) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** GAIA_BASE_PATH: URL prefix the web client is mounted under behind a
@@ -194,6 +218,18 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (Array.isArray(raw.writable)) config.writable = raw.writable.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
   if (raw.net === "full" || raw.net === "none") config.net = raw.net;
   if (typeof raw.credentialProxy === "boolean") config.credentialProxy = raw.credentialProxy;
+  return Object.keys(config).length > 0 ? config : undefined;
+}
+
+/** Parse the `graphql` section (config.json): { enabled?: boolean, port?: number }.
+ * Absent/garbage → undefined (env + DEFAULTS.graphqlEnabled/Port apply at the
+ * use site, gaiaGraphqlEnabled/gaiaGraphqlPort); unknown extra fields drop
+ * silently like every other section. */
+export function parseGraphqlConfig(raw: unknown): { enabled?: boolean; port?: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const config: { enabled?: boolean; port?: number } = {};
+  if (typeof raw.enabled === "boolean") config.enabled = raw.enabled;
+  if (typeof raw.port === "number" && Number.isInteger(raw.port) && raw.port >= 0 && raw.port <= 65535) config.port = raw.port;
   return Object.keys(config).length > 0 ? config : undefined;
 }
 

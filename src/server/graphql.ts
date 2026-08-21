@@ -310,7 +310,7 @@ export interface GraphqlServer {
  * port, used by tests). */
 export async function startGraphqlServer(options: GraphqlServerOptions): Promise<GraphqlServer> {
   const host = "127.0.0.1"; // IRON: never GAIA_HOST-driven, never configurable off localhost.
-  const port = options.port ?? gaiaGraphqlPort();
+  const port = options.port ?? gaiaGraphqlPort(options.cwd);
   const yoga = createYoga({
     schema: buildSchema(options.cwd),
     graphqlEndpoint: "/graphql",
