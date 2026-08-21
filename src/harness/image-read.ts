@@ -1,7 +1,26 @@
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import * as photon from "@silvia-odwyer/photon-node";
+import { pathToFileURL } from "node:url";
+import type * as Photon from "@silvia-odwyer/photon-node";
+import { photonNodeAssetPath } from "../core/paths.js";
+
+// Lazy + dynamic on purpose: a compiled binary must never statically import
+// "@silvia-odwyer/photon-node" at module scope (see vendor/photon-node/
+// README-GAIA.md — its internal __dirname-based wasm load bakes to the BUILD
+// MACHINE's literal path, killing every agent turn, not just image reads,
+// because this module is imported eagerly by the harness). Loading the real
+// on-disk vendor/ file via a genuine runtime import() keeps __dirname correct.
+let photonModulePromise: Promise<typeof Photon> | undefined;
+function loadPhoton(): Promise<typeof Photon> {
+  if (!photonModulePromise) {
+    const assetPath = photonNodeAssetPath();
+    photonModulePromise = assetPath
+      ? (import(pathToFileURL(assetPath).href) as Promise<typeof Photon>)
+      : (import("@silvia-odwyer/photon-node") as Promise<typeof Photon>);
+  }
+  return photonModulePromise;
+}
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 const MAX_BASE64_BYTES = Math.floor(4.5 * 1024 * 1024);
@@ -91,7 +110,7 @@ function formatRect(rect: Rect): string {
   return `(${rect.x},${rect.y},${rect.width},${rect.height})`;
 }
 
-function encodeUnderCap(image: photon.PhotonImage, width: number, height: number): RenderedImage {
+function encodeUnderCap(photon: typeof Photon, image: Photon.PhotonImage, width: number, height: number): RenderedImage {
   let currentWidth = width;
   let currentHeight = height;
   while (true) {
@@ -121,9 +140,9 @@ function encodeUnderCap(image: photon.PhotonImage, width: number, height: number
   }
 }
 
-function render(image: photon.PhotonImage, edge: number | undefined): RenderedImage {
+function render(photon: typeof Photon, image: Photon.PhotonImage, edge: number | undefined): RenderedImage {
   const dimensions = dimensionsFor(image.get_width(), image.get_height(), edge);
-  return encodeUnderCap(image, dimensions.width, dimensions.height);
+  return encodeUnderCap(photon, image, dimensions.width, dimensions.height);
 }
 
 function imageNote(originalWidth: number, originalHeight: number, sent: RenderedImage, detail: ImageReadDetail): string {
@@ -144,14 +163,15 @@ export async function readGaiaImage(path: string, cwd: string, options: { detail
   const bytes = new Uint8Array(await readFile(absolutePath));
   if (!mayBeImageReadPath(path, bytes)) return undefined;
 
+  const photon = await loadPhoton();
   const decoded = photon.PhotonImage.new_from_byteslice(bytes);
   try {
     const originalWidth = decoded.get_width();
     const originalHeight = decoded.get_height();
     const detail = options.detail ?? "low";
-    const thumbnail = render(decoded, 768);
+    const thumbnail = render(photon, decoded, 768);
     if (!options.region) {
-      const rendered = detail === "low" ? thumbnail : render(decoded, detailEdge(detail));
+      const rendered = detail === "low" ? thumbnail : render(photon, decoded, detailEdge(detail));
       return {
         content: [{ type: "text", text: imageNote(originalWidth, originalHeight, rendered, detail) }, { type: "image", data: rendered.data, mimeType: rendered.mimeType }],
         details: { imageRead: true, original: { width: originalWidth, height: originalHeight } },
@@ -161,7 +181,7 @@ export async function readGaiaImage(path: string, cwd: string, options: { detail
     const rect = gridRect(options.region, originalWidth, originalHeight);
     const crop = photon.crop(decoded, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height);
     try {
-      const renderedCrop = render(crop, detailEdge(detail));
+      const renderedCrop = render(photon, crop, detailEdge(detail));
       const cropNote = `Read image crop ${options.region} of 3×3, orig rect ${formatRect(rect)} → sent ${renderedCrop.width}×${renderedCrop.height} (detail=${detail})`;
       return {
         content: [

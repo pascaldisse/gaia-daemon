@@ -171,3 +171,15 @@ export function graphqlAssetPath(): string | undefined {
   const candidate = bundledDir("graphql.js");
   return existsSync(candidate) ? candidate : undefined;
 }
+
+/** Vendored @silvia-odwyer/photon-node (vendor/photon-node, BUNDLE_ASSET_DIRS
+ * "vendor") — see vendor/photon-node/README-GAIA.md for why this can't be a
+ * bare package import in a compiled binary. Returns the real on-disk
+ * photon_rs.js path (loaded via a genuine runtime import(), never bundled)
+ * or undefined when no snapshot exists, so harness/image-read.ts falls back
+ * to importing the bare package specifier (fine unbundled, e.g. dev/source
+ * runs before any build has produced a vendor/ snapshot). */
+export function photonNodeAssetPath(): string | undefined {
+  const candidate = bundledDir("vendor", "photon-node", "photon_rs.js");
+  return existsSync(candidate) ? candidate : undefined;
+}
