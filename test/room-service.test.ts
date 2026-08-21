@@ -3231,3 +3231,95 @@ test("a cursor past EOF still clamps to a full replay", async () => {
   assert.ok(seen[0]! >= 3, `agent got ${seen[0]} events — the impossible cursor was not clamped`);
   assert.equal((await room.state()).agentCursors.gaia, (await room.eventsFrom(0)).events.length, "cursor left impossible");
 });
+
+// --- context-diet (09-MEMORY-CONTEXT): /diet room command + dietView/dietSet/toolResultSlice ---
+
+test("/diet status: OFF by default (IRON), on/off toggles the room override, --workspace toggles the workspace default", async () => {
+  const { service } = await makeService();
+  assert.match(await service.runDietCommand("status", "room"), /preset=off/);
+
+  const onMsg = await service.runDietCommand("on", "room");
+  assert.match(onMsg, /enabled for this room/);
+  assert.match(onMsg, /preset=on/);
+  assert.match(await service.runDietCommand("status", "room"), /preset=on/);
+
+  const offMsg = await service.runDietCommand("off", "room");
+  assert.match(offMsg, /disabled for this room/);
+  assert.match(await service.runDietCommand("status", "room"), /preset=off/);
+
+  // A workspace-default toggle only reaches rooms with NO room-level override
+  // of their own — this room already has one (from the /diet off above), so
+  // its own override still wins, exactly like a real config layering.
+  const workspaceMsg = await service.runDietCommand("on", "workspace");
+  assert.match(workspaceMsg, /enabled for this workspace/);
+  assert.match(await service.runDietCommand("status", "room"), /preset=off/);
+});
+
+test("/diet on --workspace: reaches a room with no override of its own", async () => {
+  const { service } = await makeService();
+  assert.match(await service.runDietCommand("status", "room"), /preset=off/);
+  await service.runDietCommand("on", "workspace");
+  assert.match(await service.runDietCommand("status", "room"), /preset=on/);
+});
+
+test("dietView/dietSet: room override wins over the workspace default, and is visible in the view", async () => {
+  const { service } = await makeService();
+  await service.dietSet({ scope: "workspace", patch: { preset: false, toolTailLines: 12 } });
+  const view = await service.dietSet({ scope: "room", patch: { preset: true } });
+  assert.equal(view.effective.preset, true);
+  assert.equal(view.effective.toolTailLines, 12); // inherited from the workspace default
+  assert.deepEqual(view.roomOverrides, { preset: true });
+});
+
+test("a turn only carries dietPolicy on AgentInput once /diet on has run for this room (default OFF sends nothing)", async () => {
+  const seen: Array<AgentInput["dietPolicy"]> = [];
+  const { service } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "reply" } as AgentEvent]);
+      const send = runtime.send.bind(runtime);
+      runtime.send = (input) => {
+        seen.push(input.dietPolicy);
+        return send(input);
+      };
+      return runtime;
+    },
+  });
+  await service.sendMessage("first");
+  await service.waitForIdle();
+  assert.equal(seen[0], undefined, "diet is OFF by default — AgentInput.dietPolicy is absent, zero behavior change");
+
+  await service.runDietCommand("on", "room");
+  await service.sendMessage("second");
+  await service.waitForIdle();
+  assert.equal(seen[1]?.preset, true);
+});
+
+test("toolResultSlice: pages back the original call/args/result for a tool call recorded on a committed agent event", async () => {
+  const { service } = await makeService({
+    agents: ["gaia"],
+    script: () => [
+      { type: "tool-start", toolCallId: "tool-1", toolName: "bash", args: { command: "ls" } },
+      { type: "tool-end", toolCallId: "tool-1", toolName: "bash", result: { content: [{ type: "text", text: "file-a\nfile-b" }] }, isError: false },
+      { type: "text-delta", delta: "done" },
+    ],
+  });
+  await service.sendMessage("list files");
+  await service.waitForIdle();
+
+  const { events } = await service.room.eventsFrom(0);
+  const reply = events[1] as { id: string };
+
+  const full = await service.toolResultSlice(reply.id, "tool-1", 0, 10_000);
+  assert.ok(full);
+  assert.match(full!.text, /"call": "bash"/);
+  assert.match(full!.text, /file-a\\nfile-b/);
+  assert.equal(full!.hasMore, false);
+
+  const paged = await service.toolResultSlice(reply.id, "tool-1", 0, 5);
+  assert.equal(paged?.text.length, 5);
+  assert.equal(paged?.hasMore, true);
+
+  assert.equal(await service.toolResultSlice(reply.id, "no-such-tool", 0, 100), undefined);
+  assert.equal(await service.toolResultSlice("no-such-event", "tool-1", 0, 100), undefined);
+});

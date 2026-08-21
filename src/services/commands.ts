@@ -22,6 +22,7 @@ export type SlashCommand =
   | { type: "consolidate"; agent?: string }
   | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string }
+| { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
   | { type: "cancel" }
@@ -72,6 +73,11 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent]" },
+{
+    name: "diet",
+    type: "diet",
+    description: "context-diet render decay (09-MEMORY-CONTEXT, default OFF): /diet on|off|status [--workspace]",
+  },
   { name: "schedule", type: "schedule", description: "list scheduled jobs or run one now: /schedule [run <id>]" },
   { name: "steer", type: "steer", description: "inject guidance into the running turn: /steer <text>" },
   { name: "cancel", type: "cancel", description: "stop the running turn and drop queued messages", aliases: ["stop"] },
@@ -157,6 +163,12 @@ export function parseCommand(input: string): SlashCommand {
     }
     case "compact":
       return { type: "compact", agent: stripped[0] || undefined };
+    case "diet": {
+      const scope: "room" | "workspace" = args.some((arg) => arg.toLowerCase() === "--workspace") ? "workspace" : "room";
+      const first = stripped.find((arg) => arg.toLowerCase() !== "--workspace")?.toLowerCase();
+      const sub: "on" | "off" | "status" = first === "on" ? "on" : first === "off" ? "off" : "status";
+      return { type: "diet", sub, scope };
+    }
     case "schedule":
       return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
     case "steer":

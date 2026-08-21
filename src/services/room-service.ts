@@ -58,7 +58,7 @@ import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, listAgent
 import { resolveSkillRefs } from "../domain/skills.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
-import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
+import type { AgentRuntime, ContextDietView, HarnessHost } from "../harness/spec.js";
 import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCommandsFor, usageAccountFor } from "../harness/spec.js";
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
@@ -66,6 +66,8 @@ import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCo
 import { loadCommandPlugins, type CommandPlugin, type PluginContext, type PluginPanel } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
+import { ContextPolicyStore } from "./context-policy-store.js";
+import type { ContextDietOverrides } from "../domain/context-diet.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
@@ -344,6 +346,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
+  diet: (service, command) => (command.type === "diet" ? service.runDietCommand(command.sub, command.scope) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
   rewind: (service, command) => (command.type === "rewind" ? service.runRewindCommand(command.count) : Promise.resolve("")),
@@ -440,10 +443,15 @@ export class RoomService {
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
+  /** Context-diet policy store (09-MEMORY-CONTEXT): workspace default + this
+   * room's override, file-backed under .gaia/ — backs `/diet` and the
+   * `diet`/`tool_result_fetch` gaia-tool verbs. Default OFF (IRON). */
+  private readonly dietPolicyStore: ContextPolicyStore;
 
   constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
     this.incognito = options.incognito === true;
+    this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
     // In an incognito room the memory/recall tools are stripped from every agent.
     // The strip happens in the runner subprocess (it re-loads the agent from disk,
     // so a daemon-side strip here would never reach it); we just pass the flag
@@ -1480,6 +1488,12 @@ export class RoomService {
 
       const userName = await readUserNameSetting();
       const pluginContext = await this.pluginPrompt(state, target);
+      // Context-diet (09-MEMORY-CONTEXT): resolved fresh every turn (two small
+      // JSON reads) so a /diet toggle mid-conversation applies on the very
+      // next turn, no session rebuild. `preset:false` (the default) renders
+      // renderRoomTranscript IDENTICALLY to omitting dietPolicy — IRON, zero
+      // cost/behavior change for every room that never opts in.
+      const dietPolicy = await this.dietPolicyStore.effective(this.roomId);
 
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
@@ -1500,6 +1514,7 @@ export class RoomService {
             ...(pluginContext ? { pluginContext } : {}),
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
             ...(userName ? { userName } : {}),
+            ...(dietPolicy.preset ? { dietPolicy } : {}),
           },
           isCancelled: () => this.taskCancelled(task),
           onEvent: (event) => {
@@ -3206,6 +3221,44 @@ export class RoomService {
       : `Set GAIA-THINK level to ${level}/10 for this room.`;
   }
 
+  /** Context-diet policy for this room (effective = workspace default + this
+   * room's override) plus the room's raw override document, for display. The
+   * daemon-side half of BOTH the `diet` gaia-tool verb and the `/diet` room
+   * command — one implementation, two surfaces (Pascal 2026-08-21). */
+  async dietView(): Promise<ContextDietView> {
+    const [effective, roomOverrides] = await Promise.all([
+      this.dietPolicyStore.effective(this.roomId),
+      this.dietPolicyStore.roomOverrides(this.roomId),
+    ]);
+    return { effective, roomOverrides };
+  }
+
+  /** Patch the workspace default or this room's override; returns the new view. */
+  async dietSet(params: { scope: "room" | "workspace"; patch: ContextDietOverrides }): Promise<ContextDietView> {
+    if (params.scope === "workspace") await this.dietPolicyStore.patchWorkspace(params.patch);
+    else await this.dietPolicyStore.patchRoom(this.roomId, params.patch);
+    return this.dietView();
+  }
+
+  private static formatDietPolicy(policy: ContextDietView["effective"]): string {
+    return `preset=${policy.preset ? "on" : "off"}, fullTurnWindow=${policy.fullTurnWindow}, toolTailLines=${policy.toolTailLines}, keepAllToolCalls=${policy.keepAllToolCalls}`;
+  }
+
+  /** /diet on|off|status [--workspace]: toggles render-time context-diet decay
+   * (see harness/prompt.ts renderRoomTranscript). Default OFF, IRON — nothing
+   * about a room's rendering changes until this (or the gaia-tool `diet`
+   * verb) is run. */
+  async runDietCommand(sub: "on" | "off" | "status", scope: "room" | "workspace"): Promise<string> {
+    if (sub === "status") {
+      const view = await this.dietView();
+      const override = Object.keys(view.roomOverrides).length ? ` (room override: ${JSON.stringify(view.roomOverrides)})` : "";
+      return `Context-diet for this room: ${RoomService.formatDietPolicy(view.effective)}${override}`;
+    }
+    const view = await this.dietSet({ scope, patch: { preset: sub === "on" } });
+    const target = scope === "workspace" ? "this workspace (default for every room without its own override)" : "this room";
+    return `Context-diet ${sub === "on" ? "enabled" : "disabled"} for ${target}. Effective: ${RoomService.formatDietPolicy(view.effective)}.`;
+  }
+
   /** Room-scoped thinking override (mirrors setRole): writes ONLY
    * state.thinkingOverrides via room state, never agent.json, and never
    * respawns runners — the harness reads the resolved value per-turn
@@ -3441,6 +3494,27 @@ export class RoomService {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
     return events.find((event) => event.id === eventId);
+  }
+
+  /** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
+   * tool-call stub back by (eventId, toolId) — backs `tool_result_fetch`
+   * (09-MEMORY-CONTEXT). The canonical RoomEvent.details.tools entry is the
+   * single durable source; nothing there is ever collapsed — only the
+   * render-time renderRoomTranscript projection ever shows a stub, so this
+   * always finds the full original. */
+  async toolResultSlice(
+    eventId: string,
+    toolId: string,
+    offset: number,
+    limit: number,
+  ): Promise<{ text: string; totalLength: number; hasMore: boolean } | undefined> {
+    const event = await this.eventById(eventId);
+    if (!event || "targets" in event) return undefined; // only agent events carry tool details
+    const tool = event.details?.tools?.find((candidate) => candidate.id === toolId);
+    if (!tool) return undefined;
+    const full = JSON.stringify({ call: tool.toolName, args: tool.args, result: tool.result }, null, 2);
+    const text = full.slice(offset, offset + limit);
+    return { text, totalLength: full.length, hasMore: offset + text.length < full.length };
   }
 
   private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {

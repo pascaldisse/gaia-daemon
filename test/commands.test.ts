@@ -53,6 +53,13 @@ test("parseCommand: known commands and arguments", () => {
   // pipeline rather than being mistaken for a path/prose message.
   assert.deepEqual(parseCommand("/skill:stoner-mode 7"), { type: "unknown", command: "skill:stoner-mode" });
   assert.deepEqual(parseCommand("/wat"), { type: "unknown", command: "wat" });
+  assert.ok(SLASH_COMMANDS.some((command) => command.name === "diet"), "/diet is advertised to the command palette");
+  assert.deepEqual(parseCommand("/diet"), { type: "diet", sub: "status", scope: "room" });
+  assert.deepEqual(parseCommand("/diet on"), { type: "diet", sub: "on", scope: "room" });
+  assert.deepEqual(parseCommand("/diet off"), { type: "diet", sub: "off", scope: "room" });
+  assert.deepEqual(parseCommand("/diet status"), { type: "diet", sub: "status", scope: "room" });
+  assert.deepEqual(parseCommand("/diet on --workspace"), { type: "diet", sub: "on", scope: "workspace" });
+  assert.deepEqual(parseCommand("/diet --workspace off"), { type: "diet", sub: "off", scope: "workspace" });
 });
 
 test("parseCommand: /goal sub-commands, objective and --tokens budget", () => {
