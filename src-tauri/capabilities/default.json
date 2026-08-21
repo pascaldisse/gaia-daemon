@@ -14,6 +14,7 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
+    "notification:default",
     "allow-open-window",
     "allow-redock",
     "allow-set-badge",
