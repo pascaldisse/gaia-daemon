@@ -15,5 +15,15 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts", "design/src/**/*.ts"]
+  "include": ["src/**/*.ts", "design/src/**/*.ts"],
+  // graphql.ts pulls graphql-yoga -> @whatwg-node/fetch, whose .d.ts merges a
+  // DOM-shaped ReadableStream/Buffer/BlobPart into the GLOBAL scope of any
+  // program that includes it — verified live 2026-08-21: adding graphql-yoga
+  // as a plain dependency broke unrelated fetch/stream typings in
+  // embed-sidecar.ts/read-aloud.ts/transcribe.ts the moment graphql.ts was
+  // compiled in the SAME tsc program (skipLibCheck does not prevent global
+  // augmentation merging). Checked separately by src/server/graphql.tsconfig.json
+  // instead — same isolation pattern web/tsconfig.json already uses for its
+  // own, different, lib set.
+  "exclude": ["src/server/graphql.ts"]
 }

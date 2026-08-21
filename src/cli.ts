@@ -3,6 +3,7 @@
 // create) never pull in the web-server graph — heavy modules load lazily.
 
 import { hardenPath } from "./core/env.js";
+import { gaiaGraphqlEnabled } from "./core/config.js";
 import { scaffoldGlobalAgent } from "./domain/agents.js";
 import { globalAgentsPath, initWorkspace } from "./domain/workspace.js";
 import { createUser, listUsers, removeUser } from "./domain/users.js";
@@ -14,7 +15,7 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia web <query> [-n N] [--provider name]             web search; Brave → Tavily → Serper\n  gaia --help                  show help`
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon … agent room tools (used inside a turn)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia web <query> [-n N] [--provider name]             web search; Brave → Tavily → Serper\n  GAIA_GRAPHQL_ENABLED=true gaia                         also serves GraphiQL/GraphQL at /graphql (GAIA_GRAPHQL_PORT, default 4780)\n  gaia --help                  show help`
   );
 }
 
@@ -185,12 +186,22 @@ async function main(): Promise<void> {
     const { startWebServer } = await import("./server/http.js");
     const server = await startWebServer({ cwd: process.cwd() });
     console.log(`GAIA web UI: ${server.url}`);
+    // GraphQL test surface: off by default, separate localhost-only port —
+    // see src/server/graphql.ts module doc. GAIA_GRAPHQL_ENABLED=true to arm.
+    // The specifier is a runtime-only variable (not an inline string literal)
+    // on purpose: graphql.ts pulls in graphql-yoga, whose types otherwise leak
+    // into this whole tsc program the moment tsc can statically resolve a
+    // dynamic import() target — verified live 2026-08-21 (see
+    // tsconfig.json's exclude comment + src/server/graphql.tsconfig.json).
+    const graphqlModulePath = "./server/graphql.js";
+    const graphql = gaiaGraphqlEnabled() ? await (await import(graphqlModulePath)).startGraphqlServer({ cwd: process.cwd() }) : undefined;
+    if (graphql) console.log(`GAIA GraphQL test surface: ${graphql.url}`);
     console.log("Press Ctrl+C to stop.");
     await new Promise<void>((resolve) => {
       const stop = (): void => {
         process.off("SIGINT", stop);
         process.off("SIGTERM", stop);
-        void server.close().finally(resolve);
+        void Promise.all([server.close(), graphql ? graphql.close() : Promise.resolve()]).finally(resolve);
       };
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);

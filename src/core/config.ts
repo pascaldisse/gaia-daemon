@@ -35,6 +35,10 @@ export const DEFAULTS = {
   imageRead: "gaia",
   host: "127.0.0.1",
   port: 8787,
+  /** GraphQL test surface (/graphql): off by default, IRON localhost-bind only. GAIA_GRAPHQL_ENABLED toggles. */
+  graphqlEnabled: false,
+  /** GraphQL test surface port; GAIA_GRAPHQL_PORT overrides. */
+  graphqlPort: 4780,
   // Stable self-signed identity for macOS re-signing on /rebuild. Ad-hoc
   // ("-") signing keys the TCC designated requirement to the binary's
   // cdhash, which changes every build — orphaning every mic/camera grant.
@@ -122,6 +126,25 @@ export function gaiaPort(): number {
   if (!raw) return DEFAULTS.port;
   const parsed = Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.port;
+}
+
+/** Off-by-default toggle for the /graphql test surface. GAIA_GRAPHQL_ENABLED
+ * overrides ("true"/"1"/"on" enables, anything else falsy leaves it off). */
+export function gaiaGraphqlEnabled(): boolean {
+  const raw = env("GAIA_GRAPHQL_ENABLED")?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "off") return false;
+  return DEFAULTS.graphqlEnabled;
+}
+
+/** GAIA_GRAPHQL_PORT overrides (0 = pick a free port). Kept separate from
+ * gaiaPort()/the main daemon port on purpose: a distinct admin/testing
+ * surface, never sharing a listener with the primary UI+API port. */
+export function gaiaGraphqlPort(): number {
+  const raw = env("GAIA_GRAPHQL_PORT");
+  if (!raw) return DEFAULTS.graphqlPort;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : DEFAULTS.graphqlPort;
 }
 
 /** GAIA_BASE_PATH: URL prefix the web client is mounted under behind a
