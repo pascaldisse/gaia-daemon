@@ -185,12 +185,12 @@ test("gaia tool's outer schema: verb enum lists every registered verb, and args 
   assert.equal(schema.type, "object");
   assert.deepEqual(schema.required, ["verb", "args"]);
   assert.equal(schema.properties.args.type, "object");
-  assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"]);
+  assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch"]);
   // Per-verb typed branches ride as allOf/if-then — sibling to (never replacing)
   // the top-level properties, so a consumer that only reads schema.properties/
   // schema.required (pi-ai's Anthropic non-strict legacyInputSchema path) still
   // sees a correct, non-empty object schema.
-  assert.ok(Array.isArray(schema.allOf) && schema.allOf.length >= 7);
+  assert.ok(Array.isArray(schema.allOf) && schema.allOf.length >= 9);
   const editBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "edit");
   assert.ok(editBranch, "edit has a typed allOf/if-then branch");
   assert.deepEqual(editBranch.then.properties.args.required, ["path", "edits"]);
@@ -209,4 +209,57 @@ test("gaia formats above the configurable threshold in deterministic gaiago and 
   assert.match(formatted, /1→one\n2→two/);
   const raw = text(await tool.execute("raw", { verb: "bash", args: { command: "printf one" }, compress_above_bytes: 0, raw: true }));
   assert.equal(raw, "one");
+});
+
+test("gaia diet verb: get/set dispatch to ctx.contextDiet, unavailable without it, set requires a knob", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-diet-"));
+  const calls: unknown[] = [];
+  const view = { effective: { preset: true, keepAllToolCalls: false, fullTurnWindow: 2, toolTailLines: 20 }, roomOverrides: { preset: true } };
+  const tool: any = createGaiaTool({
+    memoryStore: new MemoryStore(),
+    agent: { id: "a", memoryDir: dir } as AgentDef,
+    roomId: "r",
+    roomDir: dir,
+    workDir: dir,
+    contextDiet: {
+      get: async () => view,
+      set: async (params: unknown) => {
+        calls.push(params);
+        return view;
+      },
+    },
+  });
+  assert.match(text(await tool.execute("g", { verb: "diet", args: { action: "get" }, raw: true })), /"preset":true/);
+  await tool.execute("s", { verb: "diet", args: { action: "set", scope: "workspace", preset: false }, raw: true });
+  assert.deepEqual(calls, [{ scope: "workspace", patch: { preset: false } }]);
+  assert.match(text(await tool.execute("e", { verb: "diet", args: { action: "set" }, raw: true })), /ERROR: diet set requires at least one/);
+
+  const noCtx: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  assert.match(text(await noCtx.execute("n", { verb: "diet", args: { action: "get" }, raw: true })), /ERROR: diet is unavailable/);
+});
+
+test("gaia tool_result_fetch verb: pages back via ctx.toolResultFetch, requires sessionId/entryId, unavailable without it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-fetch-"));
+  const calls: unknown[] = [];
+  const tool: any = createGaiaTool({
+    memoryStore: new MemoryStore(),
+    agent: { id: "a", memoryDir: dir } as AgentDef,
+    roomId: "r",
+    roomDir: dir,
+    workDir: dir,
+    toolResultFetch: async (params: unknown) => {
+      calls.push(params);
+      return { text: "the original bash output", totalLength: 25, hasMore: false };
+    },
+  });
+  const result = text(await tool.execute("f", { verb: "tool_result_fetch", args: { sessionId: "e1", entryId: "tool-1" }, raw: true }));
+  assert.equal(result, "the original bash output");
+  assert.deepEqual(calls, [{ sessionId: "e1", entryId: "tool-1", offset: 0, limit: 32_000 }]);
+
+  const missing = text(await tool.execute("m", { verb: "tool_result_fetch", args: {}, raw: true }));
+  assert.match(missing, /^ERROR: gaia tool_result_fetch args invalid/);
+
+  const noCtx: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
+  const unavailable = text(await noCtx.execute("u", { verb: "tool_result_fetch", args: { sessionId: "e1", entryId: "t1" }, raw: true }));
+  assert.match(unavailable, /ERROR: tool_result_fetch is unavailable/);
 });

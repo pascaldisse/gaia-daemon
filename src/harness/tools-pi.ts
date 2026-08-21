@@ -346,11 +346,11 @@ export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext,
   });
 }
 
-type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll";
+type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll" | "diet" | "tool_result_fetch";
 type GaiaResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details: unknown };
 type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
 
-const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll"];
+const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch"];
 
 /** Verbs with a real, reusable per-verb `args` schema (mirrors the retired
  * typed native tools exactly — read/write/edit/bash/summon/mem/recall come
@@ -527,6 +527,56 @@ async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult>
   return { content: [{ type: "text", text: `真 caryll.stats · ${result.stats.tokensBefore}→${result.stats.tokensAfter} · legend=${result.stats.legendEntries}` }], details: result.stats };
 }
 
+/** `diet` verb (09-MEMORY-CONTEXT): read or patch the room's context-diet
+ * policy through `ctx.contextDiet` — the SAME daemon-side implementation the
+ * `/diet` room command uses (RoomService#dietView/dietSet), just reached from
+ * inside a turn instead of a slash command. */
+async function runDietVerb(args: Record<string, unknown>, ctx: import("./tools.js").PiToolContext): Promise<GaiaResult> {
+  if (!ctx.contextDiet) return { content: [{ type: "text", text: "ERROR: diet is unavailable for this room." }], details: { ok: false } };
+  const action = args.action === "set" ? "set" : "get";
+  try {
+    if (action === "get") {
+      const view = await ctx.contextDiet.get();
+      return { content: [{ type: "text", text: JSON.stringify(view) }], details: view };
+    }
+    const scope = args.scope === "workspace" ? "workspace" : "room";
+    const patch: Record<string, unknown> = {};
+    if (typeof args.preset === "boolean") patch.preset = args.preset;
+    if (typeof args.keepAllToolCalls === "boolean") patch.keepAllToolCalls = args.keepAllToolCalls;
+    if (typeof args.fullTurnWindow === "number") patch.fullTurnWindow = args.fullTurnWindow;
+    if (typeof args.toolTailLines === "number") patch.toolTailLines = args.toolTailLines;
+    if (Object.keys(patch).length === 0) {
+      return { content: [{ type: "text", text: "ERROR: diet set requires at least one of preset/keepAllToolCalls/fullTurnWindow/toolTailLines." }], details: { ok: false } };
+    }
+    const view = await ctx.contextDiet.set({ scope, patch });
+    return { content: [{ type: "text", text: JSON.stringify(view) }], details: view };
+  } catch (error) {
+    return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+  }
+}
+
+/** `tool_result_fetch` verb (09-MEMORY-CONTEXT): pages the ORIGINAL,
+ * uncollapsed call/args/result for a diet-collapsed own tool-call stub back
+ * by (sessionId, entryId) — the ids named in the stub's own
+ * `[collapsed — ...]` marker (harness/prompt.ts renderRoomTranscript). */
+async function runToolResultFetchVerb(args: Record<string, unknown>, ctx: import("./tools.js").PiToolContext): Promise<GaiaResult> {
+  if (!ctx.toolResultFetch) return { content: [{ type: "text", text: "ERROR: tool_result_fetch is unavailable for this room." }], details: { ok: false } };
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
+  const entryId = typeof args.entryId === "string" ? args.entryId : "";
+  const offset = typeof args.offset === "number" ? args.offset : 0;
+  const limit = typeof args.limit === "number" ? args.limit : 32_000;
+  if (!sessionId || !entryId) {
+    return { content: [{ type: "text", text: "ERROR: tool_result_fetch args require { sessionId, entryId }." }], details: { ok: false } };
+  }
+  try {
+    const slice = await ctx.toolResultFetch({ sessionId, entryId, offset, limit });
+    const suffix = slice.hasMore ? `\n\n[${slice.totalLength - offset - slice.text.length} more chars — call again with a higher offset]` : "";
+    return { content: [{ type: "text", text: `${slice.text}${suffix}` }], details: slice };
+  } catch (error) {
+    return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+  }
+}
+
 /** One custom Pi tool: table-driven delegation to Pi native tools and the
  * existing daemon tool factories. New verbs add exactly one registry entry. */
 export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
@@ -594,6 +644,22 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     mem: memory.parameters as TSchema,
     recall: recall.parameters as TSchema,
     ...(summon ? { summon: summon.parameters as TSchema } : {}),
+    // 09-MEMORY-CONTEXT: diet's knobs mirror ContextDietPolicy's field names
+    // exactly (domain/context-diet.ts) — never re-named at this layer.
+    diet: Type.Object({
+      action: stringEnum(["get", "set"], "get reads the room's effective policy; set patches it (at least one knob required)."),
+      scope: Type.Optional(stringEnum(["room", "workspace"], "set only: patch this room's override (default), or the workspace-wide default every room without its own override inherits.")),
+      preset: Type.Optional(Type.Boolean({ description: "set only: diet on/off. Default OFF." })),
+      keepAllToolCalls: Type.Optional(Type.Boolean({ description: "set only: never collapse this agent's own tool calls, regardless of recency." })),
+      fullTurnWindow: Type.Optional(Type.Number({ minimum: 0, description: "set only: last N room events whose own tool calls stay full before collapsing." })),
+      toolTailLines: Type.Optional(Type.Number({ minimum: 1, description: "set only: another agent's tool activity is always trimmed to its last N lines." })),
+    }),
+    tool_result_fetch: Type.Object({
+      sessionId: Type.String({ minLength: 1, description: "From the [collapsed — ...] stub's own tool_result_fetch(sessionId=\"...\", entryId=\"...\") marker." }),
+      entryId: Type.String({ minLength: 1, description: "From the same stub marker." }),
+      offset: Type.Optional(Type.Number({ minimum: 0, description: "Char offset into the original call/args/result JSON. Default 0." })),
+      limit: Type.Optional(Type.Number({ minimum: 1, maximum: 32_000, description: "Max chars to return, capped at 32000. Default 32000." })),
+    }),
   };
 
   // Pi's exported tool definitions are the native implementations. The custom
@@ -636,13 +702,15 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
       return { content: [{ type: "text", text: result.text || "[]" }], details: result.details };
     },
     caryll: runCaryllVerb,
+    diet: (args) => runDietVerb(args, ctx),
+    tool_result_fetch: (args) => runToolResultFetchVerb(args, ctx),
   };
 
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search ({query, provider?}, Brave → Tavily → Serper), web fetch ({url, maxBytes?, transcript?, lang?, comments?} -- clean extracted page text, not raw HTML; youtube urls get a transcript by default + opt-in top-level comments) or curl fallback, daemon memory/recall/summon/resume, room artifacts, or caryll. Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; web search {query, provider?, maxResults?} falls back Brave → Tavily → Serper; web fetch {url, maxBytes?, transcript?, comments?} returns clean extracted text (youtube: transcript on by default, comments opt-in); also files, commands, memory, artifacts, workers, steering.",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search ({query, provider?}, Brave → Tavily → Serper), web fetch ({url, maxBytes?, transcript?, lang?, comments?} -- clean extracted page text, not raw HTML; youtube urls get a transcript by default + opt-in top-level comments) or curl fallback, daemon memory/recall/summon/resume, room artifacts, caryll, context-diet policy (diet: get|set render-time decay knobs), or tool_result_fetch (page back a diet-collapsed tool call by sessionId/entryId). Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; web search {query, provider?, maxResults?} falls back Brave → Tavily → Serper; web fetch {url, maxBytes?, transcript?, comments?} returns clean extracted text (youtube: transcript on by default, comments opt-in); also files, commands, memory, artifacts, workers, steering, diet (context-diet on/off + knobs), tool_result_fetch (page back a collapsed tool call).",
     parameters: buildGaiaParameters(verbSchemas),
     execute: async (_toolCallId: string, params: { verb: GaiaVerb; args: Record<string, unknown>; raw?: boolean; compress_above_bytes?: number; translator?: "deterministic" | "llm" }) => {
       try {
