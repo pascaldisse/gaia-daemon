@@ -8,6 +8,7 @@ import { shortModel } from "./models.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
 import { api } from "./api.js";
+import { humanSession } from "./auth.js";
 import { state } from "./state.js";
 import { toggleCall } from "./voice.js";
 
@@ -22,7 +23,9 @@ let accountsCatalogRequested = false;
 /** @type {{id:string,displayName:string,username:string}[]} */ let humans = [];
 let humansRequested = false;
 function ensureHumans() {
-  if (humansRequested || !state.snapshot) return; humansRequested = true;
+  // The human directory is account-scoped: asking while logged out only earns a
+  // 401 in the console. A later render retries once a session exists.
+  if (humansRequested || !state.snapshot || !humanSession()) return; humansRequested = true;
   void Promise.all([roomHumans(), api("/api/auth/users")]).then(([members, body]) => { humanMembers = members; humans = body.users ?? []; markDirty("panel"); }).catch(() => { humansRequested = false; });
 }
 async function inviteHuman(/** @type {string} */ id) { try { await addRoomHuman(id); humanMembers = await roomHumans(); markDirty("panel"); } catch (error) { markDirty("panel"); } }

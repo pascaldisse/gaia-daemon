@@ -1148,10 +1148,20 @@ export function isEditableElement(element) {
 }
 
 /** @param {KeyboardEvent} event */
+/** Surfaces that run their own keyboard (the artifact canvas: v/r/o/t tools,
+ * arrows, Backspace, Enter). Bare-key routing must stay out of them, or typing
+ * on the canvas ends up in the composer and the canvas command never fires.
+ * @param {EventTarget|null} node @returns {boolean} */
+function ownsItsKeyboard(node) {
+  return node instanceof HTMLElement && Boolean(node.closest(".artifact-panel"));
+}
+
+/** @param {KeyboardEvent} event @returns {boolean} */
 function shouldRouteKeyToComposer(event) {
   if (!state.snapshot || state.dario.open || state.search.open) return false;
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return false;
   if (isEditableElement(event.target)) return false;
+  if (ownsItsKeyboard(event.target) || ownsItsKeyboard(document.activeElement)) return false;
   if (event.key.length === 1) return true;
   return ["Enter", "Backspace", "Delete"].includes(event.key);
 }
@@ -1166,6 +1176,7 @@ export function installComposerRouting() {
     (event) => {
       if (!state.snapshot || state.dario.open || state.search.open) return;
       if (event.defaultPrevented || isEditableElement(event.target)) return;
+      if (ownsItsKeyboard(event.target) || ownsItsKeyboard(document.activeElement)) return;
       if (capturePastedFiles(event)) focusComposer();
     },
     true,
@@ -1258,5 +1269,8 @@ export function focusComposerFromBackground(event) {
   if (state.dario.open || state.search.open) return;
   if (isEditableElement(event.target)) return;
   if (event.target instanceof HTMLElement && event.target.closest("button")) return;
+  // The artifact panel is an editor with its own keyboard (undo, nudge, tools);
+  // stealing focus out of it on every click disarmed every canvas shortcut.
+  if (ownsItsKeyboard(event.target)) return;
   focusComposer();
 }

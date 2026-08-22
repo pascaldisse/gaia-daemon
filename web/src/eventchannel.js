@@ -11,6 +11,35 @@
  * }} EventChannel
  */
 
+// Which transport this origin actually supports, remembered across reloads.
+// The local daemon serves SSE only; the remote edge-proxy bridges WebSocket.
+// Probing WS on every load therefore prints a browser-level failure warning
+// forever on a local daemon, so a refusal is remembered — and re-probed after
+// PROBE_TTL_MS in case the deployment gained the bridge.
+const TRANSPORT_KEY = "gaia.events.transport";
+const PROBE_TTL_MS = 30 * 60 * 1000;
+
+/** @returns {boolean} */
+function webSocketRefusedRecently() {
+  try {
+    const raw = localStorage.getItem(TRANSPORT_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    return saved?.transport === "sse" && Date.now() - (saved.at ?? 0) < PROBE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** @param {"ws"|"sse"} transport */
+function rememberTransport(transport) {
+  try {
+    localStorage.setItem(TRANSPORT_KEY, JSON.stringify({ transport, at: Date.now() }));
+  } catch {
+    // Storage disabled: fall back to probing every load, as before.
+  }
+}
+
 /**
  * @param {string} url
  * @returns {EventChannel}
@@ -88,6 +117,7 @@ export function openEventChannel(url) {
 
   function openEventSource() {
     if (closed) return;
+    rememberTransport("sse");
     clearTimer("fallback");
     opened = false;
     usingEventSource = true;
@@ -107,6 +137,10 @@ export function openEventChannel(url) {
 
   function openWebSocket() {
     if (closed) return;
+    if (webSocketRefusedRecently()) {
+      openEventSource();
+      return;
+    }
     opened = false;
     usingEventSource = false;
     const wsUrl = `${location.protocol === "https:" ? "wss://" : "ws://"}${location.host}${url}`;
@@ -120,6 +154,7 @@ export function openEventChannel(url) {
     ws.onopen = (event) => {
       if (closed || transport !== ws) return;
       opened = true;
+      rememberTransport("ws");
       clearTimer("fallback");
       if (channel.onopen) channel.onopen(event);
     };
