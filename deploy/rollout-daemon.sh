@@ -58,7 +58,7 @@ restore() {
 }
 trap restore ERR
 
-mkdir -p "$BACKUPS"
+mkdir -p "$BACKUP"
 for name in gaia-daemon gaia-telegram-bridge graphql.js gaia-source.json web setups design addons vendor; do
   [ -e "$DEPLOY_DIR/$name" ] && cp -a "$DEPLOY_DIR/$name" "$BACKUP/$name"
 done
