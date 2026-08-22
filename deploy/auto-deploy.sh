@@ -21,6 +21,7 @@ if [ ! -e "$REPO_DIR/.git" ]; then
   git clone --origin origin "$REPO_URL" "$REPO_DIR"
 fi
 git -C "$REPO_DIR" fetch --prune origin "$BRANCH"
+git -C "$REPO_DIR" submodule update --init --recursive
 TARGET=$(git -C "$REPO_DIR" rev-parse "origin/$BRANCH")
 CURRENT=$(current_daemon_revision)
 if [ "$TARGET" = "$CURRENT" ]; then

@@ -37,9 +37,9 @@ health() {
 restore() {
   local status=$?
   trap - ERR
+  rm -rf "$SOURCE_DIR/node_modules"
   if [ "$INSTALLED" = 1 ]; then
     echo "rollback: $BACKUP" >&2
-    rm -rf "$SOURCE_DIR/node_modules"
     systemctl stop "$SERVICE" || true
     for name in gaia-daemon gaia-telegram-bridge graphql.js gaia-source.json; do
       [ -e "$BACKUP/$name" ] && install -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m "$(stat -c '%a' "$BACKUP/$name")" "$BACKUP/$name" "$DEPLOY_DIR/$name"
