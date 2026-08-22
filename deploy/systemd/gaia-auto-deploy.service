@@ -1,0 +1,11 @@
+[Unit]
+Description=GAIA daemon and optional GAIA Space automatic rollout
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=PATH=/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=-/etc/gaia/auto-deploy.env
+ExecStart=/opt/gaia-source/deploy/auto-deploy.sh
