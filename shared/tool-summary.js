@@ -1,3 +1,4 @@
+// @ts-nocheck — unknown tool payloads are intentionally traversed dynamically.
 /** Browser-and-daemon neutral compact tool subject. Kept here so the transcript
  * UI and the agent-context projector literally use the same renderer. */
 export function toolSummaryText(tool) {
