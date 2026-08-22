@@ -3310,16 +3310,17 @@ test("toolResultSlice: pages back the original call/args/result for a tool call 
   const { events } = await service.room.eventsFrom(0);
   const reply = events[1] as { id: string };
 
-  const full = await service.toolResultSlice(reply.id, "tool-1", 0, 10_000);
+  const full = await service.toolResultSlice("gaia", reply.id, "tool-1", 0, 10_000);
   assert.ok(full);
   assert.match(full!.text, /"call": "bash"/);
   assert.match(full!.text, /file-a\\nfile-b/);
   assert.equal(full!.hasMore, false);
+  assert.equal(await service.toolResultSlice("other-agent", reply.id, "tool-1", 0, 100), undefined);
 
-  const paged = await service.toolResultSlice(reply.id, "tool-1", 0, 5);
+  const paged = await service.toolResultSlice("gaia", reply.id, "tool-1", 0, 5);
   assert.equal(paged?.text.length, 5);
   assert.equal(paged?.hasMore, true);
 
-  assert.equal(await service.toolResultSlice(reply.id, "no-such-tool", 0, 100), undefined);
-  assert.equal(await service.toolResultSlice("no-such-event", "tool-1", 0, 100), undefined);
+  assert.equal(await service.toolResultSlice("gaia", reply.id, "no-such-tool", 0, 100), undefined);
+  assert.equal(await service.toolResultSlice("gaia", "no-such-event", "tool-1", 0, 100), undefined);
 });
