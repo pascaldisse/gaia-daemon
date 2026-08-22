@@ -13,6 +13,13 @@ let password = "";
 let displayName = "";
 let busy = false;
 
+/** The signed-in human, or null. Callers gate account-scoped requests on this
+ * so a logged-out client never fires a request the server can only answer 401.
+ * @returns {{id:string, username:string, displayName:string}|null} */
+export function humanSession() {
+  return current;
+}
+
 export async function loadHumanSession() {
   try { current = (await api("/api/auth/me")).user ?? null; } catch { current = null; }
   markDirty("auth");
