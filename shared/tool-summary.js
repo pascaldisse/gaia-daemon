@@ -2,11 +2,9 @@
 /** Browser-and-daemon neutral compact tool subject. Kept here so the transcript
  * UI and the agent-context projector literally use the same renderer. */
 export function toolSummaryText(tool) {
-  const candidates = [
-    ...toolSubjectCandidates(tool.args),
-    ...toolSubjectCandidates(tool.partialResult),
-    ...toolSubjectCandidates(tool.result),
-  ];
+  // A target is caller-supplied input only. Results may contain arbitrary
+  // secret payloads and therefore never belong in a compact activity label.
+  const candidates = toolSubjectCandidates(tool.args);
   return candidates[0]?.summary ?? "";
 }
 function toolSubjectCandidates(value, path = [], depth = 0) {

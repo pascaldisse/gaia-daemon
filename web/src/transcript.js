@@ -19,6 +19,8 @@ import { toggleReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
 import { toolSummaryText } from "../../shared/tool-summary.js";
+import { splitLeadingGaiaThink } from "../../shared/gaia-think.js";
+export { splitLeadingGaiaThink } from "../../shared/gaia-think.js";
 
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").UserRoomEvent} UserRoomEvent */
@@ -920,26 +922,6 @@ function ThinkingActivity(id, text, running) {
 }
 
 /**
- * A GAIA agent may open its reply with a literal `<gaia:think>…</gaia:think>`
- * span (streamed as ordinary text, not native model thinking). Detect a LEADING
- * such block: return the thought text, the remainder after the close tag, and
- * whether the close tag was seen. An unclosed tag (streaming/partial) treats
- * everything after the open as thought with no remainder yet. Only a block at
- * the very start (leading whitespace allowed) qualifies — any later occurrence
- * is left in the text and escaped by MarkdownMessage on its normal path.
- * @param {string} text
- * @returns {{ thought: string, remainder: string, closed: boolean } | null}
- */
-export function splitLeadingGaiaThink(text) {
-  const open = /^\s*<gaia:think>/u.exec(text);
-  if (!open) return null;
-  const rest = text.slice(open[0].length);
-  const closeIdx = rest.indexOf("</gaia:think>");
-  if (closeIdx === -1) return { thought: rest, remainder: "", closed: false };
-  return { thought: rest.slice(0, closeIdx), remainder: rest.slice(closeIdx + "</gaia:think>".length), closed: true };
-}
-
-/**
  * The GAIA `<gaia:think>` expander — visually identical to the native thinking
  * block (same `thinking` class / ActivityDetails / collapsed-by-default UX),
  * differing only in the marker symbol (鳴 instead of 💭). An unclosed leading
@@ -1051,7 +1033,7 @@ export function SkillInvocationActivity(skill) {
  * mirroring pi's TUI classifier (see skillReadLabel doc comment).
  * @param {ToolDetail} tool
  */
-function ToolActivity(tool) {
+export function ToolActivity(tool) {
   const skillLabel = skillReadLabel(tool);
   const options = skillLabel
     ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: "🧩", title: `[skill] ${skillLabel}` }

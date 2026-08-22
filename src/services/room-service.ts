@@ -67,7 +67,7 @@ import { loadCommandPlugins, type CommandPlugin, type PluginContext, type Plugin
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import { ContextPolicyStore } from "./context-policy-store.js";
-import type { ContextDietOverrides } from "../domain/context-diet.js";
+import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietOverrides } from "../domain/context-diet.js";
 import type { EpisodeCapture } from "./memory-service.js";
 import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
@@ -1849,7 +1849,7 @@ export class RoomService {
    * session compaction, so it shares the status but not the compact() call.) */
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
     const { events } = await this.room.eventsFrom(0);
-    const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting());
+    const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting(), { policy: DEFAULT_CONTEXT_DIET_POLICY, currentAgentId: target });
     // Cap the summarizer input, biased to the TAIL, so a huge room can't
     // overflow the model's context window (→ throw → garbage fallback). A
     // joining agent most needs recent context, and every fallback below now

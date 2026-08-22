@@ -13,6 +13,8 @@ import {
   type SystemPromptInput,
 } from "../src/harness/prompt.js";
 import type { AgentDef, AgentRoomEvent, ToolDetail } from "../src/core/types.js";
+import { toolSummaryText } from "../shared/tool-summary.js";
+import { splitLeadingGaiaThink } from "../shared/gaia-think.js";
 import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietPolicy } from "../src/domain/context-diet.js";
 
 const AGENT = { id: "tester" } as unknown as AgentDef;
@@ -179,4 +181,23 @@ test("buildTurnPrompt: a recipient retains its own complete tool payload", () =>
   const event = agentEvent("e-own", "recipient", "2026-07-20T00:00:00.000Z", [toolCall("tool-own", "OWN PAYLOAD")]);
   const prompt = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event], dietPolicy: { ...DIET_POLICY, keepAllToolCalls: true } });
   assert.match(prompt, /OWN PAYLOAD/);
+});
+
+test("buildTurnPrompt: other-agent tool summaries never derive from result payloads", () => {
+  const event = agentEvent("e-result", "author", "2026-07-20T00:00:00.000Z", [{ id: "tool-result", toolName: "read_secret", status: "complete", args: {}, result: toolResult("RAW_RESULT_PAYLOAD_MARKER") }]);
+  const prompt = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event] });
+  assert.match(prompt, /read_secret · ✓/);
+  assert.doesNotMatch(prompt, /RAW_RESULT_PAYLOAD_MARKER/);
+});
+
+test("seat projection is a subset of the same UI renderer fixture", () => {
+  const tool = { id: "tool-seat", toolName: "read_secret", status: "complete", args: { path: "/safe/target" }, result: toolResult("RAW_RESULT_PAYLOAD_MARKER") };
+  const event = agentEvent("event-seat", "author", "2026-08-22T00:00:00.000Z", [tool]);
+  event.text = "<gaia:think>SECRET_THOUGHT_MARKER</gaia:think>answer";
+  const context = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event] });
+  // These are precisely the shared functions used by web/src/transcript.js.
+  expect(splitLeadingGaiaThink(event.text)?.thought).toBe("SECRET_THOUGHT_MARKER");
+  expect(toolSummaryText(tool)).toBe("/safe/target");
+  assert.match(context, /read_secret · \/safe\/target · ✓/);
+  assert.doesNotMatch(context, /SECRET_THOUGHT_MARKER|RAW_RESULT_PAYLOAD_MARKER/);
 });
