@@ -18,6 +18,7 @@ import { MarkdownMessage } from "./markdown.js";
 import { toggleReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
+import { toolSummaryText } from "../../shared/tool-summary.js";
 
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").UserRoomEvent} UserRoomEvent */
@@ -1132,78 +1133,6 @@ function ToolPayload(label, value) {
 
 // --- Tool one-line summaries: pick the most subject-like string from the
 // args/results so a collapsed tool row still says what it acted on. ----------
-
-/** @param {ToolDetail} tool */
-function toolSummaryText(tool) {
-  const candidates = [
-    ...toolSubjectCandidates(tool.args),
-    ...toolSubjectCandidates(tool.partialResult),
-    ...toolSubjectCandidates(tool.result),
-  ];
-  return candidates[0]?.summary ?? "";
-}
-
-/**
- * @param {unknown} value
- * @param {string[]} [path]
- * @param {number} [depth]
- * @returns {{ score: number, summary: string }[]}
- */
-function toolSubjectCandidates(value, path = [], depth = 0) {
-  if (value === undefined || value === null || depth > 3) return [];
-  if (typeof value === "string") {
-    const summary = compactOneLine(value);
-    return summary ? [{ score: path.length ? subjectScore(path.at(-1)) : 0, summary }] : [];
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    const key = path.at(-1);
-    const summary = key ? `${key}: ${String(value)}` : String(value);
-    return [{ score: subjectScore(key), summary }];
-  }
-  if (Array.isArray(value)) {
-    return value.slice(0, 4).flatMap((item, index) => toolSubjectCandidates(item, [...path, String(index)], depth + 1));
-  }
-  if (typeof value !== "object") return [];
-
-  return Object.entries(value)
-    .flatMap(([key, nested]) => {
-      const nextPath = [...path, key];
-      const label = compactKey(key);
-      if (typeof nested === "string") {
-        const body = compactOneLine(nested);
-        if (!body) return [];
-        return [{ score: subjectScore(key), summary: subjectScore(key) >= 80 ? body : `${label}: ${body}` }];
-      }
-      if (typeof nested === "number" || typeof nested === "boolean") {
-        return [{ score: subjectScore(key), summary: `${label}: ${String(nested)}` }];
-      }
-      return toolSubjectCandidates(nested, nextPath, depth + 1);
-    })
-    .sort((left, right) => right.score - left.score);
-}
-
-/** @param {string|undefined} key */
-function subjectScore(key) {
-  const normalized = String(key ?? "").toLowerCase();
-  if (["path", "filepath", "file", "filename", "url", "uri", "href", "target"].includes(normalized)) return 100;
-  if (["command", "cmd", "query", "pattern", "repo", "repository", "cwd", "name", "id"].includes(normalized)) return 80;
-  if (normalized.includes("path") || normalized.includes("file") || normalized.includes("url")) return 90;
-  return 10;
-}
-
-/** @param {string} key */
-function compactKey(key) {
-  return String(key ?? "")
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .toLowerCase();
-}
-
-/** @param {unknown} value */
-function compactOneLine(value) {
-  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-  return normalized.length > 96 ? `${normalized.slice(0, 93)}...` : normalized;
-}
 
 /** @param {unknown} value */
 function formatPayload(value) {

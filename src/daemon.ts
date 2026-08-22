@@ -1076,7 +1076,7 @@ export class Daemon {
     limit: number,
   ): Promise<{ text: string; totalLength: number; hasMore: boolean }> {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const slice = await service.toolResultSlice(sessionId, entryId, offset, limit);
+    const slice = await service.toolResultSlice(claims.agentId, sessionId, entryId, offset, limit);
     if (!slice) throw new Error(`No stored tool call for session ${sessionId} entry ${entryId}`);
     return slice;
   }

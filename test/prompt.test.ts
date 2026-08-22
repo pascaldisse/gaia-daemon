@@ -142,11 +142,9 @@ test("renderRoomTranscript diet projection: own tool calls stay full within full
   assert.match(ownRecentBlock, /owner=self/);
   assert.ok(ownRecentBlock.includes(LONG_PREVIEW), "full longPreview must appear verbatim for the recent own turn");
 
-  // other agent (regardless of recency): bounded to toolTailLines=2 — only the tail lines, never the earlier ones.
-  assert.match(otherBlock, /owner=other/);
-  assert.match(otherBlock, /line four\nline five \(newest\)/);
-  assert.doesNotMatch(otherBlock, /line one/);
-  assert.doesNotMatch(otherBlock, /line three\nline four/);
+  // Another agent is always seat-projected, independently of the diet tail policy.
+  assert.match(otherBlock, /bash · x · ✓/);
+  assert.doesNotMatch(otherBlock, /line one|line four|line five/);
 
   // own + older than the window: collapsed to a one-line stub carrying (eventId, toolId) for tool_result_fetch — never silently deleted.
   assert.match(oldBlock, /collapsed — page the original with tool_result_fetch\(sessionId="e_own_old", entryId="tool_own_old"\)/);
@@ -159,4 +157,26 @@ test("renderRoomTranscript diet: keepAllToolCalls keeps own activity full regard
   const rendered = renderRoomTranscript([ownOld], undefined, { policy: { ...DIET_POLICY, fullTurnWindow: 0, keepAllToolCalls: true }, currentAgentId: "gaia" });
   assert.doesNotMatch(rendered, /collapsed — page the original/);
   assert.ok(rendered.includes(LONG_PREVIEW));
+});
+test("buildTurnPrompt: another agent's thought and payload never enter the recipient context", () => {
+  const event = agentEvent("e-seat", "author", "2026-07-20T00:00:00.000Z", [{
+    id: "tool-seat", toolName: "bash", status: "complete", args: { command: "secret-command" }, result: toolResult("SECRET RESULT PAYLOAD"),
+  }]);
+  event.text = "before <gaia:think>SECRET THOUGHT</gaia:think> after";
+  const prompt = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event] });
+  assert.match(prompt, /before\s+after/);
+  assert.match(prompt, /bash · secret-command · ✓/);
+  assert.doesNotMatch(prompt, /SECRET THOUGHT|SECRET RESULT PAYLOAD/);
+});
+test("buildTurnPrompt: an unclosed thought hides its entire unfinished tail", () => {
+  const event = agentEvent("e-seat", "author", "2026-07-20T00:00:00.000Z", []);
+  event.text = "visible <gaia:think>unfinished secret";
+  const prompt = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event] });
+  assert.match(prompt, /visible/);
+  assert.doesNotMatch(prompt, /unfinished secret/);
+});
+test("buildTurnPrompt: a recipient retains its own complete tool payload", () => {
+  const event = agentEvent("e-own", "recipient", "2026-07-20T00:00:00.000Z", [toolCall("tool-own", "OWN PAYLOAD")]);
+  const prompt = buildTurnPrompt({ roomId: "room", agentId: "recipient", message: "go", events: [event], dietPolicy: { ...DIET_POLICY, keepAllToolCalls: true } });
+  assert.match(prompt, /OWN PAYLOAD/);
 });

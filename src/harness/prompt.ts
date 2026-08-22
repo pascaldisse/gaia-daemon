@@ -15,6 +15,7 @@ import type { ResolvedRole } from "../domain/roles.js";
 import { discoverContextFiles } from "../domain/workspace.js";
 import { agentSkillNames, loadSkillText } from "../domain/skills.js";
 import type { ContextDietPolicy } from "../domain/context-diet.js";
+import { toolSummaryText } from "../../shared/tool-summary.js";
 import type { AgentInput } from "./spec.js";
 import { harnessIdFor, nativeCommandsFor } from "./spec.js";
 import { GAIA_TOOLS, gaiaToolIds, type GaiaToolSpec, type PointerContext } from "./tools.js";
@@ -192,6 +193,16 @@ function boundedActivityPreview(preview: string, policy: ContextDietPolicy, isOw
 /** Last `windowSize` distinct agent-authored event ids (nearest the end of
  * `events`, i.e. nearest the current turn) count as "recent" for the own-tool
  * diet rule; `windowSize<=0` recognizes none as recent. */
+/** Remove every GAIA thought block before another agent sees this turn. */
+function withoutGaiaThinking(text: string): string {
+  return text.replace(/<gaia:think>\s*[\s\S]*?(?:<\/gaia:think>|$)/gi, "").trim();
+}
+/** One UI-equivalent tool row: name + subject + terminal status, <=20 words. */
+function seatToolLine(tool: ToolDetail): string {
+  const summary = toolSummaryText(tool);
+  const status = tool.status === "running" ? "…" : tool.status === "error" ? "✗" : "✓";
+  return [tool.toolName, summary, status].filter(Boolean).join(" · ").split(/\s+/).slice(0, 20).join(" ");
+}
 function recentAgentEventIds(events: readonly RoomEvent[], windowSize: number): ReadonlySet<string> {
   if (windowSize <= 0) return new Set();
   const ids = events.filter((event) => !("targets" in event)).map((event) => event.id);
@@ -221,10 +232,12 @@ export function renderRoomTranscript(events: RoomEvent[], userName?: string, die
         "targets" in event
           ? `${who} -> ${event.targets.map((target: string) => `@${target}`).join(", ")}`
           : `@${event.author}`;
+      const isOtherAgent = diet !== undefined && !("targets" in event) && event.author !== diet.currentAgentId;
       const attachments = "attachments" in event && event.attachments?.length ? `\n${renderAttachmentLines(event.attachments)}` : "";
       const tools = !("targets" in event) ? event.details?.tools : undefined;
+      const seatActivity = isOtherAgent && tools?.length ? `\n${tools.map(seatToolLine).join("\n")}` : "";
       const activity =
-        diet?.policy.preset && tools?.length
+        !isOtherAgent && diet?.policy.preset && tools?.length
           ? (() => {
               const isOwn = event.author === diet.currentAgentId;
               const isRecentEvent = recent?.has(event.id) ?? false;
@@ -232,7 +245,7 @@ export function renderRoomTranscript(events: RoomEvent[], userName?: string, die
               return `\n\n[gaia.activity owner=${isOwn ? "self" : "other"}]\n${lines.join("\n")}`;
             })()
           : "";
-      return `[${formatEventTimestamp(event.timestamp)}] ${header}:\n${event.text}${attachments}${activity}`;
+      return `[${formatEventTimestamp(event.timestamp)}] ${header}:\n${isOtherAgent ? withoutGaiaThinking(event.text) : event.text}${attachments}${seatActivity}${activity}`;
     })
     .join("\n\n");
 }
@@ -433,7 +446,7 @@ export function buildTurnPrompt(input: TurnPromptInput): string {
     input.recall?.trim() ?? "",
     input.pluginContext?.trim() ?? "",
     "New room events since your last turn:",
-    renderRoomTranscript(input.events, input.userName, input.dietPolicy ? { policy: input.dietPolicy, currentAgentId: input.agentId } : undefined),
+    renderRoomTranscript(input.events, input.userName, { policy: input.dietPolicy ?? { preset: false, keepAllToolCalls: false, fullTurnWindow: 0, toolTailLines: 1 }, currentAgentId: input.agentId }),
     "Newest user message:",
     [input.message, input.attachments?.length ? renderAttachmentLines(input.attachments) : ""].filter(Boolean).join("\n"),
     input.turnLaw?.trim() ?? "",

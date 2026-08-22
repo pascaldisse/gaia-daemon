@@ -3503,13 +3503,14 @@ export class RoomService {
    * render-time renderRoomTranscript projection ever shows a stub, so this
    * always finds the full original. */
   async toolResultSlice(
+    callerId: string,
     eventId: string,
     toolId: string,
     offset: number,
     limit: number,
   ): Promise<{ text: string; totalLength: number; hasMore: boolean } | undefined> {
     const event = await this.eventById(eventId);
-    if (!event || "targets" in event) return undefined; // only agent events carry tool details
+    if (!event || "targets" in event || event.author !== callerId) return undefined; // only own agent activity is pageable
     const tool = event.details?.tools?.find((candidate) => candidate.id === toolId);
     if (!tool) return undefined;
     const full = JSON.stringify({ call: tool.toolName, args: tool.args, result: tool.result }, null, 2);
