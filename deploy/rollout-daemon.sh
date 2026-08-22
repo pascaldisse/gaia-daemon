@@ -39,6 +39,7 @@ restore() {
   trap - ERR
   if [ "$INSTALLED" = 1 ]; then
     echo "rollback: $BACKUP" >&2
+    rm -rf "$SOURCE_DIR/node_modules"
     systemctl stop "$SERVICE" || true
     for name in gaia-daemon gaia-telegram-bridge graphql.js gaia-source.json; do
       [ -e "$BACKUP/$name" ] && install -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m "$(stat -c '%a' "$BACKUP/$name")" "$BACKUP/$name" "$DEPLOY_DIR/$name"
@@ -65,7 +66,7 @@ done
 
 (
   cd "$SOURCE_DIR"
-  bun install --frozen-lockfile
+  bun install --frozen-lockfile --cache-dir "$STAGE/bun-cache"
   bun scripts/build-daemon.mjs --out "$STAGE/build" --target bun-linux-x64
 )
 for name in gaia-daemon gaia-telegram-bridge graphql.js gaia-source.json; do test -f "$STAGE/build/$name"; done
@@ -89,5 +90,5 @@ if [ -n "$PUBLIC_HEALTH_URL" ]; then health "$PUBLIC_HEALTH_URL"; fi
 if systemctl is-active --quiet "$BRIDGE_SERVICE"; then systemctl restart "$BRIDGE_SERVICE"; fi
 
 trap - ERR
-rm -rf "$STAGE"
+rm -rf "$SOURCE_DIR/node_modules" "$STAGE"
 echo "DEPLOYED=true revision=$REVISION backup=$BACKUP"
