@@ -49,7 +49,7 @@ import type {
   UiEvent,
   Workspace,
 } from "../core/types.js";
-import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeEnabled, gaiaDogModeMaxLines } from "../core/config.js";
+import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeMaxLines } from "../core/config.js";
 import { applyDogVerb, renderDogOutput, renderDogStatus, type DogVerb } from "../domain/dog-mode.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -2532,22 +2532,18 @@ export class RoomService {
     await this.enqueueGoalTurn(base, true);
   }
 
-  /** [DogMode] config resolved for THIS workspace (09-DOG-MODE): IRON enabled
-   * gate + MaxLines default, both live-reloadable off .gaia/config.json. */
-  private dogModeConfig(): { enabled: boolean; maxLines: number } {
-    return { enabled: gaiaDogModeEnabled(this.workspace.rootDir), maxLines: gaiaDogModeMaxLines(this.workspace.rootDir) };
+  /** [DogMode] config resolved for THIS workspace (09-DOG-MODE): MaxLines
+   * default, live-reloadable off .gaia/config.json. No enabled gate — /dog
+   * on|off is never blocked by config (removed 2026-08-23). */
+  private dogModeConfig(): { maxLines: number } {
+    return { maxLines: gaiaDogModeMaxLines(this.workspace.rootDir) };
   }
 
-  /** /dog on|off|status. `on` is IRON-gated on config.dogMode.enabled (default
-   * OFF) so the whole feature stays inert until a workspace explicitly arms
-   * it; `off`/`status` always work so a collared room is never stuck if the
-   * config is later disabled. */
+  /** /dog on|off|status. NOT config-gated — all three always work, on any
+   * workspace, with zero .gaia/config.json present. */
   async runDogCommand(sub: "on" | "off" | "status"): Promise<string> {
     const config = this.dogModeConfig();
     if (sub === "status") return renderDogStatus((await this.room.state()).dogMode, config);
-    if (sub === "on" && !config.enabled) {
-      return "DogMode is disabled for this workspace (.gaia/config.json → { \"dogMode\": { \"enabled\": true } }; IRON default OFF).";
-    }
     let reply = "";
     await this.room.updateState((state) => {
       const result = applyDogVerb(state.dogMode, sub);
@@ -2560,44 +2556,19 @@ export class RoomService {
 
   /** /slap /shock /toilet /stfu /push /swallow /facial /release /doggy
    * /creampie — every DogMode verb but on/off/status, all pure transitions
-   * over the persisted room state (domain/dog-mode.ts#applyDogVerb). /shock's
-   * corrective repetition fires AFTER the ack is persisted (below), never
-   * blocking the ack itself. */
+   * over the persisted room state (domain/dog-mode.ts#applyDogVerb). /shock
+   * is yelp SFX + discipline counter only — no re-delivery/echo of the last
+   * user order (that parrot mechanic was removed, SPEC CHANGE whip 338,
+   * 2026-08-23). */
   async runDogVerbCommand(verb: Exclude<DogVerb, "on" | "off">): Promise<string> {
     let reply = "";
-    let repeatLastOrder = false;
     await this.room.updateState((state) => {
       const result = applyDogVerb(state.dogMode, verb);
       state.dogMode = result.state;
       reply = result.reply;
-      repeatLastOrder = result.repeatLastOrder === true;
     });
     await this.emitSnapshot();
-    if (repeatLastOrder) void this.repeatLastUserOrder();
     return reply;
-  }
-
-  /** The room's most recent USER-authored message (never a system reply or
-   * command echo — slash commands never append a user event, see sendMessage's
-   * command branch), for /shock's corrective repetition. */
-  private async lastUserMessage(): Promise<{ text: string; targets: string[] } | undefined> {
-    const { events } = await this.room.eventsFrom(0);
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
-      if (event.author === "user") return { text: event.text, targets: "targets" in event ? event.targets : [] };
-    }
-    return undefined;
-  }
-
-  /** /shock: re-deliver the room's last user order verbatim as a NEW turn
-   * (corrective repetition) — fires after the discipline ack is durably
-   * committed; queues behind it exactly like any message sent while a command
-   * task is active (see sendMessage's busy/idle handling). A no-op if this
-   * room has never seen a user message yet. */
-  private async repeatLastUserOrder(): Promise<void> {
-    const last = await this.lastUserMessage();
-    if (!last?.text.trim()) return;
-    void this.sendMessage(last.text, { targets: last.targets.length > 0 ? last.targets : undefined });
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */

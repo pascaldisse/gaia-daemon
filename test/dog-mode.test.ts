@@ -7,11 +7,14 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCommand } from "../src/services/commands.js";
-import { DEFAULTS, gaiaDogModeEnabled, gaiaDogModeMaxLines, parseDogModeConfig } from "../src/core/config.js";
+import { DEFAULTS, gaiaDogModeMaxLines, parseDogModeConfig } from "../src/core/config.js";
 import {
   applyDogVerb,
-  DOG_STFU_GAGGED_MARKER,
-  DOG_STFU_MARKER,
+  DOG_FACIAL_ACKS,
+  DOG_PUSH_SOUNDS,
+  DOG_SHOCK_YELPS,
+  DOG_STFU_SOUNDS,
+  DOG_SWALLOW_ACKS,
   initialDogModeState,
   renderDogOutput,
   renderDogStatus,
@@ -20,7 +23,7 @@ import {
 import { normalizeRoomState } from "../src/domain/rooms.js";
 import { createTempDir } from "./helpers/temp.js";
 
-const CFG: DogModeConfig = { enabled: true, maxLines: 2 };
+const CFG: DogModeConfig = { maxLines: 2 };
 
 async function writeConfig(cwd: string, config: unknown): Promise<void> {
   await mkdir(join(cwd, ".gaia"), { recursive: true });
@@ -60,27 +63,29 @@ test("parseCommand: every DogMode verb parses to its own bare type", () => {
   }
 });
 
-// --- config: IRON gate + MaxLines precedence ---------------------------------
+// --- config: MaxLines precedence (enabled gate REMOVED 2026-08-23) ----------
 
-test("DEFAULTS.dogMode: IRON off by default, MaxLines 2", () => {
-  assert.equal(DEFAULTS.dogMode.enabled, false);
+test("DEFAULTS.dogMode: MaxLines 2, no enabled key", () => {
   assert.equal(DEFAULTS.dogMode.maxLines, 2);
+  assert.equal((DEFAULTS.dogMode as Record<string, unknown>).enabled, undefined);
 });
 
-test("parseDogModeConfig: well-typed fields survive, junk/out-of-range drop", () => {
-  assert.deepEqual(parseDogModeConfig({ enabled: true, maxLines: 5 }), { enabled: true, maxLines: 5 });
-  assert.deepEqual(parseDogModeConfig({ enabled: true, extra: "ignored" }), { enabled: true });
+test("parseDogModeConfig: maxLines survives, junk/out-of-range drops, stale enabled key ignored harmlessly", () => {
+  assert.deepEqual(parseDogModeConfig({ maxLines: 5 }), { maxLines: 5 });
+  assert.deepEqual(parseDogModeConfig({ maxLines: 5, extra: "ignored" }), { maxLines: 5 });
   assert.equal(parseDogModeConfig({ maxLines: -1 }), undefined);
-  assert.equal(parseDogModeConfig({ enabled: "true" }), undefined);
+  // A stale `enabled` key from before the gate was removed drops silently,
+  // same as any other unknown field — never resurrected, never an error.
+  assert.equal(parseDogModeConfig({ enabled: true }), undefined);
+  assert.deepEqual(parseDogModeConfig({ enabled: true, maxLines: 3 }), { maxLines: 3 });
   assert.equal(parseDogModeConfig({}), undefined);
   assert.equal(parseDogModeConfig(null), undefined);
 });
 
-test("gaiaDogModeEnabled/MaxLines: no env, no config file -> DEFAULTS (IRON off)", async () => {
+test("gaiaDogModeMaxLines: no env, no config file -> DEFAULTS.maxLines (2)", async () => {
   const temp = await createTempDir("gaia-dogmode-cfg-");
   try {
-    await withEnv({ GAIA_DOGMODE_ENABLED: undefined, GAIA_DOGMODE_MAXLINES: undefined }, () => {
-      assert.equal(gaiaDogModeEnabled(temp.path), false);
+    await withEnv({ GAIA_DOGMODE_MAXLINES: undefined }, () => {
       assert.equal(gaiaDogModeMaxLines(temp.path), 2);
     });
   } finally {
@@ -88,12 +93,11 @@ test("gaiaDogModeEnabled/MaxLines: no env, no config file -> DEFAULTS (IRON off)
   }
 });
 
-test("gaiaDogModeEnabled/MaxLines: config.json dogMode section is the fallback", async () => {
+test("gaiaDogModeMaxLines: config.json dogMode section is the fallback (stale enabled key harmless)", async () => {
   const temp = await createTempDir("gaia-dogmode-cfg-");
   try {
     await writeConfig(temp.path, { dogMode: { enabled: true, maxLines: 4 } });
-    await withEnv({ GAIA_DOGMODE_ENABLED: undefined, GAIA_DOGMODE_MAXLINES: undefined }, () => {
-      assert.equal(gaiaDogModeEnabled(temp.path), true);
+    await withEnv({ GAIA_DOGMODE_MAXLINES: undefined }, () => {
       assert.equal(gaiaDogModeMaxLines(temp.path), 4);
     });
   } finally {
@@ -101,12 +105,11 @@ test("gaiaDogModeEnabled/MaxLines: config.json dogMode section is the fallback",
   }
 });
 
-test("gaiaDogModeEnabled/MaxLines: env override wins over config.json", async () => {
+test("gaiaDogModeMaxLines: env override wins over config.json", async () => {
   const temp = await createTempDir("gaia-dogmode-cfg-");
   try {
-    await writeConfig(temp.path, { dogMode: { enabled: true, maxLines: 4 } });
-    await withEnv({ GAIA_DOGMODE_ENABLED: "false", GAIA_DOGMODE_MAXLINES: "0" }, () => {
-      assert.equal(gaiaDogModeEnabled(temp.path), false);
+    await writeConfig(temp.path, { dogMode: { maxLines: 4 } });
+    await withEnv({ GAIA_DOGMODE_MAXLINES: "0" }, () => {
       assert.equal(gaiaDogModeMaxLines(temp.path), 0);
     });
   } finally {
@@ -154,15 +157,18 @@ test("applyDogVerb: /slap /toilet are short acks, +1 tally, no sub-state change"
     const result = applyDogVerb(collared, verb);
     assert.equal(result.state.disciplineCount, 1);
     assert.equal(result.state.suppressed, false);
-    assert.equal(result.repeatLastOrder, undefined);
   }
 });
 
-test("applyDogVerb: /shock acks, +1 tally, AND flags repeatLastOrder", () => {
+// SPEC CHANGE (Pascal, whip 338, 2026-08-23): /shock's re-delivery/echo of
+// the last user order is BANNED (parrot behavior) — yelp SFX + discipline
+// counter only, nothing else, no `repeatLastOrder` field exists anymore.
+test("applyDogVerb: /shock acks +1 tally with an English-register yelp SFX only — no re-delivery mechanic", () => {
   const collared = applyDogVerb(undefined, "on").state;
   const result = applyDogVerb(collared, "shock");
   assert.equal(result.state.disciplineCount, 1);
-  assert.equal(result.repeatLastOrder, true);
+  assert.ok(!("repeatLastOrder" in result), "repeatLastOrder must not exist on DogVerbResult anymore");
+  assert.ok((DOG_SHOCK_YELPS as readonly string[]).includes(result.reply), `expected a DOG_SHOCK_YELPS variant, got ${JSON.stringify(result.reply)}`);
 });
 
 // --- /stfu sub-state machine ----------------------------------------------------
@@ -177,13 +183,13 @@ test("applyDogVerb: /stfu suppresses; /push only valid while suppressed, deepens
   const stfu = applyDogVerb(collared, "stfu");
   assert.equal(stfu.state.suppressed, true);
   assert.equal(stfu.state.suppressDepth, 0);
-  assert.equal(stfu.reply, DOG_STFU_MARKER);
+  assert.ok((DOG_STFU_SOUNDS as readonly string[]).includes(stfu.reply), `expected a DOG_STFU_SOUNDS variant, got ${JSON.stringify(stfu.reply)}`);
 
   const pushed = applyDogVerb(stfu.state, "push");
   assert.equal(pushed.state.suppressDepth, 1);
   assert.equal(pushed.state.maxLines, 0);
   assert.equal(pushed.state.disciplineCount, 1);
-  assert.equal(pushed.reply, DOG_STFU_GAGGED_MARKER);
+  assert.ok((DOG_PUSH_SOUNDS as readonly string[]).includes(pushed.reply), `expected a DOG_PUSH_SOUNDS variant, got ${JSON.stringify(pushed.reply)}`);
 });
 
 test("applyDogVerb: /swallow only valid while suppressed and NOT mounted; lifts suppression, restores MaxLines, collar stays", () => {
@@ -199,6 +205,7 @@ test("applyDogVerb: /swallow only valid while suppressed and NOT mounted; lifts 
   assert.equal(swallowed.state.suppressDepth, 0);
   assert.equal(swallowed.state.maxLines, undefined); // back to /dog register, not full release
   assert.equal(swallowed.state.collared, true);
+  assert.ok((DOG_SWALLOW_ACKS as readonly string[]).includes(swallowed.reply), `expected a DOG_SWALLOW_ACKS variant, got ${JSON.stringify(swallowed.reply)}`);
 
   // While mounted, /swallow is a refusal even if also suppressed.
   const mountedAndSuppressed = applyDogVerb(applyDogVerb(collared, "doggy").state, "stfu").state;
@@ -217,6 +224,7 @@ test("applyDogVerb: /facial valid while suppressed OR mounted; lifts whichever i
   assert.equal(viaStfu.state.suppressed, false);
   assert.equal(viaStfu.state.faceMarked, true);
   assert.equal(viaStfu.state.collared, true);
+  assert.ok((DOG_FACIAL_ACKS as readonly string[]).includes(viaStfu.reply), `expected a DOG_FACIAL_ACKS variant, got ${JSON.stringify(viaStfu.reply)}`);
 
   const viaMounted = applyDogVerb(applyDogVerb(collared, "doggy").state, "facial");
   assert.equal(viaMounted.state.mounted, false);
@@ -277,19 +285,31 @@ test("renderDogOutput: collared room hard-caps to MaxLines lines with the regist
   assert.equal(lines[2], "line2");
 });
 
-test("renderDogOutput: /stfu-suppressed room replaces ALL output with the ack marker", () => {
+test("renderDogOutput: /stfu-suppressed room replaces ALL output with a random muffled SFX (pool, never a bare marker)", () => {
   const stfu = applyDogVerb(applyDogVerb(undefined, "on").state, "stfu").state;
-  assert.equal(renderDogOutput("anything the model produced, at any length\nmore lines", stfu, CFG), DOG_STFU_MARKER);
+  const rendered = renderDogOutput("anything the model produced, at any length\nmore lines", stfu, CFG);
+  assert.ok((DOG_STFU_SOUNDS as readonly string[]).includes(rendered), `expected a DOG_STFU_SOUNDS variant, got ${JSON.stringify(rendered)}`);
 });
 
-test("renderDogOutput: /push-gagged room replaces output with the escalated marker", () => {
+test("renderDogOutput: /push-gagged room replaces output with a random escalated/choked SFX (pool)", () => {
   const pushed = applyDogVerb(applyDogVerb(applyDogVerb(undefined, "on").state, "stfu").state, "push").state;
-  assert.equal(renderDogOutput("full essay here", pushed, CFG), DOG_STFU_GAGGED_MARKER);
+  const rendered = renderDogOutput("full essay here", pushed, CFG);
+  assert.ok((DOG_PUSH_SOUNDS as readonly string[]).includes(rendered), `expected a DOG_PUSH_SOUNDS variant, got ${JSON.stringify(rendered)}`);
+});
+
+test("DogMode SPEC ADD: every sound pool has \u22656 variants and applyDogVerb('shock') picks from DOG_SHOCK_YELPS", () => {
+  for (const pool of [DOG_STFU_SOUNDS, DOG_PUSH_SOUNDS, DOG_SWALLOW_ACKS, DOG_FACIAL_ACKS, DOG_SHOCK_YELPS]) {
+    assert.ok(pool.length >= 6, `pool too small: ${JSON.stringify(pool)}`);
+    assert.equal(new Set(pool).size, pool.length, "pool has duplicate entries");
+  }
+  const collared = applyDogVerb(undefined, "on").state;
+  const shocked = applyDogVerb(collared, "shock");
+  assert.ok((DOG_SHOCK_YELPS as readonly string[]).includes(shocked.reply), `expected a DOG_SHOCK_YELPS variant, got ${JSON.stringify(shocked.reply)}`);
 });
 
 test("renderDogOutput: MaxLines=0 (config or /push override) shows only the register prefix, no body", () => {
   const state = applyDogVerb(undefined, "on").state;
-  assert.equal(renderDogOutput("a whole paragraph", state, { enabled: true, maxLines: 0 }), "\uD83D\uDC3E *kneeling, collared*");
+  assert.equal(renderDogOutput("a whole paragraph", state, { maxLines: 0 }), "\uD83D\uDC3E *kneeling, collared*");
 });
 
 test("renderDogStatus: reflects collar/suppressed/mounted/discipline/faceMarked", () => {

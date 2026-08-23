@@ -401,8 +401,8 @@ export interface RoomState {
    * enforced in server/http.ts, this is just the durable allowlist. */
   humans?: string[];
   /** DogMode (09-DOG-MODE): adult consensual D/s persona-register state for
-   * this room, IRON config-gated (config.dogMode.enabled, default OFF).
-   * Persisted like every other room-scoped toggle; enforcement of the
+   * this room. /dog on|off has NO config gate (removed 2026-08-23) — the
+   * command always works. Persisted like every other room-scoped toggle; enforcement of the
    * register itself (line cap, suppression) happens at the render/post layer
    * (RoomService#commitReply → domain/dog-mode.ts#renderDogOutput), never
    * prompt-only. Absent = never armed in this room. */

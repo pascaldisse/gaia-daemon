@@ -43,7 +43,7 @@ const ARTIFACT_USAGE = `Usage:
 const DREAM_USAGE = `Usage:
   gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
   gaia dream [agent] --apply   apply the proposal from the last dream run`;
-const DOG_USAGE = `Usage: gaia dog on|off|status   09-DOG-MODE persona-register collar state for THIS room (IRON default OFF)`;
+const DOG_USAGE = `Usage: gaia dog on|off|status   09-DOG-MODE persona-register collar state for THIS room`;
 const CARYLL_USAGE = `Usage:
   gaia caryll compress <file> [-o <out>]  compress a file in place (or to <out>)
   gaia caryll expand <file> [-o <out>]    expand a file (default out: stdout)

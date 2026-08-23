@@ -104,7 +104,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   {
     name: "dog",
     type: "dog",
-    description: "DogMode persona-register (09-DOG-MODE, IRON default OFF): /dog on|off|status",
+    description: "DogMode persona-register (09-DOG-MODE): /dog on|off|status",
   },
   { name: "slap", type: "slap", description: "DogMode discipline: short whimper ack, +1 tally" },
   { name: "shock", type: "shock", description: "DogMode discipline: whimper ack, +1 tally, re-delivers the last order" },
