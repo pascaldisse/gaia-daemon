@@ -106,6 +106,8 @@ function fakeRoom(reply: string): SummonRoomAccess & {
   delivered: { from: string; reply: string; delivery: SummonResultDelivery }[];
   markedDelivered: number;
   resumeMarkedDelivered: number;
+  /** Epoch token each markSummonResumeDelivered call carried (RC5 window 1/2). */
+  resumeEpochs: (string | undefined)[];
   settle: (status?: string, error?: string) => void;
   holdPending: () => void;
   releasePending: (reply?: string) => void;
@@ -121,6 +123,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
     delivered: [] as { from: string; reply: string; delivery: SummonResultDelivery }[],
     markedDelivered: 0,
     resumeMarkedDelivered: 0,
+    resumeEpochs: [] as (string | undefined)[],
     settle(status = "complete", error?: string) {
       task.status = status;
       task.error = error;
@@ -167,8 +170,9 @@ function fakeRoom(reply: string): SummonRoomAccess & {
     async markSummonDelivered() {
       room.markedDelivered += 1;
     },
-    async markSummonResumeDelivered() {
+    async markSummonResumeDelivered(epoch?: string) {
       room.resumeMarkedDelivered += 1;
+      room.resumeEpochs.push(epoch);
     },
     async broadcastRoomsChanged() {},
   };
@@ -949,6 +953,120 @@ test("recoverUndelivered re-arms an interrupted resume (Fix #1, RC4) via markSum
   assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
   assert.equal(child.resumeMarkedDelivered, 1);
   assert.equal(child.markedDelivered, 0);
+});
+
+// --- RC5: resume-epoch closure (a watcher may only close ITS OWN resume) ----
+
+/** Window 1 (live path): resume A is in flight; before A's watcher delivers,
+ * a NEW resume B stamps its own epoch "running" on disk. A's completion must
+ * close A's epoch ONLY — closing B's would strand B (no watcher after a crash,
+ * the boot sweep skips it because the record reads "delivered"). */
+test("RC5 window 1: a finished resume closes its OWN epoch, never a newer one", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-epoch1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("resume A done");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId)!, async () => 8, () => {});
+
+  await coordinator.resume(childRoomId, child, "task A");
+  const epochA = (normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId))).summon as { resumeStartedAt?: string }).resumeStartedAt;
+  assert.ok(epochA, "resume A stamped an epoch");
+
+  // Resume B lands while A is still in flight (a second `gaia resume`).
+  const epochB = new Date(Date.now() + 1_000).toISOString();
+  const handle = await RoomHandle.open(path, childRoomId);
+  await handle.updateState((s) => {
+    if (s.summon) {
+      s.summon.resumeStatus = "running";
+      s.summon.resumeStartedAt = epochB;
+    }
+  });
+
+  child.settle();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1, "A's result still delivers to the parent");
+  assert.deepEqual(child.resumeEpochs, [epochA], "A's watcher carries A's epoch token, not a blind 'latest' stamp");
+});
+
+/** Window 2 (boot recovery): the sweep re-arms an interrupted resume; a NEW
+ * live resume stamps a newer epoch while the recovered turn runs. Recovery
+ * must close only the epoch it scanned. */
+test("RC5 window 2: resume recovery carries the epoch it scanned", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-epoch2";
+  const strandedEpoch = "2026-01-01T00:03:00.000Z";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "turn",
+      callerAgentId: "gaia",
+      status: "delivered",
+      resumeStatus: "running",
+      resumeStartedAt: strandedEpoch,
+      launchedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+  const child = fakeRoom("recovered result");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId)!, async () => 8, () => {});
+
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1);
+  assert.deepEqual(child.resumeEpochs, [strandedEpoch], "recovery passes the scanned epoch through to the close");
+});
+
+/** The durable half: RoomService's stamp is epoch-guarded, so even a stale
+ * token arriving late cannot close a newer resume's record. */
+test("RC5: markSummonResumeDelivered only closes a matching epoch (real RoomService)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const roomId = "terry-epoch3";
+  await mkdir(join(workspace.roomsDir, roomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, roomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "note",
+      status: "delivered",
+      resumeStatus: "running",
+      resumeStartedAt: "2026-02-02T00:00:00.000Z",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+  const service = await RoomService.open({
+    workspaceId: "ws1",
+    workspace,
+    roomId,
+    memoryStore: new MemoryStore(),
+    runtimeFactory: (agentDef) => scriptedRuntime(agentDef, () => "noop"),
+  });
+  await service.markSummonResumeDelivered("2026-01-01T00:09:00.000Z"); // stale token
+  let state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
+  assert.equal(state.summon?.resumeStatus, "running", "stale epoch must not close the live resume");
+  await service.markSummonResumeDelivered("2026-02-02T00:00:00.000Z"); // own token
+  state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
+  assert.equal(state.summon?.resumeStatus, "delivered");
 });
 
 // --- Fix #2: `gaia summon --status` census -------------------------------

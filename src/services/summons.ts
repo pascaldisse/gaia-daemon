@@ -703,7 +703,7 @@ export class SummonCoordinator implements SummonHost {
       return;
     }
     const pendingFirstTurn: Array<{ info: SummonChild; record: SummonDelivery }> = [];
-    const pendingResume: Array<{ info: SummonChild }> = [];
+    const pendingResume: Array<{ info: SummonChild; epoch?: string }> = [];
     for (const roomId of roomIds) {
       if (this.running.has(roomId)) continue;
       let record: SummonDelivery | undefined;
@@ -735,7 +735,7 @@ export class SummonCoordinator implements SummonHost {
         pendingFirstTurn.push({ info, record });
       } else if (record.status === "delivered" && record.resumeStatus === "running") {
         this.running.set(roomId, info);
-        pendingResume.push({ info });
+        pendingResume.push({ info, ...(record.resumeStartedAt ? { epoch: record.resumeStartedAt } : {}) });
       }
     }
     // Register the entire recovered tree before any lane can settle. Otherwise
@@ -752,9 +752,9 @@ export class SummonCoordinator implements SummonHost {
       this.completions.set(info.roomId, completion);
       void completion;
     }
-    for (const { info } of pendingResume) {
+    for (const { info, epoch } of pendingResume) {
       this.log(`resume recovery: re-arming '${info.roomId}' (@${info.agentId} → '${info.parentRoomId}')`);
-      const completion = this.recoverResumeOne(info)
+      const completion = this.recoverResumeOne(info, epoch)
         .catch((error) => this.log(`resume recovery for '${info.roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
           this.running.delete(info.roomId);
@@ -947,9 +947,9 @@ export class SummonCoordinator implements SummonHost {
    * resume found by recoverUndelivered. init() resumes the room's own WAL
    * turn/queue; from there it's the identical runResume path a live resume
    * uses. */
-  private async recoverResumeOne(info: SummonChild): Promise<void> {
+  private async recoverResumeOne(info: SummonChild, epoch?: string): Promise<void> {
     const child = await this.serviceForRoom(info.roomId);
-    await this.runResume(child, info);
+    await this.runResume(child, info, epoch);
   }
 
   // --- Fix #2: `gaia summon --status` census ------------------------------
