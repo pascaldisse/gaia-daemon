@@ -1061,3 +1061,47 @@ test("census: dirty-worktree hint reads a real `git status` when a workDir is ch
   entries = await coordinator.census("default");
   assert.equal(entries.find((entry) => entry.roomId === roomId)?.dirtyWorktree, true, "a modified tracked file reports dirtyWorktree:true");
 });
+
+test("resume: two CONCURRENT resumes into the same child deliver to the parent exactly once (no double delivery)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-resume-race1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("raced resume result");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async (roomId) => {
+      const service = services.get(roomId);
+      if (!service) throw new Error(`unexpected room: ${roomId}`);
+      return service;
+    },
+    async () => 8,
+    () => {},
+  );
+
+  const [a, b] = await Promise.all([
+    coordinator.resume(childRoomId, child, "steer one"),
+    coordinator.resume(childRoomId, child, "steer two"),
+  ]);
+  assert.equal(a.tracked, true);
+  assert.equal(b.tracked, true);
+  assert.deepEqual([...child.sent].sort(), ["steer one", "steer two"], "both steers reached the room");
+
+  child.settle();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(parent.delivered.length, 1, "ONE delivery for the merged resumed turn, not two");
+  assert.equal(child.resumeMarkedDelivered, 1, "resume record closed out exactly once (fakeRoom counts; real RoomService persists)");
+  assert.equal(coordinator.runningChildren().length, 0);
+});

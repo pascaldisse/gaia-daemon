@@ -801,6 +801,20 @@ export class SummonCoordinator implements SummonHost {
       await room.sendMessage(message, { recordUserMessage: true });
       return { tracked: false };
     }
+    // A resume is ALREADY in flight for this room (live watcher, or a boot
+    // sweep re-arm): join it instead of registering a second contract. Two
+    // watchers on one room = two deliveries of the same settled turn into the
+    // parent. The in-flight watcher settles the merged turn too (the room runs
+    // one turn queue), so the merged message is covered by the existing
+    // contract.
+    if (this.completions.has(roomId) || this.resumeInFlight.has(roomId) || record.resumeStatus === "running") {
+      await room.sendMessage(message, { recordUserMessage: true });
+      return { tracked: true };
+    }
+    // Claim BEFORE the next await: check+add is atomic w.r.t. the event loop,
+    // so two resume() calls interleaving on their disk reads still produce
+    // exactly one watcher (the disk stamp alone is too late to serialize them).
+    this.resumeInFlight.add(roomId);
     const resumeStartedAt = new Date().toISOString();
     await handle.updateState((s) => {
       if (s.summon) {
@@ -814,6 +828,7 @@ export class SummonCoordinator implements SummonHost {
       await room.sendMessage(message, { recordUserMessage: true });
     } catch (error) {
       this.running.delete(roomId);
+      this.resumeInFlight.delete(roomId);
       // Nothing was ever kicked off — roll back THIS stamp (keyed by its own
       // timestamp so a concurrent, genuinely-in-flight resume is never
       // clobbered) so a dead stamp never fools the boot sweep into "recovering"
@@ -827,6 +842,7 @@ export class SummonCoordinator implements SummonHost {
       .catch((error) => this.log(`resume-completion tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => {
         this.running.delete(roomId);
+        this.resumeInFlight.delete(roomId);
         this.completions.delete(roomId);
         this.notifyParentRoomsChanged(parentRoomId);
       });
@@ -854,10 +870,40 @@ export class SummonCoordinator implements SummonHost {
    * off disk rather than trusting a caller-held snapshot: deliver/
    * callerAgentId are stamped once at ORIGINAL launch and never change, but
    * this keeps the path correct even if that ever stops being true. */
+  private readonly deliveringResume = new Set<string>();
+
+  /** Rooms with a live resume watcher (Fix: concurrent-resume double delivery)
+   * — see resume()'s merge guard. */
+  private readonly resumeInFlight = new Set<string>();
+
   private async deliverResume(child: SummonRoomAccess, info: SummonChild, reply: string, failed: boolean, cancelled: boolean): Promise<void> {
     const state = await (await RoomHandle.open(this.workspace.rootDir, info.roomId)).state();
     const record = state.summon;
     if (!record) return; // record vanished (shouldn't happen) — nothing durable to deliver against
+    // Atomic claim IMMEDIATELY before delivery: first watcher to reach this
+    // line for the room wins; any other watcher that raced past the merge
+    // guard (e.g. a boot-sweep re-arm meeting a live watcher) drops out, so a
+    // single settled turn is delivered exactly once. Claim is in-process only
+    // BY DESIGN — the durable resumeStatus flip stays AFTER delivery so a
+    // crash mid-delivery still re-delivers at next boot (never loses a
+    // result); duplicates can only ever arise within one live daemon.
+    if (this.deliveringResume.has(info.roomId)) return;
+    this.deliveringResume.add(info.roomId);
+    try {
+      await this.deliverResumeClaimed(child, info, record, reply, failed, cancelled);
+    } finally {
+      this.deliveringResume.delete(info.roomId);
+    }
+  }
+
+  private async deliverResumeClaimed(
+    child: SummonRoomAccess,
+    info: SummonChild,
+    record: SummonDelivery,
+    reply: string,
+    failed: boolean,
+    cancelled: boolean,
+  ): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
     await parent.deliverAgentResult(info.agentId, reply, {
       childRoomId: info.roomId,
