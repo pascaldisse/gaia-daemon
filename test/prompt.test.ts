@@ -13,8 +13,8 @@ import {
   type SystemPromptInput,
 } from "../src/harness/prompt.js";
 import type { AgentDef, AgentRoomEvent, ToolDetail } from "../src/core/types.js";
-import { toolSummaryText } from "../shared/tool-summary.js";
-import { splitLeadingGaiaThink } from "../shared/gaia-think.js";
+import { toolSummaryText } from "../web/shared/tool-summary.js";
+import { splitLeadingGaiaThink } from "../web/shared/gaia-think.js";
 import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietPolicy } from "../src/domain/context-diet.js";
 
 const AGENT = { id: "tester" } as unknown as AgentDef;
