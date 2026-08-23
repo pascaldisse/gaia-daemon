@@ -45,7 +45,7 @@ export function isGitRepo(rootDir: string): boolean {
 }
 
 /** The branch a room's worktree lives on: `<prefix><roomId>`. */
-function roomBranch(branchPrefix: string, roomId: string): string {
+export function roomBranch(branchPrefix: string, roomId: string): string {
   return `${branchPrefix}${roomId}`;
 }
 
@@ -72,6 +72,19 @@ function provisionDeps(rootDir: string, path: string): void {
   }
 }
 
+// `git worktree add` checks out gitlinks but does not populate their contents.
+// Every room checkout must therefore initialize every declared submodule,
+// without knowing any submodule names. A broken/unavailable submodule must not
+// make room isolation unavailable, so this follows the existing best-effort
+// provisioning policy.
+function provisionSubmodules(path: string): void {
+  try {
+    git(path, "submodule", "update", "--init", "--recursive");
+  } catch (error) {
+    console.warn(`worktree: could not initialize submodules in ${path} (${String(error)})`);
+  }
+}
+
 /**
  * Ensure a worktree exists for this room and return its absolute path, or
  * undefined when isolation can't apply (not a git repo, git missing, add
@@ -95,6 +108,7 @@ export function ensureRoomWorktree(rootDir: string, roomId: string, branchPrefix
     // a worktree. Present after prune → it's still registered → reuse it.
     if (existsSync(join(path, ".git"))) {
       provisionDeps(rootDir, path);
+      provisionSubmodules(path);
       return path;
     }
     const branch = roomBranch(branchPrefix, roomId);
@@ -106,6 +120,7 @@ export function ensureRoomWorktree(rootDir: string, roomId: string, branchPrefix
       git(rootDir, "worktree", "add", "-b", branch, path, "HEAD");
     }
     provisionDeps(rootDir, path);
+    provisionSubmodules(path);
     return path;
   } catch (error) {
     console.warn(`worktree: could not isolate room ${roomId} (${String(error)}); running at workspace root`);

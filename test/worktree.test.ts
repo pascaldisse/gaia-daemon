@@ -1,14 +1,14 @@
 // Room worktree isolation (domain/worktree.ts + collab config): the git layer
-// that gives each summon room its own checkout. Real git against a scratch
-// repo in tmpdir — the failure modes that matter here (stale dirs, missing
-// .git links, non-repo workspaces) only exist on a real filesystem.
+// that gives each summon room its own checkout. Real git against scratch
+// repositories — stale dirs, missing .git links, and submodule gitlinks need
+// a real filesystem to reproduce.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createConnection, createServer } from "node:net";
 import { join } from "node:path";
 import { parseCollabConfig } from "../src/core/config.js";
 import { workspacePaths } from "../src/core/paths.js";
@@ -19,9 +19,38 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
+// Test fixtures stay in the ignored workspace runtime directory.
+async function scratchDir(prefix: string): Promise<string> {
+  const parent = join(process.cwd(), ".gaia");
+  await mkdir(parent, { recursive: true });
+  return mkdtemp(join(parent, prefix));
+}
+
+async function unusedTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+async function waitForTcpPort(port: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    if (connected) return;
+    await Bun.sleep(20);
+  }
+  throw new Error(`git daemon did not open port ${port}`);
+}
+
 /** A scratch git repo with one commit — the minimum a worktree can branch off. */
 async function scratchRepo(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "gaia-worktree-"));
+  const root = await scratchDir("worktree-");
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "test");
@@ -50,7 +79,7 @@ test("parseCollabConfig: worktree isolation, defaults, legacy spellings, garbage
 });
 
 test("normalizeRoomState preserves a stamped workDir and drops blank ones", () => {
-  assert.equal(normalizeRoomState({ workDir: "/tmp/ws/.gaia/worktrees/r1" }).workDir, "/tmp/ws/.gaia/worktrees/r1");
+  assert.equal(normalizeRoomState({ workDir: "/workspace/.gaia/worktrees/r1" }).workDir, "/workspace/.gaia/worktrees/r1");
   assert.equal(normalizeRoomState({ workDir: "   " }).workDir, undefined);
   assert.equal(normalizeRoomState({ workDir: 42 }).workDir, undefined);
   assert.equal(normalizeRoomState({}).workDir, undefined);
@@ -71,6 +100,55 @@ test("ensureRoomWorktree creates a checkout on the room branch under .gaia/workt
     assert.equal(existsSync(join(root, "scratch.txt")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ensureRoomWorktree initializes declared submodules in its checkout", async () => {
+  const fixture = await scratchDir("worktree-submodule-");
+  let daemon: ChildProcess | undefined;
+  try {
+    const projectRemote = join(fixture, "project.git");
+    const submoduleRemote = join(fixture, "submodule.git");
+    const projectSeed = join(fixture, "project-seed");
+    const submoduleSeed = join(fixture, "submodule-seed");
+    const root = join(fixture, "root");
+
+    git(fixture, "init", "--bare", "--initial-branch=main", projectRemote);
+    git(fixture, "init", "--bare", "--initial-branch=main", submoduleRemote);
+    git(fixture, "clone", submoduleRemote, submoduleSeed);
+    git(submoduleSeed, "config", "user.email", "test@example.com");
+    git(submoduleSeed, "config", "user.name", "test");
+    await writeFile(join(submoduleSeed, "submodule.txt"), "submodule content\n");
+    git(submoduleSeed, "add", ".");
+    git(submoduleSeed, "commit", "-m", "submodule init");
+    git(submoduleSeed, "push", "origin", "main");
+
+    const port = await unusedTcpPort();
+    daemon = spawn("git", ["daemon", "--reuseaddr", "--export-all", `--base-path=${fixture}`, `--port=${port}`, "--listen=127.0.0.1"], { stdio: "ignore" });
+    await waitForTcpPort(port);
+    const submoduleUrl = `git://127.0.0.1:${port}/submodule.git`;
+
+    git(fixture, "clone", projectRemote, projectSeed);
+    git(projectSeed, "config", "user.email", "test@example.com");
+    git(projectSeed, "config", "user.name", "test");
+    await writeFile(join(projectSeed, "README.md"), "project\n");
+    git(projectSeed, "add", ".");
+    git(projectSeed, "commit", "-m", "project init");
+    git(projectSeed, "submodule", "add", submoduleUrl, "vendor/fixture");
+    git(projectSeed, "commit", "-m", "add submodule");
+    git(projectSeed, "push", "origin", "main");
+
+    git(fixture, "clone", projectRemote, root);
+    assert.equal(existsSync(join(root, "vendor/fixture/submodule.txt")), false, "clone leaves the gitlink uninitialized");
+
+    const path = ensureRoomWorktree(root, "room-submodule", "gaia/")!;
+    assert.ok(existsSync(join(path, "vendor/fixture/submodule.txt")), "worktree has initialized submodule contents");
+  } finally {
+    if (daemon?.exitCode === null) {
+      daemon.kill();
+      await new Promise<void>((resolve) => daemon!.once("exit", () => resolve()));
+    }
+    await rm(fixture, { recursive: true, force: true });
   }
 });
 
@@ -123,8 +201,11 @@ test("ensureRoomWorktree re-attaches to an existing room branch instead of forki
 });
 
 test("non-git workspace: ensureRoomWorktree degrades to undefined, removeRoomWorktree no-ops", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gaia-nogit-"));
+  const root = await scratchDir("nogit-");
   try {
+    // A bare repository is not a working tree, even when it lives under this
+    // checkout; this keeps every fixture under the ignored runtime directory.
+    git(root, "init", "--bare");
     assert.equal(isGitRepo(root), false);
     assert.equal(ensureRoomWorktree(root, "room-x", "gaia/"), undefined);
     // No stray dirs left behind by the failed attempt.
