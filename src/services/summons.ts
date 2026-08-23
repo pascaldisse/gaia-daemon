@@ -933,12 +933,13 @@ export class SummonCoordinator implements SummonHost {
     // outcome read returns: this contract's view of the room is fixed from
     // that observation on, and any resume arriving during the outcome's tail
     // I/O needs its own watcher (see resume()'s merge guard).
-    const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId, () => this.resumeSealed.add(info.roomId));
-    this.resumeSealed.add(info.roomId);
+    const seal = () => this.resumeSealed.set(info.roomId, token);
+    const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId, seal);
+    seal();
     try {
       await this.deliverResume(child, info, reply, failed, cancelled, token);
     } finally {
-      this.resumeSealed.delete(info.roomId);
+      if (this.resumeSealed.get(info.roomId) === token) this.resumeSealed.delete(info.roomId);
     }
   }
 
@@ -957,7 +958,7 @@ export class SummonCoordinator implements SummonHost {
   private readonly resumeInFlight = new Set<string>();
 
   /** Rooms whose live resume watcher has already sampled its outcome (RC7). */
-  private readonly resumeSealed = new Set<string>();
+  private readonly resumeSealed = new Map<string, ResumeEpoch>();
 
   private async deliverResume(child: SummonRoomAccess, info: SummonChild, reply: string, failed: boolean, cancelled: boolean, token: ResumeEpoch): Promise<void> {
     const state = await (await RoomHandle.open(this.workspace.rootDir, info.roomId)).state();
