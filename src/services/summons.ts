@@ -182,12 +182,7 @@ export interface SummonRoomAccess {
   /** Fix #1: stamp this CHILD room's MOST RECENT resume record delivered
    * (idempotent) — independent of markSummonDelivered's `status`, which
    * stays "delivered" from the original first-turn summon. See
-   * SummonDelivery.resumeStatus.
-   * `token` = the resume's own `resumeStartedAt` stamp: a LATER resume
-   * overwrites the stamp, so a stale watcher passing an older token must NOT
-   * clear it (that cleared stamp would make the boot sweep skip a resume that
-   * really is still running). Omitted = unconditional (boot recovery, which
-   * owns whatever stamp it found). */
+   * SummonDelivery.resumeStatus. */
   markSummonResumeDelivered(token?: string): Promise<void>;
   /** Rebroadcast the workspace rooms list (see RoomService.broadcastRoomsChanged). */
   broadcastRoomsChanged(): Promise<void>;
@@ -526,13 +521,9 @@ export class SummonCoordinator implements SummonHost {
         throw error;
       },
     );
-    // Identity-keyed cleanup (same law as resume's): a later lane for the SAME
-    // room owns the map entries once it registers — never clobber someone
-    // else's registration on the way out.
-    let done!: Promise<string>;
-    done = ledgered.finally(() => {
-      if (this.running.get(childRoomId) === info) this.running.delete(childRoomId);
-      if (this.completions.get(childRoomId) === done) this.completions.delete(childRoomId);
+    const done = ledgered.finally(() => {
+      this.running.delete(childRoomId);
+      this.completions.delete(childRoomId);
       this.notifyParentRoomsChanged(parentRoomId);
     });
     this.completions.set(childRoomId, done);
@@ -751,12 +742,11 @@ export class SummonCoordinator implements SummonHost {
     // a parent discovered first can miss its still-undelivered child.
     for (const { info, record } of pendingFirstTurn) {
       this.log(`summon recovery: re-arming '${info.roomId}' (@${record.agentId} → '${info.parentRoomId}')`);
-      let completion!: Promise<void>;
-      completion = this.recoverOne(info, record)
+      const completion = this.recoverOne(info, record)
         .catch((error) => this.log(`summon recovery for '${info.roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
-          if (this.running.get(info.roomId) === info) this.running.delete(info.roomId);
-          if (this.completions.get(info.roomId) === completion) this.completions.delete(info.roomId);
+          this.running.delete(info.roomId);
+          this.completions.delete(info.roomId);
           this.notifyParentRoomsChanged(info.parentRoomId);
         });
       this.completions.set(info.roomId, completion);
@@ -764,12 +754,11 @@ export class SummonCoordinator implements SummonHost {
     }
     for (const { info } of pendingResume) {
       this.log(`resume recovery: re-arming '${info.roomId}' (@${info.agentId} → '${info.parentRoomId}')`);
-      let completion!: Promise<void>;
-      completion = this.recoverResumeOne(info)
+      const completion = this.recoverResumeOne(info)
         .catch((error) => this.log(`resume recovery for '${info.roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
-          if (this.running.get(info.roomId) === info) this.running.delete(info.roomId);
-          if (this.completions.get(info.roomId) === completion) this.completions.delete(info.roomId);
+          this.running.delete(info.roomId);
+          this.completions.delete(info.roomId);
           this.notifyParentRoomsChanged(info.parentRoomId);
         });
       this.completions.set(info.roomId, completion);
@@ -822,7 +811,33 @@ export class SummonCoordinator implements SummonHost {
     // one turn queue), so the merged message is covered by the existing
     // contract.
     if (this.completions.has(roomId) || this.resumeInFlight.has(roomId) || record.resumeStatus === "running") {
+      const predecessor = this.completions.get(roomId);
+      let predecessorSettled = false;
+      predecessor?.finally(() => { predecessorSettled = true; }).catch(() => {});
       await room.sendMessage(message, { recordUserMessage: true });
+      // The predecessor may have delivered while sendMessage awaited. Its
+      // contract cannot observe this newly queued turn, so arm a successor
+      // only in that completed-before-send window; normal concurrent steers
+      // remain one watcher and one parent delivery.
+      if (!predecessorSettled) return { tracked: true };
+      const resumeStartedAt = new Date().toISOString();
+      await handle.updateState((s) => {
+        if (s.summon) {
+          s.summon.resumeStatus = "running";
+          s.summon.resumeStartedAt = resumeStartedAt;
+        }
+      });
+      const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: message, untrusted: state.summonUntrusted === true };
+      this.running.set(roomId, info);
+      const completion = this.runResume(room, info, resumeStartedAt)
+        .catch((error) => this.log(`resume successor tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          if (this.running.get(roomId) === info) this.running.delete(roomId);
+          if (this.completions.get(roomId) === completion) this.completions.delete(roomId);
+          this.notifyParentRoomsChanged(parentRoomId);
+        });
+      this.completions.set(roomId, completion);
+      completion.catch(() => {});
       return { tracked: true };
     }
     // Claim BEFORE the next await: check+add is atomic w.r.t. the event loop,
@@ -838,50 +853,9 @@ export class SummonCoordinator implements SummonHost {
     });
     const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: message, untrusted: state.summonUntrusted === true };
     this.running.set(roomId, info); // Fix #2 census visibility + counts toward the parent's summon cap while in flight
-
-    // RACE (no-delivery window): the watcher is ARMED BEFORE the message is
-    // sent, but only starts OBSERVING once the send resolved (`sent`). Armed
-    // after the send instead, an ALREADY-RUNNING watcher for this same room
-    // could settle inside the await — the old turn ends, the new one isn't
-    // enqueued yet — and its `.finally` would then delete the running/
-    // completions entries this resume had just installed, leaving the resumed
-    // turn watched by nobody: never delivered to the parent, never recoverable
-    // (its stamp cleared too). Arming first makes this lane's registration
-    // ordered BEFORE any settle it could be confused with; identity-keyed
-    // cleanup below means a stale watcher only ever removes its OWN entries.
-    let markSent!: () => void;
-    let failSend!: (error: unknown) => void;
-    const sent = new Promise<void>((resolve, reject) => {
-      markSent = resolve;
-      failSend = reject;
-    });
-    sent.catch(() => {}); // send errors surface to the caller below, not here
-    let completion!: Promise<void>;
-    completion = sent.then(
-      () =>
-        this.runResume(room, info, resumeStartedAt)
-          .catch((error) => this.log(`resume-completion tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
-          .finally(() => {
-            if (this.running.get(roomId) === info) this.running.delete(roomId);
-            this.resumeInFlight.delete(roomId);
-            if (this.completions.get(roomId) === completion) this.completions.delete(roomId);
-            this.notifyParentRoomsChanged(parentRoomId);
-          }),
-      () => {
-        // never kicked off — the send-failure path below owns the rollback
-        if (this.running.get(roomId) === info) this.running.delete(roomId);
-        this.resumeInFlight.delete(roomId);
-        if (this.completions.get(roomId) === completion) this.completions.delete(roomId);
-      },
-    );
-    this.completions.set(roomId, completion);
-    completion.catch(() => {}); // don't crash the daemon on an unwatched resume
-
     try {
       await room.sendMessage(message, { recordUserMessage: true });
-      markSent();
     } catch (error) {
-      failSend(error);
       this.running.delete(roomId);
       this.resumeInFlight.delete(roomId);
       // Nothing was ever kicked off — roll back THIS stamp (keyed by its own
@@ -893,7 +867,16 @@ export class SummonCoordinator implements SummonHost {
       }).catch(() => {});
       throw error;
     }
-
+    const completion = this.runResume(room, info, resumeStartedAt)
+      .catch((error) => this.log(`resume-completion tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => {
+        this.running.delete(roomId);
+        this.resumeInFlight.delete(roomId);
+        this.completions.delete(roomId);
+        this.notifyParentRoomsChanged(parentRoomId);
+      });
+    this.completions.set(roomId, completion);
+    completion.catch(() => {}); // don't crash the daemon on an unwatched resume
     return { tracked: true };
   }
 
@@ -936,7 +919,7 @@ export class SummonCoordinator implements SummonHost {
     if (this.deliveringResume.has(info.roomId)) return;
     this.deliveringResume.add(info.roomId);
     try {
-      await this.deliverResumeClaimed(child, info, record, reply, failed, cancelled);
+      await this.deliverResumeClaimed(child, info, record, reply, failed, cancelled, token);
     } finally {
       this.deliveringResume.delete(info.roomId);
     }
@@ -949,6 +932,7 @@ export class SummonCoordinator implements SummonHost {
     reply: string,
     failed: boolean,
     cancelled: boolean,
+    token?: string,
   ): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
     await parent.deliverAgentResult(info.agentId, reply, {

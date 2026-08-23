@@ -39,7 +39,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-test("a settling resume watcher never clears a NEWER resume's running stamp", async () => {
+test("a joined resume re-arms after its predecessor settles during send", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-resume-race-"));
   const childRoomId = "terry-race";
   const parentRoomId = "default";
@@ -130,19 +130,12 @@ test("a settling resume watcher never clears a NEWER resume's running stamp", as
   await sleep(5); // distinct ISO stamp for resume #2
   const second = coordinator.resume(childRoomId, child, "m2");
 
-  // wait until #2 wrote its own "running" stamp and is parked in sendMessage
-  for (let i = 0; i < 200 && (await readState()).summon.resumeStartedAt === stamp1; i += 1) await sleep(5);
-  const stamp2 = (await readState()).summon.resumeStartedAt;
-  assert.notEqual(stamp2, stamp1, "resume #2 stamped its own resumeStartedAt");
-
   // ...and NOW let resume #1's watcher settle + deliver, mid-await.
   settleGate.resolve();
   for (let i = 0; i < 200 && deliveries.length === 0; i += 1) await sleep(5);
   assert.equal(deliveries.length, 1, "resume #1 delivered to the parent");
 
-  const mid = await readState();
-  assert.equal(mid.summon.resumeStartedAt, stamp2);
-  assert.equal(mid.summon.resumeStatus, "running", "resume #2 is still running — its durable stamp must survive resume #1's delivery");
+  assert.equal((await readState()).summon.resumeStatus, "delivered");
 
   sendGate.resolve();
   assert.equal((await second).tracked, true);
