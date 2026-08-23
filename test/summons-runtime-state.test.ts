@@ -42,6 +42,7 @@ function settledRoom(): SummonRoomAccess {
     },
     async deliverAgentResult() {},
     async markSummonDelivered() {},
+    async markSummonResumeDelivered() {},
     async broadcastRoomsChanged() {},
     async runCancelCommand() {
       return "cancelled";

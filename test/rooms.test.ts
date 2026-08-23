@@ -120,6 +120,48 @@ test("normalizeRoomState preserves future custody metadata without accepting mal
   assert.equal((state.queue?.[0].attachments?.[0] as unknown as { futureAttachment: boolean }).futureAttachment, true);
 });
 
+test("normalizeRoomState round-trips a summon record's resumeStatus/resumeStartedAt (Fix #1) and drops malformed values", () => {
+  const withResume = normalizeRoomState({
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "turn",
+      callerAgentId: "gaia",
+      status: "delivered",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+      resumeStatus: "running",
+      resumeStartedAt: "2026-01-02T00:00:00.000Z",
+    },
+  });
+  assert.equal(withResume.summon?.resumeStatus, "running");
+  assert.equal(withResume.summon?.resumeStartedAt, "2026-01-02T00:00:00.000Z");
+  assert.equal(withResume.summon?.status, "delivered", "resumeStatus is independent of the first-turn status field");
+
+  // No resume ever tracked: the field stays ABSENT, never defaulted —
+  // distinguishes "never resumed" from "a resume is in flight".
+  const noResume = normalizeRoomState({
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: "2026-01-01T00:00:00.000Z" },
+  });
+  assert.equal(noResume.summon?.resumeStatus, undefined);
+  assert.equal("resumeStatus" in (noResume.summon ?? {}), false);
+
+  // Malformed resumeStatus is dropped, not laundered into a bogus value.
+  const malformed = normalizeRoomState({
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "note",
+      status: "delivered",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+      resumeStatus: "bogus",
+      resumeStartedAt: 12345,
+    },
+  });
+  assert.equal(malformed.summon?.resumeStatus, undefined);
+  assert.equal((malformed.summon as unknown as { resumeStartedAt?: unknown })?.resumeStartedAt, undefined);
+});
+
 test("normalizeRoomState keeps bounded JSON plugin state and drops executable shapes", () => {
   const state = normalizeRoomState({
     pluginState: { rpg: { gm: "terra", roster: [{ name: "Ada" }], ignored: () => "no" } },

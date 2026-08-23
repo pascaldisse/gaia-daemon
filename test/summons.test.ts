@@ -105,6 +105,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
   sent: string[];
   delivered: { from: string; reply: string; delivery: SummonResultDelivery }[];
   markedDelivered: number;
+  resumeMarkedDelivered: number;
   settle: (status?: string, error?: string) => void;
   holdPending: () => void;
   releasePending: (reply?: string) => void;
@@ -119,6 +120,7 @@ function fakeRoom(reply: string): SummonRoomAccess & {
     sent: [] as string[],
     delivered: [] as { from: string; reply: string; delivery: SummonResultDelivery }[],
     markedDelivered: 0,
+    resumeMarkedDelivered: 0,
     settle(status = "complete", error?: string) {
       task.status = status;
       task.error = error;
@@ -164,6 +166,9 @@ function fakeRoom(reply: string): SummonRoomAccess & {
     },
     async markSummonDelivered() {
       room.markedDelivered += 1;
+    },
+    async markSummonResumeDelivered() {
+      room.resumeMarkedDelivered += 1;
     },
     async broadcastRoomsChanged() {},
   };
@@ -674,6 +679,93 @@ test("end-to-end: a background summon posts its result into the parent room and 
   assert.equal(childState.summon?.status, "delivered");
 });
 
+test("end-to-end (Fix #1): `resume` into an already-delivered summon child runs a REAL second turn and posts its result back to the parent, re-invoking the caller again", async () => {
+  const { workspace, path } = await makeWorkspace();
+  await mkdir(join(workspace.roomsDir, "default"), { recursive: true });
+
+  const runtimes = new Map<string, ReturnType<typeof scriptedRuntime>>();
+  const services = new Map<string, Promise<RoomService>>();
+  let terryReply = "the tide tables say: go at dawn";
+  const serviceFor = (roomId: string): Promise<RoomService> => {
+    let service = services.get(roomId);
+    if (!service) {
+      service = RoomService.open({
+        workspaceId: "ws1",
+        workspace,
+        roomId,
+        memoryStore: new MemoryStore(),
+        runtimeFactory: (agentDef) => {
+          const runtime = scriptedRuntime(agentDef, () => (agentDef.id === "terry" ? terryReply : "synthesized."));
+          runtimes.set(`${roomId}:${agentDef.id}`, runtime);
+          return runtime;
+        },
+      }).then(async (svc) => {
+        await svc.init();
+        return svc;
+      });
+      services.set(roomId, service);
+    }
+    return service;
+  };
+
+  const coordinator = new SummonCoordinator(workspace, path, serviceFor, async () => 8, () => {});
+  const { roomId: childRoomId, done } = await coordinator.launch("default", "terry", "check the tides", {
+    deliver: "turn",
+    callerAgentId: "gaia",
+  });
+  await done; // first turn delivered — baseline, unchanged behavior (see the test above)
+
+  // Real `gaia resume` (HTTP handler's own call shape: coordinator.resume,
+  // no explicit targets — routeTargets picks the room's active agent, the
+  // SAME path a plain `gaia resume` into a normal room takes).
+  terryReply = "second pass: tides confirmed, all clear";
+  const child = await serviceFor(childRoomId);
+  const { tracked } = await coordinator.resume(childRoomId, child, "one more check please");
+  assert.equal(tracked, true);
+
+  // Stamped BEFORE the resumed turn ran.
+  const midState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(midState.summon?.resumeStatus, "running");
+
+  // Wait for the coordinator's background completion (the resumed turn itself
+  // already ran synchronously inside resume()'s awaited sendMessage — this
+  // waits for runResume's delivery tail).
+  for (let i = 0; i < 200; i++) {
+    const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+    if (state.summon?.resumeStatus === "delivered") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  const finalState = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(finalState.summon?.resumeStatus, "delivered", "resumed turn's own delivery record closed out");
+  assert.equal(finalState.summon?.status, "delivered", "original first-turn record untouched");
+
+  // The REAL child room actually ran "terry" a second time.
+  const terryRuntime = runtimes.get(`${childRoomId}:terry`);
+  assert.ok(terryRuntime, "terry's runtime exists in the child room");
+  assert.equal(terryRuntime!.messages.length, 2, "first-turn task + the resumed message, both real turns");
+  assert.equal(terryRuntime!.messages[1], "one more check please");
+
+  // The resumed turn's result posted back into the PARENT room — the exact
+  // gap Fix #1 closes (RC1: this note never existed before this fix).
+  const parentRoom = await RoomHandle.open(path, "default");
+  const { events } = await parentRoom.eventsFrom(0);
+  const notes = events.filter((event) => event.author === "terry") as AgentRoomEvent[];
+  assert.equal(notes.length, 2, "first-turn result note PLUS the resumed-turn result note");
+  assert.match(notes[1]!.text, /second pass: tides confirmed, all clear/);
+  assert.equal(notes[1]!.details?.summonResult?.childRoomId, childRoomId);
+  assert.equal(notes[1]!.details?.summonResult?.failed, false);
+
+  // The caller ran a SECOND callback turn processing the resumed result.
+  const caller = runtimes.get("default:gaia");
+  assert.ok(caller, "caller runtime exists");
+  assert.equal(caller!.messages.length, 2, "one callback per delivered result: first turn, then the resume");
+  assert.match(caller!.messages[1], new RegExp(childRoomId));
+  const secondCallerNote = caller!.transcripts[1].filter((event) => event.author === "terry").at(-1) as AgentRoomEvent | undefined;
+  assert.ok(secondCallerNote, "the resumed result reached the caller's context");
+  assert.match(secondCallerNote!.text, /second pass: tides confirmed, all clear/);
+});
+
 test("insight ledger: a caller with insight opts into a distilled per-worker trace at lane close; default caller writes nothing", async () => {
   const insightMemDir = await mkdtemp(join(tmpdir(), "gaia-ledger-mem-"));
   const { workspace, path } = await makeWorkspace({
@@ -708,4 +800,264 @@ test("insight ledger: a caller with insight opts into a distilled per-worker tra
   plainRoom.settle();
   await plainDone;
   await assert.rejects(read(join(workspace.agents.gaia!.memoryDir, "ledgers", "terry.md"), "utf8"));
+});
+
+// --- Fix #1: resume-completion tracking ----------------------------------
+
+test("resume: a plain (non-summon) room gets the original untracked fire-and-forget behavior", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const room = fakeRoom("");
+  const coordinator = new SummonCoordinator(workspace, path, async () => room, async () => 8, () => {});
+
+  const { tracked } = await coordinator.resume("default", room, "keep going");
+  assert.equal(tracked, false);
+  assert.deepEqual(room.sent, ["keep going"]);
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("resume: an ALREADY-delivered summon child registers a new durable contract and delivers to the parent on settle (Fix #1)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-resumeme1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("resumed and finished the extra task");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async (roomId) => {
+      const service = services.get(roomId);
+      if (!service) throw new Error(`unexpected room: ${roomId}`);
+      return service;
+    },
+    async () => 8,
+    () => {},
+  );
+
+  const { tracked } = await coordinator.resume(childRoomId, child, "one more thing please");
+  assert.equal(tracked, true);
+  assert.deepEqual(child.sent, ["one more thing please"]);
+
+  // Stamped BEFORE the turn can run — same ordering law as launch()'s own
+  // status stamp — and the first-turn record is untouched.
+  let state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(state.summon?.resumeStatus, "running");
+  assert.equal(state.summon?.status, "delivered");
+  assert.equal(coordinator.runningChildren("default").length, 1, "visible to census/cap while the resumed turn is in flight");
+
+  child.settle();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1);
+  assert.equal(parent.delivered[0].from, "terry");
+  assert.match(parent.delivered[0].reply, /resumed and finished the extra task/);
+  assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
+  assert.equal(child.resumeMarkedDelivered, 1, "markSummonResumeDelivered called — real RoomService persists this to disk (see room-service.ts); fakeRoom only counts it, matching this file's markedDelivered convention");
+  assert.equal(child.markedDelivered, 0, "deliverResume never touches the first-turn delivery record");
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("resume: does not double-track a summon child whose first turn hasn't delivered yet (avoids a double delivery)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-inflight1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "running", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("");
+  const coordinator = new SummonCoordinator(workspace, path, async () => child, async () => 8, () => {});
+
+  const { tracked } = await coordinator.resume(childRoomId, child, "steer it");
+  assert.equal(tracked, false);
+  assert.deepEqual(child.sent, ["steer it"]);
+  const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(state.summon?.resumeStatus, undefined, "no resume stamp while the first turn is still undelivered");
+});
+
+test("resume: rolls back its own stamp when sendMessage throws, so a boot sweep never chases a resume that never ran", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-resumefail1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+  const child = fakeRoom("");
+  child.sendMessage = async () => {
+    throw new Error("boom: bad target");
+  };
+  const coordinator = new SummonCoordinator(workspace, path, async () => child, async () => 8, () => {});
+
+  await assert.rejects(coordinator.resume(childRoomId, child, "steer it"), /boom: bad target/);
+  const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId)));
+  assert.equal(state.summon?.resumeStatus, "delivered", "rolled back — nothing was ever kicked off");
+  assert.equal(coordinator.runningChildren().length, 0);
+});
+
+test("recoverUndelivered re-arms an interrupted resume (Fix #1, RC4) via markSummonResumeDelivered", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-resume-stranded1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "turn",
+      callerAgentId: "gaia",
+      status: "delivered",
+      resumeStatus: "running",
+      resumeStartedAt: new Date().toISOString(),
+      launchedAt: new Date().toISOString(),
+    },
+  });
+  const child = fakeRoom("recovered resume result ✓");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async (roomId) => {
+      const service = services.get(roomId);
+      if (!service) throw new Error(`unexpected room: ${roomId}`);
+      return service;
+    },
+    async () => 8,
+    () => {},
+  );
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1);
+  assert.match(parent.delivered[0].reply, /recovered resume result/);
+  assert.equal(parent.delivered[0].delivery.triggerTarget, "gaia");
+  assert.equal(child.resumeMarkedDelivered, 1);
+  assert.equal(child.markedDelivered, 0);
+});
+
+// --- Fix #2: `gaia summon --status` census -------------------------------
+
+test("census: running/idle/dead/completed-undelivered states, scoped by parent, with a last-event time (Fix #2)", async () => {
+  const { workspace, path } = await makeWorkspace();
+
+  // idle: settled, delivered, a normal (non-failure) transcript line.
+  const idleId = "terry-idle1";
+  await mkdir(join(workspace.roomsDir, idleId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, idleId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: "2026-01-01T00:00:00.000Z" },
+  });
+  await writeFile(workspacePaths.transcript(path, idleId), `${JSON.stringify({ author: "terry", text: "all done", timestamp: "2026-01-01T00:01:00.000Z" })}\n`, "utf8");
+
+  // dead: settled, delivered, but the transcript recorded a turn failure.
+  const deadId = "terry-dead1";
+  await mkdir(join(workspace.roomsDir, deadId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, deadId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: "2026-01-01T00:00:00.000Z" },
+  });
+  await writeFile(
+    workspacePaths.transcript(path, deadId),
+    `${JSON.stringify({ author: "system", text: "⚠ turn failed: boom", timestamp: "2026-01-01T00:02:00.000Z" })}\n`,
+    "utf8",
+  );
+
+  // completed-undelivered (the lampas class): durable record still reads
+  // "running" (here via resumeStatus) but nothing in THIS process is
+  // watching it — exactly recoverUndelivered's own re-arm predicate.
+  const lampasId = "terry-lampas1";
+  await mkdir(join(workspace.roomsDir, lampasId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, lampasId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "note",
+      status: "delivered",
+      resumeStatus: "running",
+      resumeStartedAt: "2026-01-01T00:03:00.000Z",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+
+  // running: a live launch this coordinator has NOT yet seen settle.
+  const liveChild = fakeRoom("");
+  const parent = fakeRoom("");
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => (roomId === "default" ? parent : liveChild), async () => 8, () => {});
+  const { roomId: runningId } = await coordinator.launch("default", "terry", "still going", { deliver: "note" });
+  assert.equal(coordinator.runningChildren("default").length, 1, "sanity: truly tracked as running right now");
+
+  const entries = await coordinator.census("default");
+  const byId = new Map(entries.map((entry) => [entry.roomId, entry]));
+  assert.equal(byId.get(runningId)?.state, "running");
+  assert.equal(byId.get(idleId)?.state, "idle");
+  assert.equal(byId.get(idleId)?.delivered, true);
+  assert.ok(byId.get(idleId)?.lastEventAt, "idle lane carries a last-event time (transcript mtime)");
+  assert.equal(byId.get(deadId)?.state, "dead");
+  assert.equal(byId.get(deadId)?.delivered, true);
+  assert.equal(byId.get(lampasId)?.state, "completed-undelivered");
+  assert.equal(byId.get(lampasId)?.resumeStatus, "running");
+  assert.ok(entries.every((entry) => entry.dirtyWorktree === undefined), "no workDir on any fixture → no hint attempted");
+
+  // Scoped by parent: an unrelated parent room sees none of these.
+  assert.equal((await coordinator.census("someone-elses-room")).length, 0);
+});
+
+test("census: dirty-worktree hint reads a real `git status` when a workDir is cheaply known", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const { execFileSync } = await import("node:child_process");
+  const repoDir = await mkdtemp(join(tmpdir(), "gaia-census-git-"));
+  execFileSync("git", ["init", "-q"], { cwd: repoDir });
+  execFileSync("git", ["config", "user.email", "t@t"], { cwd: repoDir });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: repoDir });
+  await writeFile(join(repoDir, "a.txt"), "1", "utf8");
+  execFileSync("git", ["add", "."], { cwd: repoDir });
+  execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repoDir });
+
+  const roomId = "terry-workdir1";
+  await mkdir(join(workspace.roomsDir, roomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, roomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    workDir: repoDir,
+    summon: { agentId: "terry", deliver: "note", status: "delivered", launchedAt: new Date().toISOString() },
+  });
+  const coordinator = new SummonCoordinator(
+    workspace,
+    path,
+    async () => {
+      throw new Error("census must never open a live service");
+    },
+    async () => 8,
+    () => {},
+  );
+
+  let entries = await coordinator.census("default");
+  assert.equal(entries.find((entry) => entry.roomId === roomId)?.dirtyWorktree, false, "clean checkout reports dirtyWorktree:false");
+
+  await writeFile(join(repoDir, "a.txt"), "2", "utf8"); // modify a TRACKED file
+  entries = await coordinator.census("default");
+  assert.equal(entries.find((entry) => entry.roomId === roomId)?.dirtyWorktree, true, "a modified tracked file reports dirtyWorktree:true");
 });
