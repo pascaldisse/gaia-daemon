@@ -15,7 +15,7 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts", "design/src/**/*.ts", "shared/**/*.js"],
+  "include": ["src/**/*.ts", "design/src/**/*.ts"],
   // graphql.ts pulls graphql-yoga -> @whatwg-node/fetch, whose .d.ts merges a
   // DOM-shaped ReadableStream/Buffer/BlobPart into the GLOBAL scope of any
   // program that includes it — verified live 2026-08-21: adding graphql-yoga

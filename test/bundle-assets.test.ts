@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES, BUNDLE_BINARY_ARTIFACTS, bundleSwapNames } from "../src/core/bundle-assets.js";
 
@@ -24,6 +24,16 @@ test("design/ and addons/ are bundled and therefore swapped", () => {
     assert.ok(BUNDLE_ASSET_DIRS.includes(asset));
     assert.ok(bundleSwapNames(false).includes(asset));
   }
+});
+
+test("browser-shared modules live under web/ so the static server and base-path mounts serve them", () => {
+  for (const file of ["gaia-think.js", "tool-summary.js"]) {
+    assert.ok(existsSync(join(repoRoot, "web", "shared", file)), `missing web/shared/${file}`);
+  }
+  const transcript = readFileSync(join(repoRoot, "web", "src", "transcript.js"), "utf8");
+  assert.match(transcript, /from "\.\.\/shared\/tool-summary\.js"/);
+  assert.match(transcript, /from "\.\.\/shared\/gaia-think\.js"/);
+  assert.ok(!BUNDLE_ASSET_DIRS.includes("shared"));
 });
 
 test("compiled design assets omit source-only tests", () => {

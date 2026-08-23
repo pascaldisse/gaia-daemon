@@ -18,9 +18,9 @@ import { MarkdownMessage } from "./markdown.js";
 import { toggleReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
-import { toolSummaryText } from "../../shared/tool-summary.js";
-import { splitLeadingGaiaThink } from "../../shared/gaia-think.js";
-export { splitLeadingGaiaThink } from "../../shared/gaia-think.js";
+import { toolSummaryText } from "../shared/tool-summary.js";
+import { splitLeadingGaiaThink } from "../shared/gaia-think.js";
+export { splitLeadingGaiaThink } from "../shared/gaia-think.js";
 
 /** @typedef {import("./types.js").RoomEvent} RoomEvent */
 /** @typedef {import("./types.js").UserRoomEvent} UserRoomEvent */

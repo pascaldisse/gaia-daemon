@@ -9,7 +9,7 @@
  * ship as real, unbundled files loaded via a genuine runtime `import()` of
  * their actual on-disk path (core/paths.ts photonNodeAssetDir +
  * harness/image-read.ts) instead of a bare package-specifier import. */
-export const BUNDLE_ASSET_DIRS = ["web", "setups", "design", "addons", "vendor", "shared"] as const;
+export const BUNDLE_ASSET_DIRS = ["web", "setups", "design", "addons", "vendor"] as const;
 
 /** Source-only content removed from compiled asset snapshots. */
 export const BUNDLE_ASSET_EXCLUDES: Readonly<Partial<Record<(typeof BUNDLE_ASSET_DIRS)[number], readonly string[]>>> = {
