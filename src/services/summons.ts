@@ -662,12 +662,22 @@ export class SummonCoordinator implements SummonHost {
    * (recoverOne) and Fix #1's resume-completion paths (runResume /
    * recoverResumeOne) alike, so all three agree on what counts as
    * failed/cancelled/empty-but-active. Pure read, no delivery side effect. */
-  private async settledOutcome(child: SummonRoomAccess, roomId: string, agentId: string): Promise<{ reply: string; failed: boolean; cancelled: boolean }> {
+  private async settledOutcome(
+    child: SummonRoomAccess,
+    roomId: string,
+    agentId: string,
+    onIdleObserved?: () => void,
+  ): Promise<{ reply: string; failed: boolean; cancelled: boolean }> {
     let lastTask = (await child.getSnapshot()).tasks.at(-1);
     while (lastTask?.status === "error" && (await child.hasPendingWork())) {
       await child.waitForSettled();
       lastTask = (await child.getSnapshot()).tasks.at(-1);
     }
+    // RC8: idle is observed HERE — everything below (inspectWorker,
+    // latestReplyFrom) is tail I/O against an ALREADY-FIXED view of the room.
+    // A resume landing during that tail must not merge into this contract, so
+    // the caller seals now, not after this function returns.
+    onIdleObserved?.();
     const worker = await inspectWorker(this.workspace.rootDir, roomId, agentId);
     if (lastTask?.status === "error") {
       return { reply: [lastTask.error || worker.failure || "summon turn failed", worker.digest].filter(Boolean).join("\n\n"), failed: true, cancelled: false };
@@ -919,9 +929,11 @@ export class SummonCoordinator implements SummonHost {
    * recovery (recoverResumeOne) — same code, same guarantees either way. */
   private async runResume(child: SummonRoomAccess, info: SummonChild, token: ResumeEpoch): Promise<void> {
     await this.waitForDelegatedWork(child, info.roomId);
-    const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId);
-    // Sealed: this contract's view of the room is fixed from here on — any
-    // resume arriving now needs its own watcher (see resume()'s merge guard).
+    // Sealed the instant the room is observed idle (RC8) — not after the
+    // outcome read returns: this contract's view of the room is fixed from
+    // that observation on, and any resume arriving during the outcome's tail
+    // I/O needs its own watcher (see resume()'s merge guard).
+    const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId, () => this.resumeSealed.add(info.roomId));
     this.resumeSealed.add(info.roomId);
     try {
       await this.deliverResume(child, info, reply, failed, cancelled, token);
