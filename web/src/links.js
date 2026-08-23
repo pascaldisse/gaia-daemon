@@ -96,6 +96,16 @@ function linkToken(text, target) {
       class: "link-token",
       "data-target": target,
       title: target,
+      // WebKit (WKWebView, the app's actual renderer) treats a modifier-held
+      // mousedown on plain text as the start of its native discontiguous-
+      // selection/lookup gesture — that gesture can eat the following click
+      // before it ever reaches this handler, so cmd/ctrl+click silently does
+      // nothing. Suppressing the mousedown's default action (not the event
+      // itself — click synthesis from mousedown+mouseup on the same target
+      // still happens) heads that gesture off without changing normal click.
+      onmousedown: (event) => {
+        if (isOpenModifier(event)) event.preventDefault();
+      },
       onclick: (event) => {
         if (!isOpenModifier(event)) return;
         event.preventDefault();
