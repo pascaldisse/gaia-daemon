@@ -831,8 +831,13 @@ export class SummonCoordinator implements SummonHost {
       // settled, or the stamp survived a crash) covers nothing — returning
       // here would strand turn B exactly like the epoch collision does. Arm a
       // fresh contract in that case; only a genuinely in-flight resume merges.
-      if (this.resumeInFlight.has(roomId)) return { tracked: true };
-      if (predecessor && !predecessorSettled) return { tracked: true };
+      // ...and "live" means CAN STILL OBSERVE turn B. A watcher that already
+      // sampled its outcome (RC7: sealed — past settledOutcome, inside the
+      // parent write) is unsettled but covers nothing new; merging into it
+      // strands B exactly like a collided epoch.
+      const sealed = this.resumeSealed.has(roomId);
+      if (!sealed && this.resumeInFlight.has(roomId)) return { tracked: true };
+      if (!sealed && predecessor && !predecessorSettled) return { tracked: true };
       this.resumeEpochs.observe(roomId, record.resumeStartedAt);
       const resumeStartedAt = this.resumeEpochs.mint(roomId);
       await handle.updateState((s) => {
@@ -843,11 +848,17 @@ export class SummonCoordinator implements SummonHost {
       });
       const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: message, untrusted: state.summonUntrusted === true };
       this.running.set(roomId, info);
+      // The successor OWNS the in-flight flag from here (RC7) — otherwise a
+      // sealed predecessor's cleanup would leave it set with no watcher.
+      this.resumeInFlight.add(roomId);
       const completion = this.runResume(room, info, resumeStartedAt)
         .catch((error) => this.log(`resume successor tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
           if (this.running.get(roomId) === info) this.running.delete(roomId);
-          if (this.completions.get(roomId) === completion) this.completions.delete(roomId);
+          if (this.completions.get(roomId) === completion) {
+            this.completions.delete(roomId);
+            this.resumeInFlight.delete(roomId);
+          }
           this.notifyParentRoomsChanged(parentRoomId);
         });
       this.completions.set(roomId, completion);
@@ -885,9 +896,15 @@ export class SummonCoordinator implements SummonHost {
     const completion = this.runResume(room, info, resumeStartedAt)
       .catch((error) => this.log(`resume-completion tracking for '${roomId}' failed: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => {
-        this.running.delete(roomId);
-        this.resumeInFlight.delete(roomId);
-        this.completions.delete(roomId);
+        // Identity-guarded (RC7): a successor contract armed while this watcher
+        // was sealed owns these slots now — clearing them blind would hide
+        // still-in-flight work from the parent's delegated-work wait and let a
+        // later resume arm a duplicate watcher on the same turn.
+        if (this.running.get(roomId) === info) this.running.delete(roomId);
+        if (this.completions.get(roomId) === completion) {
+          this.completions.delete(roomId);
+          this.resumeInFlight.delete(roomId);
+        }
         this.notifyParentRoomsChanged(parentRoomId);
       });
     this.completions.set(roomId, completion);
@@ -903,7 +920,14 @@ export class SummonCoordinator implements SummonHost {
   private async runResume(child: SummonRoomAccess, info: SummonChild, token: ResumeEpoch): Promise<void> {
     await this.waitForDelegatedWork(child, info.roomId);
     const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId);
-    await this.deliverResume(child, info, reply, failed, cancelled, token);
+    // Sealed: this contract's view of the room is fixed from here on — any
+    // resume arriving now needs its own watcher (see resume()'s merge guard).
+    this.resumeSealed.add(info.roomId);
+    try {
+      await this.deliverResume(child, info, reply, failed, cancelled, token);
+    } finally {
+      this.resumeSealed.delete(info.roomId);
+    }
   }
 
   /** Land a resumed turn's result in the parent room (deliverAgentResult,
@@ -920,6 +944,9 @@ export class SummonCoordinator implements SummonHost {
    * — see resume()'s merge guard. */
   private readonly resumeInFlight = new Set<string>();
 
+  /** Rooms whose live resume watcher has already sampled its outcome (RC7). */
+  private readonly resumeSealed = new Set<string>();
+
   private async deliverResume(child: SummonRoomAccess, info: SummonChild, reply: string, failed: boolean, cancelled: boolean, token: ResumeEpoch): Promise<void> {
     const state = await (await RoomHandle.open(this.workspace.rootDir, info.roomId)).state();
     const record = state.summon;
@@ -931,12 +958,17 @@ export class SummonCoordinator implements SummonHost {
     // BY DESIGN — the durable resumeStatus flip stays AFTER delivery so a
     // crash mid-delivery still re-delivers at next boot (never loses a
     // result); duplicates can only ever arise within one live daemon.
-    if (this.deliveringResume.has(info.roomId)) return;
-    this.deliveringResume.add(info.roomId);
+    // Keyed by room AND epoch (RC7): duplicate watchers of ONE resume share its
+    // token (boot-sweep re-arm meeting a live watcher) and must collapse to one
+    // delivery; watchers of DIFFERENT epochs are different turns and each owes
+    // the parent its own result.
+    const claim = `${info.roomId}\u0000${token}`;
+    if (this.deliveringResume.has(claim)) return;
+    this.deliveringResume.add(claim);
     try {
       await this.deliverResumeClaimed(child, info, record, reply, failed, cancelled, token);
     } finally {
-      this.deliveringResume.delete(info.roomId);
+      this.deliveringResume.delete(claim);
     }
   }
 
