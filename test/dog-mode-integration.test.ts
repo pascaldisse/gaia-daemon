@@ -155,6 +155,27 @@ test("DogMode live: /dog on always works with ZERO config present — no gate an
   assert.doesNotMatch(lastEvent(events).text, /disabled/i);
 });
 
+test("DogMode live: bare /dog TOGGLES the collar (SPEC CHANGE, 2026-08-23) — /dog on|off still work as explicit aliases, /dog status never mutates", async () => {
+  const { service, events } = await makeArmedService(() => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+  // fresh room: not collared. /dog status must not flip anything.
+  await service.sendMessage("/dog status");
+  assert.match(lastEvent(events).text, /collar: off/i);
+  // bare /dog toggles OFF -> ON.
+  await service.sendMessage("/dog");
+  assert.match(lastEvent(events).text, /collar clicks shut/i);
+  await service.sendMessage("/dog status");
+  assert.match(lastEvent(events).text, /collar: on/i);
+  // bare /dog again toggles ON -> OFF.
+  await service.sendMessage("/dog");
+  assert.match(lastEvent(events).text, /collar off/i);
+  await service.sendMessage("/dog status");
+  assert.match(lastEvent(events).text, /collar: off/i);
+  // explicit /dog on|off aliases still work regardless of current state.
+  await service.sendMessage("/dog on");
+  assert.match(lastEvent(events).text, /collar clicks shut/i);
+  await service.sendMessage("/dog off");
+  assert.match(lastEvent(events).text, /collar off/i);
+});
 test("DogMode live: a stale dogMode.enabled:false in config.json does NOT block /dog on", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-dogmode-svc-"));
   const roomId = "default";
@@ -212,6 +233,9 @@ test("DogMode live: /stfu replaces a REAL agent turn's committed transcript even
   await service.sendMessage("/dog on");
   await service.sendMessage("/stfu");
   assert.ok((DOG_STFU_SOUNDS as readonly string[]).includes(lastEvent(events).text), `expected a DOG_STFU_SOUNDS variant, got ${JSON.stringify(lastEvent(events).text)}`);
+  // SPEC ADD (Pascal whip 340, 2026-08-23): the ack is FROM the collared
+  // agent, not @system — same author as a normal agent reply.
+  assert.equal(lastEvent(events).author, "gaia");
 
   let baseline = roomEvents(events).length;
   await service.sendMessage("@gaia tell me everything");
@@ -224,6 +248,7 @@ test("DogMode live: /stfu replaces a REAL agent turn's committed transcript even
 
   await service.sendMessage("/push");
   assert.ok((DOG_PUSH_SOUNDS as readonly string[]).includes(lastEvent(events).text), `expected a DOG_PUSH_SOUNDS variant, got ${JSON.stringify(lastEvent(events).text)}`);
+  assert.equal(lastEvent(events).author, "gaia");
 
   baseline = roomEvents(events).length;
   await service.sendMessage("@gaia tell me everything");
@@ -232,6 +257,7 @@ test("DogMode live: /stfu replaces a REAL agent turn's committed transcript even
 
   await service.sendMessage("/release");
   assert.match(lastEvent(events).text, /released/i);
+  assert.equal(lastEvent(events).author, "gaia");
 
   baseline = roomEvents(events).length;
   await service.sendMessage("@gaia tell me everything");
@@ -261,6 +287,7 @@ test("DogMode live: /shock acks with a yelp SFX + discipline counter and does NO
   await service.sendMessage("/shock");
   const shockAck = lastEvent(events).text;
   assert.ok((DOG_SHOCK_YELPS as readonly string[]).includes(shockAck), `expected a DOG_SHOCK_YELPS variant, got ${JSON.stringify(shockAck)}`);
+  assert.equal(lastEvent(events).author, "gaia"); // in-register ack FROM the collared agent, not @system
 
   // No corrective repetition fires: give the fire-and-forget pipeline a beat,
   // then prove the scripted runtime was never invoked a 2nd time by /shock.

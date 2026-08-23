@@ -31,7 +31,7 @@ export type SlashCommand =
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
-  | { type: "dog"; sub: "on" | "off" | "status" }
+  | { type: "dog"; sub: "on" | "off" | "status" | "toggle" }
   | { type: "slap" }
   | { type: "shock" }
   | { type: "toilet" }
@@ -104,7 +104,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   {
     name: "dog",
     type: "dog",
-    description: "DogMode persona-register (09-DOG-MODE): /dog on|off|status",
+    description: "DogMode persona-register (09-DOG-MODE): bare /dog toggles collar; /dog on|off|status also work",
   },
   { name: "slap", type: "slap", description: "DogMode discipline: short whimper ack, +1 tally" },
   { name: "shock", type: "shock", description: "DogMode discipline: whimper ack, +1 tally, re-delivers the last order" },
@@ -243,6 +243,7 @@ export function parseCommand(input: string): SlashCommand {
     }
     case "dog": {
       const sub = args[0]?.toLowerCase();
+      if (sub === undefined) return { type: "dog", sub: "toggle" };
       return { type: "dog", sub: sub === "on" ? "on" : sub === "off" ? "off" : "status" };
     }
     case "setup": {

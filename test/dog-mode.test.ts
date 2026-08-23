@@ -49,11 +49,11 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => void 
 
 // --- parseCommand ------------------------------------------------------------
 
-test("parseCommand: /dog on|off|status (bare defaults to status)", () => {
+test("parseCommand: /dog on|off|status, bare /dog is a toggle", () => {
   assert.deepEqual(parseCommand("/dog on"), { type: "dog", sub: "on" });
   assert.deepEqual(parseCommand("/dog off"), { type: "dog", sub: "off" });
   assert.deepEqual(parseCommand("/dog status"), { type: "dog", sub: "status" });
-  assert.deepEqual(parseCommand("/dog"), { type: "dog", sub: "status" });
+  assert.deepEqual(parseCommand("/dog"), { type: "dog", sub: "toggle" });
   assert.deepEqual(parseCommand("/dog garbage"), { type: "dog", sub: "status" });
 });
 

@@ -320,8 +320,12 @@ const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
- * optional event discriminator when the transcript should render it specially. */
-type CommandReply = string | { text: string; kind?: RoomEventKind };
+ * optional event discriminator when the transcript should render it specially,
+ * and an optional `author` override (SPEC ADD, Pascal whip 340, 2026-08-23):
+ * DogMode discipline acks (/slap /shock /toilet /stfu /push /swallow /facial
+ * /release /doggy /creampie) are in-register SFX from the COLLARED AGENT, not
+ * daemon control-plane text — author defaults to "system" when omitted. */
+type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<CommandReply>;
 
@@ -2539,14 +2543,18 @@ export class RoomService {
     return { maxLines: gaiaDogModeMaxLines(this.workspace.rootDir) };
   }
 
-  /** /dog on|off|status. NOT config-gated — all three always work, on any
-   * workspace, with zero .gaia/config.json present. */
-  async runDogCommand(sub: "on" | "off" | "status"): Promise<string> {
+  /** /dog toggle|on|off|status. Bare /dog is the toggle (SPEC CHANGE, Pascal
+   * 2026-08-23): flips collar off if on and vice versa; /dog on|off remain as
+   * explicit aliases; /dog status only reports, never mutates. NOT
+   * config-gated — every sub always works, on any workspace, with zero
+   * .gaia/config.json present. */
+  async runDogCommand(sub: "on" | "off" | "status" | "toggle"): Promise<string> {
     const config = this.dogModeConfig();
     if (sub === "status") return renderDogStatus((await this.room.state()).dogMode, config);
     let reply = "";
     await this.room.updateState((state) => {
-      const result = applyDogVerb(state.dogMode, sub);
+      const verb: "on" | "off" = sub === "toggle" ? (state.dogMode?.collared ? "off" : "on") : sub;
+      const result = applyDogVerb(state.dogMode, verb);
       state.dogMode = result.state;
       reply = result.reply;
     });
@@ -2559,8 +2567,14 @@ export class RoomService {
    * over the persisted room state (domain/dog-mode.ts#applyDogVerb). /shock
    * is yelp SFX + discipline counter only — no re-delivery/echo of the last
    * user order (that parrot mechanic was removed, SPEC CHANGE whip 338,
-   * 2026-08-23). */
-  async runDogVerbCommand(verb: Exclude<DogVerb, "on" | "off">): Promise<string> {
+   * 2026-08-23).
+   *
+   * SPEC ADD (Pascal whip 340, 2026-08-23): the ack is in-register speech FROM
+   * THE COLLARED AGENT, not daemon control-plane text — attributed to
+   * roomDefaultTarget() (the room's active agent, else workspace default) as
+   * `author`, same transcript styling as a normal agent reply. No LLM turn:
+   * synthesized directly here, same as the plain-string path always was. */
+  async runDogVerbCommand(verb: Exclude<DogVerb, "on" | "off">): Promise<CommandReply> {
     let reply = "";
     await this.room.updateState((state) => {
       const result = applyDogVerb(state.dogMode, verb);
@@ -2568,7 +2582,7 @@ export class RoomService {
       reply = result.reply;
     });
     await this.emitSnapshot();
-    return reply;
+    return { text: reply, author: await this.roomDefaultTarget() };
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
@@ -3102,15 +3116,20 @@ export class RoomService {
       const handler = COMMANDS[command.type];
       const reply = handler ? await handler(this, command) : `Unknown command. Try /help.`;
       const text = typeof reply === "string" ? reply : reply.text;
+      // SPEC ADD (Pascal whip 340, 2026-08-23): a command reply defaults to
+      // "system" but a handler (DogMode discipline acks) may attribute it to
+      // the room's collared agent instead — same event shape as a real agent
+      // reply, just synthesized here with no LLM turn.
+      const author = typeof reply === "string" ? "system" : (reply.author ?? "system");
       // Persist the reply so a command result (e.g. /compact) survives a reload
       // instead of only flashing on the live stream. appendEvent both writes it
       // to the transcript and emits the room-event to connected clients. Skip the
       // transcript-structural commands: they reset/truncate history themselves, so
       // a leftover confirmation would re-seed the room they just emptied.
       const event: RoomEvent = {
-        id: `system_${task.id}`,
+        id: `${author === "system" ? "system" : "cmd"}_${task.id}`,
         timestamp: new Date().toISOString(),
-        author: "system",
+        author,
         text,
         ...(typeof reply === "string" || !reply.kind ? {} : { kind: reply.kind }),
       };
