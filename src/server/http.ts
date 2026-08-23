@@ -1848,8 +1848,9 @@ export class GaiaWebServer {
     }
 
     // /api/harness/dog (09-DOG-MODE): `gaia dog on|off|status`, the CLI form
-    // of `/dog` — daemon-side half is RoomService#runDogCommand, same room the
-    // bearer token names (no cross-room targeting from this endpoint).
+    // of `/dog` — daemon-side half is RoomService#runPluginAction (the dog
+    // command-plugin, plugins/defaults/dog-mode.mjs), same room the bearer
+    // token names (no cross-room targeting from this endpoint).
     if (pathname === "/api/harness/dog") {
       const sub = stringField(body, "sub");
       if (sub !== "on" && sub !== "off" && sub !== "status") return json(response, 400, { error: "sub must be on|off|status" });

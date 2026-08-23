@@ -49,8 +49,8 @@ import type {
   UiEvent,
   Workspace,
 } from "../core/types.js";
-import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeMaxLines } from "../core/config.js";
-import { applyDogVerb, applyDiscipline, resolveDogRenderCap, displayEventText, renderDogStatus, DOG_STFU_MARKER, type DisciplineVerb, type DogRenderCap } from "../domain/dog-mode.js";
+import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
+import { displayEventText, type RenderCap } from "../domain/render-cap.js";
 import { estimateTokens } from "../core/tokens.js";
 import type { ResumeEpoch } from "./resume-epoch.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -65,7 +65,7 @@ import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, nativeCom
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, validateThinkingLevel, type SlashCommand } from "./commands.js";
-import { loadCommandPlugins, type CommandPlugin, type PluginContext, type PluginPanel } from "./plugins.js";
+import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type PluginContext, type PluginPanel, type PluginResult } from "./plugins.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import { ContextPolicyStore } from "./context-policy-store.js";
@@ -180,15 +180,15 @@ export interface SendMessageOptions {
    * the active agent: the runtime runs it as a raw command, and monad routing is
    * bypassed. Set by sendMessage's native-passthrough detection. */
   nativeCommand?: boolean;
-  /** This turn is a DogMode discipline/state verb rewritten into a message
-   * (SPEC REWRITE, Pascal whips 344-346, 2026-08-23) — targets are already
-   * pinned explicitly, so this ONLY needs to survive onto the durable queue
-   * entry (QueuedMessage.dogVerbTurn) to tell drain() to skip re-parsing the
-   * queued text as a slash command a second time (which would re-run
-   * applyDogDisciplineVerb's state mutation and misroute it back through the
-   * deleted CommandReply path). Never reaches the harness — unlike
+  /** This turn is a command-plugin verb rewritten into a message
+   * (PluginResult.rewriteAsMessage — see services/plugins.ts) — targets are
+   * already pinned explicitly, so this ONLY needs to survive onto the durable
+   * queue entry (QueuedMessage.pluginMessageTurn) to tell drain() to skip
+   * re-parsing the queued text as a slash command a second time (which would
+   * re-run the plugin's state mutation a second time and misroute it back
+   * through the command-reply path). Never reaches the harness — unlike
    * nativeCommand, it carries no special prompt-building behavior. */
-  dogVerbTurn?: boolean;
+  pluginMessageTurn?: boolean;
   /** Set by drain(): the durable queue entry this turn consumes. The entry
    * stays queued until the turn's first durable record replaces it (the
    * two-phase hand-off — see RoomHandle.peekQueue). */
@@ -328,25 +328,14 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
  * event back into the history they just reset. */
 const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
-/** Every DogMode verb but the collar master switch (SPEC REWRITE, Pascal
- * whips 344-346, 2026-08-23) — sendMessage() intercepts these BEFORE command
- * dispatch and rewrites them into a real message turn; none of them are
- * CommandHandler registry entries anymore. */
-const DOG_DISCIPLINE_VERBS = new Set<string>([
-  "slap", "shock", "toilet", "stfu", "push", "swallow", "facial", "release", "doggy", "creampie",
-]);
-
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
  * optional event discriminator when the transcript should render it specially,
  * and an optional `author` override for the rare handler that still needs one.
- * DogMode discipline/state verbs (/slap /shock /toilet /stfu /push /swallow
- * /facial /release /doggy /creampie) are NOT in this registry at all (SPEC
- * REWRITE, Pascal whips 344-346, 2026-08-23, deleting the SPEC ADD whip 340
- * fake-author path above): they're intercepted earlier in sendMessage() and
- * delivered as a REAL message turn to the room's agent, so only the agent
- * itself ever speaks as the agent. Only /dog on|off|status|toggle stay here,
- * always plain "system" text. */
+ * DogMode (/dog + its discipline verbs) is a bundled command-plugin now (whip
+ * 348, see plugins/defaults/dog-mode.mjs) and is NOT in this registry at all —
+ * it's dispatched through the generic command-plugin path in sendMessage(),
+ * same as /whip or /ultrawhip. */
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<CommandReply>;
@@ -380,11 +369,9 @@ const COMMANDS: Record<string, CommandHandler> = {
   goal: (service, command) => (command.type === "goal" ? service.runGoalCommand(command) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
-  dog: (service, command) => (command.type === "dog" ? service.runDogCommand(command.sub) : Promise.resolve("")),
-  // slap/shock/toilet/stfu/push/swallow/facial/release/doggy/creampie are
-  // NOT command handlers (SPEC REWRITE, Pascal whips 344-346, 2026-08-23) —
-  // sendMessage() intercepts them before command dispatch and turns them
-  // into a real message turn. See DOG_DISCIPLINE_VERBS below.
+  // DogMode (/dog + its discipline verbs) is a bundled command-plugin, not a
+  // registry entry — see plugins/defaults/dog-mode.mjs + sendMessage()'s
+  // generic plugin dispatch.
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -666,22 +653,6 @@ export class RoomService {
     await this.init();
 
     let command: RoomCommand = parseCommand(text);
-    // DogMode discipline/state verbs (SPEC REWRITE, Pascal whips 344-346,
-    // 2026-08-23): /slap /shock /toilet /stfu /push /swallow /facial /release
-    // /doggy /creampie are never a synthesized CommandReply — they're
-    // rewritten to a real message turn HERE, before command dispatch, so the
-    // room's agent generates the actual reply (its own yelp/whimper/refusal/
-    // whatever) and only the mechanical render/post cap (renderDogOutput) may
-    // touch it afterward. The state transition (tally/mount/suppress) runs
-    // synchronously now, so by the time the turn's reply commits, the render
-    // cap already reflects the post-verb state. /dog itself (on/off/status/
-    // toggle) is untouched — stays a plain system-authored status line.
-    if (DOG_DISCIPLINE_VERBS.has(command.type)) {
-      const target = await this.roomDefaultTarget();
-      await this.applyDogDisciplineVerb(command.type as DisciplineVerb);
-      command = { type: "message", text };
-      options = { ...options, targets: [target], dogVerbTurn: true };
-    }
     // Harness-native passthrough: an unrecognized `/command` becomes a command
     // TURN to the active agent when that agent has CHECKED that command as a
     // skill (claude builtins like deep-research) and its harness can run them.
@@ -694,17 +665,31 @@ export class RoomService {
       // always wins over any harness-native skill of the same name. Runs
       // synchronously here (not queued) so it can steer a turn that's live
       // RIGHT NOW; mirrors the /steer + /cancel gate's reply shape just below.
-      const plugin = (await this.pluginsPromise).get(command.command);
+      const commandName = command.command;
+      const plugin = (await this.pluginsPromise).get(commandName);
       if (plugin) {
         const args = text.trim().split(/\s+/).slice(1);
-        const result = await this.runPlugin(plugin, args);
-        // A plugin's `steer` is guidance meant to actually REACH an agent, not
-        // to be echoed back to the user as a system note — the steer delivery
-        // itself (mid-turn injection bubble, or a real message when nothing's
-        // running) is the only visible trace. Generic for any plugin, not
-        // just whip. `reply` (e.g. a counter) is silent bookkeeping here, not
-        // shown — a plugin wanting a REPLY shown returns no `steer` at all.
-        if (result.steer) {
+        const result = await this.runPlugin(plugin, args, commandName);
+        // Generic message-intercept-to-real-turn (PluginResult.rewriteAsMessage
+        // — e.g. plugins/defaults/dog-mode.mjs's discipline verbs): the plugin
+        // already mutated its own state synchronously (via `result.state`
+        // above, persisted inside runPlugin, BEFORE this line) — deliver the
+        // ORIGINAL raw text as a real message turn addressed at
+        // `result.targets`, falling through the FULL busy/queue/steer-by-
+        // default pipeline below exactly like a plain "@agent ..." message, so
+        // only the room's agent ever generates the actual reply. Never an
+        // early return — unlike the steer/reply branch just below.
+        if (result.rewriteAsMessage) {
+          const target = result.targets?.[0] ?? (await this.roomDefaultTarget());
+          command = { type: "message", text };
+          options = { ...options, targets: result.targets ?? [target], pluginMessageTurn: true };
+        } else if (result.steer) {
+          // A plugin's `steer` is guidance meant to actually REACH an agent, not
+          // to be echoed back to the user as a system note — the steer delivery
+          // itself (mid-turn injection bubble, or a real message when nothing's
+          // running) is the only visible trace. Generic for any plugin, not
+          // just whip. `reply` (e.g. a counter) is silent bookkeeping here, not
+          // shown — a plugin wanting a REPLY shown returns no `steer` at all.
           if (this.activeAgentTurn) {
             const pluginTask = this.createTask(text, []);
             this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
@@ -715,33 +700,35 @@ export class RoomService {
             return pluginTask;
           }
           return this.sendMessage(result.steer, options);
+        } else {
+          const pluginTask = this.createTask(text, []);
+          this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+          const reply = result.reply ?? `plugin ${commandName}: nothing to do (no active turn)`;
+          const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
+          this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+          pluginTask.status = "complete";
+          pluginTask.endedAt = new Date().toISOString();
+          this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
+          return pluginTask;
         }
-        const pluginTask = this.createTask(text, []);
-        this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
-        const reply = result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
-        const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
-        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-        pluginTask.status = "complete";
-        pluginTask.endedAt = new Date().toISOString();
-        this.emit({ type: "task-end", workspaceId: this.workspaceId, roomId: this.roomId, task: pluginTask });
-        return pluginTask;
-      }
-      const target = await this.nativeCommandTarget();
-      const agent = this.workspace.agents[target];
-      // The harness owns its command surface. Never duplicate its skill/template
-      // registry here: pass an unclaimed command-shaped token through verbatim
-      // whenever the active harness advertises native command handling. Pi then
-      // resolves its loaded skills and prompt templates in AgentSession.prompt().
-      if (agent && findHarness(harnessIdFor(agent, this.workspace))?.capabilities.supportsNativeCommands) {
-        command = { type: "message", text };
-        options = { ...options, targets: [target], nativeCommand: true };
-      } else if (text.trim().split(/\s+/).length > 1) {
-        // Not a known command, and no agent can run it as a native command — but
-        // it carries content ("/note buy milk", "/deep-research quantum"), so it
-        // is the user's MESSAGE, not a typo. Deliver it rather than discard it
-        // with an "Unknown command" reply. A user message may never disappear.
-        // (A lone contentless "/typo" still falls through to the corrective hint.)
-        command = { type: "message", text };
+      } else {
+        const target = await this.nativeCommandTarget();
+        const agent = this.workspace.agents[target];
+        // The harness owns its command surface. Never duplicate its skill/template
+        // registry here: pass an unclaimed command-shaped token through verbatim
+        // whenever the active harness advertises native command handling. Pi then
+        // resolves its loaded skills and prompt templates in AgentSession.prompt().
+        if (agent && findHarness(harnessIdFor(agent, this.workspace))?.capabilities.supportsNativeCommands) {
+          command = { type: "message", text };
+          options = { ...options, targets: [target], nativeCommand: true };
+        } else if (text.trim().split(/\s+/).length > 1) {
+          // Not a known command, and no agent can run it as a native command — but
+          // it carries content ("/note buy milk", "/deep-research quantum"), so it
+          // is the user's MESSAGE, not a typo. Deliver it rather than discard it
+          // with an "Unknown command" reply. A user message may never disappear.
+          // (A lone contentless "/typo" still falls through to the corrective hint.)
+          command = { type: "message", text };
+        }
       }
     }
     // Validate routing up-front so unknown-agent errors surface immediately,
@@ -865,7 +852,7 @@ export class RoomService {
       ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
       ...(options.attachments?.length ? { attachments: options.attachments } : {}),
       ...(options.nativeCommand ? { nativeCommand: true } : {}),
-      ...(options.dogVerbTurn ? { dogVerbTurn: true } : {}),
+      ...(options.pluginMessageTurn ? { pluginMessageTurn: true } : {}),
       ...(recordedEventId ? { eventId: recordedEventId } : {}),
       ...(recorded ? { recorded: true } : {}),
       ...(options.human ? { humanId: options.human.id, humanLabel: options.human.label } : {}),
@@ -946,12 +933,12 @@ export class RoomService {
         // skip command parsing (a reply opening with "/" is prose, not /clear). A
         // native command already decided it's a command turn to a pinned target;
         // re-parsing would just "unknown"-error it, so run it as a message too. A
-        // DogMode discipline/state verb was already mutated + rewritten to a
-        // message by sendMessage() before it was ever queued — re-parsing it
-        // here would re-run that mutation and misroute it (SPEC REWRITE,
-        // Pascal whips 344-346, 2026-08-23).
+        // command-plugin verb (PluginResult.rewriteAsMessage) was already
+        // mutated + rewritten to a message by sendMessage() before it was ever
+        // queued — re-parsing it here would re-run that plugin mutation and
+        // misroute it.
         const command =
-          next.fromAgentDialogue || next.nativeCommand || next.dogVerbTurn
+          next.fromAgentDialogue || next.nativeCommand || next.pluginMessageTurn
             ? ({ type: "message", text: next.text } as const)
             : parseCommand(next.text);
         if (command.type !== "message") {
@@ -1402,15 +1389,10 @@ export class RoomService {
       this.startedPetTargets.add(this.petTargetKey(task.id, target));
       this.emitPetProgress(task, target, "working");
       const state = await this.room.state();
-      // DogMode (09-DOG-MODE): a /facial marker is visible in status only
-      // through the room's NEXT agent turn — clear it now, at that turn's
-      // start, never mid-command (applyDogDisciplineVerb never touches this).
-      if (state.dogMode?.faceMarked) {
-        await this.room.updateState((current) => {
-          if (current.dogMode) delete current.dogMode.faceMarked;
-        });
-        delete state.dogMode.faceMarked;
-      }
+      // Generic per-turn-start plugin hook (CommandPlugin.turnStart — e.g.
+      // plugins/defaults/dog-mode.mjs expiring its transient /facial marker
+      // right at this turn's start, never mid-command).
+      await this.pluginTurnStart(state);
       // A NEW agent (never spoke here → no cursor) loads the whole back-transcript.
       // An EXISTING agent normally loads only events since its cursor — everything
       // earlier lives in its harness session. When that session is GONE (crash,
@@ -1569,16 +1551,7 @@ export class RoomService {
       let ambientFiredAt = 0;
 
       const userName = await readUserNameSetting();
-      // DogMode (09-DOG-MODE): while suppressed (/stfu, deepened by /push),
-      // a one-line context hint tells the agent to answer with sounds only —
-      // never fed as fabricated reply text, just a nudge; the mechanical
-      // MaxLines cap in renderDogOutput enforces the actual limit regardless
-      // of what the agent chooses to say (SPEC, Pascal whips 344-346,
-      // 2026-08-23).
-      const dogHint = state.dogMode?.collared && state.dogMode.suppressed
-        ? `${DOG_STFU_MARKER} DogMode: you are suppressed/gagged right now — respond with sounds only (whimpers, yelps), no words.`
-        : undefined;
-      const pluginContext = [await this.pluginPrompt(state, target), dogHint].filter(Boolean).join("\n\n") || undefined;
+      const pluginContext = await this.pluginPrompt(state, target);
       // Context-diet (09-MEMORY-CONTEXT): resolved fresh every turn (two small
       // JSON reads) so a /diet toggle mid-conversation applies on the very
       // next turn, no session rebuild. `preset:false` (the default) renders
@@ -1776,20 +1749,21 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      // DogMode (09-DOG-MODE) render/post-layer enforcement: the cap is
-      // resolved here but NEVER applied to what gets stored — commitReply
-      // persists committedReply (the agent's FULL real output) always, and
-      // stores this cap alongside it (AgentRoomEvent.dogRender) so every
-      // DISPLAY surface (live emit, snapshot fetch, read-aloud) can derive the
-      // shown/spoken text on demand via domain/dog-mode.ts#displayEventText.
-      // ROOT-CAUSE FIX (Pascal, 2026-08-23): the old code truncated BEFORE
-      // persisting, which silently destroyed real replies forever the moment
-      // a room was collared — violates NOTHING IS EVER LOST. captureEpisode/
-      // hooks/agent-dialogue below already read the RAW partialReply, so this
-      // fix only changes what commitReply is handed, not their inputs.
-      const dogState = state.dogMode;
-      const dogRenderCap = producedOutput ? resolveDogRenderCap(dogState ?? { collared: false, disciplineCount: 0, suppressed: false, suppressDepth: 0 }, this.dogModeConfig()) : undefined;
-      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending, dogRenderCap);
+      // Generic command-plugin render/post-layer enforcement (see
+      // services/plugins.ts CommandPlugin.renderCap, e.g.
+      // plugins/defaults/dog-mode.mjs): the cap is resolved here but NEVER
+      // applied to what gets stored — commitReply persists committedReply
+      // (the agent's FULL real output) always, and stores this cap alongside
+      // it (AgentRoomEvent.renderCap) so every DISPLAY surface (live emit,
+      // snapshot fetch, read-aloud) can derive the shown text on demand via
+      // domain/render-cap.ts#displayEventText. ROOT-CAUSE FIX (Pascal,
+      // 2026-08-23): the old code truncated BEFORE persisting, which silently
+      // destroyed real replies forever the moment a room was collared —
+      // violates NOTHING IS EVER LOST. captureEpisode/hooks/agent-dialogue
+      // below already read the RAW partialReply, so this fix only changes
+      // what commitReply is handed, not their inputs.
+      const renderCap = producedOutput ? await this.pluginRenderCap(state) : undefined;
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending, renderCap);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
       if (abnormalReason !== undefined && !producedOutput) {
@@ -1995,14 +1969,17 @@ export class RoomService {
 
   /** WAL step 2: append the reply event (details ON it), then one atomic state
    * write clearing the marker and advancing the cursor. */
-  /** `dogRender`, when given, is the DogMode cap resolved for THIS turn
-   * (domain/dog-mode.ts#resolveDogRenderCap) — persisted on the event
-   * verbatim alongside the agent's FULL, untruncated `reply` text (root-cause
-   * fix, Pascal, 2026-08-23: the event committed/stored here must never be
-   * shorter than what the agent actually said). Only the LIVE-emitted copy's
-   * `text` is capped, via displayEventText, matching every other display
-   * surface (#getSnapshot, #eventById(display:true)) that derives the same
-   * shown text from the same stored (text, dogRender) pair on demand. */
+  /** `renderCap`, when given, is a command-plugin's display-time cap resolved
+   * for THIS turn (services/plugins.ts CommandPlugin.renderCap) — persisted
+   * on the event verbatim alongside the agent's FULL, untruncated `reply`
+   * text (root-cause fix, Pascal, 2026-08-23: the event committed/stored here
+   * must never be shorter than what the agent actually said). Only the
+   * LIVE-emitted copy's `text` is capped, via displayEventText — and, when
+   * `renderCap.note` is set, a SEPARATE synthesized system-authored chrome
+   * event is emitted right after it (see withRenderCapNotes) — matching every
+   * other display surface (#getSnapshot, #eventById(display:true)) that
+   * derives the same shown output from the same stored (text, renderCap)
+   * pair on demand. */
   private async commitReply(
     agentId: string,
     eventId: string,
@@ -2010,7 +1987,7 @@ export class RoomService {
     details: EventDetails,
     channel: "voice" | undefined,
     nextPending?: PendingTurn,
-    dogRender?: DogRenderCap,
+    renderCap?: RenderCap,
   ): Promise<void> {
     // Blocks count only when they encode structure the plain reply text doesn't
     // already carry (a steer marker, a tool, a thinking span) — a prose-only
@@ -2028,7 +2005,7 @@ export class RoomService {
       text: reply,
       ...(channel ? { channel } : {}),
       ...(hasDetails ? { details } : {}),
-      ...(dogRender ? { dogRender } : {}),
+      ...(renderCap ? { renderCap } : {}),
     };
     // commitTurn computes the cursor from the reply's own line (sweeping the
     // mid-turn steers/notes the live turn already saw) and, for a multi-target
@@ -2036,8 +2013,9 @@ export class RoomService {
     // the FULL text — storage/memory/hooks/agent-context never see a capped
     // reply, only display surfaces do.
     await this.room.commitTurn(event, nextPending);
-    const displayEvent = dogRender ? { ...event, text: displayEventText(event.text, dogRender) } : event;
-    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: displayEvent });
+    for (const displayEvent of this.withRenderCapNotes([event])) {
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: displayEvent });
+    }
   }
 
   /** Durable failure marker: a turn that dies must leave a trace in the
@@ -2318,28 +2296,39 @@ export class RoomService {
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
   }
 
+  /** Dedupes the loaded plugin map's VALUES — a plugin owning several command
+   * names (services/plugins.ts CommandPlugin.command as an array) is the SAME
+   * object under each of its keys, and every hook below (panel/prompt/
+   * renderCap/turnStart) must run ONCE per plugin, not once per alias. */
+  private async distinctPlugins(): Promise<CommandPlugin[]> {
+    return [...new Set((await this.pluginsPromise).values())];
+  }
+
   /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
    * the same way loadCommandPlugins tolerates a bad module at load time —
-   * never crashes the caller. See services/plugins.ts for the contract. */
-  private pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>): PluginContext {
+   * never crashes the caller. See services/plugins.ts for the contract.
+   * `command`, when given, is the specific command name that invoked `run()`
+   * (PluginContext.command) — relevant only for a plugin owning several. */
+  private pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext {
     return {
       homedir: homedir(),
       roomId: this.roomId,
       workspaceRoot: this.workspace.rootDir,
-      state: state.pluginState?.[plugin.command],
+      state: state.pluginState?.[pluginStateKey(plugin)],
       agents: Object.values(this.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),
+      ...(command ? { command } : {}),
     };
   }
 
-  private async runPlugin(plugin: CommandPlugin, args: string[]): Promise<{ steer?: string; reply?: string }> {
+  private async runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult> {
     try {
       const state = await this.room.state();
-      const result = (await plugin.run(args, this.pluginContext(plugin, state))) ?? {};
+      const result = (await plugin.run(args, this.pluginContext(plugin, state, command))) ?? {};
       if (result.state || (result.activeAgent && this.workspace.agents[result.activeAgent])) {
         await this.room.updateState((next) => {
           if (result.state) {
             next.pluginState ??= {};
-            next.pluginState[plugin.command] = result.state;
+            next.pluginState[pluginStateKey(plugin)] = result.state;
           }
           if (result.activeAgent && this.workspace.agents[result.activeAgent]) next.activeAgent = result.activeAgent;
         });
@@ -2347,7 +2336,7 @@ export class RoomService {
       }
       return result;
     } catch (error) {
-      return { reply: `plugin ${plugin.command}: ${error instanceof Error ? error.message : String(error)}` };
+      return { reply: `plugin ${command ?? pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -2357,18 +2346,19 @@ export class RoomService {
     await this.init();
     const plugin = (await this.pluginsPromise).get(command);
     if (!plugin) throw new Error(`Unknown plugin: ${command}`);
-    return (await this.runPlugin(plugin, args)).reply ?? "";
+    return (await this.runPlugin(plugin, args, command)).reply ?? "";
   }
 
   private async pluginPanels(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<Record<string, PluginPanel> | undefined> {
     const panels: Record<string, PluginPanel> = {};
-    for (const plugin of (await this.pluginsPromise).values()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.panel) continue;
+      const key = pluginStateKey(plugin);
       try {
         const panel = await plugin.panel(this.pluginContext(plugin, state));
-        if (panel) panels[plugin.command] = panel;
+        if (panel) panels[key] = panel;
       } catch (error) {
-        console.warn(`[plugins] panel ${plugin.command}: ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`[plugins] panel ${key}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return Object.keys(panels).length ? panels : undefined;
@@ -2376,16 +2366,59 @@ export class RoomService {
 
   private async pluginPrompt(state: Awaited<ReturnType<RoomHandle["state"]>>, agentId: string): Promise<string | undefined> {
     const blocks: string[] = [];
-    for (const plugin of (await this.pluginsPromise).values()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.prompt) continue;
       try {
         const block = await plugin.prompt({ ...this.pluginContext(plugin, state), agentId });
         if (block?.trim()) blocks.push(block.trim());
       } catch (error) {
-        console.warn(`[plugins] prompt ${plugin.command}: ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`[plugins] prompt ${pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return blocks.length ? blocks.join("\n\n") : undefined;
+  }
+
+  /** Generic display-time render cap (services/plugins.ts CommandPlugin.
+   * renderCap) resolved ONCE per commit turn — see #commitReply. Returns the
+   * FIRST plugin-supplied cap, in load order; today only one plugin
+   * (plugins/defaults/dog-mode.mjs) ever defines this hook. */
+  private async pluginRenderCap(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<RenderCap | undefined> {
+    for (const plugin of await this.distinctPlugins()) {
+      if (!plugin.renderCap) continue;
+      try {
+        const cap = await plugin.renderCap(this.pluginContext(plugin, state));
+        if (cap) return cap;
+      } catch (error) {
+        console.warn(`[plugins] renderCap ${pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return undefined;
+  }
+
+  /** Generic per-turn-start hook (services/plugins.ts CommandPlugin.
+   * turnStart) — called once per target right before its turn runs (see
+   * #runAgentTask), letting a plugin expire a transient flag in its own state
+   * (e.g. plugins/defaults/dog-mode.mjs's /facial marker). A returned object
+   * REPLACES that plugin's persisted state wholesale; `state` (the live
+   * snapshot this call read from) is updated in place too, so the REST of
+   * this same turn sees the fresh value without a second room.state() read. */
+  private async pluginTurnStart(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<void> {
+    const updates: Record<string, Record<string, unknown>> = {};
+    for (const plugin of await this.distinctPlugins()) {
+      if (!plugin.turnStart) continue;
+      const key = pluginStateKey(plugin);
+      try {
+        const next = await plugin.turnStart(this.pluginContext(plugin, state));
+        if (next !== undefined) updates[key] = next;
+      } catch (error) {
+        console.warn(`[plugins] turnStart ${key}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (Object.keys(updates).length === 0) return;
+    await this.room.updateState((current) => {
+      current.pluginState = { ...(current.pluginState ?? {}), ...updates };
+    });
+    state.pluginState = { ...(state.pluginState ?? {}), ...updates };
   }
 
   /** Idle-path fallback for an unrecognized /command: the sendMessage seam
@@ -2397,8 +2430,8 @@ export class RoomService {
   async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
     const plugin = (await this.pluginsPromise).get(command.command);
     if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
-    const result = await this.runPlugin(plugin, []);
-    return result.reply ?? `plugin ${plugin.command}: nothing to do (no active turn)`;
+    const result = await this.runPlugin(plugin, [], command.command);
+    return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
   }
 
   /** /compact: hand the agent's session to its HARNESS's own compaction
@@ -2613,46 +2646,10 @@ export class RoomService {
     await this.enqueueGoalTurn(base, true);
   }
 
-  /** [DogMode] config resolved for THIS workspace (09-DOG-MODE): MaxLines
-   * default, live-reloadable off .gaia/config.json. No enabled gate — /dog
-   * on|off is never blocked by config (removed 2026-08-23). */
-  private dogModeConfig(): { maxLines: number } {
-    return { maxLines: gaiaDogModeMaxLines(this.workspace.rootDir) };
-  }
-
-  /** /dog toggle|on|off|status. Bare /dog is the toggle (SPEC CHANGE, Pascal
-   * 2026-08-23): flips collar off if on and vice versa; /dog on|off remain as
-   * explicit aliases; /dog status only reports, never mutates. NOT
-   * config-gated — every sub always works, on any workspace, with zero
-   * .gaia/config.json present. */
-  async runDogCommand(sub: "on" | "off" | "status" | "toggle"): Promise<string> {
-    const config = this.dogModeConfig();
-    if (sub === "status") return renderDogStatus((await this.room.state()).dogMode, config);
-    let reply = "";
-    await this.room.updateState((state) => {
-      const verb: "on" | "off" = sub === "toggle" ? (state.dogMode?.collared ? "off" : "on") : sub;
-      const result = applyDogVerb(state.dogMode, verb);
-      state.dogMode = result.state;
-      reply = result.reply;
-    });
-    await this.emitSnapshot();
-    return reply;
-  }
-
-  /** /slap /shock /toilet /stfu /push /swallow /facial /release /doggy
-   * /creampie — every DogMode verb but on/off/status: the pure state
-   * transition ONLY (domain/dog-mode.ts#applyDiscipline), called from
-   * sendMessage()'s interception BEFORE the verb is delivered to the room's
-   * agent as a real message turn. Returns nothing and produces no reply text
-   * of any kind (SPEC REWRITE, Pascal whips 344-346, 2026-08-23, deleting the
-   * SPEC ADD whip 340 fake-author ack path) — whatever the agent says in its
-   * real turn is the only output a human ever sees. */
-  private async applyDogDisciplineVerb(verb: DisciplineVerb): Promise<void> {
-    await this.room.updateState((state) => {
-      state.dogMode = applyDiscipline(state.dogMode, verb);
-    });
-    await this.emitSnapshot();
-  }
+  // DogMode (/dog + its discipline verbs) is a bundled command-plugin now
+  // (plugins/defaults/dog-mode.mjs) — no dedicated RoomService methods left;
+  // dispatch runs through the generic command-plugin path in sendMessage()
+  // plus the pluginRenderCap/pluginTurnStart/pluginPrompt hooks below.
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
   async runThanksDarioCommand(sub: "on" | "off" | "run"): Promise<string> {
@@ -3185,9 +3182,8 @@ export class RoomService {
       const handler = COMMANDS[command.type];
       const reply = handler ? await handler(this, command) : `Unknown command. Try /help.`;
       const text = typeof reply === "string" ? reply : reply.text;
-      // SPEC ADD (Pascal whip 340, 2026-08-23): a command reply defaults to
-      // "system" but a handler (DogMode discipline acks) may attribute it to
-      // the room's collared agent instead — same event shape as a real agent
+      // A command reply defaults to "system" but a rare handler may attribute
+      // it to a specific agent instead — same event shape as a real agent
       // reply, just synthesized here with no LLM turn.
       const author = typeof reply === "string" ? "system" : (reply.author ?? "system");
       // Persist the reply so a command result (e.g. /compact) survives a reload
@@ -3285,10 +3281,10 @@ export class RoomService {
         dynamic.push({ name: command.name, type: "native", description: command.description, native: true });
       }
     }
-    for (const plugin of (await this.pluginsPromise).values()) {
-      if (seen.has(plugin.command)) continue;
-      seen.add(plugin.command);
-      dynamic.push({ name: plugin.command, type: "native", description: plugin.description ?? "", native: true });
+    for (const [name, plugin] of (await this.pluginsPromise).entries()) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      dynamic.push({ name, type: "native", description: plugin.description ?? "", native: true });
     }
     return dynamic.length ? [...SLASH_COMMANDS, ...dynamic] : SLASH_COMMANDS;
   }
@@ -3661,10 +3657,11 @@ export class RoomService {
 
   /** One committed transcript event by id. `display: true` (read-aloud and
    * similar "what would a human see/hear" lookups) returns it through the
-   * same DogMode cap every other display surface uses (#getSnapshot,
-   * #eventsBefore, #commitReply's live emit) — default false keeps the FULL
-   * stored text, for internal introspection (e.g. toolResultSlice below,
-   * which needs the real content regardless of any collar). */
+   * same command-plugin render cap every other display surface uses
+   * (#getSnapshot, #eventsBefore, #commitReply's live emit) — default false
+   * keeps the FULL stored text, for internal introspection (e.g.
+   * toolResultSlice below, which needs the real content regardless of any
+   * plugin-imposed cap). */
   async eventById(eventId: string, opts: { display?: boolean } = {}): Promise<RoomEvent | undefined> {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
@@ -3812,16 +3809,36 @@ export class RoomService {
    * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
    * the transcript's "load older" — the snapshot only carries the tail window. */
   /** Maps stored events to what a client should see: identical except any
-   * event carrying a DogMode render cap (AgentRoomEvent.dogRender, resolved
-   * once at commit time — see #commitReply) gets its text capped on the way
-   * out, via the SAME derivation the live emit and read-aloud use
-   * (domain/dog-mode.ts#displayEventText). Storage/memory/hooks/recall
-   * (RoomHandle#eventsFrom directly) never route through this — only
-   * client-facing reads do (root-cause fix, Pascal, 2026-08-23: truncating
-   * the STORED text was destroying real replies; the fix moves the cap to
-   * every read-out-for-display call site instead of commit time). */
+   * event carrying a command-plugin render cap (AgentRoomEvent.renderCap,
+   * resolved once at commit time — see #commitReply) gets its text capped on
+   * the way out, via the SAME derivation the live emit and read-aloud use
+   * (domain/render-cap.ts#displayEventText), with its `note` (if any)
+   * expanded into a separate synthesized system-authored chrome event right
+   * after it (see withRenderCapNotes) — never merged into the agent's own
+   * text. Storage/memory/hooks/recall (RoomHandle#eventsFrom directly) never
+   * route through this — only client-facing reads do (root-cause fix,
+   * Pascal, 2026-08-23: truncating the STORED text was destroying real
+   * replies; the fix moves the cap to every read-out-for-display call site
+   * instead of commit time). */
   private displayEvents(events: RoomEvent[]): RoomEvent[] {
-    return events.map((event) => ("dogRender" in event && event.dogRender ? { ...event, text: displayEventText(event.text, event.dogRender) } : event));
+    return this.withRenderCapNotes(events);
+  }
+
+  /** Shared expansion used by both the live commit-time emit (#commitReply)
+   * and every stored-history display read (#displayEvents): a plain 1:1 map,
+   * except an event carrying a `renderCap` gets its displayed text capped,
+   * and — when the cap carries a `note` — a SEPARATE system-authored chrome
+   * event is inserted right after it, synthesized fresh every time from the
+   * stored (text, renderCap) pair, never persisted on its own and never
+   * merged into the agent's own message. */
+  private withRenderCapNotes(events: RoomEvent[]): RoomEvent[] {
+    return events.flatMap((event) => {
+      if (!("renderCap" in event) || !event.renderCap) return [event];
+      const capped: RoomEvent = { ...event, text: displayEventText(event.text, event.renderCap) };
+      if (!event.renderCap.note) return [capped];
+      const note: RoomEvent = { id: `${event.id}:cap-note`, timestamp: event.timestamp, author: "system", text: event.renderCap.note };
+      return [capped, note];
+    });
   }
 
   async eventsBefore(beforeId: string | undefined, limit: number): Promise<{ events: RoomEvent[]; hasMore: boolean }> {
