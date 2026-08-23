@@ -50,7 +50,7 @@ import type {
   Workspace,
 } from "../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeMaxLines } from "../core/config.js";
-import { applyDogVerb, renderDogOutput, renderDogStatus, type DogVerb } from "../domain/dog-mode.js";
+import { applyDogVerb, applyDiscipline, resolveDogRenderCap, displayEventText, renderDogStatus, DOG_STFU_MARKER, type DisciplineVerb, type DogRenderCap } from "../domain/dog-mode.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
@@ -179,6 +179,15 @@ export interface SendMessageOptions {
    * the active agent: the runtime runs it as a raw command, and monad routing is
    * bypassed. Set by sendMessage's native-passthrough detection. */
   nativeCommand?: boolean;
+  /** This turn is a DogMode discipline/state verb rewritten into a message
+   * (SPEC REWRITE, Pascal whips 344-346, 2026-08-23) — targets are already
+   * pinned explicitly, so this ONLY needs to survive onto the durable queue
+   * entry (QueuedMessage.dogVerbTurn) to tell drain() to skip re-parsing the
+   * queued text as a slash command a second time (which would re-run
+   * applyDogDisciplineVerb's state mutation and misroute it back through the
+   * deleted CommandReply path). Never reaches the harness — unlike
+   * nativeCommand, it carries no special prompt-building behavior. */
+  dogVerbTurn?: boolean;
   /** Set by drain(): the durable queue entry this turn consumes. The entry
    * stays queued until the turn's first durable record replaces it (the
    * two-phase hand-off — see RoomHandle.peekQueue). */
@@ -318,13 +327,25 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
  * event back into the history they just reset. */
 const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
+/** Every DogMode verb but the collar master switch (SPEC REWRITE, Pascal
+ * whips 344-346, 2026-08-23) — sendMessage() intercepts these BEFORE command
+ * dispatch and rewrites them into a real message turn; none of them are
+ * CommandHandler registry entries anymore. */
+const DOG_DISCIPLINE_VERBS = new Set<string>([
+  "slap", "shock", "toilet", "stfu", "push", "swallow", "facial", "release", "doggy", "creampie",
+]);
+
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
  * optional event discriminator when the transcript should render it specially,
- * and an optional `author` override (SPEC ADD, Pascal whip 340, 2026-08-23):
- * DogMode discipline acks (/slap /shock /toilet /stfu /push /swallow /facial
- * /release /doggy /creampie) are in-register SFX from the COLLARED AGENT, not
- * daemon control-plane text — author defaults to "system" when omitted. */
+ * and an optional `author` override for the rare handler that still needs one.
+ * DogMode discipline/state verbs (/slap /shock /toilet /stfu /push /swallow
+ * /facial /release /doggy /creampie) are NOT in this registry at all (SPEC
+ * REWRITE, Pascal whips 344-346, 2026-08-23, deleting the SPEC ADD whip 340
+ * fake-author path above): they're intercepted earlier in sendMessage() and
+ * delivered as a REAL message turn to the room's agent, so only the agent
+ * itself ever speaks as the agent. Only /dog on|off|status|toggle stay here,
+ * always plain "system" text. */
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<CommandReply>;
@@ -359,16 +380,10 @@ const COMMANDS: Record<string, CommandHandler> = {
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
   dog: (service, command) => (command.type === "dog" ? service.runDogCommand(command.sub) : Promise.resolve("")),
-  slap: (service) => service.runDogVerbCommand("slap"),
-  shock: (service) => service.runDogVerbCommand("shock"),
-  toilet: (service) => service.runDogVerbCommand("toilet"),
-  stfu: (service) => service.runDogVerbCommand("stfu"),
-  push: (service) => service.runDogVerbCommand("push"),
-  swallow: (service) => service.runDogVerbCommand("swallow"),
-  facial: (service) => service.runDogVerbCommand("facial"),
-  release: (service) => service.runDogVerbCommand("release"),
-  doggy: (service) => service.runDogVerbCommand("doggy"),
-  creampie: (service) => service.runDogVerbCommand("creampie"),
+  // slap/shock/toilet/stfu/push/swallow/facial/release/doggy/creampie are
+  // NOT command handlers (SPEC REWRITE, Pascal whips 344-346, 2026-08-23) —
+  // sendMessage() intercepts them before command dispatch and turns them
+  // into a real message turn. See DOG_DISCIPLINE_VERBS below.
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -650,6 +665,22 @@ export class RoomService {
     await this.init();
 
     let command: RoomCommand = parseCommand(text);
+    // DogMode discipline/state verbs (SPEC REWRITE, Pascal whips 344-346,
+    // 2026-08-23): /slap /shock /toilet /stfu /push /swallow /facial /release
+    // /doggy /creampie are never a synthesized CommandReply — they're
+    // rewritten to a real message turn HERE, before command dispatch, so the
+    // room's agent generates the actual reply (its own yelp/whimper/refusal/
+    // whatever) and only the mechanical render/post cap (renderDogOutput) may
+    // touch it afterward. The state transition (tally/mount/suppress) runs
+    // synchronously now, so by the time the turn's reply commits, the render
+    // cap already reflects the post-verb state. /dog itself (on/off/status/
+    // toggle) is untouched — stays a plain system-authored status line.
+    if (DOG_DISCIPLINE_VERBS.has(command.type)) {
+      const target = await this.roomDefaultTarget();
+      await this.applyDogDisciplineVerb(command.type as DisciplineVerb);
+      command = { type: "message", text };
+      options = { ...options, targets: [target], dogVerbTurn: true };
+    }
     // Harness-native passthrough: an unrecognized `/command` becomes a command
     // TURN to the active agent when that agent has CHECKED that command as a
     // skill (claude builtins like deep-research) and its harness can run them.
@@ -833,6 +864,7 @@ export class RoomService {
       ...(options.channel === "voice" ? { channel: "voice" as const } : {}),
       ...(options.attachments?.length ? { attachments: options.attachments } : {}),
       ...(options.nativeCommand ? { nativeCommand: true } : {}),
+      ...(options.dogVerbTurn ? { dogVerbTurn: true } : {}),
       ...(recordedEventId ? { eventId: recordedEventId } : {}),
       ...(recorded ? { recorded: true } : {}),
       ...(options.human ? { humanId: options.human.id, humanLabel: options.human.label } : {}),
@@ -912,9 +944,15 @@ export class RoomService {
         // Agent-dialogue hand-offs are agent-authored text, never slash commands —
         // skip command parsing (a reply opening with "/" is prose, not /clear). A
         // native command already decided it's a command turn to a pinned target;
-        // re-parsing would just "unknown"-error it, so run it as a message too.
+        // re-parsing would just "unknown"-error it, so run it as a message too. A
+        // DogMode discipline/state verb was already mutated + rewritten to a
+        // message by sendMessage() before it was ever queued — re-parsing it
+        // here would re-run that mutation and misroute it (SPEC REWRITE,
+        // Pascal whips 344-346, 2026-08-23).
         const command =
-          next.fromAgentDialogue || next.nativeCommand ? ({ type: "message", text: next.text } as const) : parseCommand(next.text);
+          next.fromAgentDialogue || next.nativeCommand || next.dogVerbTurn
+            ? ({ type: "message", text: next.text } as const)
+            : parseCommand(next.text);
         if (command.type !== "message") {
           task.status = "running";
           task.startedAt = new Date().toISOString();
@@ -1359,7 +1397,7 @@ export class RoomService {
       const state = await this.room.state();
       // DogMode (09-DOG-MODE): a /facial marker is visible in status only
       // through the room's NEXT agent turn — clear it now, at that turn's
-      // start, never mid-command (runDogVerbCommand never touches this).
+      // start, never mid-command (applyDogDisciplineVerb never touches this).
       if (state.dogMode?.faceMarked) {
         await this.room.updateState((current) => {
           if (current.dogMode) delete current.dogMode.faceMarked;
@@ -1524,7 +1562,16 @@ export class RoomService {
       let ambientFiredAt = 0;
 
       const userName = await readUserNameSetting();
-      const pluginContext = await this.pluginPrompt(state, target);
+      // DogMode (09-DOG-MODE): while suppressed (/stfu, deepened by /push),
+      // a one-line context hint tells the agent to answer with sounds only —
+      // never fed as fabricated reply text, just a nudge; the mechanical
+      // MaxLines cap in renderDogOutput enforces the actual limit regardless
+      // of what the agent chooses to say (SPEC, Pascal whips 344-346,
+      // 2026-08-23).
+      const dogHint = state.dogMode?.collared && state.dogMode.suppressed
+        ? `${DOG_STFU_MARKER} DogMode: you are suppressed/gagged right now — respond with sounds only (whimpers, yelps), no words.`
+        : undefined;
+      const pluginContext = [await this.pluginPrompt(state, target), dogHint].filter(Boolean).join("\n\n") || undefined;
       // Context-diet (09-MEMORY-CONTEXT): resolved fresh every turn (two small
       // JSON reads) so a /diet toggle mid-conversation applies on the very
       // next turn, no session rebuild. `preset:false` (the default) renders
@@ -1722,17 +1769,20 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      // DogMode (09-DOG-MODE) render/post-layer enforcement: applied to the
-      // FINAL committed text only, right here — never fed back into the
-      // prompt, never something the model is asked to self-limit. A collared
-      // room's persisted+emitted event is truncated to MaxLines (or replaced
-      // by the 🐾 ack marker while /stfu-suppressed) regardless of what the
-      // harness actually produced; captureEpisode/hooks/agent-dialogue below
-      // still see the RAW partialReply, so DogMode never corrupts memory or
-      // continuation logic — only what a human/other client renders.
+      // DogMode (09-DOG-MODE) render/post-layer enforcement: the cap is
+      // resolved here but NEVER applied to what gets stored — commitReply
+      // persists committedReply (the agent's FULL real output) always, and
+      // stores this cap alongside it (AgentRoomEvent.dogRender) so every
+      // DISPLAY surface (live emit, snapshot fetch, read-aloud) can derive the
+      // shown/spoken text on demand via domain/dog-mode.ts#displayEventText.
+      // ROOT-CAUSE FIX (Pascal, 2026-08-23): the old code truncated BEFORE
+      // persisting, which silently destroyed real replies forever the moment
+      // a room was collared — violates NOTHING IS EVER LOST. captureEpisode/
+      // hooks/agent-dialogue below already read the RAW partialReply, so this
+      // fix only changes what commitReply is handed, not their inputs.
       const dogState = state.dogMode;
-      const renderedReply = producedOutput && dogState?.collared ? renderDogOutput(committedReply, dogState, this.dogModeConfig()) : committedReply;
-      if (producedOutput) await this.commitReply(target, eventId, renderedReply, turn.details, channel, nextPending);
+      const dogRenderCap = producedOutput ? resolveDogRenderCap(dogState ?? { collared: false, disciplineCount: 0, suppressed: false, suppressDepth: 0 }, this.dogModeConfig()) : undefined;
+      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending, dogRenderCap);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
       if (abnormalReason !== undefined && !producedOutput) {
@@ -1938,7 +1988,23 @@ export class RoomService {
 
   /** WAL step 2: append the reply event (details ON it), then one atomic state
    * write clearing the marker and advancing the cursor. */
-  private async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn): Promise<void> {
+  /** `dogRender`, when given, is the DogMode cap resolved for THIS turn
+   * (domain/dog-mode.ts#resolveDogRenderCap) — persisted on the event
+   * verbatim alongside the agent's FULL, untruncated `reply` text (root-cause
+   * fix, Pascal, 2026-08-23: the event committed/stored here must never be
+   * shorter than what the agent actually said). Only the LIVE-emitted copy's
+   * `text` is capped, via displayEventText, matching every other display
+   * surface (#getSnapshot, #eventById(display:true)) that derives the same
+   * shown text from the same stored (text, dogRender) pair on demand. */
+  private async commitReply(
+    agentId: string,
+    eventId: string,
+    reply: string,
+    details: EventDetails,
+    channel: "voice" | undefined,
+    nextPending?: PendingTurn,
+    dogRender?: DogRenderCap,
+  ): Promise<void> {
     // Blocks count only when they encode structure the plain reply text doesn't
     // already carry (a steer marker, a tool, a thinking span) — a prose-only
     // turn stays detail-less exactly as before, so nothing bloats.
@@ -1955,12 +2021,16 @@ export class RoomService {
       text: reply,
       ...(channel ? { channel } : {}),
       ...(hasDetails ? { details } : {}),
+      ...(dogRender ? { dogRender } : {}),
     };
     // commitTurn computes the cursor from the reply's own line (sweeping the
     // mid-turn steers/notes the live turn already saw) and, for a multi-target
-    // turn, installs the next target's marker in the same atomic write.
+    // turn, installs the next target's marker in the same atomic write. Always
+    // the FULL text — storage/memory/hooks/agent-context never see a capped
+    // reply, only display surfaces do.
     await this.room.commitTurn(event, nextPending);
-    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    const displayEvent = dogRender ? { ...event, text: displayEventText(event.text, dogRender) } : event;
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: displayEvent });
   }
 
   /** Durable failure marker: a turn that dies must leave a trace in the
@@ -2563,26 +2633,18 @@ export class RoomService {
   }
 
   /** /slap /shock /toilet /stfu /push /swallow /facial /release /doggy
-   * /creampie — every DogMode verb but on/off/status, all pure transitions
-   * over the persisted room state (domain/dog-mode.ts#applyDogVerb). /shock
-   * is yelp SFX + discipline counter only — no re-delivery/echo of the last
-   * user order (that parrot mechanic was removed, SPEC CHANGE whip 338,
-   * 2026-08-23).
-   *
-   * SPEC ADD (Pascal whip 340, 2026-08-23): the ack is in-register speech FROM
-   * THE COLLARED AGENT, not daemon control-plane text — attributed to
-   * roomDefaultTarget() (the room's active agent, else workspace default) as
-   * `author`, same transcript styling as a normal agent reply. No LLM turn:
-   * synthesized directly here, same as the plain-string path always was. */
-  async runDogVerbCommand(verb: Exclude<DogVerb, "on" | "off">): Promise<CommandReply> {
-    let reply = "";
+   * /creampie — every DogMode verb but on/off/status: the pure state
+   * transition ONLY (domain/dog-mode.ts#applyDiscipline), called from
+   * sendMessage()'s interception BEFORE the verb is delivered to the room's
+   * agent as a real message turn. Returns nothing and produces no reply text
+   * of any kind (SPEC REWRITE, Pascal whips 344-346, 2026-08-23, deleting the
+   * SPEC ADD whip 340 fake-author ack path) — whatever the agent says in its
+   * real turn is the only output a human ever sees. */
+  private async applyDogDisciplineVerb(verb: DisciplineVerb): Promise<void> {
     await this.room.updateState((state) => {
-      const result = applyDogVerb(state.dogMode, verb);
-      state.dogMode = result.state;
-      reply = result.reply;
+      state.dogMode = applyDiscipline(state.dogMode, verb);
     });
     await this.emitSnapshot();
-    return { text: reply, author: await this.roomDefaultTarget() };
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
@@ -3590,11 +3652,18 @@ export class RoomService {
 
   // --- snapshot ---------------------------------------------------------------
 
-  /** One committed transcript event by id (read-aloud and similar lookups). */
-  async eventById(eventId: string): Promise<RoomEvent | undefined> {
+  /** One committed transcript event by id. `display: true` (read-aloud and
+   * similar "what would a human see/hear" lookups) returns it through the
+   * same DogMode cap every other display surface uses (#getSnapshot,
+   * #eventsBefore, #commitReply's live emit) — default false keeps the FULL
+   * stored text, for internal introspection (e.g. toolResultSlice below,
+   * which needs the real content regardless of any collar). */
+  async eventById(eventId: string, opts: { display?: boolean } = {}): Promise<RoomEvent | undefined> {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
-    return events.find((event) => event.id === eventId);
+    const event = events.find((event) => event.id === eventId);
+    if (!event) return undefined;
+    return opts.display ? this.displayEvents([event])[0] : event;
   }
 
   /** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
@@ -3735,19 +3804,32 @@ export class RoomService {
   /** Page backwards through committed history: the `limit` events immediately
    * before `beforeId` (or the transcript tail when it's absent/unknown). Backs
    * the transcript's "load older" — the snapshot only carries the tail window. */
+  /** Maps stored events to what a client should see: identical except any
+   * event carrying a DogMode render cap (AgentRoomEvent.dogRender, resolved
+   * once at commit time — see #commitReply) gets its text capped on the way
+   * out, via the SAME derivation the live emit and read-aloud use
+   * (domain/dog-mode.ts#displayEventText). Storage/memory/hooks/recall
+   * (RoomHandle#eventsFrom directly) never route through this — only
+   * client-facing reads do (root-cause fix, Pascal, 2026-08-23: truncating
+   * the STORED text was destroying real replies; the fix moves the cap to
+   * every read-out-for-display call site instead of commit time). */
+  private displayEvents(events: RoomEvent[]): RoomEvent[] {
+    return events.map((event) => ("dogRender" in event && event.dogRender ? { ...event, text: displayEventText(event.text, event.dogRender) } : event));
+  }
+
   async eventsBefore(beforeId: string | undefined, limit: number): Promise<{ events: RoomEvent[]; hasMore: boolean }> {
     await this.init();
     const { events } = await this.room.eventsFrom(0);
     const found = beforeId ? events.findIndex((event) => event.id === beforeId) : -1;
     const end = found >= 0 ? found : events.length;
     const start = Math.max(0, end - Math.max(1, limit));
-    return { events: events.slice(start, end), hasMore: start > 0 };
+    return { events: this.displayEvents(events.slice(start, end)), hasMore: start > 0 };
   }
 
   async getSnapshot(): Promise<Snapshot> {
     await this.init();
     const all = (await this.room.eventsFrom(0)).events;
-    const events = all.slice(-this.workspace.config.transcriptWindow);
+    const events = this.displayEvents(all.slice(-this.workspace.config.transcriptWindow));
     const state = await this.room.state();
     const pluginPanels = await this.pluginPanels(state);
     // The selected agent plus any agents actively executing this room's turn

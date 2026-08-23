@@ -152,6 +152,16 @@ export interface AgentRoomEvent {
   /** Text was rewritten by a sanitize apply; the original line lives in
    * redactions.jsonl beside the transcript. */
   redacted?: boolean;
+  /** DogMode (09-DOG-MODE) render cap resolved at commit time, when this room
+   * was collared for this turn. `text` above is ALWAYS the agent's FULL,
+   * untruncated reply — storage/memory/hooks/agent-context read `text`
+   * directly and never lose a byte (root-cause fix, Pascal, 2026-08-23:
+   * truncating before storage was destroying real replies). This field is
+   * the ONLY place enforcement lives; every display surface (live emit,
+   * snapshot fetch, read-aloud) derives the shown/spoken text from `text` +
+   * `dogRender` via domain/dog-mode.ts#applyDogRenderCap, on demand, never
+   * by mutating the stored event. */
+  dogRender?: { maxLines: number; prefix: string };
 }
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;
@@ -206,6 +216,11 @@ export interface QueuedMessage {
    * busy turn — drain must run it as a command turn to its pinned target, not
    * re-parse it as a slash command (which would just error). */
   nativeCommand?: boolean;
+  /** A DogMode discipline/state verb (see RoomService's SendMessageOptions)
+   * already rewritten into a message turn before queueing — drain must NOT
+   * re-parse this text as a slash command (it would re-mutate dogMode state
+   * and misroute into the deleted CommandReply path). */
+  dogVerbTurn?: boolean;
   queuedAt: string;
   /** The user event id pre-assigned to this message. Set durably BEFORE the
    * transcript append so the queue→transcript hand-off is crash-idempotent:

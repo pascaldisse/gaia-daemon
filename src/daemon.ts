@@ -1385,7 +1385,10 @@ export class Daemon {
    * (cached on disk; the result carries the chunk count for the client). */
   async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0, regenerate = false): Promise<ReadAloudResult> {
     const service = await this.serviceFor(workspaceId, roomId);
-    const event = await service.eventById(eventId);
+    // display:true — a collared room reads aloud the SAME capped text it
+    // shows (09-DOG-MODE, Pascal 2026-08-23); the stored event keeps the full
+    // reply, this just derives what a human hears.
+    const event = await service.eventById(eventId, { display: true });
     if (!event) throw new Error(`Unknown event: ${eventId}`);
     const settings = await readVoiceSettings();
     return readAloud({
@@ -1405,7 +1408,8 @@ export class Daemon {
    * The author's engine decides — this method never branches on the engine. */
   async readAloudStream(workspaceId: string, roomId: string, eventId: string, regenerate = false): Promise<ReadAloudDelivery> {
     const service = await this.serviceFor(workspaceId, roomId);
-    const event = await service.eventById(eventId);
+    // display:true — same reasoning as readAloud above.
+    const event = await service.eventById(eventId, { display: true });
     if (!event) throw new Error(`Unknown event: ${eventId}`);
     const settings = await readVoiceSettings();
     return readAloudStream({

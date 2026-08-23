@@ -350,7 +350,7 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
     const attachments = attachmentsFrom(raw.attachments);
     queue.push({
       ...unknownFields(raw, [
-        "taskId", "text", "targets", "channel", "attachments", "fromAgentDialogue", "goalStartedAt", "nativeCommand", "eventId", "recorded",
+        "taskId", "text", "targets", "channel", "attachments", "fromAgentDialogue", "goalStartedAt", "nativeCommand", "dogVerbTurn", "eventId", "recorded",
         "stallRetried", "authRetries", "notBefore", "queuedAt", "humanId", "humanLabel",
       ]),
       taskId: raw.taskId,
@@ -361,6 +361,7 @@ function queueFrom(value: unknown): QueuedMessage[] | undefined {
       ...(raw.fromAgentDialogue === true ? { fromAgentDialogue: true } : {}),
       ...(typeof raw.goalStartedAt === "string" && raw.goalStartedAt.trim() ? { goalStartedAt: raw.goalStartedAt } : {}),
       ...(raw.nativeCommand === true ? { nativeCommand: true } : {}),
+      ...(raw.dogVerbTurn === true ? { dogVerbTurn: true } : {}),
       // eventId/recorded are the queue→transcript crash-idempotency pair: drop
       // them and a restart re-appends a user event that is already on disk.
       ...(typeof raw.eventId === "string" && raw.eventId.trim() ? { eventId: raw.eventId } : {}),
@@ -544,7 +545,11 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
     };
   }
   const details = eventDetailsFrom(raw.details);
-  return { ...base, author: raw.author, ...(kind ? { kind } : {}), ...(details ? { details } : {}) };
+  const dogRender =
+    isRecord(raw.dogRender) && typeof raw.dogRender.maxLines === "number" && typeof raw.dogRender.prefix === "string"
+      ? { maxLines: raw.dogRender.maxLines, prefix: raw.dogRender.prefix }
+      : undefined;
+  return { ...base, author: raw.author, ...(kind ? { kind } : {}), ...(details ? { details } : {}), ...(dogRender ? { dogRender } : {}) };
 }
 
 async function readRoomState(path: string): Promise<unknown> {
