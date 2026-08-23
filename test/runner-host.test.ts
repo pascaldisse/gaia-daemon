@@ -6,7 +6,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentDef, AgentEvent, Workspace } from "../src/core/types.js";
@@ -163,6 +164,97 @@ async function makeHost(temp: string): Promise<RunnerHost> {
     runnerArgv: [process.execPath, stubPath],
   });
 }
+
+function pgid(pid: number): number {
+  return Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boolean, label: string): Promise<T> {
+  const deadline = Date.now() + 2_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const value = await read();
+      if (predicate(value)) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}${lastError ? `: ${String(lastError)}` : ""}`);
+}
+
+test("RunnerHost isolates its runner group and stops the complete runner tree", async () => {
+  const temp = await createTempDir();
+  let host: RunnerHost | undefined;
+  let runnerPid: number | undefined;
+  let grandchildPid: number | undefined;
+  try {
+    const marker = join(temp.path, "runner-pids.json");
+    const stubPath = join(temp.path, "tree-runner.mjs");
+    await writeFile(stubPath, `
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const marker = process.argv[2];
+const grandchild = spawn(process.execPath, ["--eval", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+writeFileSync(marker, JSON.stringify({ runnerPid: process.pid, grandchildPid: grandchild.pid }));
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+send({ type: "ready", modelLabel: "stub/tree" });
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (!line.trim()) return;
+  if (JSON.parse(line).type === "turn") send({ type: "turn-end" });
+});
+`, "utf8");
+    host = new RunnerHost({
+      workspace: fakeWorkspace(temp.path),
+      agent: AGENT,
+      harness: "stub",
+      allowSummon: () => true,
+      sandbox: () => ({ enabled: false, backend: "none" }),
+      runnerArgv: [process.execPath, stubPath, marker],
+    });
+    for await (const _event of host.send({ roomId: "default", message: "spawn", transcript: [] })) void _event;
+    const pids = await waitFor(
+      async () => JSON.parse(await readFile(marker, "utf8")) as { runnerPid: number; grandchildPid: number },
+      (value) => Number.isInteger(value.runnerPid) && Number.isInteger(value.grandchildPid),
+      "runner and grandchild pids",
+    );
+    runnerPid = pids.runnerPid;
+    grandchildPid = pids.grandchildPid;
+    assert.notEqual(pgid(runnerPid), pgid(process.pid), "runner must not share the daemon process group");
+    assert.equal(pgid(grandchildPid), pgid(runnerPid), "runner descendants stay in the runner group");
+
+    await host.dispose();
+    host = undefined;
+    await waitFor(
+      async () => alive(runnerPid!) || alive(grandchildPid!),
+      (stillAlive) => !stillAlive,
+      "runner tree termination",
+    );
+  } finally {
+    await host?.dispose();
+    for (const pid of [runnerPid, grandchildPid]) {
+      if (pid !== undefined && alive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+    await temp.cleanup();
+  }
+});
 
 test("RunnerHost streams a turn's events and tracks the model label", async () => {
   const temp = await createTempDir();
