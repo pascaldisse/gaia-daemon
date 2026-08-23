@@ -31,6 +31,17 @@ export type SlashCommand =
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
+  | { type: "dog"; sub: "on" | "off" | "status" }
+  | { type: "slap" }
+  | { type: "shock" }
+  | { type: "toilet" }
+  | { type: "stfu" }
+  | { type: "push" }
+  | { type: "swallow" }
+  | { type: "facial" }
+  | { type: "release" }
+  | { type: "doggy" }
+  | { type: "creampie" }
   | { type: "reload" }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
@@ -90,6 +101,21 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     aliases: ["dario"],
   },
   { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)" },
+  {
+    name: "dog",
+    type: "dog",
+    description: "DogMode persona-register (09-DOG-MODE, IRON default OFF): /dog on|off|status",
+  },
+  { name: "slap", type: "slap", description: "DogMode discipline: short whimper ack, +1 tally" },
+  { name: "shock", type: "shock", description: "DogMode discipline: whimper ack, +1 tally, re-delivers the last order" },
+  { name: "toilet", type: "toilet", description: "DogMode discipline: short whimper ack, +1 tally" },
+  { name: "stfu", type: "stfu", description: "DogMode: full output suppression (\u{1F43E} ack only); /release lifts" },
+  { name: "push", type: "push", description: "DogMode: deepen /stfu (gagged ack, MaxLines 0, +1 tally)" },
+  { name: "swallow", type: "swallow", description: "DogMode: finisher, lifts /stfu, collar stays" },
+  { name: "facial", type: "facial", description: "DogMode: finisher, lifts /stfu or ends /doggy, collar stays" },
+  { name: "release", type: "release", description: "DogMode: full lift — suppression AND collar off" },
+  { name: "doggy", type: "doggy", description: "DogMode: mount-from-behind sub-state, independent of /stfu" },
+  { name: "creampie", type: "creampie", description: "DogMode: finisher, ends /doggy, collar stays" },
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -214,6 +240,10 @@ export function parseCommand(input: string): SlashCommand {
     case "thanks-dario": {
       const sub = args[0]?.toLowerCase();
       return { type: "thanks-dario", sub: sub === "on" || sub === "off" ? sub : "run" };
+    }
+    case "dog": {
+      const sub = args[0]?.toLowerCase();
+      return { type: "dog", sub: sub === "on" ? "on" : sub === "off" ? "off" : "status" };
     }
     case "setup": {
       const sub = args[0]?.toLowerCase();

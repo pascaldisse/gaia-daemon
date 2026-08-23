@@ -1095,6 +1095,13 @@ export class Daemon {
     return service.dietSet({ scope, patch });
   }
 
+  /** 09-DOG-MODE: `gaia dog on|off|status` (CLI form of /dog), scoped to the
+   * CALLING room — same daemon-backed, no-GaiaTool-grant tier as dream. */
+  async harnessDogCommand(claims: HarnessTokenClaims, sub: "on" | "off" | "status"): Promise<string> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.runDogCommand(sub);
+  }
+
   /** INSIGHT "full" tier, decree 2026-07-28 part 3: direct, pull-based read of
    * ANY currently-incognito room's raw transcript, on demand — never indexed,
    * never pushed anywhere, reachable only when the CALLING agent's own

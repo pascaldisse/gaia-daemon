@@ -30,7 +30,7 @@ import { globalAgentsPath } from "../domain/workspace.js";
 import { Daemon } from "../daemon.js";
 import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services/proxy.js";
 import { configureRoomServiceReload } from "../services/room-service.js";
-import { summonAck } from "../services/summons.js";
+import { summonAck, type SummonCensusEntry } from "../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "./pet.js";
 import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
@@ -180,6 +180,26 @@ function sanitizeEditRefs(body: unknown): { eventId: string; quote: string; repl
     edits.push({ eventId: record.eventId, quote: record.quote, replacement: record.replacement });
   }
   return edits;
+}
+
+/** Fix #2 census (`gaia summon --status`): render a plain-text table for the
+ * CLI's stdout — the JSON `entries` array is the machine-readable payload,
+ * this is just the human-facing echo (mirrors summonAck's role for launch). */
+function summonCensusText(entries: SummonCensusEntry[]): string {
+  if (entries.length === 0) return "No summon lanes found.";
+  const rows = entries.map((entry) => {
+    const cols = [
+      entry.roomId,
+      `@${entry.agentId}`,
+      entry.state,
+      `delivered:${entry.delivered}`,
+      entry.resumeStatus ? `resume:${entry.resumeStatus}` : "",
+      entry.lastEventAt ? `last:${entry.lastEventAt}` : "",
+      entry.dirtyWorktree === undefined ? "" : entry.dirtyWorktree ? "dirty" : "clean",
+    ];
+    return cols.filter(Boolean).join("  ");
+  });
+  return rows.join("\n");
 }
 
 function titleCaseId(id: string): string {
@@ -688,8 +708,10 @@ export class GaiaWebServer {
           path === "/api/harness/recall" ||
           path === "/api/harness/dream" ||
           path === "/api/harness/resume" ||
+          path === "/api/harness/summon/status" ||
           path === "/api/harness/tool-result-fetch" ||
-          path === "/api/harness/context-diet"))
+          path === "/api/harness/context-diet" ||
+          path === "/api/harness/dog"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1613,11 +1635,20 @@ export class GaiaWebServer {
       return json(response, 200, { agents: agentRoster(workspace) });
     }
 
-    const verb = pathname.slice("/api/harness/".length).split("/")[0] as "memory" | "summon" | "recall" | "dream" | "resume" | "tool-result-fetch" | "context-diet";
+    const verb = pathname.slice("/api/harness/".length).split("/")[0] as
+      | "memory"
+      | "summon"
+      | "recall"
+      | "dream"
+      | "resume"
+      | "tool-result-fetch"
+      | "context-diet"
+      | "dog";
     // tool-result-fetch/context-diet are VERBS of the unified `gaia` tool
     // (09-MEMORY-CONTEXT), not separate GaiaTool ids like memory/summon/recall
     // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
-    if (verb !== "dream") {
+    // `dog` (09-DOG-MODE) is never a GaiaTool grant either — same carve-out.
+    if (verb !== "dream" && verb !== "dog") {
       const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" ? "gaia" : verb;
       if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
         return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
@@ -1747,19 +1778,48 @@ export class GaiaWebServer {
     // /api/harness/resume — send a follow-up message into an EXISTING
     // room/sub-room to resume or steer its worker (steers a running turn,
     // starts a fresh one if idle), instead of firing a brand-new summon.
-    // ALWAYS fire-and-forget, mirroring summon below: sendMessage kicks the
-    // turn off and returns immediately, it never blocks on the turn settling.
+    // ALWAYS fire-and-forget, mirroring summon below: this call resolves once
+    // the message is kicked off, never once the turn settles.
     // `room` is scoped strictly to claims.workspaceId — serviceFor resolves it
     // against the CALLER's own workspace registry, so a caller can never reach
     // a room living in another workspace even by guessing its id.
+    // Fix #1 (resume-completion tracking, gaia-daemon-triage/FIX-DESIGN.md):
+    // routed through the summon coordinator so an ALREADY-delivered summon
+    // child registers a durable delivery contract for THIS resumed turn —
+    // when it settles, the result posts back to the parent room the SAME way
+    // a first-turn summon's result does (SummonCoordinator.resume). Plain
+    // rooms (no state.summon) get the exact original untracked behavior.
     if (pathname === "/api/harness/resume") {
       const room = stringField(body, "room")?.trim();
       const message = stringField(body, "message")?.trim();
       if (!room || !message) return json(response, 400, { error: "Missing room or message" });
       try {
         const service = await this.daemon.serviceFor(claims.workspaceId, room);
-        await service.sendMessage(message, { recordUserMessage: true });
-        json(response, 200, { roomId: room, result: `Resumed room '${room}' with a follow-up message.` });
+        const coordinator = await this.daemon.coordinatorFor(claims.workspaceId);
+        const { tracked } = await coordinator.resume(room, service, message);
+        json(response, 200, {
+          roomId: room,
+          result: `Resumed room '${room}' with a follow-up message.${tracked ? " Its result will post back to the parent room when the turn settles." : ""}`,
+        });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/summon/status (Fix #2, gaia-daemon-triage/FIX-DESIGN.md) —
+    // read-only census of summon lanes: state, last-event time, delivered?,
+    // dirty-worktree hint. `room` scopes to that room's direct summon
+    // children (default: the CALLER's own room); `all: true` lists every
+    // summon lane in the workspace regardless of parent. Gated on the same
+    // "summon" grant as launching one (pathname's first segment is "summon").
+    if (pathname === "/api/harness/summon/status") {
+      const room = stringField(body, "room")?.trim();
+      const all = boolField(body, "all");
+      try {
+        const coordinator = await this.daemon.coordinatorFor(claims.workspaceId);
+        const entries = await coordinator.census(all ? undefined : room || claims.roomId);
+        json(response, 200, { entries, result: summonCensusText(entries) });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }
@@ -1781,6 +1841,21 @@ export class GaiaWebServer {
       try {
         const slice = await this.daemon.harnessToolResultFetch(claims, sessionId, entryId, offset, limit);
         json(response, 200, { ok: true, ...slice });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // /api/harness/dog (09-DOG-MODE): `gaia dog on|off|status`, the CLI form
+    // of `/dog` — daemon-side half is RoomService#runDogCommand, same room the
+    // bearer token names (no cross-room targeting from this endpoint).
+    if (pathname === "/api/harness/dog") {
+      const sub = stringField(body, "sub");
+      if (sub !== "on" && sub !== "off" && sub !== "status") return json(response, 400, { error: "sub must be on|off|status" });
+      try {
+        const text = await this.daemon.harnessDogCommand(claims, sub);
+        json(response, 200, { ok: true, result: text });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

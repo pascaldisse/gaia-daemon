@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import type { BackgroundTask, ContextGatePending, DogModeState, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
 import { appendJsonl, appendJsonlBatchDurable, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
@@ -406,12 +406,19 @@ function summonDeliveryFrom(value: unknown): SummonDelivery | undefined {
   if (typeof value.agentId !== "string" || !value.agentId.trim()) return undefined;
   const deliver = value.deliver === "turn" ? "turn" : value.deliver === "note" ? "note" : undefined;
   if (!deliver) return undefined;
+  // Fix #1 (resume-completion tracking): resumeStatus is only ever set by
+  // SummonCoordinator.resume/recoverUndelivered (never a bare "running"
+  // default like `status` above — an absent field means "no resume ever
+  // tracked", which must stay distinguishable from "one is in flight").
+  const resumeStatus = value.resumeStatus === "running" || value.resumeStatus === "delivered" ? value.resumeStatus : undefined;
   return {
     agentId: value.agentId,
     deliver,
     ...(typeof value.callerAgentId === "string" && value.callerAgentId.trim() ? { callerAgentId: value.callerAgentId } : {}),
     status: value.status === "delivered" ? "delivered" : "running",
     launchedAt: typeof value.launchedAt === "string" ? value.launchedAt : new Date().toISOString(),
+    ...(resumeStatus ? { resumeStatus } : {}),
+    ...(resumeStatus && typeof value.resumeStartedAt === "string" ? { resumeStartedAt: value.resumeStartedAt } : {}),
   };
 }
 
@@ -435,6 +442,7 @@ export function normalizeRoomState(value: unknown): RoomState {
   const contextFloors = cursorRecord(value.contextFloors);
   const petBindings = normalizePetBindings(value.petBindings);
   const pluginState = pluginStateFrom(value.pluginState);
+  const dogMode = dogModeFrom(value.dogMode);
   return {
     activeRoles: stringRecord(value.activeRoles),
     ...(petBindings ? { petBindings } : {}),
@@ -466,6 +474,42 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
     ...(value.incognito === true ? { incognito: true } : {}),
     ...(stringArray(value.humans).length > 0 ? { humans: stringArray(value.humans) } : {}),
+    ...(dogMode ? { dogMode } : {}),
+  };
+}
+
+/** DogMode round-trip (see RoomState.dogMode / domain/dog-mode.ts). The
+ * disciplineCount tally must survive even while `collared` is false (a
+ * whip-count-style monotonic counter across /dog off↔on cycles), so this
+ * does NOT gate on `collared` the way e.g. monadFrom gates on its own
+ * presence — an all-default shape (never armed, zero discipline) still
+ * collapses to absent, same policy as every other optional RoomState field. */
+function dogModeFrom(raw: unknown): DogModeState | undefined {
+  if (!isRecord(raw)) return undefined;
+  const collared = raw.collared === true;
+  const suppressed = raw.suppressed === true;
+  const suppressDepth: 0 | 1 = raw.suppressDepth === 1 ? 1 : 0;
+  const mounted = raw.mounted === true;
+  const faceMarked = raw.faceMarked === true;
+  const disciplineCount =
+    typeof raw.disciplineCount === "number" && Number.isFinite(raw.disciplineCount) && raw.disciplineCount >= 0
+      ? Math.floor(raw.disciplineCount)
+      : 0;
+  const maxLines =
+    typeof raw.maxLines === "number" && Number.isSafeInteger(raw.maxLines) && raw.maxLines >= 0 ? raw.maxLines : undefined;
+  const prefix = typeof raw.prefix === "string" && raw.prefix.trim() ? raw.prefix : undefined;
+  if (!collared && !suppressed && !mounted && !faceMarked && disciplineCount === 0 && maxLines === undefined && prefix === undefined) {
+    return undefined;
+  }
+  return {
+    collared,
+    disciplineCount,
+    suppressed,
+    suppressDepth,
+    ...(mounted ? { mounted } : {}),
+    ...(faceMarked ? { faceMarked } : {}),
+    ...(maxLines !== undefined ? { maxLines } : {}),
+    ...(prefix !== undefined ? { prefix } : {}),
   };
 }
 

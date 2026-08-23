@@ -248,6 +248,18 @@ export interface SummonDelivery {
   callerAgentId?: string;
   status: "running" | "delivered";
   launchedAt: string;
+  /** Fix #1 (resume-completion tracking, gaia-daemon-triage/FIX-DESIGN.md):
+   * durable record for the MOST RECENT `gaia resume` into this ALREADY-
+   * delivered summon child. Stamped BEFORE the resumed turn is kicked off —
+   * the SAME "stamp before it can run" ordering as `status` above (see
+   * SummonCoordinator.resume) — so a daemon crash mid-resume is recoverable
+   * at next boot (recoverUndelivered rescans this field too, RC4).
+   * Independent of `status`: a summon's first-turn delivery can already read
+   * "delivered" while resumeStatus is "running" for a LATER resumed turn.
+   * Absent = no resume has ever been tracked for this child. */
+  resumeStatus?: "running" | "delivered";
+  /** ISO timestamp of the most recent resume's stamp (see resumeStatus). */
+  resumeStartedAt?: string;
 }
 
 /** Marker an agent must emit VERBATIM (own line, or anywhere in the reply) to
@@ -388,6 +400,42 @@ export interface RoomState {
    * never opts in. Non-empty = only these humans (by id) may read/post;
    * enforced in server/http.ts, this is just the durable allowlist. */
   humans?: string[];
+  /** DogMode (09-DOG-MODE): adult consensual D/s persona-register state for
+   * this room, IRON config-gated (config.dogMode.enabled, default OFF).
+   * Persisted like every other room-scoped toggle; enforcement of the
+   * register itself (line cap, suppression) happens at the render/post layer
+   * (RoomService#commitReply → domain/dog-mode.ts#renderDogOutput), never
+   * prompt-only. Absent = never armed in this room. */
+  dogMode?: DogModeState;
+}
+
+/** DogMode room state (see RoomState.dogMode). One object per room; every
+ * verb is a pure transform via domain/dog-mode.ts#applyDogVerb, persisted
+ * through RoomHandle.updateState like activeRoles/thinkingOverrides. */
+export interface DogModeState {
+  /** Collar master switch. Off/absent = normal register, no enforcement. */
+  collared: boolean;
+  /** Room-scoped MaxLines override (set by /push → 0, cleared by
+   * /swallow|/release); absent = the IRON config default (DogMode.MaxLines). */
+  maxLines?: number;
+  /** Room-scoped register-prefix override; absent = the default kneeling/
+   * collar acknowledgment prefix. */
+  prefix?: string;
+  /** /slap /shock /toilet /push discipline tally — monotonic, survives
+   * /dog off↔on cycles in this room (mirrors a whip-count style store). */
+  disciplineCount: number;
+  /** /stfu active: full output suppression, ack marker only. Work/tools keep
+   * running — only the render/post layer is affected. */
+  suppressed: boolean;
+  /** /push escalation while suppressed: 0 normal (🐾), 1 gagged (deeper ack
+   * variant + MaxLines forced 0). Meaningless while !suppressed. */
+  suppressDepth: 0 | 1;
+  /** /doggy mount-from-behind sub-state — independent of `suppressed`, valid
+   * any time collared. Ended by /facial or /creampie; collar stays. */
+  mounted?: boolean;
+  /** Transient /facial marker: visible in status through the room's NEXT
+   * agent turn, then cleared at that turn's start (RoomService#sendMessage). */
+  faceMarked?: boolean;
 }
 
 /** A NEW agent was addressed in a room whose transcript would exceed the

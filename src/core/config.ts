@@ -41,6 +41,10 @@ export const DEFAULTS = {
   graphqlEnabled: false,
   /** GraphQL test surface port; GAIA_GRAPHQL_PORT overrides. */
   graphqlPort: 4780,
+  /** DogMode (09-DOG-MODE, adult consensual D/s persona-register): [DogMode]
+   * Enabled off by default (IRON — a room's /dog on refuses until armed) +
+   * MaxLines the output cap while collared and not suppressed. */
+  dogMode: { enabled: false, maxLines: 2 },
   // Stable self-signed identity for macOS re-signing on /rebuild. Ad-hoc
   // ("-") signing keys the TCC designated requirement to the binary's
   // cdhash, which changes every build — orphaning every mic/camera grant.
@@ -169,6 +173,54 @@ function readGraphqlConfigFile(cwd: string): { enabled?: boolean; port?: number 
   } catch {
     return undefined;
   }
+}
+
+/** IRON off-by-default gate for the whole DogMode persona-register feature
+ * (09-DOG-MODE, adult consensual D/s house mode): /dog on refuses until this
+ * is true. GAIA_DOGMODE_ENABLED overrides; then `.gaia/config.json`
+ * { dogMode: { enabled } }; then DEFAULTS.dogMode.enabled (off). Mirrors
+ * gaiaGraphqlEnabled's precedence exactly. */
+export function gaiaDogModeEnabled(cwd: string = process.cwd()): boolean {
+  const raw = env("GAIA_DOGMODE_ENABLED")?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "off") return false;
+  const fileEnabled = readDogModeConfigFile(cwd)?.enabled;
+  return fileEnabled ?? DEFAULTS.dogMode.enabled;
+}
+
+/** Output cap (lines) while collared and not suppressed — [DogMode] MaxLines.
+ * GAIA_DOGMODE_MAXLINES overrides; then `.gaia/config.json`
+ * { dogMode: { maxLines } }; then DEFAULTS.dogMode.maxLines (2). A room's own
+ * dogMode.maxLines override (set by /push, cleared by /swallow|/release) wins
+ * over all of this at the render layer — see domain/dog-mode.ts. */
+export function gaiaDogModeMaxLines(cwd: string = process.cwd()): number {
+  const raw = Number.parseInt(env("GAIA_DOGMODE_MAXLINES") ?? "", 10);
+  if (Number.isSafeInteger(raw) && raw >= 0) return raw;
+  const fileMax = readDogModeConfigFile(cwd)?.maxLines;
+  return fileMax ?? DEFAULTS.dogMode.maxLines;
+}
+
+/** Live sync read of the `dogMode` section straight off `<cwd>/.gaia/config.json`
+ * (mirrors readGraphqlConfigFile: hot-reloadable, no daemon restart). Missing
+ * workspace, missing file, or bad JSON all resolve to undefined tolerantly. */
+function readDogModeConfigFile(cwd: string): { enabled?: boolean; maxLines?: number } | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(workspacePaths.config(cwd), "utf8")) as unknown;
+    return isRecord(raw) ? parseDogModeConfig(raw.dogMode) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Parse the `dogMode` section (config.json): { enabled?: boolean, maxLines?: number }.
+ * Absent/garbage → undefined (env + DEFAULTS.dogMode apply at the use site);
+ * unknown extra fields drop silently like every other section. */
+export function parseDogModeConfig(raw: unknown): { enabled?: boolean; maxLines?: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const config: { enabled?: boolean; maxLines?: number } = {};
+  if (typeof raw.enabled === "boolean") config.enabled = raw.enabled;
+  if (typeof raw.maxLines === "number" && Number.isSafeInteger(raw.maxLines) && raw.maxLines >= 0) config.maxLines = raw.maxLines;
+  return Object.keys(config).length > 0 ? config : undefined;
 }
 
 /** GAIA_BASE_PATH: URL prefix the web client is mounted under behind a

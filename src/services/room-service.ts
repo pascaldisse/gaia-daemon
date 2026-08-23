@@ -49,7 +49,8 @@ import type {
   UiEvent,
   Workspace,
 } from "../core/types.js";
-import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
+import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeEnabled, gaiaDogModeMaxLines } from "../core/config.js";
+import { applyDogVerb, renderDogOutput, renderDogStatus, type DogVerb } from "../domain/dog-mode.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
@@ -353,6 +354,17 @@ const COMMANDS: Record<string, CommandHandler> = {
   goal: (service, command) => (command.type === "goal" ? service.runGoalCommand(command) : Promise.resolve("")),
   recall: (service, command) => (command.type === "recall" ? service.runRecallCommand(command.agent, command.query) : Promise.resolve("")),
   "thanks-dario": (service, command) => (command.type === "thanks-dario" ? service.runThanksDarioCommand(command.sub) : Promise.resolve("")),
+  dog: (service, command) => (command.type === "dog" ? service.runDogCommand(command.sub) : Promise.resolve("")),
+  slap: (service) => service.runDogVerbCommand("slap"),
+  shock: (service) => service.runDogVerbCommand("shock"),
+  toilet: (service) => service.runDogVerbCommand("toilet"),
+  stfu: (service) => service.runDogVerbCommand("stfu"),
+  push: (service) => service.runDogVerbCommand("push"),
+  swallow: (service) => service.runDogVerbCommand("swallow"),
+  facial: (service) => service.runDogVerbCommand("facial"),
+  release: (service) => service.runDogVerbCommand("release"),
+  doggy: (service) => service.runDogVerbCommand("doggy"),
+  creampie: (service) => service.runDogVerbCommand("creampie"),
   // steer and cancel never reach this registry: both must run WHILE a task is
   // active, so sendMessage handles them before the busy-queue branch.
   steer: (service, command) => (command.type === "steer" ? service.runSteerCommand(command.text) : Promise.resolve("")),
@@ -1162,6 +1174,18 @@ export class RoomService {
     });
   }
 
+  /** Fix #1 (resume-completion tracking): mark THIS room's most recent
+   * `gaia resume` durable record delivered — called by the coordinator AFTER
+   * the resumed turn's result landed in the parent room. Independent of
+   * `status` above (stays "delivered" from the original first-turn summon);
+   * see SummonDelivery.resumeStatus. */
+  async markSummonResumeDelivered(): Promise<void> {
+    await this.init();
+    await this.room.updateState((state) => {
+      if (state.summon) state.summon.resumeStatus = "delivered";
+    });
+  }
+
   /** A live-only system line in the room (not persisted) — used for transient
    * room notices like the agent-dialogue loop-guard pause. */
   private emitSystemNote(text: string): void {
@@ -1329,6 +1353,15 @@ export class RoomService {
       this.startedPetTargets.add(this.petTargetKey(task.id, target));
       this.emitPetProgress(task, target, "working");
       const state = await this.room.state();
+      // DogMode (09-DOG-MODE): a /facial marker is visible in status only
+      // through the room's NEXT agent turn — clear it now, at that turn's
+      // start, never mid-command (runDogVerbCommand never touches this).
+      if (state.dogMode?.faceMarked) {
+        await this.room.updateState((current) => {
+          if (current.dogMode) delete current.dogMode.faceMarked;
+        });
+        delete state.dogMode.faceMarked;
+      }
       // A NEW agent (never spoke here → no cursor) loads the whole back-transcript.
       // An EXISTING agent normally loads only events since its cursor — everything
       // earlier lives in its harness session. When that session is GONE (crash,
@@ -1685,7 +1718,17 @@ export class RoomService {
           : undefined;
       // The committed room-event now carries the reply; the live mirror is spent.
       this.liveTurn = undefined;
-      if (producedOutput) await this.commitReply(target, eventId, committedReply, turn.details, channel, nextPending);
+      // DogMode (09-DOG-MODE) render/post-layer enforcement: applied to the
+      // FINAL committed text only, right here — never fed back into the
+      // prompt, never something the model is asked to self-limit. A collared
+      // room's persisted+emitted event is truncated to MaxLines (or replaced
+      // by the 🐾 ack marker while /stfu-suppressed) regardless of what the
+      // harness actually produced; captureEpisode/hooks/agent-dialogue below
+      // still see the RAW partialReply, so DogMode never corrupts memory or
+      // continuation logic — only what a human/other client renders.
+      const dogState = state.dogMode;
+      const renderedReply = producedOutput && dogState?.collared ? renderDogOutput(committedReply, dogState, this.dogModeConfig()) : committedReply;
+      if (producedOutput) await this.commitReply(target, eventId, renderedReply, turn.details, channel, nextPending);
       else if (nextPending) await this.room.markPendingTurn(nextPending);
       else await this.room.clearPendingTurn();
       if (abnormalReason !== undefined && !producedOutput) {
@@ -2487,6 +2530,74 @@ export class RoomService {
     }
     await this.updateGoal(() => base);
     await this.enqueueGoalTurn(base, true);
+  }
+
+  /** [DogMode] config resolved for THIS workspace (09-DOG-MODE): IRON enabled
+   * gate + MaxLines default, both live-reloadable off .gaia/config.json. */
+  private dogModeConfig(): { enabled: boolean; maxLines: number } {
+    return { enabled: gaiaDogModeEnabled(this.workspace.rootDir), maxLines: gaiaDogModeMaxLines(this.workspace.rootDir) };
+  }
+
+  /** /dog on|off|status. `on` is IRON-gated on config.dogMode.enabled (default
+   * OFF) so the whole feature stays inert until a workspace explicitly arms
+   * it; `off`/`status` always work so a collared room is never stuck if the
+   * config is later disabled. */
+  async runDogCommand(sub: "on" | "off" | "status"): Promise<string> {
+    const config = this.dogModeConfig();
+    if (sub === "status") return renderDogStatus((await this.room.state()).dogMode, config);
+    if (sub === "on" && !config.enabled) {
+      return "DogMode is disabled for this workspace (.gaia/config.json → { \"dogMode\": { \"enabled\": true } }; IRON default OFF).";
+    }
+    let reply = "";
+    await this.room.updateState((state) => {
+      const result = applyDogVerb(state.dogMode, sub);
+      state.dogMode = result.state;
+      reply = result.reply;
+    });
+    await this.emitSnapshot();
+    return reply;
+  }
+
+  /** /slap /shock /toilet /stfu /push /swallow /facial /release /doggy
+   * /creampie — every DogMode verb but on/off/status, all pure transitions
+   * over the persisted room state (domain/dog-mode.ts#applyDogVerb). /shock's
+   * corrective repetition fires AFTER the ack is persisted (below), never
+   * blocking the ack itself. */
+  async runDogVerbCommand(verb: Exclude<DogVerb, "on" | "off">): Promise<string> {
+    let reply = "";
+    let repeatLastOrder = false;
+    await this.room.updateState((state) => {
+      const result = applyDogVerb(state.dogMode, verb);
+      state.dogMode = result.state;
+      reply = result.reply;
+      repeatLastOrder = result.repeatLastOrder === true;
+    });
+    await this.emitSnapshot();
+    if (repeatLastOrder) void this.repeatLastUserOrder();
+    return reply;
+  }
+
+  /** The room's most recent USER-authored message (never a system reply or
+   * command echo — slash commands never append a user event, see sendMessage's
+   * command branch), for /shock's corrective repetition. */
+  private async lastUserMessage(): Promise<{ text: string; targets: string[] } | undefined> {
+    const { events } = await this.room.eventsFrom(0);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.author === "user") return { text: event.text, targets: "targets" in event ? event.targets : [] };
+    }
+    return undefined;
+  }
+
+  /** /shock: re-deliver the room's last user order verbatim as a NEW turn
+   * (corrective repetition) — fires after the discipline ack is durably
+   * committed; queues behind it exactly like any message sent while a command
+   * task is active (see sendMessage's busy/idle handling). A no-op if this
+   * room has never seen a user message yet. */
+  private async repeatLastUserOrder(): Promise<void> {
+    const last = await this.lastUserMessage();
+    if (!last?.text.trim()) return;
+    void this.sendMessage(last.text, { targets: last.targets.length > 0 ? last.targets : undefined });
   }
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */

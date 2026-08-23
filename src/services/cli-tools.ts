@@ -32,7 +32,8 @@ const MEMORY_USAGE = `Usage:
 
 const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
        gaia recall --around <hitId> [--span N] [--offset N]   scroll the raw transcript around a previous hit`;
-const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>`;
+const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>
+       gaia summon --status [roomId] [--all]   census of summon lanes (state/last-event/delivered?/dirty-worktree); default room: current room`;
 const RESUME_USAGE = `Usage: gaia resume <roomId> "<message>"`;
 const ARTIFACT_USAGE = `Usage:
   gaia artifact create --name N --kind html|json|design --media-type T [--file F | --content C]
@@ -42,6 +43,7 @@ const ARTIFACT_USAGE = `Usage:
 const DREAM_USAGE = `Usage:
   gaia dream [agent]           propose a memory consolidation for [agent] (default: current agent)
   gaia dream [agent] --apply   apply the proposal from the last dream run`;
+const DOG_USAGE = `Usage: gaia dog on|off|status   09-DOG-MODE persona-register collar state for THIS room (IRON default OFF)`;
 const CARYLL_USAGE = `Usage:
   gaia caryll compress <file> [-o <out>]  compress a file in place (or to <out>)
   gaia caryll expand <file> [-o <out>]    expand a file (default out: stdout)
@@ -267,12 +269,28 @@ async function runSummon(args: string[]): Promise<number> {
     else console.error(usage.text);
     return usage.ok && args[0] === "--help" ? 0 : 1;
   }
+  if (args[0] === "--status") return runSummonStatus(args.slice(1));
   const ownWorktree = args[0] === "--worktree";
   const { positional } = parseFlags(ownWorktree ? args.slice(1) : args);
   const agent = positional[0];
   const task = positional.slice(1).join(" ").trim();
   if (!agent || !task) return fail(SUMMON_USAGE);
   const result = await daemonPost("/api/harness/summon", { agent, task, ownWorktree });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
+
+// Fix #2 (gaia-daemon-triage/FIX-DESIGN.md): `gaia summon --status [roomId]
+// [--all]` — read-only census of summon lanes (state/last-event/delivered?/
+// dirty-worktree hint). Default room: the current room (GAIA_ROOM_ID) when
+// run inside a turn; an explicit roomId overrides it; --all lists every
+// summon lane in the workspace regardless of parent.
+async function runSummonStatus(args: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(args, new Set(["all"]));
+  const all = flags.all === "true";
+  const room = positional[0] ?? env("GAIA_ROOM_ID");
+  if (!all && !room) return fail("Usage: gaia summon --status [roomId] [--all]  (no current room in env — pass roomId or --all)");
+  const result = await daemonPost("/api/harness/summon/status", { ...(all ? { all: true } : { room }) });
   console.log(result.text);
   return result.ok ? 0 : 1;
 }
@@ -354,6 +372,14 @@ async function runArtifact(args: string[]): Promise<number> {
 // It still needs the daemon-wired consolidation LLM (consolidateLlm(), built
 // in src/daemon.ts), so — same as memory writes and summon, NOT the caryll
 // template — it routes over daemonPost to the running daemon; never runs bare.
+async function runDog(args: string[]): Promise<number> {
+  const sub = args[0]?.trim().toLowerCase();
+  if (sub !== "on" && sub !== "off" && sub !== "status") return fail(DOG_USAGE);
+  const result = await daemonPost("/api/harness/dog", { sub });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
+
 async function runDream(args: string[]): Promise<number> {
   const { positional, flags } = parseFlags(args, new Set(["apply"]));
   if (positional.length > 1) return fail(DREAM_USAGE);
@@ -436,6 +462,9 @@ export async function runHarnessCommand(args: string[]): Promise<number> {
   // person runs it, not a harness — so it also dispatches directly rather
   // than through the GAIA_TOOLS registry below.
   if (command === "dream") return runDream(rest);
+  // `dog` (09-DOG-MODE) is daemon-backed room state like dream/summon but
+  // never a GaiaTool grant either — dispatched directly, same tier as dream.
+  if (command === "dog") return runDog(rest);
   const tool = command ? gaiaToolByVerb(command) : undefined;
   switch (tool?.id) {
     case "memory":
