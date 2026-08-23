@@ -18,7 +18,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
 import { configuredModelLabel, liveModelLabel } from "./model-label.js";
-import { killProcessTree, selfRelaunchArgv, spawnLineReader } from "./proc.js";
+import { killProcessTree, selfRelaunchArgv, signalProcessTree, spawnLineReader } from "./proc.js";
 import { encodeFrame, parseRunnerMessage, RUNNER_ENV, type RunnerCommand, type RunnerMessage } from "./protocol.js";
 import { installMarkerArgs } from "./reaper.js";
 // Side-effect imports: the backends resolveSandboxLaunch picks from.
@@ -357,7 +357,9 @@ export class RunnerHost implements AgentRuntime {
     if (!this.turnInFlight) return;
     if (await this.waitTurnIdle(ABORT_GRACE_MS)) return;
     process.stderr.write(`[runner ${this.agent.id}] abort not confirmed after ${ABORT_GRACE_MS}ms — killing wedged runner\n`);
-    this.child?.kill("SIGKILL");
+    // Preserve the immediate SIGKILL escalation while terminating the runner
+    // and every tool/bash descendant in its own process group.
+    if (this.child) signalProcessTree(this.child, "SIGKILL");
     await this.waitTurnIdle(ABORT_KILL_WAIT_MS);
     // Even if the exit event is somehow delayed, the lock must not outlive an
     // authoritative abort — the child is gone (or unspawned) either way.
@@ -613,6 +615,10 @@ export class RunnerHost implements AgentRuntime {
       args: launch.args,
       cwd: workDir,
       env: this.buildEnv(roomId, launchCtx),
+      // Separate from the daemon's terminal group: terminal SIGTERM must not
+      // fan out into every active runner. This also lets killProcessTree stop
+      // the runner's complete descendant tree during an authoritative abort.
+      detached: true,
       onLine: (line) => this.onMessage(line),
     });
     const child = handle.proc;

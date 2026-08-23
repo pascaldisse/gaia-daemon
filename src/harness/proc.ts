@@ -80,22 +80,25 @@ export function spawnLineReader(options: SpawnLineReaderOptions): SpawnLineReade
  * guaranteed to stop the agent. Requires the child to have been spawned
  * `detached`. No-op once the child is gone.
  */
-export function killProcessTree(proc: ChildProcess): void {
+/** Signal `proc`'s complete process group. Falls back to the direct child when
+ * no separate group exists or the group already exited. */
+export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   const pid = proc.pid;
   if (pid === undefined) return;
-  const signalGroup = (signal: NodeJS.Signals) => {
+  try {
+    process.kill(-pid, signal);
+  } catch {
     try {
-      process.kill(-pid, signal);
+      proc.kill(signal);
     } catch {
-      try {
-        proc.kill(signal);
-      } catch {
-        // Already gone.
-      }
+      // Already gone.
     }
-  };
-  signalGroup("SIGTERM");
-  const grace = setTimeout(() => signalGroup("SIGKILL"), 2000);
+  }
+}
+
+export function killProcessTree(proc: ChildProcess): void {
+  signalProcessTree(proc, "SIGTERM");
+  const grace = setTimeout(() => signalProcessTree(proc, "SIGKILL"), 2000);
   grace.unref?.();
   proc.once("exit", () => clearTimeout(grace));
 }
