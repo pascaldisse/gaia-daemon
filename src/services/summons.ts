@@ -723,6 +723,9 @@ export class SummonCoordinator implements SummonHost {
         continue;
       }
       if (!record || !parentRoomId) continue;
+      // The initial check precedes disk I/O; an overlapping recovery sweep may
+      // have claimed this room while this sweep awaited state().
+      if (this.running.has(roomId)) continue;
       const info: SummonChild = { roomId, parentRoomId, agentId: record.agentId, prompt: "", untrusted };
       if (record.status === "running") {
         // First-turn delivery still pending takes priority — recoverOne owns
