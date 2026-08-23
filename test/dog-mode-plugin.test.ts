@@ -119,7 +119,11 @@ test("discipline verb before /dog on is STILL rewritten to a real turn \u2014 un
   assert.equal(result.rewriteAsMessage, true);
   assert.equal(result.state.collared, false);
   assert.equal(result.state.disciplineCount, 0);
-  assert.ok(Array.isArray(result.targets) && result.targets.length === 1);
+  // `targets` is deliberately absent \u2014 RoomService's own #roomDefaultTarget
+  // fills it in (see services/plugins.ts PluginResult.targets doc); the
+  // plugin has no accurate way to re-derive that from raw workspaceRoot
+  // reads (see the deleted target-resolution test this replaced, whip 348 fix).
+  assert.equal(result.targets, undefined);
   assert.equal(result.reply, undefined);
   assert.equal(result.steer, undefined);
 });
@@ -227,26 +231,19 @@ test("/creampie only valid while mounted; ends mounted, collar stays; no-op othe
 });
 
 // --- target resolution for rewriteAsMessage ------------------------------------
-
-test("discipline verb targets the room's activeAgent, falling back to workspace defaultAgent, then 'unknown'", async () => {
-  const noWorkspace = await plugin.run([], ctx({ command: "slap", workspaceRoot: "/tmp/gaia-does-not-exist-at-all" }));
-  assert.deepEqual(noWorkspace.targets, ["unknown"]);
-
-  const temp = await createTempDir("gaia-dogmode-plugin-");
-  try {
-    await mkdir(join(temp.path, ".gaia"), { recursive: true });
-    await writeFile(join(temp.path, ".gaia", "config.json"), JSON.stringify({ defaultAgent: "nyari" }), "utf8");
-    const viaConfig = await plugin.run([], ctx({ command: "slap", workspaceRoot: temp.path }));
-    assert.deepEqual(viaConfig.targets, ["nyari"]);
-
-    await mkdir(join(temp.path, ".gaia", "rooms", "room1"), { recursive: true });
-    await writeFile(join(temp.path, ".gaia", "rooms", "room1", "state.json"), JSON.stringify({ activeAgent: "gaia" }), "utf8");
-    const viaRoomState = await plugin.run([], ctx({ command: "slap", workspaceRoot: temp.path }));
-    assert.deepEqual(viaRoomState.targets, ["gaia"]);
-  } finally {
-    await temp.cleanup();
-  }
-});
+//
+// A prior revision of this plugin re-derived the target agent itself, via raw
+// reads of workspaceRoot/.gaia/{config,rooms/<id>/state}.json \u2014 falling back
+// to a literal "unknown" agent id whenever neither file had what it wanted. That
+// was a real bug, not just a test-fixture quirk: a workspace's resolved
+// `config.defaultAgent` (core/config.ts DEFAULTS, always "gaia" unless overridden)
+// is an in-memory merge the daemon computes \u2014 config.json on disk is never
+// REQUIRED to literally contain that key, so this file-read fallback could (and,
+// live, did) misroute a discipline verb to "@unknown" the moment a room's very
+// first turn was a discipline verb. Fixed by deleting the re-derivation entirely:
+// `targets` is left unset (see the test above) and RoomService's own accurate
+// #roomDefaultTarget resolves it, exactly per the documented default in
+// services/plugins.ts PluginResult.targets.
 
 // --- renderCap: {maxLines} ONLY, never a prefix (whip 349) ---------------------
 

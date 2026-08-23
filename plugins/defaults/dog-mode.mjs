@@ -62,8 +62,25 @@ function normalizeState(raw) {
   };
 }
 
+// Drops the `maxLines` key entirely (rather than setting it to `undefined`
+// in place) so a cleared state is byte-for-byte identical whether or not it
+// was ever round-tripped through normalizeState (which already omits the key
+// whenever it isn't a valid number) — an explicit `maxLines: undefined`
+// property looks equal at every call site but is NOT deepEqual to "no key at
+// all", which bit the /facial and /creampie no-op tests below the moment
+// resetSubState started clearing it too.
+function withoutMaxLines(state) {
+  const { maxLines, ...rest } = state;
+  return rest;
+}
+
+// Full reset: clears the room's maxLines override too, same as /swallow and
+// /facial below — used by /dog on, /dog off, and /release. Leaving a stale
+// /push-forced maxLines:0 (or any other override) behind a collar reset was a
+// bug: the NEXT time this room collars, it would silently inherit a leftover
+// override instead of the config default.
 function resetSubState(state, collared) {
-  return { ...state, collared, suppressed: false, suppressDepth: 0 };
+  return { ...withoutMaxLines(state), collared, suppressed: false, suppressDepth: 0 };
 }
 
 /** /dog on|off — the only verbs with a synthesized reply, and even then it's
@@ -109,10 +126,10 @@ function applyDiscipline(state, verb) {
         ? { ...state, suppressDepth: 1, maxLines: 0, disciplineCount: state.disciplineCount + 1 }
         : state;
     case "swallow":
-      return state.suppressed && !state.mounted ? { ...state, suppressed: false, suppressDepth: 0, maxLines: undefined } : state;
+      return state.suppressed && !state.mounted ? { ...withoutMaxLines(state), suppressed: false, suppressDepth: 0 } : state;
     case "facial":
       return state.suppressed || state.mounted
-        ? { ...state, suppressed: false, suppressDepth: 0, maxLines: undefined, mounted: false, faceMarked: true }
+        ? { ...withoutMaxLines(state), suppressed: false, suppressDepth: 0, mounted: false, faceMarked: true }
         : state;
     case "release":
       return resetSubState(state, false);
@@ -166,21 +183,6 @@ function maxLinesFor(ctx) {
   return 2;
 }
 
-function agentFor(workspaceRoot, roomId) {
-  try {
-    const s = JSON.parse(readFileSync(join(workspaceRoot, ".gaia", "rooms", roomId, "state.json"), "utf8"));
-    if (typeof s.activeAgent === "string" && s.activeAgent) return s.activeAgent;
-  } catch {}
-  // Brand-new room: this verb can be the room's very first event, fired
-  // before any agent turn has ever run — state.json's activeAgent isn't
-  // written yet. Mirror the same fallback room-service.ts itself uses
-  // (state.activeAgent ?? workspace.config.defaultAgent).
-  try {
-    const c = JSON.parse(readFileSync(join(workspaceRoot, ".gaia", "config.json"), "utf8"));
-    if (typeof c.defaultAgent === "string" && c.defaultAgent) return c.defaultAgent;
-  } catch {}
-  return "unknown";
-}
 
 export default {
   command: DOG_VERBS,
@@ -203,10 +205,18 @@ export default {
       return { reply: renderStatus(state, maxLinesFor(ctx)) };
     }
     // Every other DogMode verb: pure state transition, delivered to the
-    // room's agent as a REAL message turn (see module doc above).
+    // room's agent as a REAL message turn (see module doc above). `targets`
+    // is deliberately OMITTED: RoomService's own #roomDefaultTarget (the
+    // room's current activeAgent, falling back to the resolved workspace
+    // defaultAgent — see services/plugins.ts PluginResult.targets doc) is the
+    // single accurate source for "who is this room talking to right now";
+    // re-deriving it here from raw config/state.json reads used to drift from
+    // that (a fresh room/workspace has no state.json yet and config.json on
+    // disk may never literally contain a `defaultAgent` key even though the
+    // resolved workspace config always has one — core/config.ts DEFAULTS),
+    // which was misrouting these verbs to a literal "unknown" agent.
     const next = applyDiscipline(state, ctx.command);
-    const target = agentFor(ctx.workspaceRoot, ctx.roomId);
-    return { state: next, rewriteAsMessage: true, targets: [target] };
+    return { state: next, rewriteAsMessage: true };
   },
   renderCap(ctx) {
     const state = normalizeState(ctx.state);
