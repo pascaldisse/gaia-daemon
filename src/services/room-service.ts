@@ -52,6 +52,7 @@ import type {
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS, gaiaDogModeMaxLines } from "../core/config.js";
 import { applyDogVerb, applyDiscipline, resolveDogRenderCap, displayEventText, renderDogStatus, DOG_STFU_MARKER, type DisciplineVerb, type DogRenderCap } from "../domain/dog-mode.js";
 import { estimateTokens } from "../core/tokens.js";
+import type { ResumeEpoch } from "./resume-epoch.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
@@ -1221,13 +1222,15 @@ export class RoomService {
    * the resumed turn's result landed in the parent room. Independent of
    * `status` above (stays "delivered" from the original first-turn summon);
    * see SummonDelivery.resumeStatus. */
-  async markSummonResumeDelivered(token?: string): Promise<void> {
+  async markSummonResumeDelivered(token: ResumeEpoch): Promise<void> {
     await this.init();
     await this.room.updateState((state) => {
       if (!state.summon) return;
-      // Stamp-keyed: a LATER resume already overwrote resumeStartedAt — a stale
-      // watcher must not clear that newer, still-running stamp.
-      if (token !== undefined && state.summon.resumeStartedAt !== token) return;
+      // Epoch-keyed and MANDATORY (RC6): a close names the exact resume it
+      // finished. A later resume already overwrote resumeStartedAt — a stale
+      // watcher must not clear that newer, still-running epoch. There is no
+      // token-less close: an unguarded one would clear whatever is live.
+      if (state.summon.resumeStartedAt !== token) return;
       state.summon.resumeStatus = "delivered";
     });
   }

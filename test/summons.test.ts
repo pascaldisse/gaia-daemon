@@ -16,6 +16,7 @@ import {
   type SummonResultDelivery,
   type SummonTaskEvent,
 } from "../src/services/summons.js";
+import { ResumeEpochRegistry, compareResumeEpoch } from "../src/services/resume-epoch.js";
 import { resolveSandboxPolicy } from "../src/harness/sandbox/spec.js";
 import { RoomService } from "../src/services/room-service.js";
 import { normalizeRoomState, RoomHandle } from "../src/domain/rooms.js";
@@ -1033,6 +1034,163 @@ test("RC5 window 2: resume recovery carries the epoch it scanned", async () => {
   for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(parent.delivered.length, 1);
   assert.deepEqual(child.resumeEpochs, [strandedEpoch], "recovery passes the scanned epoch through to the close");
+});
+
+// --- RC6: epoch REGISTRY (seq) + mandatory token ---------------------------
+/** RC5 keyed epochs on a wall-clock ISO string. Two resumes stamped inside the
+ * SAME millisecond therefore share a token, and the first watcher to finish
+ * closes the second one's record — exactly the strand RC5 set out to kill.
+ * The epoch must carry a per-room monotonic sequence, not just a clock. */
+function withFrozenClock<T>(iso: string, body: () => T): T {
+  const RealDate = Date;
+  const frozen = RealDate.parse(iso);
+  class FrozenDate extends RealDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      if (args.length === 0) super(frozen);
+      else super(...(args as [number]));
+    }
+    static override now(): number {
+      return frozen;
+    }
+  }
+  (globalThis as { Date: DateConstructor }).Date = FrozenDate as unknown as DateConstructor;
+  try {
+    return body();
+  } finally {
+    (globalThis as { Date: DateConstructor }).Date = RealDate;
+  }
+}
+
+test("RC6: the registry mints a distinct, ordered epoch per resume even inside one millisecond", () => {
+  const registry = new ResumeEpochRegistry();
+  const [a, b] = withFrozenClock("2026-03-03T03:03:03.000Z", () => [registry.mint("room-1"), registry.mint("room-1")]);
+  assert.notEqual(a, b, "same-millisecond resumes must not share an epoch token");
+  assert.ok(compareResumeEpoch(a, b) < 0, "tokens order by mint sequence, not only by clock");
+  // Per-room counters are independent; a different room starts fresh.
+  const other = withFrozenClock("2026-03-03T03:03:03.000Z", () => registry.mint("room-2"));
+  assert.notEqual(other, b);
+  // After a reboot the registry has no memory — observing a token read off
+  // disk must lift the counter so the next mint can never reuse it.
+  const rebooted = new ResumeEpochRegistry();
+  rebooted.observe("room-1", b);
+  const next = withFrozenClock("2026-03-03T03:03:03.000Z", () => rebooted.mint("room-1"));
+  assert.notEqual(next, b, "a rebooted daemon must not re-mint a token already on disk");
+  assert.ok(compareResumeEpoch(b, next) < 0);
+  // A legacy plain-ISO stamp (pre-RC6 records) is still a valid token.
+  assert.ok(compareResumeEpoch("2026-01-01T00:00:00.000Z", a) < 0);
+});
+
+test("RC6: two resumes stamped in the same millisecond get different epochs (live path)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-epoch-seq1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: "2026-01-01T00:00:00.000Z" },
+  });
+  const child = fakeRoom("done");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId)!, async () => 8, () => {});
+  const RealDate = Date;
+  const frozen = RealDate.parse("2026-03-03T03:03:03.000Z");
+  class FrozenDate extends RealDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      if (args.length === 0) super(frozen);
+      else super(...(args as [number]));
+    }
+    static override now(): number {
+      return frozen;
+    }
+  }
+  (globalThis as { Date: DateConstructor }).Date = FrozenDate as unknown as DateConstructor;
+  try {
+    await coordinator.resume(childRoomId, child, "task A");
+    const epochA = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId))).summon?.resumeStartedAt;
+    child.settle();
+    for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await coordinator.resume(childRoomId, child, "task B");
+    const epochB = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId))).summon?.resumeStartedAt;
+    assert.ok(epochA && epochB);
+    assert.notEqual(epochA, epochB, "a second resume inside the same millisecond must own a distinct epoch");
+  } finally {
+    (globalThis as { Date: DateConstructor }).Date = RealDate;
+  }
+});
+
+/** A record interrupted before RC5 existed carries resumeStatus:"running" with
+ * NO stamp. RC5 passed `undefined` through, and an undefined token closes
+ * WHATEVER epoch is on disk — the blanket close it was meant to remove.
+ * Recovery must mint + persist an epoch first, so every close is guarded. */
+test("RC6: recovery of a stamp-less legacy resume mints an epoch instead of closing blind", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const childRoomId = "terry-epoch-legacy1";
+  await mkdir(join(workspace.roomsDir, childRoomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, childRoomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "turn",
+      callerAgentId: "gaia",
+      status: "delivered",
+      resumeStatus: "running",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+  const child = fakeRoom("legacy recovered");
+  const parent = fakeRoom("");
+  const services = new Map<string, SummonRoomAccess>([
+    ["default", parent],
+    [childRoomId, child],
+  ]);
+  const coordinator = new SummonCoordinator(workspace, path, async (roomId) => services.get(roomId)!, async () => 8, () => {});
+  await coordinator.recoverUndelivered();
+  for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(parent.delivered.length, 1);
+  const minted = normalizeRoomState(await readJson(workspacePaths.roomState(path, childRoomId))).summon?.resumeStartedAt;
+  assert.ok(minted, "recovery persisted a minted epoch for the stamp-less record");
+  assert.deepEqual(child.resumeEpochs, [minted], "the close carries that minted token — never undefined");
+});
+
+test("RC6: an unknown token never closes a record (no undefined escape hatch)", async () => {
+  const { workspace, path } = await makeWorkspace();
+  const roomId = "terry-epoch-guard1";
+  await mkdir(join(workspace.roomsDir, roomId), { recursive: true });
+  await writeJsonAtomic(workspacePaths.roomState(path, roomId), {
+    activeRoles: {},
+    agentCursors: {},
+    parentRoomId: "default",
+    summon: {
+      agentId: "terry",
+      deliver: "note",
+      status: "delivered",
+      resumeStatus: "running",
+      resumeStartedAt: "2026-02-02T00:00:00.000Z#4",
+      launchedAt: "2026-01-01T00:00:00.000Z",
+    },
+  });
+  const service = await RoomService.open({
+    workspaceId: "ws1",
+    workspace,
+    roomId,
+    memoryStore: new MemoryStore(),
+    runtimeFactory: (agentDef) => scriptedRuntime(agentDef, () => "noop"),
+  });
+  // Same wall clock, earlier sequence — the RC5 string compare on the ISO part
+  // alone would have called this the same epoch.
+  await service.markSummonResumeDelivered("2026-02-02T00:00:00.000Z#3");
+  let state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
+  assert.equal(state.summon?.resumeStatus, "running", "a same-millisecond, lower-seq token is a DIFFERENT epoch");
+  await service.markSummonResumeDelivered("2026-02-02T00:00:00.000Z#4");
+  state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
+  assert.equal(state.summon?.resumeStatus, "delivered");
 });
 
 /** The durable half: RoomService's stamp is epoch-guarded, so even a stale

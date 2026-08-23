@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
+import { ResumeEpochRegistry, type ResumeEpoch } from "./resume-epoch.js";
 
 /** How a finished worker's result lands in the parent room (see
  * SummonRoomAccess.deliverAgentResult). */
@@ -183,7 +184,7 @@ export interface SummonRoomAccess {
    * (idempotent) — independent of markSummonDelivered's `status`, which
    * stays "delivered" from the original first-turn summon. See
    * SummonDelivery.resumeStatus. */
-  markSummonResumeDelivered(token?: string): Promise<void>;
+  markSummonResumeDelivered(token: ResumeEpoch): Promise<void>;
   /** Rebroadcast the workspace rooms list (see RoomService.broadcastRoomsChanged). */
   broadcastRoomsChanged(): Promise<void>;
   /** Panic-stop this room's active turn — the EXACT plumbing the /cancel
@@ -417,6 +418,9 @@ export class SummonCoordinator implements SummonHost {
   /** childRoomId -> info, for summons whose first turn is still running (the
    * cap + live snapshot). Completed summons live on as child rooms on disk. */
   private readonly running = new Map<string, SummonChild>();
+  /** Mints the identity of each resume contract (RC6) — clock + per-room
+   * sequence, so same-millisecond resumes never share a token. */
+  private readonly resumeEpochs = new ResumeEpochRegistry();
   /** Completion for every live child. A parent summon waits on its direct
    * children, then on the callback turns they enqueue, before it can itself
    * settle and deliver upstream. */
@@ -703,7 +707,7 @@ export class SummonCoordinator implements SummonHost {
       return;
     }
     const pendingFirstTurn: Array<{ info: SummonChild; record: SummonDelivery }> = [];
-    const pendingResume: Array<{ info: SummonChild; epoch?: string }> = [];
+    const pendingResume: Array<{ info: SummonChild; epoch?: ResumeEpoch }> = [];
     for (const roomId of roomIds) {
       if (this.running.has(roomId)) continue;
       let record: SummonDelivery | undefined;
@@ -735,6 +739,9 @@ export class SummonCoordinator implements SummonHost {
         pendingFirstTurn.push({ info, record });
       } else if (record.status === "delivered" && record.resumeStatus === "running") {
         this.running.set(roomId, info);
+        // Lift the mint counter past whatever this room already carries, so a
+        // rebooted daemon can never mint a token that is already on disk.
+        this.resumeEpochs.observe(roomId, record.resumeStartedAt);
         pendingResume.push({ info, ...(record.resumeStartedAt ? { epoch: record.resumeStartedAt } : {}) });
       }
     }
@@ -819,8 +826,15 @@ export class SummonCoordinator implements SummonHost {
       // contract cannot observe this newly queued turn, so arm a successor
       // only in that completed-before-send window; normal concurrent steers
       // remain one watcher and one parent delivery.
-      if (!predecessorSettled) return { tracked: true };
-      const resumeStartedAt = new Date().toISOString();
+      // A live watcher still running covers the merged turn. But a durable
+      // "running" stamp with NO watcher in this process (predecessor already
+      // settled, or the stamp survived a crash) covers nothing — returning
+      // here would strand turn B exactly like the epoch collision does. Arm a
+      // fresh contract in that case; only a genuinely in-flight resume merges.
+      if (this.resumeInFlight.has(roomId)) return { tracked: true };
+      if (predecessor && !predecessorSettled) return { tracked: true };
+      this.resumeEpochs.observe(roomId, record.resumeStartedAt);
+      const resumeStartedAt = this.resumeEpochs.mint(roomId);
       await handle.updateState((s) => {
         if (s.summon) {
           s.summon.resumeStatus = "running";
@@ -844,7 +858,8 @@ export class SummonCoordinator implements SummonHost {
     // so two resume() calls interleaving on their disk reads still produce
     // exactly one watcher (the disk stamp alone is too late to serialize them).
     this.resumeInFlight.add(roomId);
-    const resumeStartedAt = new Date().toISOString();
+    this.resumeEpochs.observe(roomId, record.resumeStartedAt);
+    const resumeStartedAt = this.resumeEpochs.mint(roomId);
     await handle.updateState((s) => {
       if (s.summon) {
         s.summon.resumeStatus = "running";
@@ -885,7 +900,7 @@ export class SummonCoordinator implements SummonHost {
    * parent-room contract as a first-turn summon, and marks THIS resume's own
    * durable record delivered. Shared by the live path (resume) and boot
    * recovery (recoverResumeOne) — same code, same guarantees either way. */
-  private async runResume(child: SummonRoomAccess, info: SummonChild, token?: string): Promise<void> {
+  private async runResume(child: SummonRoomAccess, info: SummonChild, token: ResumeEpoch): Promise<void> {
     await this.waitForDelegatedWork(child, info.roomId);
     const { reply, failed, cancelled } = await this.settledOutcome(child, info.roomId, info.agentId);
     await this.deliverResume(child, info, reply, failed, cancelled, token);
@@ -905,7 +920,7 @@ export class SummonCoordinator implements SummonHost {
    * — see resume()'s merge guard. */
   private readonly resumeInFlight = new Set<string>();
 
-  private async deliverResume(child: SummonRoomAccess, info: SummonChild, reply: string, failed: boolean, cancelled: boolean, token?: string): Promise<void> {
+  private async deliverResume(child: SummonRoomAccess, info: SummonChild, reply: string, failed: boolean, cancelled: boolean, token: ResumeEpoch): Promise<void> {
     const state = await (await RoomHandle.open(this.workspace.rootDir, info.roomId)).state();
     const record = state.summon;
     if (!record) return; // record vanished (shouldn't happen) — nothing durable to deliver against
@@ -932,7 +947,7 @@ export class SummonCoordinator implements SummonHost {
     reply: string,
     failed: boolean,
     cancelled: boolean,
-    token?: string,
+    token: ResumeEpoch,
   ): Promise<void> {
     const parent = await this.serviceForRoom(info.parentRoomId);
     await parent.deliverAgentResult(info.agentId, reply, {
@@ -947,9 +962,33 @@ export class SummonCoordinator implements SummonHost {
    * resume found by recoverUndelivered. init() resumes the room's own WAL
    * turn/queue; from there it's the identical runResume path a live resume
    * uses. */
-  private async recoverResumeOne(info: SummonChild, epoch?: string): Promise<void> {
+  private async recoverResumeOne(info: SummonChild, epoch?: ResumeEpoch): Promise<void> {
+    // A pre-RC6 record can be "running" with NO stamp. An unstamped close would
+    // have to be unguarded (closing whatever epoch is live), so mint an
+    // identity for the interrupted resume and persist it BEFORE running — same
+    // "stamp before it can settle" ordering the live path uses.
+    const token = epoch ?? (await this.mintRecoveryEpoch(info.roomId));
     const child = await this.serviceForRoom(info.roomId);
-    await this.runResume(child, info, epoch);
+    await this.runResume(child, info, token);
+  }
+
+  /** Stamp an epoch onto a stamp-less interrupted resume (see
+   * recoverResumeOne). If a live resume stamped one in the meantime, that
+   * newer token owns the record and this recovery adopts it — never overwrites
+   * it, which would strand the live resume. */
+  private async mintRecoveryEpoch(roomId: string): Promise<ResumeEpoch> {
+    const minted = this.resumeEpochs.mint(roomId);
+    const handle = await RoomHandle.open(this.workspace.rootDir, roomId);
+    let adopted = minted;
+    await handle.updateState((s) => {
+      if (!s.summon) return;
+      if (s.summon.resumeStartedAt) {
+        adopted = s.summon.resumeStartedAt;
+        return;
+      }
+      s.summon.resumeStartedAt = minted;
+    });
+    return adopted;
   }
 
   // --- Fix #2: `gaia summon --status` census ------------------------------
