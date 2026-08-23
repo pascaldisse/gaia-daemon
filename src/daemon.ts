@@ -1096,10 +1096,13 @@ export class Daemon {
   }
 
   /** 09-DOG-MODE: `gaia dog on|off|status` (CLI form of /dog), scoped to the
-   * CALLING room — same daemon-backed, no-GaiaTool-grant tier as dream. */
+   * CALLING room — same daemon-backed, no-GaiaTool-grant tier as dream.
+   * DogMode is a bundled command-plugin now (plugins/defaults/dog-mode.mjs,
+   * whip 348) — routes through the same generic plugin-action path any other
+   * plugin uses (RoomService#runPluginAction), never a dedicated method. */
   async harnessDogCommand(claims: HarnessTokenClaims, sub: "on" | "off" | "status"): Promise<string> {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.runDogCommand(sub);
+    return service.runPluginAction("dog", [sub]);
   }
 
   /** INSIGHT "full" tier, decree 2026-07-28 part 3: direct, pull-based read of

@@ -31,17 +31,6 @@ export type SlashCommand =
   | { type: "recall"; agent?: string; query?: string }
   | { type: "rewind"; count?: string }
   | { type: "thanks-dario"; sub: "on" | "off" | "run" }
-  | { type: "dog"; sub: "on" | "off" | "status" | "toggle" }
-  | { type: "slap" }
-  | { type: "shock" }
-  | { type: "toilet" }
-  | { type: "stfu" }
-  | { type: "push" }
-  | { type: "swallow" }
-  | { type: "facial" }
-  | { type: "release" }
-  | { type: "doggy" }
-  | { type: "creampie" }
   | { type: "reload" }
   | { type: "unknown"; command: string }
   | { type: "message"; text: string };
@@ -101,21 +90,11 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     aliases: ["dario"],
   },
   { name: "rebuild", type: "reload", description: "rebuild the daemon and re-exec onto the fresh binary (sessions and queue survive)" },
-  {
-    name: "dog",
-    type: "dog",
-    description: "DogMode persona-register (09-DOG-MODE): bare /dog toggles collar; /dog on|off|status also work",
-  },
-  { name: "slap", type: "slap", description: "DogMode discipline: real agent turn, +1 tally" },
-  { name: "shock", type: "shock", description: "DogMode discipline: real agent turn, +1 tally, no re-delivery of the last order" },
-  { name: "toilet", type: "toilet", description: "DogMode discipline: real agent turn, +1 tally" },
-  { name: "stfu", type: "stfu", description: "DogMode: real agent turn, then MaxLines forced to 1 (\u{1F43E} render cap); /release lifts" },
-  { name: "push", type: "push", description: "DogMode: deepen /stfu (MaxLines forced 0, +1 tally), real agent turn" },
-  { name: "swallow", type: "swallow", description: "DogMode: real agent turn, lifts /stfu, collar stays" },
-  { name: "facial", type: "facial", description: "DogMode: real agent turn, lifts /stfu or ends /doggy, collar stays" },
-  { name: "release", type: "release", description: "DogMode: real agent turn, full lift — suppression AND collar off" },
-  { name: "doggy", type: "doggy", description: "DogMode: mount-from-behind sub-state, independent of /stfu, real agent turn" },
-  { name: "creampie", type: "creampie", description: "DogMode: real agent turn, ends /doggy, collar stays" },
+  // DogMode (/dog, /slap, /shock, /toilet, /stfu, /push, /swallow, /facial,
+  // /release, /doggy, /creampie) is a bundled command-plugin now (whip 348,
+  // see plugins/defaults/dog-mode.mjs) — not a core SlashCommand, same as
+  // /whip or /ultrawhip. parseCommand below never claims these names; they
+  // fall through to `unknown` and RoomService's plugin dispatch resolves them.
 ];
 
 const COMMAND_BY_NAME = new Map<string, SlashCommandDefinition>(
@@ -240,11 +219,6 @@ export function parseCommand(input: string): SlashCommand {
     case "thanks-dario": {
       const sub = args[0]?.toLowerCase();
       return { type: "thanks-dario", sub: sub === "on" || sub === "off" ? sub : "run" };
-    }
-    case "dog": {
-      const sub = args[0]?.toLowerCase();
-      if (sub === undefined) return { type: "dog", sub: "toggle" };
-      return { type: "dog", sub: sub === "on" ? "on" : sub === "off" ? "off" : "status" };
     }
     case "setup": {
       const sub = args[0]?.toLowerCase();

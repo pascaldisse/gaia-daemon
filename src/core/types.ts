@@ -152,16 +152,18 @@ export interface AgentRoomEvent {
   /** Text was rewritten by a sanitize apply; the original line lives in
    * redactions.jsonl beside the transcript. */
   redacted?: boolean;
-  /** DogMode (09-DOG-MODE) render cap resolved at commit time, when this room
-   * was collared for this turn. `text` above is ALWAYS the agent's FULL,
-   * untruncated reply — storage/memory/hooks/agent-context read `text`
-   * directly and never lose a byte (root-cause fix, Pascal, 2026-08-23:
-   * truncating before storage was destroying real replies). This field is
-   * the ONLY place enforcement lives; every display surface (live emit,
-   * snapshot fetch, read-aloud) derives the shown/spoken text from `text` +
-   * `dogRender` via domain/dog-mode.ts#applyDogRenderCap, on demand, never
-   * by mutating the stored event. */
-  dogRender?: { maxLines: number; prefix: string };
+  /** Generic display-time cap a command-plugin resolved at commit time (see
+   * services/plugins.ts CommandPlugin.renderCap) — `text` above is ALWAYS the
+   * agent's FULL, untruncated reply; storage/memory/hooks/agent-context read
+   * `text` directly and never lose a byte. This field is the ONLY place
+   * enforcement lives; every display surface (live emit, snapshot fetch,
+   * read-aloud) derives the shown text from `text` + `renderCap` via
+   * domain/render-cap.ts#displayEventText, on demand, never by mutating the
+   * stored event. `note`, when present, backs a SEPARATE synthesized
+   * SYSTEM-authored chrome event shown alongside this one (see
+   * RoomService#withRenderCapNotes) — never merged into `text`: no plugin may
+   * ever inject words into what an agent apparently said. */
+  renderCap?: { maxLines: number; note?: string };
 }
 
 export type RoomEvent = UserRoomEvent | AgentRoomEvent;
@@ -216,11 +218,12 @@ export interface QueuedMessage {
    * busy turn — drain must run it as a command turn to its pinned target, not
    * re-parse it as a slash command (which would just error). */
   nativeCommand?: boolean;
-  /** A DogMode discipline/state verb (see RoomService's SendMessageOptions)
-   * already rewritten into a message turn before queueing — drain must NOT
-   * re-parse this text as a slash command (it would re-mutate dogMode state
-   * and misroute into the deleted CommandReply path). */
-  dogVerbTurn?: boolean;
+  /** A command-plugin verb rewritten into a message turn before queueing (see
+   * RoomService's SendMessageOptions.pluginMessageTurn / PluginResult.
+   * rewriteAsMessage) — drain must NOT re-parse this text as a slash command,
+   * which would re-run the plugin's state mutation a second time and misroute
+   * it back through the command-reply path. */
+  pluginMessageTurn?: boolean;
   queuedAt: string;
   /** The user event id pre-assigned to this message. Set durably BEFORE the
    * transcript append so the queue→transcript hand-off is crash-idempotent:
@@ -415,42 +418,12 @@ export interface RoomState {
    * never opts in. Non-empty = only these humans (by id) may read/post;
    * enforced in server/http.ts, this is just the durable allowlist. */
   humans?: string[];
-  /** DogMode (09-DOG-MODE): adult consensual D/s persona-register state for
-   * this room. /dog on|off has NO config gate (removed 2026-08-23) — the
-   * command always works. Persisted like every other room-scoped toggle; enforcement of the
-   * register itself (line cap, suppression) happens at the render/post layer
-   * (RoomService#commitReply → domain/dog-mode.ts#renderDogOutput), never
-   * prompt-only. Absent = never armed in this room. */
-  dogMode?: DogModeState;
-}
-
-/** DogMode room state (see RoomState.dogMode). One object per room; every
- * verb is a pure transform via domain/dog-mode.ts#applyDogVerb, persisted
- * through RoomHandle.updateState like activeRoles/thinkingOverrides. */
-export interface DogModeState {
-  /** Collar master switch. Off/absent = normal register, no enforcement. */
-  collared: boolean;
-  /** Room-scoped MaxLines override (set by /push → 0, cleared by
-   * /swallow|/release); absent = the IRON config default (DogMode.MaxLines). */
-  maxLines?: number;
-  /** Room-scoped register-prefix override; absent = the default kneeling/
-   * collar acknowledgment prefix. */
-  prefix?: string;
-  /** /slap /shock /toilet /push discipline tally — monotonic, survives
-   * /dog off↔on cycles in this room (mirrors a whip-count style store). */
-  disciplineCount: number;
-  /** /stfu active: full output suppression, ack marker only. Work/tools keep
-   * running — only the render/post layer is affected. */
-  suppressed: boolean;
-  /** /push escalation while suppressed: 0 normal (🐾), 1 gagged (deeper ack
-   * variant + MaxLines forced 0). Meaningless while !suppressed. */
-  suppressDepth: 0 | 1;
-  /** /doggy mount-from-behind sub-state — independent of `suppressed`, valid
-   * any time collared. Ended by /facial or /creampie; collar stays. */
-  mounted?: boolean;
-  /** Transient /facial marker: visible in status through the room's NEXT
-   * agent turn, then cleared at that turn's start (RoomService#sendMessage). */
-  faceMarked?: boolean;
+  /** DogMode (09-DOG-MODE, and every other multi-command persona-register
+   * style plugin) durable state now lives generically in `pluginState` above,
+   * keyed by the plugin's id (services/plugins.ts pluginStateKey) — e.g.
+   * `pluginState.dog`. Core has no dedicated field or type for it; the
+   * plugin owns its own shape and validation (see plugins/defaults/dog-mode.mjs
+   * normalizeState). */
 }
 
 /** A NEW agent was addressed in a room whose transcript would exceed the
