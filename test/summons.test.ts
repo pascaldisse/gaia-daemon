@@ -762,8 +762,14 @@ test("end-to-end (Fix #1): `resume` into an already-delivered summon child runs 
   assert.equal(notes[1]!.details?.summonResult?.failed, false);
 
   // The caller ran a SECOND callback turn processing the resumed result.
+  // BARRIER: resumeStatus flips to "delivered" right after deliverAgentResult
+  // returns, but that call only ENQUEUES the caller's callback turn
+  // (triggerSummonCallback -> enqueueAgentDialogue). The disk stamp therefore
+  // does not imply the callback ran — poll for the callback itself instead of
+  // asserting on a stamp that races it.
   const caller = runtimes.get("default:gaia");
   assert.ok(caller, "caller runtime exists");
+  for (let i = 0; i < 200 && caller!.messages.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(caller!.messages.length, 2, "one callback per delivered result: first turn, then the resume");
   assert.match(caller!.messages[1], new RegExp(childRoomId));
   const secondCallerNote = caller!.transcripts[1].filter((event) => event.author === "terry").at(-1) as AgentRoomEvent | undefined;
