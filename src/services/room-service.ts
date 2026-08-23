@@ -1221,10 +1221,14 @@ export class RoomService {
    * the resumed turn's result landed in the parent room. Independent of
    * `status` above (stays "delivered" from the original first-turn summon);
    * see SummonDelivery.resumeStatus. */
-  async markSummonResumeDelivered(): Promise<void> {
+  async markSummonResumeDelivered(token?: string): Promise<void> {
     await this.init();
     await this.room.updateState((state) => {
-      if (state.summon) state.summon.resumeStatus = "delivered";
+      if (!state.summon) return;
+      // Stamp-keyed: a LATER resume already overwrote resumeStartedAt — a stale
+      // watcher must not clear that newer, still-running stamp.
+      if (token !== undefined && state.summon.resumeStartedAt !== token) return;
+      state.summon.resumeStatus = "delivered";
     });
   }
 
