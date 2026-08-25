@@ -2512,9 +2512,7 @@ ${draft.summary}` : ""}`;
       const result = typeof edit === "string"
         ? await runtime.compactApply!(this.roomId, edit, progress)
         : await runtime.compact!(this.roomId, progress);
-      // Older runtime doubles returned a bare success line; keep their
-      // established /compact contract while real runtimes use CompactResult.
-      return await this.finishCompactCommand(target, typeof result === "string" ? { compacted: true, message: result } : result);
+      return await this.finishCompactCommand(target, result);
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
