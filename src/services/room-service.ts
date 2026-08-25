@@ -3651,6 +3651,7 @@ export class RoomService {
       `**Reason**: ${oneLineReason}`,
       "**Sentence**: context cleared via /clear · name on the wall · files untouched",
       "",
+      "",
     ].join("\n");
 
     try {

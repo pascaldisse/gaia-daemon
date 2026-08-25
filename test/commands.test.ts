@@ -22,6 +22,9 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/thinking off"), { type: "thinking-level", level: 0 });
   assert.deepEqual(parseCommand("/thinking 11"), { type: "thinking-level", level: 11 }); // parsed; rejected at validation
   assert.deepEqual(parseCommand("/clear"), { type: "clear" });
+  assert.deepEqual(parseCommand("/execute"), { type: "execute", reason: undefined });
+  assert.deepEqual(parseCommand("/execute signed off"), { type: "execute", reason: "signed off" });
+  assert.deepEqual(parseCommand("/execute   name\n  on\tthe wall"), { type: "execute", reason: "name on the wall" });
   assert.deepEqual(parseCommand("/refresh"), { type: "refresh" });
   assert.deepEqual(parseCommand("/fork"), { type: "fork" });
   assert.deepEqual(parseCommand("/setup"), { type: "setup", sub: "list" });

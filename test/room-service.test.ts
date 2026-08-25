@@ -994,6 +994,58 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
 });
 
+test("/execute appends a one-line law record to the configured ledger, then clears", async () => {
+  const { service, root, runtimes } = await makeService();
+  const ledger = join(root, "law", "executions.md");
+  const previous = process.env.GAIA_EXECUTIONS_FILE;
+  process.env.GAIA_EXECUTIONS_FILE = ledger;
+  try {
+    await service.room.updateState((state) => {
+      state.activeAgent = "terry";
+    });
+    await service.sendMessage("history to clear");
+    await service.waitForIdle();
+
+    const task = await service.sendMessage("/execute   approved\n  after\treview");
+    assert.equal(task.status, "complete");
+    const record = await readFileText(ledger, "utf8");
+    assert.match(
+      record,
+      /^# Execution records\n## \d{4}-\d{2}-\d{2}T[^\n]+ · terry · room default\n\*\*Reason\*\*: approved after review\n\*\*Sentence\*\*: context cleared via \/clear · name on the wall · files untouched\n\n$/,
+      "override ledger is created with its header and one-line record",
+    );
+    const room = await RoomHandle.open(root, "default");
+    assert.equal((await room.eventsFrom(0)).events.length, 0, "execute follows clear's structural path");
+    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [1, 1]);
+  } finally {
+    if (previous === undefined) delete process.env.GAIA_EXECUTIONS_FILE;
+    else process.env.GAIA_EXECUTIONS_FILE = previous;
+  }
+});
+
+test("/execute leaves the room intact when the ledger append fails", async () => {
+  const { service, root, runtimes, events } = await makeService();
+  const blockedLedger = join(root, "ledger-is-a-directory");
+  await mkdir(blockedLedger);
+  const previous = process.env.GAIA_EXECUTIONS_FILE;
+  process.env.GAIA_EXECUTIONS_FILE = blockedLedger;
+  try {
+    await service.sendMessage("history must survive");
+    await service.waitForIdle();
+    const task = await service.sendMessage("/execute no record");
+    assert.equal(task.status, "complete");
+
+    const room = await RoomHandle.open(root, "default");
+    assert.equal((await room.eventsFrom(0)).events.length, 2, "failed execution never clears history");
+    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0]);
+    const reply = events.findLast((event) => event.type === "room-event" && event.event.author === "system");
+    assert.match(reply?.event.text ?? "", /^execution record failed:/);
+  } finally {
+    if (previous === undefined) delete process.env.GAIA_EXECUTIONS_FILE;
+    else process.env.GAIA_EXECUTIONS_FILE = previous;
+  }
+});
+
 test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {
   const { service, root, runtimes } = await makeService();
   await service.sendMessage("keep this history");
