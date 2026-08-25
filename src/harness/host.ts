@@ -401,6 +401,21 @@ export class RunnerHost implements AgentRuntime {
    * stream its progress frames to `onProgress`. */
   async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
+    return this.runCompactRequest(roomId, { type: "compact", roomId }, onProgress);
+  }
+
+  async compactDraft(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }> {
+    if (!this.capabilities.supportsCompactEdit) throw new Error("this harness has no native editable compaction");
+    return this.runCompactRequest(roomId, { type: "compact-draft", roomId });
+  }
+
+  async compactApply(roomId: string, editedSummary: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
+    if (!this.capabilities.supportsCompactEdit) throw new Error("this harness has no native editable compaction");
+    return this.runCompactRequest(roomId, { type: "compact-apply", roomId, editedSummary }, onProgress);
+  }
+
+  /** One daemon↔runner result channel for all native compact variants. */
+  private async runCompactRequest(roomId: string, command: Extract<RunnerCommand, { type: "compact" | "compact-draft" | "compact-apply" }>, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     // A durable session on disk can be compacted even from a cold daemon (no
     // turn since restart): spawn the runner so its harness resumes the persisted
     // handle. Only when there's neither a live child NOR a durable session is
@@ -445,7 +460,7 @@ export class RunnerHost implements AgentRuntime {
         if (result.ok) resolve({ compacted: result.compacted, message: result.message, ...(result.summary ? { summary: result.summary } : {}) });
         else reject(new Error(result.message || "compaction failed"));
       };
-      this.write({ type: "compact", roomId });
+      this.write(command);
     });
   }
 

@@ -34,6 +34,8 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/stop"), { type: "cancel" }); // alias
   assert.deepEqual(parseCommand("/compact"), { type: "compact", agent: undefined });
   assert.deepEqual(parseCommand("/compact @nyari"), { type: "compact", agent: "nyari" });
+  assert.deepEqual(parseCommand("/compact --edit"), { type: "compact", agent: undefined, edit: true });
+  assert.deepEqual(parseCommand("/compact --edit reviewed summary"), { type: "compact", agent: undefined, edit: "reviewed summary" });
   assert.deepEqual(parseCommand("/model opus"), { type: "model", spec: "opus" });
   assert.deepEqual(parseCommand("/model @nyari anthropic/opus"), { type: "model", agent: "nyari", spec: "anthropic/opus" });
   assert.deepEqual(parseCommand("/pet @nyari nari"), { type: "pet", action: "set", agent: "nyari", package: "nari" });

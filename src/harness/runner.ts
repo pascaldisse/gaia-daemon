@@ -193,6 +193,29 @@ export async function runAgentRunner(): Promise<void> {
             send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
           );
         return;
+      case "compact-draft":
+        void (runtime.compactDraft?.(command.roomId) ?? Promise.reject(new Error("editable compaction not supported")))
+          .then((result) => send({
+            type: "compact-result", ok: true, compacted: result.compacted, message: result.message,
+            ...(result.summary ? { summary: result.summary } : {}),
+          }))
+          .catch((error: unknown) =>
+            send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
+          );
+        return;
+      case "compact-apply":
+        void (
+          runtime.compactApply?.(command.roomId, command.editedSummary, (update) => send({ type: "compact-progress", ...update })) ??
+          Promise.reject(new Error("editable compaction not supported"))
+        )
+          .then((result) => {
+            if (result.compacted === true) runtime.refreshContext?.(command.roomId);
+            send({ type: "compact-result", ok: true, compacted: result.compacted, message: result.message, ...(result.summary ? { summary: result.summary } : {}) });
+          })
+          .catch((error: unknown) =>
+            send({ type: "compact-result", ok: false, compacted: false, message: error instanceof Error ? error.message : String(error) }),
+          );
+        return;
       case "fork":
         void (
           runtime.forkAtMessage?.(command.roomId, command.originEventId, command.userOrdinal) ??

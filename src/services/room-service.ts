@@ -32,6 +32,8 @@ import type {
   AgentStatus,
   BackgroundTask,
   CompactProgress,
+  CompactProgressUpdate,
+  CompactResult,
   ContextGatePending,
   EventDetails,
   LiveTurn,
@@ -396,7 +398,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
-  compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent) : Promise.resolve("")),
+  compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent, command.edit) : Promise.resolve("")),
   diet: (service, command) => (command.type === "diet" ? service.runDietCommand(command.sub, command.scope) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
@@ -2469,71 +2471,50 @@ export class RoomService {
     return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
   }
 
-  /** /compact: hand the agent's session to its HARNESS's own compaction
-   * (pi session.compact, claude /compact, codex thread/compact/start) — gaia
-   * never re-implements summarization. Uniform: capability-gated, never
-   * id-branched. */
-  async runCompactCommand(agent?: string): Promise<CommandReply> {
+  /** /compact: native harness compaction; --edit adds Pi's review/apply
+   * variant behind a capability flag, never a harness-id branch. */
+  async runCompactCommand(agent?: string, edit?: boolean | string): Promise<CommandReply> {
     const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
-    if (!runtime.capabilities.supportsCompact || !runtime.compact) {
+    if (edit !== undefined) {
+      if (!runtime.capabilities.supportsCompactEdit || !runtime.compactDraft || !runtime.compactApply) {
+        return `@${target}'s harness has no native editable session compaction.`;
+      }
+    } else if (!runtime.capabilities.supportsCompact || !runtime.compact) {
       return `@${target}'s harness has no native session compaction.`;
     }
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
     if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
-    // Mark the agent "compacting" and seed progress with the job size we already
-    // know (its live context usage) + a start time, so the UI shows a real
-    // number and a ticking elapsed for the whole (possibly long) harness pass.
     this.compactingAgents.add(target);
     const startedAt = Date.now();
     const usedTokens = this.contextUsage[target]?.usedTokens;
     this.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
     this.lastCompactEmit = startedAt;
     await this.emitSnapshot();
+    const progress = (update: CompactProgressUpdate) => {
+      const prev = this.compactProgress.get(target);
+      if (!prev) return;
+      this.compactProgress.set(target, { ...prev, ...update });
+      const now = Date.now();
+      if (now - this.lastCompactEmit < 500) return;
+      this.lastCompactEmit = now;
+      void this.emitSnapshot();
+    };
     try {
-      const { compacted, message, summary } = await runtime.compact(this.roomId, (update) => {
-        const prev = this.compactProgress.get(target);
-        if (!prev) return;
-        this.compactProgress.set(target, { ...prev, ...update });
-        const now = Date.now();
-        if (now - this.lastCompactEmit < 500) return; // coalesce bursts of token deltas
-        this.lastCompactEmit = now;
-        void this.emitSnapshot();
-      });
-      // The harness just evicted this agent's raw history into a summary —
-      // everything up to now is recall-reachable again (active-context floor).
-      const { nextCursor } = await this.room.eventsFrom(0);
-      await this.setContextFloor(target, nextCursor);
-      // Durable compaction: persist the harness's own summary keyed to this floor,
-      // so a later session loss reloads [summary + tail after floor] instead of the
-      // full raw transcript (undoing the compaction) or a thin summary-less tail.
-      // No summary (harness can't surface one) → clear any stale entry; the reload
-      // then falls back to raw context rather than trusting a wrong summary.
-      if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
-      else if (compacted) await this.room.clearCompaction(target);
-      // The pre-compact context number is now a lie — don't leave the ctx chip
-      // sitting on the old % until the next turn. Best real post-compact figure
-      // is the summary the harness streamed (outputTokens); without one, drop
-      // the entry so the chip goes blank until fresh usage arrives.
-      const written = this.compactProgress.get(target)?.outputTokens;
-      const maxTokens = this.contextUsage[target]?.maxTokens;
-      const updated = written ? { usedTokens: written, ...(maxTokens ? { maxTokens } : {}) } : undefined;
-      if (updated) this.contextUsage[target] = updated;
-      else delete this.contextUsage[target];
-      await this.room
-        .updateState((current) => {
-          if (updated) current.contextUsage = { ...(current.contextUsage ?? {}), [target]: updated };
-          else if (current.contextUsage) delete current.contextUsage[target];
-        })
-        .catch(() => {});
-      const text = `@${target}: ${message}`;
-      // The visible compact boundary rides on the harness's structured `compacted`
-      // signal — NOT a keyword match on the message (that silently dropped the
-      // marker whenever a harness phrased its result differently). A clean no-op
-      // ("nothing to compact") stays an ordinary system line, no boundary.
-      return compacted ? { text, kind: "compact-complete" } : text;
+      if (edit === true) {
+        const draft = await runtime.compactDraft!(this.roomId);
+        return `@${target}: ${draft.message}${draft.summary ? `
+
+${draft.summary}` : ""}`;
+      }
+      const result = typeof edit === "string"
+        ? await runtime.compactApply!(this.roomId, edit, progress)
+        : await runtime.compact!(this.roomId, progress);
+      // Older runtime doubles returned a bare success line; keep their
+      // established /compact contract while real runtimes use CompactResult.
+      return await this.finishCompactCommand(target, typeof result === "string" ? { compacted: true, message: result } : result);
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
@@ -2545,6 +2526,28 @@ export class RoomService {
       this.compactProgress.delete(target);
       await this.emitSnapshot();
     }
+  }
+
+  /** Shared post-eviction boundary, durable summary, and ctx-chip bookkeeping
+   * for ordinary /compact and reviewed /compact --edit <text>. */
+  private async finishCompactCommand(target: string, { compacted, message, summary }: CompactResult): Promise<CommandReply> {
+    const { nextCursor } = await this.room.eventsFrom(0);
+    await this.setContextFloor(target, nextCursor);
+    if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
+    else if (compacted) await this.room.clearCompaction(target);
+    const written = this.compactProgress.get(target)?.outputTokens;
+    const maxTokens = this.contextUsage[target]?.maxTokens;
+    const updated = written ? { usedTokens: written, ...(maxTokens ? { maxTokens } : {}) } : undefined;
+    if (updated) this.contextUsage[target] = updated;
+    else delete this.contextUsage[target];
+    await this.room
+      .updateState((current) => {
+        if (updated) current.contextUsage = { ...(current.contextUsage ?? {}), [target]: updated };
+        else if (current.contextUsage) delete current.contextUsage[target];
+      })
+      .catch(() => {});
+    const text = `@${target}: ${message}`;
+    return compacted ? { text, kind: "compact-complete" } : text;
   }
 
   /** /cancel: panic stop from any client — drops the durable queue and cancels

@@ -94,6 +94,12 @@ export interface AgentRuntime {
    * receives whatever token counts the harness can report as the pass runs
    * (best-effort). Only present when capabilities.supportsCompact. */
   compact?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
+  /** Prepare a native compaction summary without evicting the live session.
+   * Only present when capabilities.supportsCompactEdit. */
+  compactDraft?(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }>;
+  /** Commit a previously prepared native compaction with user-edited summary
+   * text. Only present when capabilities.supportsCompactEdit. */
+  compactApply?(roomId: string, editedSummary: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
   /** Fork the harness's OWN durable session to the point of a prior user
    * message (backs edit/retry — /compact's exact sibling). Only present when
    * capabilities.supportsForkAtMessage: a harness with no native fork
@@ -168,6 +174,9 @@ export interface HarnessCapabilities {
    * session.compact, claude /compact, codex thread compaction)? Backs
    * /compact. */
   readonly supportsCompact: boolean;
+  /** Can prepare a native compaction draft for review, then apply an edited
+   * summary without re-running the LLM. */
+  readonly supportsCompactEdit?: boolean;
   /** Has a native DURABLE session fork the runtime can invoke to branch onto
    * a prior user message (pi session.sessionManager.createBranchedSession)?
    * Backs edit/retry: when true, room-service forks the harness's OWN

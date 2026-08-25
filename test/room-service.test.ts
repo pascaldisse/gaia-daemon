@@ -1353,6 +1353,41 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
   assert.equal(compactEvent.kind, "compact-complete", "compaction completion is persisted with a structured transcript marker");
 });
 
+test("/compact --edit shows a non-evicting draft, then persists the owner-edited summary on apply", async () => {
+  let draftCalls = 0;
+  let appliedSummary: string | undefined;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsCompactEdit: true };
+    (runtime as unknown as {
+      compactDraft: () => Promise<{ compacted: false; message: string; summary: string }>;
+      compactApply: (_roomId: string, summary: string) => Promise<{ compacted: boolean; message: string; summary: string }>;
+    }).compactDraft = async () => {
+      draftCalls += 1;
+      return { compacted: false, message: "draft ready", summary: "LLM-DRAFT-DO-NOT-PERSIST" };
+    };
+    (runtime as unknown as { compactApply: (_roomId: string, summary: string) => Promise<{ compacted: boolean; message: string; summary: string }> }).compactApply = async (_roomId, summary) => {
+      appliedSummary = summary;
+      return { compacted: true, message: "session compacted.", summary };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  await service.sendMessage("/compact --edit");
+  assert.equal(draftCalls, 1);
+  const room = await RoomHandle.open(root, "default");
+  assert.equal((await room.readCompaction("gaia")), undefined, "reviewing a draft writes no durable compaction");
+  assert.equal((await room.state()).contextFloors?.gaia, undefined, "reviewing a draft leaves the live context floor unchanged");
+  await service.sendMessage("/compact --edit OWNER-EDITED-SUMMARY");
+  assert.equal(appliedSummary, "OWNER-EDITED-SUMMARY");
+  assert.equal((await room.readCompaction("gaia"))?.summary, "OWNER-EDITED-SUMMARY");
+});
+test("/compact --edit reports a clean capability error for a harness without editable compaction", async () => {
+  const { service, root } = await makeService();
+  await service.sendMessage("/compact --edit");
+  const { events } = await (await RoomHandle.open(root, "default")).eventsFrom(0);
+  assert.ok(events.some((event) => event.author === "system" && /no native editable session compaction/.test(event.text)));
+});
 test("/compact streams live progress (token counts + start time) into the snapshot", async () => {
   let serviceRef: RoomService | undefined;
   let midPass: Snapshot | undefined;
