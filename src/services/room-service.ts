@@ -355,7 +355,12 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
 /** Commands that rewrite the transcript itself (wipe / branch / truncate).
  * Their reply is a live-only confirmation — persisting it would drop a stray
  * event back into the history they just reset. */
-const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "execute", "fork", "rewind"]);
+// Commands that reset/truncate the whole transcript: their confirmation must
+// NOT be appended, or it would re-seed the room they just emptied. /execute is
+// NOT here — it only floors ONE agent's context (room survives), so its record
+// SHOULD be appended and stay visible (and lands above the floor, so the cleared
+// agent sees "you were executed" as its first fresh-window line and can answer).
+const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
@@ -3638,9 +3643,36 @@ export class RoomService {
     return "Cleared room history and reset all agent sessions.";
   }
 
-  /** /execute records the room's active agent then takes the identical /clear
-   * path. A failed ledger write is deliberately a non-execution: leave room
-   * history and harness sessions intact. */
+  /** Per-agent context clear: fresh window for ONE agent from NOW, room and
+   * every other agent untouched, all FUTURE messages still land in its context.
+   * Same primitive as the /compact gate choice MINUS the summary — the raw
+   * history below the floor stays recall-reachable; the agent just starts clean
+   * from the current transcript end. Floor == cursor == live length is the
+   * deliberate-reset signal (no session-loss amnesia gate, § sendMessage), so it
+   * survives a harness session drop without silently reverting to everything.
+   *
+   * Returns false when the agent id is unknown (nothing cleared). */
+  async clearAgentContext(agentId: string): Promise<boolean> {
+    if (!this.workspace.agents[agentId]) return false;
+    const { nextCursor } = await this.room.eventsFrom(0);
+    // Floor and cursor to the live end: the agent replays nothing before now,
+    // future turns replay only from here. No summary → a clean fresh window,
+    // not a compaction. Drop any stale compaction so a session loss reloads the
+    // tail-after-floor, never an outdated summary.
+    await this.setContextFloor(agentId, nextCursor);
+    await this.room.updateState((current) => {
+      current.agentCursors[agentId] = nextCursor;
+    });
+    await this.room.clearCompaction(agentId);
+    delete this.contextUsage[agentId];
+    await this.emitSnapshot();
+    return true;
+  }
+
+  /** /execute records the room's active agent then clears ONLY that agent's
+   * context (fresh window from now), leaving room history + every other agent
+   * intact. A failed ledger write is deliberately a non-execution: leave the
+   * agent's context untouched. */
   async runExecuteCommand(reason?: string): Promise<string> {
     const path = executionsFile();
     const state = await this.room.state();
@@ -3649,7 +3681,7 @@ export class RoomService {
     const record = [
       `## ${new Date().toISOString()} · ${agent} · room ${this.roomId}`,
       `**Reason**: ${oneLineReason}`,
-      "**Sentence**: context cleared via /clear · name on the wall · files untouched",
+      "**Sentence**: context cleared for this agent · name on the wall · room + other agents + files untouched",
       "",
       "",
     ].join("\n");
@@ -3661,8 +3693,15 @@ export class RoomService {
       return `execution record failed: ${error instanceof Error ? error.message : String(error)}`;
     }
 
-    await this.runClearCommand();
-    return `execution recorded → ${path} · room cleared`;
+    const cleared = await this.clearAgentContext(agent);
+    // The room-visible verdict: a short statement on the wall, the reason shown,
+    // ledger path last. This event is appended (execute is no longer structural),
+    // and it lands ABOVE the agent's fresh-window floor — so @agent reads it as
+    // its first line and can answer the charge if it takes a turn.
+    const charge = oneLineReason === "(none given)" ? "" : ` — ${oneLineReason}`;
+    return cleared
+      ? `⚖ @${agent} executed${charge}\ncontext cleared (fresh window; room + other agents intact) · recorded → ${path}`
+      : `⚖ execution recorded${charge} · no active agent to clear → ${path}`;
   }
 
   async runRefreshCommand(): Promise<string> {
