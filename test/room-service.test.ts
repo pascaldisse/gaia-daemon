@@ -1006,6 +1006,7 @@ test("/execute appends a one-line law record to the ledger, then clears ONLY the
     await service.sendMessage("history to keep", { targets: ["terry"] });
     await service.waitForIdle();
 
+    const beforeExecute = (await (await RoomHandle.open(root, "default")).eventsFrom(0)).nextCursor;
     const task = await service.sendMessage("/execute   approved\n  after\treview");
     assert.equal(task.status, "complete");
     const record = await readFileText(ledger, "utf8");
@@ -1015,14 +1016,21 @@ test("/execute appends a one-line law record to the ledger, then clears ONLY the
       "override ledger is created with its header and one-line record",
     );
     const room = await RoomHandle.open(root, "default");
-    const { events, nextCursor } = await room.eventsFrom(0);
+    const { events } = await room.eventsFrom(0);
     // Per-agent clear: room history SURVIVES (no room-wide wipe), the active
-    // agent gets a fresh-window floor at the live end, sessions are NOT reset.
+    // agent gets a fresh-window floor at the pre-verdict end, sessions NOT reset.
     assert.ok(events.length > 0, "execute no longer wipes room history");
     const state = await room.state();
-    assert.equal(state.contextFloors?.terry, nextCursor, "active agent floored at the live end");
-    assert.equal(state.agentCursors.terry, nextCursor, "active agent cursor at the live end (fresh window)");
+    assert.equal(state.contextFloors?.terry, beforeExecute, "active agent floored at the pre-verdict end");
+    assert.equal(state.agentCursors.terry, beforeExecute, "active agent cursor at the pre-verdict end (fresh window)");
     assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0], "no harness session reset");
+    // The verdict is VISIBLE: a system event was APPENDED to the transcript
+    // (execute is no longer structural), and it lands ABOVE the floor so the
+    // cleared agent reads it as its first fresh-window line.
+    const verdict = events.at(-1) as { author: string; text: string };
+    assert.equal(verdict.author, "system", "the execution verdict is a system event on the wall");
+    assert.match(verdict.text, /⚖ @terry executed — approved after review/, "the verdict shows the agent + the reason");
+    assert.ok(events.length - 1 >= beforeExecute, "the verdict event lands above the fresh-window floor");
   } finally {
     if (previous === undefined) delete process.env.GAIA_EXECUTIONS_FILE;
     else process.env.GAIA_EXECUTIONS_FILE = previous;
@@ -1042,10 +1050,18 @@ test("/execute leaves the room intact when the ledger append fails", async () =>
     assert.equal(task.status, "complete");
 
     const room = await RoomHandle.open(root, "default");
-    assert.equal((await room.eventsFrom(0)).events.length, 2, "failed execution never clears history");
-    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0]);
+    // A failed ledger write is a NON-execution: no agent floored, no session
+    // reset, room history preserved. The 2 history events survive; the failure
+    // notice is appended on top (now visible), so 3 total — none of them cleared.
+    const state = await room.state();
+    assert.equal(state.contextFloors?.gaia ?? 0, 0, "failed execution sets no context floor");
+    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0], "failed execution resets no session");
     const reply = events.findLast((event) => event.type === "room-event" && event.event.author === "system");
     assert.match(reply?.event.text ?? "", /^execution record failed:/);
+    // The failure is VISIBLE and PERSISTED, not a silent no-op.
+    const persisted = (await room.eventsFrom(0)).events.at(-1) as { author: string; text: string };
+    assert.equal(persisted.author, "system");
+    assert.match(persisted.text, /^execution record failed:/, "the failure notice survives on the wall");
   } finally {
     if (previous === undefined) delete process.env.GAIA_EXECUTIONS_FILE;
     else process.env.GAIA_EXECUTIONS_FILE = previous;
@@ -3402,9 +3418,10 @@ test("per-agent clear (/execute): fresh window for ONE agent from now — room, 
   assert.ok(gaiaCursorBefore > 0 && lunaCursorBefore > 0, "both agents have live cursors before the clear");
   assert.equal(before.contextFloors?.gaia ?? 0, 0, "no floor before the clear");
 
-  // /execute clears ONLY the active agent (last to run = gaia).
+  // /execute clears ONLY the active agent (last to run = gaia). Called directly
+  // (no runCommand), so no verdict event is appended here — floor lands at liveEnd.
   const msg = await service.runExecuteCommand("per-agent clear check");
-  assert.match(msg, /@gaia context cleared/);
+  assert.match(msg, /⚖ @gaia executed — per-agent clear check/);
 
   const after = await room.state();
   // gaia: floor AND cursor pinned to the live end — a fresh window, no summary.

@@ -355,7 +355,12 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
 /** Commands that rewrite the transcript itself (wipe / branch / truncate).
  * Their reply is a live-only confirmation — persisting it would drop a stray
  * event back into the history they just reset. */
-const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "execute", "fork", "rewind"]);
+// Commands that reset/truncate the whole transcript: their confirmation must
+// NOT be appended, or it would re-seed the room they just emptied. /execute is
+// NOT here — it only floors ONE agent's context (room survives), so its record
+// SHOULD be appended and stay visible (and lands above the floor, so the cleared
+// agent sees "you were executed" as its first fresh-window line and can answer).
+const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
@@ -3689,9 +3694,14 @@ export class RoomService {
     }
 
     const cleared = await this.clearAgentContext(agent);
+    // The room-visible verdict: a short statement on the wall, the reason shown,
+    // ledger path last. This event is appended (execute is no longer structural),
+    // and it lands ABOVE the agent's fresh-window floor — so @agent reads it as
+    // its first line and can answer the charge if it takes a turn.
+    const charge = oneLineReason === "(none given)" ? "" : ` — ${oneLineReason}`;
     return cleared
-      ? `execution recorded → ${path} · @${agent} context cleared (fresh window; room + other agents intact)`
-      : `execution recorded → ${path} · no active agent to clear`;
+      ? `⚖ @${agent} executed${charge}\ncontext cleared (fresh window; room + other agents intact) · recorded → ${path}`
+      : `⚖ execution recorded${charge} · no active agent to clear → ${path}`;
   }
 
   async runRefreshCommand(): Promise<string> {
