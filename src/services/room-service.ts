@@ -3638,9 +3638,36 @@ export class RoomService {
     return "Cleared room history and reset all agent sessions.";
   }
 
-  /** /execute records the room's active agent then takes the identical /clear
-   * path. A failed ledger write is deliberately a non-execution: leave room
-   * history and harness sessions intact. */
+  /** Per-agent context clear: fresh window for ONE agent from NOW, room and
+   * every other agent untouched, all FUTURE messages still land in its context.
+   * Same primitive as the /compact gate choice MINUS the summary — the raw
+   * history below the floor stays recall-reachable; the agent just starts clean
+   * from the current transcript end. Floor == cursor == live length is the
+   * deliberate-reset signal (no session-loss amnesia gate, § sendMessage), so it
+   * survives a harness session drop without silently reverting to everything.
+   *
+   * Returns false when the agent id is unknown (nothing cleared). */
+  async clearAgentContext(agentId: string): Promise<boolean> {
+    if (!this.workspace.agents[agentId]) return false;
+    const { nextCursor } = await this.room.eventsFrom(0);
+    // Floor and cursor to the live end: the agent replays nothing before now,
+    // future turns replay only from here. No summary → a clean fresh window,
+    // not a compaction. Drop any stale compaction so a session loss reloads the
+    // tail-after-floor, never an outdated summary.
+    await this.setContextFloor(agentId, nextCursor);
+    await this.room.updateState((current) => {
+      current.agentCursors[agentId] = nextCursor;
+    });
+    await this.room.clearCompaction(agentId);
+    delete this.contextUsage[agentId];
+    await this.emitSnapshot();
+    return true;
+  }
+
+  /** /execute records the room's active agent then clears ONLY that agent's
+   * context (fresh window from now), leaving room history + every other agent
+   * intact. A failed ledger write is deliberately a non-execution: leave the
+   * agent's context untouched. */
   async runExecuteCommand(reason?: string): Promise<string> {
     const path = executionsFile();
     const state = await this.room.state();
@@ -3649,7 +3676,7 @@ export class RoomService {
     const record = [
       `## ${new Date().toISOString()} · ${agent} · room ${this.roomId}`,
       `**Reason**: ${oneLineReason}`,
-      "**Sentence**: context cleared via /clear · name on the wall · files untouched",
+      "**Sentence**: context cleared for this agent · name on the wall · room + other agents + files untouched",
       "",
       "",
     ].join("\n");
@@ -3661,8 +3688,10 @@ export class RoomService {
       return `execution record failed: ${error instanceof Error ? error.message : String(error)}`;
     }
 
-    await this.runClearCommand();
-    return `execution recorded → ${path} · room cleared`;
+    const cleared = await this.clearAgentContext(agent);
+    return cleared
+      ? `execution recorded → ${path} · @${agent} context cleared (fresh window; room + other agents intact)`
+      : `execution recorded → ${path} · no active agent to clear`;
   }
 
   async runRefreshCommand(): Promise<string> {

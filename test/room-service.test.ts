@@ -994,7 +994,7 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
 });
 
-test("/execute appends a one-line law record to the configured ledger, then clears", async () => {
+test("/execute appends a one-line law record to the ledger, then clears ONLY the active agent's context", async () => {
   const { service, root, runtimes } = await makeService();
   const ledger = join(root, "law", "executions.md");
   const previous = process.env.GAIA_EXECUTIONS_FILE;
@@ -1003,7 +1003,7 @@ test("/execute appends a one-line law record to the configured ledger, then clea
     await service.room.updateState((state) => {
       state.activeAgent = "terry";
     });
-    await service.sendMessage("history to clear");
+    await service.sendMessage("history to keep", { targets: ["terry"] });
     await service.waitForIdle();
 
     const task = await service.sendMessage("/execute   approved\n  after\treview");
@@ -1011,12 +1011,18 @@ test("/execute appends a one-line law record to the configured ledger, then clea
     const record = await readFileText(ledger, "utf8");
     assert.match(
       record,
-      /^# Execution records\n## \d{4}-\d{2}-\d{2}T[^\n]+ · terry · room default\n\*\*Reason\*\*: approved after review\n\*\*Sentence\*\*: context cleared via \/clear · name on the wall · files untouched\n\n$/,
+      /^# Execution records\n## \d{4}-\d{2}-\d{2}T[^\n]+ · terry · room default\n\*\*Reason\*\*: approved after review\n\*\*Sentence\*\*: context cleared for this agent · name on the wall · room \+ other agents \+ files untouched\n\n$/,
       "override ledger is created with its header and one-line record",
     );
     const room = await RoomHandle.open(root, "default");
-    assert.equal((await room.eventsFrom(0)).events.length, 0, "execute follows clear's structural path");
-    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [1, 1]);
+    const { events, nextCursor } = await room.eventsFrom(0);
+    // Per-agent clear: room history SURVIVES (no room-wide wipe), the active
+    // agent gets a fresh-window floor at the live end, sessions are NOT reset.
+    assert.ok(events.length > 0, "execute no longer wipes room history");
+    const state = await room.state();
+    assert.equal(state.contextFloors?.terry, nextCursor, "active agent floored at the live end");
+    assert.equal(state.agentCursors.terry, nextCursor, "active agent cursor at the live end (fresh window)");
+    assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0], "no harness session reset");
   } finally {
     if (previous === undefined) delete process.env.GAIA_EXECUTIONS_FILE;
     else process.env.GAIA_EXECUTIONS_FILE = previous;
@@ -3375,4 +3381,54 @@ test("toolResultSlice: pages back the original call/args/result for a tool call 
 
   assert.equal(await service.toolResultSlice("gaia", reply.id, "no-such-tool", 0, 100), undefined);
   assert.equal(await service.toolResultSlice("gaia", "no-such-event", "tool-1", 0, 100), undefined);
+});
+
+test("per-agent clear (/execute): fresh window for ONE agent from now — room, other agents, and future messages all intact", async () => {
+  const { service, root } = await makeService({ agents: ["gaia", "luna"] });
+
+  // Build shared history with BOTH agents so each holds a live cursor.
+  await service.sendMessage("one", { targets: ["gaia"] });
+  await service.waitForIdle();
+  await service.sendMessage("two", { targets: ["luna"] });
+  await service.waitForIdle();
+  await service.sendMessage("three", { targets: ["gaia"] });
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const before = await room.state();
+  const gaiaCursorBefore = before.agentCursors.gaia ?? 0;
+  const lunaCursorBefore = before.agentCursors.luna ?? 0;
+  const { nextCursor: liveEnd } = await service.room.eventsFrom(0);
+  assert.ok(gaiaCursorBefore > 0 && lunaCursorBefore > 0, "both agents have live cursors before the clear");
+  assert.equal(before.contextFloors?.gaia ?? 0, 0, "no floor before the clear");
+
+  // /execute clears ONLY the active agent (last to run = gaia).
+  const msg = await service.runExecuteCommand("per-agent clear check");
+  assert.match(msg, /@gaia context cleared/);
+
+  const after = await room.state();
+  // gaia: floor AND cursor pinned to the live end — a fresh window, no summary.
+  assert.equal(after.contextFloors?.gaia, liveEnd, "gaia floor lands at the live transcript end");
+  assert.equal(after.agentCursors.gaia, liveEnd, "gaia cursor lands at the live end (fresh window)");
+  // floor == cursor is the deliberate-reset signal, not session-loss amnesia.
+  assert.equal(after.contextFloors?.gaia, after.agentCursors.gaia, "floor == cursor: deliberate reset, no amnesia gate");
+  // luna: completely untouched — room-wide clear would have nuked her too.
+  assert.equal(after.agentCursors.luna, lunaCursorBefore, "the OTHER agent's cursor is untouched");
+  assert.equal(after.contextFloors?.luna ?? 0, 0, "the OTHER agent has no floor");
+  // Room history itself is intact (room-wide /clear would empty it).
+  const stillThere = await service.room.eventsFrom(0);
+  assert.equal(stillThere.nextCursor, liveEnd, "room transcript is NOT wiped — every event survives");
+
+  // A FUTURE message to the cleared agent still lands in its context.
+  await service.sendMessage("four", { targets: ["gaia"] });
+  await service.waitForIdle();
+  const post = await room.state();
+  assert.ok((post.agentCursors.gaia ?? 0) > liveEnd, "future messages still advance the cleared agent's cursor");
+});
+
+test("per-agent clear: unknown agent id clears nothing", async () => {
+  const { service } = await makeService({ agents: ["gaia"] });
+  await service.sendMessage("seed", { targets: ["gaia"] });
+  await service.waitForIdle();
+  assert.equal(await service.clearAgentContext("ghost"), false, "clearing a non-existent agent is a no-op");
 });
