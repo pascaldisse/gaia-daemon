@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { globalPaths } from "../core/paths.js";
 import type { AgentTtsConfig } from "../core/types.js";
 import { elevenLabsKey, type VoiceSettings, type VoiceStackSettings } from "./voice.js";
+import { stripGaiaThinking } from "../../web/shared/gaia-think.js";
 
 // ---------------------------------------------------------------------------
 // Speakable text. Voice calls avoid pronouncing tool calls structurally (only
@@ -29,6 +30,10 @@ import { elevenLabsKey, type VoiceSettings, type VoiceStackSettings } from "./vo
 // is never a blocking wait; the batch (local) path speaks it chunk by chunk.
 export function speakableText(markdown: string): string {
   let text = String(markdown ?? "");
+  // GAIA `<gaia:think>` reasoning blocks are rendered as a collapsed UI expander
+  // (transcript.js splitLeadingGaiaThink) and must NEVER be spoken — strip them
+  // first, mirroring the renderer, so read-aloud speaks the reply only.
+  text = stripGaiaThinking(text);
   // Fenced code is never worth pronouncing; note what was skipped.
   text = text.replace(/```([^\n`]*)\n[\s\S]*?(?:```|$)/g, (_match, lang) => {
     const name = String(lang).trim().split(/\s+/)[0];

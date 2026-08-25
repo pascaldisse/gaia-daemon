@@ -97,6 +97,17 @@ test("speakableText: tables turn into comma pauses without separator rows", () =
   assert.equal(text, "name, value\na, 1");
 });
 
+test("speakableText: leading <gaia:think> reasoning block is never spoken", () => {
+  assert.equal(
+    speakableText("<gaia:think>\u771f: weighing options\n\u5b9a: answer plain</gaia:think>The real reply."),
+    "The real reply.",
+  );
+  // Unclosed block (streaming) — still stripped, speaks nothing until it closes.
+  assert.equal(speakableText("<gaia:think>still reasoning, no close tag yet"), "");
+  // No think block — untouched.
+  assert.equal(speakableText("Just a plain answer."), "Just a plain answer.");
+});
+
 test("speakableText: emojis vanish and whitespace collapses", () => {
   assert.equal(speakableText("Ship it 🚀🔥   now\n\n\nplease ✨"), "Ship it now\nplease");
   assert.equal(speakableText("🚀 ✨"), "");
