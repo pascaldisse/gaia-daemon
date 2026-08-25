@@ -15,9 +15,9 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
@@ -200,6 +200,35 @@ const PARTIAL_FLUSH_MS = 1000;
 const BACKGROUND_TASK_MAX = 20;
 const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
+const EXECUTIONS_HEADER = "# Execution records\n";
+const DEFAULT_EXECUTIONS_FILE = join(homedir(), "projects", "law", "executions.md");
+
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}
+
+/** GAIA_EXECUTIONS_FILE overrides the law ledger; a defaulted parameter keeps
+ * the environment boundary explicit and makes the resolver directly testable. */
+function executionsFile(configured = process.env.GAIA_EXECUTIONS_FILE): string {
+  return resolve(expandHome(configured?.trim() || DEFAULT_EXECUTIONS_FILE));
+}
+
+async function ensureExecutionsHeader(path: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    const file = await open(path, "wx");
+    try {
+      await file.writeFile(EXECUTIONS_HEADER, "utf8");
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
 /** `lsof` binary used to probe whether a tracked background process still has
  * a live writer on its output file (see backgroundTaskPids). Env-overridable —
  * never hardcode a bare path as the only option. */
@@ -326,7 +355,7 @@ export const AGENT_DIALOGUE_MAX_HOPS = 8;
 /** Commands that rewrite the transcript itself (wipe / branch / truncate).
  * Their reply is a live-only confirmation — persisting it would drop a stray
  * event back into the history they just reset. */
-const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
+const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "execute", "fork", "rewind"]);
 
 /** Command handlers, keyed by parsed type. Adding a command = one entry here
  * plus one line in SLASH_COMMANDS. Each returns the system reply text, with an
@@ -358,6 +387,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
+  execute: (service, command) => (command.type === "execute" ? service.runExecuteCommand(command.reason) : Promise.resolve("")),
   refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
@@ -3606,6 +3636,32 @@ export class RoomService {
     this.recentTasks = [];
     await this.emitSnapshot();
     return "Cleared room history and reset all agent sessions.";
+  }
+
+  /** /execute records the room's active agent then takes the identical /clear
+   * path. A failed ledger write is deliberately a non-execution: leave room
+   * history and harness sessions intact. */
+  async runExecuteCommand(reason?: string): Promise<string> {
+    const path = executionsFile();
+    const state = await this.room.state();
+    const agent = state.activeAgent && this.workspace.agents[state.activeAgent] ? state.activeAgent : "unknown";
+    const oneLineReason = reason?.replace(/\s+/g, " ").trim() || "(none given)";
+    const record = [
+      `## ${new Date().toISOString()} · ${agent} · room ${this.roomId}`,
+      `**Reason**: ${oneLineReason}`,
+      "**Sentence**: context cleared via /clear · name on the wall · files untouched",
+      "",
+    ].join("\n");
+
+    try {
+      await ensureExecutionsHeader(path);
+      await appendFile(path, record, "utf8");
+    } catch (error) {
+      return `execution record failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    await this.runClearCommand();
+    return `execution recorded → ${path} · room cleared`;
   }
 
   async runRefreshCommand(): Promise<string> {
