@@ -21,7 +21,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { CompactionResult, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../core/attachments.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type ThinkingLevel, type UsageProbeResult, type Workspace } from "../core/types.js";
 import { gaiaHome, workspacePaths } from "../core/paths.js";
@@ -269,9 +269,69 @@ function skillPathsKey(paths: string[]): string {
 // this can only make /compact more reliable, never less.
 const COMPACT_FALLBACK_MODEL = { provider: "anthropic", name: "claude-sonnet-5" } as const;
 
-function compactionFallbackExtension(agentModelProvider: string | undefined): ExtensionFactory {
+// Pascal 08-25 ("true nyari" room, contextUsage 135%, both compact attempts
+// dying "Summarization failed: The model refused to complete the request"):
+// when the ROOM'S OWN model already equals COMPACT_FALLBACK_MODEL (i.e. this
+// is Solas himself compacting Solas), the fallback below buys ZERO diversity.
+// On any failure it returns undefined, which sends control back to
+// agent-harness.js's session_before_compact caller -- that then runs its OWN
+// compact() using the room's own model (agent-harness.js ~line 667). For
+// Fable/Opus that second attempt is a genuinely different model, a real
+// second chance. For Solas it is the byte-identical model on the
+// byte-identical content: guaranteed to fail the same way (confirmed via
+// anthropic-messages.js mapStopReason -- Anthropic's Messages API can return
+// stop_reason:"refusal" mid-generation on ANY Claude model, not just an
+// Opus/Fable-tier input classifier; Sonnet is not exempt). Net effect before
+// this fix: two guaranteed-identical failures, then the room sits stuck over
+// its context budget with no way to shrink. Fix: when session model ===
+// fallback model, skip the pointless retry and degrade straight to a
+// MECHANICAL (non-LLM) compaction -- deterministic file-op listing, prior
+// summary chain preserved verbatim, no generated narrative. Lower fidelity,
+// but the room shrinks and stays usable instead of deadlocking. Every other
+// failure mode (registry/creds/network) is untouched -- still returns
+// undefined and lets the existing (possibly genuinely different) fallback
+// run.
+// CompactionPreparation itself isn't part of pi-coding-agent's public root
+// export surface (only CompactionResult is) -- this structural subset is all
+// mechanicalCompactionFallback touches, and TS structurally matches it
+// against the real (unexported-by-name) type flowing through the
+// session_before_compact event.
+interface MechanicalCompactionInput {
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  previousSummary?: string;
+  messagesToSummarize: unknown[];
+  turnPrefixMessages: unknown[];
+  fileOps: { read: Set<string>; written: Set<string>; edited: Set<string> };
+}
+
+export function mechanicalCompactionFallback(preparation: MechanicalCompactionInput, failureReason: string): CompactionResult {
+  const modified = new Set<string>([...preparation.fileOps.edited, ...preparation.fileOps.written]);
+  const readFiles = [...preparation.fileOps.read].filter((f) => !modified.has(f)).sort();
+  const modifiedFiles = [...modified].sort();
+  const fileTags = [
+    readFiles.length ? `<read-files>\n${readFiles.join("\n")}\n</read-files>` : "",
+    modifiedFiles.length ? `<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>` : "",
+  ].filter(Boolean);
+  const droppedCount = preparation.messagesToSummarize.length + preparation.turnPrefixMessages.length;
+  const chain = preparation.previousSummary ? `\n\n<previous-summary>\n${preparation.previousSummary}\n</previous-summary>` : "";
+  const summary =
+    `## Mechanical compaction (no LLM summary)\n` +
+    `LLM summarization was unavailable (${failureReason}), and the fallback model IS this session's own model so retrying would repeat the identical failing call. ` +
+    `${droppedCount} message(s) (~${preparation.tokensBefore} tokens before compaction) dropped WITHOUT a generated narrative recap -- recent context past the cut point is still retained verbatim as usual; this note only replaces the AI-written summary of the discarded history.` +
+    `${chain}${fileTags.length ? `\n\n${fileTags.join("\n\n")}` : ""}`;
+  return {
+    summary,
+    firstKeptEntryId: preparation.firstKeptEntryId,
+    tokensBefore: preparation.tokensBefore,
+    details: { readFiles, modifiedFiles },
+  };
+}
+
+function compactionFallbackExtension(agentModelProvider: string | undefined, agentModelName: string | undefined): ExtensionFactory {
   return (pi) => {
     if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return;
+    const isSelfCompaction = agentModelName === COMPACT_FALLBACK_MODEL.name;
     pi.on("session_before_compact", async (event, ctx) => {
       const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
       if (!model) {
@@ -297,7 +357,12 @@ function compactionFallbackExtension(agentModelProvider: string | undefined): Ex
         );
         return { compaction: result };
       } catch (error) {
-        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${error instanceof Error ? error.message : error}), using session's own model`);
+        const message = error instanceof Error ? error.message : String(error);
+        if (isSelfCompaction) {
+          console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}) -- session's own model IS the fallback model, a retry would be identical; degrading to mechanical compaction`);
+          return { compaction: mechanicalCompactionFallback(event.preparation, message) };
+        }
+        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}), using session's own model`);
         return;
       }
     });
@@ -828,7 +893,7 @@ export class PiRuntime implements AgentRuntime {
       noExtensions: true,
       // Loaded regardless of noExtensions (disk-discovered extensions stay
       // off) — see compactionFallbackExtension above.
-      extensionFactories: [compactionFallbackExtension(model?.provider)],
+      extensionFactories: [compactionFallbackExtension(model?.provider, model?.name)],
       noSkills: true,
       // Keep Pi's template discovery enabled: AgentSession.prompt() expands
       // these itself when RoomService passes a native slash command through.
