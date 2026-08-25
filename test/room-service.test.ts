@@ -994,40 +994,6 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
 });
 
-test("/execute runs `new` on ONE agent — drops its own session, prints a visible line, room + others intact", async () => {
-  const { service, root, runtimes } = await makeService();
-  // Default agents = [gaia, terry]; make terry the active agent.
-  await service.room.updateState((state) => {
-    state.activeAgent = "terry";
-  });
-  await service.sendMessage("history to keep", { targets: ["terry"] });
-  await service.waitForIdle();
-
-  const task = await service.sendMessage("/execute   bug: whatever");
-  assert.equal(task.status, "complete");
-
-  // Only the active agent's harness session was reset (the pi `new`).
-  assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 1], "only the active agent's session is dropped");
-
-  // The line is VISIBLE: appended to the transcript + shows the agent and reason.
-  const room = await RoomHandle.open(root, "default");
-  const { events } = await room.eventsFrom(0);
-  assert.ok(events.length > 0, "execute does not wipe the room");
-  const line = events.at(-1) as { author: string; text: string };
-  assert.equal(line.author, "system");
-  assert.match(line.text, /⚖ @terry executed — bug: whatever/, "prints the agent + reason on the wall");
-});
-
-test("/execute with no active agent prints a plain notice", async () => {
-  const { service, runtimes } = await makeService();
-  await service.room.updateState((state) => {
-    state.activeAgent = undefined;
-  });
-  const task = await service.sendMessage("/execute");
-  assert.equal(task.status, "complete");
-  assert.deepEqual([...runtimes.values()].map((runtime) => runtime.resets), [0, 0], "nothing reset when there is no active agent");
-});
-
 test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {
   const { service, root, runtimes } = await makeService();
   await service.sendMessage("keep this history");

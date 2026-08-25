@@ -200,34 +200,6 @@ const PARTIAL_FLUSH_MS = 1000;
 const BACKGROUND_TASK_MAX = 20;
 const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
-const EXECUTIONS_HEADER = "# Execution records\n";
-const DEFAULT_EXECUTIONS_FILE = join(homedir(), "projects", "law", "executions.md");
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
-  return path;
-}
-
-/** GAIA_EXECUTIONS_FILE overrides the law ledger; a defaulted parameter keeps
- * the environment boundary explicit and makes the resolver directly testable. */
-function executionsFile(configured = process.env.GAIA_EXECUTIONS_FILE): string {
-  return resolve(expandHome(configured?.trim() || DEFAULT_EXECUTIONS_FILE));
-}
-
-async function ensureExecutionsHeader(path: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  try {
-    const file = await open(path, "wx");
-    try {
-      await file.writeFile(EXECUTIONS_HEADER, "utf8");
-    } finally {
-      await file.close();
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-  }
-}
 
 /** `lsof` binary used to probe whether a tracked background process still has
  * a live writer on its output file (see backgroundTaskPids). Env-overridable —
@@ -387,7 +359,6 @@ const COMMANDS: Record<string, CommandHandler> = {
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
-  execute: (service, command) => (command.type === "execute" ? service.runExecuteCommand(command.reason) : Promise.resolve("")),
   refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
@@ -3636,21 +3607,6 @@ export class RoomService {
     this.recentTasks = [];
     await this.emitSnapshot();
     return "Cleared room history and reset all agent sessions.";
-  }
-
-  /** /execute records the room's active agent then takes the identical /clear
-   * path. A failed ledger write is deliberately a non-execution: leave room
-   * history and harness sessions intact. */
-  /** /execute: run `new` on ONE agent — drop its OWN harness chat session
-   * (per-runtime, runtimes are per-agent, so nothing else is touched) — and
-   * print a line. That's it. */
-  async runExecuteCommand(reason?: string): Promise<string> {
-    const state = await this.room.state();
-    const agent = state.activeAgent && this.workspace.agents[state.activeAgent] ? state.activeAgent : undefined;
-    if (!agent) return "No active agent to execute.";
-    this.runtimes[agent]?.resetRoom(this.roomId);
-    const why = reason?.replace(/\s+/g, " ").trim();
-    return why ? `⚖ @${agent} executed — ${why}` : `⚖ @${agent} executed`;
   }
 
   async runRefreshCommand(): Promise<string> {

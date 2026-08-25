@@ -16,7 +16,6 @@ export type SlashCommand =
   | { type: "pet"; action: "off"; agent?: string }
   | { type: "pet"; action: "list" }
   | { type: "clear" }
-  | { type: "execute"; reason?: string }
   | { type: "refresh" }
   | { type: "fork" }
   | { type: "setup"; sub?: string; id?: string; room?: string }
@@ -64,7 +63,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
   { name: "pet", type: "pet", description: "manage native desktop pets: /pet | /pet <package> | /pet @agent [<package>] | off [@agent] | list" },
   { name: "clear", type: "clear", description: "clear this room's history and reset agent sessions" },
-  { name: "execute", type: "execute", description: "record an execution in the law ledger, then clear this room: /execute [reason]" },
   {
     name: "refresh",
     type: "refresh",
@@ -180,8 +178,6 @@ export function parseCommand(input: string): SlashCommand {
       return args[0]?.toLowerCase() === "run" ? { type: "schedule", sub: "run", id: args[1] } : { type: "schedule", sub: "list" };
     case "steer":
       return { type: "steer", text: args.join(" ") || undefined };
-    case "execute":
-      return { type: "execute", reason: args.join(" ") || undefined };
     case "recall": {
       // Only an explicit @-prefix names an agent; anything else is the query.
       const hasAgent = args[0]?.startsWith("@") ?? false;
