@@ -328,45 +328,62 @@ export function mechanicalCompactionFallback(preparation: MechanicalCompactionIn
   };
 }
 
-function compactionFallbackExtension(agentModelProvider: string | undefined, agentModelName: string | undefined): ExtensionFactory {
-  return (pi) => {
-    if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return;
-    const isSelfCompaction = agentModelName === COMPACT_FALLBACK_MODEL.name;
-    pi.on("session_before_compact", async (event, ctx) => {
-      const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
-      if (!model) {
-        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} not in registry, using session's own model`);
-        return;
-      }
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        console.warn(`compact-fallback: no credentials for ${COMPACT_FALLBACK_MODEL.provider} (${auth.error}), using session's own model`);
-        return;
-      }
-      try {
-        const result = await generatePiCompaction(
-          event.preparation,
-          model,
-          auth.apiKey,
-          auth.headers,
-          event.customInstructions,
-          event.signal,
-          undefined,
-          undefined,
-          auth.env,
-        );
-        return { compaction: result };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (isSelfCompaction) {
-          console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}) -- session's own model IS the fallback model, a retry would be identical; degrading to mechanical compaction`);
-          return { compaction: mechanicalCompactionFallback(event.preparation, message) };
-        }
-        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}), using session's own model`);
-        return;
-      }
-    });
-  };
+// Pascal 08-25 (2nd pass, post-@terra /compact --edit landing): pi-ai's
+// emitHook (agent-harness.js) does NOT stop at the first defined hook
+// result -- it calls EVERY registered `session_before_compact` listener for
+// the event and keeps overwriting `lastResult` with whichever handler ran
+// LAST that returned something defined (verified by reading emitHook
+// directly, not assumed). Registering this fallback and the editable-draft
+// hook as two SEPARATE `pi.on(...)` listeners meant that for any
+// anthropic-provider agent, compactDraft/compactApply's `{cancel:true}` or
+// `{compaction:{...editedSummary}}` result got silently overwritten by this
+// fallback firing its OWN independent (and unwanted) LLM compaction call
+// right after it -- draft mode would look like a preview but actually commit
+// a DIFFERENT, unreviewed summary for real, and compactDraft would still
+// report `compacted:false` (a lie). Fix: this is now a plain function (no
+// `pi.on` of its own) that PiRuntime's single combined `compactionExtension`
+// below calls directly, so there is exactly one listener per session and no
+// ordering-dependent double-fire is possible.
+async function runCompactionFallback(
+  event: { preparation: unknown; customInstructions?: string; signal: AbortSignal },
+  ctx: { modelRegistry: { find(provider: string, name: string): Model<any> | undefined; getApiKeyAndHeaders(model: Model<any>): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } | { ok: false; error: string }> } },
+  agentModelProvider: string | undefined,
+  agentModelName: string | undefined,
+): Promise<{ compaction: CompactionResult } | undefined> {
+  if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return undefined;
+  const isSelfCompaction = agentModelName === COMPACT_FALLBACK_MODEL.name;
+  const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
+  if (!model) {
+    console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} not in registry, using session's own model`);
+    return undefined;
+  }
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) {
+    console.warn(`compact-fallback: no credentials for ${COMPACT_FALLBACK_MODEL.provider} (${auth.error}), using session's own model`);
+    return undefined;
+  }
+  try {
+    const result = await generatePiCompaction(
+      event.preparation as Parameters<typeof generatePiCompaction>[0],
+      model,
+      auth.apiKey,
+      auth.headers,
+      event.customInstructions,
+      event.signal,
+      undefined,
+      undefined,
+      auth.env,
+    );
+    return { compaction: result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isSelfCompaction) {
+      console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}) -- session's own model IS the fallback model, a retry would be identical; degrading to mechanical compaction`);
+      return { compaction: mechanicalCompactionFallback(event.preparation as MechanicalCompactionInput, message) };
+    }
+    console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}), using session's own model`);
+    return undefined;
+  }
 }
 
 /** Text payload from Pi's SDK user-message event. Skill expansion always emits
@@ -763,14 +780,18 @@ export class PiRuntime implements AgentRuntime {
     return /compaction cancelled/i.test(error instanceof Error ? error.message : String(error));
   }
 
-  /** A loaded extension is session-scoped, so this closure captures its room.
-   * It is one-shot by reading pendingCompactOperations; ordinary compactions
-   * fall through to Pi (and its normal fallback extension) untouched. */
-  private editableCompactionExtension(roomId: string): ExtensionFactory {
+  /** ONE `session_before_compact` listener per session (see the 08-25 2nd-pass
+   * comment above runCompactionFallback for why this must not be two separate
+   * `pi.on` registrations: emitHook lets every listener run and keeps the
+   * LAST defined result, so a second listener can silently clobber this
+   * one's cancel/override). Editable-draft/apply takes priority when this
+   * room has a pending operation; otherwise this delegates to the ordinary
+   * same-provider LLM-refusal fallback, unchanged behavior for plain /compact. */
+  private compactionExtension(roomId: string, agentModelProvider: string | undefined, agentModelName: string | undefined): ExtensionFactory {
     return (pi) => {
       pi.on("session_before_compact", async (event, ctx) => {
         const operation = this.pendingCompactOperations.get(roomId);
-        if (!operation) return;
+        if (!operation) return runCompactionFallback(event, ctx, agentModelProvider, agentModelName);
         if (operation.kind === "apply") {
           return {
             compaction: {
@@ -973,7 +994,7 @@ export class PiRuntime implements AgentRuntime {
       noExtensions: true,
       // Loaded regardless of noExtensions (disk-discovered extensions stay
       // off) — see compactionFallbackExtension above.
-      extensionFactories: [this.editableCompactionExtension(roomId), compactionFallbackExtension(model?.provider, model?.name)],
+      extensionFactories: [this.compactionExtension(roomId, model?.provider, model?.name)],
       noSkills: true,
       // Keep Pi's template discovery enabled: AgentSession.prompt() expands
       // these itself when RoomService passes a native slash command through.
