@@ -21,7 +21,6 @@ import { state } from "./state.js";
 
 const WAVE_BARS = 28;
 const METER_THROTTLE_MS = 100;
-const MAX_RECORD_MS = 5 * 60 * 1000;
 const FINISH_WATCHDOG_MS = 1500;
 // After stopping, how long to wait for the chunk-upload chain to flush before
 // giving up on the server-side clip file and uploading the full in-memory
@@ -30,7 +29,7 @@ const FINISH_WATCHDOG_MS = 1500;
 // the recording is cut off.
 const UPLOAD_FLUSH_WATCHDOG_MS = 2000;
 // A dictation result must appear promptly, but STT latency scales with clip
-// length: a real ~5min (MAX_RECORD_MS) clip measured 17s round-trip through
+// length: a real ~5min clip measured 17s round-trip through
 // ElevenLabs Scribe directly (2026-07-13). 12_000 was too aggressive — it
 // aborted genuinely-in-flight (not hung) transcriptions of ordinary-length
 // recordings, surfacing as a spurious "Fetch is aborted" failure chip even
@@ -160,7 +159,6 @@ async function startDictation() {
       .then(() => undefined, () => undefined);
   };
   recorder.start(1000);
-  current.timerId = window.setTimeout(() => void stopAndTranscribe(), MAX_RECORD_MS);
   markDirty("composer");
 }
 
