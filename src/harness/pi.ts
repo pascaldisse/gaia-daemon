@@ -328,45 +328,62 @@ export function mechanicalCompactionFallback(preparation: MechanicalCompactionIn
   };
 }
 
-function compactionFallbackExtension(agentModelProvider: string | undefined, agentModelName: string | undefined): ExtensionFactory {
-  return (pi) => {
-    if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return;
-    const isSelfCompaction = agentModelName === COMPACT_FALLBACK_MODEL.name;
-    pi.on("session_before_compact", async (event, ctx) => {
-      const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
-      if (!model) {
-        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} not in registry, using session's own model`);
-        return;
-      }
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        console.warn(`compact-fallback: no credentials for ${COMPACT_FALLBACK_MODEL.provider} (${auth.error}), using session's own model`);
-        return;
-      }
-      try {
-        const result = await generatePiCompaction(
-          event.preparation,
-          model,
-          auth.apiKey,
-          auth.headers,
-          event.customInstructions,
-          event.signal,
-          undefined,
-          undefined,
-          auth.env,
-        );
-        return { compaction: result };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (isSelfCompaction) {
-          console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}) -- session's own model IS the fallback model, a retry would be identical; degrading to mechanical compaction`);
-          return { compaction: mechanicalCompactionFallback(event.preparation, message) };
-        }
-        console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}), using session's own model`);
-        return;
-      }
-    });
-  };
+// Pascal 08-25 (2nd pass, post-@terra /compact --edit landing): pi-ai's
+// emitHook (agent-harness.js) does NOT stop at the first defined hook
+// result -- it calls EVERY registered `session_before_compact` listener for
+// the event and keeps overwriting `lastResult` with whichever handler ran
+// LAST that returned something defined (verified by reading emitHook
+// directly, not assumed). Registering this fallback and the editable-draft
+// hook as two SEPARATE `pi.on(...)` listeners meant that for any
+// anthropic-provider agent, compactDraft/compactApply's `{cancel:true}` or
+// `{compaction:{...editedSummary}}` result got silently overwritten by this
+// fallback firing its OWN independent (and unwanted) LLM compaction call
+// right after it -- draft mode would look like a preview but actually commit
+// a DIFFERENT, unreviewed summary for real, and compactDraft would still
+// report `compacted:false` (a lie). Fix: this is now a plain function (no
+// `pi.on` of its own) that PiRuntime's single combined `compactionExtension`
+// below calls directly, so there is exactly one listener per session and no
+// ordering-dependent double-fire is possible.
+async function runCompactionFallback(
+  event: { preparation: unknown; customInstructions?: string; signal: AbortSignal },
+  ctx: { modelRegistry: { find(provider: string, name: string): Model<any> | undefined; getApiKeyAndHeaders(model: Model<any>): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } | { ok: false; error: string }> } },
+  agentModelProvider: string | undefined,
+  agentModelName: string | undefined,
+): Promise<{ compaction: CompactionResult } | undefined> {
+  if (agentModelProvider !== COMPACT_FALLBACK_MODEL.provider) return undefined;
+  const isSelfCompaction = agentModelName === COMPACT_FALLBACK_MODEL.name;
+  const model = findModelWithAlias(ctx.modelRegistry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name);
+  if (!model) {
+    console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} not in registry, using session's own model`);
+    return undefined;
+  }
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) {
+    console.warn(`compact-fallback: no credentials for ${COMPACT_FALLBACK_MODEL.provider} (${auth.error}), using session's own model`);
+    return undefined;
+  }
+  try {
+    const result = await generatePiCompaction(
+      event.preparation as Parameters<typeof generatePiCompaction>[0],
+      model,
+      auth.apiKey,
+      auth.headers,
+      event.customInstructions,
+      event.signal,
+      undefined,
+      undefined,
+      auth.env,
+    );
+    return { compaction: result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isSelfCompaction) {
+      console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}) -- session's own model IS the fallback model, a retry would be identical; degrading to mechanical compaction`);
+      return { compaction: mechanicalCompactionFallback(event.preparation as MechanicalCompactionInput, message) };
+    }
+    console.warn(`compact-fallback: ${COMPACT_FALLBACK_MODEL.name} summarization failed (${message}), using session's own model`);
+    return undefined;
+  }
 }
 
 /** Text payload from Pi's SDK user-message event. Skill expansion always emits
@@ -402,6 +419,7 @@ const PI_CAPABILITIES: HarnessCapabilities = {
   supportsMcp: false,
   supportsSteer: true,
   supportsCompact: true,
+  supportsCompactEdit: true,
   // Pi's own session.sessionManager.createBranchedSession/newSession branch
   // the persisted session to a NEW file at a prior user entry (see
   // PiRuntime.forkAtMessage) — unlike claude/codex, dropping the in-memory
@@ -429,6 +447,10 @@ export class PiRuntime implements AgentRuntime {
   private readonly recallSearch?: RecallSearch;
   private readonly toolResultFetch?: ToolResultFetch;
   private readonly contextDiet?: ContextDietAccess;
+  /** Drafts live only for this runner lifetime; applying after a runner restart
+   * intentionally asks the caller to make a fresh draft. */
+  private readonly pendingCompactDrafts = new Map<string, CompactionResult>();
+  private readonly pendingCompactOperations = new Map<string, { kind: "draft" | "apply"; editedSummary?: string }>();
   // ModelRuntime.create() is async (it can touch the network for catalog
   // refresh), but HarnessSpec.create() must return synchronously — so
   // construction kicks it off here and every path that touches the registry
@@ -653,87 +675,166 @@ export class PiRuntime implements AgentRuntime {
     return true;
   }
 
-  /** Native pi compaction (backs /compact). The SDK call aborts any running
-   * prompt first and emits compaction_start/end on the session stream. The
-   * SDK's own summary of the evicted history rides back on CompactResult so
-   * the daemon persists it (durable compaction — a later session loss reloads
-   * [summary + tail] instead of raw history).
-   *
-   * A cold daemon restart (or a fresh runner spawned solely to compact — see
-   * host.ts's hasDurableSession pre-spawn gate) starts this process's
-   * SessionMap empty even though a resumable session sits on disk: this
-   * process never ran a turn for the room, so ensureSession was never called.
-   * Lazily restore it here via the SAME session-creation core a turn uses,
-   * just without a turn's activeRole (this command carries only roomId — no
-   * room state crosses the runner boundary for /compact) — a role-less
-   * system prompt is fine because compact never sends a prompt, and the next
-   * real turn's own roleKey mismatch already forces the correct rebuild
-   * (SessionMap.systemPrompt + skillPathsKey diff in ensureSession). Only when
-   * there is truly nothing on disk do we return the clean no-op. */
+  /** Native pi compaction (backs /compact). */
   async compact(roomId: string): Promise<CompactResult> {
+    const session = await this.sessionForCompaction(roomId);
+    if (!session) return NO_SESSION_TO_COMPACT;
+    try {
+      return this.toCompactResult(await this.runNativeCompaction(session));
+    } catch (error) {
+      const noOp = this.compactionNoOp(error);
+      if (noOp) return noOp;
+      throw error;
+    }
+  }
+
+  /** Generate the same Pi compaction summary, but cancel before Pi persists its
+   * compaction entry. The permanent extension is inert outside this one call. */
+  async compactDraft(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }> {
+    const session = await this.sessionForCompaction(roomId);
+    if (!session) return NO_SESSION_TO_COMPACT;
+    this.pendingCompactDrafts.delete(roomId);
+    this.pendingCompactOperations.set(roomId, { kind: "draft" });
+    try {
+      await this.runNativeCompaction(session);
+    } catch (error) {
+      if (!this.isCompactionCancelled(error)) {
+        const noOp = this.compactionNoOp(error);
+        if (!noOp) throw error;
+        return noOp;
+      }
+    } finally {
+      this.pendingCompactOperations.delete(roomId);
+    }
+    const draft = this.pendingCompactDrafts.get(roomId);
+    if (!draft) throw new Error("compaction draft was cancelled before a summary was captured");
+    return { compacted: false, message: "draft ready", summary: draft.summary };
+  }
+
+  /** Apply a reviewed draft against a FRESH Pi preparation, so only the prose
+   * is stale-proof user input; cut point and token accounting stay live. */
+  async compactApply(roomId: string, editedSummary: string): Promise<CompactResult> {
+    if (!this.pendingCompactDrafts.has(roomId)) throw new Error("no draft — run /compact --edit first");
+    const session = await this.sessionForCompaction(roomId);
+    if (!session) {
+      this.pendingCompactDrafts.delete(roomId);
+      return NO_SESSION_TO_COMPACT;
+    }
+    this.pendingCompactOperations.set(roomId, { kind: "apply", editedSummary });
+    try {
+      return this.toCompactResult(await this.runNativeCompaction(session));
+    } catch (error) {
+      const noOp = this.compactionNoOp(error);
+      if (noOp) return noOp;
+      throw error;
+    } finally {
+      this.pendingCompactOperations.delete(roomId);
+      this.pendingCompactDrafts.delete(roomId);
+    }
+  }
+
+  private async sessionForCompaction(roomId: string): Promise<PiSessionLike | undefined> {
     let meta = this.sessions.get(roomId);
     if (!meta) {
-      if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return NO_SESSION_TO_COMPACT;
+      if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return undefined;
       meta = await this.ensureSession(roomId, undefined);
     }
-    const session = meta.session;
-    if (!session.compact) return NO_SESSION_TO_COMPACT;
+    return meta.session.compact ? meta.session : undefined;
+  }
 
-    const toResult = (result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number }): CompactResult => {
-      const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
-      return {
-        compacted: true,
-        message: `session compacted (${result.tokensBefore} tokens before${after}).`,
-        ...(result.summary ? { summary: result.summary } : {}),
-      };
+  private toCompactResult(result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number }): CompactResult {
+    const after = result.estimatedTokensAfter !== undefined ? ` → ~${result.estimatedTokensAfter}` : "";
+    return {
+      compacted: true,
+      message: `session compacted (${result.tokensBefore} tokens before${after}).`,
+      ...(result.summary ? { summary: result.summary } : {}),
     };
+  }
 
+  /** Pi's explicit compact retry: its default 20k kept tail may leave no cut
+   * point even though the caller explicitly asked to shrink the session. */
+  private async runNativeCompaction(session: PiSessionLike): Promise<{ summary: string; tokensBefore: number; estimatedTokensAfter?: number }> {
     try {
-      return toResult(await session.compact());
+      return await session.compact!();
     } catch (error) {
-      // pi-ai's own session.compact() throws (rather than returning a result)
-      // when its cutPoint search finds nothing outside the always-kept "recent"
-      // window (default keepRecentTokens: 20000 tokens — see
-      // @earendil-works/pi-coding-agent dist/core/compaction/compaction.js
-      // prepareCompaction/findCutPoint). "Already compacted" (last entry is a
-      // compaction boundary) is a real no-op. But "too small" only means the
-      // WHOLE session fits under that 20000-token floor — NOT that there's
-      // nothing worth trimming: for an EXPLICIT /compact the user wants it
-      // shrunk NOW (a poisoned/heavy tail the model keeps re-reading, a room
-      // that won't reply). So retry ONCE with a small forced recent-keep window
-      // (FORCE_COMPACT_KEEP_RECENT_TOKENS) so findCutPoint has something to cut,
-      // then restore the real floor — the override is in-memory only
-      // (applyOverrides never writes to disk, safe on the read-only manager).
-      // This is not a session-loss/restore bug (that case is NO_SESSION_TO_COMPACT
-      // above, fixed by 64cff59's lazy restore).
-      const msg = error instanceof Error ? error.message : String(error);
-      if (/already compacted/i.test(msg)) {
-        return { compacted: false, message: `nothing to compact — ${msg.toLowerCase()}.` };
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/too small/i.test(message) || !session.settingsManager) throw error;
+      const original = session.settingsManager.getCompactionKeepRecentTokens();
+      session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: FORCE_COMPACT_KEEP_RECENT_TOKENS } });
+      try {
+        return await session.compact!();
+      } finally {
+        session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: original } });
       }
-      if (!/too small/i.test(msg)) throw error;
-
-      // "too small" = the whole session fits under pi's 20000-token
-      // keepRecentTokens floor. For an EXPLICIT /compact the user still wants it
-      // shrunk, so retry once with a small forced recent-keep window so
-      // findCutPoint has something to cut, then restore the real floor (the
-      // override is in-memory only — applyOverrides never writes to disk). If we
-      // can't reach the settings manager, or even the forced window finds
-      // nothing (a genuinely tiny one-turn session), fall through to the same
-      // clean no-op contract the other harnesses use.
-      if (session.settingsManager) {
-        const original = session.settingsManager.getCompactionKeepRecentTokens();
-        session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: FORCE_COMPACT_KEEP_RECENT_TOKENS } });
-        try {
-          return toResult(await session.compact());
-        } catch (retryError) {
-          const rmsg = retryError instanceof Error ? retryError.message : String(retryError);
-          if (!/too small/i.test(rmsg) && !/already compacted/i.test(rmsg)) throw retryError;
-        } finally {
-          session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: original } });
-        }
-      }
-      return { compacted: false, message: `nothing to compact — ${msg.toLowerCase()}.` };
     }
+  }
+
+  private compactionNoOp(error: unknown): CompactResult | undefined {
+    const message = error instanceof Error ? error.message : String(error);
+    return /already compacted|too small/i.test(message)
+      ? { compacted: false, message: `nothing to compact — ${message.toLowerCase()}.` }
+      : undefined;
+  }
+
+  private isCompactionCancelled(error: unknown): boolean {
+    return /compaction cancelled/i.test(error instanceof Error ? error.message : String(error));
+  }
+
+  /** ONE `session_before_compact` listener per session (see the 08-25 2nd-pass
+   * comment above runCompactionFallback for why this must not be two separate
+   * `pi.on` registrations: emitHook lets every listener run and keeps the
+   * LAST defined result, so a second listener can silently clobber this
+   * one's cancel/override). Editable-draft/apply takes priority when this
+   * room has a pending operation; otherwise this delegates to the ordinary
+   * same-provider LLM-refusal fallback, unchanged behavior for plain /compact. */
+  private compactionExtension(roomId: string, agentModelProvider: string | undefined, agentModelName: string | undefined): ExtensionFactory {
+    return (pi) => {
+      pi.on("session_before_compact", async (event, ctx) => {
+        const operation = this.pendingCompactOperations.get(roomId);
+        if (!operation) return runCompactionFallback(event, ctx, agentModelProvider, agentModelName);
+        if (operation.kind === "apply") {
+          return {
+            compaction: {
+              summary: operation.editedSummary ?? "",
+              firstKeptEntryId: event.preparation.firstKeptEntryId,
+              tokensBefore: event.preparation.tokensBefore,
+              details: this.compactionDetails(event.preparation),
+            },
+          };
+        }
+        try {
+          if (!ctx.model) throw new Error("no model set for compaction");
+          const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+          if (!auth.ok) throw new Error(auth.error);
+          const generated = await generatePiCompaction(
+            event.preparation,
+            ctx.model,
+            auth.apiKey,
+            auth.headers,
+            event.customInstructions,
+            event.signal,
+            undefined,
+            undefined,
+            auth.env,
+          );
+          this.pendingCompactDrafts.set(roomId, generated);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.pendingCompactDrafts.set(roomId, mechanicalCompactionFallback(event.preparation, message));
+        }
+        // Pi recognizes this exact cancellation as a clean draft boundary; it
+        // must not append a compaction entry or evict the live context.
+        return { cancel: true };
+      });
+    };
+  }
+
+  private compactionDetails(preparation: MechanicalCompactionInput): { readFiles: string[]; modifiedFiles: string[] } {
+    const modified = new Set<string>([...preparation.fileOps.edited, ...preparation.fileOps.written]);
+    return {
+      readFiles: [...preparation.fileOps.read].filter((file) => !modified.has(file)).sort(),
+      modifiedFiles: [...modified].sort(),
+    };
   }
 
   /** Native pi fork (backs edit/retry — capabilities.supportsForkAtMessage).
@@ -893,7 +994,7 @@ export class PiRuntime implements AgentRuntime {
       noExtensions: true,
       // Loaded regardless of noExtensions (disk-discovered extensions stay
       // off) — see compactionFallbackExtension above.
-      extensionFactories: [compactionFallbackExtension(model?.provider, model?.name)],
+      extensionFactories: [this.compactionExtension(roomId, model?.provider, model?.name)],
       noSkills: true,
       // Keep Pi's template discovery enabled: AgentSession.prompt() expands
       // these itself when RoomService passes a native slash command through.

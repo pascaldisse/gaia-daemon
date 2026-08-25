@@ -513,6 +513,56 @@ test("PiRuntime.compact surfaces the SDK's summary for durable compaction", asyn
   }
 });
 
+test("PiRuntime.compactDraft captures a summary without evicting, then compactApply commits the edited text", async () => {
+  const fx = await harnessFixture();
+  try {
+    let evictions = 0;
+    let committedSummary: string | undefined;
+    const factory: PiRuntimeSessionFactory = async ({ loader }) => {
+      await loader.reload();
+      const session = new FakeSession("s1");
+      const hook = loader.getExtensions().extensions[0]!.handlers.get("session_before_compact")![0]!;
+      const preparation = {
+        firstKeptEntryId: "fresh-cut",
+        tokensBefore: 900,
+        messagesToSummarize: [], turnPrefixMessages: [], retainedTail: [],
+        fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+      };
+      session.compact = async () => {
+        const result = await hook({ preparation }, { model: undefined });
+        if (result?.cancel) throw new Error("Compaction cancelled");
+        evictions += 1;
+        committedSummary = result?.compaction?.summary ?? "generated summary";
+        return { summary: committedSummary, tokensBefore: preparation.tokensBefore };
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    const draft = await runtime.compactDraft("default");
+    assert.equal(draft.compacted, false);
+    assert.match(draft.summary ?? "", /Mechanical compaction/);
+    assert.equal(evictions, 0, "draft cancellation leaves Pi's live session intact");
+    const applied = await runtime.compactApply("default", "OWNER-EDITED-SUMMARY");
+    assert.equal(applied.compacted, true);
+    assert.equal(applied.summary, "OWNER-EDITED-SUMMARY");
+    assert.equal(committedSummary, "OWNER-EDITED-SUMMARY", "apply must not reuse the draft prose");
+    assert.equal(evictions, 1);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+test("PiRuntime.compactApply rejects clearly without a pending draft", async () => {
+  const fx = await harnessFixture();
+  try {
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore() });
+    await assert.rejects(runtime.compactApply("default", "edited"), /no draft — run \/compact --edit first/);
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
 test("PiRuntime.compact turns pi-ai's 'session too small' throw into a clean no-op instead of a scary failure", async () => {
   const fx = await harnessFixture();
   try {

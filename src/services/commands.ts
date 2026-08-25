@@ -21,7 +21,7 @@ export type SlashCommand =
   | { type: "setup"; sub?: string; id?: string; room?: string }
   | { type: "consolidate"; agent?: string }
   | { type: "dream"; agent?: string; apply?: boolean }
-  | { type: "compact"; agent?: string }
+  | { type: "compact"; agent?: string; edit?: boolean | string }
 | { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
@@ -72,7 +72,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "setup", type: "setup", description: "load a saved multi-agent setup into this room: /setup activate <id>" },
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
-  { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent]" },
+  { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent] | /compact --edit [text]" },
 {
     name: "diet",
     type: "diet",
@@ -166,8 +166,16 @@ export function parseCommand(input: string): SlashCommand {
       const agent = stripped.find((arg) => arg.toLowerCase() !== "--apply");
       return { type: "dream", agent: agent || undefined, apply };
     }
-    case "compact":
-      return { type: "compact", agent: stripped[0] || undefined };
+    case "compact": {
+      const editAt = args.findIndex((arg) => arg.toLowerCase() === "--edit");
+      if (editAt < 0) return { type: "compact", agent: stripped[0] || undefined };
+      const edited = args.slice(editAt + 1).join(" ");
+      return {
+        type: "compact",
+        agent: stripped.slice(0, editAt)[0] || undefined,
+        edit: edited || true,
+      };
+    }
     case "diet": {
       const scope: "room" | "workspace" = args.some((arg) => arg.toLowerCase() === "--workspace") ? "workspace" : "room";
       const first = stripped.find((arg) => arg.toLowerCase() !== "--workspace")?.toLowerCase();
