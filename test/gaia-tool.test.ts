@@ -186,22 +186,19 @@ test("gaia tool's outer schema: verb enum lists every registered verb, and args 
   assert.deepEqual(schema.required, ["verb", "args"]);
   assert.equal(schema.properties.args.type, "object");
   assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch"]);
-  // Typed shapes stay nested under the root args property: legacy Anthropic
-  // conversion preserves them, while Claude Code MCP accepts this anyOf form.
-  const variants = schema.properties.args.anyOf;
-  assert.ok(Array.isArray(variants) && variants.length >= 12);
-  const editBranch = variants.find((entry: any) => entry.description.startsWith("Arguments when verb is edit."));
-  assert.ok(editBranch, "edit has a typed args variant");
-  assert.deepEqual(editBranch.required, ["path", "edits"]);
-  const readBranch = variants.find((entry: any) => entry.description.startsWith("Arguments when verb is read."));
-  assert.ok(readBranch, "read has a typed args variant");
-  assert.deepEqual(readBranch.properties.detail.enum, ["low", "med", "high", "full"]);
-  assert.equal(readBranch.properties.region.pattern, "^[A-C][1-3]$");
-  assert.equal(readBranch.properties.native.type, "boolean");
-  const wireSchema = JSON.stringify(schema);
-  assert.doesNotMatch(wireSchema, /"if"\s*:/);
-  assert.doesNotMatch(wireSchema, /"then"\s*:/);
-  assert.doesNotMatch(wireSchema, /"const"\s*:/);
+  // Per-verb typed branches ride as allOf/if-then — sibling to (never replacing)
+  // the top-level properties, so a consumer that only reads schema.properties/
+  // schema.required (pi-ai's Anthropic non-strict legacyInputSchema path) still
+  // sees a correct, non-empty object schema.
+  assert.ok(Array.isArray(schema.allOf) && schema.allOf.length >= 9);
+  const editBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "edit");
+  assert.ok(editBranch, "edit has a typed allOf/if-then branch");
+  assert.deepEqual(editBranch.then.properties.args.required, ["path", "edits"]);
+  const readBranch = schema.allOf.find((entry: any) => entry.if.properties.verb.const === "read");
+  assert.ok(readBranch, "read has a typed allOf/if-then branch");
+  assert.deepEqual(readBranch.then.properties.args.properties.detail.enum, ["low", "med", "high", "full"]);
+  assert.equal(readBranch.then.properties.args.properties.region.pattern, "^[A-C][1-3]$");
+  assert.equal(readBranch.then.properties.args.properties.native.type, "boolean");
 });
 
 test("gaia formats above the configurable threshold in deterministic gaiago and raw bypasses it", async () => {
