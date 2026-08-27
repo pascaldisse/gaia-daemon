@@ -1001,6 +1001,7 @@ export class PiRuntime implements AgentRuntime {
   }
 
   private async createSessionMeta(roomId: string, systemPrompt: string, skillPaths: string[], key: string): Promise<PiSessionMeta> {
+    const model = this.resolveModel();
     const roomDir = workspacePaths.roomDir(this.workspace.rootDir, roomId);
     const customTools = await buildPiTools(this.agent.tools, {
       memoryStore: this.memoryStore,
@@ -1022,13 +1023,10 @@ export class PiRuntime implements AgentRuntime {
       cwd: this.workDir,
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
-      // Packages installed in this runner's isolated PI_CODING_AGENT_DIR may
-      // register model providers. Load them before resolving the configured
-      // provider/model; runner isolation keeps unrelated global extensions out.
-      noExtensions: Boolean(this.sessionFactory),
-      extensionFactories: [
-        this.compactionExtension(roomId, this.agent.model?.provider, this.agent.model?.name),
-      ],
+      noExtensions: true,
+      // Loaded regardless of noExtensions (disk-discovered extensions stay
+      // off) — see compactionFallbackExtension above.
+      extensionFactories: [this.compactionExtension(roomId, model?.provider, model?.name)],
       noSkills: true,
       // Keep Pi's template discovery enabled: AgentSession.prompt() expands
       // these itself when RoomService passes a native slash command through.
@@ -1051,23 +1049,7 @@ export class PiRuntime implements AgentRuntime {
         ? { systemPromptOverride: () => systemPromptRef.current, appendSystemPromptOverride: () => [] }
         : { appendSystemPromptOverride: () => [systemPromptRef.current] }),
     });
-    if (!this.sessionFactory) {
-      await loader.reload();
-      // Match Pi's createAgentSessionServices order: provider declarations are
-      // pending after resource loading and must enter ModelRuntime before the
-      // configured extension model can be resolved.
-      const extensionRuntime = loader.getExtensions().runtime;
-      for (const { name, config } of extensionRuntime.pendingProviderRegistrations) {
-        this.modelRuntime.registerProvider(name, config);
-      }
-      extensionRuntime.pendingProviderRegistrations = [];
-      for (const { provider } of extensionRuntime.pendingNativeProviderRegistrations) {
-        this.modelRuntime.registerNativeProvider(provider);
-      }
-      extensionRuntime.pendingNativeProviderRegistrations = [];
-      await this.modelRuntime.refresh({ allowNetwork: false });
-    }
-    const model = this.resolveModel();
+    if (!this.sessionFactory) await loader.reload();
 
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
