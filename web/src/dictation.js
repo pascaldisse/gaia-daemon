@@ -16,6 +16,7 @@
 // A failed clip also stays in a module variable so the user can retry or
 // discard it without a round trip to the server.
 import { apiUrl } from "./api.js";
+import { transcriptionTimeoutMs } from "./dictation-timeout.js";
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 
@@ -28,15 +29,9 @@ const FINISH_WATCHDOG_MS = 1500;
 // has landed — otherwise the daemon reads a truncated file and the tail of
 // the recording is cut off.
 const UPLOAD_FLUSH_WATCHDOG_MS = 2000;
-// A dictation result must appear promptly, but STT latency scales with clip
-// length: a real ~5min clip measured 17s round-trip through
-// ElevenLabs Scribe directly (2026-07-13). 12_000 was too aggressive — it
-// aborted genuinely-in-flight (not hung) transcriptions of ordinary-length
-// recordings, surfacing as a spurious "Fetch is aborted" failure chip even
-// though the STT call would have succeeded a few seconds later. 45s keeps
-// comfortable headroom (~2.6x the measured worst case) while still failing
-// well before an actually-unhealthy STT provider would hang the composer.
-const TRANSCRIBE_TIMEOUT_MS = 45_000;
+// The daemon owns the provider deadline (120s). Keep the browser budget past
+// it: otherwise a slow-but-valid provider becomes the misleading client-side
+// "Fetch is aborted" error before the daemon can return its result/error.
 
 /** @param {number} ms @returns {AbortSignal|undefined} */
 function fetchTimeout(ms) {
@@ -260,7 +255,7 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
   state.dictationError = "";
   markDirty("composer");
 
-  const { signal, settle } = requestSignal(TRANSCRIBE_TIMEOUT_MS);
+  const { signal, settle } = requestSignal(transcriptionTimeoutMs());
   try {
     // Prefer the clip already streamed to the daemon during recording (no
     // second upload of the audio) — but ONLY when the upload chain confirmed
@@ -518,7 +513,7 @@ export async function refreshRecoveredClips() {
  * @returns {Promise<boolean>}
  */
 export async function transcribeRecoveredClip(id) {
-  const { signal, settle } = requestSignal(TRANSCRIBE_TIMEOUT_MS);
+  const { signal, settle } = requestSignal(transcriptionTimeoutMs());
   try {
     const result = await postClipTranscribe(id, undefined, signal);
     if (result.ok) {
