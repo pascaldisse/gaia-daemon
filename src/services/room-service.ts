@@ -669,7 +669,7 @@ export class RoomService {
   /** Agent tool entry: persist a visible goodbye before aborting its runner.
    * The next human message to that agent clears this state in sendMessage(). */
   async endConversation(agentId: string, farewell: string): Promise<string> {
-    if (!this.workspace.config.agentEndConversation) throw new Error("Agent-initiated conversation ending is disabled by workspace config.");
+    if (this.workspace.config.agentEndConversation === false) throw new Error("Agent-initiated conversation ending is disabled by workspace config.");
     const text = farewell.trim();
     if (!text) throw new Error("farewell is required.");
     const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: agentId, text };

@@ -3359,3 +3359,28 @@ test("toolResultSlice: pages back the original call/args/result for a tool call 
   assert.equal(await service.toolResultSlice("gaia", reply.id, "no-such-tool", 0, 100), undefined);
   assert.equal(await service.toolResultSlice("gaia", "no-such-event", "tool-1", 0, 100), undefined);
 });
+
+test("agent conversation ending is visible, suppresses automatic turns, and a user message reactivates it", async () => {
+  const { service, runtimes } = await makeService({ script: () => [{ type: "text-delta", delta: "reply" } as AgentEvent] });
+  const farewell = "All set — goodbye for now.";
+  await service.endConversation("gaia", farewell);
+  assert.equal((await service.room.state()).conversationEndedAgents?.gaia !== undefined, true);
+  assert.equal((await service.room.eventsFrom(0)).events.at(-1)?.text, farewell, "farewell is a durable visible room event");
+
+  // This is agent-originated work, not a human callback: it must be discarded.
+  await service.room.enqueue({ taskId: "automatic-gaia", text: "continue", targets: ["gaia"], fromAgentDialogue: true, queuedAt: new Date().toISOString() });
+  await service.sendMessage("@terry carry on");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("gaia")?.sends, 0, "ended agent receives no automatic turn");
+
+  await service.sendMessage("@gaia please come back");
+  await service.waitForIdle();
+  assert.equal(runtimes.get("gaia")?.sends, 1, "a user message reactivates the agent");
+  assert.equal((await service.room.state()).conversationEndedAgents?.gaia, undefined);
+});
+
+test("agent conversation ending honors the workspace feature flag", async () => {
+  const { service } = await makeService({ config: { agentEndConversation: false } });
+  await assert.rejects(() => service.endConversation("gaia", "Goodbye."), /disabled by workspace config/);
+  assert.equal((await service.room.eventsFrom(0)).events.length, 0);
+});

@@ -185,7 +185,7 @@ test("gaia tool's outer schema: verb enum lists every registered verb, and args 
   assert.equal(schema.type, "object");
   assert.deepEqual(schema.required, ["verb", "args"]);
   assert.equal(schema.properties.args.type, "object");
-  assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch"]);
+  assert.deepEqual(schema.properties.verb.enum, ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch", "end_conversation"]);
   // Typed shapes stay nested under the root args property: legacy Anthropic
   // conversion preserves them, while Claude Code MCP accepts this anyOf form.
   const variants = schema.properties.args.anyOf;
@@ -265,4 +265,17 @@ test("gaia tool_result_fetch verb: pages back via ctx.toolResultFetch, requires 
   const noCtx: any = createGaiaTool({ memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir });
   const unavailable = text(await noCtx.execute("u", { verb: "tool_result_fetch", args: { sessionId: "e1", entryId: "t1" }, raw: true }));
   assert.match(unavailable, /ERROR: tool_result_fetch is unavailable/);
+});
+
+test("gaia end_conversation validates farewell and reaches the room bridge", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gaia-end-"));
+  const calls: string[] = [];
+  const tool: any = createGaiaTool({
+    memoryStore: new MemoryStore(), agent: { id: "a", memoryDir: dir } as AgentDef, roomId: "r", roomDir: dir, workDir: dir,
+    endConversation: async ({ farewell }: { farewell: string }) => { calls.push(farewell); return "ended"; },
+  });
+  assert.equal(text(await tool.execute("end", { verb: "end_conversation", args: { farewell: "Goodbye." }, raw: true })), "ended");
+  assert.deepEqual(calls, ["Goodbye."]);
+  const invalid = await tool.execute("end-invalid", { verb: "end_conversation", args: {}, raw: true });
+  assert.match(text(invalid), /^ERROR: gaia end_conversation args invalid/);
 });
