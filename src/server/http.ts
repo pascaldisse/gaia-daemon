@@ -711,6 +711,7 @@ export class GaiaWebServer {
           path === "/api/harness/summon/status" ||
           path === "/api/harness/tool-result-fetch" ||
           path === "/api/harness/context-diet" ||
+          path === "/api/harness/end-conversation" ||
           path === "/api/harness/dog"))
     ) {
       return this.handleHarness(request, response, path);
@@ -1643,13 +1644,14 @@ export class GaiaWebServer {
       | "resume"
       | "tool-result-fetch"
       | "context-diet"
+      | "end-conversation"
       | "dog";
     // tool-result-fetch/context-diet are VERBS of the unified `gaia` tool
     // (09-MEMORY-CONTEXT), not separate GaiaTool ids like memory/summon/recall
     // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
     // `dog` (09-DOG-MODE) is never a GaiaTool grant either — same carve-out.
     if (verb !== "dream" && verb !== "dog") {
-      const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" ? "gaia" : verb;
+      const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : verb;
       if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
         return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
       }
@@ -1847,6 +1849,19 @@ export class GaiaWebServer {
       return;
     }
 
+    // /api/harness/end-conversation — scoped by the bearer token to the
+    // calling agent and room; the service writes the visible farewell before
+    // it aborts the current runner.
+    if (pathname === "/api/harness/end-conversation") {
+      const farewell = stringField(body, "farewell")?.trim();
+      if (!farewell) return json(response, 400, { error: "farewell is required" });
+      try {
+        json(response, 200, { ok: true, result: await this.daemon.harnessEndConversation(claims, farewell) });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     // /api/harness/dog (09-DOG-MODE): `gaia dog on|off|status`, the CLI form
     // of `/dog` — daemon-side half is RoomService#runPluginAction (the dog
     // command-plugin, plugins/defaults/dog-mode.mjs), same room the bearer

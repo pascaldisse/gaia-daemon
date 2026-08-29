@@ -39,6 +39,7 @@ import {
   type ResumeCreate,
   type SummonCreate,
   type ContextDietAccess,
+  type EndConversation,
   type ToolResultFetch,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
@@ -466,6 +467,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly recallSearch?: RecallSearch;
   private readonly toolResultFetch?: ToolResultFetch;
   private readonly contextDiet?: ContextDietAccess;
+  private readonly endConversation?: EndConversation;
   /** Drafts live only for this runner lifetime; applying after a runner restart
    * intentionally asks the caller to make a fresh draft. */
   private readonly pendingCompactDrafts = new Map<string, CompactionResult>();
@@ -499,6 +501,7 @@ export class PiRuntime implements AgentRuntime {
     this.recallSearch = options.recallSearch;
     this.toolResultFetch = options.toolResultFetch;
     this.contextDiet = options.contextDiet;
+    this.endConversation = options.endConversation;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
@@ -1016,6 +1019,7 @@ export class PiRuntime implements AgentRuntime {
       recallSearch: this.recallSearch,
       toolResultFetch: this.toolResultFetch,
       contextDiet: this.contextDiet,
+      endConversation: this.endConversation,
     });
     const systemPromptRef = { current: systemPrompt };
 

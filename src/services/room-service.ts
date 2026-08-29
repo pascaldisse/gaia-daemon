@@ -651,6 +651,36 @@ export class RoomService {
   }
 
   // --- messaging -------------------------------------------------------------
+  private async isConversationEnded(agentId: string): Promise<boolean> {
+    return Boolean((await this.room.state()).conversationEndedAgents?.[agentId]);
+  }
+  private async endedConversationTargets(targets: readonly string[]): Promise<string[]> {
+    const ended = (await this.room.state()).conversationEndedAgents ?? {};
+    return targets.filter((target) => ended[target] !== undefined);
+  }
+  private async reactivateConversation(targets: readonly string[]): Promise<void> {
+    if (targets.length === 0) return;
+    await this.room.updateState((state) => {
+      if (!state.conversationEndedAgents) return;
+      for (const target of targets) delete state.conversationEndedAgents[target];
+      if (Object.keys(state.conversationEndedAgents).length === 0) delete state.conversationEndedAgents;
+    });
+  }
+  /** Agent tool entry: persist a visible goodbye before aborting its runner.
+   * The next human message to that agent clears this state in sendMessage(). */
+  async endConversation(agentId: string, farewell: string): Promise<string> {
+    if (!this.workspace.config.agentEndConversation) throw new Error("Agent-initiated conversation ending is disabled by workspace config.");
+    const text = farewell.trim();
+    if (!text) throw new Error("farewell is required.");
+    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: agentId, text };
+    await this.room.endConversation(agentId, event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+    void this.emitSnapshot();
+    // The tool call runs inside this runtime. Abort only after the farewell is
+    // durable, so a runner death cannot turn an intentional goodbye into loss.
+    if (this.activeAgentTurn?.targets.includes(agentId)) void this.runtimes[agentId]?.abort().catch(() => {});
+    return "Conversation ended. Your farewell is visible; wait for a user message before another turn.";
+  }
 
   async sendMessage(text: string, options: SendMessageOptions = {}): Promise<Task> {
     await this.init();
@@ -749,6 +779,11 @@ export class RoomService {
     }
 
     const task = this.createTask(text, targets);
+    // A human can always call an agent back. Only actual user messages clear
+    // this durable suppression; agent dialogue, goals, and WAL replays do not.
+    if (command.type === "message" && options.recordUserMessage !== false && !options.fromAgentDialogue) {
+      await this.reactivateConversation(targets);
+    }
 
     // /steer and /cancel must run WHILE a turn is active — steer injects into
     // the running turn, cancel stops it — so neither queues behind it.
@@ -899,6 +934,21 @@ export class RoomService {
       if (this.activeTask) return;
       let next = await this.room.peekQueue();
       let droppedStaleGoal = false;
+      // Ended agents receive no autonomous follow-up. Preserve any other
+      // targets on a multi-agent automatic task, but discard an empty entry.
+      while (next && (next.fromAgentDialogue || next.goalStartedAt || next.recorded)) {
+        const ended = await this.endedConversationTargets(next.targets);
+        if (ended.length === 0) break;
+        const targets = next.targets.filter((target) => !ended.includes(target));
+        if (targets.length > 0) {
+          next = { ...next, targets };
+          break;
+        }
+        await this.room.spliceQueued(next.taskId);
+        this.queuedTasks = this.queuedTasks.filter((task) => task.id !== next?.taskId);
+        droppedStaleGoal = true;
+        next = await this.room.peekQueue();
+      }
       while (next?.goalStartedAt) {
         const goal = (await this.room.state()).goal;
         if (goal?.status === "active" && goal.startedAt === next.goalStartedAt) break;
@@ -1387,6 +1437,10 @@ export class RoomService {
         await this.room.clearPendingTurn();
         return;
       }
+      if (await this.isConversationEnded(target)) {
+        remaining.shift();
+        continue;
+      }
       const agent = this.workspace.agents[target];
       const runtime = this.runtimes[target];
       this.startedPetTargets.add(this.petTargetKey(task.id, target));
@@ -1717,9 +1771,12 @@ export class RoomService {
       // gets an explicit visible outcome: output commits under the reserved id
       // with a preservation notice; no output commits a loud system failure.
       const cancelled = turn.cancelled || this.taskCancelled(task);
-      const failed = turn.error !== undefined && !cancelled;
+      // The end-conversation tool deliberately aborts the runner after its
+      // visible farewell is durable. That abort is success, never a failure.
+      const endedConversation = await this.isConversationEnded(target);
+      const failed = turn.error !== undefined && !cancelled && !endedConversation;
       // A user stop is a stop, not a malfunction: never surface the raw harness death (SIGTERM/exit 143) a cancel provokes.
-      const abnormalReason = cancelled ? new Error("stopped by user") : turn.error;
+      const abnormalReason = cancelled ? new Error("stopped by user") : endedConversation ? undefined : turn.error;
       if (abnormalReason !== undefined) finalizeInterruptedTools(turn.details);
       const partialReply = turn.reply.trim();
       // An interrupted turn that produced tools/thinking but no prose yet still
@@ -1795,6 +1852,10 @@ export class RoomService {
 
       if (cancelled) {
         this.settlePetTarget(task, target, "failed");
+        return;
+      }
+      if (endedConversation) {
+        this.settlePetTarget(task, target, "done");
         return;
       }
       this.settlePetTarget(task, target, "done");
