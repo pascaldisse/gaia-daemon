@@ -14,6 +14,7 @@ export const DEFAULTS = {
   room: "default",
   thinking: "medium",
   transcriptWindow: 20,
+  agentEndConversation: true,
   maxSummonsPerRoom: 8,
   /** Unified-tool gaiago formatting threshold; GAIA_TOOL_FORMAT_BYTES overrides. */
   toolCompressionBytes: 8_192,
@@ -385,6 +386,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
         ? obj.transcriptWindow
         : DEFAULTS.transcriptWindow,
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
+    agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
   };
   if (typeof obj.harness === "string" && validHarness(obj.harness)) config.harness = obj.harness;
   if (typeof obj.maxSummonsPerRoom === "number" && Number.isInteger(obj.maxSummonsPerRoom) && obj.maxSummonsPerRoom > 0) {
