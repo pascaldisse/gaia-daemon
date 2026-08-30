@@ -8,6 +8,7 @@ import {
   transcribe,
   type SttContext,
 } from "../src/services/transcribe.js";
+import { appleLocale, appleTranscribe } from "../src/services/stt-apple.js";
 import { VOICE_SETTINGS_DEFAULTS, type VoiceSettings } from "../src/services/voice.js";
 
 function voiceSettings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
@@ -36,10 +37,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 // ---------------------------------------------------------------------------
 // registry (same law as the TTS engine registry / harnesses)
 
-test("engines: replicate, elevenlabs, and openai are registered", () => {
+test("engines: replicate, elevenlabs, openai, and apple are registered", () => {
   assert.ok(sttEngineIds().includes("replicate"));
   assert.ok(sttEngineIds().includes("elevenlabs"));
   assert.ok(sttEngineIds().includes("openai"));
+  assert.ok(sttEngineIds().includes("apple"));
 });
 
 test("resolveSttEngine picks the engine named by settings.sttEngine", () => {
@@ -254,6 +256,54 @@ test("openai: POSTs to <base>/audio/transcriptions with a bearer key + model", a
     assert.equal((body.get("file") as File).name, "dictation.mp4");
   } finally {
     restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// apple — local Apple dictation (SFSpeechRecognizer), macOS only. The real
+// swift-helper/ffmpeg path needs a compiled helper + granted Speech
+// Recognition permission (a one-time interactive prompt) and is proven live
+// via a real synthesized clip outside this suite (bun test must stay fast +
+// hang-free on machines without that permission); these tests cover the
+// pure, deterministic pieces: registration, locale mapping, and the
+// non-macOS guard.
+
+test("apple: resolveSttEngine picks it by id", () => {
+  assert.equal(resolveSttEngine(voiceSettings({ sttEngine: "apple" })).id, "apple");
+});
+
+test("apple: appleLocale maps common ISO-639-1 hints to a concrete BCP-47 locale", () => {
+  assert.equal(appleLocale("en"), "en-US");
+  assert.equal(appleLocale("de"), "de-DE");
+  assert.equal(appleLocale("EN"), "en-US", "case-insensitive");
+});
+
+test("apple: appleLocale passes an already-BCP-47 hint through unchanged", () => {
+  assert.equal(appleLocale("pt-PT"), "pt-PT");
+});
+
+test("apple: appleLocale falls back to the raw hint for an unmapped code", () => {
+  assert.equal(appleLocale("sv"), "sv");
+});
+
+test("apple: appleLocale is empty for no hint / \"auto\" (system locale)", () => {
+  assert.equal(appleLocale(undefined), "");
+  assert.equal(appleLocale(""), "");
+  assert.equal(appleLocale("auto"), "");
+});
+
+test("apple: transcribe refuses to run on a non-macOS platform", async () => {
+  const spec = findSttEngine("apple");
+  if (!spec) throw new Error("apple not registered");
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  try {
+    await assert.rejects(
+      appleTranscribe({ audio: audio(), settings: voiceSettings(), log: () => {} }),
+      /requires macOS/,
+    );
+  } finally {
+    Object.defineProperty(process, "platform", original);
   }
 });
 
