@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness, type SummonCreate } from "../src/harness/spec.js";
-import { mechanicalCompactionFallback, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
+import { mechanicalCompactionFallback, newestContentEntryId, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
 import { createTempDir } from "./helpers/temp.js";
 
@@ -1072,6 +1072,40 @@ test("PiRuntime with NO configured model still passes undefined through to the p
 // hasDurableSession — pi self-persists sessions as files under the room's
 // pi-sessions/<agent>/ dir; any file there is what continueRecent resumes
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// /dsc-compact floor selection — a single oversized prompt entry can itself be
+// Pi's calculated cut point. The clean summary must instead retain only the
+// newest content-bearing entry, skipping tool and session metadata entries.
+// ---------------------------------------------------------------------------
+
+test("newestContentEntryId skips trailing tool and metadata entries", () => {
+  assert.equal(
+    newestContentEntryId(
+      [
+        { id: "user-1", type: "message", message: { role: "user" } },
+        { id: "assistant-1", type: "message", message: { role: "assistant" } },
+        { id: "tool-1", type: "tool_result", message: { role: "tool" } },
+        { id: "meta-1", type: "model_change" },
+      ],
+      "pi-cut",
+    ),
+    "assistant-1",
+  );
+});
+
+test("newestContentEntryId falls back to Pi's cut when no content entry exists", () => {
+  assert.equal(
+    newestContentEntryId(
+      [
+        { id: "tool-1", type: "tool_result" },
+        { id: "meta-1", type: "compaction" },
+      ],
+      "pi-cut",
+    ),
+    "pi-cut",
+  );
+});
 
 // ---------------------------------------------------------------------------
 // mechanicalCompactionFallback — 08-25 fix: when the room's own model IS the

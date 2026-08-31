@@ -27,6 +27,32 @@ interface MechanicalCompactionInput {
 type SessionMap = {
   get(roomId: string): { session: PiSessionLike } | undefined;
 };
+const COMPACTION_META_ENTRY_TYPES = new Set([
+  "compaction",
+  "branch_summary",
+  "thinking_level_change",
+  "model_change",
+  "label",
+  "session_info",
+]);
+export function newestContentEntryId(
+  entries: Array<Record<string, unknown>>,
+  fallback: string,
+): string {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const type = String(entry.type ?? "");
+    if (COMPACTION_META_ENTRY_TYPES.has(type)) continue;
+    const role = String(
+      (entry.role as string | undefined) ??
+        ((entry.message as { role?: string } | undefined)?.role ?? ""),
+    );
+    if (/tool/i.test(type) || /tool/i.test(role)) continue;
+    if (entry.id) return String(entry.id);
+  }
+  return fallback;
+}
 type Registry = {
   find(provider: string, name: string): Model<any> | undefined;
   getApiKeyAndHeaders(
@@ -241,15 +267,27 @@ export class PiCompaction {
         const operation = this.operations.get(roomId);
         if (!operation) {
           const clean = loadCleanCompactionOverride(roomId, this.agentId);
-          if (clean)
+          if (clean) {
+            const sessionManager = (
+              ctx as unknown as {
+                sessionManager?: { getEntries?: () => unknown[] };
+              }
+            ).sessionManager;
+            const newestFloor = newestContentEntryId(
+              (sessionManager?.getEntries?.() ?? []) as Array<
+                Record<string, unknown>
+              >,
+              event.preparation.firstKeptEntryId,
+            );
             return {
               compaction: {
                 summary: clean,
-                firstKeptEntryId: event.preparation.firstKeptEntryId,
+                firstKeptEntryId: newestFloor,
                 tokensBefore: event.preparation.tokensBefore,
                 details: this.details(event.preparation),
               },
             };
+          }
           return runCompactionFallback(event, ctx, provider, name);
         }
         if (operation.kind === "apply")
