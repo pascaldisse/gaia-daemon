@@ -310,6 +310,10 @@ export class PiCompaction {
     name: string | undefined,
   ): ExtensionFactory {
     return (pi) => {
+      pi.on("session_compact", (event) => {
+        if (this.operations.get(roomId)?.kind === "clean")
+          console.warn(`compact-clean: committed room=${roomId} agent=${this.agentId} floor=${event.compactionEntry.firstKeptEntryId}`);
+      });
       pi.on("session_before_compact", async (event, ctx) => {
         const operation = this.operations.get(roomId);
         // Ordinary /compact is intentionally unaware of the clean-summary
@@ -331,11 +335,12 @@ export class PiCompaction {
             }
           ).sessionManager;
           const newestFloor = newestContentEntryId(
-            (sessionManager?.getEntries?.() ?? []) as Array<
+            (event.branchEntries ?? sessionManager?.getEntries?.() ?? []) as Array<
               Record<string, unknown>
             >,
             event.preparation.firstKeptEntryId,
           );
+          console.warn(`compact-clean: room=${roomId} agent=${this.agentId} newestValidCutId=${newestFloor} preparationFloor=${event.preparation.firstKeptEntryId}`);
           return {
             compaction: {
               summary: operation.summary,
