@@ -61,6 +61,8 @@ class AudioTransport {
     this.onFirstAudio = null;
     /** @type {(() => void)|null} fired when the last sample finishes playing */
     this.onEnded = null;
+    /** @type {((error: unknown) => void)|null} visible AudioContext failures */
+    this.onError = null;
   }
 
   /** @returns {number} */
@@ -163,7 +165,9 @@ class AudioTransport {
     this.frontier = Math.min(Math.max(0, from), this.total);
     this.anchorCtx = this.ctx.currentTime + 0.08;
     this.anchorSample = this.frontier;
-    void this.ctx.resume().catch(() => {});
+    void this.ctx.resume().then(() => {
+      if (this.ctx.state !== "running") throw new Error(`Audio output is ${this.ctx.state}`);
+    }).catch((error) => this.onError?.(error));
     this._pump();
     this._maybeFinish();
   }
@@ -299,6 +303,7 @@ export function stopReadAloud() {
   if (transport) {
     transport.onEnded = null;
     transport.onFirstAudio = null;
+    transport.onError = null;
     transport.destroy();
     transport = null;
   }
@@ -335,6 +340,11 @@ async function startReadAloud(eventId, regenerate = false) {
     if (activeEventId === eventId) setPhase("ended");
     rememberPcm(eventId, t);
     updatePlayerUi();
+  };
+  t.onError = (error) => {
+    if (transport !== t) return;
+    stopReadAloud();
+    setError(error instanceof Error ? error : new Error(String(error)));
   };
 
   state.readAloud = { eventId, phase: "loading", ...origin };
