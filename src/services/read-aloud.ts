@@ -9,7 +9,7 @@
 // Voice calls are a different pipeline (services/voice.ts): live and duplex.
 // This module is one-shot: text in, a finished WAV out.
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
