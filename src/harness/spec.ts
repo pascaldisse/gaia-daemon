@@ -548,21 +548,21 @@ export function capabilitiesFor(id: string): HarnessCapabilities {
 /** A-priori context window for a harness/model, or undefined when unknown.
  * Read uniformly by the context gate — each harness declares its own. */
 export function contextWindowFor(id: string, model: string | undefined): number | undefined {
-  return registry.get(id)?.contextWindow?.(model);
+  return registry.get(canonicalHarnessId(id))?.contextWindow?.(model);
 }
 
 /** Native passthrough commands a harness advertises for autocomplete ([] when
  * none / unregistered). Read uniformly by the snapshot builder. */
 export function nativeCommandsFor(id: string): NativeCommandDef[] {
-  return registry.get(id)?.nativeCommands?.() ?? [];
+  return registry.get(canonicalHarnessId(id))?.nativeCommands?.() ?? [];
 }
 
 /** The single harness parser: valid iff registered. */
 export function parseHarness(raw: unknown): string | undefined {
-  return typeof raw === "string" && registry.has(raw) ? raw : undefined;
+  return typeof raw === "string" && registry.has(canonicalHarnessId(raw)) ? canonicalHarnessId(raw) : undefined;
 }
 
 /** Effective harness for an agent in a workspace: agent → workspace → "pi". */
 export function harnessIdFor(agent: AgentDef, workspace: Workspace): string {
-  return agent.harness ?? workspace.config.harness ?? DEFAULTS.harness;
+  return canonicalHarnessId(agent.harness ?? workspace.config.harness ?? DEFAULTS.harness);
 }
