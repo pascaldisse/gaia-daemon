@@ -393,6 +393,7 @@ async function feedStream(t, response, controller) {
   const frameBytes = 2 * channels; // s16le
   /** @type {Uint8Array} */
   let leftover = new Uint8Array(0);
+  let pcmFrames = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (controller.signal.aborted || transport !== t) {
@@ -416,8 +417,10 @@ async function feedStream(t, response, controller) {
     const usable = buf.length - (buf.length % frameBytes);
     if (usable < buf.length) leftover = buf.slice(usable);
     if (usable === 0) continue;
+    pcmFrames += usable / frameBytes;
     t.append(s16leToMono(buf.subarray(0, usable), channels));
   }
+  if (!pcmFrames) throw new Error("Read aloud stream ended without audio frames");
   t.markDone();
 }
 

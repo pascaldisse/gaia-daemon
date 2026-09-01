@@ -581,6 +581,10 @@ function voiceJsonHints(): FileHints {
     unmuteUrl: { input: "text", optional: true, label: "unmute backend URL", description: "unmute backend the browser connects to (default ws://127.0.0.1:8000)" },
     unmuteDir: { input: "text", optional: true, label: "unmute checkout", description: "local unmute checkout to auto-start; empty = the bundled one" },
     claudeVoiceUrl: { input: "text", optional: true, label: "claude-voice daemon URL", description: "claude-voice daemon for the claude engine (default http://127.0.0.1:8778)" },
+    claudeVoice: { input: "text", optional: true, label: "Claude default voice", description: "Explicit Claude voice used when an agent has no tts.voice or voice; never delegated to the helper default" },
+    claudeVoiceFirstFrameTimeoutSec: { input: "number", label: "Claude first-frame timeout (seconds)", description: "How long a successful Claude stream may wait for its first PCM frame before retrying/failing" },
+    claudeVoiceRetryCount: { input: "number", label: "Claude audio retries", description: "Retries after an empty or failed Claude audio response" },
+    claudeVoiceQueueLimit: { input: "number", label: "Claude live input queue limit", description: "Maximum queued live-Claude text chunks before the stream fails" },
     claudeVoiceDir: { input: "text", optional: true, label: "claude-voice checkout (auto-start)", description: "claude-voice checkout to auto-start when its daemon is down; empty = never auto-start" },
     elevenLabsApiKey: { input: "text", optional: true, label: "ElevenLabs API key", description: "ElevenLabs API key (xi-api-key) for the elevenlabs engine; stored locally, or set ELEVENLABS_API_KEY" },
     elevenLabsModel: select(values(["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]), {
