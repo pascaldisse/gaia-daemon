@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountsPath, ensureAccountsFile, findAccount, listAccounts, redactedAccounts, updateAccount } from "../src/domain/accounts.js";
+import "../src/harness/index.js";
+import { harnessSpecFor } from "../src/harness/spec.js";
 
 function withGaiaHome(fn: (home: string) => void): void {
   const previous = process.env.GAIA_HOME;
@@ -34,7 +36,7 @@ test("ensureAccountsFile seeds once", () => {
   });
 });
 
-test("records round-trip + filtering", () => {
+test("legacy harness account loads as a Pi account", () => {
   withGaiaHome(() => {
     writeFileSync(
       accountsPath(),
@@ -47,9 +49,10 @@ test("records round-trip + filtering", () => {
     );
 
     assert.deepEqual(listAccounts(), [
-      { id: "a1", harness: "claude", label: "Second", credentials: { oauthToken: "sk-ant-oat01-x" } },
+      { id: "a1", harness: "pi", label: "Second", credentials: { oauthToken: "sk-ant-oat01-x" } },
     ]);
     assert.equal(findAccount("a1")?.credentials.oauthToken, "sk-ant-oat01-x");
+    assert.equal(harnessSpecFor(findAccount("a1")!.harness).id, "pi");
     assert.equal(findAccount("nope"), undefined);
   });
 });
@@ -66,12 +69,12 @@ test("display metadata can be updated without exposing credentials", () => {
     writeFileSync(accountsPath(), JSON.stringify({ accounts: [{ id: "a1", harness: "claude", credentials: { oauthToken: "secret" } }] }));
     assert.deepEqual(updateAccount("a1", { label: "Personal", email: "me@example.com" }), {
       id: "a1",
-      harness: "claude",
+      harness: "pi",
       label: "Personal",
       email: "me@example.com",
       credentials: { oauthToken: "secret" },
     });
-    assert.deepEqual(redactedAccounts(), [{ id: "a1", harness: "claude", label: "Personal", email: "me@example.com" }]);
+    assert.deepEqual(redactedAccounts(), [{ id: "a1", harness: "pi", label: "Personal", email: "me@example.com" }]);
     assert.equal(updateAccount("missing", { label: "Nope" }), undefined);
   });
 });

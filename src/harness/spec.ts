@@ -7,6 +7,7 @@
 // (AGENTS.md §RULE #0).
 
 import { DEFAULTS } from "../core/config.js";
+import { canonicalHarnessId } from "../core/harness-id.js";
 import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -528,17 +529,18 @@ export function harnessSpecs(): HarnessSpec[] {
 }
 
 export function findHarness(id: string): HarnessSpec | undefined {
-  return registry.get(id);
+  return registry.get(canonicalHarnessId(id));
 }
 
 export function harnessSpecFor(id: string): HarnessSpec {
-  const spec = registry.get(id);
+  const canonical = canonicalHarnessId(id);
+  const spec = registry.get(canonical);
   if (!spec) throw new Error(`Unsupported harness: ${id}`);
   return spec;
 }
 
 export function capabilitiesFor(id: string): HarnessCapabilities {
-  const spec = registry.get(id) ?? registry.get(DEFAULTS.harness);
+  const spec = registry.get(canonicalHarnessId(id)) ?? registry.get(DEFAULTS.harness);
   if (!spec) throw new Error("No harnesses registered");
   return spec.capabilities;
 }
