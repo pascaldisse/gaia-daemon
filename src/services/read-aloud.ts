@@ -739,15 +739,14 @@ registerTtsEngine({ id: "kyutai", voices: [], synthesize: kyutaiSynthesize });
 // claude — the claude-voice daemon (claude.ai "Read aloud" voices through the
 // user's own account). POST /synthesize returns a finished WAV. When the
 // daemon is down and a checkout is configured, it is spawned detached in its
-// own process group and killed on GAIA shutdown. With claudeVoiceDir set, any
-// pre-existing daemon on the port is killed and replaced at first use (fresh
-// start policy); manual mode without claudeVoiceDir is never killed.
+// own process group and stopped on GAIA shutdown. A healthy pre-existing
+// daemon is always reused, including when claudeVoiceDir is configured, so an
+// active helper stream is never displaced.
 
 const CLAUDE_VOICES = ["airy", "buttery", "mellow", "glassy", "rounded"];
 const CLAUDE_SYNTH_TIMEOUT_MS = 180_000;
 
 let claudeVoiceChild: ChildProcess | undefined;
-let claudeVoiceOwned = false;
 let claudeVoiceExitHooked = false;
 
 interface ClaudeVoiceHealth {
@@ -827,7 +826,6 @@ async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<st
     const child = spawn(script, [], { cwd: dir, stdio: ["ignore", log, log], detached: true });
     child.unref();
     claudeVoiceChild = child;
-    claudeVoiceOwned = true;
     hookClaudeVoiceExit();
   }
 
