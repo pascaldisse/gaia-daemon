@@ -1,7 +1,7 @@
 {
   "name": "gaia-daemon",
   "version": "2.0.0",
-  "description": "GAIA \u2014 local-first multi-agent workspace. Rooms, personas, three harnesses (pi/claude/codex), sandboxed summons, monad routing, voice.",
+  "description": "GAIA \u2014 local-first multi-agent workspace. Rooms, personas, Pi runtime, sandboxed summons, monad routing, voice.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
