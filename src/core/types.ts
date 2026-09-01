@@ -627,6 +627,10 @@ export interface AgentTtsConfig {
   voice?: string;
 }
 
+/** Per-agent protocol switches from agent.json `protocols`. Every protocol is
+ * enabled unless its filename-without-`.md` key is explicitly `false`. */
+export type AgentProtocolConfig = Record<string, boolean>;
+
 /** AgentDef.insight tiers — see the field doc on AgentDef.insight for the
  * full contract (decree 2026-07-28). */
 export type InsightLevel = "none" | "line" | "full";
@@ -667,6 +671,9 @@ export interface AgentDef {
   skillOverride?: string[];
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  /** Per-protocol opt-outs; absent keys remain enabled. Keys are filenames
+   * from the configured protocols directory without their `.md` extension. */
+  protocols?: AgentProtocolConfig;
   /** Optional agent.json law line appended fresh to EVERY composed turn
    * prompt ("\n\n" + turnLaw) so it is always the newest tokens. No default
    * content lives in code — the value comes only from agent.json. */

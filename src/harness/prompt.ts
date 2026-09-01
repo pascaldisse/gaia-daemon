@@ -27,11 +27,12 @@ export interface SystemPromptInput {
   role?: ResolvedRole;
   intentText?: string;
   contextFiles: ContextFile[];
-  /** Concatenated verbatim text of ~/.gaia/protocols/*.md (buildBaseSystemPrompt
-   * reads it). ""/undefined = no `# Protocols` section at all (zero change). */
+  /** Concatenated verbatim text of enabled protocol files (buildBaseSystemPrompt
+   * reads and filters the configured protocols dir). ""/undefined = no
+   * `# Protocols` section at all (zero change). */
   protocolsText?: string;
   /** Room-scoped GAIA-THINK level 0-10. Only affects the trailing line of the
-   * Protocols section, and only when protocolsText is present. Unset = 0. */
+   * Protocols section when GAIA-THINK is enabled. Unset = 0. */
   thinkingLevel?: number;
 }
 
@@ -42,27 +43,36 @@ export function promptCacheKey(roleName: string | undefined, thinkingLevel?: num
   return `${roleName ?? ""}#t${thinkingLevel ?? 0}`;
 }
 
+const THINKING_PROTOCOL = "GAIA-THINK";
+
+function protocolEnabled(protocols: AgentDef["protocols"] | undefined, filename: string): boolean {
+  return protocols?.[filename.slice(0, -".md".length)] !== false;
+}
+
 /** The `# Protocols` section (or "" when no protocol text is loaded). When
- * loaded, a trailing line always states the room's GAIA-THINK level: level 0
+ * GAIA-THINK is enabled, its trailing line states the room's level: level 0
  * (or unset) disables thought blocks, level N announces `N/10`. */
-export function buildProtocolsSection(protocolsText?: string, thinkingLevel?: number): string {
+export function buildProtocolsSection(protocolsText?: string, thinkingLevel?: number, thinkingEnabled = true): string {
   const body = protocolsText?.trim();
   if (!body) return "";
+  if (!thinkingEnabled) return `# Protocols\n\n${body}`;
   const level = thinkingLevel ?? 0;
   const levelLine = level > 0 ? `Current thinking level: ${level}/10` : "Thinking disabled — do not emit <gaia:think> blocks.";
   return `# Protocols\n\n${body}\n\n${levelLine}`;
 }
 
-/** Read every *.md in the protocols dir (sorted by filename) and join their
- * verbatim contents with blank lines. Missing dir / no *.md → "". */
-export async function readProtocolsText(dir: string = globalPaths.protocolsDir()): Promise<string> {
+/** Read enabled *.md files in the protocols dir (sorted by filename) and join
+ * their verbatim contents with blank lines. A missing config key enables its
+ * matching filename; missing dir / no enabled *.md files → "". */
+export async function readProtocolsText(dir: string = globalPaths.protocolsDir(), protocols?: AgentDef["protocols"]): Promise<string> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".md")).sort();
   } catch {
     return "";
   }
-  const parts = await Promise.all(names.map((name) => readOptional(join(dir, name))));
+  const enabledNames = names.filter((name) => protocolEnabled(protocols, name));
+  const parts = await Promise.all(enabledNames.map((name) => readOptional(join(dir, name))));
   return parts.map((part) => part.trim()).filter(Boolean).join("\n\n");
 }
 
@@ -286,7 +296,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     // measured to suppress native thinking only at char 0, not at the end.
     input.agent.promptLaw?.trim() ?? "",
     `# Agent Soul\n\n${input.soulText.trim()}`,
-    buildProtocolsSection(input.protocolsText, input.thinkingLevel),
+    buildProtocolsSection(input.protocolsText, input.thinkingLevel, protocolEnabled(input.agent.protocols, `${THINKING_PROTOCOL}.md`)),
     input.intentText?.trim() ? `# Project Agent Intent\n\n${input.intentText.trim()}` : "",
     `# Project Context (AGENTS.md)\n\n${renderProjectContext(input.contextFiles)}`,
     HARNESS_LAW,
@@ -327,7 +337,7 @@ export async function buildBaseSystemPrompt(params: {
     readFile(params.agent.soulPath, "utf8"),
     readOptional(params.agent.projectIntentPath),
     discoverContextFiles(params.workspaceRoot),
-    readProtocolsText(params.protocolsDir),
+    readProtocolsText(params.protocolsDir, params.agent.protocols),
   ]);
   return buildSystemPrompt({
     agent: params.agent,
