@@ -717,7 +717,8 @@ export class GaiaWebServer {
           path === "/api/harness/tool-result-fetch" ||
           path === "/api/harness/context-diet" ||
           path === "/api/harness/end-conversation" ||
-          path === "/api/harness/dog"))
+          path === "/api/harness/dog" ||
+          path === "/api/harness/tools"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -1620,12 +1621,13 @@ export class GaiaWebServer {
       | "tool-result-fetch"
       | "context-diet"
       | "end-conversation"
-      | "dog";
+      | "dog"
+      | "tools";
     // tool-result-fetch/context-diet are VERBS of the unified `gaia` tool
     // (09-MEMORY-CONTEXT), not separate GaiaTool ids like memory/summon/recall
     // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
     // `dog` (09-DOG-MODE) is never a GaiaTool grant either — same carve-out.
-    if (verb !== "dream" && verb !== "dog") {
+    if (verb !== "dream" && verb !== "dog" && verb !== "tools") {
       const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : verb;
       if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
         return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
@@ -1633,6 +1635,35 @@ export class GaiaWebServer {
     }
 
     const body = await parseBody(request);
+
+    if (pathname === "/api/harness/tools") {
+      const input = body as Record<string, unknown>;
+      const operation = stringField(body, "operation");
+      const gate: GaiaTool = operation?.startsWith("artifact-") ? "artifact" : "gaia";
+      if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gate)) {
+        return json(response, 403, { error: `This agent's harness does not grant the ${gate} tool.` });
+      }
+      const providers = this.daemon.harnessToolProviders();
+      const location = { rootDir: workspace.rootDir, roomId: claims.roomId };
+      const text = (field: string) => stringField(body, field) ?? "";
+      try {
+        let result: unknown;
+        switch (operation) {
+          case "artifact-list": result = await providers.artifacts.list(location); break;
+          case "artifact-read": result = await providers.artifacts.read(location, text("artifactId")); break;
+          case "artifact-create": result = await providers.artifacts.create(location, { name: text("name"), kind: text("kind") as "html" | "json" | "design", mediaType: text("mediaType"), payload: text("payload") }); break;
+          case "artifact-update": result = await providers.artifacts.update(location, text("artifactId"), { ...(stringField(body, "name") !== undefined ? { name: text("name") } : {}), ...(stringField(body, "kind") !== undefined ? { kind: text("kind") as "html" | "json" | "design" } : {}), ...(stringField(body, "mediaType") !== undefined ? { mediaType: text("mediaType") } : {}), ...(stringField(body, "payload") !== undefined ? { payload: text("payload") } : {}) }); break;
+          case "web-search": result = await providers.web.search({ query: text("query"), ...(numberField(body, "maxResults") !== undefined ? { maxResults: numberField(body, "maxResults") } : {}), ...(stringField(body, "provider") !== undefined ? { provider: text("provider") as "brave" | "tavily" | "serper" } : {}) }); break;
+          case "web-fetch": result = await providers.web.fetch({ url: text("url"), ...(numberField(body, "maxBytes") !== undefined ? { maxBytes: numberField(body, "maxBytes") } : {}), ...(typeof input.transcript === "boolean" ? { transcript: input.transcript } : {}), ...(stringField(body, "lang") !== undefined ? { lang: text("lang") } : {}), ...(typeof input.comments === "boolean" || typeof input.comments === "number" ? { comments: input.comments } : {}) }); break;
+          case "caryll-compress": result = await providers.caryll.compress(text("text")); break;
+          case "caryll-expand": result = await providers.caryll.expand(text("text")); break;
+          default: return json(response, 400, { error: "unknown tool operation" });
+        }
+        return json(response, 200, { ok: true, result });
+      } catch (error) {
+        return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
 
     if (pathname === "/api/harness/memory") {
       // Batch mode (§5): operations validate together against the FINAL

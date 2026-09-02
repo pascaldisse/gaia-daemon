@@ -919,11 +919,6 @@ function endCompletionStream(response: ServerResponse, completionId: string): vo
   response.end();
 }
 
-/** GET /v1/models — unmute autoselects its model from this single entry. */
-export function handleModels(_request: IncomingMessage, response: ServerResponse): void {
-  json(response, 200, modelListPayload());
-}
-
 /**
  * POST /v1/chat/completions. Each voice turn arrives here; the reply streams
  * back to TTS while the same turn flows through the room service into the

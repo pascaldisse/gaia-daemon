@@ -55,6 +55,8 @@ import { SttCallBridge } from "./services/voice-stt-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
 import { readThemeSetting, writeThemeSetting } from "./services/theme.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
+import { createToolProviders } from "./services/tool-providers.js";
+import type { ToolProviders } from "./harness/protocol.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -220,6 +222,8 @@ export class Daemon {
   private readonly servicePending = new Map<string, Promise<RoomService>>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
+  /** Service-side tool implementations injected into subprocess harnesses. */
+  private readonly toolProviders = createToolProviders();
   private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
   /** One local embedding sidecar per daemon (model server shared across
    * workspaces); MemoryService reaches it through EmbedderDeps. Download and
@@ -973,6 +977,9 @@ export class Daemon {
     return capabilitiesFor(harnessIdFor(workspace.agents[agentId], workspace)).gaiaTools;
   }
 
+  harnessToolProviders(): ToolProviders {
+    return this.toolProviders;
+  }
   async harnessMemoryBatch(
     claims: HarnessTokenClaims,
     file: string,

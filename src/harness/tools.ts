@@ -11,6 +11,7 @@ import type { AgentDef, Workspace } from "../core/types.js";
 import type { ResumeCreate } from "./spec.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { ContextDietAccess, EndConversation, GaiaTool, RecallSearch, SummonCreate, ToolResultFetch } from "../harness/spec.js";
+import type { ToolProviders } from "./protocol.js";
 
 /** Everything the in-process Pi tool factories might need. */
 export interface AgentRosterEntry {
@@ -55,6 +56,8 @@ export interface PiToolContext {
   contextDiet?: ContextDietAccess;
   /** Daemon bridge for the unified end_conversation verb. */
   endConversation?: EndConversation;
+  /** Service implementations injected through the daemon bridge. */
+  toolProviders?: ToolProviders;
 }
 
 export interface GaiaToolSpec {

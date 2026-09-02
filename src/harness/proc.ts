@@ -114,21 +114,6 @@ export function isMissingBinary(error: unknown): boolean {
 }
 
 /**
- * A uniform "<label> is unavailable" startup error. On ENOENT it names the
- * missing `binary`; otherwise it carries the underlying message plus any
- * captured stderr. `binary`/`label` are data so this never branches on which
- * harness called it (AGENTS.md §RULE #0).
- */
-export function missingBinaryError(binary: string, label: string, error: unknown, stderr?: string): Error {
-  if (isMissingBinary(error)) {
-    return new Error(`${label} is unavailable: the \`${binary}\` CLI was not found in PATH.`);
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const details = stderr?.trim();
-  return new Error(`${label} is unavailable: ${message}${details ? `\n\n${binary} stderr:\n${details}` : ""}`);
-}
-
-/**
  * Absolute path to this install's CLI entry: cli.js when built, else cli.ts
  * (dev/tsx). Resolved relative to the harness directory (src2/harness/ →
  * repo cli is one level up).
