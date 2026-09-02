@@ -93,7 +93,7 @@ export interface PluginRegistryOptions {
   readonly onEvent?: (event: PluginRegistryEvent) => void;
 }
 
-export class PluginRegistryError extends Error {
+export class RegistryLifecycleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PluginRegistryError";
@@ -120,18 +120,18 @@ function errorReason(error: unknown): string {
 }
 
 function registerOf(moduleNamespace: unknown): PluginRegister {
-  if (!isRecord(moduleNamespace)) throw new PluginRegistryError("entrypoint did not export a module object");
+  if (!isRecord(moduleNamespace)) throw new RegistryLifecycleError("entrypoint did not export a module object");
   const defaultExport = moduleNamespace.default;
   if (typeof defaultExport === "function") return defaultExport as PluginRegister;
   if (isRecord(defaultExport) && typeof defaultExport.register === "function") return defaultExport.register as PluginRegister;
   if (typeof moduleNamespace.register === "function") return moduleNamespace.register as PluginRegister;
-  throw new PluginRegistryError("entrypoint must export a register function");
+  throw new RegistryLifecycleError("entrypoint must export a register function");
 }
 
 function registrationOf(value: void | PluginRegistration): PluginRegistration {
   if (value === undefined) return Object.freeze({});
   if (!isRecord(value) || (value.dispose !== undefined && typeof value.dispose !== "function")) {
-    throw new PluginRegistryError("register must return void or an object with an optional dispose function");
+    throw new RegistryLifecycleError("register must return void or an object with an optional dispose function");
   }
   return value as PluginRegistration;
 }
@@ -162,10 +162,10 @@ export class PluginRegistry implements PluginTurnBoundary {
   #lifecycle: Promise<void> = Promise.resolve();
 
   constructor(options: PluginRegistryOptions) {
-    if (options.pluginsRoot.length === 0) throw new PluginRegistryError("pluginsRoot is required");
-    if (options.placement !== "daemon" && options.placement !== "runner") throw new PluginRegistryError("placement must be daemon or runner");
-    if (typeof options.importer !== "function") throw new PluginRegistryError("an importer must be injected");
-    if (options.loader !== undefined && typeof options.loader !== "function") throw new PluginRegistryError("loader must be a function");
+    if (options.pluginsRoot.length === 0) throw new RegistryLifecycleError("pluginsRoot is required");
+    if (options.placement !== "daemon" && options.placement !== "runner") throw new RegistryLifecycleError("placement must be daemon or runner");
+    if (typeof options.importer !== "function") throw new RegistryLifecycleError("an importer must be injected");
+    if (options.loader !== undefined && typeof options.loader !== "function") throw new RegistryLifecycleError("loader must be a function");
     this.#pluginsRoot = options.pluginsRoot;
     this.#placement = options.placement;
     this.#importer = options.importer;
@@ -198,7 +198,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 
   beginTurn(): PluginTurnLease {
-    if (this.#closed) throw new PluginRegistryError("turn leases are refused after shutdown");
+    if (this.#closed) throw new RegistryLifecycleError("turn leases are refused after shutdown");
     this.#leases += 1;
     return new PluginTurnLease(this.#active.generation, () => this.#endTurn());
   }
@@ -209,9 +209,9 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 
   async #stageReload(): Promise<PluginStageResult> {
-    if (this.#closed) throw new PluginRegistryError("reload is refused after shutdown");
-    if (this.#staging) throw new PluginRegistryError("a plugin generation is already staging");
-    if (this.#staged) throw new PluginRegistryError("a staged plugin generation is awaiting a turn boundary");
+    if (this.#closed) throw new RegistryLifecycleError("reload is refused after shutdown");
+    if (this.#staging) throw new RegistryLifecycleError("a plugin generation is already staging");
+    if (this.#staged) throw new RegistryLifecycleError("a staged plugin generation is awaiting a turn boundary");
     this.#staging = true;
     const generation = ++this.#generation;
     const entries: LivePlugin[] = [];
@@ -276,7 +276,7 @@ export class PluginRegistry implements PluginTurnBoundary {
 
   async #shutdown(): Promise<void> {
     if (this.#closed) return;
-    if (this.#leases !== 0) throw new PluginRegistryError("shutdown requires zero active turn leases");
+    if (this.#leases !== 0) throw new RegistryLifecycleError("shutdown requires zero active turn leases");
     this.#closed = true;
     const staged = this.#staged;
     this.#staged = undefined;
@@ -296,7 +296,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 
   #endTurn(): void {
-    if (this.#leases === 0) throw new PluginRegistryError("turn lease was not active");
+    if (this.#leases === 0) throw new RegistryLifecycleError("turn lease was not active");
     this.#leases -= 1;
   }
 
@@ -334,7 +334,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
   #contributionPlugin(pluginId: string): LivePlugin {
     const plugin = this.#active.entries.find((entry) => entry.summary.id === pluginId);
-    if (!plugin) throw new PluginRegistryError(`plugin ${pluginId} is not active`);
+    if (!plugin) throw new RegistryLifecycleError(`plugin ${pluginId} is not active`);
     return plugin;
   }
   #requester(plugin: LivePlugin): { readonly namespace: string; readonly requiredCaps: readonly string[] } {
