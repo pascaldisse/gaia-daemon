@@ -962,7 +962,7 @@ function ModelChip(snapshot, text) {
         `provider switched models on the last turn: ${fallback.from} → ${fallback.to} — ${fallback.reason} ` +
         `(configured: ${agent.configuredModel}; each turn re-requests it, so this usually reverts on the next clean turn — ` +
         `this chip and each message's model tag always show what actually ran)`,
-      text: `⚠ ${shortModel(agent.modelLabel)}`,
+      text: `⚠︎ ${shortModel(agent.modelLabel)}`,
     });
   }
   return h("span", {
@@ -1006,7 +1006,7 @@ function MemoryChip(snapshot) {
   return h("span", {
     class: "model-chip fallback",
     title: `memory subsystem degraded: ${chips.join("; ")} — run \`gaia memory status\` in the workspace for detail`,
-    text: `⚠ memory: ${chips.join(", ")}`,
+    text: `⚠︎ memory: ${chips.join(", ")}`,
   });
 }
 

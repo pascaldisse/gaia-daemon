@@ -1,7 +1,7 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
 import { accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
-import { UI } from "./glyphs.js";
+import { agentGlyph, UI } from "./glyphs.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -125,7 +125,9 @@ function renderPanel() {
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
               h("span", { class: `dot ${agent.status}` }),
-              h("strong", { text: `${agent.icon} @${agent.id}` }),
+              // agent.icon is config data and is usually an emoji — chrome is
+              // monochrome, so the roster renders the symbol vocabulary's mark.
+              h("strong", { text: `${agentGlyph(agent.id)} @${agent.id}` }),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.

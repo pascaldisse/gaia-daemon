@@ -703,7 +703,7 @@ function Message(view) {
         ? h("small", {
             class: "model-tag fallback",
             title: details.modelFallback.reason,
-            text: `⚠ ${details.modelFallback.from} → ${details.modelFallback.to}`,
+            text: `⚠︎ ${details.modelFallback.from} → ${details.modelFallback.to}`,
           })
         : null,
       view.redacted ? RedactedTag() : null,
@@ -732,7 +732,7 @@ function Message(view) {
       ? h("span", {
           class: "stream-stalled",
           title: "upstream connection dropped mid-reply — the harness is reconnecting and will resume where it left off",
-          text: "⚠ reconnecting…",
+          text: "⚠︎ reconnecting…",
         })
       : null,
     view.streaming ? LiveHeartbeat(view) : null,
@@ -743,7 +743,7 @@ function Message(view) {
 /** @param {MessageView} view @returns {HTMLElement} */
 function LiveHeartbeat(view) {
   if (view.connectionStale) {
-    return h("div", { class: "live-heartbeat stale", text: "⚠ connection stale — reconnecting…" });
+    return h("div", { class: "live-heartbeat stale", text: "⚠︎ connection stale — reconnecting…" });
   }
   const elapsed = Math.max(0, Date.now() - Date.parse(view.timestamp));
   const activity = Math.max(0, Date.now() - (view.lastDeltaAt ?? Date.now()));
@@ -776,7 +776,7 @@ function CompactBoundary(view) {
     h(
       "span",
       { class: "compact-boundary-pill" },
-      h("span", { class: "compact-boundary-icon", text: "✂" }),
+      h("span", { class: "compact-boundary-icon", text: "✂︎" }),
       h("span", { text: "Context compacted" }),
       h("small", { text: detail }),
     ),
@@ -913,7 +913,7 @@ function RedactedTag() {
   return h("small", {
     class: "redacted-tag",
     title: "sanitized by thanks-dario — the original text is preserved in the room's redactions.jsonl",
-    text: "✂",
+    text: "✂︎",
   });
 }
 
