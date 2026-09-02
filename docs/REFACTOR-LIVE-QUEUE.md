@@ -48,3 +48,13 @@
 - A5 HTTP route smoke → FAIL · ADV-013; `GET /api/app` 500 missing cwd workspace config.
 - A6 mixed mention/edit + session fork → PASS.
 - A7 SIGKILL/WAL recovery + settings-file reload → PASS.
+
+## A6c durable queue + turn-results extraction
+- owner: 陰 live slot
+- repro: ephemeral compiled daemon; seed GAIA_HOME `agents/luna` + `accounts.json` + `config.json`; workspace under worktree containing `.gaia/config.json`; `env -u GAIA_PARENT_PID`; port `${GAIA_PORT:-18787}`.
+- verify: busy message persists `state.json.queue`; restart between reserved `pendingTurn.eventId` and completion; queue drains once; partial/reply event id has no duplicate transcript entry.
+
+## W4 A16 edit/resend regression
+- owner: 陰 live slot
+- repro: same isolated daemon/home; send two `@luna` token turns, edit first user event; inspect transcript + rewound + Pi session parent chain from disk.
+- verify: old tail absent from active transcript and fresh prompt branch; rewound retains old tail; edited reply occurs once; `GAIA_PARENT_PID` absent; daemon cwd owns `.gaia/config.json` (ADV-013).
