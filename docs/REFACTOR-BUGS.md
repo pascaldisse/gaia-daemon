@@ -682,3 +682,30 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 
 ### PASS #4 overall verdict
 - **W3 NOT DELIVERED** → bundled commands absent + durable command/denial evidence absent + no live reload trigger; queue also not fully rerun within bounded lane.
+
+## W3 REAL DELIVERY · 2026-09-03
+
+### ADV-020 · FIXED · `f218e91`
+- RED → `bun test test/dog-mode-integration.test.ts` → `0 pass · 8 fail`; `/dog` et al. → `Unknown command`.
+- GREEN → `bun test test/dog-mode-integration.test.ts` → `8 pass · 0 fail`.
+- real package registrations → defaults/dog-mode · fugu · rpg-engine · rpg; `plugins/rpg.mjs/` shim removed; Telegram declaration/registration retained standalone.
+- contract → reply · steer · activeAgent · state · rewriteAsMessage · targets · panel · prompt · renderCap · turnStart preserved through registry adapter.
+- inventory proof → `bun test test/bundled-plugins.test.ts` → `4 pass · 0 fail`; every bundled manifest declares commands; each resolves callable through production registry.
+
+### ADV-021 · FIXED · `077d846` · integration `1dc052a`
+- RED → plugin replies/denials emitted transient `room-event` only; transcript empty; denial provenance/log absent.
+- GREEN → `bun test test/room-service.test.ts` → `101 pass · 0 fail`; fresh RoomHandle reread proves transcript persistence.
+- reply → `kind=plugin-reply`; denial → `kind=capability-denied`; `details.pluginDenial={pluginId,capability,agentId,reason}`.
+- durability seam → `appendPluginEvent` → shared room-lock fsynced append + atomic cursor acknowledgement, then live emit; no memory-only reply path.
+- trust:false proof → contribution body counter `0`; denial log `[capabilities] denied plugin=... capability=... agent=... room=... reason=...` captured.
+
+### ADV-022 · FIXED · `2177872`
+- RED → lifecycle gate `7 pass · 1 fail`: missing ordered plugin-id observability.
+- GREEN → `bun test test/plugins-registry.test.ts` → `8 pass · 0 fail`.
+- trigger → settings-file PUT stages registry; `POST /api/plugins/reload` stages only.
+- daemon observation → staged · swapped · disposed logs include generation/plugin IDs.
+- boundary proof → held v1 command → staged v2 → boundary blocked → v1 complete → v2 next → v1 disposer once; ordered events asserted.
+
+### ADV-023 · FIXED · `2177872`
+- lifecycle internals un-exported; production registry owns their use.
+- proof → `rg -n 'export.*(RegistryLifecycleError|PluginTurnLease)' src/services/plugins/registry.ts` → `0`.

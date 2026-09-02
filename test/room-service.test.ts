@@ -3536,13 +3536,13 @@ test("ADV-021: a registry command's reply is durable in transcript through the a
     assert.equal(replyEvent!.author, "system");
     assert.equal(replyEvent!.text, "probe ran: hi there");
 
-    // Atomic path proof: re-read straight off disk through a FRESH RoomHandle
-    // (no shared in-memory state with `service`) — the same protocol ordinary
-    // replies use (RoomHandle#appendEvent -> appendJsonlDurable under the room
-    // lock), not the old transient-only `emit({type:"room-event"})`.
+    // Atomic path proof: a fresh RoomHandle reads both the fsynced transcript
+    // and the acknowledgement cursor written under that same room lock — not
+    // the old transient-only `emit({type:"room-event"})` path.
     const reopened = await RoomHandle.open(root, "default");
     const { events: onDisk } = await reopened.eventsFrom(0);
     assert.ok(onDisk.some((event) => "kind" in event && event.kind === "plugin-reply" && event.text === "probe ran: hi there"), "the reply is on disk, independent of the live service's memory");
+    assert.ok((await reopened.state()).agentCursors.system > 0, "the reply append has an atomic state acknowledgement");
 
     // The live broadcast still fires (display path unchanged) — durable-first,
     // not durable-instead-of-live.
@@ -3598,10 +3598,11 @@ test("ADV-021: a trust:false agent's capability denial is durable with pluginId/
       `expected a denial log line, got: ${JSON.stringify(warnCalls)}`,
     );
 
-    // Atomic path proof, same as the allowed-reply test.
+    // The denial shares the allowed reply's append + atomic acknowledgement.
     const reopened = await RoomHandle.open(root, "default");
     const { events: onDisk } = await reopened.eventsFrom(0);
     assert.ok(onDisk.some((event) => "kind" in event && event.kind === "capability-denied"), "the denial is on disk, independent of the live service's memory");
+    assert.ok((await reopened.state()).agentCursors.system > 0, "the denial append has an atomic state acknowledgement");
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(pluginRoot, { recursive: true, force: true });

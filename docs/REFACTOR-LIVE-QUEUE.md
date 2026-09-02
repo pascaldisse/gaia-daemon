@@ -115,3 +115,8 @@
 - plugin command registry turn → compiled daemon; workspace `.gaia/config.json` grants active agent required caps; issue declared bundled command in room; verify transcript command reply and registry generation/command provenance, no loose-module path.
 - staged manifest boundary → begin a deliberately held room turn; stage changed manifest package; verify old generation completes held turn; release lease; next turn invokes new generation only; inspect disposer ordering/event log.
 - untrusted capability denial → agent `trust:false`, workspace grants + agent capabilities include `network`; invoke a plugin requiring `network`; verify transcript surfaces denial and plugin contribution side-effect marker is absent.
+## W3 REAL DELIVERY · ADV-020..023 — owner 陰
+1. bundled command → compiled daemon; issue `/dog on` in default room; expect transcript `kind:"plugin-reply"`, dog reply; registry source `plugins/defaults` real index registration; no loose loader path.
+2. durable denial → seeded `trust:false` agent with workspace/agent grants; invoke `network`-required probe; expect transcript `kind:"capability-denied"`, `details.pluginDenial={pluginId,capability,agentId,reason}`; daemon `[capabilities] denied plugin=...`; side-effect marker unchanged.
+3. staged boundary → hold v1 probe command; mutate v2 manifest/entrypoint; `POST /api/plugins/reload`; expect stage log only while held, v1 completion, boundary swap log, next command v2, exactly one v1 dispose log.
+- acceptance evidence → transcript.jsonl + daemon.log + marker counter + execution/disposer log; compiled-live only; no coding-lane daemon.

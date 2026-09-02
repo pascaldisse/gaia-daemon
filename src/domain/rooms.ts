@@ -731,6 +731,14 @@ export class RoomHandle {
   async appendEvent(event: RoomEvent): Promise<void> {
     await this.withRoomLock(() => appendJsonlDurable(this.transcriptPath, event));
   }
+
+  /** Durable non-turn outcome: fsynced transcript append plus one atomic
+   * acknowledgement write, without touching a live turn's pending marker. */
+  async commitAuxiliaryEvent(event: RoomEvent): Promise<void> {
+    await this.withRoomLock(() => this.commitEventLocked(event, (state, cursorAfter) => {
+      state.agentCursors[event.author] = cursorAfter;
+    }));
+  }
   /** Append an agent's visible goodbye and durably suppress its automatic
    * follow-ups as one room-lock transaction. */
   async endConversation(agentId: string, event: RoomEvent): Promise<void> {
@@ -1157,24 +1165,23 @@ export class RoomHandle {
     // reserved event id must produce exactly one line (an unlocked check-then-
     // append duplicates it). The cursor scan stays inside too, so the offset
     // matches the file this turn actually committed against.
-    await this.withRoomLock(async () => {
-      // fsynced here, BEFORE the state write below clears pendingTurn and
-      // advances the cursor: the WAL's ordering is only real if the append is
-      // durable first — otherwise a power cut can leave a state that says
-      // "committed" over a transcript that lost the reply.
-      if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
-      const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
-        raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
-      );
-      const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
-      // Keep append→cursor scan→ack contiguous. A crash after append still
-      // retains pendingTurn and resumeMode performs finish-commit.
-      await this.updateStateLocked((state) => {
-        if (nextPending) state.pendingTurn = nextPending;
-        else delete state.pendingTurn;
-        state.agentCursors[event.author] = cursorAfter;
-      });
-    });
+    await this.withRoomLock(() => this.commitEventLocked(event, (state, cursorAfter) => {
+      if (nextPending) state.pendingTurn = nextPending;
+      else delete state.pendingTurn;
+      state.agentCursors[event.author] = cursorAfter;
+    }));
+  }
+
+  /** Transcript append + state acknowledgement under an already-held room
+   * lock. Every durable outcome shares this ordering; callers own only their
+   * state delta, so auxiliary events cannot clear a live pending turn. */
+  private async commitEventLocked(event: RoomEvent, acknowledge: (state: RoomState, cursorAfter: number) => void): Promise<void> {
+    if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
+    const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
+      raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
+    );
+    const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
+    await this.updateStateLocked((state) => acknowledge(state, cursorAfter));
   }
 
   /**

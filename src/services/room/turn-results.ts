@@ -144,7 +144,7 @@ export class RoomTurnResults {
       text,
       ...(details ? { details } : {}),
     };
-    await this.service.room.appendEvent(event);
+    await this.service.room.commitAuxiliaryEvent(event);
     this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
     return event;
   }

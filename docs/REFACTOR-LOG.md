@@ -194,3 +194,12 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 | turn lease | DELIVERED | daemon-owned injected registry; RoomService finally boundary |
 | capability broker | DELIVERED | real workspace/agent/trust sources; fail-closed cases 6/0 |
 | disposer/dependency lifecycle | DELIVERED | serialized lifecycle tail; registry lifecycle tests green |
+## W3 REAL DELIVERY — ADV-020..023 (2026-09-03)
+- commits → ADV-020 `f218e91`; ADV-021 `077d846` + integration `1dc052a`; ADV-022/023 `2177872`.
+- RED→GREEN → dog registry `0/8→8/0`; lifecycle observability `7/1→8/0`; durable reply/denial `101/0` focused RoomService proof.
+- registry → bundled manifests nonempty/callable `bundled-plugins 4/0`; full legacy command result surface retained; rpg shim → `plugins/rpg/` real package.
+- durability → plugin reply/denial transcript events; denial provenance `{pluginId,capability,agentId,reason}`; denial log; trust:false body counter 0.
+- reload → settings save + `POST /api/plugins/reload` stage only; generation swap remains lease/boundary-gated; disposal once/order asserted.
+- integration gate → check rc0; dog 8/0 · bundled 4/0 · registry 8/0 · room-service 101/0 · rooms 53/0 · plugin contract/capability/rpg controls green.
+- pragma scan src → 0; sizes → daemon 757 · http 642 · registry 379 · contracts 230.
+- live → UNVERIFIED here; CPU owner 陰; §REFACTOR-LIVE-QUEUE W3 REAL DELIVERY.
