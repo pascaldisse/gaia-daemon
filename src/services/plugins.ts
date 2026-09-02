@@ -3,13 +3,9 @@
 // one compatibility release only. Bundled defaults retain their established
 // package-free shape until they receive their own manifest packages.
 
-import { readdirSync } from "node:fs";
-import { join, parse } from "node:path";
-import { pathToFileURL } from "node:url";
-import { bundledDir, globalPaths } from "../core/paths.js";
-import { CapabilityBroker } from "./capabilities/broker.js";
-import { PluginRegistry } from "./plugins/registry.js";
-import type { PluginManifest } from "./plugins/manifest.js";
+import type { CapabilityContext } from "./capabilities/types.js";
+import type { PluginCommandRequest, PluginCommandResult } from "./plugins/contracts.js";
+import type { RegisteredPluginCommand } from "./plugins/registry.js";
 
 export interface PluginAgent {
   id: string;
@@ -78,122 +74,31 @@ function pluginCommandNames(plugin: CommandPlugin): string[] {
   return typeof plugin.command === "string" ? [plugin.command] : [...plugin.command];
 }
 
-/** Bundled defaults preserve the prior package-free install behavior. */
-export function bundledCommandPluginsDir(): string {
-  return bundledDir("plugins", "defaults");
-}
-
-function userCommandPluginsDir(): string {
-  return globalPaths.commandPluginsDir();
-}
-
-function commandPlugin(candidate: unknown): candidate is CommandPlugin {
-  if (!candidate || typeof candidate !== "object") return false;
-  const value = candidate as { command?: unknown; run?: unknown };
-  const commands = value.command;
-  return (typeof commands === "string" || (Array.isArray(commands) && commands.length > 0 && commands.every((name) => typeof name === "string" && name)))
-    && typeof value.run === "function";
-}
-
-function legacyId(file: string): string {
-  const stem = parse(file).name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return `legacy.${stem || "command"}`;
-}
-
-/** Explicit compatibility metadata; loose modules never bypass a manifest-shaped identity. */
-export function synthesizeLegacyCommandPluginManifest(file: string): PluginManifest {
-  return Object.freeze({
-    id: legacyId(file),
-    version: "0.0.0-legacy",
-    engine: "gaia-daemon@legacy",
-    placement: "daemon",
-    requiredCaps: Object.freeze([]),
-    contributes: Object.freeze({ commands: Object.freeze([]), tools: Object.freeze([]), channels: Object.freeze([]), providers: Object.freeze([]) }),
-  });
-}
-
-export interface CommandPluginLoaderOptions {
-  readonly bundledDir?: string;
-  readonly userDir?: string;
-  readonly warn?: (message: string) => void;
-}
-
-function addPlugin(plugins: Map<string, CommandPlugin>, plugin: CommandPlugin, source: string, warn: (message: string) => void): void {
-  const names = pluginCommandNames(plugin);
-  const duplicates = names.filter((name) => plugins.has(name));
-  if (duplicates.length > 0) {
-    warn(`[plugins] skipped ${source}: duplicate command(s) "${duplicates.join(", ")}"`);
-    return;
-  }
-  for (const name of names) plugins.set(name, plugin);
-}
-
-async function loadLoosePlugins(dir: string, plugins: Map<string, CommandPlugin>, warn: (message: string) => void, legacy: boolean): Promise<void> {
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((file) => file.endsWith(".mjs")).sort();
-  } catch {
-    return;
-  }
-  for (const file of files) {
-    try {
-      if (legacy) {
-        const manifest = synthesizeLegacyCommandPluginManifest(file);
-        warn(`[plugins] deprecated legacy ${file}; synthesized ${manifest.id} manifest for this compatibility release — move it to <package>/plugin.json before the next release`);
-      }
-      const candidate = (await import(pathToFileURL(join(dir, file)).href)).default;
-      if (!commandPlugin(candidate)) {
-        warn(`[plugins] skipped ${file}: invalid plugin (needs a default export with string|string[] .command and function .run)`);
-        continue;
-      }
-      addPlugin(plugins, candidate, file, warn);
-    } catch (error) {
-      warn(`[plugins] skipped ${file}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-}
-
-async function loadManifestPlugins(dir: string, plugins: Map<string, CommandPlugin>, warn: (message: string) => void): Promise<void> {
-  // A conservative broker makes the migration safe before workspace capability
-  // policy is wired: cap-free commands work; declared capabilities fail closed.
-  const registry = new PluginRegistry({
-    pluginsRoot: dir,
-    placement: "daemon",
-    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
-    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
-  });
-  const staged = await registry.stageReload();
-  if (staged.status === "failed") {
-    warn(`[plugins] manifest inventory skipped: ${staged.reason}`);
-    return;
-  }
-  await registry.applyTurnBoundary();
-  for (const command of registry.commandContributions()) {
-    addPlugin(plugins, {
-      command: command.name,
-      id: command.pluginId,
-      description: command.description,
-      run: async (args, context) => registry.invokeCommand(command.pluginId, command.name, {
-        roomId: context.roomId,
-        agentId: context.agentId,
-      }, { args }),
-    }, `${command.pluginId}/${command.name}`, warn);
-  }
+/** Registry command surface injected by the daemon composition root. */
+export interface CommandPluginRegistry {
+  commandContributions(): readonly RegisteredPluginCommand[];
+  invokeCommand(pluginId: string, name: string, context: CapabilityContext, request: PluginCommandRequest): Promise<PluginCommandResult>;
 }
 
 /**
- * Manifest packages preflight as one inventory before any package import. Then
- * bundled defaults load first and compatibility loose user files last, exactly
- * preserving their old collision behavior while making manifest packages the
- * preferred user extension path.
+ * Adapts the daemon-owned manifest registry to RoomService's legacy command
+ * shape. This module owns no lifecycle or authorization state: every command
+ * invocation is delegated back to the one injected registry.
  */
-export async function loadCommandPlugins(options: CommandPluginLoaderOptions = {}): Promise<Map<string, CommandPlugin>> {
+export async function loadCommandPlugins(registry: CommandPluginRegistry): Promise<Map<string, CommandPlugin>> {
   const plugins = new Map<string, CommandPlugin>();
-  const warn = options.warn ?? console.warn;
-  const bundledDir = options.bundledDir ?? bundledCommandPluginsDir();
-  const userDir = options.userDir ?? userCommandPluginsDir();
-  await loadLoosePlugins(bundledDir, plugins, warn, false);
-  await loadManifestPlugins(userDir, plugins, warn);
-  await loadLoosePlugins(userDir, plugins, warn, true);
+  for (const command of registry.commandContributions()) {
+    plugins.set(command.name, {
+      command: command.name,
+      id: command.pluginId,
+      description: command.description,
+      run: (args, context) => registry.invokeCommand(
+        command.pluginId,
+        command.name,
+        { roomId: context.roomId, agentId: context.agentId },
+        { args },
+      ),
+    });
+  }
   return plugins;
 }

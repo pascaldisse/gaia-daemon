@@ -58,7 +58,7 @@ import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, usageAcco
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
-import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type PluginContext, type PluginPanel, type PluginResult } from "./plugins.js";
+import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type CommandPluginRegistry, type PluginContext, type PluginPanel, type PluginResult } from "./plugins.js";
 import type { PluginTurnBoundary } from "./plugins/registry.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
@@ -130,7 +130,7 @@ export interface RoomServiceOptions {
   /** Test seam around the real safe Codex package loader. Production omits it. */
   petLoader?: (name: string) => Promise<unknown>;
   /** Manifest-plugin generations shared by the daemon; legacy command plugins remain unchanged. */
-  pluginRegistry?: PluginTurnBoundary;
+  pluginRegistry?: PluginTurnBoundary & CommandPluginRegistry;
 }
 
 /** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
@@ -401,7 +401,7 @@ export class RoomService {
   private initPromise: Promise<void> | undefined;
   /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
    * services/plugins.ts) — loaded once per RoomService and cached. */
-  readonly pluginsPromise: Promise<Map<string, CommandPlugin>> = loadCommandPlugins();
+  readonly pluginsPromise: Promise<Map<string, CommandPlugin>>;
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
@@ -413,6 +413,9 @@ export class RoomService {
 
   constructor(readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
+    this.pluginsPromise = options.pluginRegistry
+      ? loadCommandPlugins(options.pluginRegistry)
+      : Promise.resolve(new Map());
     this.incognito = options.incognito === true;
     this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
     this.backgroundTasks = new BackgroundTasks({ room: this.room, roomId: this.roomId, emitSnapshot: () => this.emitSnapshot() });

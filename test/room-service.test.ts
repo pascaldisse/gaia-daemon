@@ -15,6 +15,7 @@ import { RunnerHost } from "../src/harness/host.js";
 import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
+import type { CommandPluginRegistry } from "../src/services/plugins.js";
 import type { PluginTurnBoundary } from "../src/services/plugins/registry.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
@@ -106,7 +107,7 @@ async function makeService(options: {
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
-  pluginRegistry?: PluginTurnBoundary;
+  pluginRegistry?: PluginTurnBoundary & CommandPluginRegistry;
   /** Room id to open (default "default"). */
   roomId?: string;
   /** Seed the room's state.json as incognito before RoomService.open reads it. */
@@ -3418,7 +3419,11 @@ test("RoomService releases the manifest-plugin lease and applies a staged genera
   const calls: string[] = [];
   let finish: (() => void) | undefined;
   const holding = new Promise<void>((resolve) => { finish = resolve; });
-  const registry: PluginTurnBoundary = {
+  const registry: PluginTurnBoundary & CommandPluginRegistry = {
+    commandContributions: () => [],
+    async invokeCommand() {
+      throw new Error("no plugin commands in this lifecycle test");
+    },
     beginTurn() {
       calls.push("begin");
       return { end: () => calls.push("end") };
