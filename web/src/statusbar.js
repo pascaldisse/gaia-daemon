@@ -805,25 +805,22 @@ function ThemePalette() {
       },
     },
     h(
-      "div",
-      { class: "palette" },
+      "section",
+      { class: "modal palette" },
       h(
         "div",
-        { class: "palette-head" },
-        h("strong", { text: "themes" }),
-        h("small", { text: "hover to preview · click to apply · esc to cancel" }),
+        { class: "panel-head" },
+        h("strong", { text: "◈ Theme" }),
+        h("button", { type: "button", title: "cancel theme preview", text: "×", onclick: () => closeThemePalette(false) }),
       ),
       h(
         "div",
-        { class: "palette-grid" },
+        { class: "theme-list" },
         THEMES.map((theme) =>
-          // Each swatch carries its own data-theme attribute, so the palette
-          // variables in styles.css recolour it without a second copy of any
-          // theme colour existing in JS.
           h(
             "button",
             {
-              class: `swatch ${theme.id === committedThemeId() ? "active" : ""}`,
+              class: `theme-row ${theme.id === committedThemeId() ? "active" : ""}`,
               "data-theme": theme.id,
               onmouseenter: () => previewTheme(theme.id),
               onmouseleave: () => revertTheme(),
@@ -836,13 +833,14 @@ function ThemePalette() {
             },
             h(
               "span",
-              { class: "sw-preview" },
-              h("span", { class: "sw-dot sw-accent" }),
-              h("span", { class: "sw-dot sw-accent2" }),
-              h("span", { class: "sw-dot sw-good" }),
-              h("span", { class: "sw-dot sw-danger" }),
+              { class: "swatches" },
+              h("i", { class: "sw-bg" }),
+              h("i", { class: "sw-fg" }),
+              h("i", { class: "sw-dim" }),
+              h("i", { class: "sw-accent" }),
+              h("i", { class: "sw-good" }),
             ),
-            h("span", { class: "sw-name", text: theme.name }),
+            h("span", { text: theme.name }),
           ),
         ),
       ),

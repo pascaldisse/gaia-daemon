@@ -1,0 +1,241 @@
+/* Settings + theme palette — flat v2 overlay surfaces. */
+
+.settings2-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 94vw);
+  max-height: 80vh;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.settings2-modal > .panel-head {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings2-modal > .panel-head h2 {
+  margin: 0;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: normal;
+  letter-spacing: .08em;
+}
+
+.settings2-modal > .panel-head button,
+.settings2-modal button,
+.modal.palette button {
+  width: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.settings2-modal > .panel-head button { padding: 0 2px; font-size: 14px; }
+.settings2-modal button:hover,
+.modal.palette button:hover { color: var(--fg); background: var(--sel, transparent); }
+
+.settings2-modal > .segmented-tabs {
+  flex: 0 0 auto;
+  gap: 0;
+  flex-wrap: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings2-modal > .segmented-tabs button,
+.settings2-view-toggle button {
+  padding: 5px 14px;
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.settings2-modal > .segmented-tabs button.active,
+.settings2-view-toggle button.active {
+  color: var(--accent);
+  background: var(--sel, transparent);
+  border-bottom-color: var(--accent);
+}
+
+.settings2-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+}
+
+.settings2-row {
+  display: grid;
+  grid-template-columns: 22ch minmax(0, 1fr);
+  align-items: start;
+  gap: 2ch;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings2-row > span { padding-top: 3px; }
+.settings2-row-block { display: grid; }
+.settings2-row-block > span { margin: 0; }
+
+.settings2-modal input,
+.settings2-modal select,
+.settings2-modal textarea {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  padding: 3px 8px;
+}
+
+.settings2-modal select { min-width: 20ch; background: var(--bg); }
+.settings2-modal textarea { min-height: 88px; padding: 6px 8px; }
+.settings2-modal input:focus,
+.settings2-modal select:focus,
+.settings2-modal textarea:focus { border-color: var(--accent); }
+
+.settings2-row input[type="checkbox"],
+.settings2-bool input[type="checkbox"],
+.settings2-multi-option input[type="checkbox"] {
+  appearance: none;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings2-row input[type="checkbox"]:checked,
+.settings2-bool input[type="checkbox"]:checked,
+.settings2-multi-option input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.settings-theme-grid { grid-template-columns: repeat(auto-fill, minmax(18ch, 1fr)); gap: 1px; }
+.settings-theme {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid transparent !important;
+  text-align: left;
+}
+.settings-theme.active { border-color: var(--accent) !important; color: var(--accent) !important; }
+.settings-theme .sw-preview { order: 2; margin-left: auto; padding: 0; background: transparent; }
+.settings-theme .sw-dot { width: 10px; height: 10px; border: 1px solid var(--border); }
+.settings-theme .sw-name { order: 1; font-size: 11px; font-weight: normal; }
+
+.settings2-split { grid-template-columns: 20ch minmax(0, 1fr); gap: 16px; min-height: 340px; }
+.settings2-sidebar { gap: 1px; padding-right: 10px; border-right: 1px solid var(--border); }
+.settings2-sidebar .nav-title { margin: 0 0 4px; font-size: 10px; }
+.settings2-sidebar .file-tabs { gap: 1px; }
+.settings2-sidebar .file-tabs button {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+.settings2-sidebar .file-tabs button.active { border-color: var(--accent); background: var(--sel, transparent); color: var(--accent); }
+.settings2-sidebar .file-tabs button small { font-size: 10px; }
+.agent-row-wrapper { gap: 0; }
+.agent-row-wrapper > .settings2-row-remove { border-color: transparent; }
+
+.settings2-main { gap: 0; }
+.settings2-main > .segmented-tabs { gap: 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.settings2-main > .segmented-tabs button { padding: 4px 10px; border-right: 1px solid var(--border); }
+.settings2-main > .segmented-tabs button.active { color: var(--accent); background: var(--sel, transparent); }
+
+.settings2-editor { gap: 0; }
+.settings2-editor .file-toolbar { min-height: 30px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.settings2-toolbar-actions { gap: 1ch; }
+.settings2-raw { min-height: 380px; border-top: 0 !important; }
+.settings2-dirty { color: var(--warn); }
+.settings2-notice { margin: 4px 0; font-size: 11px; }
+.settings2-error-line { padding: 5px 8px; border-color: var(--danger); background: transparent; font-size: 11px; }
+
+.settings2-form { padding: 0; }
+.settings2-field-row {
+  grid-template-columns: 22ch minmax(0, 1fr);
+  gap: 2ch;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings2-field-label { padding-top: 3px; color: var(--fg); font-size: 12.5px; }
+.settings2-field-widget { gap: 3px; }
+.settings2-field-control { gap: 1ch; }
+.settings2-field-desc { color: var(--muted); font-size: 11px; }
+.settings2-row-remove { padding: 1px 7px; border: 1px solid var(--border); }
+.settings2-row-remove:hover { border-color: var(--danger); color: var(--danger); }
+
+.account-row { gap: 1ch; min-height: 30px; margin: 0; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.account-row-head strong { min-width: 14ch; font-weight: normal; }
+.account-row .settings2-field-control { flex-wrap: wrap; }
+.account-row .settings2-field-control input { width: 20ch; flex: 0 1 20ch; }
+.account-usage-row { border-bottom: 1px solid var(--border); }
+
+.settings2-bool { gap: 1ch; }
+.settings2-bool span { color: var(--muted); font-size: 11px; }
+.settings2-multiselect { gap: 1px; padding: 2px 8px 6px; border-color: var(--border); background: transparent; }
+.settings2-multi-option { min-height: 22px; gap: 1ch; font-size: 12.5px; }
+.settings2-multi-badge { border: 0; padding: 0; color: var(--muted); font-size: 10px; }
+.settings2-multi-grouped { gap: 4px; }
+.settings2-skill-filter { margin-bottom: 2px; }
+.settings2-skill-group { margin: 0; border: 1px solid var(--border); }
+.settings2-skill-group > summary { padding: 3px 8px; color: var(--muted); }
+.settings2-skill-group > summary:hover { color: var(--fg); background: var(--sel, transparent); }
+.settings2-skill-group > .settings2-multiselect { border: 0; border-top: 1px solid var(--border); }
+.settings2-skill-group-count { margin-left: auto; font-size: 10px; }
+.settings2-json-field { font-size: 12px; }
+.settings2-add-row { display: none; }
+
+.modal.palette {
+  width: min(340px, 94vw);
+  max-height: 80vh;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.modal.palette > .panel-head {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.modal.palette > .panel-head strong { color: var(--accent); font-size: 12.5px; font-weight: normal; letter-spacing: .08em; text-transform: none; }
+.modal.palette > .panel-head small { display: none; }
+.modal.palette > .panel-head button { padding: 0 2px; font-size: 14px; }
+.theme-list { overflow: auto; padding: 8px; }
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid transparent !important;
+  color: var(--fg) !important;
+  text-align: left;
+}
+.theme-row:hover { background: var(--sel, transparent) !important; }
+.theme-row.active { border-color: var(--accent) !important; color: var(--accent) !important; }
+.theme-row .swatches { display: flex; flex: 0 0 auto; gap: 3px; }
+.theme-row .swatches i { width: 11px; height: 11px; border: 1px solid var(--border); }
+.theme-row .sw-bg { background: var(--bg); }
+.theme-row .sw-fg { background: var(--fg); }
+.theme-row .sw-dim { background: var(--muted); }
+.theme-row .sw-accent { background: var(--accent); }
+.theme-row .sw-good { background: var(--good); }
+
+@media (max-width: 640px) {
+  .settings2-split,
+  .settings2-field-row,
+  .settings2-row { grid-template-columns: minmax(0, 1fr); }
+  .settings2-sidebar { padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--border); }
+}
