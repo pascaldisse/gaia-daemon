@@ -126,9 +126,10 @@ function renderLayout() {
   right.hidden = state.rightCollapsed;
   rightResizer.hidden = state.rightCollapsed;
   const cols = [];
-  if (!state.sidebarCollapsed) cols.push("var(--w-left)", "5px");
+  // Resizer columns are 0 wide; the 5px handle overhangs the pane border via negative margin (styles.css .col-resizer).
+  if (!state.sidebarCollapsed) cols.push("var(--w-left)", "0px");
   cols.push("minmax(0,1fr)");
-  if (!state.rightCollapsed) cols.push("5px", "var(--w-right)");
+  if (!state.rightCollapsed) cols.push("0px", "var(--w-right)");
   body.style.gridTemplateColumns = cols.join(" ");
 }
 
