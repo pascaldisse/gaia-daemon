@@ -139,3 +139,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `e98f6b5`: `services/plugins/contracts.ts`; typed command/tool/channel/provider ports, manifest-declared names only, broker gate before invocation; uniform runner wire in `harness/protocol.ts` fails closed pending A14 install.
 - gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/plugins-contracts.test.ts` 31/0.
 - call-site: registry contribution invokes hold generation lease; protocol has one harness-neutral frame; no harness-id branch. pragma scan touched services/harness: 0. live UNVERIFIED; queue updated.
+
+## A6d — summon lifecycle + agent dialogue extraction (2026-09-03)
+- `9ffba40`: `room/summon-lifecycle.ts` 202; typed `RoomSummonLifecyclePort`; one-body mixin extraction; queue/WAL/pendingTurn/atomic seams untouched.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/summons.test.ts` 134/0.
+- call-site: facade install only; each moved lifecycle body exists solely in `summon-lifecycle.ts`. pragma scan touched room files: 0. room-service 1530→1362; next extraction required for ≤800.
