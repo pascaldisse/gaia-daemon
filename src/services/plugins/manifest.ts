@@ -2,7 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const MANIFEST_KEYS = new Set(["id", "version", "engine", "placement", "requiredCaps", "contributes"]);
+const MANIFEST_KEYS = new Set(["id", "version", "engine", "placement", "process", "requiredCaps", "contributes"]);
 const CONTRIBUTION_KEYS = new Set(["commands", "tools", "channels", "providers"]);
 const PLUGIN_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -17,6 +17,8 @@ export interface PluginManifest {
   readonly version: string;
   readonly engine: string;
   readonly placement: PluginPlacement;
+  /** Standalone packages are launched outside the daemon process. */
+  readonly process?: "standalone";
   readonly requiredCaps: readonly string[];
   readonly contributes: PluginContributions;
 }
@@ -92,6 +94,9 @@ export function validatePluginManifest(value: unknown, manifestPath: string): Pl
   if (value.placement !== "daemon" && value.placement !== "runner") {
     throw new PluginManifestError("placement must be daemon or runner", manifestPath);
   }
+  if (value.process !== undefined && value.process !== "standalone") {
+    throw new PluginManifestError("process must be standalone when declared", manifestPath);
+  }
   if (!Object.hasOwn(value, "requiredCaps")) throw new PluginManifestError("requiredCaps is required", manifestPath);
   const requiredCaps = declarations(value.requiredCaps, manifestPath, "requiredCaps");
   if (!isPlainRecord(value.contributes)) throw new PluginManifestError("contributes must be a plain JSON object", manifestPath);
@@ -103,7 +108,7 @@ export function validatePluginManifest(value: unknown, manifestPath: string): Pl
     channels: declarations(value.contributes.channels, manifestPath, "contributes.channels"),
     providers: declarations(value.contributes.providers, manifestPath, "contributes.providers"),
   });
-  return Object.freeze({ id, version, engine, placement: value.placement, requiredCaps, contributes });
+  return Object.freeze({ id, version, engine, placement: value.placement, ...(value.process === "standalone" ? { process: "standalone" as const } : {}), requiredCaps, contributes });
 }
 
 /** Read a direct-child package and confine its conventional index.mjs before import. */
