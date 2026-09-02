@@ -22,6 +22,13 @@
 - A4 knip config (root; @naru-flash died 402 Insufficient Balance) · knip.json + `check:dead` (`bunx --bun knip --no-exit-code`) wired into `bun run check`, non-failing by design; flip to failing after dead code is gone.
   measured: "109 unused files" = default-config artifact; real ≈3-4 files, all false positives.
 
+## LIVE — Bhairava edit/retry/compact (2026-09-02)
+- compiled `gaia-daemon` → own `GAIA_HOME` · port 18787 · `env -u GAIA_PARENT_PID -u GAIA_HOME -u GAIA_PORT`; @luna `openai-codex/gpt-5.6-sol` exact-token probe.
+- U1 → U2-OLD → U3-TAIL; POST edit(U2) → transcript=4: U1/A1/U2-EDITED/A2; rewound=U2-OLD/A2/U3-TAIL/A3. Pi session fork: edited user parentId=`1afa0bdc` (A1); no old-tail prompt.
+- POST retry(U1) → transcript=2 regenerated U1/A1; rewound=8 includes edit branch; retry user parentId=`0b16d39e` (session root).
+- POST message `/compact luna` → `@luna: nothing to compact — nothing to compact (session too small).`
+- verdict → PASS · no ticket. A1/A6/A7 restart/tool-provider cases UNVERIFIED.
+
 ### W1 process corpses
 - 死 lane-worktree assumption: summoned lanes inherit the parent cwd, they do NOT get their own worktree ⇒ 3 lanes + root editing one tree. Fixed by steering mid-flight; every later spec creates its own worktree explicitly. 因 spec omission, not agent error.
 - 死 @naru-flash: 402 Insufficient Balance ⇒ unusable this run; its atom absorbed by root.
