@@ -613,3 +613,9 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 
 ## PASS #4 FINAL — W3 completion live + closing static
 
+### PASS #4 parent gate salvage · code `338db79`
+- `naru-flash` lane → infrastructure failure before output: HTTP 402 `Insufficient Balance`; no repository verdict derived.
+- independent root salvage → `bun run check` rc 0 (6s).
+- touched existing tests, each isolated → `bundled-plugins` 3; `capabilities-daemon-sources` 6; `edit-resend-live` 4 + live opt-in 1 skipped; `plugins-capabilities` 16; `plugins-manifest` 4; `plugins-registry` 6; `room-service` 99; `rpg-plugin` 2; `telegram-bridge-format` 3. Total → 143 pass · 0 fail · 1 live skip.
+- deleted since `4fda75d` → `plugin-host.test.ts` · `plugin-manifest.test.ts` · `plugins-migration.test.ts`.
+- raw gate evidence → `.gaia/pass4-parent-gate.log` (worktree-local; command/output/rc/duration).
