@@ -150,3 +150,37 @@ Verdict → mandatory touched test is red and W2 god-file objective fails. Do no
 
 - A1 upward imports → resolved by `4233f82` / merge `630a7b5`; main scan at `41836cd` = zero.
 - RULE0 literal harness-id branches introduced by reviewed atoms → none.
+
+## ADV-007 · HIGH · A6 leaves the RoomService god façade at 3,718 lines
+
+Atoms → A6 `350840e` (context gate) · `638fed8` (fork) · `3b2e317` (turn loop), merged through `2128ac7`.
+
+Defect → extraction moved 790 lines into three helpers, but `src/services/room-service.ts` remains 3,718 lines; plan requires façade ≤800. Queue ownership, recovery, commands, dialogue, media, goals, sanitization, snapshots, and runtime state remain co-located. New façade methods instantiate helpers through `new RoomFork(this as any)` / equivalent structural escape, so the intended bounded façade contract is absent.
+
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40
+wc -l "$W/src/services/room-service.ts" "$W/src/services/room/"*.ts
+rg -n 'new Room(Fork|ContextGate|TurnLoop)\(this as any\)' "$W/src/services/room-service.ts"
+```
+
+Expected @ plan §W2 A6 → `room-service.ts` façade ≤800 lines with explicit helper contracts; durability custody remains owned once.
+
+Actual @ `main@2128ac7` → façade 3,718 lines · helpers 125/178/512 lines · structural `any` bridges at façade boundaries. Extracted seams may preserve behavior, but A6 architecture objective is not complete.
+
+## ADV-008 · HIGH · A7 extraction leaves `daemon.ts` as a 1,334-line god file
+
+Atom → A7 `8350bb2`, merged through `a5bc607` / `2128ac7`.
+
+Defect → `reload.ts` (61 lines) + `wiring.ts` (335 lines) extracted, yet `daemon.ts` remains 1,334 lines and continues to own far more than boot sequencing. A7's declared endpoint is “daemon.ts = boot sequence”; moving 318 old lines while adding 457 does not establish that boundary.
+
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40
+wc -l "$W/src/daemon.ts" "$W/src/daemon/reload.ts" "$W/src/daemon/wiring.ts"
+git -C "$W" show --stat 8350bb2
+```
+
+Expected @ plan §W2 A7 → boot-sequence façade in `daemon.ts`; reload and service wiring bounded behind extracted modules.
+
+Actual @ `main@2128ac7` → 1,334/61/335 lines; atom adds 457 and deletes 318 lines. Live boot/reload behavior remains separately UNVERIFIED pending queue execution, but the static split objective already fails.
