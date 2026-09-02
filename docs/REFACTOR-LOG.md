@@ -75,3 +75,11 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - T-V2 A1 added feature surface in a refactor commit → NOTED, won't revert: the ToolProviders port
   IS the atom (layering inversion demands a new seam). Behaviour parity still UNVERIFIED live →
   already item 1 of docs/REFACTOR-LIVE-QUEUE.md.
+
+## A7d — daemon interaction lifecycle (2026-09-02)
+- `refactor/a7d-daemon` @ 37f23a9 → current main merged in adoption branch.
+- move+split: room/agent/voice interaction lifecycle → `src/daemon/interactions.ts`; explicit `RoomInteractionHost` in `src/daemon/ports.ts`; daemon facade delegates.
+- `src/daemon.ts` 1369→717; call sites remain facade-routed; durability seams untouched.
+- gate: `bun run check` green; voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- pragma scan `src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
+- live: voice/room interaction app path UNVERIFIED; no daemon started outside isolated test process; owner 陰.
