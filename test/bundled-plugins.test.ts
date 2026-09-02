@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { CapabilityBroker } from "../src/services/capabilities/broker.js";
+import { PluginRegistry } from "../src/services/plugins/registry.js";
 import { bundledDir } from "../src/core/paths.js";
 import { pluginDiscoveryRoots } from "../src/services/plugins/loader.js";
 import { discoverPluginManifests, readPluginManifests } from "../src/services/plugins/manifest.js";
@@ -18,4 +21,17 @@ test("bundled and global discovery roots are injectable", () => {
   const paths = { commandPluginsDir: () => "/global/plugins" };
   assert.deepEqual(pluginDiscoveryRoots({ bundled: "/bundle/plugins", paths }), ["/bundle/plugins", "/global/plugins"]);
   assert.equal(join("plugins", "defaults", "plugin.json"), "plugins/defaults/plugin.json");
+});
+
+
+test("bundled daemon packages stage through the injected registry", async () => {
+  const registry = new PluginRegistry({
+    pluginsRoot: bundledDir("plugins"),
+    placement: "daemon",
+    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+  });
+  const staged = await registry.stageReload();
+  assert.equal(staged.status, "staged");
+  if (staged.status === "staged") assert.deepEqual(staged.generation.plugins.map((plugin) => plugin.id), ["gaia.defaults", "gaia.rpg"]);
 });
