@@ -8,10 +8,8 @@
 
 import type { ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { env } from "../core/env.js";
-import { workspacePaths } from "../core/paths.js";
+import { expandHome, workspacePaths } from "../core/paths.js";
 import { accountsPath, findAccount } from "../domain/accounts.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -79,13 +77,6 @@ export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
 export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const name of PROVIDER_KEY_ENV_VARS) delete environment[name];
   return environment;
-}
-
-/** Expand the `~` shorthand HarnessSpec.sandboxPaths declares in (a spec is
- *  static data — it can't know the home dir) to the real home dir. */
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
 // --- the host ---------------------------------------------------------------------

@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { bundledDir, globalPaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { json, parseBody } from "../core/http.js";
 import { newId } from "../core/ids.js";
@@ -380,8 +381,6 @@ function defaultSpawnService(spec: ServiceSpec, unmuteDir: string, logPath: stri
   });
   return handle;
 }
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 type PortState = "service" | "occupied" | "free";
 
@@ -918,11 +917,6 @@ function endCompletionStream(response: ServerResponse, completionId: string): vo
   response.write(completionChunk(completionId, undefined, "stop"));
   response.write(completionDone());
   response.end();
-}
-
-/** GET /v1/models — unmute autoselects its model from this single entry. */
-export function handleModels(_request: IncomingMessage, response: ServerResponse): void {
-  json(response, 200, modelListPayload());
 }
 
 /**

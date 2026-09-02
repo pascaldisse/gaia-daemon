@@ -313,14 +313,3 @@ export function embedModelRow(id: string): EmbedModelRow | undefined {
   return EMBED_MODELS.find((row) => row.id === id);
 }
 
-/** True when the pinned model file is already on disk (status surfaces). */
-export function modelFilePresent(id: string): boolean {
-  const row = embedModelRow(id);
-  if (!row) return false;
-  const path = join(globalPaths.modelsCacheDir(), row.file);
-  try {
-    return statSync(path).size === row.bytes;
-  } catch {
-    return false;
-  }
-}

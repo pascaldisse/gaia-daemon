@@ -11,6 +11,11 @@ import { env } from "./env.js";
 export function gaiaHome(): string {
   return resolve(env("GAIA_HOME") ?? join(homedir(), ".gaia"));
 }
+/** Expand only a home-directory path; relative paths remain relative. */
+export function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
 
 // --- global layout ---------------------------------------------------------
 
@@ -46,6 +51,9 @@ export const globalPaths = {
    * at boot; see harness/runner-plugins.ts. Out-of-tree fetch transforms live
    * here, never in the repo. */
   runnerPluginsDir: () => join(gaiaHome(), "plugins", "runner"),
+  commandPluginsDir: () => join(gaiaHome(), "plugins"),
+  ambientWatchdogDir: () => join(gaiaHome(), "ambient-watchdog"),
+  cacheBinDir: () => join(gaiaHome(), "cache", "bin"),
   voiceSettings: () => join(gaiaHome(), "voice.json"),
   /** Durable record of live voice-call overrides — swept on boot so a crash
    * mid-call can never leave a "temporary" override applied forever. */

@@ -4,6 +4,7 @@
 // touching either runtime's module directly, so the fork stays in one place.
 
 import { createRequire } from "node:module";
+import { sleep } from "./retry.js";
 
 /** A prepared statement — the exact subset of node:sqlite's StatementSync /
  * bun:sqlite's Statement that this codebase uses. */
@@ -88,6 +89,6 @@ export async function withSqliteImmediateLock<T>(path: string, work: () => Promi
       }
       try { db.close(); } catch { /* release best-effort */ }
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
+    await sleep(retryMs);
   }
 }

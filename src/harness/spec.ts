@@ -563,11 +563,6 @@ export function nativeCommandsFor(id: string): NativeCommandDef[] {
   return registry.get(canonicalHarnessId(id))?.nativeCommands?.() ?? [];
 }
 
-/** The single harness parser: valid iff registered. */
-export function parseHarness(raw: unknown): string | undefined {
-  return typeof raw === "string" && registry.has(canonicalHarnessId(raw)) ? canonicalHarnessId(raw) : undefined;
-}
-
 /** Effective harness for an agent in a workspace: agent → workspace → "pi". */
 export function harnessIdFor(agent: AgentDef, workspace: Workspace): string {
   return canonicalHarnessId(agent.harness ?? workspace.config.harness ?? DEFAULTS.harness);

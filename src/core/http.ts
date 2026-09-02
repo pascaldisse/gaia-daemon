@@ -9,8 +9,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 const MAX_BODY_BYTES = 1024 * 1024;
 
 /** Write `value` as a JSON response with the given status. */
-export function json(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+export function json(response: ServerResponse, status: number, value: unknown, contentType = "application/json; charset=utf-8"): void {
+  response.writeHead(status, { "content-type": contentType });
   response.end(JSON.stringify(value));
 }
 

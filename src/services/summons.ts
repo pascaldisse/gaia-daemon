@@ -49,6 +49,7 @@ export interface SummonResultDelivery {
 import { RoomHandle } from "../domain/rooms.js";
 import { ensureRoomWorktree, resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
 
 export function isTrusted(agent: AgentDef): boolean {
@@ -581,7 +582,7 @@ export class SummonCoordinator implements SummonHost {
         .map((child) => this.completions.get(child.roomId))
         .filter((completion): completion is Promise<unknown> => completion !== undefined);
       if (completions.length > 0) await Promise.allSettled(completions);
-      else if (direct.length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      else if (direct.length > 0) await sleep(10);
 
       // Delivery queues (or starts) the parent callback before the child leaves
       // the running set. Waiting here therefore closes the hand-off race.
