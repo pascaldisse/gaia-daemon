@@ -242,6 +242,44 @@ test("usage domain: POST /api/usage/refresh returns an accounts snapshot", async
   }
 });
 
+test("edit-retry domain: POST .../retry regenerates, missing eventId is 400", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  const workspace = join(temp.path, "workspace");
+  const web = new GaiaWebServer({ cwd: workspace, host: "127.0.0.1", port: 0 });
+  let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
+  try {
+    await initWorkspace(workspace);
+    await RoomHandle.open(workspace, "default");
+    live = await web.listen();
+    const internals = web as unknown as { daemon: { registry: { add(path: string): Promise<{ id: string }> } } };
+    const record = await internals.daemon.registry.add(workspace);
+    const base = live.url.replace(/\/$/, "");
+    const route = `${base}/api/workspaces/${encodeURIComponent(record.id)}/rooms/default/retry`;
+
+    const missing = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(missing.status, 400);
+    assert.deepEqual(await missing.json(), { error: "Missing eventId" });
+
+    const unknownEvent = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ eventId: "does-not-exist" }),
+    });
+    assert.equal(unknownEvent.status, 409);
+  } finally {
+    await live?.close();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
+
 test("memory domain: GET workspace memory/status shape, POST harness memory writes MEMORY.md", async () => {
   const temp = await createTempDir();
   const previousHome = process.env.GAIA_HOME;
