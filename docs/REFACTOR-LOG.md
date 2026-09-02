@@ -129,3 +129,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `60f682d`: `services/plugins/registry.ts`; immutable active generation, staged replacement, failed stage preserves active, exact-once disposer; RoomService ends lease then swaps in turn-finally.
 - gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/room-service.test.ts` 124/0.
 - call-site: `RoomService.runAgentTask` `beginTurn`→finally `end`→`applyTurnBoundary`; no mixed generation. pragma scan plugin/capability dirs: 0.
+
+## W4 A16 — edit/resend ephemeral live regression code (2026-09-03)
+- `f812940`: `test/edit-resend-live.test.ts`; isolated worktree `.gaia/live-test-runs`; Luna scaffold + account shell; cwd workspace has `.gaia/config.json`; env strips `GAIA_PARENT_PID`; `${GAIA_PORT:-18787}`.
+- gate: `bun run check` green; `bun test test/edit-resend-live.test.ts` 4/0 + 1 intentional live skip.
+- live: UNVERIFIED; opt-in token/edit evidence checks transcript + rewound + Pi parent chain; §REFACTOR-LIVE-QUEUE, owner 陰.
