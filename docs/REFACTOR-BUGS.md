@@ -619,3 +619,66 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 - touched existing tests, each isolated → `bundled-plugins` 3; `capabilities-daemon-sources` 6; `edit-resend-live` 4 + live opt-in 1 skipped; `plugins-capabilities` 16; `plugins-manifest` 4; `plugins-registry` 6; `room-service` 99; `rpg-plugin` 2; `telegram-bridge-format` 3. Total → 143 pass · 0 fail · 1 live skip.
 - deleted since `4fda75d` → `plugin-host.test.ts` · `plugin-manifest.test.ts` · `plugins-migration.test.ts`.
 - raw gate evidence → `.gaia/pass4-parent-gate.log` (worktree-local; command/output/rc/duration).
+
+### ADV-020 · HIGH · bundled command plugins unreachable through production registry
+- code → `338db79`; introduced across `4589145` · `74b0d70` · `1de4129` · asserted by `6641107`.
+- repro → `bun test test/dog-mode-integration.test.ts`; control → `bun test test/dog-mode-plugin.test.ts`.
+- expected → bundled `/dog` + discipline commands load at zero setup through daemon registry; real plugin behavior retained.
+- actual → integration `0 pass · 8 fail`; replies = `Unknown command: /dog` / `/stfu` / `/push` / `/shock` / `/slap`; pure plugin control `23 pass · 0 fail`.
+- cause → all bundled manifest `contributes.commands=[]`; all manifest `index.mjs` files return `{}`; real `plugins/defaults/dog-mode.mjs` + `plugins/rpg.mjs/plugin.mjs` have no production importer; manifest command result also lacks legacy `state|activeAgent|panel|prompt|rewriteAsMessage|renderCap|turnStart` surface.
+- `plugins/rpg.mjs/` verdict → migration artefact/shim, not functioning manifest package: file-like directory + no-op `index.mjs`; real RPG module stranded as `plugin.mjs`.
+- evidence → `docs/REFACTOR-PASS4-STATIC-SONNET.md`; raw parent runs → `.gaia/pass4-parent-dog-regression.log` + `.gaia/pass4-parent-dog-control.log`.
+
+### ADV-021 · HIGH · registry command results + capability denials disappear from durable room evidence
+- code/build → source `338db79`; compiled tree `a9550fb` = source + docs only.
+- repro → generated manifest command `/probe trusted` then same command with seeded agent `trust:false`; both HTTP `202`, task `complete`.
+- expected → trusted+granted reply in transcript; untrusted non-safe capability denial in transcript/log; denied plugin body never entered.
+- actual → authorization floor works: side-effect marker count remains `1→1`; trusted + denied transcripts/events both empty; denial absent from daemon log; client only receives completed task.
+- cause seam → `RoomQueue.sendMessage()` emits plugin command reply as transient `room-event`; no durable append; `runPlugin()` converts broker rejection to reply, then same transient-only path.
+- evidence → `docs/REFACTOR-PASS4-LIVE.md` LIVE-P4-001; `.gaia/live-test-runs/pass4-20260903012416/{probe-trusted.json,probe-untrusted.json,marker-count-before-denied.txt,marker-count-after-denied.txt,transcript-after-allowed.jsonl,transcript-after-denied.jsonl,daemon.log}`.
+
+### ADV-022 · HIGH · no live manifest staging trigger or daemon lifecycle observability
+- code/build → source `338db79`; compiled tree `a9550fb`.
+- repro → boot probe manifest `1.0.2`; hold `/probe inflight`; replace manifest/entrypoint with `1.0.3`; finish old turn; invoke `/probe next`.
+- expected → old generation completes; staged generation swaps at turn boundary; next invokes `1.0.3`; old disposer exactly once at swap in daemon log.
+- actual → `V102 entered generation=1 args=inflight` + `V102 entered generation=1 args=next`; no stage/swap; disposer only at shutdown.
+- static corroboration → sole production `stageReload()` call = `Daemon.boot()`; daemon registry constructed without `onEvent`; manifest changes cannot request staging or log lifecycle events.
+- evidence → `docs/REFACTOR-PASS4-LIVE.md` LIVE-P4-002; `.gaia/live-test-runs/pass4-20260903012416/{probe-inflight.http,probe-next.http,manifest-executions.txt,evidence/manifest-after-change.json,daemon.log}`.
+
+### ADV-023 · LOW · plugin lifecycle classes exported without production consumers
+- code → `338db79`.
+- repro → `rg -n '\b(RegistryLifecycleError|PluginTurnLease)\b' src --glob '*.ts'`.
+- expected → every export in `src/services/plugins/*` + `src/services/capabilities/*` has non-test production consumer.
+- actual → both symbols occur only inside `src/services/plugins/registry.ts`; unnecessary public surface.
+- evidence → `docs/REFACTOR-PASS4-STATIC-KIMI.md` STATIC-002.
+
+### PASS #4 closing static verdict
+- trust floor → PASS: `trust:false` + agent/workspace `network` grants still denied; all-cap grant source cannot override; trusted+granted allowed; focused static gate `31 pass · 0 fail`.
+- authority scan → PASS: provider/model terms only contribution vocabulary + prohibition comment; no identity-based capability decision; no harness-id security branch.
+- layering/RULE0/pragmas → PASS: capability/plugin services import no daemon/server layer; forbidden branch + pragma scans zero.
+- composition → PASS: one production `new PluginRegistry` + one `new CapabilityBroker` at `src/daemon.ts:192/205`; no `readdirSync` plugin loader.
+- export inventory → FAIL only ADV-023.
+- bundled RPG directory → FAIL under ADV-020; no-op manifest shim, not real command package.
+
+### PASS #4 live queue verdict · compiled source `338db79`
+- A1 ToolProviders bridge → UNVERIFIED in PASS #4; not rerun.
+- A5 HTTP route suite → UNVERIFIED; only authenticated `GET /api/app` rc 0 during seed validation.
+- A7 recovery + deferred settings reload → UNVERIFIED; not rerun.
+- A6 retry/edit/rewind + restart/WAL suite → PARTIAL: A16 edit/resend branch only; remaining scenarios not rerun.
+- A6c durable queue → UNVERIFIED; not rerun.
+- W4 A16 opt-in → PASS: real compiled daemon; `GAIA_LIVE_EDIT_RESEND=1 ... bun test --timeout 120000 test/edit-resend-live.test.ts` → `5 pass · 0 fail` in 7.52s; transcript/rewound/Pi parent-chain disk evidence retained.
+- A10 manifest validation → UNVERIFIED live; not rerun.
+- A13 typed contributions/capabilities → FAIL: trusted body entered + untrusted body blocked, but reply/denial observability missing → ADV-021.
+- A14 manifest command → FAIL: custom fixture executes but durable room proof missing → ADV-021; bundled command unreachable → ADV-020.
+- ROOT #9 bundled command/generation/denial → FAIL: ADV-020 · ADV-021 · ADV-022.
+- cleanup → PASS: daemon killed; generated `dist/home/ws` removed; `lsof -nP -iTCP:18787 -sTCP:LISTEN` = empty; run-root orphan sweep = empty.
+
+### PASS #4 final gate
+- `bun run check` → rc 0 · 6s.
+- every existing test touched in `4fda75d..338db79`, isolated process/file → 143 pass · 0 fail · A16 live opt-in 1 skipped in gate; deleted tests identified, not run.
+- touched files → `bundled-plugins` 3 · `capabilities-daemon-sources` 6 · `edit-resend-live` 4+1 skip · `plugins-capabilities` 16 · `plugins-manifest` 4 · `plugins-registry` 6 · `room-service` 99 · `rpg-plugin` 2 · `telegram-bridge-format` 3.
+- additional regression repro → `dog-mode-integration` 0/8; independent pure-plugin control 23/0 → ADV-020.
+- raw output → `.gaia/pass4-parent-gate.log`.
+
+### PASS #4 overall verdict
+- **W3 NOT DELIVERED** → bundled commands absent + durable command/denial evidence absent + no live reload trigger; queue also not fully rerun within bounded lane.
