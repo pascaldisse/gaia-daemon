@@ -12,7 +12,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { readJson } from "../core/store.js";
 import { DEFAULTS } from "../core/config.js";
 import { workspacePaths } from "../core/paths.js";
-import type { RoomState, UiEvent, Workspace } from "../core/types.js";
+import type { RoomState, Workspace } from "../core/types.js";
 import { normalizeRoomState } from "../domain/rooms.js";
 import { ensureWorkspaceRoom, liveMaxSummonsPerRoom, loadWorkspace } from "../domain/workspace.js";
 import { workspaceRoomRefs, type RoomRef } from "../domain/workspace-index.js";
@@ -25,7 +25,7 @@ import { SummonCoordinator } from "../services/summons.js";
 import type { HarnessBridge } from "../services/bridge.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { EmbedSidecar } from "../services/embed-sidecar.js";
-import type { WorkspaceRegistry } from "../daemon.js";
+import type { WiringHost } from "./ports.js";
 
 /** Soft cap on simultaneously-resident room services. Idle rooms past this are
  * evicted (transcripts persist on disk); busy ones are always kept. */
@@ -43,29 +43,6 @@ const HANDOFF_GRACE_MS = 30_000;
 
 export function serviceKey(workspaceId: string, roomId: string): string {
   return `${workspaceId}::${roomId}`;
-}
-
-/** Everything the wiring functions below need from Daemon. A plain interface
- * (not `Daemon` itself) so this module never upward-imports the class — the
- * daemon.ts wrappers pass `this`, which satisfies this shape structurally. */
-export interface WiringHost {
-  readonly registry: WorkspaceRegistry;
-  readonly orphanSweepDone: Promise<void>;
-  readonly services: Map<string, RoomService>;
-  readonly handedOutAt: Map<string, number>;
-  readonly servicePending: Map<string, Promise<RoomService>>;
-  readonly currentRoom: Map<string, string>;
-  readonly memoryStores: Map<string, MemoryStore>;
-  readonly memoryServices: Map<string, { service: MemoryService; live: { workspace: Workspace } }>;
-  readonly summonCoordinators: Map<string, SummonCoordinator>;
-  readonly embedSidecar: EmbedSidecar;
-  readonly bridge: HarnessBridge | undefined;
-  readonly scheduler: SchedulerService | undefined;
-  log(message: string): void;
-  broadcast(event: UiEvent): void;
-  scheduleUsageRefresh(): void;
-  applyThinking(workspaceId: string, roomId: string | undefined, agentId: string, level: string): Promise<{ message: string }>;
-  applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void>;
 }
 
 // --- consolidation LLM (daemon-side, same credential store as the proxy) ---------
