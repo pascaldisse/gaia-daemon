@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -245,4 +244,5 @@ export class RoomSanitizeMixin {
     return join(workspacePaths.roomDir(this.workspace.rootDir, this.roomId), "sanitize.json");
   }
 }
+export interface RoomSanitizeMixin extends RoomSanitizeFacadeHost {}
 export function installRoomSanitize(target: object): void { for (const name of Object.getOwnPropertyNames(RoomSanitizeMixin.prototype)) if (name !== "constructor") Object.defineProperty(target, name, Object.getOwnPropertyDescriptor(RoomSanitizeMixin.prototype, name)!); }

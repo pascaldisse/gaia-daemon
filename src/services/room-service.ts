@@ -370,7 +370,7 @@ export class RoomService {
   readonly room: RoomHandle;
   private readonly runtimes: Record<string, AgentRuntime>;
   private readonly bus = new Bus<UiEvent>();
-  private activeTask: Task | undefined;
+  activeTask: Task | undefined;
   /** The active task ONLY when it's a streaming agent turn (via startTask) —
    * never a synchronous slash command. `activeTask` covers both, so guards that
    * mean "an agent is mid-turn" (e.g. /compact) must consult this instead, or
@@ -415,7 +415,7 @@ export class RoomService {
   /** Tasks mirroring the DURABLE queue (state.queue) for snapshot chips. */
   private queuedTasks: Task[] = [];
   /** Last sanitize proposal marker (full body lives in sanitize.json). */
-  private sanitizeStatus: SanitizeStatus | undefined;
+  sanitizeStatus: SanitizeStatus | undefined;
   /** Last provider-side model switch per agent; cleared by the next turn that
    * completes without one. Transient — the durable record is the transcript
    * event's details.modelFallback. */
@@ -453,7 +453,7 @@ export class RoomService {
    * `diet`/`tool_result_fetch` gaia-tool verbs. Default OFF (IRON). */
   private readonly dietPolicyStore: ContextPolicyStore;
 
-  constructor(private readonly options: RoomServiceOptions & { room: RoomHandle }) {
+  constructor(readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
     this.incognito = options.incognito === true;
     this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
@@ -1697,7 +1697,7 @@ export class RoomService {
     return new RoomFork(this as any).editMessage(eventId, text, keepAttachmentPaths);
   }
 
-  private async resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number, forkOrigin?: { id: string; userOrdinal: number }): Promise<void> {
+  async resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number, forkOrigin?: { id: string; userOrdinal: number }): Promise<void> {
     return new RoomFork(this as any).resetAfterTruncation(mode, cut, forkOrigin);
   }
 
