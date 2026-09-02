@@ -368,14 +368,14 @@ const COMMANDS: Record<string, CommandHandler> = {
 
 export class RoomService {
   readonly room: RoomHandle;
-  private readonly runtimes: Record<string, AgentRuntime>;
+  readonly runtimes: Record<string, AgentRuntime>;
   private readonly bus = new Bus<UiEvent>();
   activeTask: Task | undefined;
   /** The active task ONLY when it's a streaming agent turn (via startTask) —
    * never a synchronous slash command. `activeTask` covers both, so guards that
    * mean "an agent is mid-turn" (e.g. /compact) must consult this instead, or
    * they trip on the command's own task. */
-  private activeAgentTurn: Task | undefined;
+  activeAgentTurn: Task | undefined;
   /** The running agent-turn's full unwind (streaming + partial commit + settle
    * paths). cancelActiveTask awaits it so a stop settles AFTER the streamed
    * partial is committed — never blanking progress from the UI. */
@@ -399,36 +399,36 @@ export class RoomService {
   /** Agents whose harness is mid-compaction, so the snapshot can show a live
    * "compacting" status. Set around the uniform runtime.compact() call — every
    * harness that declares supportsCompact gets it, with no harness branches. */
-  private readonly compactingAgents = new Set<string>();
+  readonly compactingAgents = new Set<string>();
   /** Live compaction progress per agent (job size + summary-so-far + start
    * time), surfaced on the snapshot so the UI can render real progress, not
    * just a spinner. Present only while the agent is in `compactingAgents`. */
-  private readonly compactProgress = new Map<string, CompactProgress>();
+  readonly compactProgress = new Map<string, CompactProgress>();
   /** Throttle clock for progress-driven snapshot emits (token deltas arrive in
    * bursts; we re-render at most ~2/s). */
-  private lastCompactEmit = 0;
+  lastCompactEmit = 0;
   /** Agents whose in-flight compaction the user cancelled: /cancel aborts the
    * runtime (which kills the harness pass), and this marker turns the resulting
    * rejection into "cancelled", not a scary harness exit error. */
-  private readonly compactCancels = new Set<string>();
-  private recentTasks: Task[] = [];
+  readonly compactCancels = new Set<string>();
+  recentTasks: Task[] = [];
   /** Tasks mirroring the DURABLE queue (state.queue) for snapshot chips. */
-  private queuedTasks: Task[] = [];
+  queuedTasks: Task[] = [];
   /** Last sanitize proposal marker (full body lives in sanitize.json). */
   sanitizeStatus: SanitizeStatus | undefined;
   /** Last provider-side model switch per agent; cleared by the next turn that
    * completes without one. Transient — the durable record is the transcript
    * event's details.modelFallback. */
-  private modelFallbacks: Record<string, ModelFallback> = {};
+  readonly modelFallbacks: Record<string, ModelFallback> = {};
   /** Latest harness-reported context accounting per agent (transient). */
-  private contextUsage: Record<string, { usedTokens: number; maxTokens?: number }> = {};
+  contextUsage: Record<string, { usedTokens: number; maxTokens?: number }> = {};
   /** The running turn's accumulated view (text + thinking + tools so far),
    * mirrored on the snapshot so a client that (re)subscribes mid-turn — the
    * common case of switching rooms while an agent works — renders it instantly
    * instead of a blank until commit. Fed from the ONE onEvent sink below, so it
    * applies to every harness with zero harness branches (RULE #0). Cleared on
    * commit/failure/cancel; the durable resume record is PendingTurn.partialReply. */
-  private liveTurn: LiveTurn | undefined;
+  liveTurn: LiveTurn | undefined;
   /** A held first turn awaiting the human's context-size choice (durable copy in
    * state.contextGate); surfaced on the snapshot to drive the modal. */
   private contextGate: ContextGatePending | undefined;
@@ -436,22 +436,22 @@ export class RoomService {
    * room agent-dialogue so a mutual @mention can't loop forever; reset to 0
    * whenever a human speaks. In-memory (a runaway chain shouldn't outlive a
    * restart anyway). */
-  private agentDialogueHops = 0;
+  agentDialogueHops = 0;
   /** Per-target terminal pet states already emitted for a multi-agent task, so
    * a later target failure cannot repaint an earlier successful pet as failed. */
   private readonly settledPetTargets = new Set<string>();
-  private readonly startedPetTargets = new Set<string>();
+  readonly startedPetTargets = new Set<string>();
   private initPromise: Promise<void> | undefined;
   /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
    * services/plugins.ts) — loaded once per RoomService and cached. */
-  private readonly pluginsPromise: Promise<Map<string, CommandPlugin>> = loadCommandPlugins();
+  readonly pluginsPromise: Promise<Map<string, CommandPlugin>> = loadCommandPlugins();
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
   /** Context-diet policy store (09-MEMORY-CONTEXT): workspace default + this
    * room's override, file-backed under .gaia/ — backs `/diet` and the
    * `diet`/`tool_result_fetch` gaia-tool verbs. Default OFF (IRON). */
-  private readonly dietPolicyStore: ContextPolicyStore;
+  readonly dietPolicyStore: ContextPolicyStore;
 
   constructor(readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
@@ -634,7 +634,7 @@ export class RoomService {
   }
 
   // --- messaging -------------------------------------------------------------
-  private async isConversationEnded(agentId: string): Promise<boolean> {
+  async isConversationEnded(agentId: string): Promise<boolean> {
     return Boolean((await this.room.state()).conversationEndedAgents?.[agentId]);
   }
   private async endedConversationTargets(targets: readonly string[]): Promise<string[]> {
@@ -1030,7 +1030,7 @@ export class RoomService {
    * agent (the last one addressed here), or the workspace defaultAgent when the
    * room has none yet — or its active agent was since removed. Per-room, so
    * every room remembers who you were last talking to independently. */
-  private async roomDefaultTarget(): Promise<string> {
+  async roomDefaultTarget(): Promise<string> {
     const active = (await this.room.state()).activeAgent;
     return active && this.workspace.agents[active] ? active : this.workspace.config.defaultAgent;
   }
@@ -1091,7 +1091,7 @@ export class RoomService {
   /** Remember the agent a turn addressed as this room's active agent (persisted,
    * best-effort). The last target of a broadcast wins — that's who a bare next
    * message goes to. Skips unknown ids so a stale write can't wedge routing. */
-  private async rememberActiveAgent(targets: string[]): Promise<void> {
+  async rememberActiveAgent(targets: string[]): Promise<void> {
     const next = [...targets].reverse().find((id) => this.workspace.agents[id]);
     if (!next) return;
     if ((await this.room.state()).activeAgent === next) return;
@@ -1104,7 +1104,7 @@ export class RoomService {
    * on, let any OTHER known agent it @mentioned (anywhere in the reply) respond
    * in this room. Bounded by AGENT_DIALOGUE_MAX_HOPS consecutive hand-offs since
    * the last human message so a mutual @mention can't loop forever. */
-  private async maybeDispatchAgentDialogue(author: string, reply: string): Promise<void> {
+  async maybeDispatchAgentDialogue(author: string, reply: string): Promise<void> {
     if (!(await this.room.state()).agentDialogue) return;
     const targets = mentionedAgents(reply, new Set(Object.keys(this.workspace.agents))).filter((id) => id !== author);
     if (targets.length === 0) return;
@@ -1143,7 +1143,7 @@ export class RoomService {
   }
 
   /** Queue one synthetic goal turn through the ordinary durable agent path. */
-  private async enqueueGoalTurn(goal: RoomGoal, continuing: boolean, kick = true): Promise<void> {
+  async enqueueGoalTurn(goal: RoomGoal, continuing: boolean, kick = true): Promise<void> {
     const verb = continuing ? "Continue" : "Begin";
     await this.enqueueAgentDialogue(
       [goal.agentId],
@@ -1260,7 +1260,7 @@ export class RoomService {
 
   /** A live-only system line in the room (not persisted) — used for transient
    * room notices like the agent-dialogue loop-guard pause. */
-  private emitSystemNote(text: string): void {
+  emitSystemNote(text: string): void {
     this.emit({
       type: "room-event",
       workspaceId: this.workspaceId,
@@ -1370,11 +1370,11 @@ export class RoomService {
   // --- the turn --------------------------------------------------------------
 
   private async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    return new RoomTurnLoop(this as any).runAgentTask(task, text, options);
+    return new RoomTurnLoop(this).runAgentTask(task, text, options);
   }
 
   private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {
-    return new RoomTurnLoop(this as any).contextFor(agent);
+    return new RoomTurnLoop(this).contextFor(agent);
   }
 
   // --- context gate ----------------------------------------------------------
@@ -1387,7 +1387,7 @@ export class RoomService {
     return contextGate.resolveContextGate(this as any, choice, n);
   }
 
-  private async setContextFloor(agentId: string, floorIdx: number): Promise<void> {
+  async setContextFloor(agentId: string, floorIdx: number): Promise<void> {
     return contextGate.setContextFloor(this as any, agentId, floorIdx);
   }
 
@@ -1412,7 +1412,7 @@ export class RoomService {
    * other display surface (#getSnapshot, #eventById(display:true)) that
    * derives the same shown output from the same stored (text, renderCap)
    * pair on demand. */
-  private async commitReply(
+  async commitReply(
     agentId: string,
     eventId: string,
     reply: string,
@@ -1466,7 +1466,7 @@ export class RoomService {
    * duplicate-resend bug). retryMessage(eventId) on THIS event's id already
    * resolves correctly — forkAtUserMessage walks backward past non-user authors
    * to the user message that produced it. */
-  private async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
+  async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
     try {
       const message = error instanceof Error ? error.message : String(error);
       const event: RoomEvent = {
@@ -1485,7 +1485,7 @@ export class RoomService {
 
   /** Quiet counterpart to appendTurnFailure for user cancels that beat the
    * first token: a stop is not a failure. */
-  private async appendTurnStopped(agentId: string): Promise<void> {
+  async appendTurnStopped(agentId: string): Promise<void> {
     try {
       const event: RoomEvent = {
         id: newId("system_turnfail"),
@@ -1510,7 +1510,7 @@ export class RoomService {
    * appendTurnFailure in favor of the more specific system line this appends.
    * No-op (false) for any other error, a non-empty partial (current commit +
    * failure behavior is unchanged), or a turn that was itself a stall retry. */
-  private async maybeRequeueStall(
+  async maybeRequeueStall(
     targets: string[],
     agentId: string,
     text: string,
@@ -1547,7 +1547,7 @@ export class RoomService {
     return true;
   }
 
-  private async maybeRequeueAuth(
+  async maybeRequeueAuth(
     targets: string[],
     agentId: string,
     text: string,
@@ -1589,7 +1589,7 @@ export class RoomService {
 
   /** Episodic capture is best-effort derived data: a failure must never fail
    * the turn that produced it. */
-  private async captureEpisode(
+  async captureEpisode(
     agentId: string,
     task: string,
     reply: string,
@@ -1690,15 +1690,15 @@ export class RoomService {
    * given event and re-run it verbatim. Works on an agent reply (regenerate
    * it) or on a user message (re-send it). */
   async retryMessage(eventId: string): Promise<Task> {
-    return new RoomFork(this as any).retryMessage(eventId);
+    return new RoomFork(this).retryMessage(eventId);
   }
 
   async editMessage(eventId: string, text: string, keepAttachmentPaths?: string[]): Promise<Task> {
-    return new RoomFork(this as any).editMessage(eventId, text, keepAttachmentPaths);
+    return new RoomFork(this).editMessage(eventId, text, keepAttachmentPaths);
   }
 
   async resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number, forkOrigin?: { id: string; userOrdinal: number }): Promise<void> {
-    return new RoomFork(this as any).resetAfterTruncation(mode, cut, forkOrigin);
+    return new RoomFork(this).resetAfterTruncation(mode, cut, forkOrigin);
   }
 
   async runScheduleCommand(sub: "list" | "run", jobId?: string): Promise<string> {
@@ -1778,7 +1778,7 @@ export class RoomService {
 
   // --- monad -----------------------------------------------------------------
 
-  private async isMonadMessage(text: string, options: SendMessageOptions): Promise<boolean> {
+  async isMonadMessage(text: string, options: SendMessageOptions): Promise<boolean> {
     const state = await this.room.state();
     if (!state.monad || !this.options.summonHost) return false;
     if (options.targets) return false;
@@ -1793,7 +1793,7 @@ export class RoomService {
 
   /** Runs the monad engine over a user message: each step is a real summon (a
    * visible child room); only the single final answer posts here. */
-  private async runMonadTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+  async runMonadTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
     try {
       const state = await this.room.state();
       const monad = state.monad;
@@ -2404,7 +2404,7 @@ export class RoomService {
     return { text, totalLength: full.length, hasMore: offset + text.length < full.length };
   }
 
-  private async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
+  async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
     const now = Date.now();
     const startedAt = new Date(now).toISOString();
     const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;

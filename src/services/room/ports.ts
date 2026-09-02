@@ -11,6 +11,7 @@ import type {
   PendingTurn,
   PetProgressStatus,
   RoomGoal,
+  RoomEventKind,
   SanitizeProposal,
   SanitizeStatus,
   Task,
@@ -108,7 +109,7 @@ export interface RoomCommandsFacadePort {
   runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult>;
   roomDefaultTarget(): Promise<string>;
   unknownAgentMessage(agentId: string): string;
-  finishCompactCommand(target: string, result: CompactResult): Promise<string | { text: string; kind?: string; author?: string }>;
+  finishCompactCommand(target: string, result: CompactResult): Promise<string | { text: string; kind?: RoomEventKind; author?: string }>;
   setContextFloor(agentId: string, floorIdx: number): Promise<void>;
   cancelActiveTask(): Promise<Task | undefined>;
   recallContext(agentId: string): Promise<{ roomId: string; floorIdx: number }>;

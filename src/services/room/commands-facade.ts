@@ -84,8 +84,6 @@ const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
 const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
-type RoomCommandsFacadeHost = RoomCommandsFacadePort;
-
 export class RoomCommandsMixin {
   /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
    * shape as runSteerCommand below, just without its command-reply return
@@ -93,11 +91,10 @@ export class RoomCommandsMixin {
    * Without this it only ever reached the runtime directly (never committed,
    * never emitted), so it worked for the agent but was invisible in the room. */
   async fireWatchdogSteer(target: string, runtime: AgentRuntime, message: string): Promise<void> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     try {
-      const event = await host.room.addUserMessage(message, [target]);
-      host.emit({ type: "room-event", workspaceId: host.workspaceId, roomId: host.roomId, event });
-      const ok = (await runtime.steer?.(host.roomId, message)) ?? false;
+      const event = await this.room.addUserMessage(message, [target]);
+      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+      const ok = (await runtime.steer?.(this.roomId, message)) ?? false;
       if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     } catch {
       // A watchdog nudge is best-effort — never take the turn down over it.
@@ -110,22 +107,21 @@ export class RoomCommandsMixin {
    * received it, and the commit cursor advances past it — so it is never
    * replayed as fresh context. */
   async runSteerCommand(text?: string, attachments?: MessageAttachment[]): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const guidance = text?.trim();
     if (!guidance) return "Usage: /steer <guidance for the running turn>";
-    const task = host.activeTask;
-    const target = task?.targets.find((candidate) => host.runtimes[candidate]);
+    const task = this.activeTask;
+    const target = task?.targets.find((candidate) => this.runtimes[candidate]);
     if (!task || !target) return "No agent turn is running — just send a normal message.";
-    const runtime = host.runtimes[target];
+    const runtime = this.runtimes[target];
     if (!runtime.capabilities.supportsSteer) return `@${target}'s harness does not support mid-turn steering. Cancel and resend instead.`;
     // Same breadcrumb-lines + attachments pairing as steerRunningTurn: the
     // event carries the plain guidance (attachments ride its own field for
     // the UI gallery), the runtime gets the breadcrumb text AND the actual
     // attachment bytes so an image lands for real, not just as a path string.
-    const event = await host.room.addUserMessage(guidance, [target], undefined, attachments);
-    host.emit({ type: "room-event", workspaceId: host.workspaceId, roomId: host.roomId, event });
+    const event = await this.room.addUserMessage(guidance, [target], undefined, attachments);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
     const steerText = attachments?.length ? `${guidance}\n\n${renderAttachmentLines(attachments)}` : guidance;
-    const ok = (await runtime.steer?.(host.roomId, steerText, attachments)) ?? false;
+    const ok = (await runtime.steer?.(this.roomId, steerText, attachments)) ?? false;
     // Same stream-position marker as steer-by-default (see steerRunningTurn).
     if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
@@ -136,8 +132,7 @@ export class RoomCommandsMixin {
    * object under each of its keys, and every hook below (panel/prompt/
    * renderCap/turnStart) must run ONCE per plugin, not once per alias. */
   async distinctPlugins(): Promise<CommandPlugin[]> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    return [...new Set((await host.pluginsPromise).values())];
+    return [...new Set((await this.pluginsPromise).values())];
   }
 
   /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
@@ -146,31 +141,29 @@ export class RoomCommandsMixin {
    * `command`, when given, is the specific command name that invoked `run()`
    * (PluginContext.command) — relevant only for a plugin owning several. */
   pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext {
-    const host = this as unknown as RoomCommandsFacadeHost;
     return {
       homedir: homedir(),
-      roomId: host.roomId,
-      workspaceRoot: host.workspace.rootDir,
+      roomId: this.roomId,
+      workspaceRoot: this.workspace.rootDir,
       state: state.pluginState?.[pluginStateKey(plugin)],
-      agents: Object.values(host.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),
+      agents: Object.values(this.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),
       ...(command ? { command } : {}),
     };
   }
 
   async runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     try {
-      const state = await host.room.state();
-      const result = (await plugin.run(args, host.pluginContext(plugin, state, command))) ?? {};
-      if (result.state || (result.activeAgent && host.workspace.agents[result.activeAgent])) {
-        await host.room.updateState((next) => {
+      const state = await this.room.state();
+      const result = (await plugin.run(args, this.pluginContext(plugin, state, command))) ?? {};
+      if (result.state || (result.activeAgent && this.workspace.agents[result.activeAgent])) {
+        await this.room.updateState((next) => {
           if (result.state) {
             next.pluginState ??= {};
             next.pluginState[pluginStateKey(plugin)] = result.state;
           }
-          if (result.activeAgent && host.workspace.agents[result.activeAgent]) next.activeAgent = result.activeAgent;
+          if (result.activeAgent && this.workspace.agents[result.activeAgent]) next.activeAgent = result.activeAgent;
         });
-        await host.emitSnapshot();
+        await this.emitSnapshot();
       }
       return result;
     } catch (error) {
@@ -181,21 +174,19 @@ export class RoomCommandsMixin {
   /** Generic API/UI bridge: plugin action args use the exact same durable run
    * path as a slash command, so extensions never write room state themselves. */
   async runPluginAction(command: string, args: string[]): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    await host.init();
-    const plugin = (await host.pluginsPromise).get(command);
+    await this.init();
+    const plugin = (await this.pluginsPromise).get(command);
     if (!plugin) throw new Error(`Unknown plugin: ${command}`);
-    return (await host.runPlugin(plugin, args, command)).reply ?? "";
+    return (await this.runPlugin(plugin, args, command)).reply ?? "";
   }
 
   async pluginPanels(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<Record<string, PluginPanel> | undefined> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const panels: Record<string, PluginPanel> = {};
-    for (const plugin of await host.distinctPlugins()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.panel) continue;
       const key = pluginStateKey(plugin);
       try {
-        const panel = await plugin.panel(host.pluginContext(plugin, state));
+        const panel = await plugin.panel(this.pluginContext(plugin, state));
         if (panel) panels[key] = panel;
       } catch (error) {
         console.warn(`[plugins] panel ${key}: ${error instanceof Error ? error.message : String(error)}`);
@@ -205,12 +196,11 @@ export class RoomCommandsMixin {
   }
 
   async pluginPrompt(state: Awaited<ReturnType<RoomHandle["state"]>>, agentId: string): Promise<string | undefined> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const blocks: string[] = [];
-    for (const plugin of await host.distinctPlugins()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.prompt) continue;
       try {
-        const block = await plugin.prompt({ ...host.pluginContext(plugin, state), agentId });
+        const block = await plugin.prompt({ ...this.pluginContext(plugin, state), agentId });
         if (block?.trim()) blocks.push(block.trim());
       } catch (error) {
         console.warn(`[plugins] prompt ${pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -224,11 +214,10 @@ export class RoomCommandsMixin {
    * FIRST plugin-supplied cap, in load order; today only one plugin
    * (plugins/defaults/dog-mode.mjs) ever defines this hook. */
   async pluginRenderCap(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<RenderCap | undefined> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    for (const plugin of await host.distinctPlugins()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.renderCap) continue;
       try {
-        const cap = await plugin.renderCap(host.pluginContext(plugin, state));
+        const cap = await plugin.renderCap(this.pluginContext(plugin, state));
         if (cap) return cap;
       } catch (error) {
         console.warn(`[plugins] renderCap ${pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -245,20 +234,19 @@ export class RoomCommandsMixin {
    * snapshot this call read from) is updated in place too, so the REST of
    * this same turn sees the fresh value without a second room.state() read. */
   async pluginTurnStart(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<void> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const updates: Record<string, Record<string, unknown>> = {};
-    for (const plugin of await host.distinctPlugins()) {
+    for (const plugin of await this.distinctPlugins()) {
       if (!plugin.turnStart) continue;
       const key = pluginStateKey(plugin);
       try {
-        const next = await plugin.turnStart(host.pluginContext(plugin, state));
+        const next = await plugin.turnStart(this.pluginContext(plugin, state));
         if (next !== undefined) updates[key] = next;
       } catch (error) {
         console.warn(`[plugins] turnStart ${key}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     if (Object.keys(updates).length === 0) return;
-    await host.room.updateState((current) => {
+    await this.room.updateState((current) => {
       current.pluginState = { ...(current.pluginState ?? {}), ...updates };
     });
     state.pluginState = { ...(state.pluginState ?? {}), ...updates };
@@ -271,20 +259,18 @@ export class RoomCommandsMixin {
    * the durable queue), so no original arg text survives and no steer applies —
    * just a bare run + reply. */
   async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    const plugin = (await host.pluginsPromise).get(command.command);
+    const plugin = (await this.pluginsPromise).get(command.command);
     if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
-    const result = await host.runPlugin(plugin, [], command.command);
+    const result = await this.runPlugin(plugin, [], command.command);
     return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply
    * variant behind a capability flag, never a harness-id branch. */
   async runCompactCommand(agent?: string, edit?: boolean | string): Promise<CommandReply> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    const target = agent ?? (await host.roomDefaultTarget());
-    if (!host.workspace.agents[target]) return host.unknownAgentMessage(target);
-    const runtime = host.runtimes[target];
+    const target = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    const runtime = this.runtimes[target];
     if (edit !== undefined) {
       if (!runtime.capabilities.supportsCompactEdit || !runtime.compactDraft || !runtime.compactApply) {
         return `@${target}'s harness has no native editable session compaction.`;
@@ -294,63 +280,62 @@ export class RoomCommandsMixin {
     }
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
-    if (host.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
-    host.compactingAgents.add(target);
+    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    this.compactingAgents.add(target);
     const startedAt = Date.now();
-    const usedTokens = host.contextUsage[target]?.usedTokens;
-    host.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
-    host.lastCompactEmit = startedAt;
-    await host.emitSnapshot();
+    const usedTokens = this.contextUsage[target]?.usedTokens;
+    this.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
+    this.lastCompactEmit = startedAt;
+    await this.emitSnapshot();
     const progress = (update: CompactProgressUpdate) => {
-      const prev = host.compactProgress.get(target);
+      const prev = this.compactProgress.get(target);
       if (!prev) return;
-      host.compactProgress.set(target, { ...prev, ...update });
+      this.compactProgress.set(target, { ...prev, ...update });
       const now = Date.now();
-      if (now - host.lastCompactEmit < 500) return;
-      host.lastCompactEmit = now;
-      void host.emitSnapshot();
+      if (now - this.lastCompactEmit < 500) return;
+      this.lastCompactEmit = now;
+      void this.emitSnapshot();
     };
     try {
       if (edit === true) {
-        const draft = await runtime.compactDraft!(host.roomId);
+        const draft = await runtime.compactDraft!(this.roomId);
         return `@${target}: ${draft.message}${draft.summary ? `
 
 ${draft.summary}` : ""}`;
       }
       const result = typeof edit === "string"
-        ? await runtime.compactApply!(host.roomId, edit, progress)
-        : await runtime.compact!(host.roomId, progress);
+        ? await runtime.compactApply!(this.roomId, edit, progress)
+        : await runtime.compact!(this.roomId, progress);
       // finishCompactCommand's port signature widens `kind` to plain string for
       // callers outside this file; this file's own CommandReply keeps the exact
       // RoomEventKind literal the implementation actually returns below.
-      return (await host.finishCompactCommand(target, result)) as CommandReply;
+      return (await this.finishCompactCommand(target, result)) as CommandReply;
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
-      if (host.compactCancels.has(target)) return `Compaction cancelled for @${target}.`;
+      if (this.compactCancels.has(target)) return `Compaction cancelled for @${target}.`;
       return `Compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
-      host.compactCancels.delete(target);
-      host.compactingAgents.delete(target);
-      host.compactProgress.delete(target);
-      await host.emitSnapshot();
+      this.compactCancels.delete(target);
+      this.compactingAgents.delete(target);
+      this.compactProgress.delete(target);
+      await this.emitSnapshot();
     }
   }
 
   /** Shared post-eviction boundary, durable summary, and ctx-chip bookkeeping
    * for ordinary /compact and reviewed /compact --edit <text>. */
   async finishCompactCommand(target: string, { compacted, message, summary }: CompactResult): Promise<CommandReply> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    const { nextCursor } = await host.room.eventsFrom(0);
-    await host.setContextFloor(target, nextCursor);
-    if (compacted && summary) await host.room.writeCompaction(target, nextCursor, summary);
-    else if (compacted) await host.room.clearCompaction(target);
-    const written = host.compactProgress.get(target)?.outputTokens;
-    const maxTokens = host.contextUsage[target]?.maxTokens;
+    const { nextCursor } = await this.room.eventsFrom(0);
+    await this.setContextFloor(target, nextCursor);
+    if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
+    else if (compacted) await this.room.clearCompaction(target);
+    const written = this.compactProgress.get(target)?.outputTokens;
+    const maxTokens = this.contextUsage[target]?.maxTokens;
     const updated = written ? { usedTokens: written, ...(maxTokens ? { maxTokens } : {}) } : undefined;
-    if (updated) host.contextUsage[target] = updated;
-    else delete host.contextUsage[target];
-    await host.room
+    if (updated) this.contextUsage[target] = updated;
+    else delete this.contextUsage[target];
+    await this.room
       .updateState((current) => {
         if (updated) current.contextUsage = { ...(current.contextUsage ?? {}), [target]: updated };
         else if (current.contextUsage) delete current.contextUsage[target];
@@ -363,9 +348,8 @@ ${draft.summary}` : ""}`;
   /** /cancel: panic stop from any client — drops the durable queue and cancels
    * the running turn. Partial progress commits (WAL), so nothing is lost. */
   async runCancelCommand(): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    const queued = host.queuedTasks.length;
-    const cancelled = await host.cancelActiveTask();
+    const queued = this.queuedTasks.length;
+    const cancelled = await this.cancelActiveTask();
     if (!cancelled && queued === 0) return "Nothing is running.";
     const parts: string[] = [];
     if (cancelled) parts.push("Cancelled the running turn (partial progress is kept)");
@@ -376,14 +360,13 @@ ${draft.summary}` : ""}`;
   /** /recall: user-facing search over the same index the recall tool and
    * auto-recall use — facts, episodes, and full room history. */
   async runRecallCommand(agent?: string, query?: string): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const trimmed = query?.trim();
     if (!trimmed) return "Usage: /recall [@agent] <query> — search memory and room history.";
-    const target = agent ?? (await host.roomDefaultTarget());
-    if (!host.workspace.agents[target]) return host.unknownAgentMessage(target);
-    if (!host.options.memory) return "Memory recall is not available in this workspace.";
-    const context = await host.recallContext(target);
-    const deep = host.options.memory.deepSearch?.bind(host.options.memory) ?? host.options.memory.search.bind(host.options.memory);
+    const target = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    if (!this.options.memory) return "Memory recall is not available in this workspace.";
+    const context = await this.recallContext(target);
+    const deep = this.options.memory.deepSearch?.bind(this.options.memory) ?? this.options.memory.search.bind(this.options.memory);
     const { hits, degraded } = await deep(target, trimmed, { limit: RECALL_COMMAND_LIMIT, context });
     const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
     if (!hits.length) return `${header}No matches for "${trimmed}" in @${target}'s memory or room history.`;
@@ -396,13 +379,12 @@ ${draft.summary}` : ""}`;
    * mechanism that works identically for every harness (sessions cannot be
    * rewound). */
   async runRewindCommand(countRaw?: string): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     const count = countRaw ? Number.parseInt(countRaw, 10) : 1;
     if (!Number.isInteger(count) || count < 1) return "Usage: /rewind [n] — undo the last n user turns and their replies.";
-    const dropped = await host.room.rewindTranscript(count);
+    const dropped = await this.room.rewindTranscript(count);
     if (!dropped) return `Nothing to rewind: this room has fewer than ${count} user message${count === 1 ? "" : "s"}.`;
     // Forgetting the rewound exchanges is the point — sessions that saw them reset.
-    await host.resetAfterTruncation("reset-sessions");
+    await this.resetAfterTruncation("reset-sessions");
     return `Rewound ${count} user turn${count === 1 ? "" : "s"} (${dropped.length} event${dropped.length === 1 ? "" : "s"} removed). Agent sessions reset; the next turn replays the kept history.`;
   }
 
@@ -410,12 +392,11 @@ ${draft.summary}` : ""}`;
    * the ordinary durable queue drive it — zero harness knowledge, so every
    * harness behaves identically (AGENTS.md RULE #0). */
   async runGoalCommand(command: Extract<SlashCommand, { type: "goal" }>): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     if (command.sub === "set") {
       const objective = command.objective.trim();
       if (!objective) return "Usage: /goal [--tokens N] <objective> — pin an objective on this room.";
-      const target = await host.roomDefaultTarget();
-      if (!host.workspace.agents[target]) return host.unknownAgentMessage(target);
+      const target = await this.roomDefaultTarget();
+      if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
       const now = new Date().toISOString();
       const goal: RoomGoal = {
         objective,
@@ -427,12 +408,12 @@ ${draft.summary}` : ""}`;
         startedAt: now,
         updatedAt: now,
       };
-      await host.updateGoal(() => goal);
-      await host.enqueueGoalTurn(goal, false);
+      await this.updateGoal(() => goal);
+      await this.enqueueGoalTurn(goal, false);
       const budget = goal.tokenBudget ? ` Budget: ${goal.tokenBudget.toLocaleString()} tokens.` : "";
       return `Goal pinned for @${target}: "${objective}".${budget} @${target} is starting now and keeps working until it writes ${GOAL_COMPLETE_SIGNAL} in a reply (no marker = not done). /goal pause to hold, /goal clear to drop.`;
     }
-    const goal = (await host.room.state()).goal;
+    const goal = (await this.room.state()).goal;
     if (command.sub === "status") {
       if (!goal) return "No goal pinned in this room. Set one with /goal <objective>.";
       const budget = goal.tokenBudget ? `${goal.tokensUsed.toLocaleString()}/${goal.tokenBudget.toLocaleString()} tokens` : `${goal.tokensUsed.toLocaleString()} tokens (no budget)`;
@@ -441,63 +422,61 @@ ${draft.summary}` : ""}`;
     }
     if (!goal) return "No goal pinned in this room. Set one with /goal <objective>.";
     if (command.sub === "clear") {
-      await host.updateGoal(() => undefined);
+      await this.updateGoal(() => undefined);
       return `Goal cleared: "${goal.objective}".`;
     }
     if (command.sub === "pause") {
       if (goal.status === "paused") return "The goal is already paused.";
-      await host.updateGoal((current) => ({ ...current, status: "paused", stoppedReason: "paused by a human" }));
+      await this.updateGoal((current) => ({ ...current, status: "paused", stoppedReason: "paused by a human" }));
       return `Goal paused: "${goal.objective}". /goal resume to continue.`;
     }
     // resume
     if (goal.status === "active") return "The goal is already active.";
-    await host.updateGoal((current) => {
+    await this.updateGoal((current) => {
       const next: RoomGoal = { ...current, status: "active" };
       delete next.stoppedReason;
       return next;
     });
     const resumed = { ...goal, status: "active" as const };
     delete resumed.stoppedReason;
-    await host.enqueueGoalTurn(resumed, true);
+    await this.enqueueGoalTurn(resumed, true);
     const note = goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget ? " Note: the token budget is already spent — raise it with /goal --tokens N <objective>." : "";
     return `Goal resumed: "${goal.objective}".${note}`;
   }
 
   /** Single writer for the room goal: mutate-or-drop, then refresh clients. */
   async updateGoal(mutate: (current: RoomGoal) => RoomGoal | undefined): Promise<void> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    await host.room.updateState((state) => {
+    await this.room.updateState((state) => {
       const next = state.goal ? mutate(state.goal) : mutate({} as RoomGoal);
       if (next?.objective) state.goal = next;
       else delete state.goal;
     });
-    await host.emitSnapshot();
+    await this.emitSnapshot();
   }
 
   /** After a CLEAN goal turn: stop on the explicit completion signal or an
    * exhausted budget, otherwise enqueue the next continuation on the durable
    * queue (restart-safe). Strict by design — no signal means NOT done. */
   async maybeContinueGoal(author: string, reply: string, goalStartedAt: string): Promise<void> {
-    const host = this as unknown as RoomCommandsFacadeHost;
-    const goal = (await host.room.state()).goal;
+    const goal = (await this.room.state()).goal;
     if (!goal || goal.status !== "active" || goal.agentId !== author || goal.startedAt !== goalStartedAt) return;
-    const spent = host.contextUsage[author]?.usedTokens ?? 0;
+    const spent = this.contextUsage[author]?.usedTokens ?? 0;
     const tokensUsed = goal.tokensUsed + spent;
     const iterations = goal.iterations + 1;
     const base: RoomGoal = { ...goal, tokensUsed, iterations, updatedAt: new Date().toISOString() };
 
     if (reply.includes(GOAL_COMPLETE_SIGNAL)) {
-      await host.updateGoal(() => ({ ...base, status: "done", stoppedReason: `completed by @${author}` }));
-      host.emitSystemNote(`Goal complete: "${goal.objective}" (${iterations} turn${iterations === 1 ? "" : "s"}).`);
+      await this.updateGoal(() => ({ ...base, status: "done", stoppedReason: `completed by @${author}` }));
+      this.emitSystemNote(`Goal complete: "${goal.objective}" (${iterations} turn${iterations === 1 ? "" : "s"}).`);
       return;
     }
     if (base.tokenBudget && tokensUsed >= base.tokenBudget) {
-      await host.updateGoal(() => ({ ...base, status: "paused", stoppedReason: `token budget exhausted (${tokensUsed}/${base.tokenBudget})` }));
-      host.emitSystemNote(`Goal paused: token budget spent (${tokensUsed}/${base.tokenBudget}). /goal --tokens N <objective> to extend, /goal resume to continue.`);
+      await this.updateGoal(() => ({ ...base, status: "paused", stoppedReason: `token budget exhausted (${tokensUsed}/${base.tokenBudget})` }));
+      this.emitSystemNote(`Goal paused: token budget spent (${tokensUsed}/${base.tokenBudget}). /goal --tokens N <objective> to extend, /goal resume to continue.`);
       return;
     }
-    await host.updateGoal(() => base);
-    await host.enqueueGoalTurn(base, true);
+    await this.updateGoal(() => base);
+    await this.enqueueGoalTurn(base, true);
   }
 
   // DogMode (/dog + its discipline verbs) is a bundled command-plugin now
@@ -507,18 +486,17 @@ ${draft.summary}` : ""}`;
 
   /** /thanks-dario: run a review now, or toggle auto-review on model fallback. */
   async runThanksDarioCommand(sub: "on" | "off" | "run"): Promise<string> {
-    const host = this as unknown as RoomCommandsFacadeHost;
     if (sub === "on" || sub === "off") {
-      await host.room.updateState((state) => {
+      await this.room.updateState((state) => {
         if (sub === "on") state.thanksDario = true;
         else delete state.thanksDario;
       });
-      await host.emitSnapshot();
+      await this.emitSnapshot();
       return sub === "on"
         ? "Thanks-Dario mode ON: when a provider-side safeguard reroutes this room's model, Dario reviews the transcript and proposes redactions — popup with a diff, nothing rewritten without your approval."
         : "Thanks-Dario mode OFF.";
     }
-    const proposal = await host.sanitizePreview();
+    const proposal = await this.sanitizePreview();
     const window = `${proposal.window} message${proposal.window === 1 ? "" : "s"}`;
     if (proposal.parseError) {
       return `Dario reviewed ${window} but his reply did not parse as suggestions (${proposal.parseError}). His raw notes are in the review popup.`;
@@ -534,4 +512,6 @@ ${draft.summary}` : ""}`;
    * step. The reviewer runs through the ordinary summon path (sandboxed child
    * room, any harness/provider), so there is nothing harness-specific here. */
 }
+export interface RoomCommandsMixin extends RoomCommandsFacadePort {}
+
 export function installRoomCommands(target: object): void { for (const name of Object.getOwnPropertyNames(RoomCommandsMixin.prototype)) if (name !== "constructor") Object.defineProperty(target, name, Object.getOwnPropertyDescriptor(RoomCommandsMixin.prototype, name)!); }
