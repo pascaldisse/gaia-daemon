@@ -255,6 +255,17 @@ export async function runAgentRunner(): Promise<void> {
       case "refresh":
         runtime.refreshContext?.(command.roomId);
         return;
+      // A13 defines one wire frame for every harness. A manifest runner registry
+      // is deliberately not composed until A14; refuse rather than fall back to
+      // the legacy ~/.gaia/plugins/runner duck-typed loader.
+      case "plugin-contribution":
+        send({
+          type: "plugin-contribution-result",
+          requestId: command.requestId,
+          ok: false,
+          message: "runner manifest plugin contributions are not installed",
+        });
+        return;
       case "dispose":
         // Runner-side runtimes are sync in practice; the daemon-side host owns async child shutdown.
         void runtime.dispose();

@@ -4,9 +4,28 @@ import {
   type PluginImporter,
 } from "./loader.js";
 import type {
+  PluginContributions,
   PluginManifest,
   PluginPlacement,
 } from "./manifest.js";
+import type { CapabilityBroker } from "../capabilities/broker.js";
+import type { CapabilityContext } from "../capabilities/types.js";
+import {
+  invokePluginChannelBridge,
+  invokePluginCommand,
+  invokePluginProvider,
+  invokePluginTool,
+  validatePluginContributions,
+  type PluginChannelBridgeRequest,
+  type PluginChannelBridgeResult,
+  type PluginCommandRequest,
+  type PluginCommandResult,
+  type PluginContributionRegistration,
+  type PluginProviderRequest,
+  type PluginProviderResult,
+  type PluginToolRequest,
+  type PluginToolResult,
+} from "./contracts.js";
 
 export interface PluginRegisterContext {
   readonly manifest: PluginManifest;
@@ -15,6 +34,7 @@ export interface PluginRegisterContext {
 }
 
 export interface PluginRegistration {
+  readonly contributions?: PluginContributionRegistration;
   readonly dispose?: () => void | Promise<void>;
 }
 
@@ -25,6 +45,7 @@ export interface RegisteredPlugin {
   readonly version: string;
   readonly placement: PluginPlacement;
   readonly requiredCaps: readonly string[];
+  readonly contributes: PluginContributions;
 }
 
 export interface PluginGeneration {
@@ -58,6 +79,9 @@ export interface PluginRegistryOptions {
   readonly pluginsRoot: string;
   readonly placement: PluginPlacement;
   readonly importer: PluginImporter<unknown>;
+  /** Required before any contribution invocation; absent registries remain
+   * metadata/lifecycle-only and fail closed at the invocation port. */
+  readonly capabilityBroker?: CapabilityBroker;
   readonly loader?: PluginModuleLoader;
   readonly onEvent?: (event: PluginRegistryEvent) => void;
 }
@@ -71,6 +95,7 @@ export class PluginRegistryError extends Error {
 
 interface LivePlugin {
   readonly summary: RegisteredPlugin;
+  readonly contributions: PluginContributionRegistration;
   readonly dispose?: () => void | Promise<void>;
 }
 
@@ -114,6 +139,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   readonly #pluginsRoot: string;
   readonly #placement: PluginPlacement;
   readonly #importer: PluginImporter<unknown>;
+  readonly #capabilityBroker: CapabilityBroker | undefined;
   readonly #loader: PluginModuleLoader;
   readonly #onEvent?: (event: PluginRegistryEvent) => void;
   #active: Candidate = Object.freeze({
@@ -134,6 +160,7 @@ export class PluginRegistry implements PluginTurnBoundary {
     this.#pluginsRoot = options.pluginsRoot;
     this.#placement = options.placement;
     this.#importer = options.importer;
+    this.#capabilityBroker = options.capabilityBroker;
     this.#loader = options.loader ?? loadPlugins;
     this.#onEvent = options.onEvent;
   }
@@ -199,6 +226,22 @@ export class PluginRegistry implements PluginTurnBoundary {
     return true;
   }
 
+  /** Typed command invocation, capability-gated for this room/agent pair. */
+  async invokeCommand(pluginId: string, name: string, context: CapabilityContext, request: PluginCommandRequest): Promise<PluginCommandResult> {
+    return this.#invoke(pluginId, (plugin) => invokePluginCommand(this.#capabilityBroker, this.#requester(plugin), plugin.contributions, name, context, request));
+  }
+  /** Typed Gaia-tool invocation, capability-gated for this room/agent pair. */
+  async invokeTool(pluginId: string, name: string, context: CapabilityContext, request: PluginToolRequest): Promise<PluginToolResult> {
+    return this.#invoke(pluginId, (plugin) => invokePluginTool(this.#capabilityBroker, this.#requester(plugin), plugin.contributions, name, context, request));
+  }
+  /** Typed channel-bridge invocation, capability-gated for this room/agent pair. */
+  async invokeChannelBridge(pluginId: string, name: string, context: CapabilityContext, request: PluginChannelBridgeRequest): Promise<PluginChannelBridgeResult> {
+    return this.#invoke(pluginId, (plugin) => invokePluginChannelBridge(this.#capabilityBroker, this.#requester(plugin), plugin.contributions, name, context, request));
+  }
+  /** Typed provider invocation, capability-gated for this room/agent pair. */
+  async invokeProvider(pluginId: string, name: string, context: CapabilityContext, request: PluginProviderRequest): Promise<PluginProviderResult> {
+    return this.#invoke(pluginId, (plugin) => invokePluginProvider(this.#capabilityBroker, this.#requester(plugin), plugin.contributions, name, context, request));
+  }
   async shutdown(): Promise<void> {
     if (this.#closed) return;
     if (this.#leases !== 0) throw new PluginRegistryError("shutdown requires zero active turn leases");
@@ -227,17 +270,38 @@ export class PluginRegistry implements PluginTurnBoundary {
       generation,
     });
     const registration = registrationOf(await register.call(loaded.module, context));
+    const contributions = validatePluginContributions(registration.contributions, loaded.manifest.manifest.contributes);
     return Object.freeze({
       summary: Object.freeze({
         id: loaded.manifest.manifest.id,
         version: loaded.manifest.manifest.version,
         placement: loaded.manifest.manifest.placement,
         requiredCaps: loaded.manifest.manifest.requiredCaps,
+        contributes: loaded.manifest.manifest.contributes,
       }),
+      contributions,
       ...(registration.dispose ? { dispose: registration.dispose } : {}),
     });
   }
 
+  async #invoke<T>(pluginId: string, invoke: (plugin: LivePlugin) => Promise<T>): Promise<T> {
+    // Contributions may await; hold the same generation lease for their full
+    // lifetime so a boundary swap cannot dispose code while it is executing.
+    const lease = this.beginTurn();
+    try {
+      return await invoke(this.#contributionPlugin(pluginId));
+    } finally {
+      lease.end();
+    }
+  }
+  #contributionPlugin(pluginId: string): LivePlugin {
+    const plugin = this.#active.entries.find((entry) => entry.summary.id === pluginId);
+    if (!plugin) throw new PluginRegistryError(`plugin ${pluginId} is not active`);
+    return plugin;
+  }
+  #requester(plugin: LivePlugin): { readonly namespace: string; readonly requiredCaps: readonly string[] } {
+    return { namespace: plugin.summary.id, requiredCaps: plugin.summary.requiredCaps };
+  }
   async #dispose(entries: readonly LivePlugin[], generation: number): Promise<void> {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];

@@ -98,3 +98,10 @@
 - status: UNVERIFIED live — gate-only run confirmed (unit tests pass, `bun
   run check` clean); nobody has run the opt-in path against a real daemon
   yet.
+
+## A13 typed contribution ports
+
+- owner: 陰 live slot
+- repro: after manifest registry composition, install one daemon-placement package declaring command/tool/channel/provider; invoke each with `{roomId,agentId}`; repeat untrusted + missing-cap contexts; send a `plugin-contribution` frame to a runner before A14.
+- verify: declared+granted invocation only; undeclared/malformed output rejected; untrusted/missing-cap code never entered; runner returns explicit unavailable result, never legacy `~/.gaia/plugins/runner` fallback.
+- status: UNVERIFIED — A13 ports/registry/protocol only; no daemon composition or manifest runner registry before A14.

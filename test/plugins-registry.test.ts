@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { CapabilityBroker } from "../src/services/capabilities/index.js";
 import {
   PluginRegistry,
   type PluginRegister,
@@ -28,6 +29,81 @@ function registered(dispose?: () => void): { register: PluginRegister } {
   return { register: () => dispose ? { dispose } : {} };
 }
 
+test("registry validates and invokes typed contributions through its capability broker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
+  try {
+    await pluginPackage(root, "echo", "acme.echo");
+    await writeFile(join(root, "echo", "plugin.json"), JSON.stringify({
+      id: "acme.echo",
+      version: "1.0.0",
+      engine: "gaia-daemon@^2.0.0",
+      placement: "daemon",
+      requiredCaps: ["room.message"],
+      contributes: { commands: ["echo"], tools: [], channels: [], providers: [] },
+    }));
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement: "daemon",
+      capabilityBroker: new CapabilityBroker({ grantSource: () => ({ agent: ["room.message"] }), trustSource: () => true }),
+      importer: async () => ({
+        register: () => ({
+          contributions: {
+            commands: [{ name: "echo", description: "Echo", run: (_context, request) => ({ reply: request.args.join(" ") }) }],
+          },
+        }),
+      }),
+    });
+    const staged = await registry.stageReload();
+    assert.equal(staged.status, "staged");
+    await registry.applyTurnBoundary();
+    assert.deepEqual(registry.current.plugins[0]?.contributes.commands, ["echo"]);
+    assert.deepEqual(
+      await registry.invokeCommand("acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: ["hi"] }),
+      { reply: "hi" },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("contribution invocation holds a generation lease until async plugin code settles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
+  let release: (() => void) | undefined;
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  try {
+    await pluginPackage(root, "echo", "acme.echo");
+    await writeFile(join(root, "echo", "plugin.json"), JSON.stringify({
+      id: "acme.echo", version: "1.0.0", engine: "gaia-daemon@^2.0.0", placement: "daemon", requiredCaps: [],
+      contributes: { commands: ["echo"], tools: [], channels: [], providers: [] },
+    }));
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement: "daemon",
+      capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
+      importer: async () => ({
+        register: () => ({
+          contributions: {
+            commands: [{ name: "echo", description: "Async", run: () => new Promise((resolve) => {
+              release = () => resolve({ reply: "done" });
+              markStarted?.();
+            }) }],
+          },
+        }),
+      }),
+    });
+    await registry.stageReload();
+    await registry.applyTurnBoundary();
+    const pending = registry.invokeCommand("acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: [] });
+    await started;
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), false);
+    release?.();
+    assert.deepEqual(await pending, { reply: "done" });
+    assert.equal(await registry.applyTurnBoundary(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("stages a candidate while a turn holds one immutable generation, then swaps at its boundary", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
   const disposed: string[] = [];
