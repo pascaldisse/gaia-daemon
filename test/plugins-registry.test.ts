@@ -43,11 +43,11 @@ test("room command adapter invokes the daemon-owned registry", async () => {
   assert.ok(plugin);
   assert.deepEqual(
     await plugin.run(["hello"], {
-      homedir: "/home/test", roomId: "room-1", agentId: "agent-1", workspaceRoot: "/workspace", agents: [],
+      homedir: "/home/test", workspaceId: "workspace-1", roomId: "room-1", agentId: "agent-1", workspaceRoot: "/workspace", agents: [],
     }),
     { reply: "ok" },
   );
-  assert.deepEqual(calls, [["acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: ["hello"] }]]);
+  assert.deepEqual(calls, [["acme.echo", "echo", { workspaceId: "workspace-1", roomId: "room-1", agentId: "agent-1" }, { args: ["hello"] }]]);
 });
 
 test("registry validates and invokes typed contributions through its capability broker", async () => {
