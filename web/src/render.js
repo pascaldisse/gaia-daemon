@@ -113,24 +113,24 @@ export function mountApp() {
 // Layout region: pane collapse (Ctrl+B / Ctrl+G) toggles grid columns. The
 // children stay in the DOM (hidden), so no region loses its rendered state.
 function renderLayout() {
-  const body = $("#body");
+  const app = $("#app");
   const sidebar = $("#sidebar");
   const left = $("#resizer-left");
   const scrim = $("#scrim");
   const right = $("#right");
   const rightResizer = $("#resizer-right");
-  if (!body || !sidebar || !left || !right || !rightResizer) return;
+  if (!app || !sidebar || !left || !right || !rightResizer) return;
   sidebar.hidden = state.sidebarCollapsed;
   if (scrim) scrim.hidden = state.sidebarCollapsed;
   left.hidden = state.sidebarCollapsed;
   right.hidden = state.rightCollapsed;
   rightResizer.hidden = state.rightCollapsed;
-  const cols = [];
-  // Resizer columns are 0 wide; the 5px handle overhangs the pane border via negative margin (styles.css .col-resizer).
-  if (!state.sidebarCollapsed) cols.push("var(--w-left)", "0px");
-  cols.push("minmax(0,1fr)");
-  if (!state.rightCollapsed) cols.push("0px", "var(--w-right)");
-  body.style.gridTemplateColumns = cols.join(" ");
+  // Side panes span the app grid; the tab strip belongs to the centre column.
+  app.style.gridTemplateColumns = [
+    state.sidebarCollapsed ? "0px" : "var(--w-left)",
+    "minmax(0,1fr)",
+    state.rightCollapsed ? "0px" : "var(--w-right)",
+  ].join(" ");
 }
 
 registerRegion("layout", renderLayout);

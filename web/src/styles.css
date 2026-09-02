@@ -149,24 +149,28 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
 /* ============================================================
    app frame
    ============================================================ */
-.shell, #app { display: grid; grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
+/* The side panes are workspace furniture, not children of the tab strip. Let
+   them reach the window edge so an unused strip never floats above search or
+   the roster; the tab strip occupies the centre column only. */
+.shell, #app { display: grid; grid-template-columns: var(--w-left) minmax(0, 1fr) var(--w-right); grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: 38px minmax(0, 1fr); }
-#overlays, #overlays > div { display: contents; }
-.body { display: grid; grid-template-columns: 28ch 1fr 32ch; min-height: 0; overflow: hidden; }
+#overlays, #overlays > div, .body { display: contents; }
 .sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
-.sidebar { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-.right { border-left: 1px solid var(--border); }
-.main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); background: var(--bg); min-width: 0; min-height: 0; overflow: hidden; }
+.sidebar { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+.right { grid-column: 3; grid-row: 1 / -1; border-left: 1px solid var(--border); }
+.main { grid-column: 2; grid-row: 2; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); background: var(--bg); min-width: 0; min-height: 0; overflow: hidden; }
 .main-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 /* Drag handles: invisible 5px hit zone straddling the pane's 1px border (LAW: flat hairlines only). */
-.col-resizer { cursor: col-resize; background: transparent; width: 5px; margin: 0 -2.5px; position: relative; z-index: 2; }
+.col-resizer { grid-row: 1 / -1; cursor: col-resize; background: transparent; width: 5px; margin: 0 -2.5px; position: relative; z-index: 2; }
+#resizer-left { grid-column: 1; justify-self: end; }
+#resizer-right { grid-column: 3; justify-self: start; }
 .col-resizer:hover, body.resizing .col-resizer { background: var(--accent); opacity: .5; }
 body.resizing { cursor: col-resize; user-select: none; }
 
 /* ============================================================
    tabbar
    ============================================================ */
-.tabbar { display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
+.tabbar { grid-column: 2; grid-row: 1; display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
 body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar-inset); }
 .brand, .tab-brand { display: flex; flex: 0 0 14ch; align-items: center; justify-content: center; gap: 1ch; border-right: 1px solid var(--border); color: var(--fg); font-weight: 700; letter-spacing: .18em; }
 .brand span, .tab-logo, .tab-new { color: var(--accent); }
@@ -997,6 +1001,7 @@ sidebar: workspaces + rooms tree
   /* Root chrome sits under the iOS status bar/notch/camera (viewport-fit=cover
      in index.html opts into the full display, so we must pad it back out). */
   #app {
+    grid-template-columns: minmax(0, 1fr) !important;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
     padding-left: max(0px, env(safe-area-inset-left));
@@ -1004,10 +1009,15 @@ sidebar: workspaces + rooms tree
   }
 
   .body {
+    grid-column: 1;
+    grid-row: 2;
     display: grid !important;
     grid-template-columns: minmax(0, 1fr) !important;
     position: relative;
   }
+
+  .tabbar { grid-column: 1; grid-row: 1; }
+  .sidebar, .right, .main, .col-resizer { grid-column: auto; grid-row: auto; }
 
   .col-resizer { display: none !important; }
 

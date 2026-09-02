@@ -65,11 +65,12 @@
 .agent-list { display: grid; gap: 0; }
 .roster-agent {
   display: grid;
-  grid-template-columns: 20px minmax(70px, 1fr) 48px 54px 20px;
+  /* The glyph has one compact slot — names no longer inherit a blank gutter. */
+  grid-template-columns: 14px minmax(70px, 1fr) 48px 54px 20px;
   grid-template-rows: 19px 17px;
   align-items: center;
   min-height: 38px;
-  padding-left: 7px;
+  padding-left: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
