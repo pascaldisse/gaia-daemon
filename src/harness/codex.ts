@@ -30,6 +30,7 @@ import {
   type RuntimeCreateContext,
   type SummonCreate,
   type ContextDietAccess,
+  type EndConversation,
   type ToolResultFetch,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
@@ -367,6 +368,7 @@ export class CodexRuntime implements AgentRuntime {
   private readonly recallSearch?: RecallSearch;
   private readonly toolResultFetch?: ToolResultFetch;
   private readonly contextDiet?: ContextDietAccess;
+  private readonly endConversation?: EndConversation;
   private client: CodexClient | null = null;
   private initPromise: Promise<CodexClient> | null = null;
   private readonly cwd: string;
@@ -396,6 +398,7 @@ export class CodexRuntime implements AgentRuntime {
     this.recallSearch = options.recallSearch;
     this.toolResultFetch = options.toolResultFetch;
     this.contextDiet = options.contextDiet;
+    this.endConversation = options.endConversation;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.threads = new SessionMap<ThreadState>(undefined, fileSessionStore(this.cwd, "codex", this.agent.id));
@@ -1019,6 +1022,7 @@ export class CodexRuntime implements AgentRuntime {
       recallSearch: this.recallSearch,
       toolResultFetch: this.toolResultFetch,
       contextDiet: this.contextDiet,
+      endConversation: this.endConversation,
     })) as PiToolLike[];
     const tools = new Map(built.map((tool) => [tool.name, tool]));
     this.roomTools.set(roomId, tools);

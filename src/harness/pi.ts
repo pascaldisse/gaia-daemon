@@ -39,6 +39,7 @@ import {
   type ResumeCreate,
   type SummonCreate,
   type ContextDietAccess,
+  type EndConversation,
   type ToolResultFetch,
 } from "./spec.js";
 import { createEventChannel } from "./events.js";
@@ -344,6 +345,25 @@ export function mechanicalCompactionFallback(preparation: MechanicalCompactionIn
 // `pi.on` of its own) that PiRuntime's single combined `compactionExtension`
 // below calls directly, so there is exactly one listener per session and no
 // ordering-dependent double-fire is possible.
+/** Model-free compaction override: when a clean summary is registered for this
+ * room+agent (~/.pi/agent/clean-summaries/index.json: { <roomId>: { default?: string, agents?: { <agentId>: string } } }),
+ * return it verbatim instead of calling the summarizing model. Some providers
+ * refuse the summarization request, so a poisoned context can otherwise never
+ * self-clean. Strictly gated to registered rooms; every other room falls
+ * through to the normal model path. */
+function loadCleanCompactionOverride(roomId: string, agentId: string | undefined): string | undefined {
+  try {
+    const p = join(homedir(), ".pi", "agent", "clean-summaries", "index.json");
+    if (!existsSync(p)) return undefined;
+    const idx = JSON.parse(readFileSync(p, "utf8")) as Record<string, { default?: string; agents?: Record<string, string> }>;
+    const entry = idx[roomId];
+    if (!entry) return undefined;
+    if (agentId && entry.agents && typeof entry.agents[agentId] === "string") return entry.agents[agentId];
+    if (typeof entry.default === "string") return entry.default;
+  } catch {}
+  return undefined;
+}
+
 async function runCompactionFallback(
   event: { preparation: unknown; customInstructions?: string; signal: AbortSignal },
   ctx: { modelRegistry: { find(provider: string, name: string): Model<any> | undefined; getApiKeyAndHeaders(model: Model<any>): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } | { ok: false; error: string }> } },
@@ -447,6 +467,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly recallSearch?: RecallSearch;
   private readonly toolResultFetch?: ToolResultFetch;
   private readonly contextDiet?: ContextDietAccess;
+  private readonly endConversation?: EndConversation;
   /** Drafts live only for this runner lifetime; applying after a runner restart
    * intentionally asks the caller to make a fresh draft. */
   private readonly pendingCompactDrafts = new Map<string, CompactionResult>();
@@ -480,6 +501,7 @@ export class PiRuntime implements AgentRuntime {
     this.recallSearch = options.recallSearch;
     this.toolResultFetch = options.toolResultFetch;
     this.contextDiet = options.contextDiet;
+    this.endConversation = options.endConversation;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
@@ -791,7 +813,20 @@ export class PiRuntime implements AgentRuntime {
     return (pi) => {
       pi.on("session_before_compact", async (event, ctx) => {
         const operation = this.pendingCompactOperations.get(roomId);
-        if (!operation) return runCompactionFallback(event, ctx, agentModelProvider, agentModelName);
+        if (!operation) {
+          const cleanOverride = loadCleanCompactionOverride(roomId, this.agent?.id);
+          if (cleanOverride) {
+            return {
+              compaction: {
+                summary: cleanOverride,
+                firstKeptEntryId: event.preparation.firstKeptEntryId,
+                tokensBefore: event.preparation.tokensBefore,
+                details: this.compactionDetails(event.preparation),
+              },
+            };
+          }
+          return runCompactionFallback(event, ctx, agentModelProvider, agentModelName);
+        }
         if (operation.kind === "apply") {
           return {
             compaction: {
@@ -984,6 +1019,7 @@ export class PiRuntime implements AgentRuntime {
       recallSearch: this.recallSearch,
       toolResultFetch: this.toolResultFetch,
       contextDiet: this.contextDiet,
+      endConversation: this.endConversation,
     });
     const systemPromptRef = { current: systemPrompt };
 

@@ -260,8 +260,15 @@ export interface RuntimeCreateContext {
    * override) — backs the `diet` gaia-tool verb and the `/diet` room command;
    * ONE implementation, two surfaces. */
   contextDiet?: ContextDietAccess;
+  /** Gracefully end this agent's current room conversation with a visible farewell. */
+  endConversation?: EndConversation;
 }
 
+/** Pages a diet-collapsed own tool-call stub's original content back, 32k
+ * chars/page (mirrors gaia-daemon-v2's tool_result_fetch guarded tool). */
+export interface EndConversation {
+  (params: { farewell: string }): Promise<string>;
+}
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
  * chars/page (mirrors gaia-daemon-v2's tool_result_fetch guarded tool). */
 export interface ToolResultFetch {

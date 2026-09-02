@@ -40,7 +40,10 @@ import {
 // of the daemon snapshot; the name de-duplication in completionFor prevents a
 // second /design row after the rebuilt daemon also advertises it.
 /** @type {Array<{ name: string, description: string, native?: boolean }>} */
-const LOCAL_SLASH_COMMANDS = [{ name: "design", description: "toggle artifacts, or /design <request> to ask the active agent" }];
+const LOCAL_SLASH_COMMANDS = [
+  { name: "design", description: "toggle artifacts, or /design <request> to ask the active agent" },
+  { name: "archtree", description: "toggle the 3D room tree (summon lanes, status, roomId)" },
+];
 
 /** @type {HTMLTextAreaElement|null} */
 let textarea = null;
@@ -419,6 +422,11 @@ async function submitComposer(options = {}) {
     // receives a second command turn after it is rebuilt.
     setArtifactPanelOpen(true);
     restoreOnFailure(sendArtifactPrompt(designPrompt));
+  } else if (!editing && pending.length === 0 && archtreeCommandText(text)) {
+    // /archtree is entirely client-side (same seam as /design's toggle path):
+    // it never reaches the daemon, so it works before any rebuild.
+    clearDraft();
+    void import("./archtree/index.js").then((mod) => mod.openArchtree());
   } else if (editing && text.trim()) {
     releasePreviews(pending);
     restoreOnFailure(editMessage(editing, text, editingAttachments.map((a) => a.path)));
@@ -640,6 +648,12 @@ function onComposerKeydown(event) {
 function designCommandPrompt(text) {
   const match = text.trim().match(/^\/design(?:\s+([\s\S]*))?$/);
   return match ? (match[1]?.trim() ?? "") : null;
+}
+
+/** /archtree takes no argument — it only toggles the 3D room-tree overlay.
+ * @param {string} text */
+function archtreeCommandText(text) {
+  return /^\/archtree\s*$/.test(text.trim());
 }
 
 /** @param {string} text @returns {Completion|null} */

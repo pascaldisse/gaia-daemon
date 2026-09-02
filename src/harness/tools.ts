@@ -10,7 +10,7 @@
 import type { AgentDef, Workspace } from "../core/types.js";
 import type { ResumeCreate } from "./spec.js";
 import type { MemoryStore } from "../domain/memory.js";
-import type { ContextDietAccess, GaiaTool, RecallSearch, SummonCreate, ToolResultFetch } from "../harness/spec.js";
+import type { ContextDietAccess, EndConversation, GaiaTool, RecallSearch, SummonCreate, ToolResultFetch } from "../harness/spec.js";
 
 /** Everything the in-process Pi tool factories might need. */
 export interface AgentRosterEntry {
@@ -53,6 +53,8 @@ export interface PiToolContext {
   /** Backs the `gaia` tool's `diet` verb (09-MEMORY-CONTEXT); same store the
    * `/diet` room command uses daemon-side. */
   contextDiet?: ContextDietAccess;
+  /** Daemon bridge for the unified end_conversation verb. */
+  endConversation?: EndConversation;
 }
 
 export interface GaiaToolSpec {

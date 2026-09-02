@@ -46,3 +46,9 @@ test("codexMcpServersConfig maps the neutral shape onto mcp_servers tables", () 
     },
   );
 });
+
+test("parseWorkspaceConfig enables agent conversation ending by default and accepts an explicit disable", () => {
+  assert.equal(parseWorkspaceConfig({}, () => true).agentEndConversation, true);
+  assert.equal(parseWorkspaceConfig({ agentEndConversation: false }, () => true).agentEndConversation, false);
+  assert.equal(parseWorkspaceConfig({ agentEndConversation: "no" }, () => true).agentEndConversation, true);
+});

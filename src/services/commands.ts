@@ -22,6 +22,7 @@ export type SlashCommand =
   | { type: "consolidate"; agent?: string }
   | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string; edit?: boolean | string }
+  | { type: "stt"; engine?: string; alias?: "tts" }
 | { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
   | { type: "steer"; text?: string }
@@ -73,6 +74,8 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent] | /compact --edit [text]" },
+  { name: "stt", type: "stt", description: "show or switch the speech-to-text engine: /stt [replicate|elevenlabs|openai]" },
+  { name: "tts", type: "stt", description: "voice-input engine switch (alias of /stt): /tts [replicate|elevenlabs|openai]" },
 {
     name: "diet",
     type: "diet",
@@ -176,6 +179,8 @@ export function parseCommand(input: string): SlashCommand {
         edit: edited || true,
       };
     }
+    case "stt":
+      return { type: "stt", engine: stripped[0]?.toLowerCase(), ...(name === "tts" ? { alias: "tts" as const } : {}) };
     case "diet": {
       const scope: "room" | "workspace" = args.some((arg) => arg.toLowerCase() === "--workspace") ? "workspace" : "room";
       const first = stripped.find((arg) => arg.toLowerCase() !== "--workspace")?.toLowerCase();
@@ -241,7 +246,7 @@ export function parseCommand(input: string): SlashCommand {
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(
   "\n",
-)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet                       spawn the default pet for the agent you're talking to\n  /pet <package>             spawn a specific pet package instead\n  /pet @agent [package]      target a different agent (defaults if package omitted)\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nGoal commands:\n  /goal <objective>          pin an objective; the room's agent keeps working until it emits GOAL-COMPLETE\n  /goal --tokens N <obj>     same, with a token budget (reaching it pauses the goal)\n  /goal status               show the pinned goal, its progress and budget\n  /goal pause|resume         hold or restart the continuation loop\n  /goal clear                drop the goal\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
+)}\n\nRole commands:\n  /roles [agent]       list roles (default agent if omitted)\n  /role <role>         set a role on the default agent\n  /role <agent> <role> set a role on a specific agent\n  /role [agent] none   clear a role\n\nSummon commands:\n  /summon <agent> <task>  launch a private worker agent\n\nThinking commands:\n  /thinking <level>          set the default agent's thinking effort\n  /thinking <agent> <level>  set another agent's thinking effort\n  (during a voice call with that agent the change lasts only for the call)\n\nPet commands (native desktop only):\n  /pet                       spawn the default pet for the agent you're talking to\n  /pet <package>             spawn a specific pet package instead\n  /pet @agent [package]      target a different agent (defaults if package omitted)\n  /pet off [@agent]          remove one binding\n  /pet list                  list this room's bindings\n\nSetup commands:\n  /setup list                list available multi-agent setups\n  /setup activate <id>       load a setup into this room (becomes a monad room)\n  /setup status              show this room's active setup\n  /setup off                 clear the monad from this room\n\nGoal commands:\n  /goal <objective>          pin an objective; the room's agent keeps working until it emits GOAL-COMPLETE\n  /goal --tokens N <obj>     same, with a token budget (reaching it pauses the goal)\n  /goal status               show the pinned goal, its progress and budget\n  /goal pause|resume         hold or restart the continuation loop\n  /goal clear                drop the goal\n\nSpeech-input commands:\n  /stt                       show the selected STT engine and available engines\n  /stt <engine>              switch the global dictation engine\n  /tts [engine]              same switch; explicit voice-input alias\n\nThanks-Dario commands:\n  /thanks-dario              Dario reviews recent messages and proposes redactions (popup shows a diff; originals are preserved)\n  /thanks-dario on|off       auto-review whenever the provider reroutes the model mid-turn\n\nUse @agent mentions to route a message, for example:\n  @sidia critique this plan\n  @gaia @terry compare and implement`;
 
 // --- mention routing -----------------------------------------------------------
 //

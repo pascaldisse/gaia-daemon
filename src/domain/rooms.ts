@@ -441,6 +441,7 @@ export function normalizeRoomState(value: unknown): RoomState {
   const backgroundTasks = backgroundTasksFrom(value.backgroundTasks);
   const contextGate = contextGateFrom(value.contextGate);
   const contextFloors = cursorRecord(value.contextFloors);
+  const conversationEndedAgents = stringRecord(value.conversationEndedAgents);
   const petBindings = normalizePetBindings(value.petBindings);
   const pluginState = pluginStateFrom(value.pluginState);
   return {
@@ -453,6 +454,7 @@ export function normalizeRoomState(value: unknown): RoomState {
       : {}),
     agentCursors: cursorRecord(value.agentCursors),
     ...(Object.keys(contextFloors).length > 0 ? { contextFloors } : {}),
+    ...(Object.keys(conversationEndedAgents).length > 0 ? { conversationEndedAgents } : {}),
     ...(runtimeDetails && Object.keys(runtimeDetails).length > 0 ? { runtimeDetails } : {}),
     ...(typeof value.parentRoomId === "string" && value.parentRoomId.trim() ? { parentRoomId: value.parentRoomId } : {}),
     ...(goal ? { goal } : {}),
@@ -701,6 +703,16 @@ export class RoomHandle {
 
   async appendEvent(event: RoomEvent): Promise<void> {
     await this.withRoomLock(() => appendJsonlDurable(this.transcriptPath, event));
+  }
+  /** Append an agent's visible goodbye and durably suppress its automatic
+   * follow-ups as one room-lock transaction. */
+  async endConversation(agentId: string, event: RoomEvent): Promise<void> {
+    await this.withRoomLock(async () => {
+      await appendJsonlDurable(this.transcriptPath, event);
+      await this.updateStateLocked((state) => {
+        state.conversationEndedAgents = { ...(state.conversationEndedAgents ?? {}), [agentId]: event.timestamp };
+      });
+    });
   }
 
   /** `id` pre-assigns the event id — the queue→transcript hand-off reserves it

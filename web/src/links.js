@@ -90,26 +90,32 @@ async function openLinkedTarget(target) {
 
 /** @param {string} text @param {string} target */
 function linkToken(text, target) {
+  // WKWebView may consume the click following Cmd/Ctrl+mousedowns on plain
+  // (non-anchor) text for native lookup/selection. Open synchronously during
+  // that trusted mousedown instead of depending on the later click. The click
+  // path remains as a fallback for browsers that only deliver click.
+  let openedOnMouseDown = false;
   return h(
     "span",
     {
       class: "link-token",
       "data-target": target,
       title: target,
-      // WebKit (WKWebView, the app's actual renderer) treats a modifier-held
-      // mousedown on plain text as the start of its native discontiguous-
-      // selection/lookup gesture — that gesture can eat the following click
-      // before it ever reaches this handler, so cmd/ctrl+click silently does
-      // nothing. Suppressing the mousedown's default action (not the event
-      // itself — click synthesis from mousedown+mouseup on the same target
-      // still happens) heads that gesture off without changing normal click.
       onmousedown: (event) => {
-        if (isOpenModifier(event)) event.preventDefault();
+        if (!isOpenModifier(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openedOnMouseDown = true;
+        void openLinkedTarget(target);
       },
       onclick: (event) => {
         if (!isOpenModifier(event)) return;
         event.preventDefault();
         event.stopPropagation();
+        if (openedOnMouseDown) {
+          openedOnMouseDown = false;
+          return;
+        }
         void openLinkedTarget(target);
       },
     },

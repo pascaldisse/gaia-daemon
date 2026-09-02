@@ -8,7 +8,7 @@ import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../do
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
 import { LLM_PROXY_MOUNT } from "./protocol.js";
-import type { ContextDietAccess, ContextDietView, HarnessHost, RecallSearch, ResumeCreate, SummonCreate, ToolResultFetch } from "./spec.js";
+import type { ContextDietAccess, ContextDietView, EndConversation, HarnessHost, RecallSearch, ResumeCreate, SummonCreate, ToolResultFetch } from "./spec.js";
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
 export class BridgeMemoryStore extends MemoryStore {
@@ -93,6 +93,14 @@ export function bridgeResumeCreate(target: DaemonTarget): ResumeCreate {
   };
 }
 
+/** Gracefully end the calling agent's room conversation through the daemon. */
+export function bridgeEndConversation(target: DaemonTarget): EndConversation {
+  return async ({ farewell }) => {
+    const { ok, payload } = await daemonPost(target, "/api/harness/end-conversation", { farewell });
+    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : "end conversation failed");
+    return typeof payload.result === "string" ? payload.result : "Conversation ended.";
+  };
+}
 /** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
  * tool-call stub back — backs the `tool_result_fetch` gaia-tool verb
  * (09-MEMORY-CONTEXT). Same daemon bridge shape as every other harness dep. */

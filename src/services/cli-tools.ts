@@ -35,6 +35,7 @@ const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
 const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>
        gaia summon --status [roomId] [--all]   census of summon lanes (state/last-event/delivered?/dirty-worktree); default room: current room`;
 const RESUME_USAGE = `Usage: gaia resume <roomId> "<message>"`;
+const END_CONVERSATION_USAGE = `Usage: gaia end-conversation <farewell>`;
 const ARTIFACT_USAGE = `Usage:
   gaia artifact create --name N --kind html|json|design --media-type T [--file F | --content C]
   gaia artifact update <id> [--name N] [--kind K] [--media-type T] [--file F | --content C]
@@ -130,6 +131,13 @@ function resolveWorkspaceRoot(): string | undefined {
   return existsSync(workspacePaths.dir(process.cwd())) ? process.cwd() : undefined;
 }
 
+async function runEndConversation(args: string[]): Promise<number> {
+  const farewell = args.join(" ").trim();
+  if (!farewell) return fail(END_CONVERSATION_USAGE);
+  const result = await daemonPost("/api/harness/end-conversation", { farewell });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
 async function runMem(args: string[]): Promise<number> {
   const sub = args[0];
   const rest = parseFlags(args.slice(1));
@@ -465,6 +473,7 @@ export async function runHarnessCommand(args: string[]): Promise<number> {
   // `dog` (09-DOG-MODE) is daemon-backed room state like dream/summon but
   // never a GaiaTool grant either — dispatched directly, same tier as dream.
   if (command === "dog") return runDog(rest);
+  if (command === "end-conversation") return runEndConversation(rest);
   const tool = command ? gaiaToolByVerb(command) : undefined;
   switch (tool?.id) {
     case "memory":
