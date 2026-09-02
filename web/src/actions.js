@@ -396,6 +396,23 @@ export async function setRoomFavorite(roomId, favorite) {
   }
 }
 
+/**
+ * Persist a sidebar drag-drop reorder of this workspace's top-level rooms
+ * (mirrors reorderWorkspaces, room-scoped). `ids` is the full desired
+ * top-level order.
+ * @param {string} workspaceId @param {string[]} ids
+ */
+export async function reorderRooms(workspaceId, ids) {
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/reorder`, { method: "POST", body: JSON.stringify({ ids }) });
+    applyRoomsPayload(workspaceId, body.rooms);
+    state.error = "";
+    markDirty("sidebar");
+  } catch (error) {
+    setError(error);
+  }
+}
+
 /** @param {string} roomId */
 export async function deleteRoom(roomId) {
   const snapshot = state.snapshot;

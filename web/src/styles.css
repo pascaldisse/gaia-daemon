@@ -202,11 +202,17 @@ sidebar: workspaces + rooms tree
 .nav-title-add { border: 0; padding: 0 4px; color: var(--muted); }
 .nav-title-add:hover, .nav-title-add.active { color: var(--accent); background: transparent; }
 .nav-title-actions { display: inline-flex; align-items: center; gap: 4px; }
-.workspace-list { position: relative; }
+.workspace-list, .room-tree { position: relative; }
 .workspace-list, .room-tree, .room-node, .room-children { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
-.ws-item { user-select: none; touch-action: pan-y; }
-.ws-item.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
+.ws-item, .fav-item, .room-item { user-select: none; touch-action: pan-y; }
+.ws-item.dragging, .fav-item.dragging, .room-item.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
 .workspace-drop-indicator { position: absolute; left: 2px; right: 2px; height: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
+/* Favorites section: Finder-style pinned workspaces + rooms, above the
+   workspaces list. favorites-drop-target highlights the whole section while
+   a workspace/room row is being dragged over it (see sidebar.js) — the
+   alternative to right-click "Add favorite". */
+.favorites-empty { padding: 4px 8px 8px; color: var(--muted); font-size: 11px; white-space: normal; }
+.favorites-drop-target { outline: 1px dashed var(--accent); outline-offset: -2px; }
 .nav-item, .nav-action { width: 100%; min-height: 24px; padding: 2px 8px; border: 1px solid transparent; background: transparent; color: var(--fg); text-align: left; white-space: nowrap; overflow: hidden; }
 .nav-item:hover, .nav-action:hover { background: var(--sel); }
 .nav-item.active, .room-row.active .nav-item { border-color: var(--accent); background: var(--sel); color: var(--accent); }
@@ -223,7 +229,7 @@ sidebar: workspaces + rooms tree
 .room-subdot.running { }
 .nav-item .room-label { display: flex; align-items: center; gap: 6px; }
 .nav-item .room-icon-slot { display: flex; flex: 0 0 14px; align-items: center; justify-content: center; }
-.room-star, .room-incognito { color: var(--dim, var(--muted)); font-size: .9em; line-height: 1; }
+.room-incognito { color: var(--dim, var(--muted)); font-size: .9em; line-height: 1; }
 .room-menu { position: fixed; z-index: 1000; min-width: 190px; padding: 6px; border: 1px solid var(--border); background: var(--bg); }
 .room-menu-title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px 7px; color: var(--muted); font-size: .82em; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .room-menu button { display: block; width: 100%; border: 0; background: transparent; padding: 7px 8px; text-align: left; }

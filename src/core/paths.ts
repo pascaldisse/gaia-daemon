@@ -98,6 +98,11 @@ export const workspacePaths = {
   scheduleState: (rootDir: string) => join(rootDir, ".gaia", "schedule-state.json"),
   roomsDir: (rootDir: string) => join(rootDir, ".gaia", "rooms"),
   roomDir: (rootDir: string, roomId: string) => join(rootDir, ".gaia", "rooms", roomId),
+  /** Sidebar drag-drop reorder of this workspace's top-level rooms (mirrors
+   * WorkspaceRegistry's app.json order field, but room-scoped: one small file
+   * per workspace instead of per-room state, so a full reorder is one atomic
+   * write regardless of room count). See services/room/snapshot.ts. */
+  roomOrder: (rootDir: string) => join(rootDir, ".gaia", "room-order.json"),
   /** Reversible room deletion moves the whole room dir here rather than rm -rf,
    * so a delete is recoverable (restore = move it back). */
   roomTrashDir: (rootDir: string) => join(rootDir, ".gaia", "trash", "rooms"),

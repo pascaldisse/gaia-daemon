@@ -24,7 +24,7 @@ import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWo
 import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
-import { RoomService, scanRoomActivity } from "./services/room-service.js";
+import { RoomService, scanRoomActivity, writeRoomOrder } from "./services/room-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
@@ -520,6 +520,16 @@ export class Daemon {
   async setRoomFavorite(workspaceId: string, roomId: string, favorite: boolean): Promise<{ rooms: Snapshot["rooms"] }> {
     const service = await this.serviceForExistingRoom(workspaceId, roomId);
     await service.setFavorite(favorite);
+    return this.refreshRoomList(workspaceId);
+  }
+
+  /** Sidebar drag-drop reorder of a workspace's top-level rooms (mirrors
+   * WorkspaceRegistry.reorder) — display order only, one atomic write to this
+   * workspace's .gaia/room-order.json regardless of room count. */
+  async reorderRooms(workspaceId: string, ids: string[]): Promise<{ rooms: Snapshot["rooms"] }> {
+    const record = await this.registry.find(workspaceId);
+    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    await writeRoomOrder(record.path, ids);
     return this.refreshRoomList(workspaceId);
   }
 

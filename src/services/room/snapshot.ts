@@ -3,7 +3,7 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../../core/attachments.js";
 import { newId } from "../../core/ids.js";
-import { readJson } from "../../core/store.js";
+import { readJson, writeJsonAtomic } from "../../core/store.js";
 import { globalPaths, workspacePaths } from "../../core/paths.js";
 import type { AgentDef, AgentStatus, MessageAttachment, RoomEvent, Snapshot } from "../../core/types.js";
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
@@ -340,10 +340,24 @@ export function installRoomSnapshot(target: object): void {
  * always false (it's relative to a service's open room, which a rollup lacks).
  * Rooms are chats: ordered by last transcript write, newest first.
  */
+/** Sidebar drag-drop reorder for a workspace's top-level rooms — same shape
+ * as WorkspaceRegistry's order field, stored in its own small per-workspace
+ * file (.gaia/room-order.json) rather than per-room state, so persisting a
+ * full drag is one atomic write. Ids outside the array (never dragged, or a
+ * summon child — those aren't reorderable) fall through to activity order. */
+async function readRoomOrder(rootDir: string): Promise<string[]> {
+  const doc = (await readJson(workspacePaths.roomOrder(rootDir))) as { order?: string[] } | undefined;
+  return doc?.order ?? [];
+}
+export async function writeRoomOrder(rootDir: string, ids: string[]): Promise<void> {
+  await writeJsonAtomic(workspacePaths.roomOrder(rootDir), { order: ids });
+}
 export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms"]> {
   const roomsDir = workspacePaths.roomsDir(rootDir);
   if (!existsSync(roomsDir)) return [];
   const entries = await readdir(roomsDir, { withFileTypes: true });
+  const order = await readRoomOrder(rootDir);
+  const orderPos = new Map(order.map((id, index) => [id, index]));
   const rooms = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
@@ -370,6 +384,17 @@ export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms
         };
       }),
   );
-  rooms.sort((a, b) => b.activity - a.activity || a.summary.id.localeCompare(b.summary.id));
+  rooms.sort((a, b) => {
+    // Manual drag order (see writeRoomOrder) wins outright over activity —
+    // same precedence rule as WorkspaceRegistry.list, minus the favorites-lead
+    // clause (rooms are favorite-FILTERED via the sidebar toggle, not
+    // favorite-sorted, so favorite status doesn't affect this ordering).
+    const ao = orderPos.get(a.summary.id);
+    const bo = orderPos.get(b.summary.id);
+    if (ao !== undefined && bo !== undefined) return ao - bo;
+    if (ao !== undefined) return -1;
+    if (bo !== undefined) return 1;
+    return b.activity - a.activity || a.summary.id.localeCompare(b.summary.id);
+  });
   return rooms.map((room) => room.summary);
 }

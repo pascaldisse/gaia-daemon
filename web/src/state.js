@@ -41,6 +41,8 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   roomsCollapsed: boolean,
  *   workspacesShown: number,
  *   workspacesCollapsed: boolean,
+ *   favoritesOrder: string[],
+ *   favoriteContextMenu: {kind: "workspace"|"room", id: string, x: number, y: number}|null,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
  *   openTabs: string[],
  *   sidebarCollapsed: boolean,
@@ -132,6 +134,17 @@ export const state = {
   workspacesShown: 8,
   // Minimise the whole workspace list behind its header. Persisted per app.
   workspacesCollapsed: loadBoolean("gaia.workspacesCollapsed"),
+  // Sidebar Favorites section (Finder-style): the drag-drop ORDER of pinned
+  // workspaces + rooms, mixed. Composite keys "ws:<id>" / "room:<id>" — which
+  // items are IN the list is derived live from each record's own `favorite`
+  // flag (never stored here); this only remembers the user's manual ordering
+  // among them. Client-side only (no server round trip — unlike the
+  // workspace/room lists' own reorder, this view is a client-only composite
+  // of two server lists, so there's no single natural place to persist it
+  // server-side; per-device is an acceptable trade for a display-order-only
+  // preference). Persisted per app.
+  favoritesOrder: loadFavoritesOrder(),
+  favoriteContextMenu: null,
   // Older committed events paged in by the transcript's "load older" button,
   // strictly preceding the snapshot's tail window. Cleared on room switch and
   // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
@@ -263,6 +276,23 @@ function loadBoolean(key) {
     return localStorage.getItem(key) === "true";
   } catch {
     return false;
+  }
+}
+
+/** @returns {string[]} */
+function loadFavoritesOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("gaia.favoritesOrder") ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((key) => typeof key === "string") : [];
+  } catch {
+    return [];
+  }
+}
+export function persistFavoritesOrder() {
+  try {
+    localStorage.setItem("gaia.favoritesOrder", JSON.stringify(state.favoritesOrder));
+  } catch {
+    // storage disabled — the manual order just won't survive a reload.
   }
 }
 

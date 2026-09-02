@@ -70,6 +70,17 @@ async function roomFavorite(ctx: RouteContext): Promise<boolean> {
   await respond(ctx.response, () => ctx.daemon.setRoomFavorite(params[0], params[1], favorite));
   return true;
 }
+// Sidebar drag-drop reorder of top-level rooms — same mechanic as
+// /api/workspaces/reorder, room-scoped (see Daemon.reorderRooms). `ids` is the
+// full desired top-level order for this workspace.
+async function roomsReorder(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/reorder$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const raw = (await parseBody(ctx.request)) as { ids?: unknown };
+  const ids = Array.isArray(raw.ids) ? raw.ids.filter((id): id is string => typeof id === "string") : [];
+  await respond(ctx.response, () => ctx.daemon.reorderRooms(params[0], ids));
+  return true;
+}
 // Room-level human membership (RoomState.humans). Absent/empty = today's
 // unrestricted default for every existing room; a room only starts gating
 // reads/posts (see the /messages and /events routes below) the moment it
@@ -392,6 +403,7 @@ const roomHandlers = [
   roomHumansDelete,
   roomFileUpload,
   roomFileGet,
+  roomsReorder,
   roomBackgroundTaskOutput,
   roomBackgroundTaskDelete,
   roomMessages,

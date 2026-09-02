@@ -92,7 +92,7 @@ import { installRoomCommands, RoomCommandsMixin } from "./room/commands-facade.j
 import { installRoomSanitize, RoomSanitizeMixin } from "./room/sanitize-facade.js";
 import { installRoomUi, RoomUiMixin } from "./room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "./room/snapshot.js";
-export { readAmbientWatchdog, scanRoomActivity } from "./room/snapshot.js";
+export { readAmbientWatchdog, scanRoomActivity, writeRoomOrder } from "./room/snapshot.js";
 import { readVoiceSettings } from "./voice.js";
 
 export interface RoomServiceOptions {
