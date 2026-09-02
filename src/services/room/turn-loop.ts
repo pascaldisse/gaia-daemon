@@ -5,13 +5,14 @@ import { newRoomEventId } from "../../domain/rooms.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, resolveAgentRole } from "../../domain/roles.js";
 import { contextWindowFor, harnessIdFor } from "../../harness/spec.js";
 import { readUserNameSetting } from "../user-name.js";
+import type { RoomTurnLoopPort } from "./ports.js";
 import { finalizeInterruptedTools, runAgentTurn } from "../turns.js";
 import { HOOK_TEXT_CAP } from "../hooks.js";
 import { PARTIAL_FLUSH_MS, STALL_NOTICE_THROTTLE_MS, diedWithoutOutput, preservePartialReply, readAmbientWatchdog } from "../room-service.js";
 
 /** Durable agent-turn execution; queue custody and WAL ordering remain unchanged. */
 export class RoomTurnLoop {
-  constructor(private readonly service: any) {}
+  constructor(private readonly service: RoomTurnLoopPort) {}
   async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
     // A native command is already pinned to the active agent — it never fans out
     // through the monad.
