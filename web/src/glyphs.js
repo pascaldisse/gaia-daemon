@@ -25,7 +25,7 @@ export const AGENT_GLYPHS = /** @type {Record<string, string>} */ ({
 /** Deterministic monochrome pool for agents with no declared mark: the same
  * id always lands on the same glyph (id hash), so the roster stays visually
  * distinguishable without anybody hand-assigning an emoji. */
-const GLYPH_POOL = ["◇", "△", "▽", "◻", "◫", "⬡", "✦", "✧", "❖", "⌾", "⊙", "⊛", "⌘", "⍟", "⊚", "♁"];
+const GLYPH_POOL = ["◇", "△", "▽", "◻", "◫", "⬡", "✦", "✧", "⌾", "⊙", "⊛", "◑", "⍟", "⊚", "♁", "◉"];
 
 /** @param {string} agentId @returns {string} */
 export function agentGlyph(agentId) {
