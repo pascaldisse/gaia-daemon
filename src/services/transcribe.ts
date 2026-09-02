@@ -9,10 +9,13 @@
 //   4. openai engine — any OpenAI-compatible /audio/transcriptions endpoint,
 //      hosted (OpenAI, Groq, …) OR a local whisper-server, so dictation can be
 //      "either local or API" without touching the shared path
+//   5. apple engine — local Apple dictation (SFSpeechRecognizer), macOS only,
+//      zero keys, zero network for the on-device pass (impl in stt-apple.ts)
 // Live-CALL STT is a different pipeline (services/voice.ts + the unmute stack):
 // streaming and duplex. This module is one-shot: audio bytes in, text out.
 
 import { elevenLabsKey, replicateKey, type VoiceSettings } from "./voice.js";
+import { appleTranscribe } from "./stt-apple.js";
 
 // ---------------------------------------------------------------------------
 // Engine registry. An engine is DATA: an id plus a transcribe function over the
@@ -401,4 +404,16 @@ registerSttEngine({
   id: "openai",
   label: "OpenAI / Whisper (any OpenAI-compatible endpoint, incl. local)",
   transcribe: openAiTranscribe,
+});
+
+// ---------------------------------------------------------------------------
+// apple — local Apple dictation (SFSpeechRecognizer, "local Siri"), macOS
+// only. Zero API keys, zero network for the on-device pass; a server-dictation
+// process races it for quiet clips. See stt-apple.ts for the swift helper +
+// TCC-disclaim cure (ported from the standalone apple-stt skill).
+
+registerSttEngine({
+  id: "apple",
+  label: "Apple dictation (local, macOS only, SFSpeechRecognizer)",
+  transcribe: appleTranscribe,
 });
