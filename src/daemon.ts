@@ -26,7 +26,7 @@ import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { CapabilityBroker } from "./services/capabilities/broker.js";
 import { resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "./services/capabilities/index.js";
-import { PluginRegistry } from "./services/plugins/registry.js";
+import { PluginRegistry, type PluginRegistryEvent } from "./services/plugins/registry.js";
 import { pluginDiscoveryRoots } from "./services/plugins/loader.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
@@ -179,6 +179,16 @@ export class WorkspaceRegistry {
 
 // --- the daemon -----------------------------------------------------------------
 
+function pluginLifecycleLog(event: PluginRegistryEvent): string {
+  switch (event.kind) {
+    case "staged": return `plugin registry: staged generation=${event.generation} plugins=${event.pluginIds.join(",")}`;
+    case "stage-failed": return `plugin registry: stage-failed generation=${event.generation} reason=${event.reason}`;
+    case "swapped": return `plugin registry: swapped generation=${event.generation} previousGeneration=${event.previousGeneration} plugins=${event.pluginIds.join(",")}`;
+    case "disposed": return `plugin registry: disposed generation=${event.generation} plugin=${event.pluginId}`;
+    case "dispose-failed": return `plugin registry: dispose-failed generation=${event.generation} plugin=${event.pluginId} reason=${event.reason}`;
+  }
+}
+
 export interface DaemonOptions {
   cwd: string;
   log?: (message: string) => void;
@@ -206,6 +216,7 @@ export class Daemon {
       grantSource: (context) => resolveWorkspaceGrantPolicy(this.#liveWorkspaceFor(context.workspaceId, context.roomId), context.agentId),
       trustSource: (context) => resolveWorkspaceTrust(this.#liveWorkspaceFor(context.workspaceId, context.roomId), context.agentId),
     }),
+    onEvent: (event) => this.log(pluginLifecycleLog(event)),
   });
   /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
   private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });

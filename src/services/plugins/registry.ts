@@ -65,9 +65,9 @@ export type PluginStageResult =
   | { readonly status: "failed"; readonly reason: string };
 
 export type PluginRegistryEvent =
-  | { readonly kind: "staged"; readonly generation: number }
+  | { readonly kind: "staged"; readonly generation: number; readonly pluginIds: readonly string[] }
   | { readonly kind: "stage-failed"; readonly generation: number; readonly reason: string }
-  | { readonly kind: "swapped"; readonly generation: number; readonly previousGeneration: number }
+  | { readonly kind: "swapped"; readonly generation: number; readonly previousGeneration: number; readonly pluginIds: readonly string[] }
   | { readonly kind: "disposed"; readonly generation: number; readonly pluginId: string }
   | { readonly kind: "dispose-failed"; readonly generation: number; readonly pluginId: string; readonly reason: string };
 
@@ -93,7 +93,7 @@ export interface PluginRegistryOptions {
   readonly onEvent?: (event: PluginRegistryEvent) => void;
 }
 
-export class RegistryLifecycleError extends Error {
+class RegistryLifecycleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PluginRegistryError";
@@ -196,7 +196,7 @@ export class PluginRegistry implements PluginTurnBoundary {
     ));
   }
 
-  beginTurn(): PluginTurnLease {
+  beginTurn(): { readonly generation: PluginGeneration; end(): void } {
     if (this.#closed) throw new RegistryLifecycleError("turn leases are refused after shutdown");
     this.#leases += 1;
     return new PluginTurnLease(this.#active.generation, () => this.#endTurn());
@@ -225,7 +225,7 @@ export class PluginRegistry implements PluginTurnBoundary {
         entries: Object.freeze(entries),
       });
       this.#staged = candidate;
-      this.#emit({ kind: "staged", generation });
+      this.#emit({ kind: "staged", generation, pluginIds: candidate.generation.plugins.map((plugin) => plugin.id) });
       return Object.freeze({ status: "staged", generation: candidate.generation });
     } catch (error) {
       await this.#dispose(entries, generation);
@@ -248,7 +248,12 @@ export class PluginRegistry implements PluginTurnBoundary {
     const next = this.#staged;
     this.#active = next;
     this.#staged = undefined;
-    this.#emit({ kind: "swapped", generation: next.generation.generation, previousGeneration: previous.generation.generation });
+    this.#emit({
+      kind: "swapped",
+      generation: next.generation.generation,
+      previousGeneration: previous.generation.generation,
+      pluginIds: next.generation.plugins.map((plugin) => plugin.id),
+    });
     await this.#dispose(previous.entries, previous.generation.generation);
     return true;
   }
@@ -361,7 +366,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 }
 
-export class PluginTurnLease {
+class PluginTurnLease {
   readonly generation: PluginGeneration;
   readonly #onEnd: () => void;
   #ended = false;

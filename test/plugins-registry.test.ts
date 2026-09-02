@@ -8,9 +8,10 @@ import { loadCommandPlugins } from "../src/services/plugins.js";
 import {
   PluginRegistry,
   type PluginRegister,
+  type PluginRegistryEvent,
 } from "../src/services/plugins/registry.js";
 
-async function pluginPackage(root: string, directory: string, id: string, version = "1.0.0"): Promise<void> {
+async function pluginPackage(root: string, directory: string, id: string, version = "1.0.0", commands: readonly string[] = []): Promise<void> {
   const packageRoot = join(root, directory);
   await mkdir(packageRoot, { recursive: true });
   await Promise.all([
@@ -21,7 +22,7 @@ async function pluginPackage(root: string, directory: string, id: string, versio
       engine: "gaia-daemon@^2.0.0",
       placement: "daemon",
       requiredCaps: [],
-      contributes: { commands: [], tools: [], channels: [], providers: [] },
+      contributes: { commands, tools: [], channels: [], providers: [] },
     })),
   ]);
 }
@@ -153,6 +154,65 @@ test("stages a candidate while a turn holds one immutable generation, then swaps
     assert.equal(await registry.applyTurnBoundary(), true);
     assert.equal(registry.current.plugins[0]?.version, "2.0.0");
     assert.deepEqual(disposed, ["acme.echo@1.0.0"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stages replacement after an in-flight command, swaps the next invocation, and reports ordered lifecycle events", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
+  const events: PluginRegistryEvent[] = [];
+  const disposed: string[] = [];
+  let release: (() => void) | undefined;
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  try {
+    await pluginPackage(root, "echo", "acme.echo", "1.0.0", ["echo"]);
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement: "daemon",
+      capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
+      importer: async (_path, plugin) => ({
+        register: () => ({
+          contributions: {
+            commands: [{
+              name: "echo",
+              description: "Echo",
+              run: (_context, request) => plugin.manifest.version === "1.0.0"
+                ? new Promise((resolve) => {
+                  release = () => resolve({ reply: `1.0.0:${request.args.join(" ")}` });
+                  markStarted?.();
+                })
+                : { reply: `${plugin.manifest.version}:${request.args.join(" ")}` },
+            }],
+          },
+          dispose: () => { disposed.push(`${plugin.manifest.id}@${plugin.manifest.version}`); },
+        }),
+      }),
+      onEvent: (event) => events.push(event),
+    });
+    await registry.stageReload();
+    await registry.applyTurnBoundary();
+    const oldTurn = registry.invokeCommand("acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: ["inflight"] });
+    await started;
+    await pluginPackage(root, "echo", "acme.echo", "2.0.0", ["echo"]);
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), false);
+    release?.();
+    assert.deepEqual(await oldTurn, { reply: "1.0.0:inflight" });
+    assert.equal(await registry.applyTurnBoundary(), true);
+    assert.deepEqual(
+      await registry.invokeCommand("acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: ["next"] }),
+      { reply: "2.0.0:next" },
+    );
+    assert.deepEqual(disposed, ["acme.echo@1.0.0"]);
+    assert.deepEqual(events, [
+      { kind: "staged", generation: 1, pluginIds: ["acme.echo"] },
+      { kind: "swapped", generation: 1, previousGeneration: 0, pluginIds: ["acme.echo"] },
+      { kind: "staged", generation: 2, pluginIds: ["acme.echo"] },
+      { kind: "swapped", generation: 2, previousGeneration: 1, pluginIds: ["acme.echo"] },
+      { kind: "disposed", generation: 1, pluginId: "acme.echo" },
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

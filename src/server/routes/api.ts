@@ -52,6 +52,9 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
   let params: string[] | null;
   if (await handleAgents(ctx)) return;
   if (await handleUsage(ctx)) return;
+  if (method === "POST" && path === "/api/plugins/reload") {
+    return respond(response, () => daemon.pluginRegistry.stageReload());
+  }
     if (method === "GET" && path === "/api/app") {
       const owned = human?.workspace ? await daemon.addWorkspace(human.workspace, human.id) : undefined;
       json(response, 200, await daemon.appPayload(owned?.id, humanScope));
@@ -532,8 +535,9 @@ async function handleApiDictation(ctx: RouteContext): Promise<void> {
         if (content === undefined) return json(response, 400, { error: "Missing file content" });
         const file = await daemon.files.write(fileId, content, workspaceId);
         await daemon.applySettingsChange(file.scope, workspaceId);
+        const pluginReload = await daemon.pluginRegistry.stageReload();
         ctx.broadcast({ type: "settings-saved", workspaceId, fileId });
-        json(response, 200, { file: { ...file, hints: await daemon.fileHints(file, workspaceId) } });
+        json(response, 200, { file: { ...file, hints: await daemon.fileHints(file, workspaceId) }, pluginReload });
         return;
       }
     }
