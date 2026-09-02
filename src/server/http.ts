@@ -12,6 +12,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaBasePath, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
 import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
@@ -89,9 +90,6 @@ const RELOAD_CLOSE_TIMEOUT_MS = 1_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-}
 
 /** Total death (cmd+Q / SIGTERM) needs an authoritative pid: the shell reads
  * this file rather than trusting the pid of whatever it originally spawned,
