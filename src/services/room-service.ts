@@ -14,15 +14,15 @@
 //   50-entry LRU side-table: metadata amnesia by design).
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { appendFile, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
-import { globalPaths, workspacePaths } from "../core/paths.js";
+import { globalPaths } from "../core/paths.js";
 import { sleep } from "../core/retry.js";
 import { GOAL_COMPLETE_SIGNAL } from "../core/types.js";
 import type { SanitizeProposal, SanitizeStatus } from "../core/types.js";
@@ -79,7 +79,6 @@ import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, effectiveTrust, type SummonHost, type SummonResultDelivery } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
 import { MonadEngine } from "./monad.js";
-import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
 import { sdkThinkingLevels } from "./hints.js";
 import { createAgentRuntime } from "../harness/host.js";
 import { configuredModelLabel } from "../harness/model-label.js";
@@ -92,6 +91,7 @@ import { installRoomCommands, RoomCommandsMixin } from "./room/commands-facade.j
 import { installRoomSanitize, RoomSanitizeMixin } from "./room/sanitize-facade.js";
 import { installRoomUi, RoomUiMixin } from "./room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "./room/snapshot.js";
+import * as maintenance from "./room/room-maintenance.js";
 export { readAmbientWatchdog, scanRoomActivity } from "./room/snapshot.js";
 import { readVoiceSettings } from "./voice.js";
 
@@ -2263,125 +2263,33 @@ export class RoomService {
   }
 
   async runSetupCommand(command: { sub?: string; id?: string; room?: string }): Promise<string> {
-    const sub = command.sub ?? "list";
-
-    if (sub === "list") {
-      const setups = await discoverSetups(this.workspace.rootDir);
-      if (setups.length === 0) return "No setups found. Bundled setups live under setups/, global under ~/.gaia/setups/, project under .gaia/setups/.";
-      return [
-        "Available setups:",
-        ...setups.map((s) => `  - ${s.id}${s.displayName && s.displayName !== s.id ? ` — ${s.displayName}` : ""} [${s.source}]${s.description ? `\n      ${s.description}` : ""}`),
-      ].join("\n");
-    }
-
-    if (sub === "status") {
-      const monad = (await this.room.state()).monad;
-      if (!monad) return "This room is not a monad room. Activate a setup with /setup activate <id>.";
-      const pool = monad.slots.map((slot) => `${slot.agentId}${slot.defaultRole ? `(${slot.defaultRole})` : ""}`).join(" · ");
-      return `Monad active — policy: ${monad.policy}, maxTurns: ${monad.maxTurns}, coordinator: @${monad.coordinatorAgentId ?? monad.slots[0]?.agentId}\nPool: ${pool}`;
-    }
-
-    if (sub === "off") {
-      const cleared = await deactivateMonad(this.workspace, this.roomId);
-      this.room.invalidate();
-      await this.emitSnapshot();
-      return cleared ? "Cleared the monad from this room. Plain messages now go to the default agent." : "This room had no active monad.";
-    }
-
-    if (sub === "activate") {
-      if (!command.id) return "Usage: /setup activate <id> [room]";
-      if (!this.options.summonHost) return "Setups need the summon system, which is unavailable here.";
-      const targetRoom = command.room ?? this.roomId;
-      try {
-        const result = await activateSetup(this.workspace, command.id, targetRoom);
-        if (targetRoom === this.roomId) {
-          this.room.invalidate();
-          await this.emitSnapshot();
-        }
-        const pool = result.monad.slots.map((slot) => `@${slot.agentId}`).join(" · ");
-        return `Activated setup '${result.setupId}' into room '${targetRoom}' (policy: ${result.monad.policy}, pool: ${pool}). Send a message to run the monad; each step appears as a child room.`;
-      } catch (error) {
-        return `Setup activation failed: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    }
-
-    return "Usage: /setup list | activate <id> [room] | status | off";
+    return maintenance.runSetupCommand(this.maintenanceContext(), command);
   }
-
-  /** /clear: wipe transcript, reset cursors + legacy details, drop every
-   * harness session for this room. Role assignments are configuration — kept. */
   async runClearCommand(): Promise<string> {
-    for (const runtime of Object.values(this.runtimes)) runtime.resetRoom(this.roomId);
-    // One composite call: wiping the transcript and resetting the cursors that
-    // index it must not be observable half-done by another process.
-    await this.room.clearRoom();
-    this.recentTasks = [];
-    await this.emitSnapshot();
-    return "Cleared room history and reset all agent sessions.";
+    return maintenance.runClearCommand(this.maintenanceContext());
   }
-
   async runRefreshCommand(): Promise<string> {
-    for (const runtime of Object.values(this.runtimes)) runtime.refreshContext?.(this.roomId);
-    return "context refreshed — fresh soul/AGENTS.md/skills apply from each agent's next turn";
+    return maintenance.runRefreshCommand(this.maintenanceContext());
   }
-
-  /** /fork: branch into a sibling room. Transcript copies verbatim; cursors
-   * RESET so the branch's first turn replays the whole transcript — the one
-   * context-rebuild mechanism that works for every harness (sessions cannot
-   * be branched). */
   async runForkCommand(): Promise<string> {
-    const target = this.nextForkId(this.roomId);
-    const dstDir = workspacePaths.roomDir(this.workspace.rootDir, target);
-    // Reserve the target directory exclusively before touching it: a stale
-    // nextForkId observation must abort, never seed over another fork.
-    try {
-      await mkdir(dstDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST")
-        return `Fork aborted: room '${target}' was reserved concurrently — nothing was copied.`;
-      throw error;
-    }
-    // Source transcript + state share one lock snapshot; release it before
-    // opening the reserved target, so reciprocal forks never dual-lock.
-    const snapshot = await this.room.snapshotRoom();
-    const branch = await RoomHandle.open(this.workspace.rootDir, target);
-    // Exclusive create: false means a room already owns that id, so the
-    // snapshot was NOT written. Never report a fork that did not happen.
-    if (!(await branch.seedTranscript(snapshot.transcript)))
-      return `Fork aborted: room '${target}' already has a transcript — nothing was copied.`;
-    await branch.updateState((next) => {
-      next.activeRoles = { ...snapshot.state.activeRoles };
-      next.thinkingOverrides = { ...snapshot.state.thinkingOverrides };
-    });
-    await this.emitSnapshot();
-    return `Forked this room to '${target}'. Select it from the rooms list to continue the branch.`;
+    return maintenance.runForkCommand(this.maintenanceContext());
   }
-
-  private nextForkId(base: string): string {
-    const exists = (id: string): boolean => existsSync(workspacePaths.roomDir(this.workspace.rootDir, id));
-    let candidate = `${base}-fork`;
-    let n = 2;
-    while (exists(candidate)) candidate = `${base}-fork-${n++}`;
-    return candidate;
+  private maintenanceContext(): maintenance.RoomMaintenanceContext {
+    return {
+      workspace: this.workspace,
+      roomId: this.roomId,
+      room: this.room,
+      runtimes: this.runtimes,
+      summonHost: this.options.summonHost,
+      clearRecentTasks: () => { this.recentTasks = []; },
+      emitSnapshot: () => this.emitSnapshot(),
+      init: () => this.init(),
+      displayEvents: (events) => this.displayEvents(events),
+    };
   }
-
-  // --- snapshot ---------------------------------------------------------------
-
-  /** One committed transcript event by id. `display: true` (read-aloud and
-   * similar "what would a human see/hear" lookups) returns it through the
-   * same command-plugin render cap every other display surface uses
-   * (#getSnapshot, #eventsBefore, #commitReply's live emit) — default false
-   * keeps the FULL stored text, for internal introspection (e.g.
-   * toolResultSlice below, which needs the real content regardless of any
-   * plugin-imposed cap). */
   async eventById(eventId: string, opts: { display?: boolean } = {}): Promise<RoomEvent | undefined> {
-    await this.init();
-    const { events } = await this.room.eventsFrom(0);
-    const event = events.find((event) => event.id === eventId);
-    if (!event) return undefined;
-    return opts.display ? this.displayEvents([event])[0] : event;
+    return maintenance.eventById(this.maintenanceContext(), eventId, opts);
   }
-
   /** Pages the ORIGINAL, uncollapsed call/args/result for a diet-collapsed own
    * tool-call stub back by (eventId, toolId) — backs `tool_result_fetch`
    * (09-MEMORY-CONTEXT). The canonical RoomEvent.details.tools entry is the
