@@ -550,7 +550,7 @@ function PendingAttachmentChips() {
       type: "button",
       class: "attach-remove",
       title: `remove ${item.name}`,
-      text: "×",
+      text: UI.close,
       onclick: () => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
         state.pendingAttachments.splice(index, 1);
@@ -560,14 +560,14 @@ function PendingAttachmentChips() {
     if (item.previewUrl) {
       return h(
         "div",
-        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        { class: "composer-attachment attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
         h("img", { class: "attach-thumb", src: item.previewUrl, alt: item.name }),
         remove,
       );
     }
     return h(
       "div",
-      { class: "attach-chip", title: item.name },
+      { class: "composer-attachment attach-chip", title: item.name },
       h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
@@ -585,7 +585,7 @@ function EditingAttachmentChips() {
       type: "button",
       class: "attach-remove",
       title: `remove ${item.name}`,
-      text: "×",
+      text: UI.close,
       onclick: () => {
         state.editingAttachments.splice(index, 1);
         markDirty("composer");
@@ -594,14 +594,14 @@ function EditingAttachmentChips() {
     if (item.mime.startsWith("image/")) {
       return h(
         "div",
-        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        { class: "composer-attachment attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
         h("img", { class: "attach-thumb", src: attachmentUrl(item), alt: item.name }),
         remove,
       );
     }
     return h(
       "div",
-      { class: "attach-chip", title: item.name },
+      { class: "composer-attachment attach-chip", title: item.name },
       h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
