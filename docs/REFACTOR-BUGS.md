@@ -575,3 +575,9 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 - plugin bundled-command/generation boundary → **FAIL · unreachable**. Production grep found no daemon/server `pluginRegistry` injection; bundled defaults use loose loader. Therefore no honest live path can stage a bundled manifest during a room turn. No invented harness; ADV-015.
 - cleanup → PASS: child killed isolated daemon; removed generated `dist/`, home, workspace; `lsof -nP -iTCP:18787 -sTCP:LISTEN` empty; orphan process sweep empty.
 - live owner branch proof → `gaia/ghoul-terra-mtkotwumdct15f@555941f`.
+
+### Landing gate · merged newer main `249e7b1` into audit branch
+
+- `bun run check` @ `ca5f591` → exit 0 · 6.97s; configured Knip inventory emitted.
+- `bun test test/room-service.test.ts` @ `ca5f591` → 99 pass · 0 fail · 9.45s.
+- scope verdict remains pinned to requested `0bb260c`; newer A6i maintenance extraction is outside PASS #3 scope.
