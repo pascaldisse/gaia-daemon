@@ -404,3 +404,65 @@ Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest mai
 - ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
 - ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
 - post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
+
+---
+
+## Kali L3 · live-executor ledger · A1/A7/A6
+
+Scope → reviewer-only static map; no daemon/process/summon/test run; no fix.
+
+### LIVE-001 · required execution packet · A1 ToolProviders bridge · UNVERIFIED
+
+Static seam → `src/harness/bridge-deps.ts:47-53` POSTs bearer-authenticated operations to `/api/harness/tools`; `src/server/routes/artifacts.ts:6` owns that route; `src/daemon.ts:224,795` injects `createToolProviders()`; `src/services/tool-providers.ts` owns service imports. Harness upward-import scan remains separate from runtime proof.
+
+Repro:
+```sh
+# compiled isolated daemon + isolated GAIA_HOME; invoke through a Pi runner,
+# not direct provider/unit calls
+# 1 caryll stats README.md => raw output contains `真 caryll.stats`
+# 2 web {url:"not a url"} => `ERROR: invalid url: not a url`
+# 3 artifact create then artifact read => exact payload round-trip
+```
+
+Independent evidence required → runner transcript/tool-result bytes **and** daemon request log showing bearer `/api/harness/tools` calls; on-disk artifact manifest/payload read independently after runner exits; `rg -n 'from "\.\./services/' src/harness` clean. Direct `createToolProviders()` or HTTP-only success is insufficient.
+
+Pass → all three runner-visible contracts exact; one bridge request per operation; no harness→services import. Fail/ticket → missing bridge/auth path, altered raw error/result, or non-persistent artifact.
+
+### LIVE-002 · required execution packet · A7 recovery + deferred reload · UNVERIFIED
+
+Static seam → `src/daemon/wiring.ts:274-307` sequentially scans persisted `pendingTurn|queue` then awaits `serviceFor`; `src/daemon/reload.ts:20-47` deduplicates `pendingReloads`, waits idle, rebuilds service once.
+
+Repro:
+```sh
+# compiled isolated daemon; record pid/log/state/transcript timestamps
+# A: establish a streaming pendingTurn; SIGKILL; restart once.
+# B: establish queued-but-undrained turn; SIGKILL; restart once.
+# C: establish in-flight summon; SIGKILL; restart once.
+# D: while active turn runs, save settings twice; allow settle.
+```
+
+Independent evidence required → pre-kill and post-restart `state.json` + transcript event-id diff; boot log order (`turn recovery`/summon recovery before first client-triggered service use); runner/summon invocation count; settings file mtime plus service lifecycle/broadcast trace. Do not infer recovery from final text alone.
+
+Pass → each owed turn/summon resumes once, persisted FIFO/order retained, no duplicate event id/runner; D yields exactly one post-idle rebuild and snapshot. Fail/ticket → omission, duplication, order inversion, or reload while turn active.
+
+### LIVE-003 · required execution packet · A6 WAL/queue/edit-retry-rewind · UNVERIFIED
+
+Static seam → `src/services/room-service.ts:906-1015` peek-then-drain; `src/services/room/turn-loop.ts:26-49,162-180` reserves queue event id then atomically transfers queue→`pendingTurn`; `src/domain/rooms.ts:1097-1107` performs that custody write. Note: turn-loop is `// @ts-nocheck`; green type gate cannot prove this path (ADV-009).
+
+Repro:
+```sh
+# compiled isolated daemon; retain raw transcript.jsonl, state.json, rewound archive
+# 1 completed multi-event transcript: retry old user; edit old user; /rewind 1.
+# 2 queue successor; restart before drain.
+# 3 stream reply until pendingTurn exists; SIGKILL; restart.
+```
+
+Independent evidence required → fresh harness prompt capture proving old branch/tail absent; raw transcript/archive lineage + event IDs; state snapshots at queue, reserved eventId, pendingTurn, settled; runner process/invocation count. UI text or unit-suite output alone is insufficient.
+
+Pass → retry/edit exactly one regenerated branch; rewind resets affected session; queued successor commits once; partial reply commits/resumes once; no lost queue entry, duplicate user/reply event, or duplicate runner. Fail/ticket → any custody gap/duplication or stale branch in fresh prompt.
+
+### Findings / handoff
+
+- No new static defect asserted: all required runtime claims remain **UNVERIFIED** until the packets above execute.
+- Existing ADV-007/ADV-008 architecture failures and ADV-009 check-exempt durability seam remain applicable; live PASS does not close them.
+- Executor must append actual command, compiled-binary identity, isolated paths, timestamps, raw evidence locations, exact counts, cleanup proof, and residual UNVERIFIEDs; redact bearer tokens.
