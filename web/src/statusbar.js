@@ -40,7 +40,9 @@ function roomMeterText(snapshot) {
   const percent = context && Number.isFinite(context.usedTokens) && typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
     ? Math.round((context.usedTokens / maxTokens) * 100)
     : null;
-  return `${agentGlyph(agent.id)} @${agent.id}${percent === null ? " · ctx unavailable" : ` · ctx ${percent}%`}`;
+  // Room-header meter: speaker name renders PLAIN, glyph only (V2-SKIN.md
+  // design law — @ is for addressing/mentions, not a header).
+  return `${agentGlyph(agent.id)} ${agent.id}${percent === null ? " · ctx unavailable" : ` · ctx ${percent}%`}`;
 }
 
 /** @param {Snapshot} snapshot */
