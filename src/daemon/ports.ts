@@ -8,7 +8,7 @@ import type { HarnessBridge } from "../services/bridge.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { EmbedSidecar } from "../services/embed-sidecar.js";
 import type { ModelChoice } from "../services/hints.js";
-import type { WorkspaceRegistry } from "../daemon.js";
+import type { WorkspaceRegistry, Daemon as WorkspaceDaemon } from "../daemon.js";
 
 export interface WiringHost {
   readonly registry: WorkspaceRegistry;
@@ -44,4 +44,23 @@ export interface HarnessApiPort {
   readonly toolProviders: import("../harness/protocol.js").ToolProviders;
   serviceFor(workspaceId: string, roomId?: string): Promise<RoomService>;
   memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService;
+}
+
+/** Explicit daemon contract for room, agent, and voice interaction lifecycle. */
+export interface RoomInteractionHost {
+readonly registry: WorkspaceRegistry;
+readonly files: import("../services/hints.js").EditableFileRegistry;
+readonly currentRoom: Map<string, string>;
+readonly services: Map<string, RoomService>;
+readonly memoryServices: Map<string, { service: MemoryService; live: { workspace: Workspace } }>;
+readonly memoryStores: Map<string, MemoryStore>;
+readonly summonCoordinators: Map<string, SummonCoordinator>;
+log(message: string): void;
+broadcast(event: UiEvent): void;
+serviceFor(workspaceId: string, roomId?: string): Promise<RoomService>;
+memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService;
+petBindings(workspaceId: string): Promise<import("../core/types.js").PetBinding[]>;
+workspaceServiceKeys(workspaceId: string): string[];
+reloadService(key: string): Promise<void>;
+appPayload(workspaceId?: string, humanId?: string): Promise<Awaited<ReturnType<WorkspaceDaemon["appPayload"]>>>;
 }
