@@ -539,6 +539,9 @@ sidebar: workspaces + rooms tree
   min-height: 22px;
   cursor: pointer;
   list-style: none;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
 }
 .activity-details summary:hover { background: var(--bg3); }
 .activity-details[open] > summary { background: var(--bg3); }
