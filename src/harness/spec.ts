@@ -95,6 +95,9 @@ export interface AgentRuntime {
    * receives whatever token counts the harness can report as the pass runs
    * (best-effort). Only present when capabilities.supportsCompact. */
   compact?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
+  /** Native compaction that drops prior compaction summaries instead of
+   * chaining them ("clean" pass). Optional: harnesses without it reject. */
+  compactClean?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
   /** Prepare a native compaction summary without evicting the live session.
    * Only present when capabilities.supportsCompactEdit. */
   compactDraft?(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }>;
