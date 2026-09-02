@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { DEFAULTS } from "../../core/config.js";
 import { expandHome, globalPaths } from "../../core/paths.js";
 import { newId } from "../../core/ids.js";
-import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { bearerToken, cookieHeader, json, parseBody, readRawBody } from "../../core/http.js";
 import { readJson, writeJsonAtomic } from "../../core/store.js";
 import type { MemoryAction } from "../../domain/memory.js";
@@ -20,19 +19,16 @@ import { globalAgentsPath } from "../../domain/workspace.js";
 import { LLM_PROXY_MOUNT } from "../../services/proxy.js";
 import { summonAck } from "../../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
-import type { ReadAloudDelivery } from "../../services/read-aloud.js";
-import { AUTH_COOKIE, beginSse, boolField, matchPath, requestingHuman, respond, stringField, type RouteContext } from "../route.js";
+import { AUTH_COOKIE, beginSse, boolField, matchPath, respond, stringField, type RouteContext } from "../route.js";
 import { titleCaseId, handleAgents } from "./agents.js";
 import { handleRooms } from "./rooms.js";
 import { handleMemory } from "./memory.js";
 import { handleArtifacts } from "./artifacts.js";
 import { handleUsage } from "./usage.js";
 import { handleEditRetry } from "./edit-retry.js";
-import { stringArrayField } from "./edit-retry.js";
 import { numberField } from "./memory.js";
 import { summonCensusText } from "./usage.js";
 import { artifactRoutePrefix } from "./artifacts.js";
-import { attachmentRefs, sanitizeEditRefs } from "./rooms.js";
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".wasm": "application/wasm" };
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = "";
@@ -425,177 +421,7 @@ async function handleApiRoomActions(ctx: RouteContext): Promise<void> {
   const path = url.pathname;
   const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
   let params: string[] | null;
-// Attachment upload: the pasted file's bytes as the raw body, original
-    // filename in ?name=. Returns the server-issued id the client echoes back
-    // on the message send. Serving is GET on the same path + /<id>.
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/files$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const name = url.searchParams.get("name")?.trim() || "pasted-file";
-      const contentType = request.headers["content-type"];
-      const mime = typeof contentType === "string" && contentType !== "application/octet-stream" ? contentType.split(";")[0].trim() : undefined;
-      try {
-        const data = await readRawBody(request, ATTACHMENT_MAX_BYTES);
-        if (data.length === 0) return json(response, 400, { error: "Empty file" });
-        const stored = await service.storeAttachment(name, data, mime);
-        json(response, 201, { attachment: { id: stored.id, name: stored.name, mime: stored.mime, size: stored.size } });
-      } catch (error) {
-        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/files\/([^/]+)$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const filePath = service.attachmentPath(params[2]);
-      if (!existsSync(filePath) || !(await stat(filePath)).isFile()) return json(response, 404, { error: "Not found" });
-      // Ids are unique per upload, so the bytes are immutable — cache hard.
-      response.writeHead(200, { "content-type": attachmentMime(params[2]), "cache-control": "max-age=31536000, immutable" });
-      createReadStream(filePath).pipe(response);
-      return;
-    }
-    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)\/output$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const output = await service.backgroundTaskOutput(params[2]);
-      if (output === undefined) return json(response, 404, { error: "Background task output not found" });
-      json(response, 200, { text: output.text, running: output.running });
-      return;
-    }
-    // Stop (SIGTERM its live writers) or dismiss a tracked background task —
-    // the tray's ■ stop / ✕ dismiss action. Harness-agnostic: liveness/stop
-    // live entirely in the shared room layer, no runtime is touched.
-    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/background-tasks\/([^/]+)$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const stopped = await service.stopBackgroundTask(params[2]);
-      if (!stopped) return json(response, 404, { error: "Background task not found" });
-      json(response, 200, { ok: true });
-      return;
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/messages$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const body = await parseBody(request);
-      const textValue = stringField(body, "text") ?? "";
-      const refs = attachmentRefs(body);
-      // A picture with no words is a valid message; no words and no files is not.
-      if (!textValue.trim() && !refs) return json(response, 400, { error: "Missing message text" });
-      let attachments;
-      if (refs) {
-        try {
-          attachments = await service.resolveAttachments(refs);
-        } catch (error) {
-          return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-      // queue:true is the Cmd/Ctrl+Enter opt-out of steer-by-default — force the
-      // durable queue instead of injecting into the running turn.
-      const queue = (body as { queue?: unknown }).queue === true;
-      const human = requestingHuman(request);
-      const membership = await service.roomHumans();
-      if (membership.length > 0 && !membership.includes(human?.id ?? "")) {
-        return json(response, 403, { error: "Not a member of this room." });
-      }
-      const task = await service.sendMessage(textValue, {
-        ...(attachments ? { attachments } : {}),
-        ...(queue ? { queue } : {}),
-        ...(human ? { human: { id: human.id, label: human.displayName } } : {}),
-      });
-      json(response, 202, { task });
-      return;
-    }
-    // Fork-from-message: retry regenerates the reply produced by a user
-    // message; edit re-sends it with new text. Both truncate the transcript
-    // at that message (dropped events preserved in rewound.jsonl).
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(retry|edit)$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const body = await parseBody(request);
-      const eventId = stringField(body, "eventId");
-      const text = stringField(body, "text");
-      // Which of the original message's own attachments (by path) survive the
-      // edit. Absent => keep all (unchanged behavior); present (even []) =>
-      // narrow to that set. Never lets the client attach a NEW path — see
-      // editMessage's doc comment.
-      const keepAttachmentPaths = stringArrayField(body, "keepAttachments");
-      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
-      if (params[2] === "edit" && !text?.trim()) return json(response, 400, { error: "Missing message text" });
-      try {
-        const task =
-          params[2] === "edit"
-            ? await service.editMessage(eventId.trim(), text!, keepAttachmentPaths)
-            : await service.retryMessage(eventId.trim());
-        json(response, 202, { task });
-      } catch (error) {
-        json(response, 409, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    // Backwards paging through committed history ("load older" in the
-    // transcript): the events immediately before ?before=<eventId>.
-    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const membership = await service.roomHumans();
-      if (membership.length > 0 && !membership.includes(requestingHuman(request)?.id ?? "")) {
-        return json(response, 403, { error: "Not a member of this room." });
-      }
-      const before = url.searchParams.get("before")?.trim() || undefined;
-      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
-      return respond(response, async () => service.eventsBefore(before, limit));
-    }
-    // Thanks-Dario context sanitize. POST runs the reviewer persona and
-    // returns his proposal (slow — a real agent turn); GET returns the last
-    // saved proposal; POST /apply rewrites the approved events (originals
-    // preserved in redactions.jsonl) and resets sessions.
-    if ((params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/sanitize$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      if (method === "GET") return respond(response, async () => ({ proposal: await service.getSanitizeProposal() }));
-      if (method === "POST") return respond(response, async () => ({ proposal: await service.sanitizePreview() }));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/sanitize\/apply$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const body = await parseBody(request);
-      const edits = sanitizeEditRefs(body);
-      if (edits.length === 0) return json(response, 400, { error: "No edits provided" });
-      try {
-        json(response, 200, await service.sanitizeApply(edits));
-      } catch (error) {
-        json(response, 409, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/summons$/))) {
-      const body = await parseBody(request);
-      const agentId = stringField(body, "agentId") ?? stringField(body, "agent");
-      const taskText = stringField(body, "task");
-      if (!agentId || !taskText?.trim()) return json(response, 400, { error: "Missing agentId or task" });
-      try {
-        const coordinator = await daemon.coordinatorFor(params[0]);
-        // UI-initiated: the human reads the result as a note in the parent room.
-        const childRoomId = await coordinator.summon(params[1], agentId, taskText.trim(), { deliver: "note" });
-        json(response, 202, { roomId: childRoomId });
-      } catch (error) {
-        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      json(response, 202, { task: await service.cancelActiveTask() });
-      return;
-    }
-    // Drop ONE durably-queued message (the ✕ on a queued ghost bubble). Queue
-    // ops live entirely in the shared room layer, so this is harness-agnostic —
-    // no runtime is touched. 404 when it already started running (can't unqueue
-    // a turn in flight).
-    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/queue\/([^/]+)$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const task = await service.deleteQueuedMessage(params[2]);
-      if (!task) return json(response, 404, { error: "Queued message not found (it may have already started running)" });
-      json(response, 200, { task });
-      return;
-    }
-    // Reversible room delete: moves the room dir to trash and purges it from
-    // memory. Returns the neighbour room's snapshot (a room is always in view).
-    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)$/))) {
-      return respond(response, () => daemon.deleteRoom(params![0], params![1]));
-    }
-    // De-register a workspace: drops it from GAIA's recent-workspaces list and
+// De-register a workspace: drops it from GAIA's recent-workspaces list and
     // tears down its resident services. Files on disk are never touched. Returns
     // the fresh app payload (a remaining workspace selected, or none).
     if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)$/))) {
@@ -615,102 +441,6 @@ async function handleApiVoice(ctx: RouteContext): Promise<void> {
   const path = url.pathname;
   const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
   let params: string[] | null;
-// Read-aloud: one committed agent message → speech audio (the transcript
-    // play button), one chunk per request. The daemon resolves the author's
-    // Context gate: resolve a held new-agent first turn with the chosen amount
-    // of context — "full", "last" (+ n messages), or "compact".
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/context-gate$/))) {
-      const body = await parseBody(request);
-      const choice = stringField(body, "choice");
-      if (choice !== "full" && choice !== "last" && choice !== "compact") {
-        return json(response, 400, { error: "choice must be full | last | compact" });
-      }
-      const nRaw = body && typeof body === "object" ? (body as Record<string, unknown>).n : undefined;
-      const n = typeof nRaw === "number" && Number.isInteger(nRaw) && nRaw > 0 ? nRaw : undefined;
-      try {
-        await daemon.resolveContextGate(params[0], params[1], choice, n);
-        return json(response, 200, { ok: true });
-      } catch (error) {
-        return json(response, 502, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    // engine+voice; this layer only streams the bytes. The x-tts-chunks
-    // header tells the client how many chunks to fetch/play in sequence.
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud$/))) {
-      const body = await parseBody(request);
-      const eventId = stringField(body, "eventId");
-      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
-      const chunkRaw = body && typeof body === "object" ? (body as Record<string, unknown>).chunk : undefined;
-      const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
-      const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
-      try {
-        const audio = await daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate);
-        response.writeHead(200, {
-          "content-type": audio.contentType,
-          "content-length": audio.audio.length,
-          "cache-control": "no-store",
-          "x-tts-chunks": String(audio.chunks),
-          "x-tts-chunk": String(audio.chunk),
-        });
-        response.end(audio.audio);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        json(
-          response,
-          message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") || message.startsWith("Unknown chunk") ? 400 : 502,
-          { error: message },
-        );
-      }
-      return;
-    }
-    // Read-aloud, streamed: the whole message as one continuous PCM pass, played
-    // frame-by-frame as it is generated (the claude.ai desktop-app path). The
-    // author's engine decides the mode — a batch-only engine answers "chunks",
-    // and the client keeps the per-chunk /read-aloud path above.
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud\/stream$/))) {
-      const body = await parseBody(request);
-      const eventId = stringField(body, "eventId");
-      if (!eventId?.trim()) return json(response, 400, { error: "Missing eventId" });
-      const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
-      let delivery: ReadAloudDelivery;
-      try {
-        delivery = await daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return json(
-          response,
-          message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") ? 400 : 502,
-          { error: message },
-        );
-      }
-      if (delivery.mode === "chunks") return json(response, 200, { mode: "chunks", chunks: delivery.chunks });
-      response.writeHead(200, {
-        "content-type": "audio/pcm",
-        "cache-control": "no-store",
-        "x-tts-mode": "stream",
-        "x-tts-rate": String(delivery.format.sampleRate),
-        "x-tts-channels": String(delivery.format.channels),
-        "x-tts-bits": String(delivery.format.bitsPerSample),
-      });
-      let clientGone = false;
-      response.on("close", () => { clientGone = true; });
-      try {
-        for await (const frame of delivery.frames) {
-          if (clientGone || response.writableEnded) break;
-          if (!response.write(frame)) {
-            await new Promise<void>((resolve) => {
-              const done = (): void => { response.off("drain", done); response.off("close", done); resolve(); };
-              response.once("drain", done);
-              response.once("close", done);
-            });
-          }
-        }
-      } catch {
-        // Mid-stream failure: headers are already sent, so just close.
-      }
-      if (!response.writableEnded) response.end();
-      return;
-    }
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/voice\/(start|stop)$/))) {
       const workspaceId = params[0];
       if (params[1] === "stop") {
