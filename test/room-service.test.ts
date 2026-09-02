@@ -3384,3 +3384,29 @@ test("agent conversation ending honors the workspace feature flag", async () => 
   await assert.rejects(() => service.endConversation("gaia", "Goodbye."), /disabled by workspace config/);
   assert.equal((await service.room.eventsFrom(0)).events.length, 0);
 });
+
+test("/stt and /tts switch the global dictation engine without erasing voice settings", async () => {
+  const { service } = await makeService();
+  const voicePath = join(process.env.GAIA_HOME!, "voice.json");
+  const seeded = {
+    sttEngine: "elevenlabs",
+    elevenLabsApiKey: "fake-eleven-secret",
+    sttReplicateApiKey: "fake-replicate-secret",
+    futureVoiceSetting: { version: 7 },
+  };
+  await writeFile(voicePath, JSON.stringify(seeded), "utf8");
+
+  assert.match(await service.runSttCommand(), /Speech-to-text engine: elevenlabs/);
+  const switched = await service.runSttCommand("replicate", "tts");
+  assert.match(switched, /switched to replicate/);
+  assert.match(switched, /\/tts.*voice input/);
+  assert.deepEqual(JSON.parse(await readFileText(voicePath, "utf8")), { ...seeded, sttEngine: "replicate" });
+
+  const beforeUnknown = await readFileText(voicePath, "utf8");
+  assert.match(await service.runSttCommand("ghost"), /Unknown STT engine/);
+  assert.equal(await readFileText(voicePath, "utf8"), beforeUnknown, "unknown engine never rewrites voice.json");
+
+  await writeFile(voicePath, "{malformed", "utf8");
+  assert.match(await service.runSttCommand("openai"), /voice\.json is malformed/);
+  assert.equal(await readFileText(voicePath, "utf8"), "{malformed", "malformed settings remain untouched");
+});

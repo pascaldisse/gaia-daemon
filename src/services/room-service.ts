@@ -15,14 +15,14 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
-import { workspacePaths } from "../core/paths.js";
+import { globalPaths, workspacePaths } from "../core/paths.js";
 import { GOAL_COMPLETE_SIGNAL } from "../core/types.js";
 import type { SanitizeProposal, SanitizeStatus } from "../core/types.js";
 import type {
@@ -83,6 +83,8 @@ import { sdkThinkingLevels } from "./hints.js";
 import { createAgentRuntime } from "../harness/host.js";
 import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
+import { sttEngineIds } from "./transcribe.js";
+import { readVoiceSettings } from "./voice.js";
 
 export interface RoomServiceOptions {
   workspaceId: string;
@@ -349,6 +351,30 @@ export function configureRoomServiceReload(callback: (() => void | Promise<void>
   reloadDaemon = callback;
 }
 
+/** Read the persisted voice settings as an update document. Unlike
+ * readVoiceSettings(), this rejects malformed/non-object JSON so a slash
+ * command can never replace an unreadable file and silently erase secrets or
+ * future fields. Missing is the one valid empty-document case. */
+async function readVoiceSettingsDocument(): Promise<Record<string, unknown>> {
+  let text: string;
+  try {
+    text = await readFile(globalPaths.voiceSettings(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("voice.json is malformed; fix it before switching engines");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("voice.json must contain a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 const COMMANDS: Record<string, CommandHandler> = {
   help: async () => HELP_TEXT,
   agents: (service) => service.renderAgentsList(),
@@ -365,6 +391,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent, command.edit) : Promise.resolve("")),
+  stt: (service, command) => (command.type === "stt" ? service.runSttCommand(command.engine, command.alias) : Promise.resolve("")),
   diet: (service, command) => (command.type === "diet" ? service.runDietCommand(command.sub, command.scope) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
   schedule: (service, command) => (command.type === "schedule" ? service.runScheduleCommand(command.sub, command.id) : Promise.resolve("")),
@@ -3268,6 +3295,25 @@ ${draft.summary}` : ""}`;
       if (!this.taskCancelled(task)) this.settleTask(task, "complete");
     } catch (error) {
       if (!this.taskCancelled(task)) this.settleTask(task, "error", error);
+    }
+  }
+
+  async runSttCommand(engine?: string, alias?: "tts"): Promise<string> {
+    const available = sttEngineIds();
+    const aliasNote = alias ? " `/tts` controls voice input here; `/stt` is the canonical name." : "";
+    if (engine && !available.includes(engine)) {
+      return `Unknown STT engine "${engine}". Available: ${available.join(", ")}.${aliasNote}`;
+    }
+    try {
+      const document = await readVoiceSettingsDocument();
+      if (engine) {
+        await writeJsonAtomic(globalPaths.voiceSettings(), { ...document, sttEngine: engine });
+        return `Speech-to-text engine switched to ${engine}. Available: ${available.join(", ")}.${aliasNote}`;
+      }
+      const current = (await readVoiceSettings()).sttEngine;
+      return `Speech-to-text engine: ${current}. Available: ${available.join(", ")}. Use /stt <engine> or /tts <engine>.${aliasNote}`;
+    } catch (error) {
+      return `Could not ${engine ? "switch" : "read"} the STT engine: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
