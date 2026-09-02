@@ -106,3 +106,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `12d980c` → ADV-012: `sanitizeEditRefs` private to rooms route; dead `api.ts` bootId removed; SSE uses `ctx.bootId`.
 - gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/http-routes.test.ts` 7/0.
 - pragma scan `src/services`: 15; room-service 2527 lines. A6 four pragma-removal lanes active; W3 blocked; live A6 item remains UNVERIFIED, owned by 陰.
+## A6 facade typing checkpoint (2026-09-02)
+- turn-loop `62ec85f` · fork `6055582` · sanitize `1d462e2` · commands `0f8f62b`: all four façade `@ts-nocheck` pragmas removed; named narrow ports now type all collaborator access; no `as any` / `as unknown as` remains in the four façade files.
+- RoomService exposes only port-reached collaborators; direct `RoomTurnLoop`/`RoomFork` construction no longer uses `this as any`; queue/WAL seams unchanged.
+- gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/commands.test.ts` 8/0.
+- pragma scan `src/services`: 2 matching files; room-service 2527 lines. W3 remains BLOCKED by ≤800 extraction; A6 live item remains UNVERIFIED, owner 陰.
