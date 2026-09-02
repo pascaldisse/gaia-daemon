@@ -463,3 +463,22 @@ Live 真/未驗:
 
 Atoms clean → A5c route registration parity · A7c harness claim extraction · A7d interaction extraction · UI commits `efc2e48`/`c80a074`/`2d3e9a2` static+check only · late `230ca8e` drafts unit 2/0.
 Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifact salvageable; STATIC performed by parent.
+
+---
+
+## ADV-011 resolution · live seed correction — 2026-09-02
+- prior `Unknown agent: luna` → TEST-SETUP; not daemon regression.
+- corrected seed → `<worktree>/.gaia/livehome/agents/luna/` copied whole; whole `accounts.json` + `config.json`; workspace payload listed `luna` before every probe.
+- proof → TOKEN-1/2/3/4 + tool turn committed by luna; evidence `docs/REFACTOR-LIVE-RESULTS-20260902.md`.
+- status → superseded as daemon ticket.
+
+## ADV-013 · HIGH · app payload 500 after corrected live seed — 2026-09-02
+- repro → compiled isolated daemon @ `4bd87be`; corrected seed; `GET /api/app`.
+- expected → 200 app payload.
+- actual → 500 `Missing workspace config: .../ghoul-terra-mtklq5ixkikbww/.gaia/config.json`; boot also skips summon recovery for cwd workspace.
+- impact → full authenticated A5c route smoke blocked; no fix in live child.
+
+## Nyari triage — ADV-013 (09-02 23:35)
+- ADV-013 reclassified PRE-EXISTING / MED, not A5c: throw = src/domain/workspace.ts:147, untouched 768115b..main (`git log -S'Missing workspace config'` empty; cwd-workspace path diff 0).
+- Trigger: daemon cwd inside a dir w/ `.gaia/` but no `.gaia/config.json` (any worktree) → GET /api/app 500 + summon recovery skipped.
+- A5 route smoke → PASS for parity (all other routes 200/401 as expected). Fix = W4 atom (auto-workspace: bootstrap config or skip cwd w/o config), not refactor scope.
