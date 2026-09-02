@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { bundledDir, globalPaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { json, parseBody } from "../core/http.js";
 import { newId } from "../core/ids.js";
@@ -380,8 +381,6 @@ function defaultSpawnService(spec: ServiceSpec, unmuteDir: string, logPath: stri
   });
   return handle;
 }
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 type PortState = "service" | "occupied" | "free";
 

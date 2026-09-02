@@ -18,6 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gaiaHome } from "../core/paths.js";
+import { sleep as defaultSleep } from "../core/retry.js";
 
 // Marker flag appended to every agent-runner's argv. The value is the install id;
 // the runner itself ignores the flag (it reads only env), so it is a pure label.
@@ -97,10 +98,6 @@ function defaultListProcesses(): string {
   // darwin/linux only; `ps` here doesn't take these flags on win32. axww = all
   // processes, unlimited-width command so the marker is never truncated.
   return execFileSync("ps", ["axww", "-o", "pid=,ppid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function aliveWithMarker(entries: ProcEntry[], marker: string, pids: Set<number>): Set<number> {
