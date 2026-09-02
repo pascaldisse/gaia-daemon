@@ -144,3 +144,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `9ffba40`: `room/summon-lifecycle.ts` 202; typed `RoomSummonLifecyclePort`; one-body mixin extraction; queue/WAL/pendingTurn/atomic seams untouched.
 - gate: `bun run check` green; `bun test test/room-service.test.ts test/summons.test.ts` 134/0.
 - call-site: facade install only; each moved lifecycle body exists solely in `summon-lifecycle.ts`. pragma scan touched room files: 0. room-service 1530→1362; next extraction required for ≤800.
+
+## W3 A14 — manifest migration + Telegram bridge (2026-09-03)
+- `0597626`: command loader→manifest registry; one-release synthesized legacy manifest warning; Telegram `addons/telegram/plugin.json` + typed channel contribution; dead formatter deleted.
+- gate: `bun run check` green; focused plugin+Telegram suite 38/0 after integration.
+- grep: `scripts/telegram-bridge.mjs` creates `PluginRegistry` and invokes `gaia.telegram` channel; no formatter import. pragma scan touched paths: 0. W3 complete; live UNVERIFIED, queue owner 陰.
