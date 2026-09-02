@@ -93,8 +93,31 @@ Cumulative A3 gates @ `16cae4d`:
 
 Verdict → helper extraction itself is layer-correct/RULE0-clean; `5a39b0b` fails refactor purity until behavior change is separated or explicitly reclassified.
 
+## ADV-005 · HIGH · A8 relocates the Pi god file instead of splitting it
+
+Atom → A8 `2ad4e42` merged by `41836cd`.
+
+Defect:
+- old `src/harness/pi.ts` → 1,233 lines
+- new `src/harness/pi/session.ts` → 1,013 lines
+- new `src/harness/pi/tools.ts` → 19 lines
+- new `src/harness/pi/events.ts` → 24 lines
+- result → registration façade is small, but the runtime god file remains; W2 split objective not met
+- duplication regrowth → identical private `piUserMessageText()` now exists in `pi/session.ts:333` and `pi/events.ts:6`; session copy has no caller
+
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40
+wc -l "$W/src/harness/pi.ts" "$W/src/harness/pi/session.ts" "$W/src/harness/pi/tools.ts" "$W/src/harness/pi/events.ts"
+rg -n '^function piUserMessageText' "$W/src/harness/pi" "$W/src/harness/pi.ts"
+```
+
+Expected → bounded session/fork, tool assembly, event translation modules; no duplicate/dead helper.
+Actual → 1,013-line `session.ts` retains nearly the complete former implementation; `tools.ts` only holds provider-fetch redirection.
+
+Gate replay @ `main@41836cd` → `bun run check` 0 · pi-runtime 39/0 · runner-host 18/0. Runtime behavior gate clean; architecture verdict remains reject.
+
 ## Known planned debt · non-ticket
 
-- A1 layering baseline → `src/harness/tools-pi.ts:12-15` imports four `src/services/*` modules upward.
-- W1 owns removal; not introduced by A0 `dc2c552`.
+- A1 upward imports → resolved by `4233f82` / merge `630a7b5`; main scan at `41836cd` = zero.
 - RULE0 literal harness-id branches introduced by reviewed atoms → none.
