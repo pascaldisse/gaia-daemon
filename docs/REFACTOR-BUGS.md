@@ -404,6 +404,18 @@ Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest mai
 - ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
 - ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
 - post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
-
 ## ADV-PASS-2 · 2026-09-02 · 陰の木 adversarial refactor audit
 
+## ADV-011 · HIGH · A5c LIVE prerequisite cannot deliver required `@luna` turn
+Atom → `gaia/jareth-mtklhqjcox0sbw-pass2@d7d637e` live build; daemon hash `d7d637e`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/naru-kimi-mtkliyd9wo8b3i
+GAIA_HOME="$W/.gaia/livehome" GAIA_PORT=18787 "$W/.gaia/livetest-dist/gaia-daemon"
+# authenticated POST /api/workspaces -> id 3efc0c32a73d6aaf
+# authenticated POST /api/workspaces/3efc0c32a73d6aaf/rooms/default/messages
+# body: {"text":"@luna LIVE-AUDIT-EXACT-TOKEN","queue":true}
+```
+Expected → required exact `@luna` message accepts (202), reserves durable user event, then enables edit/retry and pending-turn recovery audit.
+Actual → HTTP 500 `{ "error":"Unknown agent: @luna. Available agents: @dario, @gaia, @sidia, @terry" }`; GET events remains `[]`; no `transcript.jsonl`, `rewound.jsonl`, or `pi-sessions` evidence exists for this flow.
+Boundary → ticket only; no fix. The isolated daemon did build and listen on 127.0.0.1:18787. UNVERIFIED → agent→agent mention/edit parent chain; web/artifact; SIGKILL/restart exactly-once; settings reload; full registered-route authenticated smoke.
