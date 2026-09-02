@@ -583,8 +583,19 @@ body.resizing { cursor: col-resize; user-select: none; }
    so it can't fight the manual re-anchor in loadOlderEvents (WebKit has none). */
 .transcript { min-height: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; padding: 16px 14px 28px; }
 
-.message { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; margin: 0 0 16px; }
-.message::before { content: ">"; color: var(--accent); }
+/* Time-group separator (V2-SKIN LAW): flat 1px rules flank a dim HH:MM label,
+   no vertical rules anywhere else in the transcript. */
+.separator { display: flex; align-items: center; gap: 1ch; margin: 14px 0 10px; color: var(--muted); font-size: 11px; }
+.separator::before, .separator::after { content: ""; height: 1px; background: var(--border); }
+.separator::before { width: 2ch; }
+.separator::after { flex: 1; }
+
+/* Entry shapes (LAW): attribution = header + containment, never a vertical
+   rule or gutter glyph — no ::before marker column. Agent entries sit flush
+   left with only the BODY indented 3ch; user entries shift the whole block
+   right 10ch inside a shaded --bg3 strip (see .message.user below); system
+   entries stay dim/italic, read as machinery, never as a chat bubble. */
+.message { margin: 0 0 14px; }
 
 .compact-boundary {
   display: grid;
@@ -595,54 +606,40 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--muted);
 }
 .compact-boundary::before,
-.compact-boundary::after {
-  content: "";
-  height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 50%, transparent), transparent);
-}
+.compact-boundary::after { content: ""; height: 1px; background: var(--border); }
 .compact-boundary-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
-  border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   color: var(--fg);
   font-size: 0.88em;
   font-weight: 650;
   letter-spacing: 0.02em;
-  text-transform: uppercase;
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .compact-boundary-icon { color: var(--accent); filter: grayscale(1) contrast(1.4); }
-.compact-boundary small { color: var(--accent); font-weight: 500; text-transform: none; letter-spacing: 0; }
+.compact-boundary small { color: var(--accent); font-weight: 500; letter-spacing: 0; }
 .compact-boundary time { grid-column: 1 / -1; justify-self: center; margin-top: -5px; font-size: 0.75em; color: var(--muted); }
-/* Queued ghost: a not-yet-run message waiting behind the current turn. */
+/* Queued ghost: a not-yet-run message waiting behind the current turn — the
+   existing "queued" channel-tag in the header already says so; no extra glyph. */
 .message.queued { opacity: 0.55; }
-.message.queued::before { content: "⋯"; }
 .message.queued .channel-tag { color: var(--muted); font-style: italic; }
 
 /* Mid-turn steer, rendered inside the reply at the stream position where it
-   landed (OrderedBlocks kind:"steer") — a user interjection, so it borrows the
-   user-bubble voice (accent2) inset into the agent body. */
-.steer-inline {
-  grid-column: 2;
-  margin: 6px 0 2px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--accent2);
-  background: color-mix(in srgb, var(--accent2) 7%, transparent);
-  border-radius: 0 6px 6px 0;
-}
+   landed (OrderedBlocks kind:"steer") — a user interjection, voiced in accent2,
+   contained by background shade only (no rule lines). */
+.steer-inline { margin: 6px 0 2px 3ch; padding: 6px 10px; background: color-mix(in srgb, var(--accent2) 7%, transparent); }
 .steer-inline-meta { display: flex; align-items: baseline; gap: 8px; color: var(--accent2); font-size: 0.85em; }
 .steer-inline-meta time { margin-left: auto; font-size: 0.9em; color: var(--muted); }
 .steer-inline-icon { font-weight: 700; }
-.steer-inline pre { grid-column: auto; margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.steer-inline pre { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 
 /* Placeholder for a streaming turn that hasn't produced any visible content
    yet (e.g. right after a daemon /rebuild resumes it) — replaces what would
    otherwise be a completely empty, dead-looking bubble. */
-.stream-pending { opacity: .6; animation: stream-pulse 1.2s ease-in-out infinite; }
+.stream-pending { margin-left: 3ch; opacity: .6; animation: stream-pulse 1.2s ease-in-out infinite; }
 @keyframes stream-pulse { 0%, 100% { opacity: .25; } 50% { opacity: .85; } }
 
 /* A streaming turn whose upstream socket dropped mid-reply: the harness is
@@ -653,7 +650,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 4px;
+  margin: 4px 0 0 3ch;
   font-size: .85em;
   color: var(--warn);
   animation: stream-pulse 1.2s ease-in-out infinite;
@@ -661,8 +658,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* One line of turn liveness beneath every streaming reply. */
 .live-heartbeat {
-  grid-column: 2;
-  margin-top: 5px;
+  margin: 5px 0 0 3ch;
   color: var(--muted);
   font-size: .8em;
   font-variant-numeric: tabular-nums;
@@ -672,13 +668,21 @@ body.resizing { cursor: col-resize; user-select: none; }
   animation: stream-pulse 1.2s ease-in-out infinite;
 }
 
-.message-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--accent); }
-.message-meta .model-tag { margin-left: auto; color: var(--muted); }
+/* Header row: flush left, dim machinery baseline; .who carries the identity
+   colour, .to the addressed targets, time always right (LAW: timestamps
+   right, dim 10px). Speaker names are plain — "@" is for addressing only. */
+.message-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; color: var(--muted); }
+.message-meta time { margin-left: auto; font-size: 10px; }
+.message-meta .who { color: var(--accent); white-space: nowrap; }
+.message-meta .to { color: var(--muted); }
+.message.user .message-meta .who { color: var(--fg); font-weight: 700; }
+.message.system .message-meta .who { color: var(--muted); }
+.message-meta .model-tag { color: var(--muted); }
 .message-meta .model-tag.fallback { margin-left: 8px; color: var(--warn); }
 
 /* Action row at the foot of a message (edit / retry / read-aloud), Claude-style.
-   Sits under the body in the content column; buttons stay ghosted until hover. */
-.message-actions { grid-column: 2; display: flex; align-items: center; gap: 2px; margin-top: 6px; }
+   Sits under the body, indented with it; buttons stay ghosted until hover. */
+.message-actions { margin: 6px 0 0 3ch; display: flex; align-items: center; gap: 2px; }
 .msg-action {
   border: none;
   background: transparent;
@@ -717,21 +721,38 @@ body.resizing { cursor: col-resize; user-select: none; }
 .message-meta .channel-tag { color: var(--muted); }
 
 /* Speaker mark in front of the meta label (v2 parity: ❯ human · agent glyph ·
-   ◇ system). Fixed 2ch slot so every label starts at the same x. */
+   ◇ system). Fixed 2ch slot so every label starts at the same x. User's ❯ and
+   agent's mark both read accent; system's ◇ stays dim. */
 .message-meta .speaker-glyph { flex: 0 0 2ch; width: 2ch; text-align: center; color: var(--muted); }
 .message-meta .speaker-glyph.agent { color: var(--accent); }
+.message.user .message-meta .speaker-glyph { color: var(--accent); }
 
-.message pre { grid-column: 2; margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+/* User entry: whole block shaded + shifted right 10ch, not just the body —
+   the offset alone says "not an agent" before you read a word. */
+.message.user { margin-left: 10ch; padding: 4px 10px; background: var(--bg3); }
 
-.markdown-message { grid-column: 2; display: grid; gap: 8px; margin-top: 4px; min-width: 0; line-height: 1.45; }
+/* System entry: dim italic notification line — machinery, never a chat bubble. */
+.message.system { color: var(--muted); font-style: italic; font-size: 11px; }
+
+.message > pre { margin: 4px 0 0 3ch; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+
+.message > .markdown-message, .trace-body .markdown-message {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.45;
+}
+.message > .markdown-message { margin: 4px 0 0 3ch; max-width: 96ch; }
 
 .markdown-message h1, .markdown-message h2, .markdown-message h3,
 .markdown-message h4, .markdown-message h5, .markdown-message h6 {
   margin: 7px 0 0;
   color: var(--accent);
-  font-size: 1em;
-  text-transform: uppercase;
+  font-weight: 700;
+  line-height: 1.3;
 }
+.markdown-message h1 { font-size: 14px; }
+.markdown-message h2 { font-size: 13px; }
 
 .markdown-message p, .markdown-message ul, .markdown-message ol, .markdown-message blockquote {
   margin: 0;
@@ -739,21 +760,21 @@ body.resizing { cursor: col-resize; user-select: none; }
   overflow-wrap: anywhere;
 }
 
-.markdown-message ul, .markdown-message ol { padding-left: 22px; }
+.markdown-message ul, .markdown-message ol { padding-left: 3ch; }
 .markdown-message li + li { margin-top: 2px; }
-.markdown-message blockquote { border-left: 1px solid var(--border); padding-left: 8px; color: var(--muted); }
+/* Blockquote is the ONE permitted vertical rule in the transcript (LAW). */
+.markdown-message blockquote { border-left: 2px solid var(--muted); padding-left: 1ch; color: var(--muted); }
 .markdown-message blockquote.copyable-block { position: relative; padding-right: 36px; padding-bottom: 30px; }
 
-.markdown-message code {
-  color: var(--fg);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  border: 1px solid var(--border);
-  padding: 0 3px;
-}
+.markdown-message code { color: var(--good); background: var(--bg3); padding: 0 3px; }
 
-.code-block { position: relative; border: 1px solid var(--border); background: color-mix(in srgb, black 35%, transparent); min-width: 0; }
-.code-lang { border-bottom: 1px solid var(--border); color: var(--muted); padding: 4px 7px; text-transform: uppercase; }
-.code-block pre { grid-column: auto; margin: 0; padding: 8px; overflow: auto; white-space: pre; }
+/* Links (LAW: accent2 = tool names/links) — .link-token is links.js's openable
+   span, styled generically as inherited colour elsewhere; scoped accent2 here. */
+.message .link-token { color: var(--accent2); }
+
+.code-block { position: relative; border: 1px solid var(--border); min-width: 0; }
+.code-lang { position: absolute; top: 3px; right: 7px; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+.code-block pre { margin: 0; padding: 18px 10px 8px; overflow: auto; white-space: pre; }
 .code-block code { display: block; background: transparent; border: 0; padding: 0; }
 
 /* Bottom-right copy button, revealed on hover of the block (always visible on
@@ -763,8 +784,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; padding: 0; cursor: pointer;
   color: var(--muted);
-  background: color-mix(in srgb, black 45%, transparent);
-  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
   opacity: 0; transition: opacity 90ms ease, color 90ms ease;
 }
 .code-copy svg { display: block; }
@@ -777,74 +798,64 @@ body.resizing { cursor: col-resize; user-select: none; }
 .markdown-message .md-table { border-collapse: collapse; font-size: 0.95em; }
 .markdown-message .md-table th, .markdown-message .md-table td {
   border: 1px solid var(--border);
-  padding: 4px 9px;
+  padding: 1px 10px;
   text-align: left;
   vertical-align: top;
 }
 .markdown-message .md-table thead th {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--fg);
-  font-weight: 600;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
-.markdown-message .md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, white 3%, transparent); }
 
-/* thinking + tool-call expanders */
-.tool-activity, .message > .activity-details { grid-column: 2; }
-.tool-activity, .activity-details { margin-top: 6px; }
-.tool-activity { display: grid; gap: 5px; }
+/* thinking + tool-call expanders — trace rows, 22px, LAW grid columns. */
+.tool-activity { margin: 6px 0 0 3ch; display: grid; gap: 5px; }
+.message > .activity-details { margin: 6px 0 0 3ch; }
 
-.activity-details { border-left: 1px solid var(--border); padding-left: 8px; color: var(--muted); }
-.activity-details summary { cursor: pointer; color: var(--accent); display: flex; align-items: center; gap: 8px; list-style: none; }
+.activity-details { color: var(--muted); }
+.activity-details summary {
+  display: grid;
+  grid-template-columns: 3ch max-content minmax(8ch, 1fr) max-content;
+  align-items: center;
+  gap: 1ch;
+  min-height: 22px;
+  cursor: pointer;
+  list-style: none;
+}
+.activity-details summary:hover { background: var(--bg3); }
+.activity-details[open] > summary { background: var(--bg3); }
 .activity-details summary::-webkit-details-marker { display: none; }
 .activity-details summary::marker { content: ""; }
-.activity-details.error summary, .activity-details.error .activity-result { color: var(--danger); }
 
-.activity-icon { width: 18px; flex: 0 0 18px; line-height: 1; filter: grayscale(1) contrast(1.4); }
-.activity-details.running .activity-icon { animation: pulse-activity 1s steps(2, end) infinite; }
-.activity-title { flex: 0 0 auto; }
-
-.activity-extra {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-}
-
-.activity-result { width: 18px; flex: 0 0 18px; text-align: right; color: var(--accent); }
-
-/* Skill invocation: a read of a SKILL.md, classified by filename (see
-   skillReadLabel in transcript.js) — bold + accented so it reads as a
-   distinct "skill" event, not a plain file read. */
-.activity-details.skill-call summary { color: var(--fg); }
+/* Kind colour law: tool = accent2 · skill = accent · thinking/summon = dim
+   italic. Error state tints the whole row alert (declared last so it wins
+   the tie against the kind rules above). */
+.activity-details.tool-call .activity-title { color: var(--accent2); }
 .activity-details.skill-call .activity-title { font-weight: 700; color: var(--accent); }
 .activity-details.skill-call .activity-icon { filter: none; }
+.activity-details.thinking summary { font-style: italic; }
+.activity-details.thinking .activity-title, .activity-details.summon-result .activity-title { color: var(--muted); }
+.activity-details.error summary, .activity-details.error .activity-result { color: var(--danger); }
+.activity-details.error .activity-title { color: var(--danger); }
 
-/* A summon worker's result: a collapsed expander with a subtle accent rail so
-   it reads as a subagent callback, not a plain reply. Revealed body renders at
-   full contrast (it's real content, not chrome). */
-.activity-details.summon-result { border-left: 2px solid var(--accent); }
-.activity-details.summon-result.error { border-left-color: var(--danger); }
-.activity-details.summon-result > *:not(summary) { color: var(--fg); margin-top: 8px; }
+.activity-icon { line-height: 1; filter: grayscale(1) contrast(1.4); }
+.activity-details.running .activity-icon { animation: pulse-activity 1s steps(2, end) infinite; }
 
-.tool-payload { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin-top: 6px; }
-.tool-payload span { color: var(--muted); }
+.activity-extra { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 
-.tool-payload pre, .thinking > .markdown-message {
-  grid-column: auto;
-  max-height: 180px;
-  overflow: auto;
-  border: 1px solid var(--border);
-  padding: 6px;
-  background: color-mix(in srgb, black 28%, transparent);
-}
+.activity-result { text-align: right; color: var(--good); }
 
-/* Thinking text renders through the same markdown subset as regular prose
-   (Codex reasoning summaries come back as real markdown — bold headers,
-   invisible HTML-comment separators between parts) instead of a raw <pre>;
-   keep it slightly dimmer than a normal reply body, matching the old <pre>. */
-.thinking > .markdown-message { color: var(--muted); }
+/* A summon worker's result: a collapsed expander, dim title like any other
+   machinery row. Revealed body renders at full contrast — it's real content. */
+.activity-details.summon-result .trace-body { color: var(--fg); }
+.activity-details.thinking .trace-body { font-style: italic; }
+
+/* Expanded payload/body — one shaded, scrollable region per trace (LAW:
+   .trace-body --sel bg, margin-left 3ch, max-height 280px). Replaces the old
+   per-section bordered boxes so an open trace reads as ONE contained block. */
+.trace-body { margin: 2px 0 8px 3ch; padding: 5px 8px; background: var(--bg3); color: var(--muted); max-height: 280px; overflow: auto; }
 
 @keyframes pulse-activity {
   0%, 45% { opacity: 1; }
