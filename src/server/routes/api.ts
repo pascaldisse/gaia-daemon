@@ -33,7 +33,7 @@ import { numberField } from "./memory.js";
 import { summonCensusText } from "./usage.js";
 import { artifactRoutePrefix } from "./artifacts.js";
 import { attachmentRefs, sanitizeEditRefs } from "./rooms.js";
-const MIME: Record<string, string> = { ".png": "image/png", ".webp": "image/webp" };
+const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".wasm": "application/wasm" };
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = "";
 async function openWithSystem(target: string): Promise<void> {
