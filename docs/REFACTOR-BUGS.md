@@ -235,3 +235,116 @@ referenced by name at use sites.
 Actual → `services/transcribe.ts:344` re-literals `"openai/gpt-4o-mini-transcribe"`
 as its own fallback; changing the settings default silently diverges from the
 transcribe fallback.
+
+## L3 Vishnu (建) — commit purity / RULE0 / layering / hardcode / duplication
+
+
+### T-V1 refactor(domain) commit changes transcript line semantics
+severity: med
+commit: 7d949ac "refactor(domain): centralize transcript reads"
+repro:
+```
+git -C /Users/pascaldisse/projects/gaia-daemon show 7d949ac -- src/domain/workspace-index.ts
+rg -n 'readTranscriptRecordsFrom' /Users/pascaldisse/projects/gaia-daemon/src/domain/rooms.ts
+```
+expected: labelled `refactor` ⇒ pure move/centralization, byte-identical behavior.
+actual: counting basis swapped `lines.length` (non-empty raw lines) → `transcript.nextCursor`, and per-line JSON-parse skip replaced by `parsed.lineIndex` filtering. If readTranscriptRecordsFrom drops malformed/blank lines or indexes differently, `total_lines`/`closed_lines` persisted in the index DB and the rebuild trigger `lineCount < cursor.total_lines` shift meaning → possible spurious full room re-index or missed rebuild. Also `scrollTranscriptWindow` window bounds now derived from nextCursor. Needs an explicit equivalence test (`bun test test/rooms.test.ts` only covers the new reader).
+
+### T-V2 refactor(harness) commit adds new feature surface (tool service providers)
+severity: low
+commit: 4233f82 "refactor(harness): inject tool service providers"
+repro:
+```
+git -C /Users/pascaldisse/projects/gaia-daemon show --stat 4233f82
+git -C /Users/pascaldisse/projects/gaia-daemon show 4233f82 -- src/harness/protocol.ts src/services/tool-providers.ts src/server/http.ts
+```
+expected: `refactor` = no new behavior; new capability ⇒ `feat`.
+actual: +158/-29 across 12 files incl. new file src/services/tool-providers.ts, new protocol union members, new http.ts route logic. Purity/label mismatch, harder to bisect. No RULE0 violation observed (wiring declared as data on the spec).
+
+### T-V3 json() default content-type widened during "reuse" refactor
+severity: low
+commit: 16cae4d "refactor(core): reuse JSON response writer"
+repro:
+```
+git -C /Users/pascaldisse/projects/gaia-daemon show 16cae4d
+```
+expected: pure call-site consolidation.
+actual: `json()` gains 4th param `contentType` (default `application/json; charset=utf-8`); voice bridges pass bare `"application/json"` to preserve old headers. Behavior preserved but an API knob was added under a refactor label; the bridges now diverge from the daemon default charset — either intentional (document) or should be normalized.
+
+### T-V4 pre-existing A3 path-semantics drift already flagged, still open
+severity: med
+commit: c1f029d "docs(refactor): flag A3 path-semantics drift" (re 5a39b0b centralize GAIA path resolution)
+repro:
+```
+git -C /Users/pascaldisse/projects/gaia-daemon show c1f029d
+git -C /Users/pascaldisse/projects/gaia-daemon show 5a39b0b -- src/core/paths.ts src/harness/host.ts src/services/stt-apple.ts
+```
+expected: drift closed or test-pinned before landing further path work.
+actual: drift documented but no follow-up commit in 820e568..main resolves it. Carried into main.
+
+## RULE0 (harness branching in shared code)
+command:
+```
+rg -n 'harness ===|harness !==|=== "pi"|=== "claude"|=== "codex"' /Users/pascaldisse/projects/gaia-daemon/src
+```
+13 hits, ALL benign — verified each: `typeof x.harness === "string"` type guards (core/config.ts:384, domain/accounts.ts:47, services/hints.ts:454, server/http.ts:967), data comparisons agent↔account ownership (harness/spec.ts:509, harness/host.ts:815, server/http.ts:968, services/hints.ts:289), comments restating the law (room-service.ts:3551, core/types/ui.ts:108, spec.ts:6/165), domain/agents.ts:94 config fallback. No `harness === "pi"|"claude"|"codex"` literal branch in shared layer.
+**RULE0 hits: 0**
+
+## layering (server→daemon→services→harness→domain→core)
+commands:
+```
+rg -n 'from "\.\./(server|daemon|services|harness|domain)' /Users/pascaldisse/projects/gaia-daemon/src/core
+rg -n 'from "\.\./(server|daemon|services|harness)'        /Users/pascaldisse/projects/gaia-daemon/src/domain
+rg -n 'from "\.\./(server|daemon|services)'                /Users/pascaldisse/projects/gaia-daemon/src/harness
+rg -n 'from "\.\./(server|daemon)'                         /Users/pascaldisse/projects/gaia-daemon/src/services
+rg -n 'from "\.\./server'                                  /Users/pascaldisse/projects/gaia-daemon/src/daemon
+```
+all five: zero output. **layer hits: 0**
+
+## hardcode
+command:
+```
+rg -n '8787|18787|/tmp|claude-3|gpt-' /Users/pascaldisse/projects/gaia-daemon/src
+```
+10 hits, all legitimate — no ticket:
+- core/config.ts:41 `port: 8787` = the DEFAULTS object itself (correct home for a default).
+- services/voice.ts:149 / transcribe.ts:344 model ids = default in settings object, overridable via `settings.sttReplicateModel`; transcribe.ts:274-275 = adapter registry KEYS (identifiers, not config).
+- services/caryll.ts:1 = npm package path `gpt-tokenizer/...`.
+- harness/sandbox/seatbelt.ts:30-31 comment, :80 `"/private/tmp"` = macOS canonical system path required by the seatbelt profile, not a workdir.
+**hardcode hits: 0**
+
+## duplication (post-refactor leftovers)
+Split commits checked by stat symmetry (deletions ≈ insertions, single new file per removed block): 7a218ab, 8350bb2, 3b2e317, 2ad4e42, 638fed8, 350840e, df58abc — all show one-way moves, no old copy retained. Dead-export deletions 0d9f141 / cec7a22 / e47adf0 are pure `-` diffs. No duplicate-implementation ticket.
+**duplication hits: 0 (stat-level check only — see UNVERIFIED)**
+
+## clean atoms
+7a218ab (pi compaction split) · 8350bb2 (daemon wiring/reload split) · 3b2e317 (room turn-loop extract) · 2ad4e42 (pi runtime split) · 638fed8 (room fork extract) · 350840e (room context-gate extract) · df58abc (core types split) · 0d9f141 · cec7a22 · e47adf0 (dead-export deletes) · 5948608 (retry sleep centralize) · 364909d (recorder asset path, 1-line web fix) · 5f307be · 94f12ea · 944dff2 · 7da562c · a93b633 · 6b30b8b · 49ea9cd · d190332 · f6a1ac7 (v2 skin, web/ only) · 91666d3 · 71e80b5 · 712d2c8 (harness id removal) · 31f99b9 (prompt opt-outs) · 5502e39 (web links) · all docs/* commits
+
+RULE0 hits: 0
+layer hits: 0
+
+## UNVERIFIED
+- duplication check = `--stat` symmetry + rg spot checks only; no line-level content diff of every moved block (time bound ≤10min).
+- T-V1 semantic drift = read-level inference; NOT reproduced at runtime (no `bun test` run, no daemon exercise).
+- `bun run check` NOT executed (read-only mandate, root = merge-only).
+- merge commits (2128ac7, bbc2c5f, 8c71e31, a5bc607, 81abec6, 41836cd, b19d542, 5602e34, 48a29f3, 46d8454, b0cc858, 312d6ba, 630a7b5, e41bbea, 7cd43bb, 094bd51, 037643f, 6be4997) not diff-inspected for conflict-resolution drift.
+
+## L3 Kali (審) — PLUGIN boundary + static supplementary
+
+### T-K1 Telegram bridge format leaks into core services
+severity: high
+commit hash: main@2128ac7 (pre-range introduction; `git -C /Users/pascaldisse/projects/gaia-daemon show 820e568..main -- src/services/telegram-bridge-format.ts` has no diff)
+exact repro (static; BUN only):
+```sh
+rg -n -i 'telegram|discord|slack|matrix' /Users/pascaldisse/projects/gaia-daemon/src/core /Users/pascaldisse/projects/gaia-daemon/src/domain /Users/pascaldisse/projects/gaia-daemon/src/services /Users/pascaldisse/projects/gaia-daemon/src/daemon /Users/pascaldisse/projects/gaia-daemon/src/server /Users/pascaldisse/projects/gaia-daemon/src/daemon.ts
+bun test test/telegram-bridge-format.test.ts
+```
+expected: Telegram-specific parsing, 4096-byte policy, inbound/outbound bridge DTOs live in a channel plugin package and enter GAIA only through registered plugin/descriptor contracts; core/domain/services/daemon/server contain no channel-specific implementation.
+actual: `src/services/telegram-bridge-format.ts` is imported directly by `scripts/telegram-bridge.mjs`; it exports `TelegramInbound`, `parseTelegramUpdate`, `formatOutgoingForTelegram`, `splitForTelegram`, and `TELEGRAM_MAX_MESSAGE_LEN` from the core `services` layer. No plugin registration/descriptor boundary mediates that channel code.
+
+PLUGIN verdict: FAIL — Plugin machinery exists (`src/services/plugin-host.ts`, `src/services/plugins.ts`, `src/services/bundled-plugins.ts`, `src/harness/runner-plugins.ts`); Telegram bridge formatter nonetheless leaks directly into `src/services/`. No Discord/Slack/Matrix core/domain/services/daemon/server hit found.
+
+UNVERIFIED:
+- No `bun test` executed: static-only constraint.
+- No daemon, summon, or app execution.
+- Pre-range origin cannot be attributed to one commit under the mandated `820e568..main` `git show` scope.
