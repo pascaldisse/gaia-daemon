@@ -61,6 +61,17 @@ test("normalizeRoomState accepts v1 shapes and drops malformed blocks", () => {
   assert.equal(state.pendingTurn, undefined); // empty targets → invalid
   assert.equal(state.queue?.length, 1);
   assert.equal(state.queue?.[0].taskId, "q1");
+  assert.equal(state.conversationEndedAgents, undefined);
+});
+
+test("normalizeRoomState retains only valid agent conversation-end markers", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    thinkingOverrides: {},
+    agentCursors: {},
+    conversationEndedAgents: { gaia: "2026-08-29T12:00:00.000Z", empty: "", bad: 42 },
+  });
+  assert.deepEqual(state.conversationEndedAgents, { gaia: "2026-08-29T12:00:00.000Z" });
 });
 
 test("normalizeRoomState preserves queue hand-off markers across restart", () => {

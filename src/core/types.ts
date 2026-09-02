@@ -330,6 +330,9 @@ export interface RoomState {
    * a single room value driving the `# Protocols` section's thinking line for
    * ALL agents. Absent/0 = thought blocks disabled. */
   thinkingLevel?: number;
+  /** Agents that gracefully ended this room conversation. Automatic work aimed
+   * at one stays suppressed until a human addresses that agent again. */
+  conversationEndedAgents?: Record<string, string>;
   agentCursors: Record<string, number>;
   /** Per-agent active-context floor: the transcript line index below which
    * content is NOT in the agent's live context (never loaded via a context-gate
@@ -720,6 +723,9 @@ export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
   transcriptWindow: number;
+  /** Enables the agent-initiated graceful conversation-ending tool. Default on;
+   * agents choose whether to invoke it. */
+  agentEndConversation: boolean;
   memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;

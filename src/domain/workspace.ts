@@ -97,6 +97,7 @@ function defaultConfigJson(): WorkspaceConfig {
     defaultAgent: DEFAULTS.defaultAgent,
     room: DEFAULTS.room,
     transcriptWindow: DEFAULTS.transcriptWindow,
+    agentEndConversation: DEFAULTS.agentEndConversation,
     maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
     // Written out (not just implied) so the memory section is visible and
     // editable in the settings UI from day one.

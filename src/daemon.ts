@@ -1109,6 +1109,11 @@ export class Daemon {
     const service = await this.serviceFor(claims.workspaceId, claims.roomId);
     return service.dietSet({ scope, patch });
   }
+  /** Gracefully end only the token owner's current room conversation. */
+  async harnessEndConversation(claims: HarnessTokenClaims, farewell: string): Promise<string> {
+    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
+    return service.endConversation(claims.agentId, farewell);
+  }
 
   /** 09-DOG-MODE: `gaia dog on|off|status` (CLI form of /dog), scoped to the
    * CALLING room — same daemon-backed, no-GaiaTool-grant tier as dream.

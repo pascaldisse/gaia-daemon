@@ -440,7 +440,7 @@ function effectiveContextWindow(modelUsage: Record<string, ClaudeModelUsage> | u
 }
 
 const CLAUDE_CAPABILITIES: HarnessCapabilities = {
-  gaiaTools: ["memory", "recall", "artifact", "summon", "resume"],
+  gaiaTools: ["memory", "recall", "artifact", "summon", "resume", "gaia"],
   nativeTools: ["web"],
   granularTools: true,
   supportsPermissionMode: true,

@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
+import { spawnSync } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
@@ -297,6 +296,9 @@ test("resolveTtsChoice: workspace default engine, agent tts override, voice fall
 
   // No tts.voice → the agent's call voice doubles as the read-aloud voice.
   assert.equal(resolveTtsChoice({ voice: "some-voice" }, settings).voice, "some-voice");
+  // Claude always receives an explicit voice, including its configured default.
+  assert.equal(resolveTtsChoice({ tts: { engine: "claude" } }, settings).voice, settings.claudeVoice);
+  assert.throws(() => resolveTtsChoice({ tts: { engine: "claude", voice: "unknown" } }, settings), /Unknown Claude TTS voice/);
   assert.throws(() => resolveTtsChoice({ tts: { engine: "nope" } }, settings), /Unknown TTS engine "nope"/);
 });
 
@@ -577,6 +579,106 @@ test("readAloudStream: an aborted stream is not cached (no truncated replay)", a
   }
 });
 
+test("claude synthesize: retries a zero-byte HTTP-success response once", async () => {
+  const temp = await createTempDir();
+  let synthHits = 0;
+  const seen: Array<{ voice?: string; requestId?: string }> = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":true}'); return; }
+    if (req.url === "/synthesize") {
+      synthHits++;
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        seen.push({ voice: JSON.parse(body).voice, requestId: String(req.headers["x-gaia-tts-request-id"] ?? "") });
+        res.writeHead(200, { "content-type": "audio/wav" });
+        res.end(synthHits === 1 ? Buffer.alloc(0) : Buffer.from("WAV"));
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const audio = await readAloud({
+      event: { author: "gaia", text: "Hello." },
+      agent: { tts: { engine: "claude" } },
+      settings: voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: "" }),
+      ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path,
+    });
+    assert.equal(audio.audio.toString(), "WAV");
+    assert.equal(synthHits, 2);
+    assert.deepEqual(seen.map(({ voice }) => voice), ["airy", "airy"]);
+    assert.ok(seen.every(({ requestId }) => requestId), "every retry carries a request id");
+    assert.equal(seen[0].requestId, seen[1].requestId, "retries remain correlated");
+  } finally {
+    server.close();
+    await temp.cleanup();
+  }
+});
+
+test("claude readAloudStream: missing first PCM frame fails and retries once", async () => {
+  const temp = await createTempDir();
+  let streamHits = 0;
+  const logs: string[] = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") { res.writeHead(200, { "content-type": "application/json" }); res.end('{"ok":true,"loggedIn":true}'); return; }
+    if (req.url === "/stream") {
+      streamHits++;
+      res.writeHead(200, { "content-type": "audio/pcm", "x-tts-rate": "16000", "x-tts-channels": "1", "x-tts-bits": "16" });
+      res.end();
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    await assert.rejects(
+      () => readAloudStream({
+        event: { author: "gaia", text: "Hello." }, agent: { tts: { engine: "claude" } },
+        settings: voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: "" }),
+        ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path, log: (message) => logs.push(message),
+      }),
+      /before its first PCM frame/,
+    );
+    assert.equal(streamHits, 2);
+    assert.ok(logs.some((message) => message.includes("Claude stream failed request=") && message.includes("voice=airy")));
+  } finally {
+    server.close();
+    await temp.cleanup();
+  }
+});
+
+test("readAloudStream cache key includes the effective voice", async () => {
+  const temp = await createTempDir();
+  let synths = 0;
+  registerTtsEngine({
+    id: "test-voice-cache",
+    voices: [],
+    synthesize: async () => ({ audio: Buffer.from("AUDIO"), contentType: "audio/test" }),
+    synthesizeStream: async (): Promise<TtsStream> => ({
+      format: { sampleRate: 16000, channels: 1, bitsPerSample: 16 },
+      frames: (async function* () { synths++; yield Buffer.from([1, 0]); })(),
+    }),
+  });
+  const request = (voice: string) => readAloudStream({
+    event: { author: "gaia", text: "Same text." }, agent: { tts: { engine: "test-voice-cache", voice } },
+    settings: voiceSettings({ ttsEngine: "test-voice-cache" }), ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path,
+  });
+  try {
+    for (const voice of ["voice-one", "voice-two", "voice-one"]) {
+      const delivery = await request(voice);
+      if (delivery.mode !== "stream") throw new Error("expected stream");
+      await collect(delivery.frames);
+    }
+    assert.equal(synths, 2, "changing voice must not replay the prior voice's cache entry");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("claude readAloudStream waits for browser-session readiness before opening stream", async () => {
   const temp = await createTempDir();
   let streamHits = 0;
@@ -600,79 +702,39 @@ test("claude readAloudStream waits for browser-session readiness before opening 
   }
 });
 
-test("claude readAloudStream kills pre-existing claude-voice daemon when claudeVoiceDir is set", async () => {
+test("claude readAloudStream reuses a healthy external claude-voice daemon", async () => {
   const temp = await createTempDir();
   const daemonDir = await createTempDir();
-  const portHolder = http.createServer();
-  await new Promise<void>((resolve) => portHolder.listen(0, "127.0.0.1", resolve));
-  const port = (portHolder.address() as AddressInfo).port;
-  await new Promise<void>((resolve, reject) => portHolder.close((error) => (error ? reject(error) : resolve())));
-  const baseUrl = `http://127.0.0.1:${port}`;
-
-  const foreign = spawn(process.execPath, ["-e", `
-    const http = require("node:http");
-    const server = http.createServer((req, res) => {
-      if (req.url === "/health") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, loggedIn: true }));
-        return;
-      }
-      res.writeHead(404);
-      res.end("not found");
-    });
-    server.listen(${port}, "127.0.0.1");
-  `], { stdio: "ignore" });
-  const foreignExit = once(foreign, "exit");
-
-  try {
-    await waitForHealthy(baseUrl);
-    const voicedPath = join(daemonDir.path, "voiced.js");
-    // The real voiced.js is spawned by exec'ing its own path (shebang-driven,
-    // like the unmute service scripts) rather than `process.execPath [script]`
-    // — see read-aloud.ts. Mirror that here: a real shebang + chmod +x.
-    await writeFile(voicedPath, `#!/usr/bin/env node
-      const http = require("node:http");
-      const server = http.createServer((req, res) => {
-        if (req.url === "/health") {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, loggedIn: true }));
-          return;
-        }
-        if (req.url === "/stream") {
-          res.writeHead(200, {
-            "content-type": "audio/pcm",
-            "x-tts-rate": "16000",
-            "x-tts-channels": "1",
-            "x-tts-bits": "16",
-          });
-          res.end(Buffer.from([1, 0, 2, 0]));
-          return;
-        }
-        res.writeHead(404);
-        res.end("not found");
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, loggedIn: true }));
+      return;
+    }
+    if (req.url === "/stream") {
+      res.writeHead(200, {
+        "content-type": "audio/pcm",
+        "x-tts-rate": "16000",
+        "x-tts-channels": "1",
+        "x-tts-bits": "16",
       });
-      server.listen(${port}, "127.0.0.1");
-    `);
-    await chmod(voicedPath, 0o755);
-
-    const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: baseUrl, claudeVoiceDir: daemonDir.path, startTimeoutSec: 3 });
+      res.end(Buffer.from([1, 0, 2, 0]));
+      return;
+    }
+    res.writeHead(404); res.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    // A configured checkout must not replace a healthy helper that may have an
+    // active stream. No voiced.js is present, proving no helper was restarted.
+    const settings = voiceSettings({ ttsEngine: "claude", claudeVoiceUrl: `http://127.0.0.1:${port}`, claudeVoiceDir: daemonDir.path, startTimeoutSec: 3 });
     const delivery = await readAloudStream({ event: { author: "gaia", text: "Hello there." }, settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path });
     assert.equal(delivery.mode, "stream");
     if (delivery.mode !== "stream") throw new Error("unreachable");
     assert.equal((await collect(delivery.frames)).toString("hex"), "01000200");
-
-    const [, signal] = (await Promise.race([
-      foreignExit,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("foreign claude-voice daemon was not killed")), 2000)),
-    ])) as [number | null, NodeJS.Signals | null];
-    assert.equal(signal, "SIGTERM");
   } finally {
-    try {
-      foreign.kill("SIGTERM");
-    } catch {
-      // Already killed by the lifecycle policy.
-    }
-    await killRandomTestPort(port);
+    server.close();
     await daemonDir.cleanup();
     await temp.cleanup();
   }

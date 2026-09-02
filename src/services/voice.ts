@@ -56,6 +56,14 @@ export interface VoiceSettings {
   ttsArchiveDir: string;
   /** claude-voice daemon the "claude" read-aloud engine talks to. */
   claudeVoiceUrl: string;
+  /** Explicit fallback voice for Claude requests with no agent voice. */
+  claudeVoice: string;
+  /** Seconds to wait for Claude's first PCM frame after HTTP success. */
+  claudeVoiceFirstFrameTimeoutSec: number;
+  /** Retry count after an empty/failed Claude audio response. */
+  claudeVoiceRetryCount: number;
+  /** Maximum pending live-Claude input chunks before failing the request. */
+  claudeVoiceQueueLimit: number;
   /** claude-voice checkout to auto-start when its daemon is down ("" = never
    * auto-start; the engine then requires the daemon to already be running). */
   claudeVoiceDir: string;
@@ -114,6 +122,10 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   // stale absolute home path in voice.json.
   ttsArchiveDir: "",
   claudeVoiceUrl: "http://127.0.0.1:8778",
+  claudeVoice: "airy",
+  claudeVoiceFirstFrameTimeoutSec: 15,
+  claudeVoiceRetryCount: 1,
+  claudeVoiceQueueLimit: 64,
   claudeVoiceDir: "",
   elevenLabsApiKey: "",
   elevenLabsModel: "eleven_v3",
@@ -176,6 +188,10 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   // Empty explicitly selects the runtime default archive path.
   if (typeof raw.ttsArchiveDir === "string") settings.ttsArchiveDir = raw.ttsArchiveDir.trim();
   if (typeof raw.claudeVoiceUrl === "string" && raw.claudeVoiceUrl.trim()) settings.claudeVoiceUrl = raw.claudeVoiceUrl.trim();
+  if (typeof raw.claudeVoice === "string" && raw.claudeVoice.trim()) settings.claudeVoice = raw.claudeVoice.trim();
+  if (typeof raw.claudeVoiceFirstFrameTimeoutSec === "number" && raw.claudeVoiceFirstFrameTimeoutSec > 0) settings.claudeVoiceFirstFrameTimeoutSec = raw.claudeVoiceFirstFrameTimeoutSec;
+  if (typeof raw.claudeVoiceRetryCount === "number" && Number.isInteger(raw.claudeVoiceRetryCount) && raw.claudeVoiceRetryCount >= 0) settings.claudeVoiceRetryCount = raw.claudeVoiceRetryCount;
+  if (typeof raw.claudeVoiceQueueLimit === "number" && Number.isInteger(raw.claudeVoiceQueueLimit) && raw.claudeVoiceQueueLimit > 0) settings.claudeVoiceQueueLimit = raw.claudeVoiceQueueLimit;
   if (typeof raw.claudeVoiceDir === "string" && raw.claudeVoiceDir.trim()) settings.claudeVoiceDir = raw.claudeVoiceDir.trim();
   if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
   if (typeof raw.elevenLabsModel === "string" && raw.elevenLabsModel.trim()) settings.elevenLabsModel = raw.elevenLabsModel.trim();

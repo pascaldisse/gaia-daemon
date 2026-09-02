@@ -346,11 +346,11 @@ export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext,
   });
 }
 
-type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll" | "diet" | "tool_result_fetch";
+type GaiaVerb = "bash" | "read" | "write" | "edit" | "web" | "summon" | "resume" | "mem" | "recall" | "artifact" | "caryll" | "diet" | "tool_result_fetch" | "end_conversation";
 type GaiaResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details: unknown };
 type GaiaHandler = (args: Record<string, unknown>) => Promise<GaiaResult>;
 
-const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch"];
+const ALL_GAIA_VERBS: readonly GaiaVerb[] = ["bash", "read", "write", "edit", "web", "summon", "resume", "mem", "recall", "artifact", "caryll", "diet", "tool_result_fetch", "end_conversation"];
 
 /** Verbs with a real, reusable per-verb `args` schema (mirrors the retired
  * typed native tools exactly — read/write/edit/bash/summon/mem/recall come
@@ -363,13 +363,9 @@ function verbSchemaEntries(schemas: Partial<Record<GaiaVerb, TSchema>>): Array<[
   return ALL_GAIA_VERBS.map((verb) => [verb, schemas[verb]] as const).filter((entry): entry is [GaiaVerb, TSchema] => entry[1] !== undefined);
 }
 
-/** Precise, path-qualified corrective error string for a malformed verb call —
- * the self-healing-loop half of schema tightness: even when the outer
- * tool schema's structural hint (allOf/if-then, see buildGaiaParameters) goes
- * unenforced by a given provider or a pre-restart daemon still serving the old
- * loose schema, this direct Value.Check/Value.Errors pass against the SAME
- * per-verb schema still catches it before dispatch and hands the model back
- * exactly which field is wrong instead of a generic native-tool crash. */
+/** Precise, path-qualified corrective error for malformed verb args.
+ * The direct per-verb check remains authoritative because the transport-safe
+ * outer schema can describe every args shape but cannot discriminate by verb. */
 function formatArgErrors(verb: GaiaVerb, schema: TSchema, args: unknown): string {
   const errors = [...Value.Errors(schema, args)].slice(0, 8);
   const detail = errors.length
@@ -379,29 +375,18 @@ function formatArgErrors(verb: GaiaVerb, schema: TSchema, args: unknown): string
   return `ERROR: gaia ${verb} args invalid — ${detail}${readDetailHint}`;
 }
 
-/** The outer `gaia` tool schema: keeps a normal flat object (verb enum + a
- * loose `args`) as the TOP-LEVEL type/properties/required — load-bearing,
- * not cosmetic: pi-ai's Anthropic non-strict conversion path
- * (convertTools → legacyInputSchema in @earendil-works/pi-ai's
- * anthropic-messages.js) rebuilds `input_schema` from ONLY
- * `schema.properties`/`schema.required` at the SCHEMA ROOT, discarding
- * anything that lives inside a root-level `oneOf` branch instead of
- * top-level `properties` — a genuine discriminated-union (option a) would
- * silently degrade to an EMPTY `properties: {}` for every Claude call
- * (verified against the installed pi-ai build, not a version assumption).
- * `allOf` of `if`/`then` branches keyed on `verb` (option b) survives that
- * rebuild untouched since it never touches `properties`/`required`/`type` —
- * confirmed live: pi-agent-core's agent-loop calls
- * `@earendil-works/pi-ai`'s `validateToolArguments(tool, toolCall)` against
- * this exact `tool.parameters` (Compile+if/then honored, see tools-pi
- * schema tests) BEFORE `execute()` ever runs, throwing a formatted error the
- * loop turns into an error tool-result — i.e. Anthropic/OpenAI/etc. all see
- * the same canonical schema pre-provider-transform. */
+/** Transport-safe outer schema. Root properties stay flat for pi-ai's legacy
+ * Anthropic conversion. Per-verb shapes live under args.anyOf: Claude Code's
+ * MCP loader accepts nested anyOf, but silently drops tools containing
+ * if/then/const. execute() performs the discriminating per-verb validation. */
 function buildGaiaParameters(verbSchemas: Partial<Record<GaiaVerb, TSchema>>) {
-  const allOf = verbSchemaEntries(verbSchemas).map(([verb, schema]) => ({
-    if: { properties: { verb: { const: verb } }, required: ["verb"] },
-    then: { properties: { args: schema } },
-  }));
+  const argVariants = verbSchemaEntries(verbSchemas).map(([verb, schema]) => {
+    const description = (schema as { description?: unknown }).description;
+    return {
+      ...schema,
+      description: `Arguments when verb is ${verb}.${typeof description === "string" ? ` ${description}` : ""}`,
+    };
+  });
   return Type.Unsafe<{
     verb: GaiaVerb;
     args: Record<string, unknown>;
@@ -416,13 +401,13 @@ function buildGaiaParameters(verbSchemas: Partial<Record<GaiaVerb, TSchema>>) {
       args: {
         type: "object",
         description:
-          "Verb-specific arguments. Shape depends on `verb`: bash/read/write/edit/summon/mem/recall/web are strictly typed (see the matching allOf branch below, keyed on verb — mirrors the retired native tools exactly, e.g. edit wants { path, edits: [{ oldText, newText }] }); resume wants { roomId, message }; artifact wants { action, ... }; caryll wants { action, path, output? } — all three validated at call time with a corrective error on mismatch.",
+          "Verb-specific arguments. Match the anyOf variant labelled for the selected verb; execute-time validation returns a precise corrective error on mismatch.",
+        ...(argVariants.length ? { anyOf: argVariants } : {}),
       },
       raw: { type: "boolean", description: "Return native output unchanged." },
       compress_above_bytes: { type: "number", minimum: 0, description: "Override configured gaiago formatting threshold in bytes." },
       translator: { type: "string", enum: ["deterministic", "llm"], description: "llm reserved: translation hook is not wired yet." },
     },
-    ...(allOf.length ? { allOf } : {}),
   });
 }
 
@@ -644,6 +629,16 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     mem: memory.parameters as TSchema,
     recall: recall.parameters as TSchema,
     ...(summon ? { summon: summon.parameters as TSchema } : {}),
+    resume: Type.Object({
+      roomId: Type.String({ description: "Room id to steer." }),
+      message: Type.String({ description: "Follow-up instruction." }),
+    }),
+    artifact: artifactParameters(),
+    caryll: Type.Object({
+      action: stringEnum(["compress", "expand", "stats"]),
+      path: Type.String({ description: "Input path." }),
+      output: Type.Optional(Type.String({ description: "Output path; defaults to input path." })),
+    }),
     // 09-MEMORY-CONTEXT: diet's knobs mirror ContextDietPolicy's field names
     // exactly (domain/context-diet.ts) — never re-named at this layer.
     diet: Type.Object({
@@ -654,7 +649,10 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
       fullTurnWindow: Type.Optional(Type.Number({ minimum: 0, description: "set only: last N room events whose own tool calls stay full before collapsing." })),
       toolTailLines: Type.Optional(Type.Number({ minimum: 1, description: "set only: another agent's tool activity is always trimmed to its last N lines." })),
     }),
-    tool_result_fetch: Type.Object({
+    end_conversation: Type.Object({
+    farewell: Type.String({ minLength: 1, description: "Visible final message for the room. This ends your current conversation until a user writes again." }),
+  }),
+  tool_result_fetch: Type.Object({
       sessionId: Type.String({ minLength: 1, description: "From the [collapsed — ...] stub's own tool_result_fetch(sessionId=\"...\", entryId=\"...\") marker." }),
       entryId: Type.String({ minLength: 1, description: "From the same stub marker." }),
       offset: Type.Optional(Type.Number({ minimum: 0, description: "Char offset into the original call/args/result JSON. Default 0." })),
@@ -704,13 +702,22 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     caryll: runCaryllVerb,
     diet: (args) => runDietVerb(args, ctx),
     tool_result_fetch: (args) => runToolResultFetchVerb(args, ctx),
+    end_conversation: async (args) => {
+      const farewell = typeof args.farewell === "string" ? args.farewell : "";
+      if (!ctx.endConversation) return { content: [{ type: "text", text: "ERROR: end_conversation is unavailable for this room." }], details: { ok: false } };
+      try {
+        return { content: [{ type: "text", text: await ctx.endConversation({ farewell }) }], details: { ok: true } };
+      } catch (error) {
+        return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], details: { ok: false } };
+      }
+    },
   };
 
   return defineTool({
     name: "gaia",
     label: "Gaia",
-    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search ({query, provider?}, Brave → Tavily → Serper), web fetch ({url, maxBytes?, transcript?, lang?, comments?} -- clean extracted page text, not raw HTML; youtube urls get a transcript by default + opt-in top-level comments) or curl fallback, daemon memory/recall/summon/resume, room artifacts, caryll, context-diet policy (diet: get|set render-time decay knobs), or tool_result_fetch (page back a diet-collapsed tool call by sessionId/entryId). Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
-    promptSnippet: "gaia: unified { verb, args }; web search {query, provider?, maxResults?} falls back Brave → Tavily → Serper; web fetch {url, maxBytes?, transcript?, comments?} returns clean extracted text (youtube: transcript on by default, comments opt-in); also files, commands, memory, artifacts, workers, steering, diet (context-diet on/off + knobs), tool_result_fetch (page back a collapsed tool call).",
+    description: "Unified GAIA tool. verb dispatches to native bash/read/write/edit, web search ({query, provider?}, Brave → Tavily → Serper), web fetch ({url, maxBytes?, transcript?, lang?, comments?} -- clean extracted page text, not raw HTML; youtube urls get a transcript by default + opt-in top-level comments) or curl fallback, daemon memory/recall/summon/resume/end_conversation, room artifacts, caryll, context-diet policy (diet: get|set render-time decay knobs), or tool_result_fetch (page back a diet-collapsed tool call by sessionId/entryId). Results above compress_above_bytes use deterministic gaiago graph notation; raw:true bypasses it.",
+    promptSnippet: "gaia: unified { verb, args }; web search {query, provider?, maxResults?} falls back Brave → Tavily → Serper; web fetch {url, maxBytes?, transcript?, comments?} returns clean extracted text (youtube: transcript on by default, comments opt-in); also files, commands, memory, artifacts, workers, steering, end_conversation, diet (context-diet on/off + knobs), tool_result_fetch (page back a collapsed tool call).",
     parameters: buildGaiaParameters(verbSchemas),
     execute: async (_toolCallId: string, params: { verb: GaiaVerb; args: Record<string, unknown>; raw?: boolean; compress_above_bytes?: number; translator?: "deterministic" | "llm" }) => {
       try {

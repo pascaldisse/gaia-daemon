@@ -243,7 +243,7 @@ export async function deleteAgent(agentId) {
 }
 
 /** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
-/** @typedef {{ id: string, label?: string, login: boolean }} AccountHarnessSummary */
+/** @typedef {{ id: string, label?: string }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
 
 /** Cached GET /api/accounts — every caller (Settings' Accounts tab, the

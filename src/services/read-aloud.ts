@@ -9,11 +9,12 @@
 // Voice calls are a different pipeline (services/voice.ts): live and duplex.
 // This module is one-shot: text in, a finished WAV out.
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { newId } from "../core/ids.js";
 import { globalPaths } from "../core/paths.js";
 import type { AgentTtsConfig } from "../core/types.js";
 import { elevenLabsKey, type VoiceSettings, type VoiceStackSettings } from "./voice.js";
@@ -318,8 +319,10 @@ export type TtsDuplexContext = Omit<TtsSynthesisContext, "text">;
 export interface TtsSynthesisContext {
   /** Speech-ready text (already through speakableText). */
   text: string;
-  /** Engine-specific voice id; undefined = the engine's default voice. */
+  /** Engine-specific effective voice, resolved before this request is sent. */
   voice?: string;
+  /** Correlates every helper request and failure in the daemon logs. */
+  requestId?: string;
   settings: VoiceSettings;
   /** Bring up the bundled unmute TTS service if needed → its HTTP base URL. */
   ensureTts(onStatus: (message: string) => void): Promise<{ ttsUrl: string }>;
@@ -333,6 +336,8 @@ export interface TtsEngineSpec {
   id: string;
   /** Known voice ids, surfaced as settings hints ([] = free-form). */
   voices: string[];
+  /** Resolve/validate an explicit per-request voice when this engine requires it. */
+  resolveVoice?(voice: string | undefined, settings: VoiceSettings): string | undefined;
   synthesize(context: TtsSynthesisContext): Promise<TtsAudio>;
   /** Optional: synthesize the whole message as ONE continuous stream, played
    * frame-by-frame as it arrives (matches the claude.ai desktop app). Declaring
@@ -378,7 +383,8 @@ export function resolveTtsChoice(
   const engineId = agent?.tts?.engine ?? settings.ttsEngine;
   const engine = findTtsEngine(engineId);
   if (!engine) throw new Error(`Unknown TTS engine "${engineId}" (available: ${ttsEngineIds().join(", ")})`);
-  return { engine, voice: agent?.tts?.voice ?? agent?.voice };
+  const requestedVoice = agent?.tts?.voice ?? agent?.voice;
+  return { engine, voice: engine.resolveVoice ? engine.resolveVoice(requestedVoice, settings) : requestedVoice };
 }
 
 // ---------------------------------------------------------------------------
@@ -531,10 +537,19 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
     throw new Error(`Unknown chunk ${index} (message has ${chunks.length})`);
   }
 
-  const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
+  const log = request.log ?? (() => {});
+  let choice: ReturnType<typeof resolveTtsChoice>;
+  try {
+    choice = resolveTtsChoice(request.agent, request.settings);
+  } catch (error) {
+    log(`voice: TTS selection failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+  const { engine, voice } = choice;
+  const requestId = newId("tts");
+  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"}`);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
-  const log = request.log ?? (() => {});
   const key = ttsCacheKey(engine.id, voice, chunks[index]);
   if (!request.regenerate) {
     const cached = await readCachedAudio(cacheDir, key);
@@ -547,6 +562,7 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
     settings: request.settings,
     ensureTts: request.ensureTts,
     log,
+    requestId,
   });
   await writeCachedAudio(cacheDir, key, result, undefined, archiveDir, log);
   return { ...result, chunks: chunks.length, chunk: index };
@@ -605,13 +621,22 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
   const text = speakableText(request.event.text);
   if (!text) throw new Error("Nothing to read aloud in this message");
 
-  const { engine, voice } = resolveTtsChoice(request.agent, request.settings);
+  const log = request.log ?? (() => {});
+  let choice: ReturnType<typeof resolveTtsChoice>;
+  try {
+    choice = resolveTtsChoice(request.agent, request.settings);
+  } catch (error) {
+    log(`voice: TTS selection failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+  const { engine, voice } = choice;
+  const requestId = newId("tts");
+  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"}`);
   // Batch-only engine (local TTS): the client uses the chunked path unchanged.
   if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length };
 
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
-  const log = request.log ?? (() => {});
   const key = ttsCacheKey(`${engine.id}:stream`, voice, text);
   if (!request.regenerate) {
     const cached = await readCachedPcm(cacheDir, key);
@@ -624,6 +649,7 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
     settings: request.settings,
     ensureTts: request.ensureTts,
     log,
+    requestId,
   });
   return { mode: "stream", format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, stream.format, archiveDir, log) };
 }
@@ -713,15 +739,14 @@ registerTtsEngine({ id: "kyutai", voices: [], synthesize: kyutaiSynthesize });
 // claude — the claude-voice daemon (claude.ai "Read aloud" voices through the
 // user's own account). POST /synthesize returns a finished WAV. When the
 // daemon is down and a checkout is configured, it is spawned detached in its
-// own process group and killed on GAIA shutdown. With claudeVoiceDir set, any
-// pre-existing daemon on the port is killed and replaced at first use (fresh
-// start policy); manual mode without claudeVoiceDir is never killed.
+// own process group and stopped on GAIA shutdown. A healthy pre-existing
+// daemon is always reused, including when claudeVoiceDir is configured, so an
+// active helper stream is never displaced.
 
 const CLAUDE_VOICES = ["airy", "buttery", "mellow", "glassy", "rounded"];
 const CLAUDE_SYNTH_TIMEOUT_MS = 180_000;
 
 let claudeVoiceChild: ChildProcess | undefined;
-let claudeVoiceOwned = false;
 let claudeVoiceExitHooked = false;
 
 interface ClaudeVoiceHealth {
@@ -746,61 +771,6 @@ async function claudeVoiceHealth(baseUrl: string): Promise<ClaudeVoiceHealth> {
     return { reachable: true, ready: true };
   } catch {
     return { reachable: false, ready: false };
-  }
-}
-
-function claudeVoicePortPids(port: string): number[] | undefined {
-  const result = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
-  if (result.error) return undefined;
-  if (result.status !== 0) return [];
-  return result.stdout
-    .split(/\s+/)
-    .map((pid) => Number(pid))
-    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
-}
-
-async function killClaudeVoicePortOccupants(baseUrl: string, log: (m: string) => void): Promise<void> {
-  let port: string;
-  try {
-    const url = new URL(baseUrl);
-    port = url.port || (url.protocol === "https:" ? "443" : "80");
-  } catch (error) {
-    log(`voice: could not parse claude-voice URL ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-
-  try {
-    const pids = claudeVoicePortPids(port);
-    if (!pids?.length) return;
-    for (const pid of pids) {
-      try {
-        process.kill(pid, "SIGTERM");
-        log(`voice: sent SIGTERM to pre-existing claude-voice daemon pid ${pid}`);
-      } catch (error) {
-        log(`voice: failed to SIGTERM claude-voice daemon pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    const deadline = Date.now() + 4000;
-    let remaining = pids;
-    while (Date.now() < deadline) {
-      const current = claudeVoicePortPids(port);
-      if (!current) return;
-      remaining = current.filter((pid) => pids.includes(pid));
-      if (!remaining.length) return;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    }
-
-    for (const pid of remaining) {
-      try {
-        process.kill(pid, "SIGKILL");
-        log(`voice: sent SIGKILL to stuck claude-voice daemon pid ${pid}`);
-      } catch (error) {
-        log(`voice: failed to SIGKILL claude-voice daemon pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  } catch (error) {
-    log(`voice: failed while killing pre-existing claude-voice daemon on ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -833,14 +803,8 @@ function hookClaudeVoiceExit(): void {
 async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<string> {
   const baseUrl = context.settings.claudeVoiceUrl.replace(/\/+$/, "");
   let health = await claudeVoiceHealth(baseUrl);
-  if (health.ready && claudeVoiceOwned) return baseUrl;
+  if (health.ready) return baseUrl;
   const dir = context.settings.claudeVoiceDir;
-  if (health.ready && !claudeVoiceOwned && !dir) return baseUrl;
-  if (health.reachable && !claudeVoiceOwned && dir) {
-    context.log(`voice: killing pre-existing claude-voice daemon at ${baseUrl} (fresh start policy)`);
-    await killClaudeVoicePortOccupants(baseUrl, context.log);
-    health = { reachable: false, ready: false };
-  }
   if (health.reachable) {
     context.log(`voice: claude-voice daemon is alive at ${baseUrl}, waiting for browser session readiness...`);
   } else {
@@ -862,7 +826,6 @@ async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<st
     const child = spawn(script, [], { cwd: dir, stdio: ["ignore", log, log], detached: true });
     child.unref();
     claudeVoiceChild = child;
-    claudeVoiceOwned = true;
     hookClaudeVoiceExit();
   }
 
@@ -881,65 +844,166 @@ async function ensureClaudeVoiceDaemon(context: TtsSynthesisContext): Promise<st
   );
 }
 
-async function claudeSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
-  const baseUrl = await ensureClaudeVoiceDaemon(context);
-  const response = await fetch(`${baseUrl}/synthesize`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: context.text, ...(context.voice ? { voice: context.voice } : {}) }),
-    signal: AbortSignal.timeout(CLAUDE_SYNTH_TIMEOUT_MS),
-  });
-  if (response.status === 404) {
-    throw new Error("claude-voice daemon has no /synthesize endpoint - update the checkout and restart the daemon");
-  }
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`claude-voice synthesis failed (${response.status})${detail ? `: ${detail}` : ""}`);
-  }
-  return {
-    audio: Buffer.from(await response.arrayBuffer()),
-    contentType: response.headers.get("content-type") ?? "audio/wav",
-  };
+function effectiveClaudeVoice(context: Pick<TtsSynthesisContext, "voice" | "requestId" | "log">): string {
+  const voice = context.voice?.trim();
+  if (voice) return voice;
+  const message = "Claude TTS request has no resolved voice; refusing helper-default fallback";
+  context.log(`voice: request=${context.requestId ?? "unknown"} ${message}`);
+  throw new Error(message);
 }
 
-/** Stream the whole message as one continuous PCM pass (the desktop-app path).
- * The daemon's /stream endpoint drives one claude.ai TTS socket for the entire
- * text and forwards each PCM frame as it is generated; we surface the format
- * from its headers and yield frames straight through. No AbortSignal timeout:
- * the daemon's own idle/hard caps guarantee the stream terminates, and a client
- * disconnect cancels the reader below. */
-async function claudeSynthesizeStream(context: TtsSynthesisContext): Promise<TtsStream> {
-  const baseUrl = await ensureClaudeVoiceDaemon(context);
-  const response = await fetch(`${baseUrl}/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: context.text, ...(context.voice ? { voice: context.voice } : {}) }),
-    // A voice-call barge-in aborts here → the daemon closes the claude.ai socket
-    // and stops generating into a call the user already talked over.
-    ...(context.signal ? { signal: context.signal } : {}),
-  });
-  if (response.status === 404) {
-    throw new Error("claude-voice daemon has no /stream endpoint - update the checkout and restart the daemon");
-  }
-  if (!response.ok || !response.body) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`claude-voice stream failed (${response.status})${detail ? `: ${detail}` : ""}`);
-  }
-  const format: TtsStreamFormat = {
+function claudeRequestId(context: Pick<TtsSynthesisContext, "requestId">): string {
+  return context.requestId ?? newId("tts");
+}
+
+function claudeHeaders(requestId: string): Record<string, string> {
+  return { "content-type": "application/json", "x-gaia-tts-request-id": requestId };
+}
+
+function claudeFormat(response: Response): TtsStreamFormat {
+  return {
     sampleRate: Number(response.headers.get("x-tts-rate")) || 16_000,
     channels: Number(response.headers.get("x-tts-channels")) || 1,
     bitsPerSample: Number(response.headers.get("x-tts-bits")) || 16,
   };
-  return { format, frames: readableToFrames(response.body) };
 }
 
-async function* readableToFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<Buffer> {
+async function claudeSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
+  const baseUrl = await ensureClaudeVoiceDaemon(context);
+  const voice = effectiveClaudeVoice(context);
+  const requestId = claudeRequestId(context);
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= context.settings.claudeVoiceRetryCount; attempt++) {
+    try {
+      context.log(`voice: Claude synth request=${requestId} voice=${voice} attempt=${attempt + 1}`);
+      const response = await fetch(`${baseUrl}/synthesize`, {
+        method: "POST",
+        headers: claudeHeaders(requestId),
+        body: JSON.stringify({ text: context.text, voice }),
+        signal: AbortSignal.timeout(CLAUDE_SYNTH_TIMEOUT_MS),
+      });
+      if (response.status === 404) {
+        throw new Error("claude-voice daemon has no /synthesize endpoint - update the checkout and restart the daemon");
+      }
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`claude-voice synthesis failed (${response.status})${detail ? `: ${detail}` : ""}`);
+      }
+      const audio = Buffer.from(await response.arrayBuffer());
+      if (!audio.length) throw new Error("claude-voice synthesis returned zero-byte audio");
+      return { audio, contentType: response.headers.get("content-type") ?? "audio/wav" };
+    } catch (error) {
+      lastError = error;
+      context.log(`voice: Claude synth failed request=${requestId} voice=${voice} attempt=${attempt + 1}: ${error instanceof Error ? error.message : String(error)}`);
+      if (attempt === context.settings.claudeVoiceRetryCount || context.signal?.aborted) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function firstPcmFrames(
+  body: ReadableStream<Uint8Array>,
+  minimumBytes: number,
+  timeoutSec: number,
+): Promise<AsyncIterable<Buffer>> {
   const reader = body.getReader();
+  const initial: Buffer[] = [];
+  let total = 0;
+  try {
+    while (total < minimumBytes) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const next = await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("claude-voice stream timed out before its first PCM frame")), timeoutSec * 1000); }),
+        ]);
+        if (next.done) throw new Error("claude-voice stream ended before its first PCM frame");
+        if (!next.value?.length) continue;
+        const frame = Buffer.from(next.value);
+        initial.push(frame);
+        total += frame.length;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    return (async function* (): AsyncGenerator<Buffer> {
+      try {
+        yield* initial;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          if (value?.length) yield Buffer.from(value);
+        }
+      } finally {
+        try {
+          await reader.cancel();
+        } catch {
+          // Reader already closed.
+        }
+      }
+    })();
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+      // Reader already closed.
+    }
+    throw error;
+  }
+}
+
+/** Stream the whole message as one continuous PCM pass. HTTP success is not
+ * success until at least one complete PCM frame arrives; this keeps the web
+ * route from advertising an empty helper response as playable audio. */
+async function claudeSynthesizeStream(context: TtsSynthesisContext): Promise<TtsStream> {
+  const baseUrl = await ensureClaudeVoiceDaemon(context);
+  const voice = effectiveClaudeVoice(context);
+  const requestId = claudeRequestId(context);
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= context.settings.claudeVoiceRetryCount; attempt++) {
+    try {
+      context.log(`voice: Claude stream request=${requestId} voice=${voice} attempt=${attempt + 1}`);
+      const response = await fetch(`${baseUrl}/stream`, {
+        method: "POST",
+        headers: claudeHeaders(requestId),
+        body: JSON.stringify({ text: context.text, voice }),
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+      if (response.status === 404) {
+        throw new Error("claude-voice daemon has no /stream endpoint - update the checkout and restart the daemon");
+      }
+      if (!response.ok || !response.body) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`claude-voice stream failed (${response.status})${detail ? `: ${detail}` : ""}`);
+      }
+      const format = claudeFormat(response);
+      const frameBytes = format.channels * (format.bitsPerSample / 8);
+      const frames = await firstPcmFrames(response.body, frameBytes, context.settings.claudeVoiceFirstFrameTimeoutSec);
+      context.log(`voice: Claude stream first-frame request=${requestId} voice=${voice}`);
+      return { format, frames };
+    } catch (error) {
+      lastError = error;
+      context.log(`voice: Claude stream failed request=${requestId} voice=${voice} attempt=${attempt + 1}: ${error instanceof Error ? error.message : String(error)}`);
+      if (attempt === context.settings.claudeVoiceRetryCount || context.signal?.aborted) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function* readableToFrames(body: ReadableStream<Uint8Array>, requireAudio = false): AsyncGenerator<Buffer> {
+  const reader = body.getReader();
+  let received = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
-      if (value && value.length) yield Buffer.from(value);
+      if (done) {
+        if (!received && requireAudio) throw new Error("claude-voice stream ended without PCM audio");
+        return;
+      }
+      if (value?.length) {
+        received = true;
+        yield Buffer.from(value);
+      }
     }
   } finally {
     try {
@@ -958,6 +1022,9 @@ async function* readableToFrames(body: ReadableStream<Uint8Array>): AsyncGenerat
  * agent is still writing the rest. */
 async function claudeSynthesizeDuplex(context: TtsDuplexContext): Promise<TtsDuplexSession> {
   const baseUrl = await ensureClaudeVoiceDaemon({ ...context, text: "" });
+  const voice = effectiveClaudeVoice(context);
+  const requestId = claudeRequestId(context);
+  context.log(`voice: Claude duplex request=${requestId} voice=${voice}`);
   const encoder = new TextEncoder();
   // Push-driven queue → an ASYNC-GENERATOR request body. (Node's fetch streams a
   // generator body reliably; a start()-enqueued ReadableStream is NOT sent until
@@ -980,10 +1047,9 @@ async function claudeSynthesizeDuplex(context: TtsDuplexContext): Promise<TtsDup
       await nextChunk();
     }
   }
-  const query = context.voice ? `?voice=${encodeURIComponent(context.voice)}` : "";
-  const response = await fetch(`${baseUrl}/stream-in${query}`, {
+  const response = await fetch(`${baseUrl}/stream-in?voice=${encodeURIComponent(voice)}`, {
     method: "POST",
-    headers: { "content-type": "application/x-ndjson" },
+    headers: { "content-type": "application/x-ndjson", "x-gaia-tts-request-id": requestId },
     body: requestBody(),
     // Send text as it is produced while reading PCM concurrently.
     duplex: "half",
@@ -1007,6 +1073,15 @@ async function claudeSynthesizeDuplex(context: TtsDuplexContext): Promise<TtsDup
     push(text: string): void {
       const speech = text.trim();
       if (closed || !speech) return;
+      if (queue.length >= context.settings.claudeVoiceQueueLimit) {
+        closed = true;
+        queue.push(null);
+        wake?.();
+        wake = undefined;
+        const message = `Claude live input queue exceeded ${context.settings.claudeVoiceQueueLimit} chunks`;
+        context.log(`voice: Claude duplex failed request=${requestId} voice=${voice}: ${message}`);
+        throw new Error(message);
+      }
       queue.push(encoder.encode(`${JSON.stringify({ text: speech })}\n`));
       wake?.();
       wake = undefined;
@@ -1019,13 +1094,19 @@ async function claudeSynthesizeDuplex(context: TtsDuplexContext): Promise<TtsDup
       wake?.();
       wake = undefined;
     },
-    frames: readableToFrames(response.body),
+    frames: readableToFrames(response.body, true),
   };
 }
 
 registerTtsEngine({
   id: "claude",
   voices: CLAUDE_VOICES,
+  resolveVoice: (requested, settings): string => {
+    const voice = (requested ?? settings.claudeVoice).trim();
+    if (!voice) throw new Error("Claude TTS voice is not configured (set agent.tts.voice, agent.voice, or voice.json claudeVoice)");
+    if (!CLAUDE_VOICES.includes(voice)) throw new Error(`Unknown Claude TTS voice "${voice}" (available: ${CLAUDE_VOICES.join(", ")})`);
+    return voice;
+  },
   synthesize: claudeSynthesize,
   synthesizeStream: claudeSynthesizeStream,
   // Feed sentences into one live socket → lowest-latency, smoothest call audio.

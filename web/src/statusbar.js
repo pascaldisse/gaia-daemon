@@ -210,7 +210,7 @@ export function initStatusbarPref() {
 
 /** The cached usage groups relevant to this room's actual account bindings.
  * A room with no usage-capable active agent intentionally displays nothing;
- * showing a provider-wide fallback is how an old login escaped into the UI.
+ * showing a provider-wide fallback is how an old credential picker escaped into the UI.
  * @returns {import("./types.js").UsageLimits[]} */
 function visibleUsageGroups() {
   const accounts = state.snapshot?.room.usageAccounts ?? [];
