@@ -246,6 +246,7 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
   const tools = Array.isArray(value.tools) ? value.tools.map(toolDetail).filter((t): t is NonNullable<typeof t> => Boolean(t)) : undefined;
   const blocks = messageBlocks(value.blocks);
   const summonResult = summonResultFrom(value.summonResult);
+  const pluginDenial = pluginDenialFrom(value.pluginDenial);
   const details: EventDetails = {
     ...(typeof value.model === "string" && value.model.length > 0 ? { model: value.model } : {}),
     ...(value.thinkingStarted === true ? { thinkingStarted: true } : {}),
@@ -253,10 +254,26 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
     ...(tools && tools.length > 0 ? { tools } : {}),
     ...(blocks ? { blocks } : {}),
     ...(summonResult ? { summonResult } : {}),
+    ...(pluginDenial ? { pluginDenial } : {}),
   };
-  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length || details.summonResult
+  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length || details.summonResult || details.pluginDenial
     ? details
     : undefined;
+}
+
+/** ADV-021: a capability-broker rejection's durable provenance, reconstructed
+ * from disk exactly like `summonResultFrom` just below — every field is
+ * required (a partial denial record is not trustworthy audit evidence, so it
+ * is dropped wholesale rather than reconstructed with holes). */
+function pluginDenialFrom(value: unknown): EventDetails["pluginDenial"] {
+  if (
+    !isRecord(value)
+    || typeof value.pluginId !== "string" || !value.pluginId
+    || typeof value.capability !== "string" || !value.capability
+    || typeof value.agentId !== "string" || !value.agentId
+    || typeof value.reason !== "string" || !value.reason
+  ) return undefined;
+  return { pluginId: value.pluginId, capability: value.capability, agentId: value.agentId, reason: value.reason };
 }
 
 /** A summon worker's result provenance, reconstructed from disk (see
@@ -507,7 +524,7 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
   // Pre-id transcript lines get a deterministic line-based id.
   const id = typeof raw.id === "string" && raw.id ? raw.id : `legacy_${index}`;
   const kind: RoomEventKind | undefined =
-    raw.kind === "compact-complete" || raw.kind === "turn-failed" ? raw.kind : undefined;
+    raw.kind === "compact-complete" || raw.kind === "turn-failed" || raw.kind === "plugin-reply" || raw.kind === "capability-denied" ? raw.kind : undefined;
   const base = {
     id,
     timestamp: raw.timestamp,

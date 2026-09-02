@@ -54,6 +54,7 @@ import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../..
 import { readUserNameSetting } from "../user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, validateThinkingLevel, type SlashCommand } from "../commands.js";
 import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type PluginContext, type PluginPanel, type PluginResult } from "../plugins.js";
+import { CapabilityDeniedError } from "../capabilities/broker.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "../sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "../turns.js";
 import { ContextPolicyStore } from "../context-policy-store.js";
@@ -169,6 +170,20 @@ export class RoomCommandsMixin {
       }
       return result;
     } catch (error) {
+      // The broker (services/plugins/contracts.ts#authorize) rejects BEFORE the
+      // plugin's own contribution code ever runs, so this catch is the ONLY
+      // place a denial's structured provenance (pluginId/capability/agentId/
+      // reason) exists — lost once flattened to a plain string. ADV-021: the
+      // caller (RoomQueue#sendMessage) needs `denial` to persist a durable
+      // `capability-denied` transcript event instead of a generic reply. The
+      // log line here is the daemon-side denial record (grep-able
+      // independent of the transcript, matching the room-lock append below).
+      if (error instanceof CapabilityDeniedError) {
+        const capability = error.missing.join(",");
+        const denial = { pluginId: error.namespace, capability, agentId: error.context.agentId, reason: error.message };
+        console.warn(`[capabilities] denied plugin=${denial.pluginId} capability=${denial.capability} agent=${denial.agentId} room=${error.context.roomId} reason=${denial.reason}`);
+        return { reply: error.message, denial };
+      }
       return { reply: `plugin ${command ?? pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}` };
     }
   }

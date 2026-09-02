@@ -1,4 +1,4 @@
-import type { EventDetails, PendingTurn, RoomEvent, Task, UiEvent, Workspace } from "../../core/types.js";
+import type { EventDetails, PendingTurn, RoomEvent, RoomEventKind, Task, UiEvent, Workspace } from "../../core/types.js";
 import type { RenderCap } from "../../domain/render-cap.js";
 import { newRoomEventId, type RoomHandle } from "../../domain/rooms.js";
 import { findHarness, harnessIdFor } from "../../harness/spec.js";
@@ -34,6 +34,7 @@ export interface RoomQueuePort {
   runCommand(task: Task, command: SlashCommand): Promise<void>;
   runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void>;
   commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn, renderCap?: RenderCap): Promise<void>;
+  appendPluginEvent(text: string, kind: RoomEventKind, details?: EventDetails): Promise<RoomEvent>;
   taskCancelled(task: Task): boolean;
   settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
   unknownAgentMessage(agentId: string): string;
@@ -103,8 +104,22 @@ export class RoomQueue {
           const pluginTask = this.service.createTask(text, []);
           this.service.emit({ type: "task-start", workspaceId: this.service.workspaceId, roomId: this.service.roomId, task: pluginTask });
           const reply = result.reply ?? `plugin ${commandName}: nothing to do (no active turn)`;
-          const event: RoomEvent = { id: `system_${pluginTask.id}`, timestamp: new Date().toISOString(), author: "system", text: reply };
-          this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
+          // ADV-021: a registry command's reply (and a capability denial
+          // converted to one — see runPlugin's CapabilityDeniedError catch)
+          // used to be a transient `emit({type:"room-event"})` only, in-memory
+          // and lost on crash or a reconnect that missed the broadcast.
+          // appendPluginEvent appends under the room lock first (same protocol
+          // as an ordinary reply's commitReply/appendTurnFailure), THEN emits
+          // the live copy — durable-first, exactly like every other observable
+          // room outcome. `result.denial` carries pluginId/capability/agentId/
+          // reason; it rides `EventDetails.pluginDenial` on a distinct `kind`
+          // so a client (or a later audit) can tell a denial from an ordinary
+          // command reply without parsing prose.
+          await this.service.appendPluginEvent(
+            reply,
+            result.denial ? "capability-denied" : "plugin-reply",
+            result.denial ? { pluginDenial: result.denial } : undefined,
+          );
           pluginTask.status = "complete";
           pluginTask.endedAt = new Date().toISOString();
           this.service.emit({ type: "task-end", workspaceId: this.service.workspaceId, roomId: this.service.roomId, task: pluginTask });
