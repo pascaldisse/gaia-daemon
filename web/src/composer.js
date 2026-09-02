@@ -77,6 +77,12 @@ let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
 /** @type {HTMLElement|null} */
+let micLevelEl = null;
+/** @type {HTMLButtonElement|null} */
+let retranscribeEl = null;
+/** @type {HTMLElement|null} */
+let draftStatusEl = null;
+/** @type {HTMLElement|null} */
 let ultrawhipWrapEl = null;
 
 // Draft persistence (composer durability — "nothing is ever lost"): the
@@ -103,6 +109,17 @@ function clearDraft() {
   try {
     localStorage.removeItem(k);
   } catch {}
+}
+
+/** Draft persistence status from the actual per-room localStorage source. */
+function draftStatus() {
+  const k = draftKey();
+  if (!k || !state.composerText.trim()) return "";
+  try {
+    return localStorage.getItem(k) === state.composerText ? "draft saved" : "draft unsaved";
+  } catch {
+    return "draft unavailable";
+  }
 }
 
 // Tracks which room's draft has already been restored into state.composerText,
@@ -137,8 +154,8 @@ export function initComposer() {
       onkeydown: onComposerKeydown,
     })
   );
-  sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: UI.send }));
-  autocompleteEl = h("div", { class: "autocomplete", hidden: true });
+  sendButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "send-button", title: "send", text: UI.send }));
+  autocompleteEl = h("div", { class: "command-suggestions", hidden: true });
   // Clicking the label toggles the summon list (only meaningful when this room
   // has running summons — renderComposer adds/removes the `has-summons` class).
   bannerLabelEl = h("span", {
@@ -154,7 +171,7 @@ export function initComposer() {
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
   stopBtnEl = /** @type {HTMLButtonElement} */ (
-    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopActiveRoom() })
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: `${UI.stop} stop`, onclick: () => void stopActiveRoom() })
   );
   bannerEl = h(
     "div",
@@ -168,15 +185,20 @@ export function initComposer() {
   editBannerEl = h(
     "div",
     { class: "editing-banner", hidden: true },
-    h("span", { text: "✎ editing message — Enter re-sends from that point, later replies are rewound" }),
+    h("span", { text: `${UI.edit} editing message — Enter re-sends from that point, later replies are rewound` }),
     h("button", { type: "button", class: "stop-btn", title: "cancel editing (Esc)", text: "cancel", onclick: () => cancelEditing() }),
   );
-  attachmentsEl = h("div", { class: "attachment-strip", hidden: true });
+  attachmentsEl = h("div", { class: "composer-attachments", hidden: true });
   dictationStatusEl = h("div", { class: "dictation-status", hidden: true });
   targetStatusEl = h("div", { class: "target-status" });
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
   modelWrapEl = h("div", { class: "model-wrap" });
   voiceWrapEl = h("div", { class: "voice-wrap" });
+  micLevelEl = h("span", { class: "mic-level", hidden: true, title: "microphone level" });
+  retranscribeEl = /** @type {HTMLButtonElement} */ (
+    h("button", { type: "button", class: "retranscribe-button", hidden: true, title: "retranscribe the last recording", text: `${UI.retry} retranscribe`, onclick: () => void retryDictation() })
+  );
+  draftStatusEl = h("output", { class: "draft-status", ariaLive: "polite" });
   ultrawhipWrapEl = h("span", {
     class: "ultrawhip-chip",
     hidden: true,
@@ -194,15 +216,20 @@ export function initComposer() {
     editBannerEl,
     attachmentsEl,
     dictationStatusEl,
-    h("div", { class: "input-shell" }, textarea, sendButton),
     h(
       "div",
       { class: "composer-row" },
-      targetStatusEl,
-      thinkingWrapEl,
-      modelWrapEl,
-      ultrawhipWrapEl,
-      h("div", { class: "composer-spacer" }),
+      h("span", { class: "composer-caret", ariaHidden: "true", text: UI.human }),
+      textarea,
+      sendButton,
+    ),
+    h(
+      "div",
+      { class: "composer-meta-row" },
+      h("div", { class: "composer-meta" }, targetStatusEl, modelWrapEl, thinkingWrapEl, ultrawhipWrapEl),
+      draftStatusEl,
+      retranscribeEl,
+      micLevelEl,
       voiceWrapEl,
     ),
   );
@@ -222,6 +249,9 @@ function renderComposer() {
     !thinkingWrapEl ||
     !modelWrapEl ||
     !voiceWrapEl ||
+    !micLevelEl ||
+    !retranscribeEl ||
+    !draftStatusEl ||
     !ultrawhipWrapEl
   )
     return;
@@ -284,7 +314,7 @@ function renderComposer() {
   if (stopBtnEl) {
     const roomBusy = Boolean(activeTask(snapshot));
     stopBtnEl.disabled = !roomBusy;
-    stopBtnEl.textContent = "■ stop";
+    stopBtnEl.textContent = `${UI.stop} stop`;
     stopBtnEl.title = roomBusy
       ? "stop this room's turn (Esc) — summons unaffected; Ctrl+C stops everything"
       : "nothing running in this room — Ctrl+C stops summons too";
@@ -354,10 +384,17 @@ function renderComposer() {
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
 
   const model = ModelChip(snapshot, state.composerText);
-  const context = ContextChip(snapshot, state.composerText);
+  // Context is turn telemetry, not static configuration: match v2 by showing
+  // its meter only while work is running. Model + thinking remain live always.
+  const context = busy ? ContextChip(snapshot, state.composerText) : null;
   const memory = MemoryChip(snapshot);
   modelWrapEl.replaceChildren(...[model, context, memory].filter((chip) => chip !== null));
 
+  draftStatusEl.textContent = draftStatus();
+  const failedDictation = hasFailedDictation();
+  retranscribeEl.hidden = !failedDictation;
+  micLevelEl.hidden = !state.dictating;
+  micLevelEl.style.setProperty("--level", String(Math.max(0, Math.min(1, state.dictationLevel))));
   voiceWrapEl.replaceChildren(...VoiceButtons());
 }
 
@@ -1105,7 +1142,7 @@ function VoiceButtons() {
         class: "voice-button end-call",
         title: `hang up @${state.voice.agentId}`,
         onclick: () => void endCall(),
-        text: "⏹",
+        text: UI.stop,
       }),
     ];
   }
@@ -1117,7 +1154,7 @@ function VoiceButtons() {
   return [
     h("button", {
       type: "button",
-      class: `voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
+      class: `mic-button voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
       title: busy
         ? "transcribing…"
         : recording
