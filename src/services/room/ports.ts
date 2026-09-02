@@ -211,6 +211,21 @@ export interface RoomLifecycleConstructPort {
   workDir: string | undefined;
 }
 
+/** Dependencies reached by monad-room turn execution (WAL-atomic markPendingTurn →
+ * engine.run → commitTurn, same shape as an agent turn). Split from room-service.ts
+ * (Pascal 2026-09-03 A6g); the pendingTurn/commitTurn atomic write stays inside
+ * this one method, unsplit. */
+export interface RoomMonadExecutionPort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspaceId: string;
+  readonly workspace: Workspace;
+  readonly options: RoomServiceOptions;
+  emit(event: UiEvent): void;
+  monadAuthor(): Promise<string[]>;
+  taskCancelled(task: Task): boolean;
+  settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+}
 /** Dependencies reached by non-WAL pet/task/monad controls. */
 export interface RoomTaskOperationsPort {
   readonly room: RoomHandle;

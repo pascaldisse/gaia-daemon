@@ -50,7 +50,7 @@ import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
 import { DEFAULT_PET_NAME, listWorkspacePetBindings, loadPet } from "../domain/pets.js";
 import { resolveRoomWorkDir } from "../domain/worktree.js";
-import { effectiveAgentTools, resolveAgentRole } from "../domain/roles.js";
+import { effectiveAgentTools } from "../domain/roles.js";
 import type { MemoryStore, MemoryAction, MemoryMutationResult } from "../domain/memory.js";
 import { formatMemoryHits, type ActiveContextRef, type MemorySearchHit } from "../domain/workspace-index.js";
 import type { AgentRuntime, HarnessHost } from "../harness/spec.js";
@@ -69,7 +69,6 @@ import { formatDreamProposal } from "./consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./consolidate.js";
 import { allowSummonForTurn, effectiveTrust, type SummonHost } from "./summons.js";
 import { HOOK_TEXT_CAP, runHooks, type HookEvent } from "./hooks.js";
-import { MonadEngine } from "./monad.js";
 import { activateSetup, deactivateMonad, discoverSetups } from "./setups.js";
 import { createAgentRuntime } from "../harness/host.js";
 import { configuredModelLabel } from "../harness/model-label.js";
@@ -79,6 +78,7 @@ import { RoomFork } from "./room/fork.js";
 import { configureRoomServiceReload, runCommand as executeCommand, runReloadCommand, runSttCommand } from "./room/command-execution.js";
 export { configureRoomServiceReload } from "./room/command-execution.js";
 import { installRoomTaskOperations, RoomTaskOperationsMixin } from "./room/task-operations.js";
+import { installRoomMonadExecution, RoomMonadExecutionMixin } from "./room/monad-execution.js";
 import type { RoomTaskOperationsPort } from "./room/ports.js";
 import { buildRoomRuntimes, resolveRoomOpen, RoomLifecycle } from "./room/lifecycle.js";
 import type { RoomLifecyclePort } from "./room/ports.js";
@@ -750,82 +750,7 @@ export class RoomService {
     }
   }
 
-  // --- monad -----------------------------------------------------------------
-
-  async runMonadTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    try {
-      const state = await this.room.state();
-      const monad = state.monad;
-      const summonHost = this.options.summonHost;
-      if (!monad || !summonHost) {
-        this.settleTask(task, "error", new Error("This room is not a monad room."));
-        return;
-      }
-
-      if (options.recordUserMessage !== false) {
-        const userEvent = await this.room.addUserMessage(text, task.targets);
-        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: userEvent });
-      }
-
-      // WAL: a monad run is a turn like any other — reserve the final answer's
-      // event id and persist a monad-flagged marker BEFORE the engine runs, so
-      // a daemon crash mid-monad leaves a resumable record (boot re-dispatches
-      // through the engine; step results already live in child rooms) instead
-      // of a recorded user message that is silently never answered. The same
-      // atomic write consumes the drained queue entry, as in runAgentTask.
-      const [author] = await this.monadAuthor();
-      const eventId = newRoomEventId();
-      await this.room.markPendingTurn(
-        {
-          id: task.id,
-          eventId,
-          prompt: text,
-          targets: task.targets.length > 0 ? task.targets : [author],
-          agentId: author,
-          partialReply: "",
-          startedAt: new Date().toISOString(),
-          monad: true,
-        },
-        options.queued ? { consumeQueuedTaskId: options.queued.taskId } : undefined,
-      );
-
-      const engine = new MonadEngine({
-        config: monad,
-        parentRoomId: this.roomId,
-        dispatch: (agentId, stepTask) => summonHost.summonAndWait(this.roomId, agentId, stepTask),
-        resolveRolePrompt: async (agentId, role) => {
-          const agent = this.workspace.agents[agentId];
-          if (!agent) return "";
-          const resolved = await resolveAgentRole(agent, role);
-          return resolved?.prompt ?? "";
-        },
-      });
-
-      const result = await engine.run(text, { isCancelled: () => this.taskCancelled(task) });
-      if (this.taskCancelled(task)) {
-        await this.room.clearPendingTurn();
-        return;
-      }
-
-      const final = result.final.trim();
-      if (final) {
-        // Commit through the WAL like every turn: append under the reserved id
-        // and retire the marker + advance the author's cursor in one write.
-        const event: RoomEvent = { id: eventId, timestamp: new Date().toISOString(), author, text: final };
-        await this.room.commitTurn(event);
-        this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-      } else {
-        await this.room.clearPendingTurn();
-      }
-      this.settleTask(task, "complete");
-    } catch (error) {
-      // Cancelled or terminally failed: retire the marker either way — never
-      // replay a poison monad run on boot.
-      await this.room.clearPendingTurn().catch(() => {});
-      if (this.taskCancelled(task)) return;
-      this.settleTask(task, "error", error);
-    }
-  }
+  // --- monad run execution: ./room/monad-execution.ts (RoomMonadExecutionMixin) ---
 
   // --- commands ----------------------------------------------------------------
 
@@ -1009,7 +934,8 @@ export interface RoomService
     RoomSummonLifecycleMixin,
     RoomLifecyclePort,
     RoomTaskOperationsMixin,
-    RoomTaskOperationsPort {}
+    RoomTaskOperationsPort,
+    RoomMonadExecutionMixin {}
 installRoomSnapshot(RoomService.prototype);
 installRoomUi(RoomService.prototype);
 installRoomCommands(RoomService.prototype);
@@ -1017,3 +943,4 @@ installRoomSanitize(RoomService.prototype);
 installRoomAgentCommands(RoomService.prototype);
 installRoomSummonLifecycle(RoomService.prototype);
 installRoomTaskOperations(RoomService.prototype);
+installRoomMonadExecution(RoomService.prototype);
