@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CapabilityBroker } from "../src/services/capabilities/index.js";
+import { loadCommandPlugins } from "../src/services/plugins.js";
 import {
   PluginRegistry,
   type PluginRegister,
@@ -28,6 +29,26 @@ async function pluginPackage(root: string, directory: string, id: string, versio
 function registered(dispose?: () => void): { register: PluginRegister } {
   return { register: () => dispose ? { dispose } : {} };
 }
+
+test("room command adapter invokes the daemon-owned registry", async () => {
+  const calls: unknown[][] = [];
+  const plugins = await loadCommandPlugins({
+    commandContributions: () => [{ pluginId: "acme.echo", name: "echo", description: "Echo" }],
+    async invokeCommand(...args) {
+      calls.push(args);
+      return { reply: "ok" };
+    },
+  });
+  const plugin = plugins.get("echo");
+  assert.ok(plugin);
+  assert.deepEqual(
+    await plugin.run(["hello"], {
+      homedir: "/home/test", roomId: "room-1", agentId: "agent-1", workspaceRoot: "/workspace", agents: [],
+    }),
+    { reply: "ok" },
+  );
+  assert.deepEqual(calls, [["acme.echo", "echo", { roomId: "room-1", agentId: "agent-1" }, { args: ["hello"] }]]);
+});
 
 test("registry validates and invokes typed contributions through its capability broker", async () => {
   const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
