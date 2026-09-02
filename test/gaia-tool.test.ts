@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createGaiaTool } from "../src/harness/tools-pi.js";
 import { buildPiTools } from "../src/harness/tools.js";
 import { MemoryStore } from "../src/domain/memory.js";
+import { createToolProviders } from "../src/services/tool-providers.js";
 import type { AgentDef } from "../src/core/types.js";
 
 function text(result: any): string {
@@ -65,6 +66,7 @@ test("gaia-only tool dispatches every phase-one verb to its native implementatio
       calls.push(`resume:${roomId}:${message}`);
       return "resumed";
     },
+    toolProviders: createToolProviders(),
   });
   assert.equal(onlyGaia.length, 1, "agent is configured with ONLY gaia");
   const tool: any = onlyGaia[0];

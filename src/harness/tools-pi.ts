@@ -9,10 +9,6 @@ import { Value } from "typebox/value";
 import { createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, defineTool } from "@earendil-works/pi-coding-agent";
 import { gaiaToolCompressionBytes } from "../core/config.js";
 import { readGaiaImage, type ImageReadDetail, type ImageReadRegion } from "./image-read.js";
-import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "../services/artifacts.js";
-import { compressCaryll, expandCaryll } from "../services/caryll.js";
-import { searchWeb, type WebSearchProvider } from "../services/web-search.js";
-import { fetchWeb } from "../services/web-fetch.js";
 import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import type { AgentDef, InsightLevel } from "../core/types.js";
 import { CORE_MEMORY_FILE, USER_MEMORY_FILE, type MemoryStore } from "../domain/memory.js";
@@ -292,25 +288,26 @@ function artifactParameters() {
 }
 
 async function runArtifactAction(
-  ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId">,
+  ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId" | "toolProviders">,
   params: ArtifactToolParams,
 ): Promise<{ text: string; details: unknown }> {
+  if (!ctx.toolProviders) throw new Error("artifact is unavailable for this room.");
   const location = { rootDir: workspaceRootFromRoomDir(ctx.roomDir), roomId: ctx.roomId };
   if (params.action === "list") {
-    const artifacts = await listArtifacts(location);
+    const artifacts = await ctx.toolProviders.artifacts.list(location);
     return { text: JSON.stringify(artifacts, null, 2), details: { artifacts } };
   }
   if (params.action === "read") {
     if (!params.artifact_id) throw new Error("artifact_id is required for read");
-    const artifact = await readArtifact(location, params.artifact_id);
-    const content = Buffer.from(artifact.payload).toString("utf8");
+    const artifact = await ctx.toolProviders.artifacts.read(location, params.artifact_id);
+    const content = artifact.payload;
     return { text: `${JSON.stringify(artifact.manifest, null, 2)}\n\n${content}`, details: { manifest: artifact.manifest } };
   }
   if (params.action === "create") {
     if (!params.name || !params.kind || !params.media_type || params.content === undefined) {
       throw new Error("name, kind, media_type, and content are required for create");
     }
-    const manifest = await createArtifact(location, {
+    const manifest = await ctx.toolProviders.artifacts.create(location, {
       name: params.name,
       kind: params.kind,
       mediaType: params.media_type,
@@ -319,7 +316,7 @@ async function runArtifactAction(
     return { text: JSON.stringify(manifest, null, 2), details: { manifest } };
   }
   if (!params.artifact_id) throw new Error("artifact_id is required for update");
-  const manifest = await updateArtifact(location, params.artifact_id, {
+  const manifest = await ctx.toolProviders.artifacts.update(location, params.artifact_id, {
     ...(params.name !== undefined ? { name: params.name } : {}),
     ...(params.kind !== undefined ? { kind: params.kind } : {}),
     ...(params.media_type !== undefined ? { mediaType: params.media_type } : {}),
@@ -328,7 +325,7 @@ async function runArtifactAction(
   return { text: JSON.stringify(manifest, null, 2), details: { manifest } };
 }
 
-export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId">) {
+export function createArtifactTool(ctx: Pick<import("./tools.js").PiToolContext, "roomDir" | "roomId" | "toolProviders">) {
   return defineTool({
     name: "artifact",
     label: "Artifact",
@@ -431,14 +428,15 @@ export function formatGaiagoResult(verb: GaiaVerb, text: string, details: unknow
   return { text: `${status} ${verb} · 行=${nonblank} · 詳=${detailKind}\n${payload || "∅"}`, formatter: "deterministic" };
 }
 
-async function runWebSearchVerb(args: Record<string, unknown>): Promise<GaiaResult> {
+async function runWebSearchVerb(args: Record<string, unknown>, providers: import("./protocol.js").ToolProviders | undefined): Promise<GaiaResult> {
+  if (!providers) return { content: [{ type: "text", text: "ERROR: web is unavailable for this room." }], details: { ok: false } };
   const query = typeof args.query === "string" ? args.query : "";
   const provider = args.provider;
   if (provider !== undefined && provider !== "brave" && provider !== "tavily" && provider !== "serper") {
     return { content: [{ type: "text", text: "ERROR: web provider must be brave, tavily, or serper." }], details: { ok: false } };
   }
   const maxResults = typeof args.maxResults === "number" ? args.maxResults : typeof args.max_results === "number" ? args.max_results : undefined;
-  const response = await searchWeb({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider: provider as WebSearchProvider }) });
+  const response = await providers.web.search({ query, ...(maxResults === undefined ? {} : { maxResults }), ...(provider === undefined ? {} : { provider }) });
   const output = response.results.map((item, index) => `--- Result ${index + 1} ---\nTitle: ${item.title}\nLink: ${item.url}\nSnippet: ${item.snippet}`).join("\n\n");
   return { content: [{ type: "text", text: `Provider: ${response.provider}\n${output}` }], details: response };
 }
@@ -446,14 +444,15 @@ async function runWebSearchVerb(args: Record<string, unknown>): Promise<GaiaResu
 /** Clean extracted page text (title + main content, chrome stripped) instead
  * of raw HTML -- the low-token alternative to curl. YouTube urls additionally
  * get a transcript (default on) and, opt-in, top-level comments. */
-async function runWebFetchVerb(args: Record<string, unknown>): Promise<GaiaResult> {
+async function runWebFetchVerb(args: Record<string, unknown>, providers: import("./protocol.js").ToolProviders | undefined): Promise<GaiaResult> {
+  if (!providers) return { content: [{ type: "text", text: "ERROR: web is unavailable for this room." }], details: { ok: false } };
   const url = typeof args.url === "string" ? args.url : "";
   const maxBytes = typeof args.maxBytes === "number" ? args.maxBytes : typeof args.max_bytes === "number" ? args.max_bytes : undefined;
   const transcript = typeof args.transcript === "boolean" ? args.transcript : undefined;
   const lang = typeof args.lang === "string" ? args.lang : undefined;
   const comments = typeof args.comments === "boolean" || typeof args.comments === "number" ? args.comments : undefined;
   try {
-    const response = await fetchWeb({
+    const response = await providers.web.fetch({
       url,
       ...(maxBytes === undefined ? {} : { maxBytes }),
       ...(transcript === undefined ? {} : { transcript }),
@@ -482,15 +481,16 @@ async function runWebFetchVerb(args: Record<string, unknown>): Promise<GaiaResul
   }
 }
 
-async function runWebVerb(args: Record<string, unknown>, bash: any): Promise<GaiaResult> {
-  if (typeof args.url === "string" && args.url) return runWebFetchVerb(args);
-  if (typeof args.query === "string" && args.query) return runWebSearchVerb(args);
+async function runWebVerb(args: Record<string, unknown>, bash: any, providers: import("./protocol.js").ToolProviders | undefined): Promise<GaiaResult> {
+  if (typeof args.url === "string" && args.url) return runWebFetchVerb(args, providers);
+  if (typeof args.query === "string" && args.query) return runWebSearchVerb(args, providers);
   // Preserve the pre-existing command-shaped curl escape hatch for anything
   // that is neither a search nor a fetch call.
   return bash.execute("gaia", args, undefined, undefined, undefined) as Promise<GaiaResult>;
 }
 
-async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult> {
+async function runCaryllVerb(args: Record<string, unknown>, providers: import("./protocol.js").ToolProviders | undefined): Promise<GaiaResult> {
+  if (!providers) return { content: [{ type: "text", text: "ERROR: caryll is unavailable for this room." }], details: { ok: false} };
   const action = args.action;
   const path = typeof args.path === "string" ? args.path : "";
   const output = typeof args.output === "string" ? args.output : path;
@@ -499,16 +499,16 @@ async function runCaryllVerb(args: Record<string, unknown>): Promise<GaiaResult>
   }
   const source = await readFile(path, "utf8");
   if (action === "compress") {
-    const result = compressCaryll(source);
+    const result = await providers.caryll.compress(source);
     await writeFile(output, result.output);
     return { content: [{ type: "text", text: `真 caryll.compress · ${path}→${output}` }], details: result.stats };
   }
   if (action === "expand") {
-    const result = expandCaryll(source);
+    const result = await providers.caryll.expand(source);
     await writeFile(output, result);
     return { content: [{ type: "text", text: `真 caryll.expand · ${path}→${output}` }], details: { bytes: Buffer.byteLength(result) } };
   }
-  const result = compressCaryll(source);
+  const result = await providers.caryll.compress(source);
   return { content: [{ type: "text", text: `真 caryll.stats · ${result.stats.tokensBefore}→${result.stats.tokensAfter} · legend=${result.stats.legendEntries}` }], details: result.stats };
 }
 
@@ -680,7 +680,7 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
     },
     write: (args) => executeNative(native.write, args),
     edit: (args) => executeNative(native.edit, args),
-    web: (args) => runWebVerb(args, native.bash),
+    web: (args) => runWebVerb(args, native.bash, ctx.toolProviders),
     mem: (args) => executeNative(memory, args),
     recall: (args) => executeNative(recall, args),
     summon: (args) => (summon ? executeNative(summon, args) : Promise.resolve({ content: [{ type: "text", text: "ERROR: summon is unavailable for this room." }], details: { ok: false } })),
@@ -699,7 +699,7 @@ export function createGaiaTool(ctx: import("./tools.js").PiToolContext) {
       const result = await runArtifactAction(ctx, args as unknown as ArtifactToolParams);
       return { content: [{ type: "text", text: result.text || "[]" }], details: result.details };
     },
-    caryll: runCaryllVerb,
+    caryll: (args) => runCaryllVerb(args, ctx.toolProviders),
     diet: (args) => runDietVerb(args, ctx),
     tool_result_fetch: (args) => runToolResultFetchVerb(args, ctx),
     end_conversation: async (args) => {

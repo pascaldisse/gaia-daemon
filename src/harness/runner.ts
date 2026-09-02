@@ -12,7 +12,7 @@
 import { createInterface } from "node:readline";
 import { env } from "../core/env.js";
 import { loadWorkspace } from "../domain/workspace.js";
-import { BridgeMemoryStore, bridgeContextDiet, bridgeEndConversation, bridgeRecallSearch, bridgeResumeCreate, bridgeSummonCreate, bridgeToolResultFetch, fixedTokenHost } from "./bridge-deps.js";
+import { BridgeMemoryStore, bridgeContextDiet, bridgeEndConversation, bridgeRecallSearch, bridgeResumeCreate, bridgeSummonCreate, bridgeToolProviders, bridgeToolResultFetch, fixedTokenHost } from "./bridge-deps.js";
 // Self-register every harness before the lookup — this subprocess starts with
 // an empty registry.
 import "./index.js";
@@ -95,6 +95,7 @@ export async function runAgentRunner(): Promise<void> {
   const toolResultFetch = target ? bridgeToolResultFetch(target) : undefined;
   const contextDiet = target ? bridgeContextDiet(target) : undefined;
   const endConversation = target ? bridgeEndConversation(target) : undefined;
+  const toolProviders = target ? bridgeToolProviders(target) : undefined;
 
   // The daemon already resolved the harness (agent > workspace > default) and
   // passed it down; fall back to recomputing if the env is somehow absent.
@@ -111,6 +112,7 @@ export async function runAgentRunner(): Promise<void> {
       toolResultFetch,
       contextDiet,
       endConversation,
+      toolProviders,
     });
   let runtime = createRuntime(agent);
   let runtimeKey = JSON.stringify({ tools: agent.tools, skills: agent.skills ?? [] });

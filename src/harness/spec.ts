@@ -14,6 +14,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
+import type { ToolProviders } from "./protocol.js";
 
 // --- what a runtime consumes and produces ------------------------------------
 
@@ -266,6 +267,8 @@ export interface RuntimeCreateContext {
   contextDiet?: ContextDietAccess;
   /** Gracefully end this agent's current room conversation with a visible farewell. */
   endConversation?: EndConversation;
+  /** Service implementations for the shared tool port. */
+  toolProviders?: ToolProviders;
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
