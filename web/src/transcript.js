@@ -519,7 +519,24 @@ function renderTranscript() {
     if (el.dataset.eventId) existing.set(el.dataset.eventId, el);
   }
 
-  const nextNodes = views.map((view) => {
+  // `── HH:MM ──` separators between time groups (LAW): inserted whenever the
+  // formatted minute changes from the previous visible entry. Keyed off the
+  // triggering view's id so the sync below can reuse/drop it like any node.
+  /** @type {HTMLElement[]} */
+  const nextNodes = [];
+  let lastMinuteLabel = "";
+  for (const view of views) {
+    const minuteLabel = formatTime(view.timestamp);
+    if (minuteLabel && minuteLabel !== lastMinuteLabel) {
+      const sepKey = `sep:${view.id}`;
+      const sepVersion = `sep:${minuteLabel}`;
+      const sepCurrent = existing.get(sepKey);
+      const sepNode = sepCurrent && sepCurrent.dataset.v === sepVersion ? sepCurrent : Separator(minuteLabel);
+      sepNode.dataset.eventId = sepKey;
+      sepNode.dataset.v = sepVersion;
+      nextNodes.push(sepNode);
+      lastMinuteLabel = minuteLabel;
+    }
     // Read-aloud playback and the search-jump flash both fold into the version
     // stamp, so exactly the affected message re-renders when either toggles.
     const version =
@@ -527,13 +544,12 @@ function renderTranscript() {
       (state.readAloud?.eventId === view.id ? `:ra-${state.readAloud.phase}` : "") +
       (state.search.highlightEventId === view.id ? ":search-hit" : "");
     const current = existing.get(view.id);
-    if (current && current.dataset.v === version) return current;
-    const node = Message(view);
+    const node = current && current.dataset.v === version ? current : Message(view);
     if (state.search.highlightEventId === view.id) node.classList.add("search-hit");
     node.dataset.eventId = view.id;
     node.dataset.v = version;
-    return node;
-  });
+    nextNodes.push(node);
+  }
 
   // Older-history indicator above the transcript, keyed like a message so the
   // sync below keeps it. History now pages in automatically as you scroll toward
@@ -594,9 +610,11 @@ function Message(view) {
   if (view.kind === "compact-complete") return CompactBoundary(view);
   const isUser = view.author === "user";
   const isAgent = !isUser && view.author !== "system";
-  const label = isUser
-    ? `${view.humanLabel ?? "user"} -> ${view.targets.map((target) => `@${target}`).join(", ")}`
-    : `@${view.author}`;
+  // Speaker names are plain (LAW): "@" addresses a target, it never prefixes
+  // the speaker's own name. Human = their name, agent = its bare id, system
+  // reads as "system" — never as a chat participant.
+  const speakerName = isUser ? (view.humanLabel ?? "user") : isAgent ? view.author : "system";
+  const targetLabel = isUser && view.targets.length ? `→ ${view.targets.map((target) => `@${target}`).join(", ")}` : "";
   const text = isUser ? stripLeadingRouteMentions(view.text, view.targets) : view.text;
   const details = view.details ?? {};
   // A summon worker's result lands as a collapsed, summon-labeled block (reusing
@@ -696,7 +714,8 @@ function Message(view) {
         "aria-hidden": "true",
         text: isUser ? UI.human : isAgent ? agentGlyph(view.author) : UI.system,
       }),
-      h("span", { text: label }),
+      h("span", { class: "who", text: speakerName }),
+      targetLabel ? h("span", { class: "to", text: targetLabel }) : null,
       view.queued ? h("small", { class: "channel-tag", title: "queued — runs after the current turn", text: "queued" }) : null,
       view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: UI.call }) : null,
       details.model ? h("small", { class: "model-tag", text: details.model }) : null,
@@ -760,6 +779,13 @@ function LiveHeartbeat(view) {
 function formatElapsed(milliseconds) {
   const seconds = Math.floor(milliseconds / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** `── HH:MM ──` time-group separator (LAW) — the dashes are CSS pseudo-elements
+ * (.separator::before/::after), this only carries the label.
+ * @param {string} label @returns {HTMLElement} */
+function Separator(label) {
+  return h("div", { class: "separator" }, h("span", { text: label }));
 }
 
 /** @param {MessageView} view @returns {HTMLElement} */
@@ -1216,6 +1242,7 @@ function skillReadLabel(tool) {
 function ActivityDetails(options, ...children) {
   const statusText = options.status === "running" ? "running" : options.status === "error" ? "error" : "complete";
   const id = options.id;
+  const body = children.filter(Boolean);
   return h(
     "details",
     {
@@ -1241,7 +1268,10 @@ function ActivityDetails(options, ...children) {
         text: options.status === "running" ? "" : options.status === "error" ? STATE.error : STATE.done,
       }),
     ),
-    children,
+    // One shaded, scrollable body per trace (LAW .trace-body) instead of the
+    // payload sections spilling directly under <details> — an open trace reads
+    // as ONE contained block, never a stack of bordered boxes.
+    body.length ? h("div", { class: "trace-body" }, body) : null,
   );
 }
 

@@ -7,7 +7,7 @@
 // control (◌ #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
-import { KIND, UI } from "./glyphs.js";
+import { agentGlyph, KIND, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -219,7 +219,7 @@ export function initComposer() {
     h(
       "div",
       { class: "composer-row" },
-      h("span", { class: "composer-caret", "aria-hidden": "true", text: UI.human }),
+      h("span", { class: "composer-caret", "aria-hidden": "true", text: "▌" }),
       textarea,
       sendButton,
     ),
@@ -384,9 +384,7 @@ function renderComposer() {
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
 
   const model = ModelChip(snapshot, state.composerText);
-  // Context is turn telemetry, not static configuration: match v2 by showing
-  // its meter only while work is running. Model + thinking remain live always.
-  const context = busy ? ContextChip(snapshot, state.composerText) : null;
+  const context = ContextChip(snapshot, state.composerText);
   const memory = MemoryChip(snapshot);
   modelWrapEl.replaceChildren(...[model, context, memory].filter((chip) => chip !== null));
 
@@ -864,7 +862,7 @@ function composerTargetStatus(snapshot, text) {
   const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
   const unknown = leadingMentionIds(text).filter((id) => !knownAgents.has(id));
   if (unknown.length) return `unknown: ${unknown.map((id) => `@${id}`).join(", ")}`;
-  return composerTargets(snapshot, text).map((target) => `@${target}`).join(", ");
+  return composerTargets(snapshot, text).map((target) => `${agentGlyph(target)} @${target}`).join(", ");
 }
 
 // Last non-off level per agent, so the off-toggle can come back to it.
@@ -1006,7 +1004,7 @@ function ModelChip(snapshot, text) {
   return h("span", {
     class: "model-chip",
     title: `model for @${agent.id} (configured: ${agent.configuredModel}; ran: ${agent.modelLabel})`,
-    text: shortModel(agent.modelLabel),
+    text: `${shortModel(agent.modelLabel)}${agent.account ? ` (${agent.account})` : ""}`,
   });
 }
 
@@ -1178,7 +1176,7 @@ function VoiceButtons() {
 /** @param {HTMLTextAreaElement} el */
 function resizeComposer(el) {
   el.style.height = "0px";
-  el.style.height = `${Math.min(180, Math.max(34, el.scrollHeight))}px`;
+  el.style.height = `${Math.min(180, Math.max(28, el.scrollHeight))}px`;
 }
 
 /** @param {number} [selectionStart] @param {number} [selectionEnd] */

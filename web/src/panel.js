@@ -117,13 +117,14 @@ function renderPanel() {
             // roster-row (v2 parity class) rides ALONGSIDE the existing
             // agent-row layout — never replaces it, so the role/account
             // selects below keep their current markup and behavior untouched.
-            class: `agent-row roster-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
+            class: `agent-row roster-row roster-agent ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
             oncontextmenu: (/** @type {MouseEvent} */ event) => {
               event.preventDefault();
               state.agentContextMenu = { agentId: agent.id, x: event.clientX, y: event.clientY };
               markDirty("panel");
             },
           },
+          h("i", { text: agentGlyph(agent.id), "aria-hidden": "true" }),
           h(
             "div",
             // The role-select is pinned to this cell's bottom-right (the model
@@ -134,10 +135,7 @@ function renderPanel() {
             h(
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
-              h("span", { class: `dot ${agent.status}` }),
-              // agent.icon is config data and is usually an emoji — chrome is
-              // monochrome, so the roster renders the symbol vocabulary's mark.
-              h("strong", { text: `${agentGlyph(agent.id)} @${agent.id}` }),
+              h("strong", { text: `@${agent.id}` }),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.
@@ -207,10 +205,6 @@ function renderPanel() {
             onclick: () => void toggleCall(agent.id),
             text: connecting ? "…" : onCall ? UI.stop : UI.call,
           }),
-          // roster-status: the v2 parity hook wrapping an <output> with the same
-          // status text the subtitle already carries. Additive — the existing
-          // <small> subtitle above is untouched.
-          h("span", { class: "roster-status" }, h("output", { text: agentSubtitle(agent, activeAgent) || "ready" })),
         );
       }),
     ),

@@ -21,7 +21,6 @@ import { jumpToEvent } from "./transcript.js";
 function renderStatus() {
   renderTopbar();
   renderErrorBanner();
-  renderStatusbar();
 }
 
 registerRegion("status", renderStatus);
@@ -68,6 +67,7 @@ function renderTopbar() {
     return;
   }
   const meter = roomMeterText(snapshot);
+  const usage = usageChipSeg();
   topbar.replaceChildren(
     h(
       "div",
@@ -83,18 +83,29 @@ function renderTopbar() {
     h(
       "div",
       { class: "room-header-controls" },
-      h("input", {
+      h("button", {
         class: "room-search",
-        type: "search",
-        placeholder: "search room",
-        title: "Search this room (Enter)",
+        type: "button",
+        title: "Search this room",
         "aria-label": "Search this room",
-        onkeydown: (event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          state.search.query = /** @type {HTMLInputElement} */ (event.currentTarget).value;
-          openSearch("room");
-        },
+        text: "⌕",
+        onclick: () => openSearch("room"),
+      }),
+      usage && !usage.spacer
+        ? h("button", {
+            class: `room-usage${usage.cls.includes("crit") ? " crit" : usage.cls.includes("warn") ? " warn" : ""}`,
+            type: "button",
+            title: usage.title,
+            text: usage.text.replace(/^◔\s*/, ""),
+            onclick: usage.onclick,
+          })
+        : null,
+      h("button", {
+        class: `room-artifacts${artifactPanelOpen() ? " on" : ""}`,
+        type: "button",
+        title: "toggle artifacts",
+        text: artifactPanelOpen() ? "◫ artifacts" : "□ artifacts",
+        onclick: toggleArtifactPanel,
       }),
       h("output", {
         class: "room-meter",
@@ -215,23 +226,21 @@ const STATUSBAR_STORAGE_KEY = "gaia.statusbar";
 
 /** @returns {boolean} true unless the user has explicitly hidden it */
 export function statusbarVisible() {
-  try {
-    return localStorage.getItem(STATUSBAR_STORAGE_KEY) !== "hidden";
-  } catch {
-    return true;
-  }
+  return false;
 }
 
 /** @param {boolean} visible */
 function applyStatusbarVisibility(visible) {
-  const app = $("#app");
-  if (app) app.classList.toggle("statusbar-hidden", !visible);
+  void visible;
+}
+
+/** @param {boolean} visible */
+export function setStatusbarVisible(visible) {
+  void visible;
 }
 
 // Restore before first paint so there is no flash of the status bar.
-export function initStatusbarPref() {
-  applyStatusbarVisibility(statusbarVisible());
-}
+export function initStatusbarPref() {}
 
 // ---------------------------------------------------------------------------
 // Account usage chip — subscription session/weekly caps per ACCOUNT
@@ -796,25 +805,22 @@ function ThemePalette() {
       },
     },
     h(
-      "div",
-      { class: "palette" },
+      "section",
+      { class: "modal palette" },
       h(
         "div",
-        { class: "palette-head" },
-        h("strong", { text: "themes" }),
-        h("small", { text: "hover to preview · click to apply · esc to cancel" }),
+        { class: "panel-head" },
+        h("strong", { text: "◈ Theme" }),
+        h("button", { type: "button", title: "cancel theme preview", text: "×", onclick: () => closeThemePalette(false) }),
       ),
       h(
         "div",
-        { class: "palette-grid" },
+        { class: "theme-list" },
         THEMES.map((theme) =>
-          // Each swatch carries its own data-theme attribute, so the palette
-          // variables in styles.css recolour it without a second copy of any
-          // theme colour existing in JS.
           h(
             "button",
             {
-              class: `swatch ${theme.id === committedThemeId() ? "active" : ""}`,
+              class: `theme-row ${theme.id === committedThemeId() ? "active" : ""}`,
               "data-theme": theme.id,
               onmouseenter: () => previewTheme(theme.id),
               onmouseleave: () => revertTheme(),
@@ -827,13 +833,14 @@ function ThemePalette() {
             },
             h(
               "span",
-              { class: "sw-preview" },
-              h("span", { class: "sw-dot sw-accent" }),
-              h("span", { class: "sw-dot sw-accent2" }),
-              h("span", { class: "sw-dot sw-good" }),
-              h("span", { class: "sw-dot sw-danger" }),
+              { class: "swatches" },
+              h("i", { class: "sw-bg" }),
+              h("i", { class: "sw-fg" }),
+              h("i", { class: "sw-dim" }),
+              h("i", { class: "sw-accent" }),
+              h("i", { class: "sw-good" }),
             ),
-            h("span", { class: "sw-name", text: theme.name }),
+            h("span", { text: theme.name }),
           ),
         ),
       ),

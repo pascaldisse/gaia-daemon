@@ -213,7 +213,7 @@ function SettingsModal() {
         "div",
         { class: "panel-head" },
         h("h2", { text: "Settings" }),
-        h("button", { onclick: closeSettings, text: "x" }),
+        h("button", { onclick: closeSettings, text: "×" }),
       ),
       h(
         "div",
@@ -228,7 +228,7 @@ function SettingsModal() {
       ),
       h(
         "div",
-        { class: "settings2-body" },
+        { class: "settings2-body settings-body" },
         state.settingsTab === "general" ? GeneralTab() : state.settingsTab === "workspace" ? WorkspaceTab() : state.settingsTab === "agents" ? AgentsTab() : AccountsSection(),
       ),
     ),
@@ -1073,7 +1073,7 @@ function FieldRow(entry, ctx) {
     : null;
   return h(
     "div",
-    { class: "settings2-field-row" },
+    { class: "settings2-field-row field-row" },
     h("div", { class: "settings2-field-label" }, h("span", { text: entry.hint.label ?? entry.key })),
     h(
       "div",
