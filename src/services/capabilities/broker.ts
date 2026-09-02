@@ -1,6 +1,5 @@
 // Capability invocation broker — the only place a plugin's declared
-// requiredCaps (plugin-manifest.ts, surfaced as RegisteredPlugin in
-// plugin-host.ts) is checked against what a {roomId, agentId} context is
+// requiredCaps (plugins/manifest.ts, surfaced by the canonical registry) is checked against what a {roomId, agentId} context is
 // actually granted. A plugin registration carries no authority of its own:
 // requiredCaps is a NEED, never a GRANT, and this module never accepts a
 // grant set from the plugin side — only from an injected CapabilityGrantSource

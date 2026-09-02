@@ -131,6 +131,7 @@ async function createService(host: WiringHost, workspaceId: string, resolvedRoom
     workspace,
     roomId: resolvedRoom,
     memoryStore: memoryStoreFor(host, workspaceId),
+    pluginRegistry: host.pluginRegistry,
     memory: memoryServiceFor(host, workspaceId, workspace, record.path),
     // Same LLM caller consolidation uses — backs the context-gate compact.
     llm: consolidateLlm(),

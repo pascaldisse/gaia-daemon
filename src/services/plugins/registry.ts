@@ -158,6 +158,8 @@ export class PluginRegistry implements PluginTurnBoundary {
   #generation = 0;
   #staging = false;
   #closed = false;
+  /** All lifecycle work serializes through one tail; disposer awaits remain a boundary. */
+  #lifecycle: Promise<void> = Promise.resolve();
 
   constructor(options: PluginRegistryOptions) {
     if (typeof options.pluginsRoot !== "string" || options.pluginsRoot.length === 0) throw new PluginRegistryError("pluginsRoot is required");
@@ -202,7 +204,11 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 
   /** Build a replacement without changing the active generation. */
-  async stageReload(): Promise<PluginStageResult> {
+  stageReload(): Promise<PluginStageResult> {
+    return this.#serialize(() => this.#stageReload());
+  }
+
+  async #stageReload(): Promise<PluginStageResult> {
     if (this.#closed) throw new PluginRegistryError("reload is refused after shutdown");
     if (this.#staging) throw new PluginRegistryError("a plugin generation is already staging");
     if (this.#staged) throw new PluginRegistryError("a staged plugin generation is awaiting a turn boundary");
@@ -233,7 +239,11 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
 
   /** Swap only while no RoomService turn owns the old snapshot. */
-  async applyTurnBoundary(): Promise<boolean> {
+  applyTurnBoundary(): Promise<boolean> {
+    return this.#serialize(() => this.#applyTurnBoundary());
+  }
+
+  async #applyTurnBoundary(): Promise<boolean> {
     if (this.#leases !== 0 || !this.#staged) return false;
     const previous = this.#active;
     const next = this.#staged;
@@ -260,7 +270,11 @@ export class PluginRegistry implements PluginTurnBoundary {
   async invokeProvider(pluginId: string, name: string, context: CapabilityContext, request: PluginProviderRequest): Promise<PluginProviderResult> {
     return this.#invoke(pluginId, (plugin) => invokePluginProvider(this.#capabilityBroker, this.#requester(plugin), plugin.contributions, name, context, request));
   }
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> {
+    return this.#serialize(() => this.#shutdown());
+  }
+
+  async #shutdown(): Promise<void> {
     if (this.#closed) return;
     if (this.#leases !== 0) throw new PluginRegistryError("shutdown requires zero active turn leases");
     this.#closed = true;
@@ -273,6 +287,12 @@ export class PluginRegistry implements PluginTurnBoundary {
       entries: Object.freeze([]),
     });
     await this.#dispose(active.entries, active.generation.generation);
+  }
+
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#lifecycle.then(operation, operation);
+    this.#lifecycle = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   #endTurn(): void {

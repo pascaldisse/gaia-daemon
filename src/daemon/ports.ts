@@ -2,6 +2,7 @@
 import type { UiEvent, Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { RoomService } from "../services/room-service.js";
+import type { PluginRegistry } from "../services/plugins/registry.js";
 import type { MemoryService } from "../services/memory-service.js";
 import type { SummonCoordinator } from "../services/summons.js";
 import type { HarnessBridge } from "../services/bridge.js";
@@ -12,6 +13,7 @@ import type { WorkspaceRegistry, Daemon as WorkspaceDaemon } from "../daemon.js"
 
 export interface WiringHost {
   readonly registry: WorkspaceRegistry;
+  readonly pluginRegistry: PluginRegistry;
   readonly orphanSweepDone: Promise<void>;
   readonly services: Map<string, RoomService>;
   readonly handedOutAt: Map<string, number>;

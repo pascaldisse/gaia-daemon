@@ -1,7 +1,7 @@
 // Capability broker — shared shapes. See resolver.ts / broker.ts for the two
 // halves: resolving WHAT a {roomId, agentId} context is granted (data-driven,
 // trust-floored) and AUTHORIZING one plugin's declared requirement against it.
-// Never merge these: a plugin's manifest states a NEED (plugin-manifest.ts),
+// Never merge these: a plugin's manifest states a NEED (plugins/manifest.ts),
 // never a GRANT — grants come only from the host-side policy this module
 // resolves.
 
@@ -29,7 +29,7 @@ export interface CapabilityDecision {
 }
 
 /** Minimal shape the broker needs from a registered plugin — declarations
- * only (plugin-host.ts#RegisteredPlugin), never the plugin's own services. */
+ * only (plugins/registry.ts#RegisteredPlugin), never the plugin's own services. */
 export interface CapabilityRequester {
   readonly namespace: string;
   readonly requiredCaps: readonly string[];

@@ -9,6 +9,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Bus } from "./core/bus.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
@@ -23,6 +24,8 @@ import { listWorkspacePetBindings } from "./domain/pets.js";
 import { loadWorkspace, workspacePath } from "./domain/workspace.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
+import { CapabilityBroker } from "./services/capabilities/broker.js";
+import { PluginRegistry } from "./services/plugins/registry.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
@@ -182,6 +185,13 @@ export interface DaemonOptions {
 export class Daemon {
   readonly registry = new WorkspaceRegistry();
   readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
+  /** One daemon-owned plugin generation boundary, injected into every room. */
+  readonly pluginRegistry = new PluginRegistry({
+    pluginsRoot: globalPaths.commandPluginsDir(),
+    placement: "daemon",
+    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+  });
   /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
   private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });
   // Non-private: daemon/wiring.ts + daemon/reload.ts read/mutate this directly
@@ -251,6 +261,9 @@ export class Daemon {
     this.orphanSweepDone = reapOrphans({ log: (message) => this.log(message) }).then(() => {});
     await this.orphanSweepDone;
     this.bridge = new HarnessBridge(baseUrl);
+    const plugins = await this.pluginRegistry.stageReload();
+    if (plugins.status === "failed") this.log(`plugin registry: ${plugins.reason}`);
+    else await this.pluginRegistry.applyTurnBoundary();
     // Proactive runs: one tick across every initialized workspace. The first
     // tick also recovers runs a prior process left marked "running".
     this.scheduler = new SchedulerService({
@@ -352,6 +365,7 @@ export class Daemon {
     this.interactions.dispose();
     this.keepAwakeManager.dispose();
     this.embedSidecar.dispose();
+    await this.pluginRegistry.shutdown();
     const serviceDisposals = [...this.services.values()].map((service) => service.dispose());
     await Promise.all(serviceDisposals);
     this.services.clear();
@@ -364,6 +378,7 @@ export class Daemon {
   private wiringHost(): WiringHost {
     return {
       registry: this.registry,
+      pluginRegistry: this.pluginRegistry,
       orphanSweepDone: this.orphanSweepDone,
       services: this.services,
       handedOutAt: this.handedOutAt,
