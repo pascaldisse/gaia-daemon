@@ -63,6 +63,7 @@ import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../ha
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
 import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type PluginContext, type PluginPanel, type PluginResult } from "./plugins.js";
+import type { PluginTurnBoundary } from "./plugins/registry.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "./turns.js";
 import { ContextPolicyStore } from "./context-policy-store.js";
@@ -123,6 +124,8 @@ export interface RoomServiceOptions {
   settingsChanged?: (scope: "global" | "workspace") => Promise<void>;
   /** Test seam around the real safe Codex package loader. Production omits it. */
   petLoader?: (name: string) => Promise<unknown>;
+  /** Manifest-plugin generations shared by the daemon; legacy command plugins remain unchanged. */
+  pluginRegistry?: PluginTurnBoundary;
 }
 
 /** What /schedule needs from the scheduler (daemon-provided, workspace-bound). */
@@ -1000,7 +1003,13 @@ export class RoomService {
 
   // --- turn results and context gate ---------------------------------------
   async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    return new RoomTurnResults(this).runAgentTask(task, text, options);
+    const lease = this.options.pluginRegistry?.beginTurn();
+    try {
+      await new RoomTurnResults(this).runAgentTask(task, text, options);
+    } finally {
+      lease?.end();
+      if (lease) await this.options.pluginRegistry?.applyTurnBoundary();
+    }
   }
   private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {
     return new RoomTurnResults(this).contextFor(agent);
