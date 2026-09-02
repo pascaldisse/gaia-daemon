@@ -373,3 +373,27 @@ src/services/room/fork.ts(134,11): error TS18046: 'cursor' is of type 'unknown'.
 src/services/room/fork.ts(55,35): error TS7006: Parameter 'event' implicitly has an 'any' type.
 ```
 Runtime behavior UNVERIFIED (no live queue run this atom); the gate-coverage regression is measured.
+
+---
+
+## 2026-09-02 bounded parent verdict · Jareth
+
+Range → `820e568..main@2128ac7` · review branch → `room/chat-mtk78q14-wa40`.
+
+Gate 真:
+- `bun run check` → exit 0; Knip debt still emitted/non-enforcing → ADV-003 remains.
+- diff-touched tests, isolated files → accounts 5 · context-gate 2 · gaia-tool 14 · hints 3 · paths 2 · prompt 22 · retry 1 · rooms 51 · runner-host-proxy 2 · skills 3 = **105/0**.
+- split/durability controls → room-service 98 · pi-runtime 39 · daemon-delete 4 · runner-host 18 · summons 35 = **194/0**.
+- Telegram formatter control → **10/0**; architecture boundary failure unaffected → T-K1.
+
+Live 真 → compiled isolated daemon · `GAIA_HOME` isolated · port 18787:
+- U1→U3 then edit U2 → PASS; active transcript loses old tail; rewound archive retains it; Pi edited-user parentId points to A1.
+- retry U1 → PASS; regenerated root branch only.
+- tiny `/compact luna` → PASS clean no-op (`session too small`).
+- agent→agent mention then edit → UNVERIFIED.
+- queue A1 ToolProviders · A6 crash/WAL recovery · A7 boot/settings reload → UNVERIFIED.
+- cleanup → daemon killed · live dist/home removed · `lsof -nP -iTCP:18787 -sTCP:LISTEN` empty.
+
+Current clean atoms → A2a `0d9f141` · A2b `cec7a22` · A2c `e47adf0` · A3 retry `5948608` · A8b `7a218ab` · A9 `df58abc`. A8 first atom ADV-005 superseded structurally by A8b; historical ticket retained append-only. A6/A7 focused behavior tests green ≠ architecture clean → ADV-007/008/009.
+
+RULE0 → 0 · layering → 0. New-wave tickets → HIGH 4 · MED 2 · LOW 3. Cumulative ledger sections → BLOCKER 3 · HIGH 7 · MED 2 · LOW 3; T-V4 duplicates open ADV-004 evidence.
