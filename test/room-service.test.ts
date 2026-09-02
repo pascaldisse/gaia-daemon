@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile as readFileText } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_DIALOGUE_MAX_HOPS, RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
@@ -15,6 +15,7 @@ import { RunnerHost } from "../src/harness/host.js";
 import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
+import type { PluginTurnBoundary } from "../src/services/plugins/registry.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -105,6 +106,7 @@ async function makeService(options: {
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
+  pluginRegistry?: PluginTurnBoundary;
   /** Room id to open (default "default"). */
   roomId?: string;
   /** Seed the room's state.json as incognito before RoomService.open reads it. */
@@ -165,6 +167,7 @@ async function makeService(options: {
     ...(options.petLoader ? { petLoader: options.petLoader } : {}),
     ...(options.summonHost ? { summonHost: options.summonHost } : {}),
     ...(options.llm ? { llm: options.llm } : {}),
+    ...(options.pluginRegistry ? { pluginRegistry: options.pluginRegistry } : {}),
     runtimeFactory: (agent) => {
       const runtime = options.runtimeFactory ? (options.runtimeFactory(agent, workspace) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
@@ -3409,4 +3412,44 @@ test("/stt and /tts switch the global dictation engine without erasing voice set
   await writeFile(voicePath, "{malformed", "utf8");
   assert.match(await service.runSttCommand("openai"), /voice\.json is malformed/);
   assert.equal(await readFileText(voicePath, "utf8"), "{malformed", "malformed settings remain untouched");
+});
+
+test("RoomService releases the manifest-plugin lease and applies a staged generation only in turn finally", async () => {
+  const calls: string[] = [];
+  let finish: (() => void) | undefined;
+  const holding = new Promise<void>((resolve) => { finish = resolve; });
+  const registry: PluginTurnBoundary = {
+    beginTurn() {
+      calls.push("begin");
+      return { end: () => calls.push("end") };
+    },
+    async applyTurnBoundary() {
+      calls.push("boundary");
+      return true;
+    },
+  };
+  const { service, root } = await makeService({
+    pluginRegistry: registry,
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => []);
+      runtime.send = async function* () {
+        calls.push("runtime");
+        await holding;
+        yield { type: "text-delta", delta: "complete" } as AgentEvent;
+      };
+      return runtime;
+    },
+  });
+  try {
+    await service.sendMessage("hold the turn");
+    for (let index = 0; index < 50 && !calls.includes("runtime"); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(calls, ["begin", "runtime"]);
+    finish?.();
+    for (let index = 0; index < 50 && !calls.includes("boundary"); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.at(-2), "end");
+    assert.equal(calls.at(-1), "boundary");
+    await service.waitForSettled();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

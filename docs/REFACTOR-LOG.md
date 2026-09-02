@@ -111,3 +111,65 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - RoomService exposes only port-reached collaborators; direct `RoomTurnLoop`/`RoomFork` construction no longer uses `this as any`; queue/WAL seams unchanged.
 - gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/commands.test.ts` 8/0.
 - pragma scan `src/services`: 2 matching files; room-service 2527 lines. W3 remains BLOCKED by ≤800 extraction; A6 live item remains UNVERIFIED, owner 陰.
+
+## A6c — durable queue + turn-results extraction (2026-09-02)
+- `77c28ee` + landing fix: queue/WAL routing→`room/queue.ts` (419) · turn-result persistence/retry→`room/turn-results.ts` (262); `room-service.ts` 2527→1521.
+- seam: queue + `pendingTurn.eventId` custody remains whole in `RoomQueue`/`RoomTurnResults`; atomic `RoomHandle` writes unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 98/0.
+- call-site: `RoomQueue` sole routing implementation; `RoomTurnResults` sole result implementation; facade delegates only; no legacy parallel bodies.
+- pragma scan `src/services`: 1 textual `as any` prose match; 0 pragma directives / casts. A6c landed main ff-only pending below.
+
+## W3 A10+A12 — manifest inventory + capability broker (2026-09-03)
+- A10 `ef898f6`: `services/plugins/{manifest,loader}.ts`; inventory validates all `plugin.json` before import; duplicate id + realpath escape reject; daemon/runner placement data.
+- A12 `5070d24`: `services/capabilities/`; per `{roomId,agentId}` broker; trust=false→empty grant floor before grant lookup; plugin declarations never grant.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts` 22/0.
+- call-site: A10/A12 foundations intentionally unwired; A11 staged registry then A13/A14 own production migration. pragma scan `src/services/plugins src/services/capabilities`: 0.
+
+## W3 A11 — staged plugin registry turn lease (2026-09-03)
+- `60f682d`: `services/plugins/registry.ts`; immutable active generation, staged replacement, failed stage preserves active, exact-once disposer; RoomService ends lease then swaps in turn-finally.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/room-service.test.ts` 124/0.
+- call-site: `RoomService.runAgentTask` `beginTurn`→finally `end`→`applyTurnBoundary`; no mixed generation. pragma scan plugin/capability dirs: 0.
+
+## W4 A16 — edit/resend ephemeral live regression code (2026-09-03)
+- `f812940`: `test/edit-resend-live.test.ts`; isolated worktree `.gaia/live-test-runs`; Luna scaffold + account shell; cwd workspace has `.gaia/config.json`; env strips `GAIA_PARENT_PID`; `${GAIA_PORT:-18787}`.
+- gate: `bun run check` green; `bun test test/edit-resend-live.test.ts` 4/0 + 1 intentional live skip.
+- live: UNVERIFIED; opt-in token/edit evidence checks transcript + rewound + Pi parent chain; §REFACTOR-LIVE-QUEUE, owner 陰.
+
+## W3 A13 — typed contribution ports (2026-09-03)
+- `e98f6b5`: `services/plugins/contracts.ts`; typed command/tool/channel/provider ports, manifest-declared names only, broker gate before invocation; uniform runner wire in `harness/protocol.ts` fails closed pending A14 install.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/plugins-contracts.test.ts` 31/0.
+- call-site: registry contribution invokes hold generation lease; protocol has one harness-neutral frame; no harness-id branch. pragma scan touched services/harness: 0. live UNVERIFIED; queue updated.
+
+## A6d — summon lifecycle + agent dialogue extraction (2026-09-03)
+- `9ffba40`: `room/summon-lifecycle.ts` 202; typed `RoomSummonLifecyclePort`; one-body mixin extraction; queue/WAL/pendingTurn/atomic seams untouched.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/summons.test.ts` 134/0.
+- call-site: facade install only; each moved lifecycle body exists solely in `summon-lifecycle.ts`. pragma scan touched room files: 0. room-service 1530→1362; next extraction required for ≤800.
+
+## W3 A14 — manifest migration + Telegram bridge (2026-09-03)
+- `0597626`: command loader→manifest registry; one-release synthesized legacy manifest warning; Telegram `addons/telegram/plugin.json` + typed channel contribution; dead formatter deleted.
+- gate: `bun run check` green; focused plugin+Telegram suite 38/0 after integration.
+- grep: `scripts/telegram-bridge.mjs` creates `PluginRegistry` and invokes `gaia.telegram` channel; no formatter import. pragma scan touched paths: 0. W3 complete; live UNVERIFIED, queue owner 陰.
+
+## A6e — RoomService bootstrap lifecycle extraction (2026-09-03)
+- `89d5936`: `room/lifecycle.ts` 154; runtime construction/open/init/recovery/subscribe/dispose moved through typed lifecycle ports; queue/WAL/pendingTurn atomic paths unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0.
+- call-site: lifecycle implementations solely in `room/lifecycle.ts`; room-service delegates. pragma touched files: 0. room-service 1362→1251; continued extraction required for ≤800.
+
+## A6f — RoomService task operations extraction (2026-09-03)
+- `0b3bfe0`: `room/task-operations.ts` 145; pet/task cancellation/queue chips/idle + monad eligibility moved via typed port; summon lifecycle retains dialogue/pending-work ownership; queue/WAL/pendingTurn execution remains whole.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0.
+- call-site: facade mixin only; moved bodies deleted. pragma touched files: 0. room-service 1251→1097; ≤800 remains open.
+
+## A6h — command execution extraction (2026-09-03)
+- `a931351`: `room/command-execution.ts` 110; command persistence/STT/reload moved; facade delegates; queue/WAL untouched.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0. room-service 1097→1019; ≤800 pending.
+
+## A6g — monad execution extraction (2026-09-03)
+- `ec95464`: `room/monad-execution.ts` 97; pendingTurn→engine→commit/clear seam moved whole; atomicity unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/monad.test.ts test/rooms.test.ts` 166/0. room-service 1019→946; ≤800 still open.
+
+## A6i — room maintenance extraction (2026-09-03)
+- pending landing: `room/maintenance.ts` 172; setup/history maintenance/transcript inspection/background-task controls moved through typed `RoomMaintenancePort`; queue/WAL/`pendingTurn.eventId` execution untouched.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/monad*.test.ts test/rooms*.test.ts` 166/0.
+- call-site: command table delegates; moved bodies sole in `room/maintenance.ts`; pragma scan `src`: 0. sizes: room-service 946→798 · daemon 717 · http 642.
+- W1/W2: prior state · W3 complete (`0597626`) · W4 live UNVERIFIED/陰. Open: ADV-002/003/004 · ADV-007/A6 size resolved by this landing · ADV-008 · ADV-009 historical · ADV-013 MED. ADV-012 resolved (`12d980c`).

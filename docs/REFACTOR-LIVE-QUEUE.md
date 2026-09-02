@@ -48,3 +48,66 @@
 - A5 HTTP route smoke → FAIL · ADV-013; `GET /api/app` 500 missing cwd workspace config.
 - A6 mixed mention/edit + session fork → PASS.
 - A7 SIGKILL/WAL recovery + settings-file reload → PASS.
+
+## A6c durable queue + turn-results extraction
+- owner: 陰 live slot
+- repro: ephemeral compiled daemon; seed GAIA_HOME `agents/luna` + `accounts.json` + `config.json`; workspace under worktree containing `.gaia/config.json`; `env -u GAIA_PARENT_PID`; port `${GAIA_PORT:-18787}`.
+- verify: busy message persists `state.json.queue`; restart between reserved `pendingTurn.eventId` and completion; queue drains once; partial/reply event id has no duplicate transcript entry.
+
+## W4 A16 edit/resend regression
+- owner: 陰 live slot
+- repro: same isolated daemon/home; send two `@luna` token turns, edit first user event; inspect transcript + rewound + Pi session parent chain from disk.
+- verify: old tail absent from active transcript and fresh prompt branch; rewound retains old tail; edited reply occurs once; `GAIA_PARENT_PID` absent; daemon cwd owns `.gaia/config.json` (ADV-013).
+
+## A10 manifest-first plugin foundation
+
+- owner: root live slot
+- repro: after the manifest loader is wired by a later atom, launch compiled daemon with one valid daemon-placement package and one invalid sibling package → assert no package entrypoint runs; repair sibling → assert only selected placement runs after complete inventory validation.
+- status: UNVERIFIED — A10 exports the validated loader only; legacy command/runner paths remain unchanged pending A14, so no daemon call-site exists to exercise.
+## W4 A16 · edit/resend regression test code — queued for 陰
+- code → `test/edit-resend-live.test.ts` (naru-sonnet, based on main `51a71cf`).
+  Unit tests (seed helpers, env helper, evidence-reader parsing) run under
+  plain `bun test` — no daemon, no network, no subprocess; gate-safe. The
+  live HTTP flow is `test.skip`-gated by default; nothing here starts a
+  daemon in a coding lane (CPU law).
+- to run live → set `GAIA_LIVE_EDIT_RESEND=1`, `LIVE_WORKSPACE_DIR=<abs
+  path>`, `GAIA_PORT` (defaults 18787 if the daemon was started via the
+  file's `liveDaemonEnv()`), optional `LIVE_AUTH_TOKEN` if the ephemeral
+  GAIA_HOME has registered users. Recipe:
+  1. In this worktree: `bun run build --out .gaia/live-test-runs/dist`
+     (compiled binary — dev mode is deleted, AGENTS.md).
+  2. Call `seedEphemeralDaemonHome(...)` (or replicate by hand): isolated
+     GAIA_HOME with `agents/luna` scaffolded + `accounts.json`, PLUS a real
+     luna-capable OAuth account added on top (the seed only stubs the
+     shell — no real credentials ship in the repo); a workspace dir already
+     through `initWorkspace()` (ADV-013: `.gaia/config.json` must exist
+     BEFORE the daemon's first boot against that `cwd`).
+  3. Start the compiled binary with `cwd` = that workspace dir and env from
+     `liveDaemonEnv(seed, port)` (strips inherited `GAIA_PARENT_PID` — see
+     EDIT-RESEND-LIVETEST.md § Incidents for why a live daemon restart
+     otherwise kills the ephemeral one).
+  4. `GAIA_LIVE_EDIT_RESEND=1 LIVE_WORKSPACE_DIR=<that workspace dir>
+     GAIA_PORT=<port> bun test test/edit-resend-live.test.ts`.
+- verify → token round-trip through `/messages` + `/edit`, transcript.jsonl
+  (edited text present, pre-edit old tail absent), rewound.jsonl (pre-edit
+  old tail preserved off-branch), pi-sessions/luna/*.jsonl parent chain
+  (edited entry's `parentId` = the pre-edit reply, never the rewound old
+  tail) — codifies EDIT-RESEND-LIVETEST.md Q2/Q3 +
+  REFACTOR-LIVE-RESULTS-20260902.md A6 as reusable, re-runnable code instead
+  of ad-hoc manual commands.
+- status: UNVERIFIED live — gate-only run confirmed (unit tests pass, `bun
+  run check` clean); nobody has run the opt-in path against a real daemon
+  yet.
+
+## A13 typed contribution ports
+
+- owner: 陰 live slot
+- repro: after manifest registry composition, install one daemon-placement package declaring command/tool/channel/provider; invoke each with `{roomId,agentId}`; repeat untrusted + missing-cap contexts; send a `plugin-contribution` frame to a runner before A14.
+- verify: declared+granted invocation only; undeclared/malformed output rejected; untrusted/missing-cap code never entered; runner returns explicit unavailable result, never legacy `~/.gaia/plugins/runner` fallback.
+- status: UNVERIFIED — A13 ports/registry/protocol only; no daemon composition or manifest runner registry before A14.
+
+## A14 manifest command + Telegram bridge
+- owner→陰 live slot
+- repro→compiled daemon; `~/.gaia/plugins/<pkg>/plugin.json` daemon command + invalid sibling + loose legacy `~/.gaia/plugins/<name>.mjs`; Telegram bridge valid bot/account env
+- verify→invalid sibling→zero manifest entrypoint imports; repaired sibling→typed command registered; loose module warns synthetic compatibility manifest; Telegram incoming/outgoing→registered `gaia.telegram/telegram`; untrusted/missing-cap denied before contribution code
+- status→UNVERIFIED; coding lane never starts daemon/port

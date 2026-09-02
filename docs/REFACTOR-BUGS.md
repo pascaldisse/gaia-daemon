@@ -482,3 +482,102 @@ Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifa
 - ADV-013 reclassified PRE-EXISTING / MED, not A5c: throw = src/domain/workspace.ts:147, untouched 768115b..main (`git log -S'Missing workspace config'` empty; cwd-workspace path diff 0).
 - Trigger: daemon cwd inside a dir w/ `.gaia/` but no `.gaia/config.json` (any worktree) → GET /api/app 500 + summon recovery skipped.
 - A5 route smoke → PASS for parity (all other routes 200/401 as expected). Fix = W4 atom (auto-workspace: bootstrap config or skip cwd w/o config), not refactor scope.
+
+## PASS #3 · W3 plugin system + W4 A16 live · 2026-09-03
+
+Scope → `b4c126d..0bb260c` · audit branch `audit/pass3-w3-a16-20260903` · fixes forbidden.
+
+### ADV-014 · HIGH · capability broker is a stub
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'new CapabilityBroker|grantSource|trustSource' -- src/services/plugins.ts scripts/telegram-bridge.mjs src/services/capabilities
+```
+Expected → daemon-owned grant policy + effective room/agent trust feed every manifest contribution invocation; `trust:false` remains forced-empty.
+Actual → only live constructions use `grantSource: () => undefined, trustSource: () => false` (`src/services/plugins.ts:162`, `scripts/telegram-bridge.mjs:69`); nonempty `requiredCaps` permanently deny; no domain/config grant source reaches broker. Cap-free plugins exercise no authorization policy.
+
+### ADV-015 · HIGH · bundled plugins bypass or never reach manifest runtime
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'loadCommandPlugins|PluginRegistry|listBundledPlugins|pluginRegistry:' -- src scripts
+git ls-tree -r --name-only 0bb260c -- addons plugins | rg 'plugin.json|plugins/(defaults|fugu|rpg-engine)'
+```
+Expected → daemon boot discovers + validates bundled manifests before import; daemon retains one registry/lifecycle owner; `RoomService` receives its turn boundary.
+Actual → `RoomService.pluginsPromise` calls `loadCommandPlugins()`; bundled defaults import loose `.mjs` directly (`src/services/plugins.ts:131-153,190-198`). `fugu`/`rpg-engine` have no `plugin.json` or daemon registry caller. Telegram's manifest is reached only by standalone `scripts/telegram-bridge.mjs`, not daemon boot. `RoomServiceOptions.pluginRegistry` remains optional and has no production injection; transient registries are discarded after startup wrappers are copied. Mid-turn manifest staging through the daemon is unreachable.
+
+### ADV-016 · HIGH · two incompatible manifest/lifecycle systems coexist
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'interface PluginManifest|class PluginHost|class PluginRegistry' -- src/services
+```
+Expected → one manifest ABI + one lifecycle/registry implementation.
+Actual → `src/services/plugin-manifest.ts` requires `{schema,name,entrypoint,permissions,...}` and feeds `plugin-host.ts`; W3 adds `src/services/plugins/manifest.ts` requiring `{id,placement,contributes,...}` and feeds `plugins/registry.ts`. `addons/telegram/plugin.json` matches only the second. Old `listBundledPlugins`/`PluginHost` have no production caller; parallel surfaces violate zero-duplication and cannot consume the same package.
+
+### ADV-017 · HIGH · generation lifecycle is not serialized across disposer await
+
+Repro @ `0bb260c` → registry candidate G0 disposer blocks on a promise; call `stageReload()` + `applyTurnBoundary()`; before resolving G0 disposer, stage/apply G1.
+Expected → G0 disposal completes before G1 registration/swap/disposal begins.
+Actual → `plugins/registry.ts:236-244` swaps + clears staged before awaiting old disposal; a second stage/apply can overlap G0 disposal with G1 lifecycle. Invocation lease (`:305-313`) protects contribution execution, not lifecycle operation serialization.
+
+### ADV-018 · MED · A16 live assertion does not prove claimed fork parent
+
+Repro @ `f812940`:
+```sh
+nl -ba test/edit-resend-live.test.ts | sed -n '362,371p'
+```
+Expected → `editedEntry.parentId === <assistant reply immediately before U2>.id`.
+Actual → `preEditReplyEntry` is found by token only (may select U1 user entry) and never compared to `editedEntry.parentId`; only optional inequality against one old-tail entry is asserted. Live opt-in may pass with an arbitrary wrong parent.
+
+### ADV-019 · LOW · A6f left a dead duplicate dialogue limit
+
+Repro @ `0bb260c`:
+```sh
+rg -n 'AGENT_DIALOGUE_MAX_HOPS' src/services/room-service.ts src/services/room test/room-service.test.ts
+```
+Expected → one canonical dialogue-hop constant.
+Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-service.ts:94`; A6f copied byte-identical `export const AGENT_DIALOGUE_MAX_HOPS = 8` into `task-operations.ts:8`, where nothing imports or reads it. Knip also reports this export.
+
+### A6c–A6h static verdict
+
+- extraction discipline → PASS except ADV-019 residue; new queue/turn-results/summon/lifecycle/task/command/monad bodies have production facade/delegation callsites; no second behavior body found in `room-service.ts`.
+- durability → PASS: queue/pending mutation owns one implementation in `domain/rooms.ts:1051-1157`; physical atomic write owns one implementation in `core/store.ts`; extracted room files invoke/read those seams, never reimplement persistence.
+- A6h transient ledger typo → `bc6c96c` named nonexistent `c8069bb`; `c8023a3` corrected it to landed `a931351`; no HEAD residue.
+- requested stale-branch salvage → `gaia/ghoul-terra-mtkojg90dhpql1@b1647ed` is not an ancestor of `0bb260c`. `b1647ed:room/command-execution.ts` and `a931351:room/command-execution.ts` have identical blob `474815c6`; this is the salvaged part. Dropped extraction-only parts: `615f90e` `room-maintenance.ts` (setup/clear/refresh/fork/event lookup/tool-result methods remain in facade at audited HEAD) and b164's function-style `background-tasks.ts` rewrite (main retains the independently landed class implementation from `8fcea00`). Dropped user behavior → none measured; dropped refactor surface → those two files/variants.
+
+### W3 steal-list delivery
+
+| item | verdict | evidence |
+|---|---|---|
+| manifest-first validation | PARTIAL | new validator/loader exists; bundled defaults bypass; daemon/addon boot discovery absent |
+| atomic swap | PARTIAL | registry algorithm exists; no daemon owner; disposer overlap ADV-017 |
+| turn lease | PARTIAL | registry invocation + optional RoomService seam exist; no production injection |
+| capability broker | MISSING | API exists; real grants/trust absent → ADV-014 |
+| disposer/dependency lifecycle | PARTIAL | reverse disposer exists; no retained shutdown owner/dependency graph; overlap ADV-017 |
+
+### Static non-findings
+
+- `rg -n 'pragma|harness\\s*===|harness\\s*!==' src/services/plugins src/services/capabilities src/services/plugins.ts` → 0.
+- W3 service imports → no server/daemon upward import; harness contribution wire remains data contract.
+- `src/services/plugins/loader.ts` → not test-only: default loader for transient command registry + standalone Telegram registry; no daemon-owned persistent consumer.
+
+### Gate · parent @ `cf73776` (code tree = `0bb260c`; ledger-only delta)
+
+- `bun run check` → exit 0 · 6.80s; TypeScript worlds green; configured `knip --no-exit-code` ran and reported existing debt (4 unused files · 116 unused exports · 77 unused exported types).
+- touched tests discovered by `git diff --name-only b4c126d..0bb260c -- 'test/**'` → 10 files.
+- each file run separately → `edit-resend-live` 4 pass/1 live skip · `plugins-capabilities` 16/0 · `plugins-contracts` 4/0 · `plugins-loader` 2/0 · `plugins-manifest` 4/0 · `plugins-migration` 4/0 · `plugins-registry` 5/0 · `room-service` 99/0 · `rooms` 53/0 · `telegram-bridge-format` 3/0. Aggregate → 194 pass · 1 intentional live skip · 0 fail.
+- Knip enforcement → configured but non-enforcing (`package.json` `check:dead = knip --no-exit-code`); gate cannot fail on dead exports.
+
+### Live verdict · isolated compiled daemon @ `0bb260c`
+
+- A16 → **PASS**. Command: `GAIA_LIVE_EDIT_RESEND=1 ... bun test --timeout 120000 test/edit-resend-live.test.ts` → 5 pass · 0 fail. Token `TOKEN-4435348c`: active transcript contained A1 + A2-EDITED only; `rewound.jsonl` contained A2-OLD; Pi session edited-user `19268617.parentId=69b6694a` (A1 assistant), not old-tail `93aa687d`. Independent disk inspection proves this run's parent chain despite ADV-018's insufficient automated assertion.
+- plugin bundled-command/generation boundary → **FAIL · unreachable**. Production grep found no daemon/server `pluginRegistry` injection; bundled defaults use loose loader. Therefore no honest live path can stage a bundled manifest during a room turn. No invented harness; ADV-015.
+- cleanup → PASS: child killed isolated daemon; removed generated `dist/`, home, workspace; `lsof -nP -iTCP:18787 -sTCP:LISTEN` empty; orphan process sweep empty.
+- live owner branch proof → `gaia/ghoul-terra-mtkotwumdct15f@555941f`.
+
+### Landing gate · merged newer main `249e7b1` into audit branch
+
+- `bun run check` @ `ca5f591` → exit 0 · 6.97s; configured Knip inventory emitted.
+- `bun test test/room-service.test.ts` @ `ca5f591` → 99 pass · 0 fail · 9.45s.
+- scope verdict remains pinned to requested `0bb260c`; newer A6i maintenance extraction is outside PASS #3 scope.

@@ -7,6 +7,28 @@ import type { AgentInput } from "./spec.js";
 
 /** Service implementations injected into harness tools at runtime. Harnesses
  * depend on this contract only; service imports stay at composition level. */
+/** JSON-safe payload exchanged by the uniform runner contribution port. Runtime
+ * service contracts validate plugin output again before exposing it to Gaia. */
+export type PluginContributionWireValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly PluginContributionWireValue[]
+  | { readonly [key: string]: PluginContributionWireValue };
+export type RunnerPluginContributionKind = "command" | "tool" | "channel-bridge" | "provider";
+export interface RunnerPluginContributionRequest {
+  readonly requestId: string;
+  readonly pluginId: string;
+  readonly kind: RunnerPluginContributionKind;
+  readonly name: string;
+  readonly context: { readonly roomId: string; readonly agentId: string };
+  readonly payload: PluginContributionWireValue;
+}
+export type RunnerPluginContributionResult =
+  | { readonly type: "plugin-contribution-result"; readonly requestId: string; readonly ok: true; readonly payload: PluginContributionWireValue }
+  | { readonly type: "plugin-contribution-result"; readonly requestId: string; readonly ok: false; readonly message: string };
+
 export interface ToolProviders {
   artifacts: {
     list(location: { rootDir: string; roomId: string }): Promise<unknown>;
@@ -36,6 +58,8 @@ export type RunnerCommand =
   | { type: "fork"; roomId: string; originEventId: string; userOrdinal: number }
   | { type: "reset"; roomId: string }
   | { type: "refresh"; roomId: string }
+  /** Manifest runner contribution dispatch. Every harness shares this frame. */
+  | ({ type: "plugin-contribution" } & RunnerPluginContributionRequest)
   | { type: "dispose" };
 
 /** Runner -> daemon. */
@@ -55,7 +79,8 @@ export type RunnerMessage =
   // boundary from `compacted`, never from the message text.
   | { type: "compact-result"; ok: boolean; compacted: boolean; message: string; summary?: string }
   // Result of a `fork` command — see AgentRuntime.forkAtMessage.
-  | { type: "fork-result"; ok: boolean; message: string };
+  | { type: "fork-result"; ok: boolean; message: string }
+  | RunnerPluginContributionResult;
 
 /** Serialize one protocol frame for the newline-delimited wire.
  *
@@ -101,6 +126,24 @@ export const RUNNER_ENV = {
   llmProxyUrl: "GAIA_LLM_PROXY_URL",
 } as const;
 
+function isPluginContributionWireValue(value: unknown, seen = new Set<object>()): value is PluginContributionWireValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const valid = value.every((item) => isPluginContributionWireValue(item, seen));
+    seen.delete(value);
+    return valid;
+  }
+  if (typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const valid = Object.values(value).every((item) => isPluginContributionWireValue(item, seen));
+  seen.delete(value);
+  return valid;
+}
+
 export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const msg = raw as Record<string, unknown>;
@@ -132,6 +175,16 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
       };
     case "fork-result":
       return { type: "fork-result", ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : "" };
+    case "plugin-contribution-result":
+      if (typeof msg.requestId !== "string") return undefined;
+      if (msg.ok === true) {
+        return isPluginContributionWireValue(msg.payload)
+          ? { type: "plugin-contribution-result", requestId: msg.requestId, ok: true, payload: msg.payload }
+          : undefined;
+      }
+      return msg.ok === false && typeof msg.message === "string"
+        ? { type: "plugin-contribution-result", requestId: msg.requestId, ok: false, message: msg.message }
+        : undefined;
     default:
       return undefined;
   }

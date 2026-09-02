@@ -4,6 +4,7 @@ import type {
   CompactProgress,
   CompactProgressUpdate,
   CompactResult,
+ContextGatePending,
   EventDetails,
   LiveTurn,
   MessageAttachment,
@@ -11,6 +12,7 @@ import type {
   PendingTurn,
   PetProgressStatus,
   RoomGoal,
+  RoomEvent,
   RoomEventKind,
   SanitizeProposal,
   SanitizeStatus,
@@ -26,6 +28,22 @@ import type { HookEvent } from "../hooks.js";
 import type { EpisodeCapture } from "../memory-service.js";
 import type { RoomServiceOptions, SendMessageOptions } from "../room-service.js";
 import type { SanitizeContext } from "../sanitize.js";
+import type { ResumeEpoch } from "../resume-epoch.js";
+import type { SummonResultDelivery } from "../summons.js";
+
+/** Dependencies reached by context-gate persistence and resume. */
+export interface RoomContextGatePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly options: RoomServiceOptions;
+  contextGate: ContextGatePending | undefined;
+  readonly compactingAgents: Set<string>;
+  readonly compactProgress: Map<string, CompactProgress>;
+  init(): Promise<void>;
+  emitSnapshot(): Promise<void>;
+  sendMessage(text: string, options?: SendMessageOptions): Promise<Task>;
+}
 
 /** Dependencies reached by the durable turn executor. */
 export interface RoomTurnLoopPort {
@@ -70,6 +88,13 @@ export interface RoomTurnLoopPort {
   maybeDispatchAgentDialogue(author: string, reply: string): Promise<void>;
   maybeContinueGoal(author: string, reply: string, goalStartedAt: string): Promise<void>;
   settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+}
+
+/** Dependencies reached by turn result persistence and retry handling. */
+export interface RoomTurnResultsPort extends RoomTurnLoopPort, RoomContextGatePort {
+  readonly queuedTasks: Task[];
+  createTask(text: string, targets: string[]): Task;
+  withRenderCapNotes(events: import("../../core/types.js").RoomEvent[]): import("../../core/types.js").RoomEvent[];
 }
 
 /** Dependencies reached by transcript forks, retries, and session resets. */
@@ -120,6 +145,29 @@ export interface RoomCommandsFacadePort {
   sanitizePreview(): Promise<SanitizeProposal>;
 }
 
+/** Dependencies reached by summon lifecycle (deliver/mark/wait) and agent-dialogue
+ * hand-off delivery. Split from room-service.ts (Pascal 2026-09-03 A6d). */
+export interface RoomSummonLifecyclePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspaceId: string;
+  readonly workspace: Workspace;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly activeTask: Task | undefined;
+  readonly activeAgentTurn: Task | undefined;
+  readonly queuedTasks: Task[];
+  agentDialogueHops: number;
+  init(): Promise<void>;
+  emit(event: UiEvent): void;
+  emitSnapshot(): Promise<void>;
+  emitSystemNote(text: string): void;
+  emitRoomsChanged(): Promise<void>;
+  drain(onDecided?: () => void): Promise<void>;
+  waitForIdle(timeoutMs?: number): Promise<void>;
+  createTask(text: string, targets: string[]): Task;
+  postAgentNote(agentId: string, text: string, details?: EventDetails): Promise<void>;
+}
+
 /** Dependencies reached by sanitize review, proposal persistence, and apply. */
 export interface RoomSanitizeFacadePort {
   readonly room: RoomHandle;
@@ -134,4 +182,94 @@ export interface RoomSanitizeFacadePort {
   buildPersonaContext(agentId: string): Promise<SanitizeContext | undefined>;
   readonly sanitizeProposalPath: string;
   resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number, forkOrigin?: { id: string; userOrdinal: number }): Promise<void>;
+}
+
+/** Dependencies reached by RoomService construction/open/bootstrap/disposal. */
+export interface RoomLifecyclePort {
+  readonly options: RoomServiceOptions & { room: RoomHandle };
+  readonly room: RoomHandle;
+  readonly workspace: Workspace;
+  readonly incognito: boolean;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly bus: { on(listener: (event: UiEvent) => void): () => void };
+  isSummonRoom: boolean;
+  summonUntrusted: boolean;
+  workDir: string | undefined;
+  contextGate: ContextGatePending | undefined;
+  sanitizeStatus: SanitizeStatus | undefined;
+  readonly sanitizeProposalPath: string;
+  contextUsage: Record<string, { usedTokens: number; maxTokens?: number }>;
+  queuedTasks: Task[];
+  readonly activeTask: Task | undefined;
+  authRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  resumePendingTurn(pending: PendingTurn): Promise<void>;
+  enqueueGoalTurn(goal: RoomGoal, continuing: boolean, kick?: boolean): Promise<void>;
+  drain(onDecided?: () => void): Promise<void>;
+}
+export interface RoomLifecycleConstructPort {
+  isSummonRoom: boolean;
+  summonUntrusted: boolean;
+  workDir: string | undefined;
+}
+
+/** Dependencies reached by monad-room turn execution (WAL-atomic markPendingTurn →
+ * engine.run → commitTurn, same shape as an agent turn). Split from room-service.ts
+ * (Pascal 2026-09-03 A6g); the pendingTurn/commitTurn atomic write stays inside
+ * this one method, unsplit. */
+export interface RoomMonadExecutionPort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspaceId: string;
+  readonly workspace: Workspace;
+  readonly options: RoomServiceOptions;
+  emit(event: UiEvent): void;
+  monadAuthor(): Promise<string[]>;
+  taskCancelled(task: Task): boolean;
+  settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+}
+/** Dependencies reached by non-WAL pet/task/monad controls. */
+export interface RoomTaskOperationsPort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly workspaceId: string;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly options: RoomServiceOptions;
+  activeTask: Task | undefined;
+  activeTurnUnwind: Promise<void> | undefined;
+  readonly activeAgentTurn: Task | undefined;
+  readonly compactingAgents: Set<string>;
+  readonly compactCancels: Set<string>;
+  queuedTasks: Task[];
+  recentTasks: Task[];
+  agentDialogueHops: number;
+  init(): Promise<void>;
+  emit(event: UiEvent): void;
+  emitSnapshot(): Promise<void>;
+  roomDefaultTarget(): Promise<string>;
+  unknownAgentMessage(agentId: string): string;
+  emitSystemNote(text: string): void;
+  settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+  subscribe(listener: (event: UiEvent) => void): () => void;
+}
+
+
+/** Dependencies reached by room setup, maintenance, transcript inspection, and task controls. */
+export interface RoomMaintenancePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly workspaceId: string;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly options: RoomServiceOptions;
+  recentTasks: Task[];
+  readonly backgroundTasks: {
+    record(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void>;
+    output(taskId: string): Promise<{ text: string; running: boolean } | undefined>;
+    stop(taskId: string): Promise<boolean>;
+  };
+  emitSnapshot(): Promise<void>;
+  init(): Promise<void>;
+  eventById(eventId: string, opts?: { display?: boolean }): Promise<RoomEvent | undefined>;
+  displayEvents(events: RoomEvent[]): RoomEvent[];
 }
