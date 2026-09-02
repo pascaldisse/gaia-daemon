@@ -24,23 +24,6 @@ export function stringField(body: unknown, field: string): string | undefined {
 export function boolField(body: unknown, field: string): boolean {
   return !!body && typeof body === "object" && (body as Record<string, unknown>)[field] === true;
 }
-export function numberField(body: unknown, field: string): number | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const value = (body as Record<string, unknown>)[field];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-export function stringArrayField(body: unknown, field: string): string[] | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const raw = (body as Record<string, unknown>)[field];
-  return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string") : undefined;
-}
-export function summonCensusText(entries: SummonCensusEntry[]): string {
-  if (entries.length === 0) return "No summon lanes found.";
-  return entries.map((entry) => [entry.roomId, `@${entry.agentId}`, entry.state, `delivered:${entry.delivered}`, entry.resumeStatus ? `resume:${entry.resumeStatus}` : "", entry.lastEventAt ? `last:${entry.lastEventAt}` : "", entry.dirtyWorktree === undefined ? "" : entry.dirtyWorktree ? "dirty" : "clean"].filter(Boolean).join("  ")).join("\n");
-}
-export function titleCaseId(id: string): string {
-  return id.split(/[-_]/).filter(Boolean).map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join(" ") || id;
-}
 export function encodeSse(eventType: string, payload: unknown): string { return `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`; }
 export function beginSse(response: ServerResponse): void {
   response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive" });
