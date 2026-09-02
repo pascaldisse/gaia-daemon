@@ -20,13 +20,13 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SqliteDatabase as DatabaseSync } from "../core/sqlite.js";
 import { openSqlite } from "../core/sqlite.js";
 import { workspacePaths } from "../core/paths.js";
 import type { EpisodeOutcome } from "./episodes.js";
 import { readEpisodesFrom } from "./episodes.js";
+import { readTranscriptRecordsFrom } from "./rooms.js";
 import type { FactSource } from "./facts.js";
 import { readFactOpsFrom, sharedFactsDir, WORKSPACE_FACTS_AGENT } from "./facts.js";
 
@@ -358,12 +358,12 @@ async function syncRoomChunks(db: DatabaseSync, room: RoomRef): Promise<boolean>
     | undefined;
   if (cursor && cursor.mtime_ms === stat.mtimeMs && cursor.size_bytes === stat.size) return false;
 
-  const raw = await readFile(room.transcriptPath, "utf8").catch(() => "");
-  const lines = raw.split("\n").filter((line) => line.trim());
+  const transcript = await readTranscriptRecordsFrom(room.transcriptPath).catch(() => ({ items: [], nextCursor: 0 }));
+  const lineCount = transcript.nextCursor;
   let from = cursor?.closed_lines ?? 0;
   // Fewer lines than indexed ⇒ the transcript was replaced, hand-edited, or
   // /rewind-truncated: rebuild this room from scratch for consistency.
-  if (lines.length < (cursor?.total_lines ?? 0)) {
+  if (lineCount < (cursor?.total_lines ?? 0)) {
     deleteRoomChunks(db, room.roomId, 0);
     from = 0;
   } else {
@@ -372,13 +372,9 @@ async function syncRoomChunks(db: DatabaseSync, room: RoomRef): Promise<boolean>
   }
 
   const events: ChunkEvent[] = [];
-  for (let idx = from; idx < lines.length; idx += 1) {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(lines[idx]) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+  for (const parsed of transcript.items) {
+    const idx = parsed.lineIndex;
+    if (idx < from) continue;
     if (typeof parsed.text !== "string" || typeof parsed.author !== "string" || !parsed.text.trim()) continue;
     // System events are room chrome (slash-command replies), never conversation.
     if (parsed.author === "system") continue;
@@ -413,10 +409,10 @@ async function syncRoomChunks(db: DatabaseSync, room: RoomRef): Promise<boolean>
   }
 
   const openChunk = chunks.find((chunk) => chunk.open);
-  const closedLines = openChunk ? openChunk.firstIdx : lines.length;
+  const closedLines = openChunk ? openChunk.firstIdx : lineCount;
   db.prepare(
     "INSERT INTO rooms (room_id, closed_lines, total_lines, mtime_ms, size_bytes) VALUES (?, ?, ?, ?, ?) ON CONFLICT(room_id) DO UPDATE SET closed_lines = excluded.closed_lines, total_lines = excluded.total_lines, mtime_ms = excluded.mtime_ms, size_bytes = excluded.size_bytes",
-  ).run(room.roomId, closedLines, lines.length, stat.mtimeMs, stat.size);
+  ).run(room.roomId, closedLines, lineCount, stat.mtimeMs, stat.size);
   return true;
 }
 
@@ -1109,20 +1105,15 @@ export async function scrollTranscriptWindow(
   }
   if (!row) return undefined;
   const transcriptPath = workspacePaths.transcript(workspaceRoot, row.room_id);
-  const raw = await readFile(transcriptPath, "utf8").catch(() => "");
-  if (!raw) return undefined;
-  const lines = raw.split("\n").filter((line) => line.trim());
+  const transcript = await readTranscriptRecordsFrom(transcriptPath).catch(() => ({ items: [], nextCursor: 0 }));
+  if (transcript.nextCursor === 0) return undefined;
   const center = Math.floor((row.first_idx + row.last_idx) / 2) + (options.offset ?? 0);
   const from = Math.max(0, center - span);
-  const to = Math.min(lines.length - 1, center + span);
-  const out: string[] = [`room ${row.room_id} · events ${from}–${to} of ${lines.length} (hit ${chunkId} at ${row.first_idx}–${row.last_idx})`];
-  for (let idx = from; idx <= to; idx += 1) {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(lines[idx]) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+  const to = Math.min(transcript.nextCursor - 1, center + span);
+  const out: string[] = [`room ${row.room_id} · events ${from}–${to} of ${transcript.nextCursor} (hit ${chunkId} at ${row.first_idx}–${row.last_idx})`];
+  for (const parsed of transcript.items) {
+    const idx = parsed.lineIndex;
+    if (idx < from || idx > to) continue;
     if (typeof parsed.text !== "string" || typeof parsed.author !== "string") continue;
     const marker = idx >= row.first_idx && idx <= row.last_idx ? "▶" : " ";
     const text = parsed.text.length > 500 ? `${parsed.text.slice(0, 500)}…` : parsed.text;
