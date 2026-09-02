@@ -1,5 +1,5 @@
 import type { ActiveContextRef } from "../../domain/workspace-index.js";
-import type { AgentDef, EventDetails, MessageAttachment, PendingTurn, RoomEvent, Task } from "../../core/types.js";
+import type { AgentDef, EventDetails, MessageAttachment, PendingTurn, RoomEvent, RoomEventKind, Task } from "../../core/types.js";
 import type { RenderCap } from "../../domain/render-cap.js";
 import type { EpisodeCapture } from "../memory-service.js";
 import { newId } from "../../core/ids.js";
@@ -124,6 +124,29 @@ export class RoomTurnResults {
     } catch {
       // The task-error path still surfaces the original error live.
     }
+  }
+
+  /** Durable persistence for a manifest-registry command's system-authored
+   * reply, OR a capability denial converted to one (ADV-021) — same
+   * append-under-room-lock protocol as appendTurnFailure/appendTurnStopped
+   * just below, replacing RoomQueue#sendMessage's old transient-only
+   * `emit({type:"room-event"})` (in-memory, lost on crash/reconnect-miss:
+   * REFACTOR-BUGS.md ADV-021). `details`, when given, carries structured
+   * provenance (e.g. `pluginDenial`) alongside the human-readable `text`.
+   * Returns the committed event so the caller can drive its own task-status
+   * bookkeeping without a second read. */
+  async appendPluginEvent(text: string, kind: RoomEventKind, details?: EventDetails): Promise<RoomEvent> {
+    const event: RoomEvent = {
+      id: newId("system_plugin"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      kind,
+      text,
+      ...(details ? { details } : {}),
+    };
+    await this.service.room.appendEvent(event);
+    this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
+    return event;
   }
 
   /** Quiet counterpart to appendTurnFailure for user cancels that beat the

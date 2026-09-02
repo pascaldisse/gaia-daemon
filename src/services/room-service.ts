@@ -579,6 +579,9 @@ export class RoomService {
   async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn, renderCap?: RenderCap): Promise<void> {
     return new RoomTurnResults(this).commitReply(agentId, eventId, reply, details, channel, nextPending, renderCap);
   }
+  async appendPluginEvent(text: string, kind: RoomEventKind, details?: EventDetails): Promise<RoomEvent> {
+    return new RoomTurnResults(this).appendPluginEvent(text, kind, details);
+  }
   async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
     return new RoomTurnResults(this).appendTurnFailure(agentId, error);
   }

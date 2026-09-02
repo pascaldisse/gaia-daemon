@@ -6,6 +6,7 @@ import type { PluginCommandRequest, PluginCommandResult } from "./plugins/contra
 import type { RegisteredPluginCommand } from "./plugins/registry.js";
 
 import type { PluginCommandContext, PluginPanel, PluginRenderCap } from "./plugins/contracts.js";
+import type { PluginDenial } from "../core/types.js";
 export type { PluginPanel };
 export type PluginContext = PluginCommandContext;
 export interface PluginResult {
@@ -19,6 +20,12 @@ panel?: (ctx: PluginContext) => PluginPanel | undefined | Promise<PluginPanel | 
 prompt?: (ctx: PluginContext & { agentId: string }) => string | undefined | Promise<string | undefined>;
 renderCap?: (ctx: PluginContext) => PluginRenderCap | undefined | Promise<PluginRenderCap | undefined>;
 turnStart?: (ctx: PluginContext) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
+/** Set only when this result came from a CapabilityDeniedError catch
+ * (ADV-021) — the broker rejected the invocation before the plugin's own
+ * contribution code ran. `reply` above still carries a human-readable line;
+ * this field is the durable, structured provenance the caller (RoomQueue)
+ * persists as `EventDetails.pluginDenial` on a `capability-denied` event. */
+denial?: PluginDenial;
 }
 export interface CommandPlugin {
 command: string | readonly string[];
