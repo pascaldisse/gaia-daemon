@@ -118,3 +118,9 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - gate: `bun run check` green; `bun test test/room-service.test.ts` 98/0.
 - call-site: `RoomQueue` sole routing implementation; `RoomTurnResults` sole result implementation; facade delegates only; no legacy parallel bodies.
 - pragma scan `src/services`: 1 textual `as any` prose match; 0 pragma directives / casts. A6c landed main ff-only pending below.
+
+## W3 A10+A12 — manifest inventory + capability broker (2026-09-03)
+- A10 `ef898f6`: `services/plugins/{manifest,loader}.ts`; inventory validates all `plugin.json` before import; duplicate id + realpath escape reject; daemon/runner placement data.
+- A12 `5070d24`: `services/capabilities/`; per `{roomId,agentId}` broker; trust=false→empty grant floor before grant lookup; plugin declarations never grant.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts` 22/0.
+- call-site: A10/A12 foundations intentionally unwired; A11 staged registry then A13/A14 own production migration. pragma scan `src/services/plugins src/services/capabilities`: 0.
