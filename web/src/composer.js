@@ -862,7 +862,9 @@ function composerTargetStatus(snapshot, text) {
   const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
   const unknown = leadingMentionIds(text).filter((id) => !knownAgents.has(id));
   if (unknown.length) return `unknown: ${unknown.map((id) => `@${id}`).join(", ")}`;
-  return composerTargets(snapshot, text).map((target) => `${agentGlyph(target)} @${target}`).join(", ");
+  // Composer meta line: speaker/target name renders PLAIN, glyph only
+  // (V2-SKIN.md design law — @ is for addressing/mentions, not a header).
+  return composerTargets(snapshot, text).map((target) => `${agentGlyph(target)} ${target}`).join(", ");
 }
 
 // Last non-off level per agent, so the off-toggle can come back to it.
