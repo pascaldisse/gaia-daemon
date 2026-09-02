@@ -143,6 +143,7 @@ export class RoomCommandsMixin {
   pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext {
     return {
       homedir: homedir(),
+      workspaceId: this.workspaceId,
       roomId: this.roomId,
       agentId: state.activeAgent ?? this.workspace.config.defaultAgent,
       workspaceRoot: this.workspace.rootDir,

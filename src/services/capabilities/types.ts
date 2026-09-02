@@ -6,8 +6,13 @@
 // resolves.
 
 /** One authorization's identity — every capability decision is scoped to
- * exactly this pair, never ambient / process-global. */
+ * exactly this triple, never ambient / process-global. `workspaceId` is
+ * required (not derivable from `roomId` alone: a daemon serves many
+ * workspaces, and room ids are workspace-scoped, not globally unique) — a
+ * real host-side source (daemon.ts's grantSource/trustSource) resolves
+ * workspace + agent config from it. */
 export interface CapabilityContext {
+  readonly workspaceId: string;
   readonly roomId: string;
   readonly agentId: string;
 }

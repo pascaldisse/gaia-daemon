@@ -31,6 +31,11 @@ export interface PluginPanel {
 
 export interface PluginContext {
   homedir: string;
+  /** Capability decisions resolve real workspace/agent config off this —
+   * see CapabilityContext (capabilities/types.ts) and daemon.ts's
+   * grantSource/trustSource. Not derivable from `workspaceRoot` (a path):
+   * the daemon's live-service cache is keyed by the workspace id. */
+  workspaceId: string;
   roomId: string;
   /** Capability decisions stay bound to the room's resolved target agent. */
   agentId: string;
@@ -95,7 +100,7 @@ export async function loadCommandPlugins(registry: CommandPluginRegistry): Promi
       run: (args, context) => registry.invokeCommand(
         command.pluginId,
         command.name,
-        { roomId: context.roomId, agentId: context.agentId },
+        { workspaceId: context.workspaceId, roomId: context.roomId, agentId: context.agentId },
         { args },
       ),
     });

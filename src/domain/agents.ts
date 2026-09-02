@@ -41,6 +41,8 @@ interface RawAgentConfig {
   sandbox?: unknown;
   trust?: unknown;
   allowNestedSummon?: unknown;
+  /** Agent-tier plugin capability grants (default []) — see AgentDef.capabilities. */
+  capabilities?: unknown;
   insight?: unknown;
   memory?: unknown;
   mcpServers?: unknown;
@@ -446,6 +448,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       sandbox: parseSandboxConfig(raw.sandbox),
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,
+      capabilities: stringList(raw.capabilities, []),
       insight: raw.insight === "line" || raw.insight === "full" ? raw.insight : undefined,
       permissionMode: normalizePermissionMode(raw.permissionMode),
       account: typeof raw.account === "string" && raw.account.trim() ? raw.account.trim() : undefined,

@@ -25,6 +25,7 @@ import { loadWorkspace, workspacePath } from "./domain/workspace.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { CapabilityBroker } from "./services/capabilities/broker.js";
+import { resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "./services/capabilities/index.js";
 import { PluginRegistry } from "./services/plugins/registry.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
@@ -49,6 +50,7 @@ memoryServiceFor as wireMemoryServiceFor,
 recoverPendingTurns as wireRecoverPendingTurns,
 recoverSummons as wireRecoverSummons,
 serviceFor as wireServiceFor,
+serviceKey,
 } from "./daemon/wiring.js";
 import {
   applySettingsChange as reloadApplySettingsChange,
@@ -190,7 +192,19 @@ export class Daemon {
     pluginsRoot: globalPaths.commandPluginsDir(),
     placement: "daemon",
     importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
-    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+    // Real sources, not the always-deny stub: resolve off this daemon's OWN
+    // resident RoomService cache (#liveWorkspaceFor), synchronously —
+    // CapabilityGrantSource/CapabilityTrustSource are sync by contract
+    // (services/capabilities/types.ts), so no I/O happens here. A context
+    // whose room isn't presently live resolves to workspace=undefined, which
+    // both daemon-sources.ts functions fail CLOSED on (no grants, untrusted)
+    // — never inferred open. Arrow functions close over `this`, evaluated
+    // lazily at call time (after full construction), so field-init order is
+    // safe even though `services` is declared further below.
+    capabilityBroker: new CapabilityBroker({
+      grantSource: (context) => resolveWorkspaceGrantPolicy(this.#liveWorkspaceFor(context.workspaceId, context.roomId), context.agentId),
+      trustSource: (context) => resolveWorkspaceTrust(this.#liveWorkspaceFor(context.workspaceId, context.roomId), context.agentId),
+    }),
   });
   /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
   private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });
@@ -635,6 +649,16 @@ export class Daemon {
       skills: skillHintOptions(skillWorkspace),
     };
     return buildFileHints({ label: file.label, kind: file.kind, content: file.content }, sources);
+  }
+
+  /** Sync, resident-only workspace lookup for one {workspaceId, roomId} —
+   * the capability broker's grantSource/trustSource (see the pluginRegistry
+   * field above) are sync by contract and must never do I/O, so this reads
+   * ONLY an already-loaded RoomService's cached Workspace off `this.services`
+   * (keyed by daemon/wiring.js#serviceKey) and returns undefined otherwise —
+   * unlike the async `workspaceForId` below, it never falls back to disk. */
+  #liveWorkspaceFor(workspaceId: string, roomId: string): Workspace | undefined {
+    return this.services.get(serviceKey(workspaceId, roomId))?.workspace;
   }
 
   async workspaceForId(workspaceId: string): Promise<Workspace | undefined> {

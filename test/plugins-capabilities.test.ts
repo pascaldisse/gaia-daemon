@@ -9,8 +9,8 @@ import {
 } from "../src/services/capabilities/index.js";
 import type { CapabilityContext, CapabilityRequester } from "../src/services/capabilities/index.js";
 
-function ctx(roomId = "room-1", agentId = "agent-1"): CapabilityContext {
-  return Object.freeze({ roomId, agentId });
+function ctx(roomId = "room-1", agentId = "agent-1", workspaceId = "ws-1"): CapabilityContext {
+  return Object.freeze({ workspaceId, roomId, agentId });
 }
 
 function requester(namespace: string, requiredCaps: readonly string[]): CapabilityRequester {

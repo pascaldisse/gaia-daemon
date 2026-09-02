@@ -2,6 +2,7 @@
 // and broker.ts (per-operation authorization); types.ts for shared shapes.
 
 export { resolveCapabilityGrants } from "./resolver.js";
+export { resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "./daemon-sources.js";
 export { authorizeCapabilities, authorizePlugin, CapabilityBroker, CapabilityDeniedError } from "./broker.js";
 export type { CapabilityBrokerOptions } from "./broker.js";
 export type {
