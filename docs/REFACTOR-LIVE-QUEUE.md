@@ -111,3 +111,7 @@
 - repro→compiled daemon; `~/.gaia/plugins/<pkg>/plugin.json` daemon command + invalid sibling + loose legacy `~/.gaia/plugins/<name>.mjs`; Telegram bridge valid bot/account env
 - verify→invalid sibling→zero manifest entrypoint imports; repaired sibling→typed command registered; loose module warns synthetic compatibility manifest; Telegram incoming/outgoing→registered `gaia.telegram/telegram`; untrusted/missing-cap denied before contribution code
 - status→UNVERIFIED; coding lane never starts daemon/port
+## ROOT #9 W3 live repros · owner 陰
+- plugin command registry turn → compiled daemon; workspace `.gaia/config.json` grants active agent required caps; issue declared bundled command in room; verify transcript command reply and registry generation/command provenance, no loose-module path.
+- staged manifest boundary → begin a deliberately held room turn; stage changed manifest package; verify old generation completes held turn; release lease; next turn invokes new generation only; inspect disposer ordering/event log.
+- untrusted capability denial → agent `trust:false`, workspace grants + agent capabilities include `network`; invoke a plugin requiring `network`; verify transcript surfaces denial and plugin contribution side-effect marker is absent.

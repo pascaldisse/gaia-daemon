@@ -581,3 +581,32 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 - `bun run check` @ `ca5f591` → exit 0 · 6.97s; configured Knip inventory emitted.
 - `bun test test/room-service.test.ts` @ `ca5f591` → 99 pass · 0 fail · 9.45s.
 - scope verdict remains pinned to requested `0bb260c`; newer A6i maintenance extraction is outside PASS #3 scope.
+
+---
+## ROOT #9 closure · 2026-09-03
+
+### ADV-014 · FIXED · `c529bf4`
+- daemon owns broker sources: workspace `.gaia/config.json` `plugins.grants[agentId]` + loaded `agent.json` `capabilities`; default `{}`/`[]`.
+- trust source → existing `isTrusted(agent)`; missing workspace/agent fail closed; `trust:false` bypasses grant lookup → no non-safe capability.
+- evidence → `bun test test/capabilities-daemon-sources.test.ts` 6/0; untrusted network denial · trusted grant allowance · granted/untrusted denial.
+
+### ADV-015 · FIXED · `6641107`
+- manifest inventory → `plugins/{defaults,fugu,rpg-engine,rpg.mjs}` + `addons/telegram`; Telegram `process:"standalone"`.
+- roots → injectable `bundledDir("plugins")` + `globalPaths.commandPluginsDir()`; no loose `readdirSync` command loader.
+- evidence → `test/bundled-plugins.test.ts` validates inventory before import; rpg/dog/Telegram focused tests green.
+
+### ADV-016 · FIXED · `1de4129`
+- one production `PluginRegistry` + `CapabilityBroker` → `src/daemon.ts`; RoomService adapter receives injected typed registry; no module-level loader/default registry.
+- evidence → registry/room/bundled tests green; construction scan below.
+
+### ADV-017 · VERIFIED · inherited `c03795b`
+- `PluginRegistry.#serialize` queues stage/apply/shutdown through one lifecycle tail; disposer await remains serialized.
+- evidence → `test/plugins-registry.test.ts` lifecycle/staging cases green after #9 integration.
+
+### ADV-018 · FIXED · `6bca2e1`
+- A16 fixture reads new Pi-session tail `parentId`; equality to edited message id + inequality to old tail required.
+- red → expected edited id, actual old-tail id; green → `test/edit-resend-live.test.ts` 4/0 + one live skip.
+
+### ADV-019 · FIXED · `6bca2e1`
+- dead `task-operations.ts` duplicate deleted; canonical `room/summon-lifecycle.ts` export retained/re-exported.
+- evidence → canonical-only `rg AGENT_DIALOGUE_MAX_HOPS` scan.

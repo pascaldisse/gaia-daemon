@@ -173,3 +173,20 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - gate: `bun run check` green; `bun test test/room-service.test.ts test/monad*.test.ts test/rooms*.test.ts` 166/0.
 - call-site: command table delegates; moved bodies sole in `room/maintenance.ts`; pragma scan `src`: 0. sizes: room-service 946→798 · daemon 717 · http 642.
 - W1/W2: prior state · W3 complete (`0597626`) · W4 live UNVERIFIED/陰. Open: ADV-002/003/004 · ADV-007/A6 size resolved by this landing · ADV-008 · ADV-009 historical · ADV-013 MED. ADV-012 resolved (`12d980c`).
+## ROOT #9 — W3 completion / ADV-014..019 closure (2026-09-03)
+- A / ADV-016 → `1de4129` + `6db2d17`: one daemon registry/broker; RoomService command adapter receives injected registry; no module-level loader.
+- B / ADV-015 → `6641107`: bundled manifest packages + injectable bundled/global discovery roots; Telegram standalone declaration.
+- C / ADV-014 → `c529bf4`: daemon broker reads workspace grants + agent capabilities; existing trust tier remains hard floor.
+- D / ADV-018/019 → `6bca2e1`: Pi tail parent assertion corrected; duplicate dialogue limit deleted.
+- ADV-017 → inherited serialized lifecycle tail; re-gated.
+- sizes → room-service 801 · daemon 749 · http 642; pragma scan `src` → 0.
+- gates → check + focused registry/room/bundled/rpg/dog/Telegram/manifest/loader/capability/A16 suites; green after integration.
+- W1 → prior delivered; W2 → prior delivered; W3 → DELIVERED; W4 A16 assertion delivered, live execution remains 陰-owned/UNVERIFIED.
+
+| steal-list item | verdict | evidence |
+|---|---|---|
+| manifest-first validation | DELIVERED | complete bundled inventory + pre-import validation |
+| atomic swap | DELIVERED | inherited serialized registry lifecycle + focused registry gate |
+| turn lease | DELIVERED | daemon-owned injected registry; RoomService finally boundary |
+| capability broker | DELIVERED | real workspace/agent/trust sources; fail-closed cases 6/0 |
+| disposer/dependency lifecycle | DELIVERED | serialized lifecycle tail; registry lifecycle tests green |
