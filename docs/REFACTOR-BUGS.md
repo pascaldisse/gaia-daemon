@@ -610,3 +610,6 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 ### ADV-019 · FIXED · `6bca2e1`
 - dead `task-operations.ts` duplicate deleted; canonical `room/summon-lifecycle.ts` export retained/re-exported.
 - evidence → canonical-only `rg AGENT_DIALOGUE_MAX_HOPS` scan.
+
+## PASS #4 FINAL — W3 completion live + closing static
+
