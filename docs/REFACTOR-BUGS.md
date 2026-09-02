@@ -49,6 +49,27 @@ Gate replay @ review branch `7cd43bb` (contains exact `main@dc2c552` + docs):
 
 Risk → type seam proven; live behavior/error framing unproven. No live slot required for A0, but focused regression coverage remains mandatory before clean adversary verdict.
 
+## ADV-003 · BLOCKER · A4 dead-code gate is deliberately non-enforcing
+
+Atom → A4 `b8845eb` · `knip.json` + `package.json`.
+
+Defect → `check:dead` uses `bunx --bun knip --no-exit-code`; `bun run check` succeeds while Knip reports violations. Contradicts `docs/REFACTOR-PLAN-v1.md:25` → “dead code can't regrow.”
+
+Repro:
+```sh
+R=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40/.gaia/review-b8845eb
+cd "$R"
+bun run check
+```
+
+Expected → nonzero until the configured dead-code baseline is clean; later regressions block.
+
+Actual → exit 0 with 3 unused files · 1 unused dependency · 3 unlisted dependencies · 2 unlisted binaries · 116 unused exports · 58 unused exported types · 10 configuration hints.
+
+Additional determinism risk → `knip` absent from `devDependencies`; every check invokes `bunx` package resolution rather than the lockfile-pinned project tool.
+
+Verdict → A4 fails its sole enforcement objective; do not merge until W1 A2 debt is removed/baselined and Knip runs without `--no-exit-code` from a pinned dependency.
+
 ## Known planned debt · non-ticket
 
 - A1 layering baseline → `src/harness/tools-pi.ts:12-15` imports four `src/services/*` modules upward.
