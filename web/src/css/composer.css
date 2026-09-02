@@ -1,1 +1,168 @@
-/* v2 parity partial \u2014 composer lane. Owned by ONE lane; styles.css untouched. */
+/* v2 parity partial — composer lane. styles.css remains the legacy substrate. */
+
+/* Input row: v2's fixed caret/input/send grid. */
+.composer-row {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr) 34px;
+  align-items: start;
+  min-height: 32px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  background: var(--ink);
+}
+.composer-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 14px var(--glow);
+}
+.composer-caret {
+  padding-top: 7px;
+  color: var(--accent);
+  text-align: right;
+}
+.composer-row .command-input,
+.composer-row .command-input:focus {
+  width: 100%;
+  min-height: 30px;
+  max-height: 160px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  resize: none;
+}
+.composer-row .send-button {
+  min-width: 34px;
+  min-height: 30px;
+  height: 30px;
+  color: var(--accent);
+  font-size: 15px;
+}
+
+/* Live target/model/thinking telemetry + durable draft state. */
+.composer-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 1.5ch;
+  min-height: 25px;
+  padding-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.composer-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 1.5ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-meta .target-status { flex: 0 1 auto; }
+.composer-meta .model-wrap { gap: 1.5ch; }
+.draft-status {
+  margin-left: auto;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Pending and edit-time attachment chips. */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 2ch 1px;
+}
+.composer-attachment {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: min(42ch, 100%);
+  min-height: 24px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg);
+}
+.composer-attachment:not(.image) { padding: 2px 6px; }
+.composer-attachment .attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-attachment small { color: var(--muted); white-space: nowrap; }
+
+/* Completion overlay: command rows use v2's public class and never shift layout. */
+.command-suggestions {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  z-index: 30;
+  display: grid;
+  max-height: 170px;
+  overflow: auto;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 18px var(--glow);
+}
+.command-suggestions .completion-row {
+  display: grid;
+  grid-template-columns: minmax(18ch, max-content) minmax(0, 1fr);
+  gap: 1ch;
+  width: 100%;
+  min-height: 24px;
+  padding: 1px 7px;
+  color: var(--fg);
+  text-align: left;
+}
+.command-suggestions .completion-row:hover,
+.command-suggestions .completion-row:focus-visible,
+.command-suggestions .completion-row.active { background: var(--bg3); }
+.command-suggestions .completion-row span { color: var(--accent); }
+.command-suggestions .completion-row small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Existing dictation.js state drives all three v2 controls. */
+.mic-button {
+  min-width: 27px;
+  min-height: 23px;
+  color: var(--accent);
+}
+.mic-button.recording {
+  color: var(--danger);
+  animation: dictation-pulse 1.2s ease-in-out infinite;
+}
+.mic-level {
+  position: relative;
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  margin-right: 2px;
+  overflow: hidden;
+  background: var(--border);
+}
+.mic-level::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: calc(var(--level, 0) * 100%);
+  background: var(--danger);
+  content: "";
+}
+.retranscribe-button {
+  min-height: 23px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.retranscribe-button:hover { border-color: var(--accent); }
+
+@media (max-width: 760px) {
+  .composer-meta-row { flex-wrap: wrap; }
+  .composer-meta { flex-basis: 100%; }
+  .draft-status { margin-left: 0; margin-right: auto; }
+}
