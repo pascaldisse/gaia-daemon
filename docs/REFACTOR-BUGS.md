@@ -70,6 +70,29 @@ Additional determinism risk → `knip` absent from `devDependencies`; every chec
 
 Verdict → A4 fails its sole enforcement objective; do not merge until W1 A2 debt is removed/baselined and Knip runs without `--no-exit-code` from a pinned dependency.
 
+## ADV-004 · HIGH · A3 path dedup changes `GAIA_HOME` behavior inside refactor atom
+
+Atom → A3 sub-atom `5a39b0b` on `refactor/a3-dedup`.
+
+Defect → callers formerly fixed to `homedir()/.gaia` now resolve through `globalPaths` → `gaiaHome()` → `GAIA_HOME`:
+- `src/services/plugins.ts` → user command-plugin discovery root changes
+- `src/services/room-service.ts` → ambient-watchdog root changes
+- `src/services/stt-apple.ts` → compiled helper cache root changes
+
+Repro:
+```sh
+git -C /Users/pascaldisse/projects/gaia-daemon show 5a39b0b -- src/core/paths.ts src/services/plugins.ts src/services/room-service.ts src/services/stt-apple.ts test/paths.test.ts
+```
+Expected for move/split/delete-only A3 → path semantics unchanged; any `GAIA_HOME` behavior correction lands as a separate behavior atom + caller-level tests.
+Actual → `test/paths.test.ts` explicitly asserts the new `GAIA_HOME` routing, but no plugin/watchdog/STT caller regression test accompanies it.
+
+Cumulative A3 gates @ `16cae4d`:
+- `bun run check` → 0
+- retry 1/0 · paths 2/0 · rooms 51/0 · orphan-reaper 11/0 · runner-host 18/0 · room-service 98/0 · summons 35/0 · transcribe 22/0 · voice 25/0
+- pre-existing controls reproduced unchanged at parent `dc2c552`: auth-adversarial 0/4 · room-membership-security 0/3 · memory-service 20/1 timeout · voice-stt-bridge 2/1 timeout · voice-tts-bridge 6/3 timeout
+
+Verdict → helper extraction itself is layer-correct/RULE0-clean; `5a39b0b` fails refactor purity until behavior change is separated or explicitly reclassified.
+
 ## Known planned debt · non-ticket
 
 - A1 layering baseline → `src/harness/tools-pi.ts:12-15` imports four `src/services/*` modules upward.
