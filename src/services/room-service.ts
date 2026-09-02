@@ -76,6 +76,8 @@ import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
 import { sttEngineIds } from "./transcribe.js";
 import { RoomFork } from "./room/fork.js";
+import { configureRoomServiceReload, runCommand as executeCommand, runReloadCommand, runSttCommand } from "./room/command-execution.js";
+export { configureRoomServiceReload } from "./room/command-execution.js";
 import { installRoomTaskOperations, RoomTaskOperationsMixin } from "./room/task-operations.js";
 import type { RoomTaskOperationsPort } from "./room/ports.js";
 import { buildRoomRuntimes, resolveRoomOpen, RoomLifecycle } from "./room/lifecycle.js";
@@ -284,36 +286,6 @@ const TRANSCRIPT_STRUCTURAL_COMMANDS = new Set(["clear", "fork", "rewind"]);
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<CommandReply>;
-
-let reloadDaemon: (() => void | Promise<void>) | undefined;
-
-export function configureRoomServiceReload(callback: (() => void | Promise<void>) | undefined): void {
-  reloadDaemon = callback;
-}
-
-/** Read the persisted voice settings as an update document. Unlike
- * readVoiceSettings(), this rejects malformed/non-object JSON so a slash
- * command can never replace an unreadable file and silently erase secrets or
- * future fields. Missing is the one valid empty-document case. */
-async function readVoiceSettingsDocument(): Promise<Record<string, unknown>> {
-  let text: string;
-  try {
-    text = await readFile(globalPaths.voiceSettings(), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw error;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw new Error("voice.json is malformed; fix it before switching engines");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("voice.json must contain a JSON object");
-  }
-  return parsed as Record<string, unknown>;
-}
 
 const COMMANDS: Record<string, CommandHandler> = {
   help: async () => HELP_TEXT,
@@ -858,65 +830,15 @@ export class RoomService {
   // --- commands ----------------------------------------------------------------
 
   async runCommand(task: Task, command: RoomCommand): Promise<void> {
-    try {
-      const handler = COMMANDS[command.type];
-      const reply = handler ? await handler(this, command) : `Unknown command. Try /help.`;
-      const text = typeof reply === "string" ? reply : reply.text;
-      // A command reply defaults to "system" but a rare handler may attribute
-      // it to a specific agent instead — same event shape as a real agent
-      // reply, just synthesized here with no LLM turn.
-      const author = typeof reply === "string" ? "system" : (reply.author ?? "system");
-      // Persist the reply so a command result (e.g. /compact) survives a reload
-      // instead of only flashing on the live stream. appendEvent both writes it
-      // to the transcript and emits the room-event to connected clients. Skip the
-      // transcript-structural commands: they reset/truncate history themselves, so
-      // a leftover confirmation would re-seed the room they just emptied.
-      const event: RoomEvent = {
-        id: `${author === "system" ? "system" : "cmd"}_${task.id}`,
-        timestamp: new Date().toISOString(),
-        author,
-        text,
-        ...(typeof reply === "string" || !reply.kind ? {} : { kind: reply.kind }),
-      };
-      if (!TRANSCRIPT_STRUCTURAL_COMMANDS.has(command.type)) await this.room.appendEvent(event);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-      // /cancel settles a long command (e.g. mid-compaction) out from under us;
-      // the reply above still lands, but the task must not settle twice.
-      if (!this.taskCancelled(task)) this.settleTask(task, "complete");
-    } catch (error) {
-      if (!this.taskCancelled(task)) this.settleTask(task, "error", error);
-    }
+    return executeCommand(this, task, command, (candidate) => COMMANDS[candidate.type]?.(this, candidate));
   }
 
   async runSttCommand(engine?: string, alias?: "tts"): Promise<string> {
-    const available = sttEngineIds();
-    const aliasNote = alias ? " `/tts` controls voice input here; `/stt` is the canonical name." : "";
-    if (engine && !available.includes(engine)) {
-      return `Unknown STT engine "${engine}". Available: ${available.join(", ")}.${aliasNote}`;
-    }
-    try {
-      const document = await readVoiceSettingsDocument();
-      if (engine) {
-        await writeJsonAtomic(globalPaths.voiceSettings(), { ...document, sttEngine: engine });
-        return `Speech-to-text engine switched to ${engine}. Available: ${available.join(", ")}.${aliasNote}`;
-      }
-      const current = (await readVoiceSettings()).sttEngine;
-      return `Speech-to-text engine: ${current}. Available: ${available.join(", ")}. Use /stt <engine> or /tts <engine>.${aliasNote}`;
-    } catch (error) {
-      return `Could not ${engine ? "switch" : "read"} the STT engine: ${error instanceof Error ? error.message : String(error)}`;
-    }
+    return runSttCommand(engine, alias);
   }
 
   async runReloadCommand(): Promise<string> {
-    const reload = reloadDaemon;
-    if (!reload) return "Reload is unavailable in this process.";
-    // Room-level provenance for the restart-attribution trail (see
-    // requestReload in server/http.ts): which room's /reload ordered it.
-    console.log(`[gaia] ${new Date().toISOString()} /reload command issued in room ${this.roomId} (workspace ${this.workspaceId})`);
-    setTimeout(() => {
-      void reload();
-    }, 0);
-    return "reloading daemon — in-flight turns resume after restart.";
+    return runReloadCommand(this);
   }
 
   // --- agent configuration commands: ./room/agent-commands.ts (RoomAgentCommandsMixin) ---
