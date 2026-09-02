@@ -154,3 +154,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `89d5936`: `room/lifecycle.ts` 154; runtime construction/open/init/recovery/subscribe/dispose moved through typed lifecycle ports; queue/WAL/pendingTurn atomic paths unchanged.
 - gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0.
 - call-site: lifecycle implementations solely in `room/lifecycle.ts`; room-service delegates. pragma touched files: 0. room-service 1362→1251; continued extraction required for ≤800.
+
+## A6f — RoomService task operations extraction (2026-09-03)
+- `f5d40ab`: `room/task-operations.ts` 145; pet/task cancellation/queue chips/idle + monad eligibility moved via typed port; summon lifecycle retains dialogue/pending-work ownership; queue/WAL/pendingTurn execution remains whole.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0.
+- call-site: facade mixin only; moved bodies deleted. pragma touched files: 0. room-service 1251→1097; ≤800 remains open.
