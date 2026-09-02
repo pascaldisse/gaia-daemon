@@ -85,6 +85,7 @@ import { createAgentRuntime } from "../harness/host.js";
 import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
 import { sttEngineIds } from "./transcribe.js";
+import * as contextGate from "./room/context-gate.js";
 import { readVoiceSettings } from "./voice.js";
 
 export interface RoomServiceOptions {
@@ -1913,150 +1914,24 @@ export class RoomService {
 
   // --- context gate ----------------------------------------------------------
 
-  /** Hold a big first-load turn — a new agent's first seed, or an existing
-   * agent replaying history because its harness session vanished. Persists the
-   * decision (durable + snapshot) and DOESN'T run it. The user message is
-   * already in the transcript; a later resolveContextGate replays the turn
-   * with the chosen amount of context. */
-  private async openContextGate(
-    agent: AgentDef,
-    message: string,
-    estTokens: number,
-    totalEvents: number,
-    attachments: MessageAttachment[] | undefined,
-    reason: "new-agent" | "session-lost",
-  ): Promise<void> {
-    const window = contextWindowFor(harnessIdFor(agent, this.workspace), agent.model?.name);
-    const gate: ContextGatePending = {
-      agentId: agent.id,
-      message,
-      estTokens,
-      totalEvents,
-      ...(window ? { window } : {}),
-      ...(attachments?.length ? { attachments } : {}),
-      reason,
-      at: new Date().toISOString(),
-    };
-    await this.room.updateState((current) => {
-      current.contextGate = gate;
-    });
-    this.contextGate = gate;
-    await this.emitSnapshot();
+  private async openContextGate(agent: AgentDef, message: string, estTokens: number, totalEvents: number, attachments: MessageAttachment[] | undefined, reason: "new-agent" | "session-lost"): Promise<void> {
+    return contextGate.openContextGate(this as any, agent, message, estTokens, totalEvents, attachments, reason);
   }
 
-  /** Resolve a held gate: replay the held turn with the chosen context.
-   * Affects ONLY this agent's seed — the transcript and every other agent's
-   * session are untouched. */
   async resolveContextGate(choice: "full" | "last" | "compact", n?: number): Promise<void> {
-    await this.init();
-    const gate = this.contextGate ?? (await this.room.state()).contextGate;
-    if (!gate) return;
-    await this.room.updateState((current) => {
-      delete current.contextGate;
-    });
-    this.contextGate = undefined;
-    await this.emitSnapshot();
-
-    const base: SendMessageOptions = {
-      targets: [gate.agentId],
-      recordUserMessage: false, // already recorded when the turn was first held
-      bypassContextGate: true,
-      ...(gate.attachments?.length ? { attachments: gate.attachments } : {}),
-    };
-    if (choice === "last") {
-      const keep = Number.isInteger(n) && (n as number) > 0 ? (n as number) : CONTEXT_GATE_LAST_N;
-      const start = Math.max(0, gate.totalEvents - keep);
-      // Everything before the loaded tail never reaches this agent's context —
-      // recall may (must) reach it (active-context floor, MEMORY-DESIGN.md §7).
-      await this.setContextFloor(gate.agentId, start);
-      await this.sendMessage(gate.message, { ...base, cursorOverride: start });
-      return;
-    }
-    if (choice === "compact") {
-      const summary = await this.summarizeRoom(gate.agentId, gate.totalEvents);
-      // The agent gets a summary, not the raw history — the raw events below
-      // the gate point stay recall-reachable.
-      await this.setContextFloor(gate.agentId, gate.totalEvents);
-      await this.sendMessage(gate.message, {
-        ...base,
-        cursorOverride: gate.totalEvents, // no raw transcript — the summary IS the context
-        recallOverride: `Summary of the conversation so far (compacted for you only):\n\n${summary}`,
-      });
-      return;
-    }
-    // "full": load everything from the room's start. bypass avoids re-gating.
-    await this.setContextFloor(gate.agentId, 0);
-    await this.sendMessage(gate.message, { ...base, cursorOverride: 0 });
+    return contextGate.resolveContextGate(this as any, choice, n);
   }
 
-  /** Persist an agent's active-context floor: the transcript line index below
-   * which content is NOT in its live context (context-gate choice or /compact).
-   * Recall keeps everything below the floor reachable and treats everything at
-   * or above it as already-in-context (self-match exclusion). */
   private async setContextFloor(agentId: string, floorIdx: number): Promise<void> {
-    await this.room.updateState((current) => {
-      if (floorIdx <= 0) {
-        if (current.contextFloors) delete current.contextFloors[agentId];
-        return;
-      }
-      current.contextFloors = { ...(current.contextFloors ?? {}), [agentId]: floorIdx };
-    });
+    return contextGate.setContextFloor(this as any, agentId, floorIdx);
   }
 
-  /** The asking agent's active-context window in THIS room — what recall's
-   * self-match exclusion needs (daemon passes it for harness recall calls). */
   async recallContext(agentId: string): Promise<ActiveContextRef> {
-    await this.init();
-    const state = await this.room.state();
-    return { roomId: this.roomId, floorIdx: state.contextFloors?.[agentId] ?? 0 };
+    return contextGate.recallContext(this as any, agentId);
   }
 
-  /** One LLM pass distilling the room (up to the gate point) into a briefing for
-   * a joining agent. Degrades to a raw transcript slice if no llm is wired.
-   * Surfaces the pass as a "compacting" status with a ticking elapsed — the same
-   * UI the /compact command drives — so the context-gate "Compact & join" path
-   * isn't a silent black box. (This is a seed-time briefing, not a harness
-   * session compaction, so it shares the status but not the compact() call.) */
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
-    const { events } = await this.room.eventsFrom(0);
-    const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting(), { policy: DEFAULT_CONTEXT_DIET_POLICY, currentAgentId: target });
-    // Cap the summarizer input, biased to the TAIL, so a huge room can't
-    // overflow the model's context window (→ throw → garbage fallback). A
-    // joining agent most needs recent context, and every fallback below now
-    // returns the recent tail — never the ancient head, which was useless for
-    // continuity (the "cut off mid-sentence, only the early thread" briefing).
-    const input =
-      rendered.length > MAX_SUMMARY_INPUT_CHARS
-        ? `[…earlier history omitted for length…]\n\n${rendered.slice(-MAX_SUMMARY_INPUT_CHARS)}`
-        : rendered;
-    const llm = this.options.llm;
-    if (!llm) return input.slice(-4000);
-    // Use the default consolidation model, NOT the joining agent's model: an
-    // agent on an oauth subscription (e.g. anthropic/opus via Claude) is not in
-    // the pi-ai model registry and has no API key there, so forcing its model
-    // makes the summary throw and silently fall back to a raw transcript slice.
-    // The consolidation default is the same reliably-authed model memory
-    // consolidation already uses.
-    // Mark the joining agent "compacting" and seed the job size so the panel/
-    // composer/statusbar show a real number and a ticking elapsed for the whole
-    // (possibly long) summary pass. A single LLM call can't stream token deltas,
-    // so the elapsed timer carries the progress.
-    this.compactingAgents.add(target);
-    this.compactProgress.set(target, { startedAt: Date.now(), contextTokens: estimateTokens(input) });
-    await this.emitSnapshot();
-    try {
-      const summary = await llm({ system: CONTEXT_SUMMARY_SYSTEM, user: input });
-      const text = summary.trim() || input.slice(-4000);
-      const prev = this.compactProgress.get(target);
-      if (prev) this.compactProgress.set(target, { ...prev, outputTokens: estimateTokens(text) });
-      return text;
-    } catch {
-      return input.slice(-4000); // summarizer failure never blocks the resume
-    } finally {
-      this.compactingAgents.delete(target);
-      this.compactProgress.delete(target);
-      await this.emitSnapshot();
-    }
+    return contextGate.summarizeRoom(this as any, target, uptoEvents);
   }
 
   /** WAL step 2: append the reply event (details ON it), then one atomic state
