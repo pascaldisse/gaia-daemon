@@ -706,52 +706,9 @@ export class RoomService {
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
   }
 
-  /** Resume a turn a prior process left in-flight. Three cases:
-   * - reply already in transcript (crash between append and ack) → finish the
-   *   state write only;
-   * - partial streamed → commit it as the preserved progress;
-   * then re-dispatch any unfinished targets. Re-entrant: the replay re-marks a
-   * fresh pendingTurn, so an interrupted resume is itself resumable. */
+  // --- durable pending-turn resume: ./room/queue.ts (RoomQueue) ---
   async resumePendingTurn(pending: PendingTurn): Promise<void> {
-    // A monad dispatch resumes through the monad engine, never as a plain
-    // agent turn: targets are omitted so isMonadMessage re-derives the routing
-    // from state.monad (step results live in child rooms; the engine reruns).
-    if (pending.monad) {
-      await this.room.clearPendingTurn();
-      await this.sendMessage(pending.prompt, { recordUserMessage: false });
-      return;
-    }
-    const mode = await this.room.resumeMode(pending);
-    if (mode === "finish-commit" && pending.eventId) {
-      const state = await this.room.state();
-      const cursor = state.agentCursors[pending.agentId] ?? 0;
-      const { nextCursor } = await this.room.eventsFrom(cursor);
-      await this.room.updateState((current) => {
-        delete current.pendingTurn;
-        current.agentCursors[pending.agentId] = nextCursor;
-      });
-    } else if (pending.partialReply.trim()) {
-      // Details weren't durably captured mid-turn; preserve the text. The
-      // commit clears the marker in the SAME atomic write as the cursor
-      // advance — clearing it up front (the old order) opened a window where
-      // a crash destroyed both the flushed partial and the owed-replay record.
-      await this.commitReply(pending.agentId, pending.eventId ?? newRoomEventId(), pending.partialReply, {}, pending.channel);
-    }
-    // No partial and nothing committed → the marker deliberately STAYS until
-    // the replay below re-marks it (markPendingTurn overwrites): a crash
-    // anywhere in between re-enters this resume idempotently.
-
-    const remaining = mode === "finish-commit" ? pending.targets.filter((t) => t !== pending.agentId) : pending.targets;
-    if (remaining.length > 0) {
-      // The user prompt is already on disk — replay without re-recording it.
-      await this.sendMessage(pending.prompt, {
-        targets: remaining,
-        recordUserMessage: false,
-        ...(pending.channel ? { channel: pending.channel } : {}),
-        ...(pending.attachments?.length ? { attachments: pending.attachments } : {}),
-        ...(pending.goalStartedAt ? { goalStartedAt: pending.goalStartedAt } : {}),
-      });
-    }
+    return this.queue.resumePendingTurn(pending);
   }
 
   // --- monad run execution: ./room/monad-execution.ts (RoomMonadExecutionMixin) ---

@@ -1,5 +1,6 @@
-import type { RoomEvent, Task, UiEvent, Workspace } from "../../core/types.js";
-import type { RoomHandle } from "../../domain/rooms.js";
+import type { EventDetails, PendingTurn, RoomEvent, Task, UiEvent, Workspace } from "../../core/types.js";
+import type { RenderCap } from "../../domain/render-cap.js";
+import { newRoomEventId, type RoomHandle } from "../../domain/rooms.js";
 import { findHarness, harnessIdFor } from "../../harness/spec.js";
 import { parseCommand, planMentionRoute, type SlashCommand } from "../commands.js";
 import type { CommandPlugin, PluginResult } from "../plugins.js";
@@ -32,6 +33,7 @@ export interface RoomQueuePort {
   steerRunningTurn(target: string, text: string, task: Task, attachments?: SendMessageOptions["attachments"], human?: SendMessageOptions["human"]): Promise<true | string>;
   runCommand(task: Task, command: SlashCommand): Promise<void>;
   runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void>;
+  commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn, renderCap?: RenderCap): Promise<void>;
   taskCancelled(task: Task): boolean;
   settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
   unknownAgentMessage(agentId: string): string;
@@ -414,6 +416,54 @@ export class RoomQueue {
   async roomDefaultTarget(): Promise<string> {
     const active = (await this.service.room.state()).activeAgent;
     return active && this.service.workspace.agents[active] ? active : this.service.workspace.config.defaultAgent;
+  }
+
+  /** Resume a turn a prior process left in-flight. Three cases:
+   * - reply already in transcript (crash between append and ack) → finish the
+   *   state write only;
+   * - partial streamed → commit it as the preserved progress;
+   * then re-dispatch any unfinished targets. Re-entrant: the replay re-marks a
+   * fresh pendingTurn, so an interrupted resume is itself resumable. */
+  async resumePendingTurn(pending: PendingTurn): Promise<void> {
+    // A monad dispatch resumes through the monad engine, never as a plain
+    // agent turn: targets are omitted so isMonadMessage re-derives the routing
+    // from state.monad (step results live in child rooms; the engine reruns).
+    if (pending.monad) {
+      await this.service.room.clearPendingTurn();
+      await this.sendMessage(pending.prompt, { recordUserMessage: false });
+      return;
+    }
+    const mode = await this.service.room.resumeMode(pending);
+    if (mode === "finish-commit" && pending.eventId) {
+      const state = await this.service.room.state();
+      const cursor = state.agentCursors[pending.agentId] ?? 0;
+      const { nextCursor } = await this.service.room.eventsFrom(cursor);
+      await this.service.room.updateState((current) => {
+        delete current.pendingTurn;
+        current.agentCursors[pending.agentId] = nextCursor;
+      });
+    } else if (pending.partialReply.trim()) {
+      // Details weren't durably captured mid-turn; preserve the text. The
+      // commit clears the marker in the SAME atomic write as the cursor
+      // advance — clearing it up front (the old order) opened a window where
+      // a crash destroyed both the flushed partial and the owed-replay record.
+      await this.service.commitReply(pending.agentId, pending.eventId ?? newRoomEventId(), pending.partialReply, {}, pending.channel);
+    }
+    // No partial and nothing committed → the marker deliberately STAYS until
+    // the replay below re-marks it (markPendingTurn overwrites): a crash
+    // anywhere in between re-enters this resume idempotently.
+
+    const remaining = mode === "finish-commit" ? pending.targets.filter((t) => t !== pending.agentId) : pending.targets;
+    if (remaining.length > 0) {
+      // The user prompt is already on disk — replay without re-recording it.
+      await this.sendMessage(pending.prompt, {
+        targets: remaining,
+        recordUserMessage: false,
+        ...(pending.channel ? { channel: pending.channel } : {}),
+        ...(pending.attachments?.length ? { attachments: pending.attachments } : {}),
+        ...(pending.goalStartedAt ? { goalStartedAt: pending.goalStartedAt } : {}),
+      });
+    }
   }
 
 }
