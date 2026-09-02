@@ -2,10 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../../core/attachments.js";
-import { newId } from "../../core/ids.js";
+import { mintedAt, newId } from "../../core/ids.js";
 import { readJson } from "../../core/store.js";
 import { globalPaths, workspacePaths } from "../../core/paths.js";
-import type { AgentDef, AgentStatus, MessageAttachment, RoomEvent, Snapshot } from "../../core/types.js";
+import type { AgentDef, AgentStatus, MessageAttachment, PendingTurn, RoomEvent, Snapshot } from "../../core/types.js";
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
 import { displayEventText } from "../../domain/render-cap.js";
 import { normalizeRoomState, normalizeRoomTitle } from "../../domain/rooms.js";
@@ -340,6 +340,12 @@ export function installRoomSnapshot(target: object): void {
  * always false (it's relative to a service's open room, which a rollup lacks).
  * Rooms are chats: ordered by last transcript write, newest first.
  */
+function runningSince(turn: PendingTurn): string | undefined {
+  const startedAt = Date.parse(turn.startedAt);
+  if (Number.isFinite(startedAt)) return new Date(startedAt).toISOString();
+  return turn.eventId ? mintedAt(turn.eventId) : undefined;
+}
+
 export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms"]> {
   const roomsDir = workspacePaths.roomsDir(rootDir);
   if (!existsSync(roomsDir)) return [];
@@ -353,6 +359,8 @@ export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms
           (info) => info.mtimeMs,
           () => 0,
         );
+        const running = state.pendingTurn;
+        const since = running ? runningSince(running) : undefined;
         return {
           activity,
           summary: {
@@ -360,7 +368,7 @@ export async function scanRoomActivity(rootDir: string): Promise<Snapshot["rooms
             path: join(roomsDir, entry.name),
             isCurrent: false,
             ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-            ...(state.pendingTurn ? { running: true } : {}),
+            ...(running ? { running: true, ...(since ? { runningSince: since } : {}) } : {}),
             ...(state.title ? { title: state.title } : {}),
             ...(state.favorite ? { favorite: true } : {}),
             ...(state.imported ? { imported: state.imported } : {}),

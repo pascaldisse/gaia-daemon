@@ -133,6 +133,13 @@ function renderSidebar() {
 // fixes). The current workspace is always kept visible even past the cap.
 const WORKSPACES_CHUNK = 8;
 
+/** @param {string | undefined} timestamp */
+function localTime(timestamp) {
+  const date = timestamp ? new Date(timestamp) : null;
+  return date && !Number.isNaN(date.valueOf())
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+    : "";
+}
 /**
  * Star + running/unread-dot, each in its own fixed-width slot so a row's name
  * always starts at the same x whether or not either icon is present — the
@@ -352,6 +359,8 @@ function RoomNode(room, childrenOf, depth) {
   const focus = effectiveSidebarFocus();
   const focused = focus?.kind === "room" && focus.id === room.id;
   const label = room.title ?? room.id;
+  const since = localTime(room.runningSince);
+  const runningTitle = room.running && since ? `running since ${since}` : "agent running";
   return h(
     "div",
     { class: "room-node" },
@@ -365,7 +374,7 @@ function RoomNode(room, childrenOf, depth) {
         "button",
         {
           class: `nav-item room-item ${room.isCurrent ? "active" : ""} ${focused ? "focused" : ""}`,
-          title: `${label} — ${room.path}`,
+          title: room.running && since ? runningTitle : `${label} — ${room.path}`,
           // Clicking makes this the delete target (the ⌘⌫ / Del chord acts on
           // it) and opens it. Re-clicking the current room just re-targets it.
           onclick: !snapshot
@@ -396,8 +405,9 @@ function RoomNode(room, childrenOf, depth) {
         h(
           "span",
           { class: "room-label" },
-          ...StatusIcons({ favorite: room.favorite, running: room.running, unread: roomUnread(room), incognito: room.incognito }),
+          ...StatusIcons({ favorite: room.favorite, running: room.running, unread: roomUnread(room), incognito: room.incognito, runningTitle }),
           h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
+          depth && room.running && since ? h("small", { class: "room-running-since", text: `· since ${since}` }) : null,
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),
