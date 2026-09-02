@@ -4,6 +4,7 @@ import type {
   CompactProgress,
   CompactProgressUpdate,
   CompactResult,
+ContextGatePending,
   EventDetails,
   LiveTurn,
   MessageAttachment,
@@ -26,6 +27,20 @@ import type { HookEvent } from "../hooks.js";
 import type { EpisodeCapture } from "../memory-service.js";
 import type { RoomServiceOptions, SendMessageOptions } from "../room-service.js";
 import type { SanitizeContext } from "../sanitize.js";
+
+/** Dependencies reached by context-gate persistence and resume. */
+export interface RoomContextGatePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly options: RoomServiceOptions;
+  contextGate: ContextGatePending | undefined;
+  readonly compactingAgents: Set<string>;
+  readonly compactProgress: Map<string, CompactProgress>;
+  init(): Promise<void>;
+  emitSnapshot(): Promise<void>;
+  sendMessage(text: string, options?: SendMessageOptions): Promise<Task>;
+}
 
 /** Dependencies reached by the durable turn executor. */
 export interface RoomTurnLoopPort {
@@ -70,6 +85,13 @@ export interface RoomTurnLoopPort {
   maybeDispatchAgentDialogue(author: string, reply: string): Promise<void>;
   maybeContinueGoal(author: string, reply: string, goalStartedAt: string): Promise<void>;
   settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+}
+
+/** Dependencies reached by turn result persistence and retry handling. */
+export interface RoomTurnResultsPort extends RoomTurnLoopPort, RoomContextGatePort {
+  readonly queuedTasks: Task[];
+  createTask(text: string, targets: string[]): Task;
+  withRenderCapNotes(events: import("../../core/types.js").RoomEvent[]): import("../../core/types.js").RoomEvent[];
 }
 
 /** Dependencies reached by transcript forks, retries, and session resets. */

@@ -19,7 +19,6 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
 import { Bus } from "../core/bus.js";
-import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { globalPaths, workspacePaths } from "../core/paths.js";
 import { sleep } from "../core/retry.js";
@@ -49,7 +48,7 @@ import type {
   Workspace,
 } from "../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
-import { displayEventText, type RenderCap } from "../domain/render-cap.js";
+import type { RenderCap } from "../domain/render-cap.js";
 import { estimateTokens } from "../core/tokens.js";
 import type { ResumeEpoch } from "./resume-epoch.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -79,9 +78,8 @@ import { createAgentRuntime } from "../harness/host.js";
 import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
 import { sttEngineIds } from "./transcribe.js";
-import * as contextGate from "./room/context-gate.js";
 import { RoomFork } from "./room/fork.js";
-import { RoomTurnLoop } from "./room/turn-loop.js";
+import { RoomTurnResults } from "./room/turn-results.js";
 import { installRoomAgentCommands, RoomAgentCommandsMixin } from "./room/agent-commands.js";
 import { RoomQueue } from "./room/queue.js";
 import { installRoomCommands, RoomCommandsMixin } from "./room/commands-facade.js";
@@ -416,7 +414,7 @@ export class RoomService {
   liveTurn: LiveTurn | undefined;
   /** A held first turn awaiting the human's context-size choice (durable copy in
    * state.contextGate); surfaced on the snapshot to drive the modal. */
-  private contextGate: ContextGatePending | undefined;
+  contextGate: ContextGatePending | undefined;
   /** Consecutive agent→agent hand-offs since the last human message. Bounds
    * room agent-dialogue so a mutual @mention can't loop forever; reset to 0
    * whenever a human speaks. In-memory (a runaway chain shouldn't outlive a
@@ -1000,253 +998,46 @@ export class RoomService {
 
   // --- the turn --------------------------------------------------------------
 
-  async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    return new RoomTurnLoop(this).runAgentTask(task, text, options);
+  // --- turn results and context gate ---------------------------------------
+  private async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+    return new RoomTurnResults(this).runAgentTask(task, text, options);
   }
-
   private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {
-    return new RoomTurnLoop(this).contextFor(agent);
+    return new RoomTurnResults(this).contextFor(agent);
   }
-
-  // --- context gate ----------------------------------------------------------
-
   private async openContextGate(agent: AgentDef, message: string, estTokens: number, totalEvents: number, attachments: MessageAttachment[] | undefined, reason: "new-agent" | "session-lost"): Promise<void> {
-    return contextGate.openContextGate(this as any, agent, message, estTokens, totalEvents, attachments, reason);
+    return new RoomTurnResults(this).openContextGate(agent, message, estTokens, totalEvents, attachments, reason);
   }
-
   async resolveContextGate(choice: "full" | "last" | "compact", n?: number): Promise<void> {
-    return contextGate.resolveContextGate(this as any, choice, n);
+    return new RoomTurnResults(this).resolveContextGate(choice, n);
   }
-
   async setContextFloor(agentId: string, floorIdx: number): Promise<void> {
-    return contextGate.setContextFloor(this as any, agentId, floorIdx);
+    return new RoomTurnResults(this).setContextFloor(agentId, floorIdx);
   }
-
   async recallContext(agentId: string): Promise<ActiveContextRef> {
-    return contextGate.recallContext(this as any, agentId);
+    return new RoomTurnResults(this).recallContext(agentId);
   }
-
   private async summarizeRoom(target: string, uptoEvents: number): Promise<string> {
-    return contextGate.summarizeRoom(this as any, target, uptoEvents);
+    return new RoomTurnResults(this).summarizeRoom(target, uptoEvents);
   }
-
-  /** WAL step 2: append the reply event (details ON it), then one atomic state
-   * write clearing the marker and advancing the cursor. */
-  /** `renderCap`, when given, is a command-plugin's display-time cap resolved
-   * for THIS turn (services/plugins.ts CommandPlugin.renderCap) — persisted
-   * on the event verbatim alongside the agent's FULL, untruncated `reply`
-   * text (root-cause fix, Pascal, 2026-08-23: the event committed/stored here
-   * must never be shorter than what the agent actually said). Only the
-   * LIVE-emitted copy's `text` is capped, via displayEventText — and, when
-   * `renderCap.note` is set, a SEPARATE synthesized system-authored chrome
-   * event is emitted right after it (see withRenderCapNotes) — matching every
-   * other display surface (#getSnapshot, #eventById(display:true)) that
-   * derives the same shown output from the same stored (text, renderCap)
-   * pair on demand. */
-  async commitReply(
-    agentId: string,
-    eventId: string,
-    reply: string,
-    details: EventDetails,
-    channel: "voice" | undefined,
-    nextPending?: PendingTurn,
-    renderCap?: RenderCap,
-  ): Promise<void> {
-    // Blocks count only when they encode structure the plain reply text doesn't
-    // already carry (a steer marker, a tool, a thinking span) — a prose-only
-    // turn stays detail-less exactly as before, so nothing bloats.
-    const hasDetails =
-      details.model ||
-      details.thinkingStarted ||
-      details.thinking ||
-      details.tools?.length ||
-      details.blocks?.some((block) => block.kind !== "text");
-    const event: RoomEvent = {
-      id: eventId,
-      timestamp: new Date().toISOString(),
-      author: agentId,
-      text: reply,
-      ...(channel ? { channel } : {}),
-      ...(hasDetails ? { details } : {}),
-      ...(renderCap ? { renderCap } : {}),
-    };
-    // commitTurn computes the cursor from the reply's own line (sweeping the
-    // mid-turn steers/notes the live turn already saw) and, for a multi-target
-    // turn, installs the next target's marker in the same atomic write. Always
-    // the FULL text — storage/memory/hooks/agent-context never see a capped
-    // reply, only display surfaces do.
-    await this.room.commitTurn(event, nextPending);
-    for (const displayEvent of this.withRenderCapNotes([event])) {
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event: displayEvent });
-    }
+  async commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn, renderCap?: RenderCap): Promise<void> {
+    return new RoomTurnResults(this).commitReply(agentId, eventId, reply, details, channel, nextPending, renderCap);
   }
-
-  /** Durable failure marker: a turn that dies must leave a trace in the
-   * transcript, not just the ephemeral task-error toast (which vanishes on the
-   * next reload — the poisoned-gateway incident left rooms full of failed
-   * turns with zero on-disk evidence). Authored by "system" so it renders as a
-   * system line and stays out of every agent's context. Best-effort: marking
-   * the failure must never mask the failure itself.
-   *
-   * `kind: "turn-failed"` is the ONLY signal the client needs to offer a resend
-   * — it means the user message right before this row got NO reply at all
-   * (producedOutput was false at the call site). Without it, the transcript's ⟳
-   * only ever appears on an agent reply, so a reply-less failed turn had no
-   * fork-based recovery and users retyped the same text into the composer,
-   * which appends a brand-new user event instead of regenerating (the
-   * duplicate-resend bug). retryMessage(eventId) on THIS event's id already
-   * resolves correctly — forkAtUserMessage walks backward past non-user authors
-   * to the user message that produced it. */
   async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
-    try {
-      const message = error instanceof Error ? error.message : String(error);
-      const event: RoomEvent = {
-        id: newId("system_turnfail"),
-        timestamp: new Date().toISOString(),
-        author: "system",
-        kind: "turn-failed",
-        text: `⚠ turn failed (@${agentId}): ${message}`,
-      };
-      await this.room.appendEvent(event);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    } catch {
-      // The task-error path still surfaces the original error live.
-    }
+    return new RoomTurnResults(this).appendTurnFailure(agentId, error);
   }
-
-  /** Quiet counterpart to appendTurnFailure for user cancels that beat the
-   * first token: a stop is not a failure. */
   async appendTurnStopped(agentId: string): Promise<void> {
-    try {
-      const event: RoomEvent = {
-        id: newId("system_turnfail"),
-        timestamp: new Date().toISOString(),
-        author: "system",
-        text: `■ turn stopped (@${agentId}) — no output yet`,
-      };
-      await this.room.appendEvent(event);
-      this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    } catch {
-      // The task-error path still surfaces the original error live.
-    }
+    return new RoomTurnResults(this).appendTurnStopped(agentId);
   }
-
-  /** Requeue-once after RunnerHost's hard stall deadline aborted the turn
-   * (a named UpstreamStallError — src/harness/host.ts): a stalled turn that
-   * produced no reply text gets exactly ONE automatic retry, through the same
-   * durable queue every other queued message uses, marked `stallRetried` so a
-   * SECOND stall on the retry falls through to the normal failure path
-   * instead of keeping a dead upstream's retry loop alive forever. Returns
-   * true when it requeued — the caller then skips its generic
-   * appendTurnFailure in favor of the more specific system line this appends.
-   * No-op (false) for any other error, a non-empty partial (current commit +
-   * failure behavior is unchanged), or a turn that was itself a stall retry. */
-  async maybeRequeueStall(
-    targets: string[],
-    agentId: string,
-    text: string,
-    error: unknown,
-    partialReply: string,
-    channel: "voice" | undefined,
-    attachments: MessageAttachment[] | undefined,
-    options: SendMessageOptions,
-  ): Promise<boolean> {
-    const isStall = error instanceof Error && error.name === "UpstreamStallError";
-    if (!isStall || partialReply.trim() || options.queued?.stallRetried) return false;
-    const event: RoomEvent = {
-      id: newId("system_stallretry"),
-      timestamp: new Date().toISOString(),
-      author: "system",
-      text: `⚠ turn aborted after upstream stall (@${agentId}) — message requeued, retrying once`,
-    };
-    await this.room.appendEvent(event);
-    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    const retryTask = this.createTask(text, targets);
-    retryTask.status = "queued";
-    await this.room.enqueue({
-      taskId: retryTask.id,
-      text,
-      targets,
-      ...(channel ? { channel } : {}),
-      ...(attachments?.length ? { attachments } : {}),
-      stallRetried: true,
-      queuedAt: retryTask.startedAt,
-    });
-    this.queuedTasks.push(retryTask);
-    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
-    void this.emitSnapshot();
-    return true;
+  async maybeRequeueStall(targets: string[], agentId: string, text: string, error: unknown, partialReply: string, channel: "voice" | undefined, attachments: MessageAttachment[] | undefined, options: SendMessageOptions): Promise<boolean> {
+    return new RoomTurnResults(this).maybeRequeueStall(targets, agentId, text, error, partialReply, channel, attachments, options);
   }
-
-  async maybeRequeueAuth(
-    targets: string[],
-    agentId: string,
-    text: string,
-    error: unknown,
-    _partialReply: string,
-    channel: "voice" | undefined,
-    attachments: MessageAttachment[] | undefined,
-    options: SendMessageOptions,
-  ): Promise<boolean> {
-    const isAuth = error instanceof Error && error.name === "TransientAuthError";
-    const attempt = (options.queued?.authRetries ?? 0) + 1;
-    if (!isAuth || attempt > 5) return false;
-    const backoff = [30_000, 60_000, 120_000, 300_000, 600_000][attempt - 1];
-    const event: RoomEvent = {
-      id: newId("system_authretry"),
-      timestamp: new Date().toISOString(),
-      author: "system",
-      text: `⚠ turn failed on transient auth (@${agentId}) — requeued, retry ${attempt}/5 in ${backoff / 1000}s`,
-    };
-    await this.room.appendEvent(event);
-    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
-    const retryTask = this.createTask(text, targets);
-    retryTask.status = "queued";
-    await this.room.enqueue({
-      taskId: retryTask.id,
-      text,
-      targets,
-      ...(channel ? { channel } : {}),
-      ...(attachments?.length ? { attachments } : {}),
-      authRetries: attempt,
-      notBefore: new Date(Date.now() + backoff).toISOString(),
-      queuedAt: retryTask.startedAt,
-    });
-    this.queuedTasks.push(retryTask);
-    this.emit({ type: "task-start", workspaceId: this.workspaceId, roomId: this.roomId, task: retryTask });
-    void this.emitSnapshot();
-    return true;
+  async maybeRequeueAuth(targets: string[], agentId: string, text: string, error: unknown, partialReply: string, channel: "voice" | undefined, attachments: MessageAttachment[] | undefined, options: SendMessageOptions): Promise<boolean> {
+    return new RoomTurnResults(this).maybeRequeueAuth(targets, agentId, text, error, partialReply, channel, attachments, options);
   }
-
-  /** Episodic capture is best-effort derived data: a failure must never fail
-   * the turn that produced it. */
-  async captureEpisode(
-    agentId: string,
-    task: string,
-    reply: string,
-    outcome: EpisodeCapture["outcome"],
-    details: EventDetails,
-    channel: "voice" | undefined,
-  ): Promise<void> {
-    if (!this.options.memory) return;
-    // Incognito rooms leave no episodic trace: nothing from a turn here is ever
-    // captured into memory (guards all captureEpisode call sites at once).
-    if (this.incognito) return;
-    const tools = [...new Set((details.tools ?? []).map((tool) => tool.toolName))];
-    try {
-      await this.options.memory.capture(agentId, {
-        roomId: this.roomId,
-        task,
-        reply,
-        outcome,
-        ...(tools.length ? { tools } : {}),
-        ...(channel ? { channel } : {}),
-      });
-    } catch {
-      // Derived data; the transcript already has the full turn.
-    }
+  async captureEpisode(agentId: string, task: string, reply: string, outcome: EpisodeCapture["outcome"], details: EventDetails, channel: "voice" | undefined): Promise<void> {
+    return new RoomTurnResults(this).captureEpisode(agentId, task, reply, outcome, details, channel);
   }
-
   async runConsolidateCommand(agentId?: string): Promise<string> {
     const target = agentId ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return `Unknown agent: ${target}`;

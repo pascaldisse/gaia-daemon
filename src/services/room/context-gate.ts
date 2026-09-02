@@ -1,6 +1,7 @@
 import { DEFAULT_CONTEXT_DIET_POLICY } from "../../domain/context-diet.js";
 import { estimateTokens } from "../../core/tokens.js";
 import type { AgentDef, ContextGatePending, MessageAttachment } from "../../core/types.js";
+import type { RoomContextGatePort } from "./ports.js";
 import { contextWindowFor, harnessIdFor } from "../../harness/spec.js";
 import { readUserNameSetting } from "../user-name.js";
 import { renderRoomTranscript } from "../../harness/prompt.js";
@@ -16,10 +17,9 @@ const MAX_SUMMARY_INPUT_CHARS = 100_000;
 
 /** RoomService context-size gate. The host is deliberately structural: this is
  * orchestration shared with the façade without learning about a harness. */
-type ContextGateHost = any;
 
 export async function openContextGate(
-  service: ContextGateHost,
+  service: RoomContextGatePort,
   agent: AgentDef,
   message: string,
   estTokens: number,
@@ -38,31 +38,31 @@ export async function openContextGate(
     reason,
     at: new Date().toISOString(),
   };
-  await service.room.updateState((current: any) => {
+  await service.room.updateState((current) => {
     current.contextGate = gate;
   });
   service.contextGate = gate;
   await service.emitSnapshot();
 }
 
-export async function resolveContextGate(service: ContextGateHost, choice: "full" | "last" | "compact", n?: number): Promise<void> {
+export async function resolveContextGate(service: RoomContextGatePort, choice: "full" | "last" | "compact", n?: number): Promise<void> {
   await service.init();
   const gate = service.contextGate ?? (await service.room.state()).contextGate;
   if (!gate) return;
-  await service.room.updateState((current: any) => {
+  await service.room.updateState((current) => {
     delete current.contextGate;
   });
   service.contextGate = undefined;
   await service.emitSnapshot();
 
-  const base: any = {
+  const base = {
     targets: [gate.agentId],
     recordUserMessage: false,
     bypassContextGate: true,
     ...(gate.attachments?.length ? { attachments: gate.attachments } : {}),
   };
   if (choice === "last") {
-    const keep = Number.isInteger(n) && (n as number) > 0 ? (n as number) : CONTEXT_GATE_LAST_N;
+    const keep = n !== undefined && Number.isInteger(n) && n > 0 ? n : CONTEXT_GATE_LAST_N;
     const start = Math.max(0, gate.totalEvents - keep);
     await setContextFloor(service, gate.agentId, start);
     await service.sendMessage(gate.message, { ...base, cursorOverride: start });
@@ -82,8 +82,8 @@ export async function resolveContextGate(service: ContextGateHost, choice: "full
   await service.sendMessage(gate.message, { ...base, cursorOverride: 0 });
 }
 
-export async function setContextFloor(service: ContextGateHost, agentId: string, floorIdx: number): Promise<void> {
-  await service.room.updateState((current: any) => {
+export async function setContextFloor(service: RoomContextGatePort, agentId: string, floorIdx: number): Promise<void> {
+  await service.room.updateState((current) => {
     if (floorIdx <= 0) {
       if (current.contextFloors) delete current.contextFloors[agentId];
       return;
@@ -92,13 +92,13 @@ export async function setContextFloor(service: ContextGateHost, agentId: string,
   });
 }
 
-export async function recallContext(service: ContextGateHost, agentId: string): Promise<{ roomId: string; floorIdx: number }> {
+export async function recallContext(service: RoomContextGatePort, agentId: string): Promise<{ roomId: string; floorIdx: number }> {
   await service.init();
   const state = await service.room.state();
   return { roomId: service.roomId, floorIdx: state.contextFloors?.[agentId] ?? 0 };
 }
 
-export async function summarizeRoom(service: ContextGateHost, target: string, uptoEvents: number): Promise<string> {
+export async function summarizeRoom(service: RoomContextGatePort, target: string, uptoEvents: number): Promise<string> {
   const { events } = await service.room.eventsFrom(0);
   const rendered = renderRoomTranscript(events.slice(0, uptoEvents), await readUserNameSetting(), { policy: DEFAULT_CONTEXT_DIET_POLICY, currentAgentId: target });
   const input = rendered.length > MAX_SUMMARY_INPUT_CHARS
