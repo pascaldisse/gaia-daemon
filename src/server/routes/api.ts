@@ -387,7 +387,8 @@ async function handleApiAccounts(ctx: RouteContext): Promise<void> {
         return json(response, 403, { error: "Workspace is outside your assigned scope." });
       }
     }
-    for (const handler of [handleRooms, handleEditRetry]) if (await handler(ctx)) return;
+    if (await handleRooms(ctx)) return;
+    if (await handleEditRetry(ctx)) return;
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {
       const service = await daemon.serviceFor(params[0]);
       json(response, 200, {
@@ -400,31 +401,11 @@ async function handleApiAccounts(ctx: RouteContext): Promise<void> {
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/memory\/status$/))) {
       return respond(response, async () => ({ health: await daemon.memoryHealth(params![0]) }));
     }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms$/))) {
-      const body = await parseBody(request);
-      const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
-      if (!roomId?.trim()) return json(response, 400, { error: "Missing room id" });
-      const incognito = boolField(body, "incognito");
-      return respond(response, () => daemon.selectRoom(params![0], roomId.trim(), { incognito }));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/))) {
-      // The body is optional; when a room is being CREATED via select, it may
-      // carry `incognito: true` (a no-op on an already-existing room).
-      const incognito = boolField(await parseBody(request), "incognito");
-      return respond(response, () => daemon.selectRoom(params![0], params![1], { incognito }));
-    }
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/default-agent$/))) {
       const body = await parseBody(request);
       const agentId = stringField(body, "agentId") ?? stringField(body, "id");
       if (!agentId?.trim()) return json(response, 400, { error: "Missing agent id" });
       return respond(response, () => daemon.setDefaultAgent(params![0], agentId.trim()));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/role$/))) {
-      const body = await parseBody(request);
-      const agentId = stringField(body, "agentId");
-      const role = stringField(body, "role");
-      if (!agentId?.trim() || !role?.trim()) return json(response, 400, { error: "Missing agentId or role" });
-      return respond(response, () => daemon.setAgentRole(params![0], params![1], agentId.trim(), role.trim()));
     }
     if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/default-role$/))) {
       const body = await parseBody(request);
@@ -433,66 +414,10 @@ async function handleApiAccounts(ctx: RouteContext): Promise<void> {
       if (!agentId?.trim()) return json(response, 400, { error: "Missing agentId" });
       return respond(response, () => daemon.setAgentDefaultRole(params![0], agentId.trim(), (role ?? "").trim()));
     }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/plugins\/([A-Za-z0-9_-]+)$/))) {
-      const body = await parseBody(request);
-      const args = Array.isArray((body as { args?: unknown }).args)
-        ? (body as { args: unknown[] }).args.filter((arg): arg is string => typeof arg === "string").slice(0, 16)
-        : [];
-      return respond(response, () => daemon.runPluginAction(params![0], params![1], params![2], args));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/agent-dialogue$/))) {
-      const body = await parseBody(request);
-      const on = (body as { on?: unknown }).on === true;
-      return respond(response, () => daemon.setRoomAgentDialogue(params![0], params![1], on));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/title$/))) {
-      const body = await parseBody(request);
-      const title = stringField(body, "title")?.trim();
-      if (!title) return json(response, 400, { error: "Missing room title" });
-      return respond(response, () => daemon.renameRoom(params![0], params![1], title));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/favorite$/))) {
-      const favorite = (await parseBody(request) as { favorite?: unknown }).favorite === true;
-      return respond(response, () => daemon.setRoomFavorite(params![0], params![1], favorite));
-    }
     return handleApiMembership(ctx);
 }
 async function handleApiMembership(ctx: RouteContext): Promise<void> {
-  const { request, response, url, daemon, human, humanScope } = ctx;
-  const method = request.method ?? "GET";
-  const path = url.pathname;
-  const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
-  let params: string[] | null;
-// Room-level human membership (RoomState.humans). Absent/empty = today's
-    // unrestricted default for every existing room; a room only starts gating
-    // reads/posts (see the /messages and /events routes below) the moment it
-    // gets its first member. Every write here requires an authenticated human
-    // who is EITHER already a member OR the room has none yet (so someone can
-    // bootstrap membership on a room they otherwise already had full access to).
-    if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      return respond(response, async () => ({ humans: await service.roomHumans() }));
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const requester = requestingHuman(request);
-      if (!requester) return json(response, 401, { error: "Log in before managing room membership." });
-      const existing = await service.roomHumans();
-      if (existing.length > 0 && !existing.includes(requester.id)) return json(response, 403, { error: "Not a member of this room." });
-      const body = await parseBody(request);
-      const userId = stringField(body, "userId");
-      if (!userId?.trim()) return json(response, 400, { error: "Missing userId" });
-      return respond(response, async () => ({ humans: await service.inviteHuman(userId.trim()) }));
-    }
-    if (method === "DELETE" && (params = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans\/([^/]+)$/))) {
-      const service = await daemon.serviceFor(params[0], params[1]);
-      const requester = requestingHuman(request);
-      if (!requester) return json(response, 401, { error: "Log in before managing room membership." });
-      const existing = await service.roomHumans();
-      if (existing.length > 0 && !existing.includes(requester.id)) return json(response, 403, { error: "Not a member of this room." });
-      return respond(response, async () => ({ humans: await service.removeHuman(params![2]) }));
-    }
-    return handleApiRoomActions(ctx);
+  return handleApiRoomActions(ctx);
 }
 async function handleApiRoomActions(ctx: RouteContext): Promise<void> {
   const { request, response, url, daemon, human, humanScope } = ctx;
