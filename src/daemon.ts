@@ -10,19 +10,17 @@ import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { Bus } from "./core/bus.js";
-import { DEFAULTS } from "./core/config.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
 import type { AgentDef, ChatSearchHit, ChatSearchResult, KeepAwakeCapability, PetBinding, RoomState, Snapshot, UiEvent, UsageLimits, VoiceCallInfo, Workspace, WorkspaceRecord } from "./core/types.js";
 import { capabilitiesFor, type ContextDietView, type GaiaTool, harnessIdFor } from "./harness/spec.js";
 import type { ContextDietOverrides } from "./domain/context-diet.js";
-import { findModelWithAlias } from "./harness/model-aliases.js";
 import { reapOrphans } from "./harness/reaper.js";
 import type { MemoryAction, MemoryMutationResult } from "./domain/memory.js";
 import { MemoryStore } from "./domain/memory.js";
-import { normalizeRoomState, RoomHandle } from "./domain/rooms.js";
+import { RoomHandle } from "./domain/rooms.js";
 import { listWorkspacePetBindings } from "./domain/pets.js";
-import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, liveMaxSummonsPerRoom, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
+import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom, workspacePath } from "./domain/workspace.js";
 import { setAgentDefaultRole, trashGlobalAgent } from "./domain/agents.js";
 import { listAgentRoles } from "./domain/roles.js";
 import { ensureAccountsFile } from "./domain/accounts.js";
@@ -32,8 +30,8 @@ import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { formatDreamProposal } from "./services/consolidate.js";
-import type { ConsolidateLlm, ConsolidateResult } from "./services/consolidate.js";
-import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
+import type { ConsolidateResult } from "./services/consolidate.js";
+import { formatMemoryHits, scrollTranscriptWindow, type MemoryHealthRow, type MemorySearchHit } from "./domain/workspace-index.js";
 import { SummonCoordinator } from "./services/summons.js";
 import { HarnessBridge, type HarnessTokenClaims } from "./services/bridge.js";
 import { resolveUpstreamCredential, type UpstreamCredential } from "./services/proxy.js";
@@ -57,6 +55,20 @@ import { readThemeSetting, writeThemeSetting } from "./services/theme.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 import { createToolProviders } from "./services/tool-providers.js";
 import type { ToolProviders } from "./harness/protocol.js";
+import {
+  coordinatorFor as wireCoordinatorFor,
+  memoryServiceFor as wireMemoryServiceFor,
+  recoverPendingTurns as wireRecoverPendingTurns,
+  recoverSummons as wireRecoverSummons,
+  roomIdsOnDisk,
+  serviceFor as wireServiceFor,
+  serviceKey,
+} from "./daemon/wiring.js";
+import {
+  applySettingsChange as reloadApplySettingsChange,
+  reloadService as doReloadService,
+  workspaceServiceKeys as wireWorkspaceServiceKeys,
+} from "./daemon/reload.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -175,24 +187,6 @@ export class WorkspaceRegistry {
 
 // --- the daemon -----------------------------------------------------------------
 
-/** Soft cap on simultaneously-resident room services. Idle rooms past this are
- * evicted (transcripts persist on disk); busy ones are always kept. */
-const MAX_LIVE_SERVICES = 32;
-
-/** Grace window protecting a just-handed-out service from eviction. `serviceFor`
- * returns an idle service to a caller that then `await`s several times (init +
- * routing) before `sendMessage` sets `activeTask` — until then `isBusy` is
- * false, so a concurrent `serviceFor` (constant under heavy summon fan-out) can
- * `evictIdleServices()` and dispose the runtimes out from under the in-flight
- * turn: the message persists but no turn ever runs, and it takes a SECOND
- * message (which re-creates the room) to get a reply. Any service handed out
- * within this window is treated as busy so the hand-off can complete. */
-const HANDOFF_GRACE_MS = 30_000;
-
-function serviceKey(workspaceId: string, roomId: string): string {
-  return `${workspaceId}::${roomId}`;
-}
-
 export interface DaemonOptions {
   cwd: string;
   log?: (message: string) => void;
@@ -210,40 +204,43 @@ export class Daemon {
   readonly voiceStack = new VoiceStackManager(globalPaths.voiceLogsDir());
   /** "Keep laptop awake" (Global Settings ▸ General) — see services/keep-awake.ts. */
   private readonly keepAwakeManager = new KeepAwakeManager({ log: (message) => this.log(message) });
-  private readonly services = new Map<string, RoomService>();
+  // Non-private: daemon/wiring.ts + daemon/reload.ts read/mutate this directly
+  // through the WiringHost/ReloadHost structural interfaces (A7 split);
+  // callers outside Daemon never see it (not part of the public surface).
+  readonly services = new Map<string, RoomService>();
   /** serviceKey -> epoch ms of the most recent `serviceFor` hand-out. Guards the
    * eviction race: a service is protected while a caller's in-flight operation
    * (e.g. sendMessage's init+routing, before activeTask is set) completes. */
-  private readonly handedOutAt = new Map<string, number>();
+  readonly handedOutAt = new Map<string, number>();
   /** serviceKey -> in-flight creation. Two concurrent cache misses for the same
    * room (SSE reconnect burst right after a restart) must share ONE creation:
    * independent RoomService instances each run initOnce — double pendingTurn
    * resume, two runner subprocesses, racing writes to the same state.json. */
-  private readonly servicePending = new Map<string, Promise<RoomService>>();
-  private readonly currentRoom = new Map<string, string>();
-  private readonly memoryStores = new Map<string, MemoryStore>();
+  readonly servicePending = new Map<string, Promise<RoomService>>();
+  readonly currentRoom = new Map<string, string>();
+  readonly memoryStores = new Map<string, MemoryStore>();
   /** Service-side tool implementations injected into subprocess harnesses. */
   private readonly toolProviders = createToolProviders();
-  private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
+  readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
   /** One local embedding sidecar per daemon (model server shared across
    * workspaces); MemoryService reaches it through EmbedderDeps. Download and
    * startup progress fans out to every workspace's health table — a 300MB
    * model pull must be visible, not a buried log line (§10). */
-  private readonly embedSidecar = new EmbedSidecar({
+  readonly embedSidecar = new EmbedSidecar({
     log: (message) => this.log(message),
     onProgress: (state, detail, role) => {
       for (const { service } of this.memoryServices.values()) service.noteSidecarProgress(role === "rerank" ? "reranker" : "embedder", state, detail);
     },
   });
-  private readonly summonCoordinators = new Map<string, SummonCoordinator>();
+  readonly summonCoordinators = new Map<string, SummonCoordinator>();
   private readonly bus = new Bus<UiEvent>();
-  private readonly pendingReloads = new Set<string>();
+  readonly pendingReloads = new Set<string>();
   /** Subscription-usage meter (account-keyed, disk-cached, self-polling) —
    * see services/usage-service.ts. The daemon only wires broadcast + lifecycle. */
   private readonly usageService = new UsageService({ broadcast: (event) => this.broadcast(event) });
-  private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
-  private bridge: HarnessBridge | undefined;
-  private scheduler: SchedulerService | undefined;
+  hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
+  bridge: HarnessBridge | undefined;
+  scheduler: SchedulerService | undefined;
   /** One voice call at a time; unmute's chat-completions requests bind to it. */
   activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   voiceStarting = false;
@@ -259,7 +256,7 @@ export class Daemon {
   // runner from the previous daemon generation for that same room might still
   // be alive: the two would race the same transcript/runner slot. Defaults to
   // an already-resolved promise so tests/callers that skip boot() aren't stuck.
-  private orphanSweepDone: Promise<void> = Promise.resolve();
+  orphanSweepDone: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: DaemonOptions) {
     ensureAccountsFile(); // seed ~/.gaia/accounts.json so it lists as an editable settings file
@@ -269,7 +266,7 @@ export class Daemon {
     return this.options.cwd;
   }
 
-  private log(message: string): void {
+  log(message: string): void {
     (this.options.log ?? console.log)(`[gaia] ${message}`);
   }
 
@@ -373,7 +370,7 @@ export class Daemon {
     await this.usageService.refresh({ force: true, manual: true });
   }
 
-  private scheduleUsageRefresh(): void {
+  scheduleUsageRefresh(): void {
     this.usageService.scheduleRefresh();
   }
 
@@ -397,222 +394,34 @@ export class Daemon {
   /** Get-or-create the long-lived service for a (workspace, room). Omitted room
    * = the workspace's current room. LRU-bumped; creating past the soft cap
    * evicts the least-recently-used idle room. */
+  /** Get-or-create the long-lived service for a (workspace, room). Omitted room
+   * = the workspace's current room. LRU-bumped; creating past the soft cap
+   * evicts the least-recently-used idle room. Logic lives in daemon/wiring.ts
+   * (A7 split) — this stays the public entry point so every existing call
+   * site (`this.serviceFor(...)`, dozens across this class) is untouched. */
   async serviceFor(workspaceId: string, roomId?: string): Promise<RoomService> {
-    // Enforce the invariant boot() documents at its reapOrphans() call: nothing
-    // resumes/starts a turn until the stale-runner sweep has settled. Without
-    // this, a message landing right after a restart (the HTTP server accepts
-    // connections before boot() finishes — see http.ts) could start a fresh
-    // turn/runner for a room while a surviving orphan runner for that same
-    // room+agent is still being identified/killed.
-    await this.orphanSweepDone;
-    const resolvedRoom = roomId ?? (await this.resolveCurrentRoom(workspaceId));
-    const key = serviceKey(workspaceId, resolvedRoom);
-
-    const existing = this.services.get(key);
-    if (existing) {
-      this.services.delete(key);
-      this.services.set(key, existing);
-      this.handedOutAt.set(key, Date.now());
-      return existing;
-    }
-
-    // A creation already in flight IS this room's service — join it.
-    const pending = this.servicePending.get(key);
-    if (pending) {
-      this.handedOutAt.set(key, Date.now());
-      return pending;
-    }
-    const creation = this.createService(workspaceId, resolvedRoom, key);
-    this.servicePending.set(key, creation);
-    try {
-      return await creation;
-    } finally {
-      this.servicePending.delete(key);
-    }
+    return wireServiceFor(this, workspaceId, roomId);
   }
 
-  private async createService(workspaceId: string, resolvedRoom: string, key: string): Promise<RoomService> {
-    const record = await this.registry.find(workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
-    await ensureWorkspaceRoom(record.path, resolvedRoom);
-    const workspace = await loadWorkspace(record.path);
-    const service = await RoomService.open({
-      workspaceId,
-      workspace,
-      roomId: resolvedRoom,
-      memoryStore: this.memoryStoreFor(workspaceId),
-      memory: this.memoryServiceFor(workspaceId, workspace, record.path),
-      // Same LLM caller consolidation uses — backs the context-gate compact.
-      llm: consolidateLlm(),
-      summonHost: this.summonCoordinatorFor(workspaceId, workspace, record.path),
-      setThinking: async (agentId, level) => (await this.applyThinking(workspaceId, resolvedRoom, agentId, level)).message,
-      // Same reload the settings-file save route uses: /model + /thinking
-      // rewrite agent.json, and only a service rebuild reaches the runner
-      // subprocesses (they snapshot the config at spawn).
-      settingsChanged: (scope) => this.applySettingsChange(scope, workspaceId),
-      harnessHost: this.bridge ? (opts) => this.bridge!.hostFor(workspaceId, opts) : undefined,
-      // Closures resolve this.scheduler per call: services built before boot()
-      // (or after dispose) answer gracefully instead of binding a stale ref.
-      scheduler: {
-        list: () => this.scheduler?.describeWorkspace(workspaceId, record.path) ?? Promise.resolve("The scheduler is not running."),
-        runNow: (jobId) => this.scheduler?.runNow(workspaceId, record.path, jobId) ?? Promise.resolve("The scheduler is not running."),
-      },
-    });
-    service.subscribe((event) => {
-      this.broadcast(event);
-      // A finished turn just spent tokens — refresh the account usage chip so it
-      // tracks live instead of waiting for the slow poll.
-      if (event.type === "task-end" || event.type === "task-error") this.scheduleUsageRefresh();
-    });
-    await service.init();
-    this.services.set(key, service);
-    this.handedOutAt.set(key, Date.now());
-    this.evictIdleServices();
-    return service;
-  }
-
-  private async resolveCurrentRoom(workspaceId: string): Promise<string> {
-    const cached = this.currentRoom.get(workspaceId);
-    if (cached) return cached;
-    const record = await this.registry.find(workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
-    const workspace = await loadWorkspace(record.path);
-    this.currentRoom.set(workspaceId, workspace.config.room);
-    return workspace.config.room;
-  }
-
-  private evictIdleServices(): void {
-    const now = Date.now();
-    for (const [key, service] of this.services) {
-      if (this.services.size <= MAX_LIVE_SERVICES) break;
-      if (service.isBusy) continue;
-      // A just-handed-out service is idle only because its caller hasn't reached
-      // startTask yet; disposing it here loses the in-flight turn (see
-      // HANDOFF_GRACE_MS). Treat the hand-off window as busy.
-      if (now - (this.handedOutAt.get(key) ?? 0) < HANDOFF_GRACE_MS) continue;
-      // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
-      void service.dispose();
-      this.services.delete(key);
-      this.handedOutAt.delete(key);
-      this.log(`evicted idle room service ${key} (soft cap ${MAX_LIVE_SERVICES})`);
-    }
-  }
-
-  private memoryStoreFor(workspaceId: string): MemoryStore {
-    let store = this.memoryStores.get(workspaceId);
-    if (!store) {
-      store = new MemoryStore();
-      this.memoryStores.set(workspaceId, store);
-    }
-    return store;
-  }
-
-  /** One MemoryService per workspace. Holds live workspace accessors so a
-   * settings reload changes behavior without a rebuild; the consolidation LLM
-   * runs daemon-side through the same credential store as the proxy. */
+  /** One MemoryService per workspace — see daemon/wiring.ts (A7 split). Kept as
+   * a private wrapper: called from several room-operation methods below
+   * (`this.memoryServiceFor(...)`), which stay in this class untouched. */
   private memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService {
-    const existing = this.memoryServices.get(workspaceId);
-    if (existing) {
-      // Workspace objects are rebuilt on settings reload; the accessors close
-      // over `live`, so refreshing it here keeps the memory service current.
-      existing.live.workspace = workspace;
-      return existing.service;
-    }
-    const live = { workspace };
-    const service = new MemoryService({
-      workspaceRoot: path,
-      workspaceMemory: () => live.workspace.config.memory,
-      agents: () => live.workspace.agents,
-      memoryStore: this.memoryStoreFor(workspaceId),
-      roomsFor: () => this.recentRoomRefs(path),
-      llm: consolidateLlm(),
-      log: (message) => this.log(message),
-      embedderDeps: {
-        ensureLocalSidecar: (modelId) => this.embedSidecar.ensure(modelId),
-        ensureLocalReranker: (modelId) => this.embedSidecar.ensureRerank(modelId),
-      },
-    });
-    this.memoryServices.set(workspaceId, { service, live });
-    return service;
+    return wireMemoryServiceFor(this, workspaceId, workspace, path);
   }
 
-  /** Every room transcript in the workspace, most-recently-active first, for
-   * the workspace memory index (one shared definition: workspaceRoomRefs). */
-  private recentRoomRefs(workspaceRoot: string): RoomRef[] {
-    return workspaceRoomRefs(workspaceRoot);
-  }
-
-  private summonCoordinatorFor(workspaceId: string, workspace: Workspace, path: string): SummonCoordinator {
-    let coordinator = this.summonCoordinators.get(workspaceId);
-    if (!coordinator) {
-      coordinator = new SummonCoordinator(
-        workspace,
-        path,
-        (roomId) => this.serviceFor(workspaceId, roomId),
-        () => liveMaxSummonsPerRoom(path),
-        (message) => this.log(message),
-      );
-      this.summonCoordinators.set(workspaceId, coordinator);
-    }
-    return coordinator;
-  }
-
-  /** Boot sweep: re-arm undelivered summons in every initialized workspace
-   * (see SummonCoordinator.recoverUndelivered). Failures are logged, never
-   * thrown — recovery must not take the daemon down. */
+  /** Boot sweep: re-arm undelivered summons — see daemon/wiring.ts. */
   private async recoverSummons(): Promise<void> {
-    for (const record of await this.registry.list()) {
-      if (!record.isInitialized) continue;
-      try {
-        await (await this.coordinatorFor(record.id)).recoverUndelivered();
-      } catch (error) {
-        this.log(`summon recovery skipped for workspace ${record.name}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    return wireRecoverSummons(this);
   }
 
-  /** Boot sweep: wake every room whose persisted state carries unfinished work
-   * (a pendingTurn or a non-empty queue) — the counterpart to recoverSummons
-   * for plain agent turns, which otherwise only resume/drain lazily inside
-   * RoomService.initOnce(), on-demand, the next time something calls
-   * serviceFor() for that specific room. Scan is cheap (one JSON read per
-   * room, no service/workspace load); only rooms that actually need it get a
-   * real serviceFor(), which does the rest via initOnce(). Sequential, not
-   * fanned out — a restart can strand many rooms at once, and each wake may
-   * spawn a runner subprocess; waking them one at a time avoids a subprocess
-   * thundering herd (servicePending already makes this race-safe against a
-   * concurrent client reconnect for the same room). Failures are logged,
-   * never thrown — recovery must not take the daemon down. */
+  /** Boot sweep: wake rooms with unfinished work — see daemon/wiring.ts. */
   private async recoverPendingTurns(): Promise<void> {
-    for (const record of await this.registry.list()) {
-      if (!record.isInitialized) continue;
-      for (const roomId of this.roomIdsOnDisk(record.path)) {
-        let state: RoomState;
-        try {
-          state = normalizeRoomState(await readJson(workspacePaths.roomState(record.path, roomId)));
-        } catch {
-          continue; // Unreadable/corrupt state — leave it for the room's own on-open recovery.
-        }
-        if (!state.pendingTurn && !state.queue?.length) continue;
-        this.log(
-          `turn recovery: waking ${record.id}::${roomId} (pending=${Boolean(state.pendingTurn)}, queued=${state.queue?.length ?? 0})`,
-        );
-        try {
-          await this.serviceFor(record.id, roomId);
-        } catch (error) {
-          this.log(`turn recovery failed for ${record.id}::${roomId}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
+    return wireRecoverPendingTurns(this);
   }
 
   async coordinatorFor(workspaceId: string): Promise<SummonCoordinator> {
-    const existing = this.summonCoordinators.get(workspaceId);
-    if (existing) return existing;
-    const record = await this.registry.find(workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
-    const workspace = await loadWorkspace(record.path);
-    return this.summonCoordinatorFor(workspaceId, workspace, record.path);
+    return wireCoordinatorFor(this, workspaceId);
   }
 
   // --- workspace/room operations ---------------------------------------------------
@@ -664,14 +473,6 @@ export class Daemon {
     return { snapshot, workspaceFiles: await this.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
-  private roomIdsOnDisk(workspaceRoot: string): string[] {
-    const dir = workspacePaths.roomsDir(workspaceRoot);
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  }
-
   /** Rename a room's display title without changing its durable id/path. */
   async renameRoom(workspaceId: string, roomId: string, title: string): Promise<{ rooms: Snapshot["rooms"] }> {
     const service = await this.serviceForExistingRoom(workspaceId, roomId);
@@ -691,7 +492,7 @@ export class Daemon {
     const record = await this.registry.find(workspaceId);
     if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
     if (!isValidRoomId(roomId)) throw new Error("Invalid room id.");
-    if (!this.roomIdsOnDisk(record.path).includes(roomId)) throw new Error(`Room not found: ${roomId}`);
+    if (!roomIdsOnDisk(record.path).includes(roomId)) throw new Error(`Room not found: ${roomId}`);
     return this.serviceFor(workspaceId, roomId);
   }
 
@@ -716,7 +517,7 @@ export class Daemon {
       throw new Error("Stop the active voice call before deleting this room.");
     }
 
-    const roomIds = this.roomIdsOnDisk(record.path);
+    const roomIds = roomIdsOnDisk(record.path);
     if (!roomIds.includes(roomId)) throw new Error(`Room not found: ${roomId}`);
     if (roomIds.length <= 1) throw new Error("Can't delete the only room in the workspace.");
 
@@ -927,42 +728,21 @@ export class Daemon {
   // --- settings hot-reload ----------------------------------------------------------
 
   /** Settings files feed workspace/agent definitions cached at service
-   * creation. Rebuild affected services so saves apply without a restart. */
+   * creation. Rebuild affected services so saves apply without a restart.
+   * Logic lives in daemon/reload.ts (A7 split); Daemon keeps the state
+   * (services/pendingReloads/hintSourcesCache) these delegate against, and
+   * every call site below (`this.applySettingsChange`/`this.reloadService`/
+   * `this.workspaceServiceKeys`) is untouched. */
   async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
-    this.hintSourcesCache = undefined;
-    const keys = scope === "global" ? [...this.services.keys()] : workspaceId ? this.workspaceServiceKeys(workspaceId) : [];
-    await Promise.all(keys.map((key) => this.reloadService(key)));
+    return reloadApplySettingsChange(this, scope, workspaceId);
   }
 
   private workspaceServiceKeys(workspaceId: string): string[] {
-    const prefix = serviceKey(workspaceId, "");
-    return [...this.services.keys()].filter((key) => key.startsWith(prefix));
+    return wireWorkspaceServiceKeys(this, workspaceId);
   }
 
   private async reloadService(key: string): Promise<void> {
-    const service = this.services.get(key);
-    if (!service) return;
-
-    if (service.hasActiveTask) {
-      // Deferred while a turn runs; re-attempted when it settles.
-      if (this.pendingReloads.has(key)) return;
-      this.pendingReloads.add(key);
-      void service
-        .waitForIdle()
-        .then(() => {
-          this.pendingReloads.delete(key);
-          return this.reloadService(key);
-        })
-        .catch(() => this.pendingReloads.delete(key));
-      return;
-    }
-
-    const { workspaceId, roomId } = service;
-    // signals are sent synchronously inside dispose(); waiting is only needed at shutdown
-    void service.dispose();
-    this.services.delete(key);
-    const fresh = await this.serviceFor(workspaceId, roomId);
-    this.broadcast({ type: "snapshot", workspaceId, roomId: fresh.roomId, snapshot: await fresh.getSnapshot() });
+    return doReloadService(this, key);
   }
 
   // --- harness bridge (memory writes + summon for subprocesses) ----------------------
@@ -1551,41 +1331,4 @@ export class Daemon {
       theme: await this.theme(),
     };
   }
-}
-
-// --- consolidation LLM (daemon-side, same credential store as the proxy) ---------
-
-/** Builds the completion function consolidation uses. Resolved lazily per call
- * so key/model changes apply without a daemon restart; no key → the call
- * throws and consolidation skips with the error as its reason. */
-function consolidateLlm(): ConsolidateLlm {
-  return async ({ system, user, model }) => {
-    const provider = model?.provider ?? DEFAULTS.model.provider;
-    const name = model?.name ?? DEFAULTS.model.name;
-    const [{ completeSimple }, { ModelRegistry, ModelRuntime }] = await Promise.all([
-      // completeSimple moved to the compat subpath in pi-ai 0.80 (same shape).
-      import("@earendil-works/pi-ai/compat"),
-      import("@earendil-works/pi-coding-agent"),
-    ]);
-    const runtime = await ModelRuntime.create();
-    // Alias fallback (RULE #0): short tier names (fable/opus/sonnet/haiku) in an
-    // agent's config resolve here too — this direct pi-ai path bypasses the
-    // harness CLI, so an un-aliased `find` was silently killing consolidation
-    // for any agent configured with a short name (e.g. anthropic/fable).
-    const resolved = findModelWithAlias(new ModelRegistry(runtime), provider, name);
-    if (!resolved) throw new Error(`consolidation model not found: ${provider}/${name}`);
-    const apiKey = (await runtime.getAuth(provider))?.auth.apiKey;
-    const message = await completeSimple(
-      resolved,
-      { systemPrompt: system, messages: [{ role: "user", content: user, timestamp: Date.now() }] },
-      { ...(apiKey ? { apiKey } : {}), maxTokens: 4_000 },
-    );
-    if (message.stopReason === "error" || message.stopReason === "aborted") {
-      throw new Error(message.errorMessage ?? "consolidation model call failed");
-    }
-    return message.content
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
-      .map((part) => part.text)
-      .join("");
-  };
 }
