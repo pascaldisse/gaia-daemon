@@ -198,7 +198,7 @@ export function initComposer() {
   retranscribeEl = /** @type {HTMLButtonElement} */ (
     h("button", { type: "button", class: "retranscribe-button", hidden: true, title: "retranscribe the last recording", text: `${UI.retry} retranscribe`, onclick: () => void retryDictation() })
   );
-  draftStatusEl = h("output", { class: "draft-status", ariaLive: "polite" });
+  draftStatusEl = h("output", { class: "draft-status", "aria-live": "polite" });
   ultrawhipWrapEl = h("span", {
     class: "ultrawhip-chip",
     hidden: true,
@@ -219,7 +219,7 @@ export function initComposer() {
     h(
       "div",
       { class: "composer-row" },
-      h("span", { class: "composer-caret", ariaHidden: "true", text: UI.human }),
+      h("span", { class: "composer-caret", "aria-hidden": "true", text: UI.human }),
       textarea,
       sendButton,
     ),
@@ -744,6 +744,7 @@ function applyCompletion(completion, option) {
   state.composerText = `${state.composerText.slice(0, completion.start)}${option.value}${option.suffix ?? ""}`;
   state.completionIndex = 0;
   state.completionHidden = true;
+  persistDraft(state.composerText);
 }
 
 /** @param {Completion} completion @returns {HTMLElement[]} */
@@ -999,7 +1000,7 @@ function ModelChip(snapshot, text) {
         `provider switched models on the last turn: ${fallback.from} → ${fallback.to} — ${fallback.reason} ` +
         `(configured: ${agent.configuredModel}; each turn re-requests it, so this usually reverts on the next clean turn — ` +
         `this chip and each message's model tag always show what actually ran)`,
-      text: `⚠︎ ${shortModel(agent.modelLabel)}`,
+      text: `${KIND.warning} ${shortModel(agent.modelLabel)}`,
     });
   }
   return h("span", {
@@ -1043,7 +1044,7 @@ function MemoryChip(snapshot) {
   return h("span", {
     class: "model-chip fallback",
     title: `memory subsystem degraded: ${chips.join("; ")} — run \`gaia memory status\` in the workspace for detail`,
-    text: `⚠︎ memory: ${chips.join(", ")}`,
+    text: `${KIND.warning} memory: ${chips.join(", ")}`,
   });
 }
 
@@ -1306,6 +1307,7 @@ export function installComposerRouting() {
         state.completionHidden = false;
       }
 
+      persistDraft(state.composerText);
       focusComposer();
       markDirty("composer");
     },
