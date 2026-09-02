@@ -210,3 +210,29 @@ export interface RoomLifecycleConstructPort {
   summonUntrusted: boolean;
   workDir: string | undefined;
 }
+
+/** Dependencies reached by non-WAL pet/task/monad controls. */
+export interface RoomTaskOperationsPort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly workspaceId: string;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly options: RoomServiceOptions;
+  activeTask: Task | undefined;
+  activeTurnUnwind: Promise<void> | undefined;
+  readonly activeAgentTurn: Task | undefined;
+  readonly compactingAgents: Set<string>;
+  readonly compactCancels: Set<string>;
+  queuedTasks: Task[];
+  recentTasks: Task[];
+  agentDialogueHops: number;
+  init(): Promise<void>;
+  emit(event: UiEvent): void;
+  emitSnapshot(): Promise<void>;
+  roomDefaultTarget(): Promise<string>;
+  unknownAgentMessage(agentId: string): string;
+  emitSystemNote(text: string): void;
+  settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
+  subscribe(listener: (event: UiEvent) => void): () => void;
+}
