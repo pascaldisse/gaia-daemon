@@ -93,3 +93,11 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - A5c+A7d integration branch re-gated against `main` @ efc2e48; root checkout remains wrong branch, hence UNLANDED.
 - gates: check green; http-routes 7/0 · voice 25/0 · read-aloud 35/0 · dictation 2/0.
 - sizes: http 642 · room-service 2527 · daemon 717. pragma scans server/daemon: 0.
+
+## A5c+A7d — latest-main gate (2026-09-02)
+- `refactor/a7d-adopt` merged `main` @ f383f22 → f71b774; includes A5c route table + A7d interaction lifecycle.
+- gate: `bun run check` green; http-routes 7/0 · voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- call-site grep: daemon facade only delegates `RoomInteractionLifecycle`; no parallel interaction implementation found.
+- pragma scan `src/server src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
+- sizes: room-service 2527 · daemon 717 · http 642.
+- root landing BLOCKED: root checkout is clean `fix/native-weblinks` @ 4bd87be, not `main` @ f383f22; root switching forbidden by merge-only law.
