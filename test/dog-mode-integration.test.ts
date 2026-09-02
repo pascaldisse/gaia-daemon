@@ -40,7 +40,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { RoomService } from "../src/services/room-service.js";
+import { CapabilityBroker } from "../src/services/capabilities/broker.js";
+import { PluginRegistry } from "../src/services/plugins/registry.js";
+import { bundledDir } from "../src/core/paths.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import type { AgentDef, AgentEvent, RoomEvent, UiEvent, Workspace } from "../src/core/types.js";
 import type { AgentRuntime } from "../src/harness/spec.js";
@@ -77,6 +81,17 @@ function scriptedRuntime(agent: AgentDef, script: () => AgentEvent[]): AgentRunt
 }
 
 type RoomEventUi = Extract<UiEvent, { type: "room-event" }>;
+async function bundledRegistry(): Promise<PluginRegistry> {
+  const registry = new PluginRegistry({
+    pluginsRoot: bundledDir("plugins"), placement: "daemon",
+    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+  });
+  const staged = await registry.stageReload();
+  assert.equal(staged.status, "staged");
+  assert.equal(await registry.applyTurnBoundary(), true);
+  return registry;
+}
 function roomEvents(events: UiEvent[]): RoomEventUi[] {
   return events.filter((event): event is RoomEventUi => event.type === "room-event");
 }
@@ -144,6 +159,7 @@ async function makeArmedService(script: () => AgentEvent[]): Promise<{ service: 
     workspace,
     roomId,
     memoryStore: new MemoryStore(),
+    pluginRegistry: await bundledRegistry(),
     runtimeFactory: (a) => scriptedRuntime(a, script),
   });
   const events: UiEvent[] = [];
@@ -173,6 +189,7 @@ test("DogMode live: /dog on always works with ZERO config present \u2014 no gate
     workspace,
     roomId,
     memoryStore: new MemoryStore(),
+    pluginRegistry: await bundledRegistry(),
     runtimeFactory: (a) => scriptedRuntime(a, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]),
   });
   const events: UiEvent[] = [];
@@ -226,6 +243,7 @@ test("DogMode live: a stale dogMode.enabled:false in config.json does NOT block 
     workspace,
     roomId,
     memoryStore: new MemoryStore(),
+    pluginRegistry: await bundledRegistry(),
     runtimeFactory: (a) => scriptedRuntime(a, () => [{ type: "text-delta", delta: "hi" } as AgentEvent]),
   });
   const events: UiEvent[] = [];

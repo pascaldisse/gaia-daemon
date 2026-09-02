@@ -139,8 +139,7 @@ function registrationOf(value: void | PluginRegistration): PluginRegistration {
 /**
  * Staged manifest-plugin generations. Loading/registering builds an isolated
  * candidate; only `applyTurnBoundary` replaces the active snapshot, after the
- * final RoomService lease ends. The legacy command/runner loaders stay outside
- * this registry.
+ * final RoomService lease ends. Command invocation stays registry-owned.
  */
 export class PluginRegistry implements PluginTurnBoundary {
   readonly #pluginsRoot: string | readonly string[];

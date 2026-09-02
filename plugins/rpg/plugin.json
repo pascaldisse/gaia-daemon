@@ -1,22 +1,12 @@
 {
-  "id": "gaia.defaults",
+  "id": "gaia.rpg",
   "version": "1.0.0",
   "engine": "gaia-daemon@^2.0.0",
   "placement": "daemon",
   "requiredCaps": [],
   "contributes": {
     "commands": [
-      "dog",
-      "slap",
-      "shock",
-      "toilet",
-      "stfu",
-      "push",
-      "swallow",
-      "facial",
-      "release",
-      "doggy",
-      "creampie"
+      "rpg"
     ],
     "tools": [],
     "channels": [],

@@ -1,1 +1,15 @@
-{"id":"gaia.fugu","version":"1.0.0","engine":"gaia-daemon@^2.0.0","placement":"runner","requiredCaps":[],"contributes":{"commands":[],"tools":[],"channels":[],"providers":[]}}
+{
+  "id": "gaia.fugu",
+  "version": "1.0.0",
+  "engine": "gaia-daemon@^2.0.0",
+  "placement": "runner",
+  "requiredCaps": [],
+  "contributes": {
+    "commands": [
+      "fugu"
+    ],
+    "tools": [],
+    "channels": [],
+    "providers": []
+  }
+}

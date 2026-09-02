@@ -8,12 +8,18 @@ import type { PluginContributions } from "./manifest.js";
 export type PluginContributionKind = "command" | "tool" | "channel-bridge" | "provider";
 export type PluginContributionValue = PluginContributionWireValue;
 
-export interface PluginCommandRequest {
-  readonly args: readonly string[];
-}
+export interface PluginAgent { readonly id: string; readonly displayName: string; readonly icon: string; }
+export interface PluginPanelField { readonly name: string; readonly label: string; readonly type: "text" | "select"; readonly value?: string; readonly options?: readonly { readonly value: string; readonly label: string }[]; }
+export interface PluginPanel { readonly title: string; readonly description?: string; readonly forms?: readonly { readonly action: string; readonly label: string; readonly fields: readonly PluginPanelField[] }[]; readonly items?: readonly { readonly title: string; readonly detail?: string; readonly actions?: readonly { readonly action: string; readonly label: string; readonly args?: readonly string[]; readonly danger?: boolean }[] }[]; }
+export interface PluginRenderCap { readonly maxLines: number; readonly note?: string; }
+export interface PluginCommandContext { readonly homedir: string; readonly workspaceId: string; readonly roomId: string; readonly agentId: string; readonly workspaceRoot: string; readonly state?: Record<string, unknown>; readonly agents: readonly PluginAgent[]; readonly command?: string; }
+export interface PluginCommandRequest { readonly args: readonly string[]; readonly pluginContext?: PluginCommandContext; }
 export interface PluginCommandResult {
-  readonly reply?: string;
-  readonly steer?: string;
+  reply?: string; steer?: string; activeAgent?: string; state?: Record<string, unknown>; rewriteAsMessage?: boolean; targets?: string[];
+  panel?: (context: PluginCommandContext) => PluginPanel | undefined | Promise<PluginPanel | undefined>;
+  prompt?: (context: PluginCommandContext & { readonly agentId: string }) => string | undefined | Promise<string | undefined>;
+  renderCap?: (context: PluginCommandContext) => PluginRenderCap | undefined | Promise<PluginRenderCap | undefined>;
+  turnStart?: (context: PluginCommandContext) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
 }
 export interface PluginToolRequest {
   readonly arguments: Readonly<Record<string, PluginContributionValue>>;
@@ -152,11 +158,26 @@ export function validatePluginContributions(
   });
 }
 
+function isPanelHook(value: unknown): value is NonNullable<PluginCommandResult["panel"]> { return typeof value === "function"; }
+function isPromptHook(value: unknown): value is NonNullable<PluginCommandResult["prompt"]> { return typeof value === "function"; }
+function isRenderCapHook(value: unknown): value is NonNullable<PluginCommandResult["renderCap"]> { return typeof value === "function"; }
+function isTurnStartHook(value: unknown): value is NonNullable<PluginCommandResult["turnStart"]> { return typeof value === "function"; }
 function validateCommandResult(value: unknown): PluginCommandResult {
-  if (!isRecord(value) || (value.reply !== undefined && typeof value.reply !== "string") || (value.steer !== undefined && typeof value.steer !== "string")) {
+  if (!isRecord(value) || (value.reply !== undefined && typeof value.reply !== "string") || (value.steer !== undefined && typeof value.steer !== "string") || (value.activeAgent !== undefined && typeof value.activeAgent !== "string") || (value.state !== undefined && !isRecord(value.state)) || (value.rewriteAsMessage !== undefined && typeof value.rewriteAsMessage !== "boolean") || (value.targets !== undefined && (!Array.isArray(value.targets) || value.targets.some((target) => typeof target !== "string"))) || (value.panel !== undefined && typeof value.panel !== "function") || (value.prompt !== undefined && typeof value.prompt !== "function") || (value.renderCap !== undefined && typeof value.renderCap !== "function") || (value.turnStart !== undefined && typeof value.turnStart !== "function")) {
     throw new PluginContributionError("command contribution returned an invalid result");
   }
-  return Object.freeze({ ...(typeof value.reply === "string" ? { reply: value.reply } : {}), ...(typeof value.steer === "string" ? { steer: value.steer } : {}) });
+  const result: PluginCommandResult = {};
+if (typeof value.reply === "string") result.reply = value.reply;
+if (typeof value.steer === "string") result.steer = value.steer;
+if (typeof value.activeAgent === "string") result.activeAgent = value.activeAgent;
+if (isRecord(value.state)) result.state = value.state;
+if (typeof value.rewriteAsMessage === "boolean") result.rewriteAsMessage = value.rewriteAsMessage;
+if (Array.isArray(value.targets)) result.targets = [...value.targets];
+if (isPanelHook(value.panel)) result.panel = value.panel;
+if (isPromptHook(value.prompt)) result.prompt = value.prompt;
+if (isRenderCapHook(value.renderCap)) result.renderCap = value.renderCap;
+if (isTurnStartHook(value.turnStart)) result.turnStart = value.turnStart;
+return Object.freeze(result);
 }
 function validateToolResult(value: unknown): PluginToolResult {
   if (!isRecord(value) || typeof value.content !== "string" || (value.isError !== undefined && typeof value.isError !== "boolean")) {

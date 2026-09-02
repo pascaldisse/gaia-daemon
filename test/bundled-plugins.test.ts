@@ -35,3 +35,31 @@ test("bundled daemon packages stage through the injected registry", async () => 
   assert.equal(staged.status, "staged");
   if (staged.status === "staged") assert.deepEqual(staged.generation.plugins.map((plugin) => plugin.id), ["gaia.defaults", "gaia.rpg"]);
 });
+test("every bundled manifest declares callable command contributions", async () => {
+  const roots = [
+    { root: bundledDir("plugins"), placement: "daemon" as const },
+    { root: bundledDir("plugins"), placement: "runner" as const },
+    { root: bundledDir("addons"), placement: "daemon" as const },
+  ];
+  for (const { root, placement } of roots) {
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement,
+      importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+      capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+    });
+    const staged = await registry.stageReload();
+    assert.equal(staged.status, "staged");
+    if (staged.status !== "staged") continue;
+    assert.ok(staged.generation.plugins.length > 0);
+    assert.ok(staged.generation.plugins.every((plugin) => plugin.contributes.commands.length > 0));
+    assert.equal(await registry.applyTurnBoundary(), true);
+    for (const command of registry.commandContributions()) {
+      const result = await registry.invokeCommand(command.pluginId, command.name, { workspaceId: "workspace", roomId: "room", agentId: "agent" }, {
+        args: [],
+        pluginContext: { homedir: "/home/test", workspaceId: "workspace", roomId: "room", agentId: "agent", workspaceRoot: "/workspace", agents: [], command: command.name },
+      });
+      assert.equal(typeof result, "object");
+    }
+  }
+});

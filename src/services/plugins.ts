@@ -1,82 +1,38 @@
-// Command-plugin compatibility surface. New daemon command packages live in
-// ~/.gaia/plugins/<package>/plugin.json; legacy loose ~/.mjs files remain for
-// one compatibility release only. Bundled defaults retain their established
-// package-free shape until they receive their own manifest packages.
+// Command-plugin compatibility surface. Commands enter only through daemon-owned
+// manifest registries; this adapter binds their typed result to room hooks.
 
 import type { CapabilityContext } from "./capabilities/types.js";
 import type { PluginCommandRequest, PluginCommandResult } from "./plugins/contracts.js";
 import type { RegisteredPluginCommand } from "./plugins/registry.js";
 
-export interface PluginAgent {
-  id: string;
-  displayName: string;
-  icon: string;
-}
-
-export interface PluginPanelField {
-  name: string;
-  label: string;
-  type: "text" | "select";
-  value?: string;
-  options?: Array<{ value: string; label: string }>;
-}
-
-/** Declarative only: plugins never own browser surfaces. */
-export interface PluginPanel {
-  title: string;
-  description?: string;
-  forms?: Array<{ action: string; label: string; fields: PluginPanelField[] }>;
-  items?: Array<{ title: string; detail?: string; actions?: Array<{ action: string; label: string; args?: string[]; danger?: boolean }> }>;
-}
-
-export interface PluginContext {
-  homedir: string;
-  /** Capability decisions resolve real workspace/agent config off this —
-   * see CapabilityContext (capabilities/types.ts) and daemon.ts's
-   * grantSource/trustSource. Not derivable from `workspaceRoot` (a path):
-   * the daemon's live-service cache is keyed by the workspace id. */
-  workspaceId: string;
-  roomId: string;
-  /** Capability decisions stay bound to the room's resolved target agent. */
-  agentId: string;
-  workspaceRoot: string;
-  state?: Record<string, unknown>;
-  agents: PluginAgent[];
-  command?: string;
-}
-
-export interface PluginRenderCap {
-  maxLines: number;
-  note?: string;
-}
-
+import type { PluginCommandContext, PluginPanel, PluginRenderCap } from "./plugins/contracts.js";
+export type { PluginPanel };
+export type PluginContext = PluginCommandContext;
 export interface PluginResult {
-  steer?: string;
-  reply?: string;
-  activeAgent?: string;
-  state?: Record<string, unknown>;
-  rewriteAsMessage?: boolean;
-  targets?: string[];
+steer?: string;
+reply?: string;
+activeAgent?: string;
+state?: Record<string, unknown>;
+rewriteAsMessage?: boolean;
+targets?: string[];
+panel?: (ctx: PluginContext) => PluginPanel | undefined | Promise<PluginPanel | undefined>;
+prompt?: (ctx: PluginContext & { agentId: string }) => string | undefined | Promise<string | undefined>;
+renderCap?: (ctx: PluginContext) => PluginRenderCap | undefined | Promise<PluginRenderCap | undefined>;
+turnStart?: (ctx: PluginContext) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
 }
-
 export interface CommandPlugin {
-  command: string | readonly string[];
-  id?: string;
-  description?: string;
-  run(args: string[], ctx: PluginContext): PluginResult | Promise<PluginResult>;
-  panel?(ctx: PluginContext): PluginPanel | Promise<PluginPanel | undefined>;
-  prompt?(ctx: PluginContext & { agentId: string }): string | Promise<string | undefined>;
-  renderCap?(ctx: PluginContext): PluginRenderCap | undefined | Promise<PluginRenderCap | undefined>;
-  turnStart?(ctx: PluginContext): Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
+command: string | readonly string[];
+id?: string;
+description?: string;
+run(args: string[], ctx: PluginContext): PluginResult | Promise<PluginResult>;
+panel?: PluginResult["panel"];
+prompt?: PluginResult["prompt"];
+renderCap?: PluginResult["renderCap"];
+turnStart?: PluginResult["turnStart"];
 }
-
 /** Shared room-state namespace for aliases. */
 export function pluginStateKey(plugin: Pick<CommandPlugin, "command" | "id">): string {
   return plugin.id ?? (typeof plugin.command === "string" ? plugin.command : plugin.command[0]);
-}
-
-function pluginCommandNames(plugin: CommandPlugin): string[] {
-  return typeof plugin.command === "string" ? [plugin.command] : [...plugin.command];
 }
 
 /** Registry command surface injected by the daemon composition root. */
@@ -93,17 +49,20 @@ export interface CommandPluginRegistry {
 export async function loadCommandPlugins(registry: CommandPluginRegistry): Promise<Map<string, CommandPlugin>> {
   const plugins = new Map<string, CommandPlugin>();
   for (const command of registry.commandContributions()) {
-    plugins.set(command.name, {
+    const plugin: CommandPlugin = {
       command: command.name,
       id: command.pluginId,
       description: command.description,
-      run: (args, context) => registry.invokeCommand(
-        command.pluginId,
-        command.name,
-        { workspaceId: context.workspaceId, roomId: context.roomId, agentId: context.agentId },
-        { args },
-      ),
-    });
+      run: async (args, context) => {
+        const result = await registry.invokeCommand(command.pluginId, command.name, { workspaceId: context.workspaceId, roomId: context.roomId, agentId: context.agentId }, { args, pluginContext: context });
+        plugin.panel = result.panel;
+        plugin.prompt = result.prompt;
+        plugin.renderCap = result.renderCap;
+        plugin.turnStart = result.turnStart;
+        return result;
+      },
+    };
+    plugins.set(command.name, plugin);
   }
   return plugins;
 }

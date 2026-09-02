@@ -47,7 +47,7 @@ test("room command adapter invokes the daemon-owned registry", async () => {
     }),
     { reply: "ok" },
   );
-  assert.deepEqual(calls, [["acme.echo", "echo", { workspaceId: "workspace-1", roomId: "room-1", agentId: "agent-1" }, { args: ["hello"] }]]);
+  assert.deepEqual(calls, [["acme.echo", "echo", { workspaceId: "workspace-1", roomId: "room-1", agentId: "agent-1" }, { args: ["hello"], pluginContext: { homedir: "/home/test", workspaceId: "workspace-1", roomId: "room-1", agentId: "agent-1", workspaceRoot: "/workspace", agents: [] } }]]);
 });
 
 test("registry validates and invokes typed contributions through its capability broker", async () => {
@@ -239,4 +239,28 @@ test("disposes staged failures, replaced generations, and shutdown generations e
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("room command adapter preserves every legacy command result field", async () => {
+  const plugins = await loadCommandPlugins({
+    commandContributions: () => [{ pluginId: "acme.full", name: "full", description: "Full" }],
+    async invokeCommand() {
+      return {
+        reply: "reply", steer: "steer", activeAgent: "agent", state: { saved: true }, rewriteAsMessage: true, targets: ["agent"],
+        panel: () => ({ title: "panel" }), prompt: () => "prompt", renderCap: () => ({ maxLines: 1 }), turnStart: () => ({ started: true }),
+      };
+    },
+  });
+  const plugin = plugins.get("full");
+  assert.ok(plugin);
+  const context = { homedir: "/home/test", workspaceId: "workspace", roomId: "room", agentId: "agent", workspaceRoot: "/workspace", agents: [] };
+  const result = await plugin.run([], context);
+  assert.deepEqual(result.state, { saved: true });
+  assert.equal(result.activeAgent, "agent");
+  assert.equal(result.rewriteAsMessage, true);
+  assert.deepEqual(result.targets, ["agent"]);
+  assert.equal(typeof plugin.panel, "function");
+  assert.equal(typeof plugin.prompt, "function");
+  assert.equal(typeof plugin.renderCap, "function");
+  assert.equal(typeof plugin.turnStart, "function");
 });

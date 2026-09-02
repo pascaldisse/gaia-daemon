@@ -9,9 +9,8 @@
  * ship as real, unbundled files loaded via a genuine runtime `import()` of
  * their actual on-disk path (core/paths.ts photonNodeAssetDir +
  * harness/image-read.ts) instead of a bare package-specifier import.
- * plugins/ ships local command-plugins (services/plugins.ts CommandPlugin) —
- * plugins/defaults/*.mjs load for every install with zero setup (see
- * services/plugins.ts bundledCommandPluginsDir), the rest (e.g. rpg.mjs) are
+ * plugins/ ships manifest command packages; bundled defaults load through the
+ * daemon registry with zero setup, while the rest (e.g. rpg) are
  * reference examples a user may copy into ~/.gaia/plugins/ to opt in. */
 export const BUNDLE_ASSET_DIRS = ["web", "setups", "design", "addons", "vendor", "plugins"] as const;
 

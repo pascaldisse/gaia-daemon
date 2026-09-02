@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import plugin from "../plugins/rpg.mjs/plugin.mjs";
+import plugin from "../plugins/rpg/plugin.mjs";
 
 const ctx = {
   homedir: "/tmp/gaia",
