@@ -182,14 +182,6 @@ if (method === "POST" && path === "/api/pick-directory") {
       json(response, 200, { target });
       return;
     }
-    // Manual usage refresh (the popover's ↻ button) — probes every declared
-    // account NOW, bypassing throttle and backoff, and answers with the fresh
-    // snapshot directly so the button works even when SSE hiccups.
-    if (method === "POST" && path === "/api/usage/refresh") {
-      await daemon.refreshUsage();
-      json(response, 200, { accounts: daemon.usageSnapshot() });
-      return;
-    }
     if (method === "GET" && path === "/api/events") {
       const owned = human?.workspace ? await daemon.addWorkspace(human.workspace, human.id) : undefined;
       const requestedWorkspaceId = url.searchParams.get("workspaceId") ?? undefined;

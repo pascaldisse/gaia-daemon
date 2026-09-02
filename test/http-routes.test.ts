@@ -212,6 +212,36 @@ test("artifacts domain: POST /api/harness/tools artifact-create then artifact-li
   }
 });
 
+test("usage domain: POST /api/usage/refresh returns an accounts snapshot", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  let server: HttpServer | undefined;
+  let web: WebInternals | undefined;
+  try {
+    const workspace = join(temp.path, "workspace");
+    await mkdir(workspace, { recursive: true });
+    await initWorkspace(workspace);
+    web = new GaiaWebServer({ cwd: workspace }) as unknown as WebInternals;
+    const { server: listeningServer, base } = await listenRoute(web);
+    server = listeningServer;
+
+    const refreshed = await fetch(`${base}/api/usage/refresh`, { method: "POST" });
+    assert.equal(refreshed.status, 200);
+    const body = (await refreshed.json()) as { accounts: Record<string, unknown> };
+    assert.equal(typeof body.accounts, "object");
+
+    const wrongMethod = await fetch(`${base}/api/usage/refresh`, { method: "GET" });
+    assert.equal(wrongMethod.status, 404);
+  } finally {
+    if (server) await new Promise<void>((resolve, reject) => server!.close((error) => (error ? reject(error) : resolve())));
+    await web?.daemon.dispose();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
+
 test("memory domain: GET workspace memory/status shape, POST harness memory writes MEMORY.md", async () => {
   const temp = await createTempDir();
   const previousHome = process.env.GAIA_HOME;
