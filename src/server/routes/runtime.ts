@@ -15,7 +15,7 @@ import { sleep } from "../../core/retry.js";
 import { bundleSwapNames } from "../../core/bundle-assets.js";
 import { newId } from "../../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
-import { bearerToken, cookieHeader, cookieValue, json, parseBody, readRawBody, text } from "../../core/http.js";
+import { bearerToken, cookieHeader, json, parseBody, readRawBody, text } from "../../core/http.js";
 import { readJson, writeJsonAtomic } from "../../core/store.js";
 import type { UiEvent } from "../../core/types.js";
 import type { MemoryAction } from "../../domain/memory.js";
@@ -34,7 +34,7 @@ import { summonAck } from "../../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
 import type { ReadAloudDelivery } from "../../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../../services/voice.js";
-import { AUTH_COOKIE, beginSse, boolField, encodeSse, findAppBundleRoot, pathInside, requestingHuman, stringField } from "../route.js";
+import { AUTH_COOKIE, beginSse, boolField, encodeSse, findAppBundleRoot, matchPath, pathInside, requestingHuman, stringField } from "../route.js";
 import { titleCaseId } from "./agents.js";
 import { stringArrayField } from "./edit-retry.js";
 import { numberField } from "./memory.js";
@@ -732,10 +732,7 @@ export class GaiaWebServer {
     }
 
     // Parameterized workspace routes.
-    const match = (pattern: RegExp): string[] | null => {
-      const result = path.match(pattern);
-      return result ? result.slice(1).map((part) => decodeURIComponent(part ?? "")) : null;
-    };
+    const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
 
     let params: string[] | null;
 
