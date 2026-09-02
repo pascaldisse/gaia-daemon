@@ -51,3 +51,22 @@ cards, drafts, apply targets.
 - Data missing in v1 daemon → report BLOCKED, never invent a fake source.
 - Live proof: spawn your OWN daemon + `app-spawn.js` instance. Port 9333 =
   Pascal's screen, passive only.
+
+## Isolated live-verification recipe (MANDATORY — 09-02 incident)
+A second daemon started against the SHARED room store runs summon recovery and
+SIGTERMs every live runner: it killed 3 lanes at once. Never start a daemon
+without `GAIA_HOME` pointing somewhere private.
+
+```
+H=/tmp/<lane>-home; W=/tmp/<lane>-ws; P=<free port>
+rm -rf $H $W && mkdir -p $H $W/.gaia/rooms
+cp -R /Users/pascaldisse/.gaia/agents $H/agents
+cp -R <a real room dir with traffic> $W/.gaia/rooms/
+cp <repo>/.gaia/config.json $W/.gaia/config.json   # set defaultAgent to a copied agent
+# $H/app.json: {"recentWorkspaces":[{id,path:"/private/tmp/<lane>-ws",name,isInitialized:true}],"currentWorkspaceId":id}
+cd $W && GAIA_HOME=$H GAIA_PORT=$P bun <your worktree>/src/cli.ts &
+~/.gaia/skills/app-tools/app-spawn.js --url http://127.0.0.1:$P --room <roomId>
+# spawn blocks; read its CDP port from ~/.gaia/app-sandbox/<pid>/DevToolsActivePort
+app-eval.js --port <cdp> '…'   # counts of YOUR classes = the proof
+```
+When done: `lsof -ti :$P | xargs kill` + kill the headless browser.
