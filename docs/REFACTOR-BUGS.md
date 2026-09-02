@@ -397,3 +397,10 @@ Live 真 → compiled isolated daemon · `GAIA_HOME` isolated · port 18787:
 Current clean atoms → A2a `0d9f141` · A2b `cec7a22` · A2c `e47adf0` · A3 retry `5948608` · A8b `7a218ab` · A9 `df58abc`. A8 first atom ADV-005 superseded structurally by A8b; historical ticket retained append-only. A6/A7 focused behavior tests green ≠ architecture clean → ADV-007/008/009.
 
 RULE0 → 0 · layering → 0. New-wave tickets → HIGH 4 · MED 2 · LOW 3. Cumulative ledger sections → BLOCKER 3 · HIGH 7 · MED 2 · LOW 3; T-V4 duplicates open ADV-004 evidence.
+
+### Late-main delta · A6b `8fcad7e` (landed during review)
+
+Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest main before landing.
+- ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
+- ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
+- post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
