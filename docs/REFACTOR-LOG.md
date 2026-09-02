@@ -101,3 +101,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - pragma scan `src/server src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
 - sizes: room-service 2527 · daemon 717 · http 642.
 - root landing BLOCKED: root checkout is clean `fix/native-weblinks` @ 4bd87be, not `main` @ f383f22; root switching forbidden by merge-only law.
+## A6 ports + ADV-012 checkpoint (2026-09-02)
+- `b942811` → typed `RoomTurnLoopPort`·`RoomForkPort`·`RoomCommandsFacadePort`·`RoomSanitizeFacadePort` in `src/services/room/ports.ts`; erased facade index signatures removed; commands→sanitizePreview explicit; four pragmas retained pending per-file typing.
+- `12d980c` → ADV-012: `sanitizeEditRefs` private to rooms route; dead `api.ts` bootId removed; SSE uses `ctx.bootId`.
+- gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/http-routes.test.ts` 7/0.
+- pragma scan `src/services`: 15; room-service 2527 lines. A6 four pragma-removal lanes active; W3 blocked; live A6 item remains UNVERIFIED, owned by 陰.
