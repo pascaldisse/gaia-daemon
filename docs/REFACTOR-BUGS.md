@@ -709,3 +709,6 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 ### ADV-023 · FIXED · `2177872`
 - lifecycle internals un-exported; production registry owns their use.
 - proof → `rg -n 'export.*(RegistryLifecycleError|PluginTurnLease)' src/services/plugins/registry.ts` → `0`.
+
+## Pass 5 W3 sign-off — 2026-09-03
+
