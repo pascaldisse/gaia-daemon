@@ -418,7 +418,7 @@ export class RunnerHost implements AgentRuntime {
   }
 
   /** One daemon↔runner result channel for all native compact variants. */
-  private async runCompactRequest(roomId: string, command: Extract<RunnerCommand, { type: "compact" | "compact-draft" | "compact-apply" }>, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
+  private async runCompactRequest(roomId: string, command: Extract<RunnerCommand, { type: "compact" | "compact-clean" | "compact-draft" | "compact-apply" }>, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     // A durable session on disk can be compacted even from a cold daemon (no
     // turn since restart): spawn the runner so its harness resumes the persisted
     // handle. Only when there's neither a live child NOR a durable session is
