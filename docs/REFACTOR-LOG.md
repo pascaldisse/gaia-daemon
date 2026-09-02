@@ -161,5 +161,5 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - call-site: facade mixin only; moved bodies deleted. pragma touched files: 0. room-service 1251→1097; ≤800 remains open.
 
 ## A6h — command execution extraction (2026-09-03)
-- `c8069bb`: `room/command-execution.ts` 110; command persistence/STT/reload moved; facade delegates; queue/WAL untouched.
+- `a931351`: `room/command-execution.ts` 110; command persistence/STT/reload moved; facade delegates; queue/WAL untouched.
 - gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0. room-service 1097→1019; ≤800 pending.
