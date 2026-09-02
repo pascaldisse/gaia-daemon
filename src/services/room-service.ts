@@ -999,7 +999,7 @@ export class RoomService {
   // --- the turn --------------------------------------------------------------
 
   // --- turn results and context gate ---------------------------------------
-  private async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+  async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
     return new RoomTurnResults(this).runAgentTask(task, text, options);
   }
   private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {

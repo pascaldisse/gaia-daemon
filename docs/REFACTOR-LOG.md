@@ -111,3 +111,10 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - RoomService exposes only port-reached collaborators; direct `RoomTurnLoop`/`RoomFork` construction no longer uses `this as any`; queue/WAL seams unchanged.
 - gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/commands.test.ts` 8/0.
 - pragma scan `src/services`: 2 matching files; room-service 2527 lines. W3 remains BLOCKED by ≤800 extraction; A6 live item remains UNVERIFIED, owner 陰.
+
+## A6c — durable queue + turn-results extraction (2026-09-02)
+- `77c28ee` + landing fix: queue/WAL routing→`room/queue.ts` (419) · turn-result persistence/retry→`room/turn-results.ts` (262); `room-service.ts` 2527→1521.
+- seam: queue + `pendingTurn.eventId` custody remains whole in `RoomQueue`/`RoomTurnResults`; atomic `RoomHandle` writes unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 98/0.
+- call-site: `RoomQueue` sole routing implementation; `RoomTurnResults` sole result implementation; facade delegates only; no legacy parallel bodies.
+- pragma scan `src/services`: 1 textual `as any` prose match; 0 pragma directives / casts. A6c landed main ff-only pending below.
