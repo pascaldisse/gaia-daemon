@@ -182,6 +182,13 @@ export interface AgentDef {
   trust?: boolean;
   /** May summon further workers when itself a summon (default false). */
   allowNestedSummon?: boolean;
+  /** Agent-tier plugin capability grants (agent.json `capabilities`, default
+   * []) — unioned with the workspace-tier grant (.gaia/config.json
+   * `plugins.grants[id]`) by the capability resolver
+   * (services/capabilities/resolver.ts). Trust-floored: read only when
+   * `trust !== false` (services/capabilities/broker.ts) — declaring a
+   * capability here never widens an untrusted agent's grant set. */
+  capabilities?: string[];
   /** How much of THIS agent's summon history it gets to keep, as the caller
    * (not as the worker — a ghoul's own room is incognito regardless, see
    * services/summons.ts). Default "none": today's behavior, a summon's child
