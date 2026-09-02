@@ -117,7 +117,7 @@ Actual → 1,013-line `session.ts` retains nearly the complete former implementa
 
 Gate replay @ `main@41836cd` → `bun run check` 0 · pi-runtime 39/0 · runner-host 18/0. Runtime behavior gate clean; architecture verdict remains reject.
 
-## ADV-006 · HIGH · A5 relocates the HTTP god file; route extraction not achieved
+## ADV-006 · BLOCKER · A5 gate red + HTTP god file merely relocated
 
 Candidate → `verify/a5@614e606` (code series `718a1cc..6a1873e`).
 
@@ -138,7 +138,13 @@ for f in src/server/http.ts src/server/route.ts src/server/routes/*.ts test/http
 Expected from A5 → actual route table; room/agent/memory/artifact/usage/edit-retry handlers owned by domain route files; listener+dispatch-only `http.ts`; focused domain tests.
 Actual → complete `GaiaWebServer` + 1,800-line `handleApi` remain together in `routes/runtime.ts`; façade location changed, architecture did not.
 
-Verdict → refactor purity may hold, but W2 god-file objective fails. Do not land as A5 completion.
+Focused gate @ `verify/a5@614e606`:
+- `bun run check` → 0
+- `bun test test/http-routes.test.ts` → 1/0
+- `bun test test/bundle-assets.test.ts` → **8/1**; assertion still requires `bundleSwapNames(fromSource)` ownership in `src/server/http.ts`, now a three-line re-export
+- end-conversation 1/0 · HTTP background 2/0 · user-workspaces 1/0 · workspace-order 1/0
+
+Verdict → mandatory touched test is red and W2 god-file objective fails. Do not land.
 
 ## Known planned debt · non-ticket
 
