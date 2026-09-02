@@ -1,26 +1,22 @@
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULTS } from "../../core/config.js";
 import { expandHome, globalPaths } from "../../core/paths.js";
 import { newId } from "../../core/ids.js";
 import { bearerToken, cookieHeader, json, parseBody, readRawBody } from "../../core/http.js";
-import { readJson, writeJsonAtomic } from "../../core/store.js";
 import type { MemoryAction } from "../../domain/memory.js";
 import { parseContextDietOverrides } from "../../domain/context-diet.js";
-import { scaffoldGlobalAgent } from "../../domain/agents.js";
-import { findAccount, redactedAccounts, removeAccount, updateAccount } from "../../domain/accounts.js";
+import { redactedAccounts, removeAccount, updateAccount } from "../../domain/accounts.js";
 import { authenticate, createUser, issueSessionToken, listUsers } from "../../domain/users.js";
 import { harnessSpecs, type GaiaTool } from "../../harness/spec.js";
 import { agentRoster } from "../../harness/tools.js";
-import { globalAgentsPath } from "../../domain/workspace.js";
 import { LLM_PROXY_MOUNT } from "../../services/proxy.js";
 import { summonAck } from "../../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
 import { AUTH_COOKIE, beginSse, boolField, matchPath, respond, stringField, type RouteContext } from "../route.js";
-import { titleCaseId, handleAgents } from "./agents.js";
+import { handleAgents } from "./agents.js";
 import { handleRooms } from "./rooms.js";
 import { handleMemory } from "./memory.js";
 import { handleArtifacts } from "./artifacts.js";
@@ -57,7 +53,8 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
   const path = url.pathname;
   const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
   let params: string[] | null;
-  for (const handler of [handleAgents, handleUsage]) if (await handler(ctx)) return;
+  if (await handleAgents(ctx)) return;
+  if (await handleUsage(ctx)) return;
     if (method === "GET" && path === "/api/app") {
       const owned = human?.workspace ? await daemon.addWorkspace(human.workspace, human.id) : undefined;
       json(response, 200, await daemon.appPayload(owned?.id, humanScope));
@@ -177,21 +174,6 @@ if (method === "POST" && path === "/api/pick-directory") {
         ? (body as { ids: unknown[] }).ids.filter((id): id is string => typeof id === "string")
         : [];
       return respond(response, () => daemon.reorderWorkspaces(ids, humanScope));
-    }
-    if (method === "POST" && path === "/api/agents") {
-      const body = await parseBody(request);
-      const id = stringField(body, "id");
-      if (!id) return json(response, 400, { error: "Missing agent id" });
-      try {
-        const displayName = stringField(body, "displayName")?.trim() || titleCaseId(id);
-        const result = await scaffoldGlobalAgent(globalAgentsPath(), id, { displayName, icon: stringField(body, "icon") });
-        await daemon.applySettingsChange("global");
-        json(response, 201, { agent: { id, displayName, dir: result.agentDir } });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        json(response, message.startsWith("Invalid agent id") ? 400 : 409, { error: message });
-      }
-      return;
     }
     if (method === "POST" && path === "/api/open-target") {
       const body = await parseBody(request);
@@ -332,48 +314,7 @@ async function handleApiAccounts(ctx: RouteContext): Promise<void> {
   const path = url.pathname;
   const match = (pattern: RegExp): string[] | null => matchPath(path, pattern);
   let params: string[] | null;
-// Reversible agent delete: move the agent dir to trash (recoverable), then
-    // reload global settings so the agents list refreshes. Placed here — with
-    // the other /api/agents routes, AFTER match/params are declared.
-    if (method === "DELETE" && (params = match(/^\/api\/agents\/([^/]+)$/))) {
-      return respond(response, async () => {
-        await daemon.deleteAgent(params![0]);
-        await daemon.applySettingsChange("global");
-        return {};
-      });
-    }
-    // Per-agent account binding: which named account (if any) an agent's
-    // harness subprocess runs under. Harness-blind — compares harness id
-    // STRINGS pulled from agent.json/accounts.json data, never a literal id.
-    if (method === "POST" && (params = match(/^\/api\/agents\/([^/]+)\/account$/))) {
-      const agentId = params[0];
-      const configPath = join(globalAgentsPath(), agentId, "agent.json");
-      if (!existsSync(configPath)) return json(response, 404, { error: `unknown agent '${agentId}'` });
-      const body = await parseBody(request);
-      const rawAccount = (body as { account?: unknown } | undefined)?.account;
-      const account = typeof rawAccount === "string" && rawAccount.trim() ? rawAccount.trim() : null;
-      try {
-        const config = ((await readJson(configPath)) ?? {}) as Record<string, unknown>;
-        if (account) {
-          const record = findAccount(account);
-          if (!record) return json(response, 400, { error: `unknown account '${account}'` });
-          const agentHarness = typeof config.harness === "string" && config.harness.trim() ? config.harness : DEFAULTS.harness;
-          if (record.harness !== agentHarness) {
-            return json(response, 400, { error: `account '${account}' is for harness '${record.harness}', agent uses '${agentHarness}'` });
-          }
-          config.account = account;
-        } else {
-          delete config.account;
-        }
-        await writeJsonAtomic(configPath, config);
-        await daemon.applySettingsChange("global");
-        json(response, 200, { agent: { id: agentId, account } });
-      } catch (error) {
-        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    // One ownership check covers the complete parameterized workspace route
+// One ownership check covers the complete parameterized workspace route
     // table below. Legacy/shared requests can only reach unowned records;
     // assigned humans can only reach records carrying their own id.
     const workspaceRoute = path.match(/^\/api\/workspaces\/([^/]+)/);
@@ -586,19 +527,6 @@ async function handleApiDictation(ctx: RouteContext): Promise<void> {
       }
       response.writeHead(204);
       response.end();
-      return;
-    }
-    if (method === "POST" && (params = match(/^\/api\/workspaces\/([^/]+)\/agents\/([^/]+)\/thinking$/))) {
-      const body = await parseBody(request);
-      const level = stringField(body, "level");
-      const roomId = stringField(body, "roomId");
-      if (level === undefined) return json(response, 400, { error: "Missing thinking level" });
-      try {
-        const result = await daemon.applyThinking(params[0], roomId, params[1], level);
-        json(response, 200, { scope: result.scope, thinking: level || undefined });
-      } catch (error) {
-        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
       return;
     }
     if ((params = match(/^\/api\/files\/([^/]+)$/))) {

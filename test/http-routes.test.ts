@@ -110,3 +110,43 @@ test("rooms domain: POST title renames the room, GET events returns its shape", 
     await temp.cleanup();
   }
 });
+
+test("agents domain: POST /api/agents scaffolds a global agent, missing id is 400", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  let server: HttpServer | undefined;
+  let web: WebInternals | undefined;
+  try {
+    const workspace = join(temp.path, "workspace");
+    await mkdir(workspace, { recursive: true });
+    await initWorkspace(workspace);
+    web = new GaiaWebServer({ cwd: workspace }) as unknown as WebInternals;
+    const { server: listeningServer, base } = await listenRoute(web);
+    server = listeningServer;
+
+    const missing = await fetch(`${base}/api/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(missing.status, 400);
+    assert.deepEqual(await missing.json(), { error: "Missing agent id" });
+
+    const created = await fetch(`${base}/api/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "test-agent" }),
+    });
+    assert.equal(created.status, 201);
+    const body = (await created.json()) as { agent: { id: string; displayName: string } };
+    assert.equal(body.agent.id, "test-agent");
+    assert.equal(body.agent.displayName, "Test Agent");
+  } finally {
+    if (server) await new Promise<void>((resolve, reject) => server!.close((error) => (error ? reject(error) : resolve())));
+    await web?.daemon.dispose();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
