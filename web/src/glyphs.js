@@ -62,6 +62,7 @@ export const UI = {
   memory: "◍",
   watchdog: "◉",
   mic: "⌁",
+  recording: "⏺",
   micMuted: "⌁̸",
   call: "☏",
   stop: "◼",

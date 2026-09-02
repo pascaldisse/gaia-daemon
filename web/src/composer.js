@@ -1115,7 +1115,7 @@ function VoiceButtons() {
         event.preventDefault();
         if (recording) cancelDictation();
       },
-      text: busy ? "…" : recording ? "⏺" : "\u{1F3A4}",
+      text: busy ? "…" : recording ? UI.recording : UI.mic,
     }),
   ];
 }

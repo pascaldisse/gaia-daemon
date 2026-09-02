@@ -351,6 +351,24 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tab-new:hover { color: var(--accent); background: var(--bg3); }
 .tab-spacer { flex: 1; }
 
+/* App-wide dictation indicator (v2 parity): live recording is bound to the room
+   it started in, so it must stay visible after switching tabs. Click = go back. */
+.dictation-chip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 1px solid var(--warn);
+  background: transparent;
+  box-shadow: none;
+  color: var(--warn);
+  font-size: 10px;
+  white-space: nowrap;
+  animation: nowplaying-pulse 1.4s ease-in-out infinite;
+}
+.dictation-chip:hover { background: var(--warn); color: var(--bg); }
+
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
