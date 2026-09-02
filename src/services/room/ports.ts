@@ -182,3 +182,31 @@ export interface RoomSanitizeFacadePort {
   readonly sanitizeProposalPath: string;
   resetAfterTruncation(mode: "reset-sessions" | "reset-keep-context", cut?: number, forkOrigin?: { id: string; userOrdinal: number }): Promise<void>;
 }
+
+/** Dependencies reached by RoomService construction/open/bootstrap/disposal. */
+export interface RoomLifecyclePort {
+  readonly options: RoomServiceOptions & { room: RoomHandle };
+  readonly room: RoomHandle;
+  readonly workspace: Workspace;
+  readonly incognito: boolean;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly bus: { on(listener: (event: UiEvent) => void): () => void };
+  isSummonRoom: boolean;
+  summonUntrusted: boolean;
+  workDir: string | undefined;
+  contextGate: ContextGatePending | undefined;
+  sanitizeStatus: SanitizeStatus | undefined;
+  readonly sanitizeProposalPath: string;
+  contextUsage: Record<string, { usedTokens: number; maxTokens?: number }>;
+  queuedTasks: Task[];
+  readonly activeTask: Task | undefined;
+  authRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  resumePendingTurn(pending: PendingTurn): Promise<void>;
+  enqueueGoalTurn(goal: RoomGoal, continuing: boolean, kick?: boolean): Promise<void>;
+  drain(onDecided?: () => void): Promise<void>;
+}
+export interface RoomLifecycleConstructPort {
+  isSummonRoom: boolean;
+  summonUntrusted: boolean;
+  workDir: string | undefined;
+}

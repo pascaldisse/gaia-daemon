@@ -76,6 +76,8 @@ import { configuredModelLabel } from "../harness/model-label.js";
 import { resolveSandboxPolicy } from "../harness/sandbox/spec.js";
 import { sttEngineIds } from "./transcribe.js";
 import { RoomFork } from "./room/fork.js";
+import { buildRoomRuntimes, resolveRoomOpen, RoomLifecycle } from "./room/lifecycle.js";
+import type { RoomLifecyclePort } from "./room/ports.js";
 import { RoomTurnResults } from "./room/turn-results.js";
 import { installRoomAgentCommands, RoomAgentCommandsMixin } from "./room/agent-commands.js";
 import { RoomQueue } from "./room/queue.js";
@@ -349,7 +351,7 @@ const COMMANDS: Record<string, CommandHandler> = {
 export class RoomService {
   readonly room: RoomHandle;
   readonly runtimes: Record<string, AgentRuntime>;
-  private readonly bus = new Bus<UiEvent>();
+  readonly bus = new Bus<UiEvent>();
   activeTask: Task | undefined;
   /** The active task ONLY when it's a streaming agent turn (via startTask) —
    * never a synchronous slash command. `activeTask` covers both, so guards that
@@ -438,60 +440,23 @@ export class RoomService {
     this.room = options.room;
     this.incognito = options.incognito === true;
     this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
-    this.backgroundTasks = new BackgroundTasks({
-      room: this.room,
-      roomId: this.roomId,
-      emitSnapshot: () => this.emitSnapshot(),
-    });
-    // In an incognito room the memory/recall tools are stripped from every agent.
-    // The strip happens in the runner subprocess (it re-loads the agent from disk,
-    // so a daemon-side strip here would never reach it); we just pass the flag
-    // down. It applies uniformly to every harness — RULE #0 — because the runner
-    // is the one path all harnesses go through. `this.incognito` also gates the
-    // daemon-side episode-capture and auto-recall paths below.
-    this.runtimes = Object.fromEntries(
-      Object.values(options.workspace.agents).map((agent) => [
-        agent.id,
-        options.runtimeFactory
-          ? options.runtimeFactory(agent)
-          : createAgentRuntime({
-              workspace: options.workspace,
-              agent,
-              ...(this.incognito ? { incognito: true } : {}),
-              memoryStore: options.memoryStore,
-              harnessHost: options.harnessHost,
-              // Resolved at spawn (after init), when parentRoomId and the
-              // inherited untrusted tier are known.
-              allowSummon: () => allowSummonForTurn(agent, this.isSummonRoom, this.summonUntrusted),
-              sandbox: () =>
-                resolveSandboxPolicy(options.workspace.config.sandbox, agent.sandbox, this.isSummonRoom, {
-                  trusted: effectiveTrust(agent, this.summonUntrusted),
-                }),
-              workDir: () => this.workDir,
-            }),
-      ]),
-    );
+    this.backgroundTasks = new BackgroundTasks({ room: this.room, roomId: this.roomId, emitSnapshot: () => this.emitSnapshot() });
+    this.runtimes = buildRoomRuntimes(options, this.incognito, this);
   }
-
   static async open(options: RoomServiceOptions): Promise<RoomService> {
-    const roomId = options.roomId ?? options.workspace.config.room;
-    const room = await RoomHandle.open(options.workspace.rootDir, roomId);
-    // The incognito flag is immutable, so read it once here and let the
-    // constructor strip tools + the turn path skip capture/auto-recall.
-    const incognito = options.incognito ?? (await room.state()).incognito === true;
+    const { room, incognito } = await resolveRoomOpen(options);
     return new RoomService({ ...options, room, incognito });
   }
-
-  private isSummonRoom = false;
+  isSummonRoom = false;
   /** This room inherited the untrusted tier from its summon chain (see
    * RoomState.summonUntrusted) — feeds effectiveTrust for sandbox resolution. */
-  private summonUntrusted = false;
+  summonUntrusted = false;
   /** This room's isolated working directory (RoomState.workDir — its git
    * worktree under collab isolation), validated against the filesystem at
    * init. Assigned at room-service init for EVERY room — default,
    * interactive, and summon children alike — not at summon launch.
    * undefined = run at the workspace root. Feeds the runtimes' workDir thunk. */
-  private workDir: string | undefined;
+  workDir: string | undefined;
 
   get workspace(): Workspace {
     return this.options.workspace;
@@ -533,92 +498,15 @@ export class RoomService {
     return this.initPromise;
   }
 
-  private async initOnce(): Promise<void> {
-    await Promise.all(Object.values(this.workspace.agents).map((agent) => this.options.memoryStore.init(agent.memoryDir, agent.displayName)));
-    const state = await this.room.state();
-    this.isSummonRoom = Boolean(state.parentRoomId);
-    this.summonUntrusted = state.summonUntrusted === true;
-    // This room's working directory: top-level rooms OWN a git worktree under
-    // collab isolation (created here on first open); summon rooms INHERIT the
-    // parent's (resolved + stamped at summon launch). A vanished dir degrades
-    // to the workspace root instead of wedging every spawn on a dead cwd.
-    this.workDir = await resolveRoomWorkDir(this.workspace.rootDir, this.workspace.config.collab, state, this.room.roomId);
-    if (this.workDir && this.workDir !== state.workDir) {
-      const dir = this.workDir;
-      await this.room.updateState((s) => { s.workDir = dir; });
-    }
-    // Restore the per-agent context accounting so the composer's `ctx` chip is
-    // present from first paint after a restart, not blank until the next turn.
-    if (state.contextUsage) this.contextUsage = { ...state.contextUsage };
-    // Reopen a held context-gate decision (the modal persists across a restart).
-    this.contextGate = state.contextGate;
-
-    // Surface a previously saved sanitize proposal (popup reopens after restart).
-    // Only ACTIONABLE proposals are restored as pending: a review that returned
-    // no output, didn't parse, or found nothing has 0 suggestions and can never
-    // be applied, so it must not linger as a pending item that re-pops the popup
-    // on every reload. The file stays on disk — reopening the popup manually
-    // still shows Dario's raw notes.
-    const savedProposal = (await readJson(this.sanitizeProposalPath)) as SanitizeProposal | null;
-    if (savedProposal?.at && Array.isArray(savedProposal.suggestions) && savedProposal.suggestions.length > 0) {
-      this.sanitizeStatus = {
-        at: savedProposal.at,
-        suggestions: savedProposal.suggestions.length,
-        ...(savedProposal.appliedAt ? { appliedAt: savedProposal.appliedAt } : {}),
-      };
-    }
-
-    // Interrupted turn? Resume in the background — never blocks opening.
-    if (state.pendingTurn) void this.resumePendingTurn(state.pendingTurn).catch(() => {});
-    // Durable queue survivors from a prior process: rebuild their task chips.
-    // Voice-channel synthetics are dropped — their call is gone.
-    const queue = state.queue ?? [];
-    if (queue.length > 0) {
-      const stale = queue.filter((message) => message.channel === "voice");
-      if (stale.length > 0) {
-        await this.room.updateState((current) => {
-          current.queue = current.queue?.filter((message) => message.channel !== "voice");
-          if (current.queue?.length === 0) delete current.queue;
-        });
-      }
-      this.queuedTasks = queue
-        .filter((message) => message.channel !== "voice")
-        .map((message) => ({
-          id: message.taskId,
-          roomId: this.roomId,
-          text: message.text,
-          targets: message.targets,
-          status: "queued" as const,
-          startedAt: message.queuedAt,
-          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-          // Agent-authored hand-offs/summon callbacks aren't "user →" ghosts.
-          ...(message.fromAgentDialogue ? { callback: true } : {}),
-        }));
-    }
-
-    // Goal recovery: every active goal owns either an in-flight WAL marker or
-    // one durable queue entry. If a process died after committing a reply but
-    // before enqueueing its successor, recreate that successor on boot.
-    const goal = state.goal;
-    const goalPending = goal && state.pendingTurn?.goalStartedAt === goal.startedAt;
-    const goalQueued = goal && queue.some((message) => message.goalStartedAt === goal.startedAt);
-    if (goal?.status === "active" && !goalPending && !goalQueued) {
-      await this.enqueueGoalTurn(goal, true, !state.pendingTurn);
-    } else if (!state.pendingTurn && this.queuedTasks.length > 0 && !this.activeTask) {
-      void this.drain();
-    }
+  async initOnce(): Promise<void> {
+    return new RoomLifecycle(this).initOnce();
   }
-
   subscribe(listener: (event: UiEvent) => void): () => void {
-    return this.bus.on(listener);
+    return new RoomLifecycle(this).subscribe(listener);
   }
-
   async dispose(): Promise<void> {
-    clearTimeout(this.authRetryTimer);
-    this.authRetryTimer = undefined;
-    await Promise.all(Object.values(this.runtimes).map((runtime) => runtime.dispose()));
+    return new RoomLifecycle(this).dispose();
   }
-
   // --- messaging -------------------------------------------------------------
   async isConversationEnded(agentId: string): Promise<boolean> {
     return Boolean((await this.room.state()).conversationEndedAgents?.[agentId]);
@@ -990,7 +878,7 @@ export class RoomService {
    * - partial streamed → commit it as the preserved progress;
    * then re-dispatch any unfinished targets. Re-entrant: the replay re-marks a
    * fresh pendingTurn, so an interrupted resume is itself resumable. */
-  private async resumePendingTurn(pending: PendingTurn): Promise<void> {
+  async resumePendingTurn(pending: PendingTurn): Promise<void> {
     // A monad dispatch resumes through the monad engine, never as a plain
     // agent turn: targets are omitted so isMonadMessage re-derives the routing
     // from state.monad (step results live in child rooms; the engine reruns).
@@ -1353,7 +1241,8 @@ export interface RoomService
     RoomCommandsMixin,
     RoomSanitizeMixin,
     RoomAgentCommandsMixin,
-    RoomSummonLifecycleMixin {}
+    RoomSummonLifecycleMixin,
+    RoomLifecyclePort {}
 installRoomSnapshot(RoomService.prototype);
 installRoomUi(RoomService.prototype);
 installRoomCommands(RoomService.prototype);
