@@ -23,7 +23,6 @@ import { handleUsage } from "./usage.js";
 import { handleEditRetry } from "./edit-retry.js";
 import { numberField } from "./memory.js";
 import { summonCensusText } from "./usage.js";
-import { artifactRoutePrefix } from "./artifacts.js";
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".wasm": "application/wasm" };
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
 const bootId = "";
@@ -116,6 +115,7 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
       return respond(response, async () => ({ userName: await daemon.setUserName(name) }));
     }
     if (await handleMemory(ctx)) return;
+    if (await handleArtifacts(ctx)) return;
     if (
       (method === "GET" && path === "/api/harness/agents") ||
       (method === "POST" &&
@@ -127,8 +127,7 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
           path === "/api/harness/tool-result-fetch" ||
           path === "/api/harness/context-diet" ||
           path === "/api/harness/end-conversation" ||
-          path === "/api/harness/dog" ||
-          path === "/api/harness/tools"))
+          path === "/api/harness/dog"))
     ) {
       return handleHarness(ctx, path);
     }
@@ -596,34 +595,6 @@ async function handleHarness(ctx: RouteContext, pathname: string): Promise<void>
       }
     }
     const body = await parseBody(request);
-    if (pathname === artifactRoutePrefix) {
-      const input = body as Record<string, unknown>;
-      const operation = stringField(body, "operation");
-      const gate: GaiaTool = operation?.startsWith("artifact-") ? "artifact" : "gaia";
-      if (!daemon.harnessGaiaTools(workspace, claims.agentId).includes(gate)) {
-        return json(response, 403, { error: `This agent's harness does not grant the ${gate} tool.` });
-      }
-      const providers = daemon.harnessToolProviders();
-      const location = { rootDir: workspace.rootDir, roomId: claims.roomId };
-      const text = (field: string) => stringField(body, field) ?? "";
-      try {
-        let result: unknown;
-        switch (operation) {
-          case "artifact-list": result = await providers.artifacts.list(location); break;
-          case "artifact-read": result = await providers.artifacts.read(location, text("artifactId")); break;
-          case "artifact-create": result = await providers.artifacts.create(location, { name: text("name"), kind: text("kind") as "html" | "json" | "design", mediaType: text("mediaType"), payload: text("payload") }); break;
-          case "artifact-update": result = await providers.artifacts.update(location, text("artifactId"), { ...(stringField(body, "name") !== undefined ? { name: text("name") } : {}), ...(stringField(body, "kind") !== undefined ? { kind: text("kind") as "html" | "json" | "design" } : {}), ...(stringField(body, "mediaType") !== undefined ? { mediaType: text("mediaType") } : {}), ...(stringField(body, "payload") !== undefined ? { payload: text("payload") } : {}) }); break;
-          case "web-search": result = await providers.web.search({ query: text("query"), ...(numberField(body, "maxResults") !== undefined ? { maxResults: numberField(body, "maxResults") } : {}), ...(stringField(body, "provider") !== undefined ? { provider: text("provider") as "brave" | "tavily" | "serper" } : {}) }); break;
-          case "web-fetch": result = await providers.web.fetch({ url: text("url"), ...(numberField(body, "maxBytes") !== undefined ? { maxBytes: numberField(body, "maxBytes") } : {}), ...(typeof input.transcript === "boolean" ? { transcript: input.transcript } : {}), ...(stringField(body, "lang") !== undefined ? { lang: text("lang") } : {}), ...(typeof input.comments === "boolean" || typeof input.comments === "number" ? { comments: input.comments } : {}) }); break;
-          case "caryll-compress": result = await providers.caryll.compress(text("text")); break;
-          case "caryll-expand": result = await providers.caryll.expand(text("text")); break;
-          default: return json(response, 400, { error: "unknown tool operation" });
-        }
-        return json(response, 200, { ok: true, result });
-      } catch (error) {
-        return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
     if (pathname === "/api/harness/recall") {
       const numberField = (name: string): number | undefined => {
         const raw = (body as Record<string, unknown>)[name];

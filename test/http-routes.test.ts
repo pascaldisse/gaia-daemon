@@ -18,7 +18,7 @@ import { createTempDir } from "./helpers/temp.js";
 registerHarness({
   id: "pi",
   capabilities: {
-    gaiaTools: ["memory"],
+    gaiaTools: ["memory", "artifact", "gaia"],
     nativeTools: [],
     granularTools: true,
     supportsPermissionMode: false,
@@ -145,6 +145,67 @@ test("agents domain: POST /api/agents scaffolds a global agent, missing id is 40
   } finally {
     if (server) await new Promise<void>((resolve, reject) => server!.close((error) => (error ? reject(error) : resolve())));
     await web?.daemon.dispose();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
+
+test("artifacts domain: POST /api/harness/tools artifact-create then artifact-list round-trips", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  const workspace = join(temp.path, "workspace");
+  const web = new GaiaWebServer({ cwd: workspace, host: "127.0.0.1", port: 0 });
+  let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
+  try {
+    await initWorkspace(workspace);
+    live = await web.listen();
+    const internals = web as unknown as {
+      daemon: {
+        registry: { add(path: string): Promise<{ id: string }> };
+        bridge: { hostFor(workspaceId: string): { mintToken(claims: { agentId: string; roomId: string }): string } };
+      };
+    };
+    const record = await internals.daemon.registry.add(workspace);
+    const base = live.url.replace(/\/$/, "");
+    const token = internals.daemon.bridge.hostFor(record.id).mintToken({ agentId: "gaia", roomId: "default" });
+
+    const created = await fetch(`${base}/api/harness/tools`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ operation: "artifact-create", name: "note", kind: "json", mediaType: "application/json", payload: "{}" }),
+    });
+    const createdBody = (await created.json()) as { ok: boolean; result: { artifactId: string } };
+    assert.equal(created.status, 200, JSON.stringify(createdBody));
+    assert.equal(createdBody.ok, true, JSON.stringify(createdBody));
+    assert.ok(createdBody.result.artifactId);
+
+    const listed = await fetch(`${base}/api/harness/tools`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ operation: "artifact-list" }),
+    });
+    assert.equal(listed.status, 200);
+    const listedBody = (await listed.json()) as { ok: boolean; result: Array<{ artifactId: string }> };
+    assert.ok(listedBody.result.some((a) => a.artifactId === createdBody.result.artifactId));
+
+    const badOp = await fetch(`${base}/api/harness/tools`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ operation: "not-a-real-op" }),
+    });
+    assert.equal(badOp.status, 400);
+    assert.deepEqual(await badOp.json(), { error: "unknown tool operation" });
+
+    const unauthorized = await fetch(`${base}/api/harness/tools`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operation: "artifact-list" }),
+    });
+    assert.equal(unauthorized.status, 401);
+  } finally {
+    await live?.close();
     if (previousHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = previousHome;
     await temp.cleanup();
