@@ -117,6 +117,29 @@ Actual → 1,013-line `session.ts` retains nearly the complete former implementa
 
 Gate replay @ `main@41836cd` → `bun run check` 0 · pi-runtime 39/0 · runner-host 18/0. Runtime behavior gate clean; architecture verdict remains reject.
 
+## ADV-006 · HIGH · A5 relocates the HTTP god file; route extraction not achieved
+
+Candidate → `verify/a5@614e606` (code series `718a1cc..6a1873e`).
+
+Defect:
+- old `src/server/http.ts` → ~2,084 lines
+- new `src/server/routes/runtime.ts` → 1,993 lines
+- domain route modules → agents 4 · artifacts 2 · edit-retry 6 · memory 6 · rooms 27 · usage 6 lines
+- `src/server/http.ts` → three-line re-export, not listener + dispatch
+- `test/http-routes.test.ts` → one 40-line test of tiny parsing adapters + one auth endpoint; no per-domain route-table coverage
+
+Repro:
+```sh
+git -C /Users/pascaldisse/projects/gaia-daemon diff --stat main...verify/a5
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40
+for f in src/server/http.ts src/server/route.ts src/server/routes/*.ts test/http-routes.test.ts; do wc -l "$W/$f"; done
+```
+
+Expected from A5 → actual route table; room/agent/memory/artifact/usage/edit-retry handlers owned by domain route files; listener+dispatch-only `http.ts`; focused domain tests.
+Actual → complete `GaiaWebServer` + 1,800-line `handleApi` remain together in `routes/runtime.ts`; façade location changed, architecture did not.
+
+Verdict → refactor purity may hold, but W2 god-file objective fails. Do not land as A5 completion.
+
 ## Known planned debt · non-ticket
 
 - A1 upward imports → resolved by `4233f82` / merge `630a7b5`; main scan at `41836cd` = zero.
