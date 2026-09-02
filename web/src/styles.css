@@ -19,6 +19,7 @@
   /* resizable pane widths */
   --w-left: 28ch;
   --w-right: 32ch;
+  --titlebar-inset: 0px;
   font-family: var(--font);
   font-size: 12.5px;
 }
@@ -149,6 +150,7 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
    app frame
    ============================================================ */
 .shell, #app { display: grid; grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
+body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: 38px minmax(0, 1fr); }
 #overlays, #overlays > div { display: contents; }
 .body { display: grid; grid-template-columns: 28ch 1fr 32ch; min-height: 0; overflow: hidden; }
 .sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
@@ -165,24 +167,25 @@ body.resizing { cursor: col-resize; user-select: none; }
    tabbar
    ============================================================ */
 .tabbar { display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
+body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar-inset); }
 .brand, .tab-brand { display: flex; flex: 0 0 14ch; align-items: center; justify-content: center; gap: 1ch; border-right: 1px solid var(--border); color: var(--fg); font-weight: 700; letter-spacing: .18em; }
 .brand span, .tab-logo, .tab-new { color: var(--accent); }
 .chrome-btn { display: none; }
 .tab-strip { position: relative; display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 0 1 auto; min-width: 0; scrollbar-width: none; }
 .tab-strip::-webkit-scrollbar { height: 0; }
-.tab { display: flex; align-items: center; gap: 1ch; padding: 0 12px; border: 0; border-right: 1px solid var(--border); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 240px; user-select: none; touch-action: pan-x; }
+.tab { display: flex; align-items: center; gap: 1ch; padding: 0 10px; border: 0; border-right: 1px solid var(--border); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 240px; user-select: none; touch-action: pan-x; }
 .tab:hover { background: var(--sel); color: var(--fg); }
 .tab.active { color: var(--fg); background: var(--sel); box-shadow: inset 0 2px 0 var(--accent); }
 .tab.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
 .tab.dragging.tearing { opacity: .85; }
 .tab-drop-indicator { position: absolute; top: 4px; bottom: 4px; width: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
-.tab-num { padding: 0 4px; border: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.5; }
-.tab.active .tab-num { color: var(--accent); border-color: var(--accent); }
+.tab-num { padding: 0; border: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.tab.active .tab-num { color: var(--fg); }
 .tab-dot, .room-dot { flex: 0 0 6px; width: 6px; height: 6px; background: var(--dim, var(--muted)); }
 .tab-dot, .room-dot.running { background: var(--accent); }
 .room-dot.unread { background: var(--accent); animation: none; }
 .room-name.unread { color: var(--fg); font-weight: 600; }
-.tab-name { overflow: hidden; text-overflow: ellipsis; }
+.tab-name { overflow: hidden; padding-left: 1ch; border-left: 1px solid var(--border); text-overflow: ellipsis; }
 .tab-close { border: 0; background: transparent; color: var(--muted); padding: 0 1px; font-size: 1.15em; line-height: 1; opacity: 0; }
 .tab:hover .tab-close, .tab.active .tab-close { opacity: .65; }
 .tab-close:hover { color: var(--alert); opacity: 1; }
@@ -536,6 +539,9 @@ sidebar: workspaces + rooms tree
   min-height: 22px;
   cursor: pointer;
   list-style: none;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
 }
 .activity-details summary:hover { background: var(--bg3); }
 .activity-details[open] > summary { background: var(--bg3); }

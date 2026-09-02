@@ -1,59 +1,54 @@
-/* V2 skin — 46px room header + relocated status survivors. */
+/* V2 skin — slim room header + relocated status survivors. */
 .room-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 2ch;
   min-width: 0;
-  height: 46px;
-  padding: 7px 16px 5px;
+  height: 28px;
+  padding: 0 16px;
+  border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
-  background: var(--bg);
+  background: transparent;
   box-shadow: none;
 }
 
-.room-header-primary,
-.room-paths { min-width: 0; }
-.room-header-primary { flex: 1 1 auto; overflow: hidden; }
-.room-paths strong,
-.room-paths small {
-  display: block;
+.room-workspace-path {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
+  color: var(--fg);
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.room-paths strong { color: var(--fg); font-weight: 700; }
-.room-paths small { color: var(--muted); font-size: 11px; }
-.transcript-state { display: none; }
 
 .room-header-controls {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
-  color: var(--accent);
+  gap: 2ch;
   white-space: nowrap;
 }
-.room-header-controls button,
-.room-header-controls .room-search {
+.room-header-controls button {
   min-width: 0;
-  height: 24px;
-  padding: 1px 7px;
-  border: 1px solid var(--border);
+  height: auto;
+  padding: 0;
+  border: 0;
   border-radius: 0;
+  outline: 0;
   background: transparent;
   box-shadow: none;
   color: var(--muted);
   font: inherit;
+  font-size: 11px;
 }
-.room-header-controls button:hover,
-.room-header-controls button:focus-visible { border-color: var(--accent); color: var(--accent); }
-.room-search { width: 3ch; font-size: 12.5px; }
+.room-header-controls .room-search { font-size: 12.5px; }
+.room-header-controls .room-search:hover,
+.room-header-controls .room-search:focus-visible { color: var(--accent); }
+.room-header-controls .room-artifacts:hover,
+.room-header-controls .room-artifacts:focus-visible { color: var(--fg); }
 .room-meter { color: var(--accent); font-size: 11px; }
-.room-usage.warn { color: var(--warn); }
-.room-usage.crit { color: var(--danger); }
-.room-artifacts.on { border-color: var(--accent); color: var(--accent); }
 
 /* Right room panel: one header, one talk row, one compact roster. */
 .right { border-left: 1px solid var(--border); border-radius: 0; background: var(--bg); box-shadow: none; }
@@ -141,8 +136,7 @@
 .process-output pre { min-height: 330px; margin: 0 0 8px; white-space: pre-wrap; }
 
 @media (max-width: 760px), (pointer: coarse) {
-  .room-header { gap: 8px; padding: 7px 10px 5px; }
-  .room-header-controls { gap: 6px; }
+  .room-header-controls { gap: 1ch; }
   .room-meter { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .process-list { max-height: 36vh; border-right: 0; border-bottom: 1px solid var(--border); }

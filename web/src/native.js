@@ -17,6 +17,44 @@ export function isNative() {
   return typeof window !== "undefined" && Boolean(T());
 }
 
+const MACOS_TITLEBAR_INSET = "76px";
+
+/** The native macOS shell, not a browser tab running on macOS. */
+export function isMacNativeShell() {
+  if (!isNative() || typeof navigator === "undefined") return false;
+  const platform = (/** @type {any} */ (navigator).userAgentData?.platform) ?? navigator.platform ?? navigator.userAgent;
+  return /mac/i.test(platform);
+}
+
+/**
+ * Put the web chrome beneath macOS's overlay title bar. The inset is owned here
+ * so CSS has one parameter and fullscreen can remove it without a second magic
+ * value. Browser and non-macOS shell layouts stay at their existing 30px bar.
+ */
+export function installMacTitlebar() {
+  if (!isMacNativeShell()) return;
+  const root = document.documentElement;
+  const sync = async () => {
+    let fullscreen = Boolean(document.fullscreenElement);
+    try {
+      fullscreen ||= await T().window.getCurrentWindow().isFullscreen();
+    } catch {
+      // Keep the normal titlebar inset if the bridge is temporarily unavailable.
+    }
+    root.style.setProperty("--titlebar-inset", fullscreen ? "0px" : MACOS_TITLEBAR_INSET);
+    document.body.classList.toggle("macos-titlebar-fullscreen", fullscreen);
+  };
+  document.body.classList.add("macos-titlebar-overlay");
+  void sync();
+  window.addEventListener("resize", () => void sync());
+  document.addEventListener("fullscreenchange", () => void sync());
+  try {
+    void T().window.getCurrentWindow().onResized(() => void sync()).catch(() => {});
+  } catch {
+    // The titlebar still tracks browser fullscreen and resize events.
+  }
+}
+
 // Whether the native window is the active (key) window. `document.hasFocus()` is
 // unreliable in a background WKWebView — it keeps returning true even when the
 // GAIA app isn't frontmost — so the shell's real focus/blur events are the only

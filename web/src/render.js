@@ -63,7 +63,7 @@ export function mountApp() {
   const root = $("#app");
   if (!root) return;
   root.replaceChildren(
-    h("header", { class: "tabbar", id: "tabbar" }),
+    h("header", { class: "tabbar", id: "tabbar", "data-tauri-drag-region": true }),
     h(
       "div",
       { class: "body", id: "body" },

@@ -10,11 +10,54 @@ import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
 import { openSqlite, withSqliteImmediateLock } from "../src/core/sqlite.js";
 import { workspacePaths } from "../src/core/paths.js";
+import { scanRoomActivity } from "../src/services/room/snapshot.js";
 
 async function openRoom(): Promise<RoomHandle> {
   const root = await mkdtemp(join(tmpdir(), "gaia-rooms-"));
   return RoomHandle.open(root, "default");
 }
+
+test("scanRoomActivity exposes a running child's pending-turn reservation timestamp", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-running-since-"));
+  const roomId = "child";
+  const mint = Date.parse("2026-09-02T21:31:00.000Z");
+  await mkdir(join(root, ".gaia", "rooms", roomId), { recursive: true });
+  await writeFile(workspacePaths.roomState(root, roomId), JSON.stringify({
+    pendingTurn: {
+      id: "task_1",
+      eventId: `evt_${mint.toString(36)}_reserved`,
+      prompt: "work",
+      targets: ["luna"],
+      agentId: "luna",
+      partialReply: "",
+      startedAt: "",
+    },
+  }), "utf8");
+
+  const [room] = await scanRoomActivity(root);
+  assert.equal(room.running, true);
+  assert.equal(room.runningSince, "2026-09-02T21:31:00.000Z");
+});
+
+test("scanRoomActivity prefers a pending turn's persisted start timestamp", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-running-since-started-"));
+  const roomId = "child";
+  await mkdir(join(root, ".gaia", "rooms", roomId), { recursive: true });
+  await writeFile(workspacePaths.roomState(root, roomId), JSON.stringify({
+    pendingTurn: {
+      id: "task_1",
+      eventId: "evt_minted_later",
+      prompt: "work",
+      targets: ["luna"],
+      agentId: "luna",
+      partialReply: "",
+      startedAt: "2026-09-02T21:30:00.000Z",
+    },
+  }), "utf8");
+
+  const [room] = await scanRoomActivity(root);
+  assert.equal(room.runningSince, "2026-09-02T21:30:00.000Z");
+});
 
 test("isAutoRoomId matches only the auto-created chat- prefix", () => {
   assert.equal(isAutoRoomId("chat-lx9a2-4f0b"), true);

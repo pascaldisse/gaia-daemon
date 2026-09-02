@@ -25,7 +25,6 @@ import { numberField } from "./memory.js";
 import { summonCensusText } from "./usage.js";
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".wasm": "application/wasm" };
 const TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024;
-const bootId = "";
 async function openWithSystem(target: string): Promise<void> {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", target] : [target];

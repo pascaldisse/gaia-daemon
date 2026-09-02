@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -78,7 +77,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-
+import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
 const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
@@ -86,7 +85,6 @@ const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 export class RoomCommandsMixin {
-  [key: string]: any;
   /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
    * shape as runSteerCommand below, just without its command-reply return
    * value — a watchdog fires from inside an onEvent callback, not a command.
@@ -308,7 +306,10 @@ ${draft.summary}` : ""}`;
       const result = typeof edit === "string"
         ? await runtime.compactApply!(this.roomId, edit, progress)
         : await runtime.compact!(this.roomId, progress);
-      return await this.finishCompactCommand(target, result);
+      // finishCompactCommand's port signature widens `kind` to plain string for
+      // callers outside this file; this file's own CommandReply keeps the exact
+      // RoomEventKind literal the implementation actually returns below.
+      return (await this.finishCompactCommand(target, result)) as CommandReply;
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
@@ -511,4 +512,6 @@ ${draft.summary}` : ""}`;
    * step. The reviewer runs through the ordinary summon path (sandboxed child
    * room, any harness/provider), so there is nothing harness-specific here. */
 }
+export interface RoomCommandsMixin extends RoomCommandsFacadePort {}
+
 export function installRoomCommands(target: object): void { for (const name of Object.getOwnPropertyNames(RoomCommandsMixin.prototype)) if (name !== "constructor") Object.defineProperty(target, name, Object.getOwnPropertyDescriptor(RoomCommandsMixin.prototype, name)!); }
