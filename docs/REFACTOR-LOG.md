@@ -124,3 +124,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - A12 `5070d24`: `services/capabilities/`; per `{roomId,agentId}` broker; trust=false→empty grant floor before grant lookup; plugin declarations never grant.
 - gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts` 22/0.
 - call-site: A10/A12 foundations intentionally unwired; A11 staged registry then A13/A14 own production migration. pragma scan `src/services/plugins src/services/capabilities`: 0.
+
+## W3 A11 — staged plugin registry turn lease (2026-09-03)
+- `60f682d`: `services/plugins/registry.ts`; immutable active generation, staged replacement, failed stage preserves active, exact-once disposer; RoomService ends lease then swaps in turn-finally.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/room-service.test.ts` 124/0.
+- call-site: `RoomService.runAgentTask` `beginTurn`→finally `end`→`applyTurnBoundary`; no mixed generation. pragma scan plugin/capability dirs: 0.
