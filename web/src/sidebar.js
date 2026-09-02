@@ -117,8 +117,11 @@ function renderSidebar() {
     ),
     state.roomsCollapsed ? null : RoomTree(),
     RoomContextMenu(),
-    h("div", { class: "spacer" }),
-    h("button", { class: "nav-action", onclick: () => openSettings(), text: "settings" }),
+    h(
+      "div",
+      { class: "side-bottom" },
+      h("button", { class: "nav-action", onclick: () => openSettings(), text: "settings" }),
+    ),
   ];
   nav.replaceChildren(...children.filter((child) => child !== null));
   if (scrollTop) nav.scrollTop = scrollTop;

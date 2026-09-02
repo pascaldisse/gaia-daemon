@@ -21,7 +21,6 @@ import { jumpToEvent } from "./transcript.js";
 function renderStatus() {
   renderTopbar();
   renderErrorBanner();
-  renderStatusbar();
 }
 
 registerRegion("status", renderStatus);
@@ -215,33 +214,21 @@ const STATUSBAR_STORAGE_KEY = "gaia.statusbar";
 
 /** @returns {boolean} true unless the user has explicitly hidden it */
 export function statusbarVisible() {
-  try {
-    return localStorage.getItem(STATUSBAR_STORAGE_KEY) !== "hidden";
-  } catch {
-    return true;
-  }
+  return false;
 }
 
 /** @param {boolean} visible */
 function applyStatusbarVisibility(visible) {
-  const app = $("#app");
-  if (app) app.classList.toggle("statusbar-hidden", !visible);
+  void visible;
 }
 
 /** @param {boolean} visible */
 export function setStatusbarVisible(visible) {
-  applyStatusbarVisibility(visible);
-  try {
-    localStorage.setItem(STATUSBAR_STORAGE_KEY, visible ? "shown" : "hidden");
-  } catch {
-    // private mode / storage disabled — the choice just won't persist.
-  }
+  void visible;
 }
 
 // Restore before first paint so there is no flash of the status bar.
-export function initStatusbarPref() {
-  applyStatusbarVisibility(statusbarVisible());
-}
+export function initStatusbarPref() {}
 
 // ---------------------------------------------------------------------------
 // Account usage chip — subscription session/weekly caps per ACCOUNT

@@ -17,6 +17,7 @@ import { isNative } from "./native.js";
 import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
+import { openThemePalette } from "./statusbar.js";
 import { moveTabToIndex, visibleTabs } from "./tabs.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
@@ -50,16 +51,7 @@ function renderTabs() {
   const tabs = visibleTabs(snapshot);
   const dictationChip = DictationChip();
   bar.replaceChildren(
-    h("button", {
-      class: "chrome-btn",
-      title: state.sidebarCollapsed ? "show sessions" : "hide sessions",
-      onclick: () => {
-        state.sidebarCollapsed = !state.sidebarCollapsed;
-        markDirty("layout", "tabs");
-      },
-      text: state.sidebarCollapsed ? "▸" : "◂",
-    }),
-    h("div", { class: "tab-brand" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
+    h("div", { class: "brand" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
     h(
       "div",
       { class: "tab-strip" },
@@ -71,13 +63,11 @@ function renderTabs() {
     // the idle case is wrapped away rather than passed as null).
     ...(dictationChip ? [dictationChip] : []),
     h("button", {
-      class: "chrome-btn",
-      title: state.rightCollapsed ? "show room panel" : "hide room panel",
-      onclick: () => {
-        state.rightCollapsed = !state.rightCollapsed;
-        markDirty("layout", "tabs");
-      },
-      text: "▥",
+      class: "theme-btn",
+      title: "themes (Alt+T)",
+      "aria-label": "open theme palette",
+      onclick: openThemePalette,
+      text: "◈",
     }),
   );
 }

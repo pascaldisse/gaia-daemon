@@ -89,7 +89,6 @@ export function mountApp() {
         h("section", { class: "panel", id: "room-panel" }),
       ),
     ),
-    h("footer", { class: "statusbar", id: "statusbar" }),
     // Overlay slots: the theme palette and other overlays render into their
     // own mount points, so neither region's re-render can touch the other.
     h(
