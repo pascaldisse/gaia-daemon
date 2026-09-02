@@ -83,3 +83,13 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - gate: `bun run check` green; voice 25/0 · read-aloud 35/0 · dictation 2/0.
 - pragma scan `src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
 - live: voice/room interaction app path UNVERIFIED; no daemon started outside isolated test process; owner 陰.
+
+## A5c — HTTP route-table integration (2026-09-02)
+- `refactor/a5c-http` integrated with current `main` in `refactor/a5-a7-integration`; root checkout was `fix/native-weblinks`, not `main`, so no root landing claim.
+- `src/server/http.ts` 2120→642; real dispatcher routes agents/rooms/memory/artifacts/usage/edit-retry.
+- gate: `bun run check` green; `http-routes` 7/0; pragma scan `src/server`: 0.
+
+## A7d — main integration checkpoint (2026-09-02)
+- A5c+A7d integration branch re-gated against `main` @ efc2e48; root checkout remains wrong branch, hence UNLANDED.
+- gates: check green; http-routes 7/0 · voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- sizes: http 642 · room-service 2527 · daemon 717. pragma scans server/daemon: 0.
