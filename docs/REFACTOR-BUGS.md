@@ -184,3 +184,54 @@ git -C "$W" show --stat 8350bb2
 Expected @ plan §W2 A7 → boot-sequence façade in `daemon.ts`; reload and service wiring bounded behind extracted modules.
 
 Actual @ `main@2128ac7` → 1,334/61/335 lines; atom adds 457 and deletes 318 lines. Live boot/reload behavior remains separately UNVERIFIED pending queue execution, but the static split objective already fails.
+
+---
+
+# Audit pass — 陰木 Vishnu/Kali (L2 STATIC), range 820e568..main (tip 2128ac7)
+
+Static only. No fixes applied (fix forbidden — tickets only).
+
+## L2 integration scans (measured 真)
+
+### RULE0 — literal harness-id branches in shared code
+Repro:
+```
+rg -n 'harness ===|harness !==|=== "pi"|=== "claude"|=== "codex"' /Users/pascaldisse/projects/gaia-daemon/src
+```
+Expected → zero shared-layer branches on a harness identity literal.
+Actual → 13 hits, all non-violating: field comparisons against config/account
+`harness` DATA (`domain/agents.ts:94`, `core/config.ts:384`, `domain/accounts.ts:47`,
+`harness/host.ts:815`, `services/hints.ts:289,454`, `harness/spec.ts:509`,
+`server/http.ts:967-968`) + 4 comment/doc mentions of the forbidden pattern.
+**RULE0 hits: 0** (clean).
+
+### Layering — upward imports
+Repro:
+```
+rg -n 'from "\.\./(server|daemon|services)/' /Users/pascaldisse/projects/gaia-daemon/src/core /Users/pascaldisse/projects/gaia-daemon/src/domain /Users/pascaldisse/projects/gaia-daemon/src/harness
+rg -n 'from "\.\./(server|daemon)/' /Users/pascaldisse/projects/gaia-daemon/src/services
+```
+Expected → no output. Actual → no output. **layer hits: 0** (clean).
+
+### Hardcode scan
+Repro:
+```
+rg -n '8787|18787|/tmp|claude-3|gpt-' /Users/pascaldisse/projects/gaia-daemon/src
+```
+Actual → 10 hits; `core/config.ts:41 port: 8787` = named DEFAULTS entry (allowed),
+`harness/sandbox/seatbelt.ts:30,31,80` = sandbox path allowlist (allowed),
+`services/caryll.ts:1` = tokenizer encoding import (allowed),
+`services/voice.ts:144,149` + `services/transcribe.ts:258,274,275` = STT model
+registry/default (allowed). One drift below.
+
+### T-L2-1 duplicated STT default literal
+severity: low · commit: pre-range (present through `2128ac7`)
+Repro:
+```
+rg -n 'openai/gpt-4o-mini-transcribe' /Users/pascaldisse/projects/gaia-daemon/src
+```
+Expected → default declared once (`services/voice.ts:149 sttReplicateModel`) and
+referenced by name at use sites.
+Actual → `services/transcribe.ts:344` re-literals `"openai/gpt-4o-mini-transcribe"`
+as its own fallback; changing the settings default silently diverges from the
+transcribe fallback.
