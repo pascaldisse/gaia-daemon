@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { hasExplicitMention } from "../commands.js";
 import type { MessageAttachment, Task } from "../../core/types.js";
 import type { RoomForkPort } from "./ports.js";
