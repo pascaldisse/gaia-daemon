@@ -37,3 +37,24 @@ export function findAppBundleRoot(path: string): string | undefined {
   while (true) { if (dir.endsWith(".app")) return dir; const parent = dirname(dir); if (parent === dir) return undefined; dir = parent; }
 }
 export const AUTH_COOKIE = "gaia_user";
+
+export interface RouteContext {
+  request: IncomingMessage;
+  response: ServerResponse;
+  url: URL;
+  daemon: import("../daemon.js").Daemon;
+  human: PublicUser | null;
+  humanScope?: string;
+  boundUrl: string;
+  cwd: string;
+  broadcast(event: import("../core/types.js").UiEvent): void;
+  bootId: string;
+  registerSse(workspaceId?: string, roomId?: string): void;
+}
+export async function respond(response: ServerResponse, run: () => Promise<unknown>): Promise<void> {
+  try {
+    json(response, 200, await run());
+  } catch (error) {
+    json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+  }
+}
