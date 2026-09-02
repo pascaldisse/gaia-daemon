@@ -40,3 +40,11 @@
 - required `@luna` turn → HTTP 500 unknown agent; available `dario|gaia|sidia|terry` → ADV-011.
 - items A1/A5/A7 → UNVERIFIED; no substitute agent used because protocol required Luna.
 - cleanup → daemon killed · isolated dist/home removed · 18787 listener empty.
+
+## 2026-09-02 corrected-seed closure · compiled `4bd87be`
+- evidence → `docs/REFACTOR-LIVE-RESULTS-20260902.md`.
+- ADV-011 original unknown-luna result → TEST-SETUP superseded; corrected seed lists/uses luna.
+- A1 ToolProviders → PASS.
+- A5 HTTP route smoke → FAIL · ADV-013; `GET /api/app` 500 missing cwd workspace config.
+- A6 mixed mention/edit + session fork → PASS.
+- A7 SIGKILL/WAL recovery + settings-file reload → PASS.
