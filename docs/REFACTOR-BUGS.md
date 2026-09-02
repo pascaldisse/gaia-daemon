@@ -482,3 +482,7 @@ Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifa
 - ADV-013 reclassified PRE-EXISTING / MED, not A5c: throw = src/domain/workspace.ts:147, untouched 768115b..main (`git log -S'Missing workspace config'` empty; cwd-workspace path diff 0).
 - Trigger: daemon cwd inside a dir w/ `.gaia/` but no `.gaia/config.json` (any worktree) → GET /api/app 500 + summon recovery skipped.
 - A5 route smoke → PASS for parity (all other routes 200/401 as expected). Fix = W4 atom (auto-workspace: bootstrap config or skip cwd w/o config), not refactor scope.
+
+## PASS #3 · W3 plugin system + W4 A16 live · 2026-09-03
+
+<!-- restart-proof audit ledger; findings pending -->
