@@ -173,6 +173,10 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - gate: `bun run check` green; `bun test test/room-service.test.ts test/monad*.test.ts test/rooms*.test.ts` 166/0.
 - call-site: command table delegates; moved bodies sole in `room/maintenance.ts`; pragma scan `src`: 0. sizes: room-service 946→798 · daemon 717 · http 642.
 - W1/W2: prior state · W3 complete (`0597626`) · W4 live UNVERIFIED/陰. Open: ADV-002/003/004 · ADV-007/A6 size resolved by this landing · ADV-008 · ADV-009 historical · ADV-013 MED. ADV-012 resolved (`12d980c`).
+
+## A6j — resumePendingTurn extraction (2026-09-03)
+- `72bf6a8`: `room/queue.ts` gains `resumePendingTurn` (46 lines: monad replay, finish-commit cursor advance, partial-reply commit, re-dispatch of remaining targets — the durable pendingTurn resume seam, matching the file's existing queue↔pendingTurn ownership); `commitReply` added to `RoomQueuePort`; room-service.ts delegates through the existing `this.queue` instance.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0. pragma scan (room-service.ts, room/queue.ts): 0. room-service 801→758.
 ## ROOT #9 — W3 completion / ADV-014..019 closure (2026-09-03)
 - A / ADV-016 → `1de4129` + `6db2d17`: one daemon registry/broker; RoomService command adapter receives injected registry; no module-level loader.
 - B / ADV-015 → `6641107`: bundled manifest packages + injectable bundled/global discovery roots; Telegram standalone declaration.
