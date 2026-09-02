@@ -163,3 +163,7 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 ## A6h — command execution extraction (2026-09-03)
 - `a931351`: `room/command-execution.ts` 110; command persistence/STT/reload moved; facade delegates; queue/WAL untouched.
 - gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0. room-service 1097→1019; ≤800 pending.
+
+## A6g — monad execution extraction (2026-09-03)
+- `ec95464`: `room/monad-execution.ts` 97; pendingTurn→engine→commit/clear seam moved whole; atomicity unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/monad.test.ts test/rooms.test.ts` 166/0. room-service 1019→946; ≤800 still open.
