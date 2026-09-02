@@ -34,7 +34,8 @@ import { summonAck } from "../../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
 import type { ReadAloudDelivery } from "../../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../../services/voice.js";
-import { attachmentRefs, AUTH_COOKIE, beginSse, boolField, encodeSse, findAppBundleRoot, numberField, pathInside, requestingHuman, sanitizeEditRefs, stringArrayField, stringField, summonCensusText, titleCaseId } from "../route.js";
+import { AUTH_COOKIE, beginSse, boolField, encodeSse, findAppBundleRoot, numberField, pathInside, requestingHuman, stringArrayField, stringField, summonCensusText, titleCaseId } from "../route.js";
+import { attachmentRefs, sanitizeEditRefs } from "./rooms.js";
 
 export interface WebServerOptions {
   cwd: string;
