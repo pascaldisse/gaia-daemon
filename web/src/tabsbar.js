@@ -51,14 +51,14 @@ function renderTabs() {
   const tabs = visibleTabs(snapshot);
   const dictationChip = DictationChip();
   bar.replaceChildren(
-    h("div", { class: "brand" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
+    h("div", { class: "brand", "data-tauri-drag-region": "deep" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
     h(
       "div",
-      { class: "tab-strip" },
+      { class: "tab-strip", "data-tauri-drag-region": "deep" },
       tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
       snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
-    h("div", { class: "tab-spacer" }),
+    h("div", { class: "tab-spacer", "data-tauri-drag-region": "deep" }),
     // Only present while a recording is live (replaceChildren takes Nodes, so
     // the idle case is wrapped away rather than passed as null).
     ...(dictationChip ? [dictationChip] : []),
@@ -105,6 +105,7 @@ function Tab(room, number, isActive, wsId) {
     "div",
     {
       class: `tab ${isActive ? "active" : ""} ${room.running ? "running" : ""}`,
+"data-tauri-drag-region": "false",
       title: room.title ? `${room.title} — ${room.id}` : room.id,
       onpointerdown: (event) => beginDrag(event, room.id, wsId),
       onpointermove: (event) => moveDrag(event),

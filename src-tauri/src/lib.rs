@@ -41,6 +41,8 @@ mod webkit {
     #[cfg(desktop)]
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+    #[cfg(target_os = "macos")]
+    use tauri::{LogicalPosition, TitleBarStyle};
     use tauri_plugin_notification::NotificationExt;
 
     const DEFAULT_PORT: u16 = 8787;
@@ -232,6 +234,13 @@ mod webkit {
             // fires: with Tauri's OS drag-drop handler on, the webview swallows it.
             .disable_drag_drop_handler()
             .resizable(true);
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder
+                .title_bar_style(TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(LogicalPosition::new(12.0, 9.0));
+        }
         if let (Some(px), Some(py)) = (x, y) {
             builder = builder.position(px, py);
         }
@@ -621,6 +630,13 @@ mod webkit {
                         .initialization_script(&crate::debug_server::init_script())
                         // See open_window: needed for the tab strip's HTML5 drag-and-drop.
                         .disable_drag_drop_handler();
+                #[cfg(target_os = "macos")]
+                {
+                    main_window_builder = main_window_builder
+                        .title_bar_style(TitleBarStyle::Overlay)
+                        .hidden_title(true)
+                        .traffic_light_position(LogicalPosition::new(12.0, 9.0));
+                }
 
                 // Desktop gets an explicit window size. On iOS/Android a fixed
                 // inner_size becomes the WKWebView's frame, so the page lays out

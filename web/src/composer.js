@@ -11,6 +11,7 @@ import { agentGlyph, KIND, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
+import { clearComposerDraft, composerDraftKey, composerDraftStatus, loadComposerDraft, saveComposerDraft } from "./composer-drafts.js";
 import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion, setError } from "./render.js";
@@ -85,47 +86,44 @@ let draftStatusEl = null;
 /** @type {HTMLElement|null} */
 let ultrawhipWrapEl = null;
 
-// Draft persistence (composer durability — "nothing is ever lost"): the
-// in-progress text survives a reload/crash and is restored per-room.
+// Synchronous local cache survives reload/rebuild without a pending timer.
 /** @returns {string|null} */
 function draftKey() {
   const s = state.snapshot;
-  return s ? `gaia.draft.${s.workspace.id}.${s.room.id}` : null;
+  return s ? composerDraftKey(s.workspace.id, s.room.id) : null;
 }
 
 /** @param {string} text */
 function persistDraft(text) {
-  const k = draftKey();
-  if (!k) return;
+  const key = draftKey();
+  if (!key) return;
   try {
-    if (text.trim()) localStorage.setItem(k, text);
-    else localStorage.removeItem(k);
+    saveComposerDraft(localStorage, key, text);
   } catch {}
 }
 
 function clearDraft() {
-  const k = draftKey();
-  if (!k) return;
+  const key = draftKey();
+  if (!key) return;
   try {
-    localStorage.removeItem(k);
+    clearComposerDraft(localStorage, key);
   } catch {}
 }
 
-/** Draft persistence status from the actual per-room localStorage source. */
 function draftStatus() {
-  const k = draftKey();
-  if (!k || !state.composerText.trim()) return "";
+  const key = draftKey();
+  if (!key) return "";
   try {
-    return localStorage.getItem(k) === state.composerText ? "draft saved" : "draft unsaved";
+    return composerDraftStatus(localStorage, key, state.composerText);
   } catch {
     return "draft unavailable";
   }
 }
 
-// Tracks which room's draft has already been restored into state.composerText,
-// so switching rooms restores at most once (and doesn't clobber live typing).
 /** @type {string|null} */
 let restoredRoomKey = null;
+/** @type {Snapshot|null} */
+let restoredSnapshot = null;
 
 export function initComposer() {
   const form = $("#composer");
@@ -258,23 +256,23 @@ function renderComposer() {
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
 
-  // Restore a persisted draft once per room switch (never clobbers text
-  // already typed for this room, e.g. from a fresh page load mid-composition).
   const currentDraftKey = draftKey();
-  if (currentDraftKey !== restoredRoomKey) {
+  const roomChanged = currentDraftKey !== restoredRoomKey;
+  const snapshotReset = snapshot !== restoredSnapshot;
+  if (roomChanged || snapshotReset) {
     restoredRoomKey = currentDraftKey;
-    if (!state.composerText.trim()) {
+    restoredSnapshot = snapshot;
+    // Room switches adopt that room's text. Same-room reconnects restore only
+    // when the fresh snapshot reset the live composer.
+    if (roomChanged || !state.composerText) {
       try {
-        const stored = currentDraftKey ? localStorage.getItem(currentDraftKey) : null;
-        if (stored) {
-          state.composerText = stored;
-          textarea.value = stored;
-        }
+        const stored = currentDraftKey ? loadComposerDraft(localStorage, currentDraftKey) : "";
+        state.composerText = stored;
+        textarea.value = stored;
+        textarea.setSelectionRange(stored.length, stored.length);
       } catch {}
     }
-    // Recovered dictation clips (crash/reload durability, server-backed) are
-    // per-room too — refresh the chip list whenever the room switches.
-    void refreshRecoveredClips();
+    if (roomChanged) void refreshRecoveredClips();
   }
 
   // Textarea chrome; the value is only written when state changed elsewhere
@@ -862,7 +860,9 @@ function composerTargetStatus(snapshot, text) {
   const knownAgents = new Set((snapshot.agents ?? []).map((agent) => agent.id));
   const unknown = leadingMentionIds(text).filter((id) => !knownAgents.has(id));
   if (unknown.length) return `unknown: ${unknown.map((id) => `@${id}`).join(", ")}`;
-  return composerTargets(snapshot, text).map((target) => `${agentGlyph(target)} @${target}`).join(", ");
+  // Composer meta line: speaker/target name renders PLAIN, glyph only
+  // (V2-SKIN.md design law — @ is for addressing/mentions, not a header).
+  return composerTargets(snapshot, text).map((target) => `${agentGlyph(target)} ${target}`).join(", ");
 }
 
 // Last non-off level per agent, so the off-toggle can come back to it.

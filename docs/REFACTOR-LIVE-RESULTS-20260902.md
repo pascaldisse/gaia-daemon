@@ -30,11 +30,11 @@ Build → compiled `gaia-daemon` @ `4bd87be`; own `GAIA_HOME`; port `18787`; `GA
 - actual → snapshot rooms `[default]`, eventTotal=6 before probe; TOKEN-4 committed after reload.
 - hashes → `live-hashes.txt`.
 
-## A5c route smoke — FAIL · ADV-011 (new)
+## A5c route smoke — FAIL · ADV-013 (new)
 - authenticated-route setup attempted: unauth `GET /api/auth/users` → `401 {"error":"Not logged in."}`; room routes snapshot/events/humans/favorite/title/default-agent → 200; voice/clips → 200.
 - expected → no 5xx.
 - actual → `GET /api/app` → `500 {"error":"Missing workspace config: .../ghoul-terra-mtklq5ixkikbww/.gaia/config.json"}`. Boot log also: `summon recovery skipped ... Missing workspace config`.
-- ticket → ADV-011: app payload/boot recovery includes cwd auto-workspace lacking `.gaia/config.json`; route smoke cannot complete. No fix attempted.
+- ticket → ADV-013: app payload/boot recovery includes cwd auto-workspace lacking `.gaia/config.json`; route smoke cannot complete. No fix attempted.
 
 ## Queue verdict
 - A1 → PASS.

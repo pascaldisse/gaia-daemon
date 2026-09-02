@@ -78,15 +78,16 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-
+import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
 const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
 const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
+type RoomCommandsFacadeHost = RoomCommandsFacadePort;
+
 export class RoomCommandsMixin {
-  [key: string]: any;
   /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
    * shape as runSteerCommand below, just without its command-reply return
    * value — a watchdog fires from inside an onEvent callback, not a command.
