@@ -186,5 +186,21 @@ export async function discoverPluginManifests(pluginsRoot: string): Promise<read
     if (isRecord(error) && error.code === "ENOENT") return [];
     throw error;
   }
-  return Object.freeze(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().map((name) => join(pluginsRoot, name, "plugin.json")));
+  const candidates = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(pluginsRoot, entry.name, "plugin.json"))
+    .sort();
+  // A root can also contain non-package support directories (notably the
+  // legacy runner folder). Every manifest that exists remains in the complete
+  // validate-before-import inventory; a directory without one is not a package.
+  const present = await Promise.all(candidates.map(async (path) => {
+    try {
+      await stat(path);
+      return path;
+    } catch (error: unknown) {
+      if (isRecord(error) && error.code === "ENOENT") return undefined;
+      throw error;
+    }
+  }));
+  return Object.freeze(present.filter((path): path is string => path !== undefined));
 }

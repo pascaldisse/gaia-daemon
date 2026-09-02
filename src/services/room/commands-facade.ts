@@ -144,6 +144,7 @@ export class RoomCommandsMixin {
     return {
       homedir: homedir(),
       roomId: this.roomId,
+      agentId: state.activeAgent ?? this.workspace.config.defaultAgent,
       workspaceRoot: this.workspace.rootDir,
       state: state.pluginState?.[pluginStateKey(plugin)],
       agents: Object.values(this.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),

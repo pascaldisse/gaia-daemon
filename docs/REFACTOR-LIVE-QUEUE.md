@@ -105,3 +105,9 @@
 - repro: after manifest registry composition, install one daemon-placement package declaring command/tool/channel/provider; invoke each with `{roomId,agentId}`; repeat untrusted + missing-cap contexts; send a `plugin-contribution` frame to a runner before A14.
 - verify: declared+granted invocation only; undeclared/malformed output rejected; untrusted/missing-cap code never entered; runner returns explicit unavailable result, never legacy `~/.gaia/plugins/runner` fallback.
 - status: UNVERIFIED — A13 ports/registry/protocol only; no daemon composition or manifest runner registry before A14.
+
+## A14 manifest command + Telegram bridge
+- owner→陰 live slot
+- repro→compiled daemon; `~/.gaia/plugins/<pkg>/plugin.json` daemon command + invalid sibling + loose legacy `~/.gaia/plugins/<name>.mjs`; Telegram bridge valid bot/account env
+- verify→invalid sibling→zero manifest entrypoint imports; repaired sibling→typed command registered; loose module warns synthetic compatibility manifest; Telegram incoming/outgoing→registered `gaia.telegram/telegram`; untrusted/missing-cap denied before contribution code
+- status→UNVERIFIED; coding lane never starts daemon/port

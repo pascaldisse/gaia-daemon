@@ -53,6 +53,13 @@ export interface PluginGeneration {
   readonly plugins: readonly RegisteredPlugin[];
 }
 
+/** Read-only command catalogue; invocation remains registry-owned. */
+export interface RegisteredPluginCommand {
+  readonly pluginId: string;
+  readonly name: string;
+  readonly description: string;
+}
+
 export type PluginStageResult =
   | { readonly status: "staged"; readonly generation: PluginGeneration }
   | { readonly status: "failed"; readonly reason: string };
@@ -175,6 +182,17 @@ export class PluginRegistry implements PluginTurnBoundary {
 
   get activeTurnLeases(): number {
     return this.#leases;
+  }
+
+  /** Contributions are exposed as metadata only; callers invoke by id/name. */
+  commandContributions(): readonly RegisteredPluginCommand[] {
+    return Object.freeze(this.#active.entries.flatMap((entry) =>
+      (entry.contributions.commands ?? []).map((command) => Object.freeze({
+        pluginId: entry.summary.id,
+        name: command.name,
+        description: command.description,
+      })),
+    ));
   }
 
   beginTurn(): PluginTurnLease {

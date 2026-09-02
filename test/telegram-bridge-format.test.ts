@@ -1,77 +1,97 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  TELEGRAM_MAX_MESSAGE_LEN,
-  formatOutgoingForTelegram,
-  nextOffset,
-  parseTelegramUpdate,
-  splitForTelegram,
-} from "../src/services/telegram-bridge-format.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import test from "node:test";
+import { CapabilityBroker } from "../src/services/capabilities/broker.js";
+import { PluginRegistry } from "../src/services/plugins/registry.js";
 
-test("parseTelegramUpdate: a real text message parses", () => {
-  const update = {
-    update_id: 42,
-    message: { chat: { id: -1001 }, text: "hello gaia", from: { username: "pascal", id: 7 } },
-  };
-  assert.deepEqual(parseTelegramUpdate(update), { chatId: -1001, text: "hello gaia", fromLabel: "pascal", updateId: 42 });
+const repoRoot = join(import.meta.dirname, "..");
+const addonsRoot = join(repoRoot, "addons");
+
+async function telegramRegistry(): Promise<PluginRegistry> {
+  const registry = new PluginRegistry({
+    pluginsRoot: addonsRoot,
+    placement: "daemon",
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+  });
+  const staged = await registry.stageReload();
+  assert.equal(staged.status, "staged");
+  assert.equal(await registry.applyTurnBoundary(), true);
+  return registry;
+}
+
+test("Telegram bridge registers and invokes its typed manifest channel contribution", async () => {
+  const registry = await telegramRegistry();
+  const context = { roomId: "room", agentId: "telegram-bridge" };
+  const incoming = await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "incoming",
+    payload: { update_id: 7, message: { chat: { id: 12 }, from: { username: "ada" }, text: "hello" } },
+  });
+  assert.deepEqual(incoming, { handled: true, payload: { updateId: 7, chatId: 12, fromLabel: "ada", text: "hello" } });
+  const offset = await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "incoming",
+    payload: { updates: [{ update_id: 4 }, { update_id: 9 }], offset: 3 },
+  });
+  assert.deepEqual(offset, { handled: true, payload: { offset: 10 } });
+  const outgoing = await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "outgoing",
+    payload: { event: { author: "agent", text: "x".repeat(4097) }, bridgeUserId: "human" },
+  });
+  assert.deepEqual(outgoing, { handled: true, payload: { chunks: [`[@agent] ${"x".repeat(4087)}`, "x".repeat(10)] } });
+  assert.deepEqual(registry.current.plugins[0]?.contributes.channels, ["telegram"]);
+  assert.deepEqual(await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "incoming", payload: { update_id: 8, message: { chat: { id: 12 }, text: "  " } },
+  }), { handled: false });
+  assert.deepEqual(await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "outgoing", payload: { event: { author: "user", text: "never echo" }, bridgeUserId: "human" },
+  }), { handled: false });
+  const lineSplit = await registry.invokeChannelBridge("gaia.telegram", "telegram", context, {
+    direction: "outgoing", payload: { event: { author: "agent", text: `${"a".repeat(3000)}\n${"b".repeat(2000)}` }, bridgeUserId: "human" },
+  });
+  assert.deepEqual(lineSplit, { handled: true, payload: { chunks: [`[@agent] ${"a".repeat(3000)}`, "b".repeat(2000)] } });
 });
 
-test("parseTelegramUpdate: falls back to first+last name, then numeric id", () => {
-  const noUsername = {
-    update_id: 1,
-    message: { chat: { id: 5 }, text: "hi", from: { first_name: "Ada", last_name: "L.", id: 9 } },
-  };
-  assert.equal(parseTelegramUpdate(noUsername)?.fromLabel, "Ada L.");
-
-  const anonymous = { update_id: 2, message: { chat: { id: 5 }, text: "hi", from: { id: 99 } } };
-  assert.equal(parseTelegramUpdate(anonymous)?.fromLabel, "99");
+test("Telegram channel preserves parse fallbacks, filters, and lossless splitting", async () => {
+  const registry = await telegramRegistry();
+  const context = { roomId: "room", agentId: "telegram-bridge" };
+  const channel = (direction: "incoming" | "outgoing", payload: Record<string, unknown>) =>
+    registry.invokeChannelBridge("gaia.telegram", "telegram", context, { direction, payload });
+  assert.deepEqual(await channel("incoming", {
+    update_id: 1, message: { chat: { id: 5 }, text: "hi", from: { first_name: "Ada", last_name: "L.", id: 9 } },
+  }), { handled: true, payload: { updateId: 1, chatId: 5, text: "hi", fromLabel: "Ada L." } });
+  assert.deepEqual(await channel("incoming", {
+    update_id: 2, message: { chat: { id: 5 }, text: "hi", from: { id: 99 } },
+  }), { handled: true, payload: { updateId: 2, chatId: 5, text: "hi", fromLabel: "99" } });
+  for (const payload of [null, {}, { update_id: 1 }, { update_id: 1, message: { chat: { id: 1 } } }, { update_id: "bad", message: {} }]) {
+    assert.deepEqual(await channel("incoming", { raw: payload }), { handled: false });
+  }
+  for (const event of [
+    { author: "system", text: "compacted" }, { author: "agent", text: "hi", redacted: true },
+    { author: "agent", text: "  " }, { author: "agent", text: "hi", humanId: "bridge" },
+  ]) assert.deepEqual(await channel("outgoing", { event, bridgeUserId: "bridge" }), { handled: false });
+  assert.deepEqual(await channel("outgoing", { event: { author: "gaia", text: "hi there" }, bridgeUserId: "bridge" }), {
+    handled: true, payload: { chunks: ["[@gaia] hi there"] },
+  });
+  const lineText = Array.from({ length: 100 }, () => "x".repeat(100)).join("\n");
+  const lineResult = await channel("outgoing", { event: { author: "agent", text: lineText }, bridgeUserId: "bridge" });
+  const lineChunks = (lineResult.payload as { chunks: string[] }).chunks;
+  assert.ok(lineChunks.every((chunk) => chunk.length <= 4096));
+  assert.equal(lineChunks.join("\n"), `[@agent] ${lineText}`);
+  const hardResult = await channel("outgoing", { event: { author: "agent", text: "x".repeat(9000) }, bridgeUserId: "bridge" });
+  const hardChunks = (hardResult.payload as { chunks: string[] }).chunks;
+  assert.ok(hardChunks.every((chunk) => chunk.length <= 4096));
+  assert.equal(hardChunks.join(""), `[@agent] ${"x".repeat(9000)}`);
 });
 
-test("parseTelegramUpdate: non-text / malformed updates are skipped, never throw", () => {
-  assert.equal(parseTelegramUpdate(null), null);
-  assert.equal(parseTelegramUpdate({}), null);
-  assert.equal(parseTelegramUpdate({ update_id: 1 }), null); // no message (e.g. edited_message)
-  assert.equal(parseTelegramUpdate({ update_id: 1, message: { chat: { id: 1 } } }), null); // no text (photo, sticker)
-  assert.equal(parseTelegramUpdate({ update_id: 1, message: { chat: { id: 1 }, text: "   " } }), null); // whitespace-only
-  assert.equal(parseTelegramUpdate({ update_id: "not-a-number", message: {} }), null);
-});
-
-test("nextOffset: one past the highest update_id seen", () => {
-  assert.equal(nextOffset([{ update_id: 5 }, { update_id: 9 }, { update_id: 7 }], 1), 10);
-});
-
-test("nextOffset: no updates leaves the offset unchanged", () => {
-  assert.equal(nextOffset([], 12), 12);
-});
-
-test("formatOutgoingForTelegram: agent reply formats with an @author prefix", () => {
-  assert.equal(formatOutgoingForTelegram({ author: "gaia", text: "hi there" }, "u_bridge"), "[@gaia] hi there");
-});
-
-test("formatOutgoingForTelegram: human/system/redacted/empty/self-loop all skip", () => {
-  assert.equal(formatOutgoingForTelegram({ author: "user", text: "hello" }, "u_bridge"), null);
-  assert.equal(formatOutgoingForTelegram({ author: "system", text: "compacted" }, "u_bridge"), null);
-  assert.equal(formatOutgoingForTelegram({ author: "gaia", text: "hi", redacted: true }, "u_bridge"), null);
-  assert.equal(formatOutgoingForTelegram({ author: "gaia", text: "   " }, "u_bridge"), null);
-  assert.equal(formatOutgoingForTelegram({ author: "gaia", text: "hi", humanId: "u_bridge" }, "u_bridge"), null);
-});
-
-test("splitForTelegram: short text passes through as one chunk", () => {
-  assert.deepEqual(splitForTelegram("hello"), ["hello"]);
-});
-
-test("splitForTelegram: long text splits on a line boundary, never exceeds the cap, and reassembles losslessly", () => {
-  const line = "x".repeat(100);
-  const text = Array.from({ length: 100 }, () => line).join("\n"); // ~10100 chars, well over the cap
-  const chunks = splitForTelegram(text, TELEGRAM_MAX_MESSAGE_LEN);
-  assert.ok(chunks.length > 1);
-  for (const chunk of chunks) assert.ok(chunk.length <= TELEGRAM_MAX_MESSAGE_LEN);
-  assert.equal(chunks.join("\n"), text);
-});
-
-test("splitForTelegram: no line breaks at all still hard-cuts at the cap (never returns an oversized chunk)", () => {
-  const text = "x".repeat(9000);
-  const chunks = splitForTelegram(text, TELEGRAM_MAX_MESSAGE_LEN);
-  for (const chunk of chunks) assert.ok(chunk.length <= TELEGRAM_MAX_MESSAGE_LEN);
-  assert.equal(chunks.join(""), text);
+test("Telegram bridge script uses the registered manifest channel, not a service formatter import", async () => {
+  const [script, manifest] = await Promise.all([
+    readFile(join(repoRoot, "scripts", "telegram-bridge.mjs"), "utf8"),
+    readFile(join(addonsRoot, "telegram", "plugin.json"), "utf8"),
+  ]);
+  assert.match(script, /new PluginRegistry/);
+  assert.match(script, /invokeChannelBridge\("gaia\.telegram", "telegram"/);
+  assert.doesNotMatch(script, /telegram-bridge-format/);
+  assert.match(manifest, /"channels": \["telegram"\]/);
 });

@@ -8,14 +8,14 @@
 //
 // Direction Telegram -> GAIA: long-polls Telegram's getUpdates, posts each
 // text message into the room as the bridge's logged-in human (so it shows up
-// attributed, same as any other multi-user message — see the humanId/
+// attributed like every other multi-user message — see the humanId/
 // humanLabel work in domain/rooms.ts).
 //
 // Direction GAIA -> Telegram: subscribes to /api/events?workspaceId=&roomId=
 // (SSE), forwards each agent-authored room-event to the Telegram chat via
 // sendMessage. Never echoes the bridge's own human-authored posts back out
-// (see formatOutgoingForTelegram) — otherwise every relayed message would
-// loop.
+// through the registered channel package — otherwise every relayed message
+// would loop.
 //
 // Config (env):
 //   TELEGRAM_BOT_TOKEN       required — from @BotFather.
@@ -35,10 +35,13 @@
 // has never run against a real bot token — I have none; @BotFather is a
 // manual human step. The GAIA-side half (login, post-as-human, SSE read) is
 // separately live-verified (see the room-service/http commits this session).
-// Only the pure parsing/formatting logic (telegram-bridge-format.ts) has
-// real tests.
+// The manifest channel package has unit coverage; Telegram API remains
+// unverified.
 
-import { parseTelegramUpdate, nextOffset, formatOutgoingForTelegram, splitForTelegram } from "../src/services/telegram-bridge-format.ts";
+import { pathToFileURL } from "node:url";
+import { bundledDir } from "../src/core/paths.ts";
+import { CapabilityBroker } from "../src/services/capabilities/broker.ts";
+import { PluginRegistry } from "../src/services/plugins/registry.ts";
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -56,6 +59,29 @@ const ROOM_ID = requireEnv("GAIA_ROOM_ID");
 const BRIDGE_USERNAME = requireEnv("GAIA_BRIDGE_USERNAME");
 const BRIDGE_PASSWORD = requireEnv("GAIA_BRIDGE_PASSWORD");
 let CHAT_ID = process.env.TELEGRAM_CHAT_ID ? Number(process.env.TELEGRAM_CHAT_ID) : undefined;
+
+async function installTelegramBridge() {
+  const registry = new PluginRegistry({
+    pluginsRoot: bundledDir("addons"),
+    placement: "daemon",
+    // The bridge declares no capabilities; false is the conservative forced
+    // floor if a future manifest adds one without host-side policy wiring.
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+  });
+  const staged = await registry.stageReload();
+  if (staged.status === "failed") throw new Error(`telegram manifest registration failed: ${staged.reason}`);
+  await registry.applyTurnBoundary();
+  return async (direction, payload) => {
+    const result = await registry.invokeChannelBridge("gaia.telegram", "telegram", {
+      roomId: ROOM_ID,
+      agentId: "telegram-bridge",
+    }, { direction, payload });
+    return result.handled ? result.payload : undefined;
+  };
+}
+
+const telegramBridge = installTelegramBridge();
 
 // Override for tests only (fake Telegram server) — unset in real use, real
 // Telegram API by default.
@@ -108,10 +134,11 @@ async function pollTelegram(cookie) {
       await new Promise((r) => setTimeout(r, 5000));
       continue;
     }
-    offset = nextOffset(updates, offset);
+    const next = await (await telegramBridge)("incoming", { updates, offset });
+    if (next && typeof next === "object" && typeof next.offset === "number") offset = next.offset;
     for (const raw of updates) {
-      const parsed = parseTelegramUpdate(raw);
-      if (!parsed) continue;
+      const parsed = await (await telegramBridge)("incoming", raw);
+      if (!parsed || typeof parsed !== "object" || typeof parsed.chatId !== "number" || typeof parsed.fromLabel !== "string" || typeof parsed.text !== "string") continue;
       if (CHAT_ID === undefined) {
         console.log(`telegram-bridge: saw chat id ${parsed.chatId} from ${parsed.fromLabel} — set TELEGRAM_CHAT_ID and restart.`);
         continue;
@@ -153,9 +180,9 @@ async function streamGaiaToTelegram(userId) {
 async function handleRoomEvent(payload, bridgeUserId) {
   if (payload?.workspaceId !== WORKSPACE_ID || payload?.roomId !== ROOM_ID) return;
   if (CHAT_ID === undefined) return;
-  const text = formatOutgoingForTelegram(payload.event, bridgeUserId);
-  if (!text) return;
-  for (const chunk of splitForTelegram(text)) {
+  const outgoing = await (await telegramBridge)("outgoing", { event: payload.event, bridgeUserId });
+  if (!outgoing || typeof outgoing !== "object" || !Array.isArray(outgoing.chunks) || !outgoing.chunks.every((chunk) => typeof chunk === "string")) return;
+  for (const chunk of outgoing.chunks) {
     try {
       await telegramCall("sendMessage", { chat_id: CHAT_ID, text: chunk });
     } catch (error) {
