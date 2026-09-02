@@ -8,6 +8,7 @@
 // when the final room-event commits under the same id, the stream entry is
 // dropped and the keyed node swaps to the committed version in place.
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
+import { agentGlyph, KIND, STATE, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { detectArtifacts } from "./design/artifacts.js";
@@ -653,7 +654,7 @@ function Message(view) {
           type: "button",
           class: "msg-action",
           title: "retry — regenerate from the message that produced this reply",
-          text: "⟳",
+          text: UI.retry,
           onclick: () => void retryMessage(view.id),
         })
       : null,
@@ -662,7 +663,7 @@ function Message(view) {
           type: "button",
           class: "msg-action",
           title: "resend — regenerate the failed turn from the message that produced it",
-          text: "⟳",
+          text: UI.retry,
           onclick: () => void retryMessage(view.id),
         })
       : null,
@@ -687,9 +688,16 @@ function Message(view) {
     h(
       "div",
       { class: "message-meta" },
+      // Speaker mark (v2 parity): ❯ for the human, the agent's own identity
+      // glyph otherwise. Theme-coloured via .speaker-glyph, never emoji.
+      h("span", {
+        class: `speaker-glyph${isAgent ? " agent" : ""}`,
+        "aria-hidden": "true",
+        text: isUser ? UI.human : isAgent ? agentGlyph(view.author) : UI.system,
+      }),
       h("span", { text: label }),
       view.queued ? h("small", { class: "channel-tag", title: "queued — runs after the current turn", text: "queued" }) : null,
-      view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: "🎙" }) : null,
+      view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: UI.call }) : null,
       details.model ? h("small", { class: "model-tag", text: details.model }) : null,
       details.modelFallback
         ? h("small", {
@@ -824,7 +832,7 @@ function SummonResultActivity(view, summon) {
       id: `summon:${view.id}`,
       className: "summon-result",
       status: summon.failed ? "error" : "complete",
-      icon: summon.failed ? "⚠️" : "↩︎",
+      icon: summon.failed ? KIND.warning : KIND.handoff,
       title: `summon ${summon.childRoomId}`,
       extra: summon.failed ? "failed" : "finished",
     },
@@ -916,7 +924,7 @@ function RedactedTag() {
  */
 function ThinkingActivity(id, text, running) {
   return ActivityDetails(
-    { id, className: "thinking", status: running ? "running" : "complete", icon: "💭", title: "thinking" },
+    { id, className: "thinking", status: running ? "running" : "complete", icon: KIND.thinking, title: "thinking" },
     text && text.trim() ? MarkdownMessage(text) : null,
   );
 }
@@ -973,7 +981,7 @@ function AttachmentGallery(attachments) {
       return h(
         "a",
         { class: "attachment-chip", href: url, target: "_blank", rel: "noopener", title: file.path },
-        h("span", { text: "📎" }),
+        h("span", { text: UI.attach }),
         h("span", { class: "attach-name", text: file.name }),
         h("small", { text: humanSize(file.size) }),
       );
@@ -1021,7 +1029,7 @@ function ToolActivityList(tools) {
  */
 export function SkillInvocationActivity(skill) {
   return ActivityDetails(
-    { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: "🧩", title: `[skill] ${skill.name}` },
+    { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: KIND.skill, title: `[skill] ${skill.name}` },
     MarkdownMessage(skill.content),
   );
 }
@@ -1036,8 +1044,8 @@ export function SkillInvocationActivity(skill) {
 export function ToolActivity(tool) {
   const skillLabel = skillReadLabel(tool);
   const options = skillLabel
-    ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: "🧩", title: `[skill] ${skillLabel}` }
-    : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) };
+    ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: KIND.skill, title: `[skill] ${skillLabel}` }
+    : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: KIND.tool, title: tool.toolName, extra: toolSummaryText(tool) };
   return ActivityDetails(
     options,
     ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
@@ -1100,7 +1108,7 @@ function ActivityDetails(options, ...children) {
         class: "activity-result",
         title: statusText,
         "aria-label": statusText,
-        text: options.status === "running" ? "" : options.status === "error" ? "x" : "✓",
+        text: options.status === "running" ? "" : options.status === "error" ? STATE.error : STATE.done,
       }),
     ),
     children,

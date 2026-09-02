@@ -23,6 +23,14 @@
   font-size: 12.5px;
 }
 
+/* v2's signature palette (gaia-daemon-v2 styles.css), ported unchanged in hue
+   and widened to v1's fuller token set. */
+[data-theme="obsidian-violet"] {
+  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70;
+  --border: #2a2840; --accent: #a78bfa; --accent2: #ce93c9;
+  --good: #8fb573; --warn: #d3a35e; --danger: #e05f9d; --glow: rgba(167, 139, 250, 0.3);
+}
+
 [data-theme="tokyo-night"] {
   --bg: #16161e; --bg2: #1a1b26; --bg3: #222434; --fg: #c0caf5; --muted: #565f89;
   --border: #2a2e42; --accent: #7aa2f7; --accent2: #bb9af7;
@@ -689,6 +697,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .editing-banner .stop-btn { padding: 2px 10px; color: var(--warn); border: 1px solid var(--warn); background: transparent; }
 .message-meta .channel-tag { color: var(--muted); }
+
+/* Speaker mark in front of the meta label (v2 parity: ❯ human · agent glyph ·
+   ◇ system). Fixed 2ch slot so every label starts at the same x. */
+.message-meta .speaker-glyph { flex: 0 0 2ch; width: 2ch; text-align: center; color: var(--muted); }
+.message-meta .speaker-glyph.agent { color: var(--accent); }
 
 .message pre { grid-column: 2; margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 
@@ -1978,6 +1991,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* One general-tab preference row (label + control), e.g. keep-awake. */
 .settings2-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
 .settings2-row input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+/* Block rows stack their control under the label (theme grid, v2 parity). */
+.settings2-row-block { display: block; }
+.settings2-row-block > span { display: block; margin-bottom: 8px; }
+.settings-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.settings-theme { padding: 9px; }
+.settings-theme .sw-name { font-size: 11px; }
 
 /* Workspace/agents tabs: a narrow file/agent list beside the editor. */
 .settings2-split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }

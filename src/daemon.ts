@@ -54,6 +54,7 @@ import { transcribe, type SttAudioInput } from "./services/transcribe.js";
 import { TtsCallBridge } from "./services/voice-tts-bridge.js";
 import { SttCallBridge } from "./services/voice-stt-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
+import { readThemeSetting, writeThemeSetting } from "./services/theme.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
@@ -907,6 +908,20 @@ export class Daemon {
     return this.userName();
   }
 
+  // --- theme (Global Settings ▸ General) -------------------------------------------
+
+  /** Persisted UI palette id ("" = unset → the client's own default).
+   * Daemon-side so every client window opens on the same palette. */
+  async theme(): Promise<string> {
+    return readThemeSetting();
+  }
+
+  /** @param theme palette id; "" clears it back to unset. */
+  async setTheme(theme: string): Promise<string> {
+    await writeThemeSetting(theme);
+    return this.theme();
+  }
+
   // --- settings hot-reload ----------------------------------------------------------
 
   /** Settings files feed workspace/agent definitions cached at service
@@ -1493,6 +1508,7 @@ export class Daemon {
     workspaceRooms: Record<string, Snapshot["rooms"]>;
     keepAwake: KeepAwakeCapability;
     userName: string;
+    theme: string;
   }> {
     const workspaces = await this.registry.listForHuman(humanId);
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
@@ -1522,6 +1538,7 @@ export class Daemon {
       workspaceRooms,
       keepAwake: await this.keepAwake(),
       userName: await this.userName(),
+      theme: await this.theme(),
     };
   }
 }

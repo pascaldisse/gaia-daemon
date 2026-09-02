@@ -694,6 +694,14 @@ export class GaiaWebServer {
     // "Your name" (Global Settings ▸ General): the label the shared transcript
     // renderer uses for the human's own messages, in place of the anonymous
     // "user" token (services/user-name.ts). "" clears it back to that default.
+    // Theme palette (Global Settings ▸ General): persisted daemon-side so every
+    // client window opens on the same palette (services/theme.ts). "" clears it.
+    if (method === "POST" && path === "/api/app/theme") {
+      const body = await parseBody(request);
+      const theme = stringField(body, "theme") ?? "";
+      return this.respond(response, async () => ({ theme: await this.daemon.setTheme(theme) }));
+    }
+
     if (method === "POST" && path === "/api/app/user-name") {
       const body = await parseBody(request);
       const name = stringField(body, "name") ?? "";

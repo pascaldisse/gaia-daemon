@@ -3,6 +3,7 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
@@ -11,7 +12,7 @@ import { stopReadAloud } from "./readaloud.js";
 import { clearError, markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";
-import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
+import { commitTheme, committedThemeId, currentThemeId, previewTheme, revertTheme, themeById, THEMES } from "./themes.js";
 import { jumpToEvent } from "./transcript.js";
 
 /** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
@@ -103,7 +104,7 @@ function renderStatusbar() {
       cls: running ? "seg-run on" : "seg-run",
       title: "rooms with a live turn (this room + any running summons)",
     });
-    if (state.voice) segs.push({ text: `🎙 @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
+    if (state.voice) segs.push({ text: `${UI.call} @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
   } else {
     segs.push({ text: "no workspace", cls: "seg-head" });
   }
@@ -548,7 +549,7 @@ function BgTasksPopover() {
                     h("span", {
                       class: "usage-pct",
                       style: "cursor:pointer;",
-                      text: running ? "■ stop" : "✕ dismiss",
+                      text: running ? `${UI.stop} stop` : `${UI.close} dismiss`,
                       title: running ? "stop this background process" : "dismiss this entry",
                       onclick: (event) => {
                         event.stopPropagation();
@@ -729,20 +730,17 @@ async function jumpToPlaying(playing) {
 // html[data-theme] attribute, no re-render); click commits; Esc or backdrop
 // cancels back to where you were.
 
-/** @type {string|null} */
-let themeCommitted = null;
-
 export function openThemePalette() {
-  themeCommitted = currentThemeId();
   state.themePaletteOpen = true;
   markDirty("theme", "status");
 }
 
 /** @param {boolean} commit */
 export function closeThemePalette(commit) {
-  if (!commit && themeCommitted) applyTheme(themeCommitted);
+  // v2 model: the committed palette is the only thing that survives; anything
+  // still on screen from a hover is a preview and gets dropped on close.
+  if (!commit) revertTheme();
   state.themePaletteOpen = false;
-  themeCommitted = null;
   markDirty("theme", "status");
 }
 
@@ -783,12 +781,14 @@ function ThemePalette() {
           h(
             "button",
             {
-              class: `swatch ${theme.id === currentThemeId() ? "active" : ""}`,
+              class: `swatch ${theme.id === committedThemeId() ? "active" : ""}`,
               "data-theme": theme.id,
-              onmouseenter: () => applyTheme(theme.id),
+              onmouseenter: () => previewTheme(theme.id),
+              onmouseleave: () => revertTheme(),
+              onfocus: () => previewTheme(theme.id),
+              onblur: () => revertTheme(),
               onclick: () => {
-                applyTheme(theme.id);
-                themeCommitted = theme.id;
+                commitTheme(theme.id);
                 closeThemePalette(true);
               },
             },

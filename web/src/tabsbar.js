@@ -10,6 +10,7 @@
 // for the whole gesture and keep firing even when the pointer leaves the window,
 // so we get a trustworthy release point to place the torn-off window at.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { tearOff } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { isNative } from "./native.js";
@@ -62,7 +63,7 @@ function renderTabs() {
       "div",
       { class: "tab-strip" },
       tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
-      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
+      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer" }),
     h("button", {
@@ -98,8 +99,8 @@ function Tab(room, number, isActive, wsId) {
     },
     h("span", { class: "tab-num", text: String(number) }),
     room.running ? h("span", { class: "tab-dot" }) : null,
-    room.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
-    room.incognito ? h("span", { class: "tab-incognito", title: "incognito — no memory", text: "🕶" }) : null,
+    room.favorite ? h("span", { class: "room-star", title: "favorite", text: UI.favorite }) : null,
+    room.incognito ? h("span", { class: "tab-incognito", title: "incognito — no memory", text: UI.incognito }) : null,
     h("span", { class: "tab-name", text: room.title ?? room.id }),
     h("button", {
       class: "tab-close",

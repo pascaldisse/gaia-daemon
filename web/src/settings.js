@@ -10,6 +10,7 @@ import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
+import { commitTheme, committedThemeId, previewTheme, revertTheme, THEMES } from "./themes.js";
 
 /** @typedef {import("./types.js").FileDescriptor} FileDescriptor */
 /** @typedef {import("./types.js").FieldHint} FieldHint */
@@ -277,6 +278,49 @@ function GeneralTab() {
       ),
     );
   }
+  // Theme lives in Settings too (v2 parity), not only behind Alt+T: same
+  // preview-on-hover / commit-on-click contract, same palettes, one source of
+  // colour (each swatch carries data-theme; styles.css does the rest).
+  rows.push(
+    h(
+      "div",
+      { class: "settings2-row settings2-row-block" },
+      h("span", { text: "Theme" }),
+      h(
+        "div",
+        { class: "settings-theme-grid", role: "radiogroup", "aria-label": "Theme" },
+        THEMES.map((theme) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `settings-theme swatch ${theme.id === committedThemeId() ? "active" : ""}`,
+              "data-theme": theme.id,
+              role: "radio",
+              "aria-checked": String(theme.id === committedThemeId()),
+              onmouseenter: () => previewTheme(theme.id),
+              onmouseleave: () => revertTheme(),
+              onfocus: () => previewTheme(theme.id),
+              onblur: () => revertTheme(),
+              onclick: () => {
+                commitTheme(theme.id);
+                markDirty("settings", "theme", "status");
+              },
+            },
+            h(
+              "span",
+              { class: "sw-preview" },
+              h("span", { class: "sw-dot sw-accent" }),
+              h("span", { class: "sw-dot sw-accent2" }),
+              h("span", { class: "sw-dot sw-good" }),
+              h("span", { class: "sw-dot sw-danger" }),
+            ),
+            h("span", { class: "sw-name", text: theme.name }),
+          ),
+        ),
+      ),
+    ),
+  );
   return h("div", {}, rows);
 }
 

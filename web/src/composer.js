@@ -7,6 +7,7 @@
 // control (💭 #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -133,7 +134,7 @@ export function initComposer() {
       onkeydown: onComposerKeydown,
     })
   );
-  sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: ">" }));
+  sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: UI.send }));
   autocompleteEl = h("div", { class: "autocomplete", hidden: true });
   // Clicking the label toggles the summon list (only meaningful when this room
   // has running summons — renderComposer adds/removes the `has-summons` class).
@@ -177,7 +178,7 @@ export function initComposer() {
     class: "ultrawhip-chip",
     hidden: true,
     title: "UltraWhip is on — an auto-repeating steer lands every N tool calls, in whatever turn is running. /ultrawhip to toggle off.",
-    text: "🖤 UltraWhip",
+    text: `${UI.watchdog} UltraWhip`,
   });
 
   form.replaceChildren(
@@ -250,7 +251,7 @@ function renderComposer() {
     : state.voice
       ? `on call with @${state.voice.agentId} - speak, or type`
       : snapshot.room.incognito
-        ? "🕶 incognito — message @agent or /command (nothing saved to memory)"
+        ? `${UI.incognito} incognito — message @agent or /command (nothing saved to memory)`
         : "message @agent or /command";
   textarea.disabled = !snapshot;
   if (textarea.value !== state.composerText) {
@@ -262,7 +263,7 @@ function renderComposer() {
 
   const dictationPending = state.dictating || state.dictationBusy;
   sendButton.disabled = !snapshot;
-  sendButton.textContent = state.dictationBusy ? "…" : busy ? "»" : ">";
+  sendButton.textContent = state.dictationBusy ? "…" : busy ? UI.sendBusy : UI.send;
   sendButton.title = dictationPending
     ? "send voice message — stops recording, transcribes, then sends"
     : busy
@@ -342,7 +343,7 @@ function renderComposer() {
   // fall back to the original generic wording rather than assume a specific
   // plugin is the one running.
   if (ambientWatchdog) {
-    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? "🖤 UltraWhip"} ·${ambientWatchdog.toolCalls}`;
+    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? `${UI.watchdog} UltraWhip`} ·${ambientWatchdog.toolCalls}`;
     ultrawhipWrapEl.title = `An auto-repeating steer lands every ${ambientWatchdog.toolCalls} tool calls, in whatever turn is running. Toggle off with the command that turned it on (e.g. /ultrawhip, /ultralove).`;
   }
 
@@ -522,7 +523,7 @@ function PendingAttachmentChips() {
     return h(
       "div",
       { class: "attach-chip", title: item.name },
-      h("span", { class: "attach-icon", text: "📎" }),
+      h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
       remove,
@@ -556,7 +557,7 @@ function EditingAttachmentChips() {
     return h(
       "div",
       { class: "attach-chip", title: item.name },
-      h("span", { class: "attach-icon", text: "📎" }),
+      h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
       remove,
@@ -1083,7 +1084,7 @@ function VoiceButtons() {
         class: state.micMuted ? "voice-button muted" : "voice-button",
         title: state.micMuted ? "unmute microphone" : "mute microphone",
         onclick: () => setMicMuted(!state.micMuted),
-        text: state.micMuted ? "\u{1F507}" : "\u{1F3A4}",
+        text: state.micMuted ? UI.micMuted : UI.mic,
       }),
       h("button", {
         type: "button",

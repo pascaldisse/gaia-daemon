@@ -8,6 +8,7 @@ import { markDirty, setError } from "./render.js";
 import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
 import { closeTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
+import { adoptServerTheme, setThemePersist } from "./themes.js";
 import { pinTranscriptToBottom } from "./transcript.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
@@ -35,6 +36,9 @@ async function applyAppPayload(body) {
   state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
   state.keepAwake = body.keepAwake ?? state.keepAwake;
   state.userName = body.userName ?? state.userName;
+  // Theme is a daemon setting (v2 parity, services/theme.ts): the payload is
+  // authoritative over this browser's pre-paint localStorage cache.
+  adoptServerTheme(body.theme);
   if (state.snapshot) {
     restoreTabs(state.snapshot.workspace.id);
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
@@ -736,6 +740,12 @@ export async function setKeepAwake(enabled) {
     setError(error);
   }
 }
+
+// Theme commits (palette overlay, settings grid, Alt+Shift+T cycle) persist
+// daemon-side through this hook; themes.js itself never touches the API.
+setThemePersist((theme) => {
+  void api("/api/app/theme", { method: "POST", body: JSON.stringify({ theme }) }).catch(setError);
+});
 
 /** "Your name" (Settings ▸ General): persists the label agents use for the
  * human's own transcript lines in place of the anonymous "user" token

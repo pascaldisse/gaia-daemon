@@ -9,6 +9,7 @@
 // joining agent's first seed — never the transcript or any other agent.
 
 import { api } from "./api.js";
+import { UI } from "./glyphs.js";
 import { $, h } from "./dom.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
@@ -71,7 +72,7 @@ function ContextGateModal(gate) {
   // Same choice, two stories: a NEW agent's first seed vs an EXISTING agent
   // whose harness session vanished (its history must be reloaded, not skipped).
   const sessionLost = gate.reason === "session-lost";
-  const heading = sessionLost ? `🧠 Session lost — how much should @${gate.agentId} reload?` : `🧠 Big room — how much should @${gate.agentId} load?`;
+  const heading = sessionLost ? `${UI.memory} Session lost — how much should @${gate.agentId} reload?` : `${UI.memory} Big room — how much should @${gate.agentId} load?`;
   const lead = sessionLost
     ? `@${gate.agentId}'s harness session for this room is gone, so its memory of the conversation now lives only in the transcript (${size}${ofWindow}). Rather than silently continuing mid-stream, pick how much history to reload — this affects only @${gate.agentId}; every other agent and the transcript stay unchanged.`
     : `@${gate.agentId} is joining a conversation carrying ${size}${ofWindow}. Its prompt cache is empty, so all of it loads on the first turn. Pick how much history to give it — this affects only @${gate.agentId}; every other agent and the transcript stay unchanged.`;

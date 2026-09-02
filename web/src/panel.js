@@ -1,6 +1,7 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
 import { addRoomHuman, removeRoomHuman, roomHumans, accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
@@ -207,14 +208,14 @@ function renderPanel() {
               : `make @${agent.id} the default agent (seeds new rooms; doesn't change who this room is talking to)`,
             disabled: agent.isDefault,
             onclick: () => void setDefaultAgent(agent.id),
-            text: agent.isDefault ? "★" : "☆",
+            text: agent.isDefault ? UI.favorite : UI.favoriteOff,
           }),
           h("button", {
             class: `call-button ${onCall ? "active" : ""}`,
             title: onCall ? `hang up @${agent.id}` : `start voice call with @${agent.id}`,
             disabled: connecting || (Boolean(state.voice) && !onCall),
             onclick: () => void toggleCall(agent.id),
-            text: connecting ? "..." : onCall ? "⏹" : "📞",
+            text: connecting ? "…" : onCall ? UI.stop : UI.call,
           }),
         );
       }),
