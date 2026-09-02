@@ -225,10 +225,14 @@ test("evidence readers: transcript/rewound/pi-session parsing on hand-written fi
       { type: "message", id: "s-u1", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "TOKEN-A1" }] } },
       { type: "message", id: "s-a1", parentId: "s-u1", timestamp: "t", message: { role: "assistant", content: [{ type: "text", text: "TOKEN-A1-REPLY" }] } },
       { type: "message", id: "s-u2old", parentId: "s-a1", timestamp: "t", message: { role: "user", content: [{ type: "text", text: "TOKEN-A2-OLD" }] } },
+      { type: "message", id: "s-a2old", parentId: "s-u2old", timestamp: "t", message: { role: "assistant", content: [{ type: "text", text: "TOKEN-A2-OLD-REPLY" }] } },
       // Fork: the edited entry's parent is s-a1 (the reply BEFORE the edited
       // message), not s-u2old — same shape as the real f4b4e0e2/07da2578 pair
       // in REFACTOR-LIVE-RESULTS-20260902.md's A6 result.
       { type: "message", id: "s-u2edit", parentId: "s-a1", timestamp: "t", message: { role: "user", content: [{ type: "text", text: "TOKEN-A2-EDITED" }] } },
+      // Fresh tail branches from the edited message, never the rewound tail —
+      // the same pi-session evidence shape as REFACTOR-LIVE-RESULTS-20260902.
+      { type: "message", id: "s-a2edit", parentId: "s-u2edit", timestamp: "t", message: { role: "assistant", content: [{ type: "text", text: "TOKEN-A2-EDITED-REPLY" }] } },
     ];
 
     const { appendJsonl } = await import("../src/core/store.js");
@@ -247,12 +251,12 @@ test("evidence readers: transcript/rewound/pi-session parsing on hand-written fi
     assert.equal(rewound.length, 2);
     assert.ok(rewound.some((event) => event.text === "TOKEN-A2-OLD"), "pre-edit old tail preserved off-branch in rewound.jsonl");
 
-    const editedEntry = session.find((entry) => entryCarriesText(entry, "TOKEN-A2-EDITED"));
-    const oldTailEntry = session.find((entry) => entryCarriesText(entry, "TOKEN-A2-OLD"));
-    const replyEntry = session.find((entry) => entryCarriesText(entry, "TOKEN-A1-REPLY"));
-    assert.ok(editedEntry && oldTailEntry && replyEntry, "all three pi-session entries must be found");
-    assert.equal(editedEntry!.parentId, replyEntry!.id, "edited entry's parent must be the pre-edit assistant reply, not the old tail — the fork target");
-    assert.notEqual(editedEntry!.parentId, oldTailEntry!.id, "edited entry must NOT chain through the rewound old tail");
+    const editedMessageEntry = session.find((entry) => entry.message?.role === "user" && entryCarriesText(entry, "TOKEN-A2-EDITED"));
+    const oldTailEntry = session.find((entry) => entry.message?.role === "assistant" && entryCarriesText(entry, "TOKEN-A2-OLD"));
+    const newTailEntry = session.find((entry) => entry.message?.role === "assistant" && entryCarriesText(entry, "TOKEN-A2-EDITED"));
+    assert.ok(editedMessageEntry && oldTailEntry && newTailEntry, "edited message plus old and new pi-session tails must be found");
+    assert.equal(newTailEntry!.parentId, editedMessageEntry!.id, "new pi-session tail must parent the edited message");
+    assert.notEqual(newTailEntry!.parentId, oldTailEntry!.id, "new pi-session tail must not parent the rewound old tail");
   } finally {
     seed.cleanup();
   }
@@ -359,14 +363,14 @@ test(
     const rewound = await readRewound(workspaceDir!, roomId);
     assert.ok(rewound.some((e) => e.text.includes(tokenA2Old)), "pre-edit old tail must be preserved in rewound.jsonl");
 
-    // 3) Pi session parent chain: the edited entry's parent is the reply that
-    // preceded U2, not U2's own pre-edit entry — the fork target.
+    // 3) Pi session parent chain: read the actual fresh assistant tail, then
+    // prove it parents the edited user message rather than the rewound tail.
     const session = await readPiSessionEntries(workspaceDir!, roomId, LUNA_AGENT_ID);
-    const editedEntry = session.find((entry) => entryCarriesText(entry, tokenA2Edited));
-    const preEditReplyEntry = session.find((entry) => entryCarriesText(entry, tokenA1));
-    const oldTailEntry = session.find((entry) => entryCarriesText(entry, tokenA2Old));
-    assert.ok(editedEntry, "edited token must appear in a pi session entry");
-    assert.ok(preEditReplyEntry, "pre-edit reply token must appear in a pi session entry");
-    if (oldTailEntry) assert.notEqual(editedEntry!.parentId, oldTailEntry.id, "edited entry must not chain through the rewound old-tail entry");
+    const editedMessageEntry = session.find((entry) => entry.message?.role === "user" && entryCarriesText(entry, tokenA2Edited));
+    const oldTailEntry = session.find((entry) => entry.message?.role === "assistant" && entryCarriesText(entry, tokenA2Old));
+    const newTailEntry = session.find((entry) => entry.message?.role === "assistant" && entryCarriesText(entry, tokenA2Edited));
+    assert.ok(editedMessageEntry && oldTailEntry && newTailEntry, "edited message plus old and new pi-session tails must be found");
+    assert.equal(newTailEntry!.parentId, editedMessageEntry!.id, "new pi-session tail must parent the edited message");
+    assert.notEqual(newTailEntry!.parentId, oldTailEntry!.id, "new pi-session tail must not parent the rewound old tail");
   },
 );
