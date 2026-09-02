@@ -477,3 +477,8 @@ Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifa
 - expected → 200 app payload.
 - actual → 500 `Missing workspace config: .../ghoul-terra-mtklq5ixkikbww/.gaia/config.json`; boot also skips summon recovery for cwd workspace.
 - impact → full authenticated A5c route smoke blocked; no fix in live child.
+
+## Nyari triage — ADV-013 (09-02 23:35)
+- ADV-013 reclassified PRE-EXISTING / MED, not A5c: throw = src/domain/workspace.ts:147, untouched 768115b..main (`git log -S'Missing workspace config'` empty; cwd-workspace path diff 0).
+- Trigger: daemon cwd inside a dir w/ `.gaia/` but no `.gaia/config.json` (any worktree) → GET /api/app 500 + summon recovery skipped.
+- A5 route smoke → PASS for parity (all other routes 200/401 as expected). Fix = W4 atom (auto-workspace: bootstrap config or skip cwd w/o config), not refactor scope.
