@@ -49,6 +49,7 @@ test("rejects schema drift, malformed declarations, and invalid placement", () =
     { ...valid, id: "Acme" },
     { ...valid, version: "01.2.3" },
     { ...valid, placement: "host" },
+    { ...valid, process: "daemon" },
     { ...valid, requiredCaps: ["room.message", "room.message"] },
     { ...valid, contributes: { ...valid.contributes, tools: ["unsafe tool"] } },
     { ...valid, contributes: { commands: [], tools: [], channels: [] } },

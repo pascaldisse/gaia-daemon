@@ -94,4 +94,5 @@ test("Telegram bridge script uses the registered manifest channel, not a service
   assert.match(script, /invokeChannelBridge\("gaia\.telegram", "telegram"/);
   assert.doesNotMatch(script, /telegram-bridge-format/);
   assert.match(manifest, /"channels": \["telegram"\]/);
+  assert.match(manifest, /"process": "standalone"/);
 });

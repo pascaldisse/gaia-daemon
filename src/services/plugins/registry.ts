@@ -72,7 +72,7 @@ export type PluginRegistryEvent =
   | { readonly kind: "dispose-failed"; readonly generation: number; readonly pluginId: string; readonly reason: string };
 
 export type PluginModuleLoader = (
-  pluginsRoot: string,
+  pluginsRoot: string | readonly string[],
   placement: PluginPlacement,
   importer: PluginImporter<unknown>,
 ) => Promise<readonly LoadedPlugin<unknown>[]>;
@@ -83,7 +83,7 @@ export interface PluginTurnBoundary {
 }
 
 export interface PluginRegistryOptions {
-  readonly pluginsRoot: string;
+  readonly pluginsRoot: string | readonly string[];
   readonly placement: PluginPlacement;
   readonly importer: PluginImporter<unknown>;
   /** Required before any contribution invocation; absent registries remain
@@ -143,7 +143,7 @@ function registrationOf(value: void | PluginRegistration): PluginRegistration {
  * this registry.
  */
 export class PluginRegistry implements PluginTurnBoundary {
-  readonly #pluginsRoot: string;
+  readonly #pluginsRoot: string | readonly string[];
   readonly #placement: PluginPlacement;
   readonly #importer: PluginImporter<unknown>;
   readonly #capabilityBroker: CapabilityBroker | undefined;
@@ -162,7 +162,7 @@ export class PluginRegistry implements PluginTurnBoundary {
   #lifecycle: Promise<void> = Promise.resolve();
 
   constructor(options: PluginRegistryOptions) {
-    if (typeof options.pluginsRoot !== "string" || options.pluginsRoot.length === 0) throw new PluginRegistryError("pluginsRoot is required");
+    if (options.pluginsRoot.length === 0) throw new PluginRegistryError("pluginsRoot is required");
     if (options.placement !== "daemon" && options.placement !== "runner") throw new PluginRegistryError("placement must be daemon or runner");
     if (typeof options.importer !== "function") throw new PluginRegistryError("an importer must be injected");
     if (options.loader !== undefined && typeof options.loader !== "function") throw new PluginRegistryError("loader must be a function");

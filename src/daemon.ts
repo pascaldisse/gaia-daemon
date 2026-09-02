@@ -26,6 +26,7 @@ import { ensureAccountsFile } from "./domain/accounts.js";
 import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { CapabilityBroker } from "./services/capabilities/broker.js";
 import { PluginRegistry } from "./services/plugins/registry.js";
+import { pluginDiscoveryRoots } from "./services/plugins/loader.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
@@ -187,7 +188,7 @@ export class Daemon {
   readonly files = new EditableFileRegistry((id) => this.workspaceForId(id));
   /** One daemon-owned plugin generation boundary, injected into every room. */
   readonly pluginRegistry = new PluginRegistry({
-    pluginsRoot: globalPaths.commandPluginsDir(),
+    pluginsRoot: pluginDiscoveryRoots(),
     placement: "daemon",
     importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
     capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),

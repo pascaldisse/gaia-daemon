@@ -1,0 +1,1 @@
+{"id":"gaia.rpg","version":"1.0.0","engine":"gaia-daemon@^2.0.0","placement":"daemon","requiredCaps":[],"contributes":{"commands":[],"tools":[],"channels":[],"providers":[]}}

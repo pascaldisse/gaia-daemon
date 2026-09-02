@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "engine": "gaia-daemon@^2.0.0",
   "placement": "daemon",
+  "process": "standalone",
   "requiredCaps": [],
   "contributes": {
     "commands": [],
