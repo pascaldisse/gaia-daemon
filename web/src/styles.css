@@ -17,8 +17,8 @@
   /* deep inset surfaces (inputs, menus) — always darker than --bg */
   --ink: color-mix(in srgb, var(--bg) 55%, black);
   /* resizable pane widths */
-  --w-left: 248px;
-  --w-right: 332px;
+  --w-left: 28ch;
+  --w-right: 32ch;
   font-family: var(--font);
   font-size: 12.5px;
 }
