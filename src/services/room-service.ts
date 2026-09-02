@@ -23,6 +23,7 @@ import { Bus } from "../core/bus.js";
 import { newId } from "../core/ids.js";
 import { readJson, writeJsonAtomic } from "../core/store.js";
 import { globalPaths, workspacePaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { GOAL_COMPLETE_SIGNAL } from "../core/types.js";
 import type { SanitizeProposal, SanitizeStatus } from "../core/types.js";
 import type {
@@ -250,7 +251,7 @@ const PERSONA_CONTEXT_CAP = 16_000;
  * running turns; missing/invalid = a no-op. Room ids are already
  * filesystem-safe (see newRoomId/room dir naming), so no extra sanitizing. */
 function ambientWatchdogPath(roomId: string): string {
-  return join(homedir(), ".gaia", "ambient-watchdog", `${roomId}.json`);
+  return join(globalPaths.ambientWatchdogDir(), `${roomId}.json`);
 }
 
 interface AmbientWatchdog {
@@ -1270,7 +1271,7 @@ export class RoomService {
       const settled = !this.activeTask && !state.pendingTurn && (state.queue?.length ?? 0) === 0;
       stable = settled ? stable + 1 : 0;
       if (stable >= 2) return;
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await sleep(250);
     }
   }
 

@@ -228,16 +228,6 @@ function applyStatusbarVisibility(visible) {
   if (app) app.classList.toggle("statusbar-hidden", !visible);
 }
 
-/** @param {boolean} visible */
-export function setStatusbarVisible(visible) {
-  applyStatusbarVisibility(visible);
-  try {
-    localStorage.setItem(STATUSBAR_STORAGE_KEY, visible ? "shown" : "hidden");
-  } catch {
-    // private mode / storage disabled — the choice just won't persist.
-  }
-}
-
 // Restore before first paint so there is no flash of the status bar.
 export function initStatusbarPref() {
   applyStatusbarVisibility(statusbarVisible());

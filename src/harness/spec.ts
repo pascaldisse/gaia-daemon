@@ -14,6 +14,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
+import type { ToolProviders } from "./protocol.js";
 
 // --- what a runtime consumes and produces ------------------------------------
 
@@ -266,6 +267,8 @@ export interface RuntimeCreateContext {
   contextDiet?: ContextDietAccess;
   /** Gracefully end this agent's current room conversation with a visible farewell. */
   endConversation?: EndConversation;
+  /** Service implementations for the shared tool port. */
+  toolProviders?: ToolProviders;
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
@@ -558,11 +561,6 @@ export function contextWindowFor(id: string, model: string | undefined): number 
  * none / unregistered). Read uniformly by the snapshot builder. */
 export function nativeCommandsFor(id: string): NativeCommandDef[] {
   return registry.get(canonicalHarnessId(id))?.nativeCommands?.() ?? [];
-}
-
-/** The single harness parser: valid iff registered. */
-export function parseHarness(raw: unknown): string | undefined {
-  return typeof raw === "string" && registry.has(canonicalHarnessId(raw)) ? canonicalHarnessId(raw) : undefined;
 }
 
 /** Effective harness for an agent in a workspace: agent → workspace → "pi". */

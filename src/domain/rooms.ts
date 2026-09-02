@@ -49,8 +49,6 @@ export function isAutoRoomId(roomId: string): boolean {
   return roomId.startsWith(AUTO_ROOM_PREFIX);
 }
 
-export type RoomTitleSource = "auto" | "model" | "manual";
-
 export const ROOM_TITLE_MAX = 48;
 
 /** Normalize a user/model-proposed room title: one line, no wrapping quotes or

@@ -468,6 +468,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly toolResultFetch?: ToolResultFetch;
   private readonly contextDiet?: ContextDietAccess;
   private readonly endConversation?: EndConversation;
+  private readonly toolProviders?: RuntimeCreateContext["toolProviders"];
   /** Drafts live only for this runner lifetime; applying after a runner restart
    * intentionally asks the caller to make a fresh draft. */
   private readonly pendingCompactDrafts = new Map<string, CompactionResult>();
@@ -502,6 +503,7 @@ export class PiRuntime implements AgentRuntime {
     this.toolResultFetch = options.toolResultFetch;
     this.contextDiet = options.contextDiet;
     this.endConversation = options.endConversation;
+    this.toolProviders = options.toolProviders;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
@@ -1020,6 +1022,7 @@ export class PiRuntime implements AgentRuntime {
       toolResultFetch: this.toolResultFetch,
       contextDiet: this.contextDiet,
       endConversation: this.endConversation,
+      toolProviders: this.toolProviders,
     });
     const systemPromptRef = { current: systemPrompt };
 

@@ -321,14 +321,6 @@ export function parseMcpServers(raw: unknown): Record<string, McpServerConfig> |
   return Object.keys(servers).length > 0 ? servers : undefined;
 }
 
-/** Effective MCP servers for an agent: workspace set ∪ agent set (agent wins). */
-export function resolveMcpServers(
-  workspace: Pick<WorkspaceConfig, "mcpServers">,
-  agent: { mcpServers?: Record<string, McpServerConfig> },
-): Record<string, McpServerConfig> {
-  return { ...(workspace.mcpServers ?? {}), ...(agent.mcpServers ?? {}) };
-}
-
 /** Parse a `memory` patch (agent.json override or config.json section).
  * Unknown/bad fields drop; an empty patch returns undefined. */
 export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {

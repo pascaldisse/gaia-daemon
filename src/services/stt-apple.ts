@@ -12,9 +12,10 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { globalPaths } from "../core/paths.js";
 import type { SttContext, SttResult } from "./transcribe.js";
 
 // ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ const INFO_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 function binDir(): string {
-  return join(homedir(), ".gaia", "cache", "bin");
+  return globalPaths.cacheBinDir();
 }
 
 function helperPath(log: (message: string) => void): string {
