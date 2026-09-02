@@ -348,3 +348,28 @@ UNVERIFIED:
 - No `bun test` executed: static-only constraint.
 - No daemon, summon, or app execution.
 - Pre-range origin cannot be attributed to one commit under the mandated `820e568..main` `git show` scope.
+
+## ADV-009 · HIGH · A6 extraction disables typechecking on the durability seam (`// @ts-nocheck`)
+
+Atom → A6 room-service split; files `src/services/room/turn-loop.ts` (512 lines) + `src/services/room/fork.ts` (178 lines).
+
+Defect → both extracted modules begin with `// @ts-nocheck` and take `private readonly service: any`. 690 lines carrying the durability seam (reserved `pendingTurn.eventId` commit path, `flushPartialReply`, `clearPendingTurn`, multi-target hand-off marker install, transcript fork/rewind + cursor capping) are excluded from `bun run check`. The green gate is therefore not evidence for this code: renaming/removing any `service.*` member or changing a durability signature compiles silently. Pre-split, this code was typechecked inside `room-service.ts`.
+
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/chat-mtk78q14-wa40
+rg -n 'ts-nocheck|service: any' "$W/src/services/room/"*.ts
+sed -i '' '1s|// @ts-nocheck|//|' "$W/src/services/room/turn-loop.ts" "$W/src/services/room/fork.ts"
+bunx tsc -p "$W/tsconfig.json" --noEmit 2>&1 | grep -E 'room/(turn-loop|fork)'
+git -C "$W" checkout src/services/room/turn-loop.ts src/services/room/fork.ts
+```
+
+Expected @ REFACTOR-LAWS (gate = proof) → extracted modules typechecked, helper↔façade contract explicit (typed interface, not `any`).
+
+Actual @ `main` / worktree `a85cfea` → `bun run check` EXIT=0 while the two files are check-exempt; removing the suppression yields **9 errors** (fork 5, turn-loop 4), e.g.
+```
+src/services/room/turn-loop.ts(15,57): error TS2304: Cannot find name 'SendMessageOptions'.
+src/services/room/fork.ts(134,11): error TS18046: 'cursor' is of type 'unknown'.
+src/services/room/fork.ts(55,35): error TS7006: Parameter 'event' implicitly has an 'any' type.
+```
+Runtime behavior UNVERIFIED (no live queue run this atom); the gate-coverage regression is measured.
