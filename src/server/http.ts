@@ -910,8 +910,7 @@ export class GaiaWebServer {
       return this.respond(response, async () => ({ ok: true }));
     }
 
-    // Named accounts. The login routes are registered BEFORE DELETE
-    // /api/accounts/<id> so "login" is never mistaken for an account id.
+    // Named accounts are managed directly in accounts.json.
     if (method === "GET" && path === "/api/accounts") {
       return this.respond(response, async () => ({
         accounts: redactedAccounts(),
@@ -921,41 +920,12 @@ export class GaiaWebServer {
       }));
     }
 
-    if (method === "POST" && path === "/api/accounts/login") {
-      const body = await parseBody(request);
-      const harness = stringField(body, "harness");
-      const label = stringField(body, "label");
-      return this.respond(response, async () => ({
-        session: this.daemon.accountLogins.start((harness ?? "").trim(), label?.trim() || undefined),
-      }));
-    }
-
-    if (method === "GET" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
-      return this.respond(response, async () => ({ session: this.daemon.accountLogins.status(params![0]) }));
-    }
-
-    if (method === "POST" && (params = match(/^\/api\/accounts\/login\/([^/]+)\/input$/))) {
-      const body = await parseBody(request);
-      const textValue = stringField(body, "text") ?? "";
-      return this.respond(response, async () => {
-        this.daemon.accountLogins.input(params![0], textValue);
-        return { session: this.daemon.accountLogins.status(params![0]) };
-      });
-    }
-
-    if (method === "DELETE" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
-      return this.respond(response, async () => {
-        this.daemon.accountLogins.cancel(params![0]);
-        return { session: this.daemon.accountLogins.status(params![0]) };
-      });
-    }
 
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
     }
 
-    // Display metadata only — credentials remain write-only to the harness
-    // login flow / accounts.json and never cross this HTTP boundary.
+    // Display metadata only — credentials remain write-only in accounts.json.
     if (method === "PATCH" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       const body = await parseBody(request);
       const value = (key: "label" | "email"): string | null | undefined => {

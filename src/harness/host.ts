@@ -47,7 +47,6 @@ import {
 export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
   "ANTHROPIC_OAUTH_TOKEN",
   "ANTHROPIC_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN", // per-account subscription token (HarnessSpec.accounts)
   "COPILOT_GITHUB_TOKEN",
   "OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY",
@@ -402,6 +401,10 @@ export class RunnerHost implements AgentRuntime {
   async compact(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     if (!this.capabilities.supportsCompact) throw new Error("this harness has no native compaction");
     return this.runCompactRequest(roomId, { type: "compact", roomId }, onProgress);
+  }
+
+  async compactClean(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
+    return this.runCompactRequest(roomId, { type: "compact-clean", roomId }, onProgress);
   }
 
   async compactDraft(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }> {

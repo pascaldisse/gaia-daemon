@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  buildBaseSystemPrompt,
   buildProtocolsSection,
   buildSystemPrompt,
   buildTurnPrompt,
@@ -18,6 +20,9 @@ import { splitLeadingGaiaThink } from "../web/shared/gaia-think.js";
 import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietPolicy } from "../src/domain/context-diet.js";
 
 const AGENT = { id: "tester" } as unknown as AgentDef;
+const PROTOCOL_FIXTURE_DIR = fileURLToPath(new URL("./fixtures/protocols", import.meta.url));
+const PROTOCOL_FIXTURE_ROOT = fileURLToPath(new URL("./fixtures", import.meta.url));
+const PROTOCOL_FIXTURE_SOUL = fileURLToPath(new URL("./fixtures/protocol-soul.md", import.meta.url));
 
 function baseInput(overrides: Partial<SystemPromptInput> = {}): SystemPromptInput {
   return {
@@ -81,6 +86,40 @@ test("readProtocolsText: missing dir = empty; *.md sorted + concatenated verbati
   await writeFile(join(dir, "ignore.txt"), "NOPE");
   const text = await readProtocolsText(dir);
   assert.equal(text, "FIRST\n\nSECOND"); // filename sort, .txt ignored
+});
+
+test("readProtocolsText: missing protocol config enables every file", async () => {
+  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR), "ALWAYS-ON BODY\n\nGAIA-THINK BODY");
+});
+
+test("readProtocolsText: explicit true leaves a protocol enabled", async () => {
+  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, { "GAIA-THINK": true }), "ALWAYS-ON BODY\n\nGAIA-THINK BODY");
+});
+
+test("readProtocolsText: explicit false excludes its filename before concatenation", async () => {
+  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, { "GAIA-THINK": false }), "ALWAYS-ON BODY");
+});
+
+test("buildSystemPrompt: disabling GAIA-THINK also omits its thinking-level line", () => {
+  const prompt = buildSystemPrompt(baseInput({
+    agent: { id: "tester", protocols: { "GAIA-THINK": false } } as AgentDef,
+    protocolsText: "ALWAYS-ON BODY",
+    thinkingLevel: 3,
+  }));
+  assert.match(prompt, /# Protocols\n\nALWAYS-ON BODY/);
+  assert.doesNotMatch(prompt, /Current thinking level|Thinking disabled/);
+});
+
+test("buildBaseSystemPrompt: agent protocol opt-out filters files before assembly", async () => {
+  const prompt = await buildBaseSystemPrompt({
+    agent: { id: "tester", soulPath: PROTOCOL_FIXTURE_SOUL, protocols: { "GAIA-THINK": false } } as AgentDef,
+    role: undefined,
+    workspaceRoot: PROTOCOL_FIXTURE_ROOT,
+    protocolsDir: PROTOCOL_FIXTURE_DIR,
+    thinkingLevel: 3,
+  });
+  assert.match(prompt, /ALWAYS-ON BODY/);
+  assert.doesNotMatch(prompt, /GAIA-THINK BODY|Current thinking level|Thinking disabled/);
 });
 
 test("buildSystemPrompt: promptLaw is the very first tokens; absent when unset", () => {

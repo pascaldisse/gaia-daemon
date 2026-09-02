@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalPaths } from "../core/paths.js";
+import { canonicalHarnessId } from "../core/harness-id.js";
 
 export interface AccountRecord {
   /** Unique id (what AgentDef.account references). */
@@ -51,7 +52,7 @@ export function listAccounts(): AccountRecord[] {
     return [
       {
         id: record.id.trim(),
-        harness: record.harness.trim(),
+        harness: canonicalHarnessId(record.harness),
         ...(typeof record.label === "string" && record.label.trim() ? { label: record.label.trim() } : {}),
         ...(typeof record.email === "string" && record.email.trim() ? { email: record.email.trim() } : {}),
         credentials,

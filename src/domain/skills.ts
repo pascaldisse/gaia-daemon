@@ -19,7 +19,7 @@ import { effectiveAgentSkills, type ResolvedRole } from "./roles.js";
 
 // The install location a skill was detected in. Known ecosystems are spelled
 // out for autocomplete; the `(string & {})` arm keeps it open for new roots.
-export type SkillSource = "project" | "global" | "pi" | "claude" | "codex" | "hermes" | (string & {});
+export type SkillSource = "project" | "global" | "pi" | "hermes" | (string & {});
 
 export interface ResolvedSkill {
   name: string;
@@ -59,21 +59,15 @@ export interface SkillRoot {
 }
 
 /** Every skill directory gaia auto-detects, in precedence order (earlier wins).
- * Covers the popular agent ecosystems — pi, Claude Code, Codex, Hermes — plus
- * gaia's own. Non-existent dirs are skipped silently, so listing a tool you
+ * Covers Pi, Hermes, and gaia skill locations. Non-existent dirs are skipped
+ * silently, so listing a tool you
  * don't use costs nothing; add a line here to cover another. A detected skill is
  * only AVAILABLE — which agent/persona/role loads it stays explicit config. */
 export function skillRoots(workspace: SkillWorkspaceRef, home?: string, userHome = homedir()): SkillRoot[] {
   return [
     { path: projectSkillsPath(workspace), source: "project" },
-    // Claude Code's project-level skills live beside the project ROOT
-    // (<root>/.claude/skills — workspace.dir is <root>/.gaia, one level in);
-    // the bare-dir seam mirrors the layout inside the injected dir as above.
-    { path: join(workspace.rootDir ?? workspace.dir, ".claude", "skills"), source: "project" },
     { path: globalSkillsPath(home), source: "global" },
     { path: join(userHome, ".pi", "agent", "skills"), source: "pi" }, // pi nests under collection dirs (pi-skills/)
-    { path: join(userHome, ".claude", "skills"), source: "claude" },
-    { path: join(userHome, ".codex", "skills"), source: "codex" },
     { path: join(userHome, ".hermes", "skills"), source: "hermes" },
     { path: join(userHome, ".config", "hermes", "skills"), source: "hermes" },
   ];
@@ -102,7 +96,7 @@ function readSkillMeta(path: string): { name?: string; description?: string } {
 /** Scan a root for `<dir>/SKILL.md`, descending up to `depth` extra levels so a
  * collection dir (pi's pi-skills/) is walked into. Best-effort: an unreadable
  * dir yields nothing rather than throwing. Exported as THE one SKILL.md
- * discovery + frontmatter parser — harness command hints (claude.ts) reuse it
+ * discovery + frontmatter parser
  * rather than re-implementing the scan/quote-strip/name rules. */
 export function scanSkillRoot(root: string, source: SkillSource, depth = 1): ResolvedSkill[] {
   const found: ResolvedSkill[] = [];
@@ -179,12 +173,9 @@ export function agentSkillNames(agent: Pick<AgentDef, "skills" | "skillOverride"
 }
 
 /**
- * Inline the text of named skills for harnesses that can't load skill files
- * natively. Pi loads skills via the SDK (additionalSkillPaths); the Claude and
- * Codex harnesses run external CLIs that never see them, so we read each
- * SKILL.md, strip its frontmatter, and return a block to append to the system
- * prompt. Without this, an assigned skill reaches those agents as an instruction
- * to use a skill they can't see.
+ * Read assigned SKILL.md files for prompt construction and diagnostics. Pi
+ * loads paths through its SDK; this helper remains the safe shared reader for
+ * callers that need rendered skill text.
  */
 export async function loadSkillText(
   workspace: SkillWorkspaceRef,
