@@ -3,7 +3,7 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
-import { UI } from "./glyphs.js";
+import { agentGlyph, UI } from "./glyphs.js";
 import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
@@ -26,38 +26,81 @@ function renderStatus() {
 
 registerRegion("status", renderStatus);
 
+/** @param {Snapshot} snapshot */
+function activeAgent(snapshot) {
+  const id = snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent;
+  return snapshot.agents.find((agent) => agent.id === id) ?? null;
+}
+
+/** @param {Snapshot} snapshot */
+function roomMeterText(snapshot) {
+  const agent = activeAgent(snapshot);
+  if (!agent) return "No active agent";
+  const context = agent.context;
+  const maxTokens = context?.maxTokens;
+  const percent = context && Number.isFinite(context.usedTokens) && typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+    ? Math.round((context.usedTokens / maxTokens) * 100)
+    : null;
+  return `${agentGlyph(agent.id)} @${agent.id}${percent === null ? " · ctx unavailable" : ` · ctx ${percent}%`}`;
+}
+
+/** @param {Snapshot} snapshot */
+function transcriptStateText(snapshot) {
+  const loaded = snapshot.room.events.length;
+  const total = snapshot.room.eventTotal;
+  const running = activeAgent(snapshot)?.status === "running";
+  return `${loaded.toLocaleString()} loaded · ${total.toLocaleString()} total${running ? " · running" : ""}`;
+}
+
 function renderTopbar() {
   const topbar = $("#topbar");
   if (!topbar) return;
+  topbar.classList.add("room-header");
   const snapshot = state.snapshot;
+  if (!snapshot) {
+    topbar.replaceChildren(
+      h("div", { class: "room-header-primary" },
+        h("div", { class: "room-paths" },
+          h("strong", { title: "No workspace selected" }, LinkedText("No workspace selected")),
+          h("small", { title: "Add an initialized workspace to begin." }, LinkedText("Add an initialized workspace to begin."))),
+      ),
+    );
+    return;
+  }
+  const meter = roomMeterText(snapshot);
   topbar.replaceChildren(
     h(
       "div",
-      {},
-      h("strong", {}, snapshot ? PathText(snapshot.workspace.rootDir) : LinkedText("No workspace selected")),
-      h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
+      { class: "room-header-primary" },
+      h(
+        "div",
+        { class: "room-paths" },
+        h("strong", { title: snapshot.workspace.rootDir }, PathText(snapshot.workspace.rootDir)),
+        h("small", { title: snapshot.room.statePath }, PathText(snapshot.room.statePath)),
+      ),
+      h("div", { class: "transcript-state", title: "Durable transcript state", text: transcriptStateText(snapshot) }),
     ),
     h(
       "div",
-      { class: "topbar-right" },
-      // Search THIS chat — the same overlay as ⌘K, pre-scoped to the open room.
-      snapshot
-        ? h("button", {
-            class: "topbar-search",
-            type: "button",
-            title: "search this chat (⌘F)",
-            "aria-label": "search this chat",
-            onclick: () => openSearch("room"),
-            text: "⌕",
-          })
-        : null,
-      h("div", {
-        class: state.voice || state.voiceStatusText ? "status on-call" : "status",
-        text: state.voiceStatusText
-          ? state.voiceStatusText
-          : snapshot
-            ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
-            : "idle",
+      { class: "room-header-controls" },
+      h("input", {
+        class: "room-search",
+        type: "search",
+        placeholder: "search room",
+        title: "Search this room (Enter)",
+        "aria-label": "Search this room",
+        onkeydown: (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          state.search.query = /** @type {HTMLInputElement} */ (event.currentTarget).value;
+          openSearch("room");
+        },
+      }),
+      h("output", {
+        class: "room-meter",
+        title: "Context is reported by the active harness. Session cost is unavailable: v1 does not expose room cost totals.",
+        "aria-live": "polite",
+        text: meter,
       }),
     ),
   );
