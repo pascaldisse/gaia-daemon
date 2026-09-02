@@ -75,3 +75,10 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - T-V2 A1 added feature surface in a refactor commit → NOTED, won't revert: the ToolProviders port
   IS the atom (layering inversion demands a new seam). Behaviour parity still UNVERIFIED live →
   already item 1 of docs/REFACTOR-LIVE-QUEUE.md.
+
+## A5c — HTTP route-table adoption (2026-09-02)
+- `refactor/a5c-http` @ f2eebd4 → main merged in adoption branch.
+- move+split: `src/server/http.ts` 2120→642; `routes/api.ts` owns ordered route dispatch; domains agents/rooms/memory/artifacts/usage/edit-retry invoked from real dispatcher; no dead parallel handlers.
+- gate: `bun run check` green; `bun test test/http-routes.test.ts` 7 pass, 0 fail.
+- pragma scan `src/server`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
+- live: route regression test starts isolated test daemon; app/CDP live regression remains owner 陰; queue unchanged.
