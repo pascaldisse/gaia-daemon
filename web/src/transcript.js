@@ -503,6 +503,14 @@ function renderTranscript() {
   const roomId = state.snapshot?.room?.id ?? "";
   if (stickState.roomId !== roomId) stickState = { roomId, stick: true };
   const stick = stickState.stick;
+  // Snapshot open thinking/tool state before the keyed sync rebuilds a streaming
+  // message (notably its stream → committed-event handoff). `toggle` normally
+  // keeps this set current; reading the live DOM here also preserves native
+  // <details> state on WebKit's commit-frame edge.
+  for (const activity of container.querySelectorAll("details[data-activity-id][open]")) {
+    const id = /** @type {HTMLElement} */ (activity).dataset.activityId;
+    if (id) state.expandedActivities.add(id);
+  }
   // Snapshot open thinking/tool scroll offsets before the sync rebuilds nodes.
   const activityScroll = captureActivityScroll(container);
 
@@ -735,7 +743,7 @@ function Message(view) {
     summon || !orderedBlocks ? null : OrderedBlocks(view, orderedBlocks, details.tools ?? []),
     summon || orderedBlocks || !showThinking
       ? null
-      : ThinkingActivity(`thinking:${view.id}`, details.thinking ?? "", Boolean(view.streaming)),
+      : ThinkingActivity(`thinking:${view.id}:0`, details.thinking ?? "", Boolean(view.streaming)),
     summon || orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
     summon || orderedBlocks
@@ -879,6 +887,7 @@ function SummonResultActivity(view, summon) {
 function OrderedBlocks(view, blocks, tools) {
   const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
   const lastIndex = blocks.length - 1;
+  let thinkingIndex = 0;
   // Only the FIRST text span can carry a leading <gaia:think> block (the reply's
   // opening) — later text spans render as plain markdown.
   const firstTextIndex = blocks.findIndex((block) => block.kind === "text" && block.text.trim());
@@ -896,7 +905,12 @@ function OrderedBlocks(view, blocks, tools) {
       // isn't currently streaming carries nothing to show.
       const running = Boolean(view.streaming) && index === lastIndex;
       if (!block.text.trim() && !running) return null;
-      return ThinkingActivity(`thinking:${view.id}:${index}`, block.text, running);
+      // Number thinking spans independently of text/tool blocks. This keeps
+      // the expander id stable if the stream's bucketed view becomes an ordered
+      // timeline (or vice versa) when the final room event arrives.
+      const id = `thinking:${view.id}:${thinkingIndex}`;
+      thinkingIndex += 1;
+      return ThinkingActivity(id, block.text, running);
     }
     if (block.kind === "steer") {
       // The user steered HERE. Render their message inline at this position —
