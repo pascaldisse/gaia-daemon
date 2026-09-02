@@ -1,15 +1,22 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
-import { accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
-import { agentGlyph, UI } from "./glyphs.js";
+import { accountsCatalog, cancelActiveTask, deleteAgent, deleteQueuedMessage, sendMessage, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { agentGlyph, STATE, UI } from "./glyphs.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
-import { state } from "./state.js";
+import { activeTask, state } from "./state.js";
 import { toggleCall } from "./voice.js";
+
+/** Draft text for the todo-section's quick-add row. Module-level (like
+ * accountsCatalogValue above) so it survives the full-subtree replace every
+ * renderPanel() does — an inline input's typed value would otherwise vanish
+ * on the next unrelated snapshot re-render. Local UI-only state; never
+ * touches state.js. */
+let todoDraftText = "";
 
 /** Account catalog for the per-agent picker below: fetched once (accountsCatalog()
  * caches the request itself), held here as the last resolved value so a render
@@ -59,12 +66,12 @@ function renderPanel() {
   ensureAccountsCatalog();
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
-  const tasks = snapshot?.tasks ?? [];
   // The agent this room is currently addressing: its remembered active agent,
   // or the workspace default when it has none yet. Marks the "active" row and
   // is who a bare next message goes to.
   const activeAgent = snapshot ? (snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent) : undefined;
   const agentMenu = AgentContextMenu();
+  const swarmSection = SwarmSection(snapshot);
   panel.replaceChildren(
     h(
       "div",
@@ -107,7 +114,10 @@ function renderPanel() {
         return h(
           "div",
           {
-            class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
+            // roster-row (v2 parity class) rides ALONGSIDE the existing
+            // agent-row layout — never replaces it, so the role/account
+            // selects below keep their current markup and behavior untouched.
+            class: `agent-row roster-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
             oncontextmenu: (/** @type {MouseEvent} */ event) => {
               event.preventDefault();
               state.agentContextMenu = { agentId: agent.id, x: event.clientX, y: event.clientY };
@@ -197,17 +207,15 @@ function renderPanel() {
             onclick: () => void toggleCall(agent.id),
             text: connecting ? "…" : onCall ? UI.stop : UI.call,
           }),
+          // roster-status: the v2 parity hook wrapping an <output> with the same
+          // status text the subtitle already carries. Additive — the existing
+          // <small> subtitle above is untouched.
+          h("span", { class: "roster-status" }, h("output", { text: agentSubtitle(agent, activeAgent) || "ready" })),
         );
       }),
     ),
-    h("h3", { text: "tasks" }),
-    h(
-      "div",
-      { class: "task-list" },
-      tasks.length === 0
-        ? h("div", { class: "empty", text: "no tasks" })
-        : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
-    ),
+    TodoSection(snapshot),
+    ...(swarmSection ? [swarmSection] : []),
     ...(agentMenu ? [agentMenu] : []),
   );
   // Keep the elapsed advancing between server snapshots while any pass runs.
@@ -247,5 +255,145 @@ window.addEventListener("click", (event) => {
   state.agentContextMenu = null;
   markDirty("panel");
 });
+
+/**
+ * v2-parity TODO section (§G4). v1 has no separate agent-authored checklist
+ * tool — the REAL nearest data is the room's own task queue (snapshot.tasks:
+ * queued/running/complete/error/cancelled, see core/types.ts Task), already
+ * shown pre-parity as a plain "tasks" list a few lines above this. This
+ * replaces that plain list with the v2 class contract (.native-section
+ * .todo-section / .todo-list / .todo-row(+modifier) / .todo-actions /
+ * .todo-create) over the SAME real source — cancel wired to the real
+ * deleteQueuedMessage/cancelActiveTask actions, create wired to the real
+ * sendMessage action. No fake data.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot
+ */
+function TodoSection(snapshot) {
+  const tasks = snapshot?.tasks ?? [];
+  const rows = tasks.slice(-8);
+  return h(
+    "section",
+    { class: "native-section todo-section" },
+    h("h3", { text: "todo" }),
+    h(
+      "div",
+      { class: "todo-list" },
+      rows.length === 0 ? h("div", { class: "empty", text: "no queued tasks" }) : rows.map((task) => TodoRow(task)),
+    ),
+    TodoCreate(snapshot),
+  );
+}
+
+/** One task chip. v2 status names are "open"/"in-progress"/"completed"/
+ * "cancelled"; v1's real TaskStatus is "queued"/"running"/"complete"/"error"/
+ * "cancelled" — mapped onto the v2 modifier spelling where it lines up
+ * (completed, cancelled) and kept as-is otherwise (queued, running, error).
+ * @param {import("./types.js").Task} task */
+function TodoRow(task) {
+  const modifier = task.status === "complete" ? "todo-completed" : task.status === "cancelled" ? "todo-cancelled" : `todo-${task.status}`;
+  const glyph = task.status === "running" ? STATE.running : task.status === "complete" ? STATE.done : task.status === "error" ? STATE.error : task.status === "cancelled" ? UI.stop : "";
+  const targets = (task.targets ?? []).map((id) => `@${id}`).join(" ");
+  const canCancel = task.status === "queued" || task.status === "running";
+  return h(
+    "div",
+    { class: `todo-row ${modifier}` },
+    h("strong", { title: task.text, text: task.text || "(no text)" }),
+    h("small", { text: [glyph, task.status, targets].filter(Boolean).join(" ") }),
+    canCancel
+      ? h(
+          "div",
+          { class: "todo-actions" },
+          h("button", {
+            type: "button",
+            text: "cancel",
+            onclick: () => void (task.status === "running" ? cancelActiveTask() : deleteQueuedMessage(task.id)),
+          }),
+        )
+      : null,
+  );
+}
+
+/** Quick-add row: sends straight through the real message pipe (queued if a
+ * turn is already running, dispatched immediately otherwise) — a genuinely
+ * new task lands in snapshot.tasks, same as one typed in the composer.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot */
+function TodoCreate(snapshot) {
+  if (!snapshot) return null;
+  return h(
+    "div",
+    { class: "todo-create" },
+    h("input", {
+      type: "text",
+      placeholder: "new task…",
+      "aria-label": "New task text",
+      value: todoDraftText,
+      oninput: (event) => {
+        todoDraftText = /** @type {HTMLInputElement} */ (event.target).value;
+      },
+      onkeydown: (event) => {
+        if (event.key === "Enter") submitTodoDraft(snapshot);
+      },
+    }),
+    h("button", { type: "button", text: "+ task", onclick: () => submitTodoDraft(snapshot) }),
+  );
+}
+
+/** @param {import("./types.js").Snapshot} snapshot */
+function submitTodoDraft(snapshot) {
+  const text = todoDraftText.trim();
+  if (!text) return;
+  todoDraftText = "";
+  void sendMessage(text, [], { queue: Boolean(activeTask(snapshot)) });
+}
+
+/**
+ * v2-parity swarm phase tree (§G4). v2's tree rides live `swarm.phase`
+ * events (started/completed/failed) rendered inline in the transcript —
+ * transcript.js is out of this lane's ownership, and v1 has no such event on
+ * the wire. The REAL data available here is the child-room roster:
+ * `summon` spawns each whale into its own sub-room with `parentRoomId` set
+ * to this room (see harness/tools-pi.ts createSummonTool + core/types.ts
+ * RoomSummary.parentRoomId/.running). That gives an honest 2-state tree —
+ * started (still running) / completed (not running any more). v1 surfaces
+ * no per-lane failure flag at the snapshot level (would need each child's
+ * own transcript), so "failed" is never emitted — no fake state.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot
+ */
+function SwarmSection(snapshot) {
+  if (!snapshot) return null;
+  const rooms = snapshot.rooms ?? [];
+  const lanes = rooms.filter((room) => room.parentRoomId === snapshot.room.id);
+  if (lanes.length === 0) return null;
+  return h(
+    "section",
+    { class: "native-section swarm-section" },
+    h("h3", { text: "swarm" }),
+    h(
+      "ol",
+      { class: "swarm-phase-tree" },
+      h(
+        "ul",
+        { class: "swarm-phase-level" },
+        lanes.map((room) => SwarmNode(room)),
+      ),
+    ),
+  );
+}
+
+/** @param {import("./types.js").RoomSummary} room */
+function SwarmNode(room) {
+  const phase = room.running ? "started" : "completed";
+  const glyph = agentGlyph(room.title ?? room.id);
+  return h(
+    "li",
+    { class: `swarm-phase-node swarm-phase-${phase}` },
+    h(
+      "div",
+      { class: "swarm-phase-row" },
+      h("i", { class: "swarm-phase-glyph", text: glyph }),
+      h("span", { class: "swarm-phase-title", text: room.title || room.id }),
+    ),
+  );
+}
 
 registerRegion("panel", renderPanel);

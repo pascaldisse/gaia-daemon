@@ -147,7 +147,10 @@ function StatusIcons({ favorite, running, unread, incognito, runningTitle = "age
       running
         ? h("span", { class: "room-dot running", title: runningTitle })
         : unread
-          ? h("span", { class: "room-dot unread", title: unreadTitle })
+          // v2-parity `.unread-dot` class rides alongside the existing
+          // `.room-dot.unread` — same element, same behavior, native.css
+          // adds the v2 hook without touching styles.css's own rule.
+          ? h("span", { class: "room-dot unread unread-dot", title: unreadTitle })
           : null,
     ),
     incognito === undefined
