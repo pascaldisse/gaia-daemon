@@ -9,11 +9,11 @@
    ============================================================ */
 :root {
   color-scheme: dark;
-  /* Tokyo Night is the default palette (also the pre-JS fallback). */
-  --bg: #16161e; --bg2: #1a1b26; --bg3: #222434; --fg: #c0caf5; --muted: #565f89;
-  --border: #2a2e42; --accent: #7aa2f7; --accent2: #bb9af7;
-  --good: #9ece6a; --warn: #e0af68; --danger: #f7768e; --glow: rgba(122, 162, 247, 0.3);
-  --font: "Berkeley Mono", "JetBrains Mono", "SF Mono", "SFMono-Regular", "Cascadia Code", ui-monospace, Menlo, Consolas, monospace;
+  /* Obsidian Violet is the default and pre-JS fallback. */
+  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70;
+  --border: #2a2840; --accent: #a78bfa; --accent2: #ce93c9;
+  --good: #8fb573; --warn: #d3a35e; --alert: #e05f9d; --danger: var(--alert); --glow: rgba(167, 139, 250, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
+  --font: "0xProto Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", ui-monospace, Menlo, monospace;
   /* deep inset surfaces (inputs, menus) — always darker than --bg */
   --ink: color-mix(in srgb, var(--bg) 55%, black);
   /* resizable pane widths */
@@ -28,73 +28,73 @@
 [data-theme="obsidian-violet"] {
   --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70;
   --border: #2a2840; --accent: #a78bfa; --accent2: #ce93c9;
-  --good: #8fb573; --warn: #d3a35e; --danger: #e05f9d; --glow: rgba(167, 139, 250, 0.3);
+  --good: #8fb573; --warn: #d3a35e; --alert: #e05f9d; --danger: var(--alert); --glow: rgba(167, 139, 250, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="tokyo-night"] {
   --bg: #16161e; --bg2: #1a1b26; --bg3: #222434; --fg: #c0caf5; --muted: #565f89;
   --border: #2a2e42; --accent: #7aa2f7; --accent2: #bb9af7;
-  --good: #9ece6a; --warn: #e0af68; --danger: #f7768e; --glow: rgba(122, 162, 247, 0.3);
+  --good: #9ece6a; --warn: #e0af68; --alert: #f7768e; --danger: var(--alert); --glow: rgba(122, 162, 247, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="cyberpunk"] {
   --bg: #0a0814; --bg2: #120d22; --bg3: #1c1438; --fg: #f0e9ff; --muted: #6f6398;
   --border: #2a1f4a; --accent: #00f0ff; --accent2: #ff2e97;
-  --good: #00ff9f; --warn: #fcee0a; --danger: #ff2e63; --glow: rgba(0, 240, 255, 0.42);
+  --good: #00ff9f; --warn: #fcee0a; --alert: #ff2e63; --danger: var(--alert); --glow: rgba(0, 240, 255, 0.42); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="catppuccin"] {
   --bg: #181825; --bg2: #1e1e2e; --bg3: #282a3a; --fg: #cdd6f4; --muted: #6c7086;
   --border: #313244; --accent: #89b4fa; --accent2: #cba6f7;
-  --good: #a6e3a1; --warn: #f9e2af; --danger: #f38ba8; --glow: rgba(137, 180, 250, 0.26);
+  --good: #a6e3a1; --warn: #f9e2af; --alert: #f38ba8; --danger: var(--alert); --glow: rgba(137, 180, 250, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="gruvbox"] {
   --bg: #1d2021; --bg2: #282828; --bg3: #32302f; --fg: #ebdbb2; --muted: #928374;
   --border: #3c3836; --accent: #fabd2f; --accent2: #fe8019;
-  --good: #b8bb26; --warn: #fabd2f; --danger: #fb4934; --glow: rgba(250, 189, 47, 0.24);
+  --good: #b8bb26; --warn: #fabd2f; --alert: #fb4934; --danger: var(--alert); --glow: rgba(250, 189, 47, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="nord"] {
   --bg: #2e3440; --bg2: #343b49; --bg3: #3b4252; --fg: #e5e9f0; --muted: #7b88a1;
   --border: #434c5e; --accent: #88c0d0; --accent2: #81a1c1;
-  --good: #a3be8c; --warn: #ebcb8b; --danger: #bf616a; --glow: rgba(136, 192, 208, 0.24);
+  --good: #a3be8c; --warn: #ebcb8b; --alert: #bf616a; --danger: var(--alert); --glow: rgba(136, 192, 208, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="everforest"] {
   --bg: #272e33; --bg2: #2d353b; --bg3: #374247; --fg: #d3c6aa; --muted: #859289;
   --border: #3d484d; --accent: #a7c080; --accent2: #7fbbb3;
-  --good: #a7c080; --warn: #dbbc7f; --danger: #e67e80; --glow: rgba(167, 192, 128, 0.24);
+  --good: #a7c080; --warn: #dbbc7f; --alert: #e67e80; --danger: var(--alert); --glow: rgba(167, 192, 128, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="kanagawa"] {
   --bg: #1a1a22; --bg2: #1f1f28; --bg3: #2a2a37; --fg: #dcd7ba; --muted: #727169;
   --border: #363646; --accent: #7e9cd8; --accent2: #957fb8;
-  --good: #98bb6c; --warn: #ffa066; --danger: #e46876; --glow: rgba(126, 156, 216, 0.26);
+  --good: #98bb6c; --warn: #ffa066; --alert: #e46876; --danger: var(--alert); --glow: rgba(126, 156, 216, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="rose-pine"] {
   --bg: #16141f; --bg2: #191724; --bg3: #21202e; --fg: #e0def4; --muted: #6e6a86;
   --border: #26233a; --accent: #c4a7e7; --accent2: #ebbcba;
-  --good: #9ccfd8; --warn: #f6c177; --danger: #eb6f92; --glow: rgba(196, 167, 231, 0.26);
+  --good: #9ccfd8; --warn: #f6c177; --alert: #eb6f92; --danger: var(--alert); --glow: rgba(196, 167, 231, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="dracula"] {
   --bg: #21222c; --bg2: #282a36; --bg3: #343746; --fg: #f8f8f2; --muted: #6272a4;
   --border: #44475a; --accent: #bd93f9; --accent2: #ff79c6;
-  --good: #50fa7b; --warn: #f1fa8c; --danger: #ff5555; --glow: rgba(189, 147, 249, 0.28);
+  --good: #50fa7b; --warn: #f1fa8c; --alert: #ff5555; --danger: var(--alert); --glow: rgba(189, 147, 249, 0.28); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="matte-black"] {
   --bg: #000000; --bg2: #0c0c0c; --bg3: #161616; --fg: #e6e6e6; --muted: #6a6a6a;
   --border: #1f1f1f; --accent: #ededed; --accent2: #8a8a8a;
-  --good: #79c07e; --warn: #d6b25e; --danger: #e5707a; --glow: transparent;
+  --good: #79c07e; --warn: #d6b25e; --alert: #e5707a; --danger: var(--alert); --glow: transparent; --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="matrix"] {
   --bg: #020403; --bg2: #06110c; --bg3: #091912; --fg: #d5ffe9; --muted: #5f9c78;
   --border: #136b40; --accent: #1cff8b; --accent2: #19c269;
-  --good: #1cff8b; --warn: #ffdf70; --danger: #ff5c7a; --glow: rgba(28, 255, 139, 0.4);
+  --good: #1cff8b; --warn: #ffdf70; --alert: #ff5c7a; --danger: var(--alert); --glow: rgba(28, 255, 139, 0.4); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 /* Bloodborne — Yharnam night: lantern amber on umber-black, old blood,
@@ -102,414 +102,136 @@
 [data-theme="bloodborne"] {
   --bg: #0d0a08; --bg2: #14100c; --bg3: #1f1813; --fg: #d8cbb3; --muted: #6f6355;
   --border: #2e241b; --accent: #c99a4b; --accent2: #8d1f2c;
-  --good: #7d9367; --warn: #d98e32; --danger: #a41e22; --glow: rgba(201, 154, 75, 0.22);
+  --good: #7d9367; --warn: #d98e32; --alert: #a41e22; --danger: var(--alert); --glow: rgba(201, 154, 75, 0.22); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
-/* The Matrix theme alone keeps the CRT identity: scanlines, phosphor glow,
-   pixel font, no smoothing. Every other theme is a clean flat terminal. */
-html.retro { --font: "Perfect DOS VGA 437", "Px437 IBM VGA8", "Fixedsys", "Terminal", Menlo, "Courier New", monospace; }
-
-html.retro body {
-  background:
-    linear-gradient(rgba(28, 255, 139, 0.04) 50%, rgba(0, 0, 0, 0.13) 50%) 0 0 / 100% 4px,
-    radial-gradient(circle at 50% 0%, rgba(28, 255, 139, 0.12), transparent 42%),
-    var(--bg);
-  image-rendering: pixelated;
-  -webkit-font-smoothing: none;
-  text-rendering: auto;
-}
-
-html.retro button { background: var(--ink); box-shadow: 2px 2px 0 color-mix(in srgb, var(--border) 45%, black); }
-html.retro button:hover,
-html.retro button.active { color: #fff; text-shadow: 0 0 8px var(--accent); }
+/* Flat base — every palette is variable driven. */
+html.retro { --font: "0xProto Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", ui-monospace, Menlo, monospace; }
 
 /* ============================================================
    base
    ============================================================ */
-* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border) var(--bg); }
 [hidden] { display: none !important; }
-
 body {
   margin: 0;
   min-height: 100vh;
   color: var(--fg);
   font-family: var(--font);
-  background:
-    radial-gradient(120% 80% at 50% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
-    var(--bg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
-}
-
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
-::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--fg); }
-
+@media (prefers-reduced-motion: reduce) { * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::selection { background: var(--sel); color: var(--fg); }
 button, textarea, input, select { font: inherit; }
-
-button {
-  color: var(--fg);
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  padding: 7px 9px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
-}
-
-button:hover { border-color: var(--accent); color: var(--fg); }
+button { color: var(--fg); background: transparent; border: 1px solid var(--border); padding: 4px 8px; cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--fg); background: var(--sel); }
 button.active { border-color: var(--accent); color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
-
-textarea, input, select {
-  width: 100%;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  padding: 8px;
-  outline: none;
-}
-
+textarea, input, select { width: 100%; color: var(--fg); background: var(--bg); border: 1px solid var(--border); padding: 5px 8px; outline: none; }
 textarea, input { caret-color: var(--accent); caret-shape: block; }
-textarea:focus, input:focus, select:focus { border-color: var(--accent); }
-
+textarea:focus, input:focus, select:focus, :focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 small, time { color: var(--muted); overflow-wrap: anywhere; }
 .muted { opacity: 0.55; }
 .empty { color: var(--muted); padding: 8px 0; }
 .spacer { height: 24px; }
-
 .link-token { color: inherit; text-decoration: none; }
-
-.open-link-mode .link-token:hover {
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-shadow: 0 0 8px var(--glow);
-}
+.open-link-mode .link-token:hover { color: var(--accent2); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 
 /* ============================================================
-   shell layout
+   app frame
    ============================================================ */
-.shell, #app { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; overflow: hidden; }
-/* The overlay container and its two mount slots must not participate in the
-   app grid; the backdrops inside them are fixed-position anyway. */
+.shell, #app { display: grid; grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 #overlays, #overlays > div { display: contents; }
-.body { display: grid; min-height: 0; overflow: hidden; }
-
-.sidebar, .right {
-  background: color-mix(in srgb, var(--bg2) 70%, var(--bg));
-  padding: 12px;
-  overflow: auto;
-  min-width: 0;
-}
-
-.sidebar { border-right: 1px solid var(--border); }
+.body { display: grid; grid-template-columns: 28ch 1fr 32ch; min-height: 0; overflow: hidden; }
+.sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
+.sidebar { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
 .right { border-left: 1px solid var(--border); }
-
-.main {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  /* Cap the single column at the pane's own width: without this, an implicit
-     grid column sizes to its widest child (the topbar's fixed chips), dragging
-     main-stack + the transcript wider than the pane on a narrow window so text
-     clips instead of reflowing. minmax(0,1fr) pins it to the available width. */
-  grid-template-columns: minmax(0, 1fr);
-  background: var(--bg);
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
+.main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); background: var(--bg); min-width: 0; min-height: 0; overflow: hidden; }
 .main-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
-
-.col-resizer { cursor: col-resize; background: var(--border); opacity: 0.35; transition: opacity 0.12s ease, background 0.12s ease; }
-.col-resizer:hover, body.resizing .col-resizer { opacity: 1; background: var(--accent); }
+.col-resizer { cursor: col-resize; background: var(--border); opacity: 1; }
+.col-resizer:hover, body.resizing .col-resizer { background: var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; }
 
 /* ============================================================
-   tmux window bar — rooms as windows
+   tabbar
    ============================================================ */
-/* min-width:0 + overflow:hidden keep the tab row from dictating the shared
-   #app grid column: without them, an unshrinkable tab-strip (below) makes the
-   bar's min-content exceed the viewport, widening every row and shoving the
-   right panel off-screen. The strip itself scrolls; the bar never grows. */
-.tabbar { display: flex; align-items: stretch; height: 38px; min-width: 0; overflow: hidden; background: var(--bg2); border-bottom: 1px solid var(--border); }
-
-.chrome-btn {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  width: 32px;
-  display: grid;
-  place-items: center;
-  border-right: 1px solid var(--border);
-}
-
-.chrome-btn:hover { color: var(--accent); background: var(--bg3); }
-
-.tab-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 16px;
-  font-weight: 700;
-  letter-spacing: 3px;
-  color: var(--fg);
-  border-right: 1px solid var(--border);
-}
-
-.tab-logo { color: var(--accent); text-shadow: 0 0 12px var(--glow); }
-
-/* min-width:0 is what actually lets a flex item scroll: without it the item's
-   min-width defaults to its content size, so overflow-x:auto never engages and
-   the tabs push the layout wide instead of scrolling within the strip. */
+.tabbar { display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
+.brand, .tab-brand { display: flex; flex: 0 0 14ch; align-items: center; justify-content: center; gap: 1ch; border-right: 1px solid var(--border); color: var(--fg); font-weight: 700; letter-spacing: .18em; }
+.brand span, .tab-logo, .tab-new { color: var(--accent); }
+.chrome-btn { display: none; }
 .tab-strip { position: relative; display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 0 1 auto; min-width: 0; scrollbar-width: none; }
 .tab-strip::-webkit-scrollbar { height: 0; }
-
-.tab {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px 0 11px;
-  border-right: 1px solid var(--border);
-  color: var(--muted);
-  cursor: pointer;
-  white-space: nowrap;
-  max-width: 240px;
-  /* Pointer-drag reorder/tear-off: no text selection. Touch keeps the strip's
-     own axis pannable (pan-x) so a swipe scrolls the tabs; the drag arms only
-     on a still long press and then swallows touchmove — see press-drag.js. */
-  user-select: none;
-  touch-action: pan-x;
-  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
-}
-
-.tab:hover { background: var(--bg3); color: var(--fg); }
-.tab.active { color: var(--fg); background: var(--bg); box-shadow: inset 0 2px 0 var(--accent); }
-/* Being dragged for a reorder: dimmed and lifted. */
-.tab.dragging { opacity: 0.5; cursor: grabbing; background: var(--bg3); }
-/* Dragged clear of the strip: about to pop out into its own window. */
-.tab.dragging.tearing { opacity: 0.85; box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.4); }
-
-/* The reorder drop caret — an accent bar at the slot the tab will land in.
-   Absolutely placed in the (position: relative) strip; never a hit target. */
-.tab-drop-indicator {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--glow);
-  border-radius: 1px;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.tab-num { font-size: 0.74em; color: var(--muted); border: 1px solid var(--border); padding: 0 4px; line-height: 1.5; }
+.tab { display: flex; align-items: center; gap: 1ch; padding: 0 12px; border: 0; border-right: 1px solid var(--border); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 240px; user-select: none; touch-action: pan-x; }
+.tab:hover { background: var(--sel); color: var(--fg); }
+.tab.active { color: var(--fg); background: var(--sel); box-shadow: inset 0 2px 0 var(--accent); }
+.tab.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
+.tab.dragging.tearing { opacity: .85; }
+.tab-drop-indicator { position: absolute; top: 4px; bottom: 4px; width: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
+.tab-num { padding: 0 4px; border: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.5; }
 .tab.active .tab-num { color: var(--accent); border-color: var(--accent); }
-
-.tab-dot, .room-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
-.tab-dot, .room-dot.running { box-shadow: 0 0 7px var(--good); animation: dot-pulse 1.2s ease-in-out infinite; }
-/* Finished with unread agent replies: a steady accent dot (no pulse) + a
-   brighter room name. Clears the moment the room is opened (roomUnread). */
-.room-dot.unread { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: none; }
+.tab-dot, .room-dot { flex: 0 0 6px; width: 6px; height: 6px; background: var(--dim, var(--muted)); }
+.tab-dot, .room-dot.running { background: var(--accent); animation: dot-pulse 1.2s ease-in-out infinite; }
+.room-dot.unread { background: var(--accent); animation: none; }
 .room-name.unread { color: var(--fg); font-weight: 600; }
-
 .tab-name { overflow: hidden; text-overflow: ellipsis; }
-
-.tab-close {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  padding: 0 1px;
-  font-size: 1.15em;
-  line-height: 1;
-  opacity: 0;
-}
-
-.tab:hover .tab-close, .tab.active .tab-close { opacity: 0.65; }
-.tab-close:hover { color: var(--danger); opacity: 1; }
-
-.tab-new {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  width: 34px;
-  font-size: 1.15em;
-  border-right: 1px solid var(--border);
-}
-
-.tab-new:hover { color: var(--accent); background: var(--bg3); }
+.tab-close { border: 0; background: transparent; color: var(--muted); padding: 0 1px; font-size: 1.15em; line-height: 1; opacity: 0; }
+.tab:hover .tab-close, .tab.active .tab-close { opacity: .65; }
+.tab-close:hover { color: var(--alert); opacity: 1; }
+.tab-new, .theme-btn { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 12px; color: var(--accent); font-size: 1.15em; }
+.tab-new:hover, .theme-btn:hover { color: var(--accent); background: var(--sel); }
 .tab-spacer { flex: 1; }
-
-/* App-wide dictation indicator (v2 parity): live recording is bound to the room
-   it started in, so it must stay visible after switching tabs. Click = go back. */
-.dictation-chip {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  margin-right: 8px;
-  padding: 0 8px;
-  border: 1px solid var(--warn);
-  background: transparent;
-  box-shadow: none;
-  color: var(--warn);
-  font-size: 10px;
-  white-space: nowrap;
-  animation: nowplaying-pulse 1.4s ease-in-out infinite;
-}
-.dictation-chip:hover { background: var(--warn); color: var(--bg); }
-
-@keyframes dot-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
+.theme-btn { margin-left: auto; border-left: 1px solid var(--border); border-right: 0; color: var(--muted); }
+.dictation-chip { display: flex; flex: 0 0 auto; align-items: center; margin-right: 8px; padding: 0 8px; border: 1px solid var(--warn); background: transparent; color: var(--warn); font-size: 10px; white-space: nowrap; animation: nowplaying-pulse 1.4s ease-in-out infinite; }
+.dictation-chip:hover { background: var(--sel); color: var(--warn); }
+@keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* ============================================================
-   sidebar: workspaces + rooms tree
-   ============================================================ */
-.nav-title, h3 { margin: 14px 0 7px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-/* A section header with an inline affordance (e.g. rooms + new-room button). */
+sidebar: workspaces + rooms tree
+============================================================ */
+.nav-search { flex: 0 0 26px; height: 26px; padding: 0 10px; border: 1px solid var(--border); color: var(--muted); text-align: left; }
+.nav-search:hover { color: var(--fg); background: var(--sel); }
+.nav-title, h3 { margin: 16px 0 6px; color: var(--muted); font-size: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: .14em; }
 .nav-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.nav-title-add {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 0 4px;
-  line-height: 1;
-  font-size: 1.15em;
-  color: var(--muted);
-  transition: color 0.15s;
-}
-.nav-title-add:hover, .nav-title-add.active { color: var(--accent); }
+.nav-title-add { border: 0; padding: 0 4px; color: var(--muted); }
+.nav-title-add:hover, .nav-title-add.active { color: var(--accent); background: transparent; }
 .nav-title-actions { display: inline-flex; align-items: center; gap: 4px; }
-/* position:relative anchors the reorder drop caret (.workspace-drop-indicator),
-   an absolutely-positioned child — see .ws-item drag handlers in sidebar.js. */
 .workspace-list { position: relative; }
-.workspace-list, .agent-list, .task-list, .file-tabs { display: grid; gap: 7px; }
-/* Pointer-drag reorder (sidebar.js, same technique as the tab strip): keep the
-   gesture from starting a text selection or a touch-scroll so
-   setPointerCapture owns the whole drag. */
-/* pan-y: a vertical swipe scrolls the sidebar; reorder arms on long press (press-drag.js). */
+.workspace-list, .room-tree, .room-node, .room-children { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
 .ws-item { user-select: none; touch-action: pan-y; }
-.ws-item.dragging { opacity: 0.5; cursor: grabbing; background: var(--bg3); }
-/* The reorder drop caret — an accent bar at the vertical slot the workspace
-   will land in. Absolutely placed in the (position:relative) list; never a
-   hit target. */
-.workspace-drop-indicator {
-  position: absolute;
-  left: 2px;
-  right: 2px;
-  height: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--glow);
-  border-radius: 1px;
-  pointer-events: none;
-  z-index: 2;
-}
-.nav-item, .nav-action, .file-tabs button, .segmented-tabs button { width: 100%; text-align: left; }
-.nav-item span, .file-tabs span, .segmented-tabs span { display: block; }
-
-/* A row of pill tabs (Settings modal's general/workspace/agents, and its nested
-   agent config/persona/memory view) — one .active button at a time. */
-.segmented-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.segmented-tabs button { width: auto; display: flex; align-items: center; gap: 6px; }
-
-/* Agent row in settings: flex layout so delete button sits inline with the agent name. */
-.agent-row-wrapper { display: flex; gap: 4px; align-items: stretch; }
-.agent-row-wrapper > button:first-child { flex: 1; min-width: 0; }
-
-/* The sidebar is a tmux session tree: names matter, absolute paths are noise.
-   Keep just the names; the full path lives on the button's hover title. */
+.ws-item.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
+.workspace-drop-indicator { position: absolute; left: 2px; right: 2px; height: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
+.nav-item, .nav-action { width: 100%; min-height: 24px; padding: 2px 8px; border: 1px solid transparent; background: transparent; color: var(--fg); text-align: left; white-space: nowrap; overflow: hidden; }
+.nav-item:hover, .nav-action:hover { background: var(--sel); }
+.nav-item.active, .room-row.active .nav-item { border-color: var(--accent); background: var(--sel); color: var(--accent); }
+.nav-item.focused { outline: 1px solid var(--alert); outline-offset: -1px; }
+.nav-item span { display: block; }
 .sidebar .nav-item small { display: none; }
-
-/* Rooms are a nested tree: a summon's child room collapses under its parent
-   behind a twisty, indented by depth. */
-/* minmax(0,1fr): pin every grid track to the sidebar width so a long room id
-   (e.g. a nested whale-* child) can't blow the column past the pane and shove
-   the trailing twisty off-screen. min-width:0 lets the row shrink to match. */
-.room-tree, .room-node, .room-children { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
 .room-row { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
-
-.room-twisty {
-  flex: 0 0 auto;
-  width: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  color: var(--muted);
-}
-
-.room-twisty:hover { color: var(--accent); text-shadow: 0 0 8px var(--accent); }
+.room-twisty { flex: 0 0 auto; width: 20px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.room-twisty:hover { color: var(--accent); }
 .room-twisty.leaf { cursor: default; visibility: hidden; }
 .room-item { flex: 1 1 auto; min-width: 0; }
-/* Rolled-up RUNNING status of a COLLAPSED room's subrooms — in the right
-   gutter (a different position from the room's own left dot) so a live summon
-   sub-room shows without expanding. No .unread variant: a summon's unread
-   state stays on its own row (visible once expanded) rather than bubbling up,
-   see descendantActivity in sidebar.js. */
-.room-subdot { flex: 0 0 auto; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
-.room-subdot.running { box-shadow: 0 0 6px var(--good); animation: dot-pulse 1.2s ease-in-out infinite; }
-
-/* The sidebar's delete target: the last room you clicked (or the current room
-   by default). The OS delete chord — ⌘⌫ on macOS, Del elsewhere — removes the
-   focused ROOM; there's no per-row delete button for it. Workspaces are never
-   removed by this chord — that's right-click -> "Remove workspace" only. */
-.nav-item.focused { box-shadow: inset 0 0 0 1px var(--danger); }
-/* Both selectors below are scoped through .nav-item (not just the bare class)
-   so they out-specificity ".nav-item span { display: block }" above — without
-   that, room-label (itself a span) gets blockified back to a stacked column
-   and its icon children stack one per line instead of sitting in a row. */
+.room-children { padding-left: 3ch; }
+.room-subdot { flex: 0 0 6px; align-self: center; width: 6px; height: 6px; background: var(--accent); }
+.room-subdot.running { animation: dot-pulse 1.2s ease-in-out infinite; }
 .nav-item .room-label { display: flex; align-items: center; gap: 6px; }
-/* Fixed-width slot for the star / running-unread dot (see StatusIcons() in
-   sidebar.js) so a row's name always starts at the same x whether or not the
-   icon inside a given slot is present. */
 .nav-item .room-icon-slot { display: flex; flex: 0 0 14px; align-items: center; justify-content: center; }
-.room-star { color: var(--accent); text-shadow: 0 0 6px var(--glow); font-size: 0.9em; line-height: 1; }
-.room-menu {
-  position: fixed;
-  z-index: 1000;
-  min-width: 190px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg2);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
-}
-.room-menu-title {
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 5px 8px 7px;
-  color: var(--muted);
-  font-size: 0.82em;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-}
-.room-menu button {
-  display: block;
-  width: 100%;
-  border: none;
-  box-shadow: none;
-  background: transparent;
-  padding: 7px 8px;
-  text-align: left;
-}
-.room-menu button:hover { background: var(--bg3); color: var(--accent); }
+.room-star, .room-incognito { color: var(--dim, var(--muted)); font-size: .9em; line-height: 1; }
+.room-menu { position: fixed; z-index: 1000; min-width: 190px; padding: 6px; border: 1px solid var(--border); background: var(--bg); }
+.room-menu-title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px 7px; color: var(--muted); font-size: .82em; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.room-menu button { display: block; width: 100%; border: 0; background: transparent; padding: 7px 8px; text-align: left; }
+.room-menu button:hover { background: var(--sel); color: var(--accent); }
+.rooms-more { color: var(--muted); font-size: 11px; }
+.side-bottom { margin-top: auto; padding: 12px 6px 0; }
+.side-bottom .nav-action { color: var(--muted); }
 
 /* ============================================================
    topbar + error banner
@@ -1319,7 +1041,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .dot.running { background: var(--warn); }
 .dot.compacting { background: var(--accent); animation: dot-pulse 1.2s ease-in-out infinite; }
 
-.modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.72); z-index: 20; }
+.modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 78%, transparent); z-index: 20; }
 
 .modal {
   width: min(980px, calc(100vw - 32px));
@@ -1355,99 +1077,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tab-incognito, .room-incognito { flex: 0 0 auto; font-size: 0.82em; opacity: 0.85; }
 
 /* ============================================================
-   powerline status bar (spaceship-style segments)
+   status bar — intentionally absent (v2 layout law)
    ============================================================ */
-.statusbar {
-  display: flex;
-  align-items: stretch;
-  height: 28px;
-  background: var(--bg);
-  border-top: 1px solid var(--border);
-  font-size: 0.85em;
-  overflow: hidden;
-}
-
-/* Desktop "Show status bar" setting — persisted client-side (gaia.statusbar). */
-#app.statusbar-hidden .statusbar { display: none; }
-
-.seg {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 16px 0 12px;
-  color: var(--fg);
-  background: var(--seg-bg, var(--bg2));
-  position: relative;
-  border: none;
-  box-shadow: none;
-  white-space: nowrap;
-}
-
-/* The trailing powerline arrow — pure CSS, no Nerd Font needed. */
-.seg::after {
-  content: "";
-  position: absolute;
-  left: 100%;
-  top: 0;
-  width: 0;
-  height: 0;
-  z-index: 1;
-  border-top: 14px solid transparent;
-  border-bottom: 14px solid transparent;
-  border-left: 9px solid var(--seg-bg, var(--bg2));
-}
-
-.seg.spacer { --seg-bg: var(--bg); flex: 1; padding: 0; }
-.seg.spacer::after { display: none; }
-
-.seg-head { --seg-bg: var(--accent); color: var(--bg); font-weight: 700; letter-spacing: 1px; }
-.seg-a { --seg-bg: var(--bg3); color: var(--accent); }
-.seg-b { --seg-bg: var(--bg2); color: var(--muted); }
-.seg-run { --seg-bg: var(--bg3); color: var(--muted); }
-.seg-run.on { color: var(--good); }
-.seg-voice { --seg-bg: var(--bg2); color: var(--accent2); }
-
-/* Read-aloud now-playing chip — a message may keep speaking after you switch
-   rooms, so this lit, gently-pulsing chip says where it's playing (click to
-   jump). The paired ■ chip stops it. */
-.seg-nowplaying { --seg-bg: var(--bg3); color: var(--good); cursor: pointer; font-weight: 600; animation: nowplaying-pulse 1.6s ease-in-out infinite; }
-.seg-nowplaying:hover { color: var(--fg); }
-.seg-nowplaying.loading { color: var(--muted); }
-.seg-nowplaying.idle { color: var(--accent); animation: none; }
-.seg-nowplaying.stop { color: var(--danger); font-weight: 700; animation: none; }
-.seg-nowplaying.stop:hover { color: var(--fg); }
-
-@keyframes nowplaying-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-
-/* Right cluster opens with a left-pointing wedge so it reads as powerline too. */
-.seg-theme { --seg-bg: var(--bg2); color: var(--accent2); cursor: pointer; }
-.seg-artifacts { --seg-bg: var(--bg3); color: var(--muted); cursor: pointer; }
-.seg-artifacts.on { color: var(--accent); }
-.seg-artifacts:hover { color: var(--fg); }
-
-.seg-theme::before {
-  content: "";
-  position: absolute;
-  right: 100%;
-  top: 0;
-  width: 0;
-  height: 0;
-  border-top: 14px solid transparent;
-  border-bottom: 14px solid transparent;
-  border-right: 9px solid var(--seg-bg);
-}
-
-.seg-theme:hover { color: var(--fg); }
-.seg-clock { --seg-bg: var(--bg3); color: var(--muted); }
-.seg-keys { --seg-bg: var(--accent); color: var(--bg); font-weight: 600; }
-.seg-keys::after { display: none; }
-
-/* Account usage chip (subscription session/weekly caps). Colour tracks the
-   worst window's severity so a full week reads red at a glance. */
-.seg-usage { --seg-bg: var(--bg2); color: var(--accent); cursor: pointer; font-weight: 600; font-variant-numeric: tabular-nums; }
-.seg-usage:hover { color: var(--fg); }
-.seg-usage.warn { color: var(--warn); }
-.seg-usage.crit { color: var(--danger); }
+.statusbar { display: none !important; }
 
 /* ============================================================
    omarchy-style theme palette
