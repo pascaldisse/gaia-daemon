@@ -10,7 +10,7 @@
 :root {
   color-scheme: dark;
   /* Obsidian Violet is the default and pre-JS fallback. */
-  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70;
+  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70; --dim: var(--muted);
   --border: #2a2840; --accent: #a78bfa; --accent2: #ce93c9;
   --good: #8fb573; --warn: #d3a35e; --alert: #e05f9d; --danger: var(--alert); --glow: rgba(167, 139, 250, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
   --font: "0xProto Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", ui-monospace, Menlo, monospace;
@@ -26,73 +26,73 @@
 /* v2's signature palette (gaia-daemon-v2 styles.css), ported unchanged in hue
    and widened to v1's fuller token set. */
 [data-theme="obsidian-violet"] {
-  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70;
+  --bg: #0a0a0f; --bg2: #12111b; --bg3: #1b1a29; --fg: #c9c7d4; --muted: #5f5d70; --dim: var(--muted);
   --border: #2a2840; --accent: #a78bfa; --accent2: #ce93c9;
   --good: #8fb573; --warn: #d3a35e; --alert: #e05f9d; --danger: var(--alert); --glow: rgba(167, 139, 250, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="tokyo-night"] {
-  --bg: #16161e; --bg2: #1a1b26; --bg3: #222434; --fg: #c0caf5; --muted: #565f89;
+  --bg: #16161e; --bg2: #1a1b26; --bg3: #222434; --fg: #c0caf5; --muted: #565f89; --dim: var(--muted);
   --border: #2a2e42; --accent: #7aa2f7; --accent2: #bb9af7;
   --good: #9ece6a; --warn: #e0af68; --alert: #f7768e; --danger: var(--alert); --glow: rgba(122, 162, 247, 0.3); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="cyberpunk"] {
-  --bg: #0a0814; --bg2: #120d22; --bg3: #1c1438; --fg: #f0e9ff; --muted: #6f6398;
+  --bg: #0a0814; --bg2: #120d22; --bg3: #1c1438; --fg: #f0e9ff; --muted: #6f6398; --dim: var(--muted);
   --border: #2a1f4a; --accent: #00f0ff; --accent2: #ff2e97;
   --good: #00ff9f; --warn: #fcee0a; --alert: #ff2e63; --danger: var(--alert); --glow: rgba(0, 240, 255, 0.42); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="catppuccin"] {
-  --bg: #181825; --bg2: #1e1e2e; --bg3: #282a3a; --fg: #cdd6f4; --muted: #6c7086;
+  --bg: #181825; --bg2: #1e1e2e; --bg3: #282a3a; --fg: #cdd6f4; --muted: #6c7086; --dim: var(--muted);
   --border: #313244; --accent: #89b4fa; --accent2: #cba6f7;
   --good: #a6e3a1; --warn: #f9e2af; --alert: #f38ba8; --danger: var(--alert); --glow: rgba(137, 180, 250, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="gruvbox"] {
-  --bg: #1d2021; --bg2: #282828; --bg3: #32302f; --fg: #ebdbb2; --muted: #928374;
+  --bg: #1d2021; --bg2: #282828; --bg3: #32302f; --fg: #ebdbb2; --muted: #928374; --dim: var(--muted);
   --border: #3c3836; --accent: #fabd2f; --accent2: #fe8019;
   --good: #b8bb26; --warn: #fabd2f; --alert: #fb4934; --danger: var(--alert); --glow: rgba(250, 189, 47, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="nord"] {
-  --bg: #2e3440; --bg2: #343b49; --bg3: #3b4252; --fg: #e5e9f0; --muted: #7b88a1;
+  --bg: #2e3440; --bg2: #343b49; --bg3: #3b4252; --fg: #e5e9f0; --muted: #7b88a1; --dim: var(--muted);
   --border: #434c5e; --accent: #88c0d0; --accent2: #81a1c1;
   --good: #a3be8c; --warn: #ebcb8b; --alert: #bf616a; --danger: var(--alert); --glow: rgba(136, 192, 208, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="everforest"] {
-  --bg: #272e33; --bg2: #2d353b; --bg3: #374247; --fg: #d3c6aa; --muted: #859289;
+  --bg: #272e33; --bg2: #2d353b; --bg3: #374247; --fg: #d3c6aa; --muted: #859289; --dim: var(--muted);
   --border: #3d484d; --accent: #a7c080; --accent2: #7fbbb3;
   --good: #a7c080; --warn: #dbbc7f; --alert: #e67e80; --danger: var(--alert); --glow: rgba(167, 192, 128, 0.24); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="kanagawa"] {
-  --bg: #1a1a22; --bg2: #1f1f28; --bg3: #2a2a37; --fg: #dcd7ba; --muted: #727169;
+  --bg: #1a1a22; --bg2: #1f1f28; --bg3: #2a2a37; --fg: #dcd7ba; --muted: #727169; --dim: var(--muted);
   --border: #363646; --accent: #7e9cd8; --accent2: #957fb8;
   --good: #98bb6c; --warn: #ffa066; --alert: #e46876; --danger: var(--alert); --glow: rgba(126, 156, 216, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="rose-pine"] {
-  --bg: #16141f; --bg2: #191724; --bg3: #21202e; --fg: #e0def4; --muted: #6e6a86;
+  --bg: #16141f; --bg2: #191724; --bg3: #21202e; --fg: #e0def4; --muted: #6e6a86; --dim: var(--muted);
   --border: #26233a; --accent: #c4a7e7; --accent2: #ebbcba;
   --good: #9ccfd8; --warn: #f6c177; --alert: #eb6f92; --danger: var(--alert); --glow: rgba(196, 167, 231, 0.26); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="dracula"] {
-  --bg: #21222c; --bg2: #282a36; --bg3: #343746; --fg: #f8f8f2; --muted: #6272a4;
+  --bg: #21222c; --bg2: #282a36; --bg3: #343746; --fg: #f8f8f2; --muted: #6272a4; --dim: var(--muted);
   --border: #44475a; --accent: #bd93f9; --accent2: #ff79c6;
   --good: #50fa7b; --warn: #f1fa8c; --alert: #ff5555; --danger: var(--alert); --glow: rgba(189, 147, 249, 0.28); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="matte-black"] {
-  --bg: #000000; --bg2: #0c0c0c; --bg3: #161616; --fg: #e6e6e6; --muted: #6a6a6a;
+  --bg: #000000; --bg2: #0c0c0c; --bg3: #161616; --fg: #e6e6e6; --muted: #6a6a6a; --dim: var(--muted);
   --border: #1f1f1f; --accent: #ededed; --accent2: #8a8a8a;
   --good: #79c07e; --warn: #d6b25e; --alert: #e5707a; --danger: var(--alert); --glow: transparent; --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 [data-theme="matrix"] {
-  --bg: #020403; --bg2: #06110c; --bg3: #091912; --fg: #d5ffe9; --muted: #5f9c78;
+  --bg: #020403; --bg2: #06110c; --bg3: #091912; --fg: #d5ffe9; --muted: #5f9c78; --dim: var(--muted);
   --border: #136b40; --accent: #1cff8b; --accent2: #19c269;
   --good: #1cff8b; --warn: #ffdf70; --alert: #ff5c7a; --danger: var(--alert); --glow: rgba(28, 255, 139, 0.4); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
@@ -100,7 +100,7 @@
 /* Bloodborne — Yharnam night: lantern amber on umber-black, old blood,
    paleblood sky. Fear the old blood; ship it anyway. */
 [data-theme="bloodborne"] {
-  --bg: #0d0a08; --bg2: #14100c; --bg3: #1f1813; --fg: #d8cbb3; --muted: #6f6355;
+  --bg: #0d0a08; --bg2: #14100c; --bg3: #1f1813; --fg: #d8cbb3; --muted: #6f6355; --dim: var(--muted);
   --border: #2e241b; --accent: #c99a4b; --accent2: #8d1f2c;
   --good: #7d9367; --warn: #d98e32; --alert: #a41e22; --danger: var(--alert); --glow: rgba(201, 154, 75, 0.22); --sel: color-mix(in srgb, var(--fg) 7%, transparent);
 }
