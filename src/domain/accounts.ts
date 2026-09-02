@@ -92,35 +92,6 @@ export function updateAccount(id: string, patch: { label?: string | null; email?
   return listAccounts().find((account) => account.id === id);
 }
 
-/** First free id: slugified label ("Work Account" -> "work-account") when given
- * and unused, else `${harness}-2`, `${harness}-3`, ... skipping taken ids. */
-export function newAccountId(harness: string, label?: string): string {
-  const taken = new Set(listAccounts().map((account) => account.id));
-  if (label) {
-    const slug = label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug && !taken.has(slug)) return slug;
-  }
-  for (let n = 2; ; n++) {
-    const candidate = `${harness}-${n}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-}
-
-export function addAccount(record: AccountRecord): void {
-  ensureAccountsFile();
-  const path = accountsPath();
-  const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
-  const list = Array.isArray(raw.accounts) ? (raw.accounts as unknown[]) : [];
-  if (list.some((entry) => (entry as Partial<AccountRecord>)?.id === record.id)) {
-    throw new Error(`account '${record.id}' already exists`);
-  }
-  list.push(record);
-  writeFileSync(path, JSON.stringify({ ...raw, accounts: list }, null, 2) + "\n", { mode: 0o600 });
-}
-
 export function removeAccount(id: string): boolean {
   const path = accountsPath();
   if (!existsSync(path)) return false;
