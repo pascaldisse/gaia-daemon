@@ -4,10 +4,10 @@
 // preview, thinking control, voice buttons), so typing never loses the caret.
 //
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
-// control (💭 #level: click toggles off, right-click menu), queueing while
+// control (◌ #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
-import { UI } from "./glyphs.js";
+import { KIND, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -899,7 +899,7 @@ function ThinkingControl(snapshot, text) {
       state.thinkingMenuOpen = !state.thinkingMenuOpen;
       markDirty("composer");
     },
-    text: `\u{1F4AD} #${effective}`,
+    text: `${KIND.thinking} #${effective}`,
   });
 
   return h(
