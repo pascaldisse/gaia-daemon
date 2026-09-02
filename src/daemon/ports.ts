@@ -37,3 +37,11 @@ export interface ReloadHost {
   serviceFor(workspaceId: string, roomId?: string): Promise<RoomService>;
   broadcast(event: UiEvent): void;
 }
+
+/** Harness claim-scoped RPC dependencies; capability-neutral by design. */
+export interface HarnessApiPort {
+  readonly registry: WorkspaceRegistry;
+  readonly toolProviders: import("../harness/protocol.js").ToolProviders;
+  serviceFor(workspaceId: string, roomId?: string): Promise<RoomService>;
+  memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService;
+}

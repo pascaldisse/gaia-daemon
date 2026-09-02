@@ -69,7 +69,8 @@ import {
   reloadService as doReloadService,
   workspaceServiceKeys as wireWorkspaceServiceKeys,
 } from "./daemon/reload.js";
-import type { ReloadHost, WiringHost } from "./daemon/ports.js";
+import type { HarnessApiPort, ReloadHost, WiringHost } from "./daemon/ports.js";
+import { harnessContextDietGet, harnessContextDietSet, harnessDogCommand, harnessDreamApply, harnessDreamPropose, harnessEndConversation, harnessGaiaTools, harnessGhoulLedgerSearch, harnessGhoulRoomRead, harnessMemoryBatch, harnessMemoryWrite, harnessRecall, harnessRecallScroll, harnessToolProviders, harnessToolResultFetch } from "./daemon/harness-api.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -786,34 +787,19 @@ export class Daemon {
     return this.bridge?.verify(token) ?? null;
   }
 
-  /** The gaia tools an agent's EFFECTIVE harness declares — read uniformly from
-   * the registry, never branched on the harness id. Gates /api/harness/*. */
-  harnessGaiaTools(workspace: Workspace, agentId: string): readonly GaiaTool[] {
-    return capabilitiesFor(harnessIdFor(workspace.agents[agentId], workspace)).gaiaTools;
+  private harnessApiPort(): HarnessApiPort {
+    return {
+      registry: this.registry,
+      toolProviders: this.toolProviders,
+      serviceFor: (workspaceId, roomId) => this.serviceFor(workspaceId, roomId),
+      memoryServiceFor: (workspaceId, workspace, path) => this.memoryServiceFor(workspaceId, workspace, path),
+    };
   }
 
-  harnessToolProviders(): ToolProviders {
-    return this.toolProviders;
-  }
-  async harnessMemoryBatch(
-    claims: HarnessTokenClaims,
-    file: string,
-    operations: Array<{ action: MemoryAction; content?: string; oldText?: string }>,
-  ): Promise<MemoryMutationResult> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.mutateAgentMemoryBatch(claims.agentId, file, operations);
-  }
-
-  async harnessMemoryWrite(
-    claims: HarnessTokenClaims,
-    file: string,
-    action: MemoryAction,
-    options: { content?: string; oldText?: string },
-  ): Promise<MemoryMutationResult> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.mutateAgentMemory(claims.agentId, file, action, options);
-  }
-
+  harnessGaiaTools(workspace: Workspace, agentId: string): readonly GaiaTool[] { return harnessGaiaTools(workspace, agentId); }
+  harnessToolProviders(): ToolProviders { return harnessToolProviders(this.harnessApiPort()); }
+  async harnessMemoryBatch(claims: HarnessTokenClaims, file: string, operations: Array<{ action: MemoryAction; content?: string; oldText?: string }>): Promise<MemoryMutationResult> { return harnessMemoryBatch(this.harnessApiPort(), claims, file, operations); }
+  async harnessMemoryWrite(claims: HarnessTokenClaims, file: string, action: MemoryAction, options: { content?: string; oldText?: string }): Promise<MemoryMutationResult> { return harnessMemoryWrite(this.harnessApiPort(), claims, file, action, options); }
   /** Chat-wide transcript search for the web client. Transcript-only and
    * navigable to the matched message. No `workspaceId` scans every initialized
    * workspace; `roomId` narrows to a single chat (in-chat search). Bm25 order
@@ -861,198 +847,17 @@ export class Daemon {
     return { hits: hits.slice(0, limit), degraded };
   }
 
-  /** Hybrid DEEP recall for a harness turn (capability-gated by the caller;
-   * §8: explicit invocation tolerates seconds, so it earns the reranker +
-   * chunk-window expansion). Runs entirely daemon-side: index, embedder,
-   * reranker, and room refs stay here. The asking room's active context
-   * window is excluded (self-match, CALMem) and any degradation is stated in
-   * the result — never silent. */
-  async harnessRecall(
-    claims: HarnessTokenClaims,
-    query: string,
-    limit?: number,
-    options: { summarize?: boolean } = {},
-  ): Promise<{ result: string; hits: MemorySearchHit[] }> {
-    const record = await this.registry.find(claims.workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
-    const context = await service.recallContext(claims.agentId);
-    const request = { limit: limit && limit > 0 ? Math.min(limit, 25) : undefined, context };
-    if (options.summarize) {
-      const { text, degraded } = await memory.summarizeSearch(claims.agentId, query, request);
-      const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
-      return { result: text ? `${header}${text}` : `${header}no matches in memory or room history`, hits: [] };
-    }
-    const { hits, degraded } = await memory.deepSearch(claims.agentId, query, request);
-    const header = degraded.length ? `(recall degraded: ${degraded.join("; ")})\n` : "";
-    return { result: hits.length ? `${header}${formatMemoryHits(hits, { full: true })}` : `${header}no matches in memory or room history`, hits };
-  }
-
-  /** The scroll pager (§8): raw transcript window around a previous recall
-   * hit. No LLM, no ranking — just the surrounding conversation. */
-  async harnessRecallScroll(claims: HarnessTokenClaims, hitId: number, options: { span?: number; offset?: number } = {}): Promise<string> {
-    const record = await this.registry.find(claims.workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const window = await scrollTranscriptWindow(record.path, hitId, options);
-    return window ?? `no transcript hit with id ${hitId} — ids come from recall results ("hit N")`;
-  }
-
-  /** tool_result_fetch (09-MEMORY-CONTEXT): pages the ORIGINAL, uncollapsed
-   * call/args/result for a diet-collapsed own tool-call stub back by
-   * (sessionId, entryId) — v1 names these the room event id and the tool id
-   * within its details.tools[] (see RoomService#toolResultSlice). Scoped to
-   * the CALLING room only — a stub only ever names an event in its own room. */
-  async harnessToolResultFetch(
-    claims: HarnessTokenClaims,
-    sessionId: string,
-    entryId: string,
-    offset: number,
-    limit: number,
-  ): Promise<{ text: string; totalLength: number; hasMore: boolean }> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const slice = await service.toolResultSlice(claims.agentId, sessionId, entryId, offset, limit);
-    if (!slice) throw new Error(`No stored tool call for session ${sessionId} entry ${entryId}`);
-    return slice;
-  }
-
-  /** Context-diet policy (09-MEMORY-CONTEXT): read/patch the calling room's
-   * effective policy — the daemon-side half of BOTH the `diet` gaia-tool verb
-   * and the `/diet` room command (RoomService#dietView/dietSet is the one
-   * shared implementation). */
-  async harnessContextDietGet(claims: HarnessTokenClaims): Promise<ContextDietView> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.dietView();
-  }
-
-  async harnessContextDietSet(claims: HarnessTokenClaims, scope: "room" | "workspace", patch: ContextDietOverrides): Promise<ContextDietView> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.dietSet({ scope, patch });
-  }
-  /** Gracefully end only the token owner's current room conversation. */
-  async harnessEndConversation(claims: HarnessTokenClaims, farewell: string): Promise<string> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.endConversation(claims.agentId, farewell);
-  }
-
-  /** 09-DOG-MODE: `gaia dog on|off|status` (CLI form of /dog), scoped to the
-   * CALLING room — same daemon-backed, no-GaiaTool-grant tier as dream.
-   * DogMode is a bundled command-plugin now (plugins/defaults/dog-mode.mjs,
-   * whip 348) — routes through the same generic plugin-action path any other
-   * plugin uses (RoomService#runPluginAction), never a dedicated method. */
-  async harnessDogCommand(claims: HarnessTokenClaims, sub: "on" | "off" | "status"): Promise<string> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    return service.runPluginAction("dog", [sub]);
-  }
-
-  /** INSIGHT "full" tier, decree 2026-07-28 part 3: direct, pull-based read of
-   * ANY currently-incognito room's raw transcript, on demand — never indexed,
-   * never pushed anywhere, reachable only when the CALLING agent's own
-   * `insight` is "full" (Solas reading a brother's room, not a general
-   * capability — the target room's own owner/agentId is irrelevant to the
-   * gate). Windowed by event count (offset/limit) because a ghoul's
-   * transcript can run to megabytes of tool-call noise; unwindowed dumping
-   * would defeat the point of a considered, on-demand read. */
-  async harnessGhoulRoomRead(claims: HarnessTokenClaims, targetRoomId: string, options: { offset?: number; limit?: number } = {}): Promise<string> {
-    const record = await this.registry.find(claims.workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const caller = service.workspace.agents[claims.agentId];
-    if (caller?.insight !== "full") {
-      throw new Error(`insight "full" required to read another room's raw transcript (caller '${claims.agentId}' has insight "${caller?.insight ?? "none"}")`);
-    }
-    // RoomHandle.open has create-on-open semantics (seeds a default state.json
-    // for any id that doesn't exist) — wrong for a read-only "look into the
-    // labyrinth" operation, so check existence first; never let a typo'd room
-    // id silently create a phantom room on disk.
-    if (!existsSync(workspacePaths.roomState(record.path, targetRoomId))) throw new Error(`no such room: ${targetRoomId}`);
-    const handle = await RoomHandle.open(record.path, targetRoomId);
-    const state = await handle.state();
-    if (state.incognito !== true) {
-      throw new Error(`'${targetRoomId}' is not an incognito room — read it through normal recall instead`);
-    }
-    const { events } = await handle.eventsFrom(0);
-    const offset = Math.max(0, options.offset ?? 0);
-    const limit = Math.min(Math.max(1, options.limit ?? 40), 200);
-    const window = events.slice(offset, offset + limit);
-    if (window.length === 0) return `'${targetRoomId}': no events at offset ${offset} (${events.length} total)`;
-    const lines = window.map((event, index) => {
-      const shown = event.text.length > 800 ? `${event.text.slice(0, 800)}…` : event.text;
-      return `[${offset + index}] ${event.author}: ${shown || "(no text)"}`;
-    });
-    const consumed = offset + window.length;
-    const more = consumed < events.length ? `\n\n… ${events.length - consumed} more events; pass offset=${consumed} to continue` : "";
-    return `${targetRoomId} (${events.length} events total, showing ${offset}–${consumed - 1}):\n\n${lines.join("\n")}${more}`;
-  }
-
-  /** INSIGHT "full" tier: search every agent's distilled summon ledgers (never
-   * the raw transcripts) by substring — "index the ledgers, not the
-   * transcripts" (decree 2026-07-28 part 2): real search power, zero
-   * widening of the shared recall index (ledgers never enter that index; this
-   * reads the plain .md files directly, filesystem-scoped). Omitted query =
-   * list every entry. */
-  async harnessGhoulLedgerSearch(claims: HarnessTokenClaims, query?: string): Promise<string> {
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const caller = service.workspace.agents[claims.agentId];
-    if (caller?.insight !== "full") {
-      throw new Error(`insight "full" required to search other agents' ledgers (caller '${claims.agentId}' has insight "${caller?.insight ?? "none"}")`);
-    }
-    const needle = query?.trim().toLowerCase();
-    const hits: string[] = [];
-    for (const agent of Object.values(service.workspace.agents)) {
-      const dir = join(agent.memoryDir, "ledgers");
-      let files: string[];
-      try {
-        files = (await readdir(dir)).filter((name) => name.endsWith(".md"));
-      } catch {
-        continue;
-      }
-      for (const file of files) {
-        let content: string;
-        try {
-          content = await readFile(join(dir, file), "utf8");
-        } catch {
-          continue;
-        }
-        const entries = content.split(/\n(?=§ )/).filter((entry) => entry.trim());
-        for (const entry of entries) {
-          if (!needle || entry.toLowerCase().includes(needle)) hits.push(`--- ${agent.id} / ${file} ---\n${entry.trim()}`);
-        }
-      }
-    }
-    if (hits.length === 0) return needle ? `no ledger entries matching "${query}"` : "no ledger entries recorded yet";
-    return hits.slice(0, 40).join("\n\n");
-  }
-
-  /** Dream v2 propose: a user-triggered consolidation preview for `agentId`
-   * (the CLI's `[agent]` argument — may differ from the caller, same as
-   * summon's target). Never gated by a GaiaTool grant (see cli-tools.ts's
-   * runDream comment): it is a human-operated CLI utility, not an in-turn
-   * agent capability. Force semantics bypass the daily cap and the
-   * "nothing new" skip; applies nothing — writes dream-proposal.json. Returns
-   * preformatted text the CLI prints verbatim. */
-  async harnessDreamPropose(claims: HarnessTokenClaims, agentId: string): Promise<string> {
-    const record = await this.registry.find(claims.workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
-    const result = await memory.consolidate(agentId, { propose: true, force: true });
-    return formatDreamProposal(result, "run: gaia dream [agent] --apply to accept, or dream again to regenerate.");
-  }
-
-  /** Dream v2 apply: commits the proposal `harnessDreamPropose` wrote, through
-   * the guarded writers, then deletes it. Throws when there is no pending
-   * proposal — caught by handleHarness same as every other harness route, so
-   * the CLI sees ok:false and exits nonzero. */
-  async harnessDreamApply(claims: HarnessTokenClaims, agentId: string): Promise<string> {
-    const record = await this.registry.find(claims.workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${claims.workspaceId}`);
-    const service = await this.serviceFor(claims.workspaceId, claims.roomId);
-    const memory = this.memoryServiceFor(claims.workspaceId, service.workspace, record.path);
-    const result = await memory.applyDreamProposal(agentId);
-    if (!result) throw new Error(`no pending dream proposal for @${agentId} — run \`gaia dream\` first`);
-    return `applied ${result.applied} ops (${result.skipped} skipped)`;
-  }
+  async harnessRecall(claims: HarnessTokenClaims, query: string, limit?: number, options: { summarize?: boolean } = {}): Promise<{ result: string; hits: MemorySearchHit[] }> { return harnessRecall(this.harnessApiPort(), claims, query, limit, options); }
+  async harnessRecallScroll(claims: HarnessTokenClaims, hitId: number, options: { span?: number; offset?: number } = {}): Promise<string> { return harnessRecallScroll(this.harnessApiPort(), claims, hitId, options); }
+  async harnessToolResultFetch(claims: HarnessTokenClaims, sessionId: string, entryId: string, offset: number, limit: number): Promise<{ text: string; totalLength: number; hasMore: boolean }> { return harnessToolResultFetch(this.harnessApiPort(), claims, sessionId, entryId, offset, limit); }
+  async harnessContextDietGet(claims: HarnessTokenClaims): Promise<ContextDietView> { return harnessContextDietGet(this.harnessApiPort(), claims); }
+  async harnessContextDietSet(claims: HarnessTokenClaims, scope: "room" | "workspace", patch: ContextDietOverrides): Promise<ContextDietView> { return harnessContextDietSet(this.harnessApiPort(), claims, scope, patch); }
+  async harnessEndConversation(claims: HarnessTokenClaims, farewell: string): Promise<string> { return harnessEndConversation(this.harnessApiPort(), claims, farewell); }
+  async harnessDogCommand(claims: HarnessTokenClaims, sub: "on" | "off" | "status"): Promise<string> { return harnessDogCommand(this.harnessApiPort(), claims, sub); }
+  async harnessGhoulRoomRead(claims: HarnessTokenClaims, targetRoomId: string, options: { offset?: number; limit?: number } = {}): Promise<string> { return harnessGhoulRoomRead(this.harnessApiPort(), claims, targetRoomId, options); }
+  async harnessGhoulLedgerSearch(claims: HarnessTokenClaims, query?: string): Promise<string> { return harnessGhoulLedgerSearch(this.harnessApiPort(), claims, query); }
+  async harnessDreamPropose(claims: HarnessTokenClaims, agentId: string): Promise<string> { return harnessDreamPropose(this.harnessApiPort(), claims, agentId); }
+  async harnessDreamApply(claims: HarnessTokenClaims, agentId: string): Promise<string> { return harnessDreamApply(this.harnessApiPort(), claims, agentId); }
 
   /** Memory health rows for `gaia memory status` and the web status surface. */
   async memoryHealth(workspaceId: string): Promise<MemoryHealthRow[]> {
