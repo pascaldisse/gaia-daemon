@@ -251,7 +251,7 @@ const PERSONA_CONTEXT_CAP = 16_000;
  * running turns; missing/invalid = a no-op. Room ids are already
  * filesystem-safe (see newRoomId/room dir naming), so no extra sanitizing. */
 function ambientWatchdogPath(roomId: string): string {
-  return join(homedir(), ".gaia", "ambient-watchdog", `${roomId}.json`);
+  return join(globalPaths.ambientWatchdogDir(), `${roomId}.json`);
 }
 
 interface AmbientWatchdog {

@@ -6,12 +6,11 @@ import { createReadStream, existsSync, openSync, readFileSync, writeSync, rmSync
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaBasePath, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
-import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
+import { bundledDir, expandHome, gaiaHome, globalPaths } from "../core/paths.js";
 import { sleep } from "../core/retry.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
@@ -2046,7 +2045,7 @@ export class GaiaWebServer {
     if (/^www\./i.test(target)) return `https://${target}`;
 
     const withoutFilePrefix = target.startsWith("file://") ? fileURLToPath(target) : target;
-    const expanded = withoutFilePrefix.startsWith("~/") ? join(homedir(), withoutFilePrefix.slice(2)) : withoutFilePrefix;
+    const expanded = expandHome(withoutFilePrefix);
     const base = workspaceId ? (await this.daemon.workspaceForId(workspaceId))?.rootDir : undefined;
     const path = isAbsolute(expanded) ? expanded : resolve(base ?? this.options.cwd, expanded);
 

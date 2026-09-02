@@ -1,9 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
-import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type * as Photon from "@silvia-odwyer/photon-node";
-import { photonNodeAssetPath } from "../core/paths.js";
+import { expandHome, photonNodeAssetPath } from "../core/paths.js";
 
 // Lazy + dynamic on purpose: a compiled binary must never statically import
 // "@silvia-odwyer/photon-node" at module scope (see vendor/photon-node/
@@ -75,7 +74,7 @@ function startsWithAscii(bytes: Uint8Array, offset: number, text: string): boole
  * escape hatch for Pi's rarer path-normalisation variants if this fails. */
 function resolveImagePath(path: string, cwd: string): string {
   const stripped = path.startsWith("@") ? path.slice(1) : path;
-  const expanded = stripped === "~" ? homedir() : stripped.startsWith("~/") ? resolve(homedir(), stripped.slice(2)) : stripped;
+  const expanded = expandHome(stripped);
   return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
 }
 
