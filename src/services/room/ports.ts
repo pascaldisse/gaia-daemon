@@ -12,6 +12,7 @@ ContextGatePending,
   PendingTurn,
   PetProgressStatus,
   RoomGoal,
+  RoomEvent,
   RoomEventKind,
   SanitizeProposal,
   SanitizeStatus,
@@ -250,4 +251,25 @@ export interface RoomTaskOperationsPort {
   emitSystemNote(text: string): void;
   settleTask(task: Task, status: "complete" | "error" | "cancelled", error?: unknown): void;
   subscribe(listener: (event: UiEvent) => void): () => void;
+}
+
+
+/** Dependencies reached by room setup, maintenance, transcript inspection, and task controls. */
+export interface RoomMaintenancePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspace: Workspace;
+  readonly workspaceId: string;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly options: RoomServiceOptions;
+  recentTasks: Task[];
+  readonly backgroundTasks: {
+    record(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void>;
+    output(taskId: string): Promise<{ text: string; running: boolean } | undefined>;
+    stop(taskId: string): Promise<boolean>;
+  };
+  emitSnapshot(): Promise<void>;
+  init(): Promise<void>;
+  eventById(eventId: string, opts?: { display?: boolean }): Promise<RoomEvent | undefined>;
+  displayEvents(events: RoomEvent[]): RoomEvent[];
 }

@@ -167,3 +167,9 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 ## A6g — monad execution extraction (2026-09-03)
 - `ec95464`: `room/monad-execution.ts` 97; pendingTurn→engine→commit/clear seam moved whole; atomicity unchanged.
 - gate: `bun run check` green; `bun test test/room-service.test.ts test/monad.test.ts test/rooms.test.ts` 166/0. room-service 1019→946; ≤800 still open.
+
+## A6i — room maintenance extraction (2026-09-03)
+- pending landing: `room/maintenance.ts` 172; setup/history maintenance/transcript inspection/background-task controls moved through typed `RoomMaintenancePort`; queue/WAL/`pendingTurn.eventId` execution untouched.
+- gate: `bun run check` green; `bun test test/room-service.test.ts test/monad*.test.ts test/rooms*.test.ts` 166/0.
+- call-site: command table delegates; moved bodies sole in `room/maintenance.ts`; pragma scan `src`: 0. sizes: room-service 946→798 · daemon 717 · http 642.
+- W1/W2: prior state · W3 complete (`0597626`) · W4 live UNVERIFIED/陰. Open: ADV-002/003/004 · ADV-007/A6 size resolved by this landing · ADV-008 · ADV-009 historical · ADV-013 MED. ADV-012 resolved (`12d980c`).
