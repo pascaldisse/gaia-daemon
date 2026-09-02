@@ -257,12 +257,6 @@ export function accountsCatalog() {
   return accountsCatalogPromise;
 }
 
-/** Drop the cache so the next accountsCatalog() call refetches — call after
- * an account is added, removed, or logged in. */
-export function refreshAccountsCatalog() {
-  accountsCatalogPromise = null;
-}
-
 /** Run a room-local plugin action (popup form submit, item action button, or
  * an equivalent slash-command args array) and persist its result.
  * @param {string} command @param {string[]} args */
@@ -769,16 +763,3 @@ export async function roomHumans() {
   return body.humans ?? [];
 }
 
-/** @param {string} humanId */
-export async function addRoomHuman(humanId) {
-  const snapshot = state.snapshot;
-  if (!snapshot) return;
-  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans`, { method: "POST", body: JSON.stringify({ userId: humanId }) });
-}
-
-/** @param {string} humanId */
-export async function removeRoomHuman(humanId) {
-  const snapshot = state.snapshot;
-  if (!snapshot) return;
-  await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/humans/${encodeURIComponent(humanId)}`, { method: "DELETE", body: "{}" });
-}
