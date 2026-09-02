@@ -179,7 +179,7 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - C / ADV-014 → `c529bf4`: daemon broker reads workspace grants + agent capabilities; existing trust tier remains hard floor.
 - D / ADV-018/019 → `6bca2e1`: Pi tail parent assertion corrected; duplicate dialogue limit deleted.
 - ADV-017 → inherited serialized lifecycle tail; re-gated.
-- sizes → room-service 801 · daemon 749 · http 642; pragma scan `src` → 0.
+- sizes → room-service 801 · daemon 757 · http 642; pragma scan `src` → 0.
 - gates → check + focused registry/room/bundled/rpg/dog/Telegram/manifest/loader/capability/A16 suites; green after integration.
 - W1 → prior delivered; W2 → prior delivered; W3 → DELIVERED; W4 A16 assertion delivered, live execution remains 陰-owned/UNVERIFIED.
 
