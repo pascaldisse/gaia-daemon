@@ -156,8 +156,9 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
 .right { border-left: 1px solid var(--border); }
 .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); background: var(--bg); min-width: 0; min-height: 0; overflow: hidden; }
 .main-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
-.col-resizer { cursor: col-resize; background: var(--border); opacity: 1; }
-.col-resizer:hover, body.resizing .col-resizer { background: var(--accent); }
+/* Drag handles: invisible 5px hit zone straddling the pane's 1px border (LAW: flat hairlines only). */
+.col-resizer { cursor: col-resize; background: transparent; width: 5px; margin: 0 -2.5px; position: relative; z-index: 2; }
+.col-resizer:hover, body.resizing .col-resizer { background: var(--accent); opacity: .5; }
 body.resizing { cursor: col-resize; user-select: none; }
 
 /* ============================================================
