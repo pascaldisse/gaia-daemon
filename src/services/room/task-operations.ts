@@ -4,8 +4,6 @@ import { hasExplicitMention } from "../commands.js";
 import type { SendMessageOptions } from "../room-service.js";
 import type { RoomTaskOperationsPort } from "./ports.js";
 
-/** Max consecutive agent→agent hand-offs before room agent-dialogue pauses. */
-export const AGENT_DIALOGUE_MAX_HOPS = 8;
 
 /** Non-WAL task controls: pets, agent-dialogue policy, cancellation, queue chips,
  * idle observation, and monad eligibility. Queue/WAL ownership stays in RoomService. */
