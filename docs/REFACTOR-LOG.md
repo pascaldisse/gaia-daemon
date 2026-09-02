@@ -149,3 +149,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `0597626`: command loader→manifest registry; one-release synthesized legacy manifest warning; Telegram `addons/telegram/plugin.json` + typed channel contribution; dead formatter deleted.
 - gate: `bun run check` green; focused plugin+Telegram suite 38/0 after integration.
 - grep: `scripts/telegram-bridge.mjs` creates `PluginRegistry` and invokes `gaia.telegram` channel; no formatter import. pragma scan touched paths: 0. W3 complete; live UNVERIFIED, queue owner 陰.
+
+## A6e — RoomService bootstrap lifecycle extraction (2026-09-03)
+- `c4816a2`: `room/lifecycle.ts` 154; runtime construction/open/init/recovery/subscribe/dispose moved through typed lifecycle ports; queue/WAL/pendingTurn atomic paths unchanged.
+- gate: `bun run check` green; `bun test test/room-service.test.ts` 99/0.
+- call-site: lifecycle implementations solely in `room/lifecycle.ts`; room-service delegates. pragma touched files: 0. room-service 1362→1251; continued extraction required for ≤800.
