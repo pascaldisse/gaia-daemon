@@ -27,6 +27,8 @@ import type { HookEvent } from "../hooks.js";
 import type { EpisodeCapture } from "../memory-service.js";
 import type { RoomServiceOptions, SendMessageOptions } from "../room-service.js";
 import type { SanitizeContext } from "../sanitize.js";
+import type { ResumeEpoch } from "../resume-epoch.js";
+import type { SummonResultDelivery } from "../summons.js";
 
 /** Dependencies reached by context-gate persistence and resume. */
 export interface RoomContextGatePort {
@@ -140,6 +142,29 @@ export interface RoomCommandsFacadePort {
   updateGoal(mutate: (current: RoomGoal) => RoomGoal | undefined): Promise<void>;
   emitSystemNote(text: string): void;
   sanitizePreview(): Promise<SanitizeProposal>;
+}
+
+/** Dependencies reached by summon lifecycle (deliver/mark/wait) and agent-dialogue
+ * hand-off delivery. Split from room-service.ts (Pascal 2026-09-03 A6d). */
+export interface RoomSummonLifecyclePort {
+  readonly room: RoomHandle;
+  readonly roomId: string;
+  readonly workspaceId: string;
+  readonly workspace: Workspace;
+  readonly runtimes: Record<string, AgentRuntime>;
+  readonly activeTask: Task | undefined;
+  readonly activeAgentTurn: Task | undefined;
+  readonly queuedTasks: Task[];
+  agentDialogueHops: number;
+  init(): Promise<void>;
+  emit(event: UiEvent): void;
+  emitSnapshot(): Promise<void>;
+  emitSystemNote(text: string): void;
+  emitRoomsChanged(): Promise<void>;
+  drain(onDecided?: () => void): Promise<void>;
+  waitForIdle(timeoutMs?: number): Promise<void>;
+  createTask(text: string, targets: string[]): Task;
+  postAgentNote(agentId: string, text: string, details?: EventDetails): Promise<void>;
 }
 
 /** Dependencies reached by sanitize review, proposal persistence, and apply. */
