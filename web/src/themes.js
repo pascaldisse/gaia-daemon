@@ -30,7 +30,7 @@ export const THEMES = [
 ];
 
 const STORAGE_KEY = "gaia.theme";
-const DEFAULT_THEME = "tokyo-night";
+const DEFAULT_THEME = "obsidian-violet";
 
 let currentId = DEFAULT_THEME;
 
