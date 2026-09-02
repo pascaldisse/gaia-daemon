@@ -1,7 +1,7 @@
 {
   "name": "gaia-daemon",
   "version": "2.0.0",
-  "description": "GAIA \u2014 local-first multi-agent workspace. Rooms, personas, Pi runtime, sandboxed summons, monad routing, voice.",
+  "description": "GAIA — local-first multi-agent workspace. Rooms, personas, Pi runtime, sandboxed summons, monad routing, voice.",
   "type": "module",
   "bin": {
     "gaia": "./dist/cli.js"
@@ -9,7 +9,7 @@
   "scripts": {
     "build": "bun scripts/build-daemon.mjs",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json && tsc -p src/server/graphql.tsconfig.json --noEmit && bun run check:dead",
-    "check:dead": "bunx --bun knip --no-exit-code",
+    "check:dead": "knip --no-exit-code",
     "test": "bun test test/",
     "start": "bun src/cli.ts",
     "stop": "pids=$(lsof -ti tcp:8787); if [ -n \"$pids\" ]; then kill $pids && echo \"stopped gaia (pid $pids) on :8787\"; else echo \"gaia not running on :8787\"; fi",
@@ -37,6 +37,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.3.0",
+    "knip": "^6.34.0",
     "typescript": "^5.7.3"
   },
   "license": "MIT"

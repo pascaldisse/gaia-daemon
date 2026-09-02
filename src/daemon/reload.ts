@@ -5,21 +5,8 @@
 // parameterized over a `host` shaped like Daemon so behaviour is unchanged —
 // see daemon.ts's thin delegating wrappers.
 
-import type { RoomService } from "../services/room-service.js";
-import type { ModelChoice } from "../services/hints.js";
-import type { UiEvent } from "../core/types.js";
 import { serviceKey } from "./wiring.js";
-
-/** Everything the reload functions below need from Daemon. A plain interface
- * (not `Daemon` itself); the daemon.ts wrappers pass `this`, which satisfies
- * this shape structurally. */
-export interface ReloadHost {
-  readonly services: Map<string, RoomService>;
-  readonly pendingReloads: Set<string>;
-  hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
-  serviceFor(workspaceId: string, roomId?: string): Promise<RoomService>;
-  broadcast(event: UiEvent): void;
-}
+import type { ReloadHost } from "./ports.js";
 
 /** Settings files feed workspace/agent definitions cached at service
  * creation. Rebuild affected services so saves apply without a restart. */

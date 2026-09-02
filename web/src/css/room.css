@@ -56,9 +56,9 @@
 .room-artifacts.on { border-color: var(--accent); color: var(--accent); }
 
 /* Right room panel: one header, one talk row, one compact roster. */
-#room-panel,
 .right { border-left: 1px solid var(--border); border-radius: 0; background: var(--bg); box-shadow: none; }
-#room-panel { padding: 10px 12px; overflow: auto; }
+/* #room-panel lives INSIDE .right — no second border-left (double hairline). */
+#room-panel { border: 0; padding: 10px 12px; overflow: auto; }
 #room-panel > h3 { margin: 10px 0 6px; color: var(--muted); font-size: 10px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase; }
 #room-panel .panel-head { display: flex; gap: 2ch; margin: 0; padding: 0 0 8px; overflow: hidden; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; box-shadow: none; }
 #room-panel .panel-head h2 { margin: 0; color: var(--accent); font-size: 12.5px; font-weight: 700; }

@@ -69,6 +69,7 @@ import {
   reloadService as doReloadService,
   workspaceServiceKeys as wireWorkspaceServiceKeys,
 } from "./daemon/reload.js";
+import type { ReloadHost, WiringHost } from "./daemon/ports.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -389,6 +390,40 @@ export class Daemon {
     this.memoryServices.clear();
   }
 
+  /** Typed boundary: extracted wiring receives only its declared state/actions. */
+  private wiringHost(): WiringHost {
+    return {
+      registry: this.registry,
+      orphanSweepDone: this.orphanSweepDone,
+      services: this.services,
+      handedOutAt: this.handedOutAt,
+      servicePending: this.servicePending,
+      currentRoom: this.currentRoom,
+      memoryStores: this.memoryStores,
+      memoryServices: this.memoryServices,
+      summonCoordinators: this.summonCoordinators,
+      embedSidecar: this.embedSidecar,
+      bridge: this.bridge,
+      scheduler: this.scheduler,
+      log: (message) => this.log(message),
+      broadcast: (event) => this.broadcast(event),
+      scheduleUsageRefresh: () => this.scheduleUsageRefresh(),
+      applyThinking: (workspaceId, roomId, agentId, level) => this.applyThinking(workspaceId, roomId, agentId, level),
+      applySettingsChange: (scope, workspaceId) => this.applySettingsChange(scope, workspaceId),
+    };
+  }
+  /** Typed boundary: reload owns no daemon state beyond this contract. */
+  private reloadHost(): ReloadHost {
+    const daemon = this;
+    return {
+      services: daemon.services,
+      pendingReloads: daemon.pendingReloads,
+      get hintSourcesCache() { return daemon.hintSourcesCache; },
+      set hintSourcesCache(value) { daemon.hintSourcesCache = value; },
+      serviceFor: (workspaceId, roomId) => daemon.serviceFor(workspaceId, roomId),
+      broadcast: (event) => daemon.broadcast(event),
+    };
+  }
   // --- room services ------------------------------------------------------------
 
   /** Get-or-create the long-lived service for a (workspace, room). Omitted room
@@ -400,24 +435,24 @@ export class Daemon {
    * (A7 split) — this stays the public entry point so every existing call
    * site (`this.serviceFor(...)`, dozens across this class) is untouched. */
   async serviceFor(workspaceId: string, roomId?: string): Promise<RoomService> {
-    return wireServiceFor(this, workspaceId, roomId);
+    return wireServiceFor(this.wiringHost(), workspaceId, roomId);
   }
 
   /** One MemoryService per workspace — see daemon/wiring.ts (A7 split). Kept as
    * a private wrapper: called from several room-operation methods below
    * (`this.memoryServiceFor(...)`), which stay in this class untouched. */
   private memoryServiceFor(workspaceId: string, workspace: Workspace, path: string): MemoryService {
-    return wireMemoryServiceFor(this, workspaceId, workspace, path);
+    return wireMemoryServiceFor(this.wiringHost(), workspaceId, workspace, path);
   }
 
   /** Boot sweep: re-arm undelivered summons — see daemon/wiring.ts. */
   private async recoverSummons(): Promise<void> {
-    return wireRecoverSummons(this);
+    return wireRecoverSummons(this.wiringHost());
   }
 
   /** Boot sweep: wake rooms with unfinished work — see daemon/wiring.ts. */
   private async recoverPendingTurns(): Promise<void> {
-    return wireRecoverPendingTurns(this);
+    return wireRecoverPendingTurns(this.wiringHost());
   }
 
   async coordinatorFor(workspaceId: string): Promise<SummonCoordinator> {
@@ -734,15 +769,15 @@ export class Daemon {
    * every call site below (`this.applySettingsChange`/`this.reloadService`/
    * `this.workspaceServiceKeys`) is untouched. */
   async applySettingsChange(scope: "global" | "workspace", workspaceId?: string): Promise<void> {
-    return reloadApplySettingsChange(this, scope, workspaceId);
+    return reloadApplySettingsChange(this.reloadHost(), scope, workspaceId);
   }
 
   private workspaceServiceKeys(workspaceId: string): string[] {
-    return wireWorkspaceServiceKeys(this, workspaceId);
+    return wireWorkspaceServiceKeys(this.reloadHost(), workspaceId);
   }
 
   private async reloadService(key: string): Promise<void> {
-    return doReloadService(this, key);
+    return doReloadService(this.reloadHost(), key);
   }
 
   // --- harness bridge (memory writes + summon for subprocesses) ----------------------
