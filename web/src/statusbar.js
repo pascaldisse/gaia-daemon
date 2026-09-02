@@ -68,6 +68,7 @@ function renderTopbar() {
     return;
   }
   const meter = roomMeterText(snapshot);
+  const usage = usageChipSeg();
   topbar.replaceChildren(
     h(
       "div",
@@ -83,18 +84,29 @@ function renderTopbar() {
     h(
       "div",
       { class: "room-header-controls" },
-      h("input", {
+      h("button", {
         class: "room-search",
-        type: "search",
-        placeholder: "search room",
-        title: "Search this room (Enter)",
+        type: "button",
+        title: "Search this room",
         "aria-label": "Search this room",
-        onkeydown: (event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          state.search.query = /** @type {HTMLInputElement} */ (event.currentTarget).value;
-          openSearch("room");
-        },
+        text: "⌕",
+        onclick: () => openSearch("room"),
+      }),
+      usage && !usage.spacer
+        ? h("button", {
+            class: `room-usage${usage.cls.includes("crit") ? " crit" : usage.cls.includes("warn") ? " warn" : ""}`,
+            type: "button",
+            title: usage.title,
+            text: usage.text.replace(/^◔\s*/, ""),
+            onclick: usage.onclick,
+          })
+        : null,
+      h("button", {
+        class: `room-artifacts${artifactPanelOpen() ? " on" : ""}`,
+        type: "button",
+        title: "toggle artifacts",
+        text: artifactPanelOpen() ? "◫ artifacts" : "□ artifacts",
+        onclick: toggleArtifactPanel,
       }),
       h("output", {
         class: "room-meter",
