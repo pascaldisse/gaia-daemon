@@ -19,6 +19,7 @@
   /* resizable pane widths */
   --w-left: 28ch;
   --w-right: 32ch;
+  --titlebar-inset: 0px;
   font-family: var(--font);
   font-size: 12.5px;
 }
@@ -149,6 +150,7 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
    app frame
    ============================================================ */
 .shell, #app { display: grid; grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
+body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: 38px minmax(0, 1fr); }
 #overlays, #overlays > div { display: contents; }
 .body { display: grid; grid-template-columns: 28ch 1fr 32ch; min-height: 0; overflow: hidden; }
 .sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
@@ -165,6 +167,7 @@ body.resizing { cursor: col-resize; user-select: none; }
    tabbar
    ============================================================ */
 .tabbar { display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
+body.macos-titlebar-overlay .tabbar { height: 38px; padding-left: var(--titlebar-inset); }
 .brand, .tab-brand { display: flex; flex: 0 0 14ch; align-items: center; justify-content: center; gap: 1ch; border-right: 1px solid var(--border); color: var(--fg); font-weight: 700; letter-spacing: .18em; }
 .brand span, .tab-logo, .tab-new { color: var(--accent); }
 .chrome-btn { display: none; }
