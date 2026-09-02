@@ -58,3 +58,9 @@
 - owner: 陰 live slot
 - repro: same isolated daemon/home; send two `@luna` token turns, edit first user event; inspect transcript + rewound + Pi session parent chain from disk.
 - verify: old tail absent from active transcript and fresh prompt branch; rewound retains old tail; edited reply occurs once; `GAIA_PARENT_PID` absent; daemon cwd owns `.gaia/config.json` (ADV-013).
+
+## A10 manifest-first plugin foundation
+
+- owner: root live slot
+- repro: after the manifest loader is wired by a later atom, launch compiled daemon with one valid daemon-placement package and one invalid sibling package → assert no package entrypoint runs; repair sibling → assert only selected placement runs after complete inventory validation.
+- status: UNVERIFIED — A10 exports the validated loader only; legacy command/runner paths remain unchanged pending A14, so no daemon call-site exists to exercise.
