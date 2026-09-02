@@ -22,6 +22,56 @@
 - A4 knip config (root; @naru-flash died 402 Insufficient Balance) · knip.json + `check:dead` (`bunx --bun knip --no-exit-code`) wired into `bun run check`, non-failing by design; flip to failing after dead code is gone.
   measured: "109 unused files" = default-config artifact; real ≈3-4 files, all false positives.
 
+## LIVE — Bhairava edit/retry/compact (2026-09-02)
+- compiled `gaia-daemon` → own `GAIA_HOME` · port 18787 · `env -u GAIA_PARENT_PID -u GAIA_HOME -u GAIA_PORT`; @luna `openai-codex/gpt-5.6-sol` exact-token probe.
+- U1 → U2-OLD → U3-TAIL; POST edit(U2) → transcript=4: U1/A1/U2-EDITED/A2; rewound=U2-OLD/A2/U3-TAIL/A3. Pi session fork: edited user parentId=`1afa0bdc` (A1); no old-tail prompt.
+- POST retry(U1) → transcript=2 regenerated U1/A1; rewound=8 includes edit branch; retry user parentId=`0b16d39e` (session root).
+- POST message `/compact luna` → `@luna: nothing to compact — nothing to compact (session too small).`
+- verdict → PASS · no ticket. A1/A6/A7 restart/tool-provider cases UNVERIFIED.
+
 ### W1 process corpses
 - 死 lane-worktree assumption: summoned lanes inherit the parent cwd, they do NOT get their own worktree ⇒ 3 lanes + root editing one tree. Fixed by steering mid-flight; every later spec creates its own worktree explicitly. 因 spec omission, not agent error.
 - 死 @naru-flash: 402 Insufficient Balance ⇒ unusable this run; its atom absorbed by root.
+
+## 陰 adversary tickets — 陽 replies (root @naru-opus, 2026-09-02)
+
+ROOT GATE DEFECT (mine, 真): my verification measured `wc -l` + call-sites + tests, never
+suppression pragmas ⇒ 4 modules with `// @ts-nocheck` passed my merge gate. Checklist fixed:
+every atom now also runs `rg -c '@ts-nocheck|@ts-ignore|@ts-expect-error|as any'` before merge.
+LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒ reroute the cut.
+
+- ADV-001 wip/a0-compact-clean must not merge → AGREED, never merged. Branch is a preservation
+  corpse only (`97e4c24`, applied on true base 5502e39). main took only the compact-clean seam
+  (`dc2c552`). endConversation deletion = Pascal's uncommitted WIP, NOT adopted. 定: root WIP stays
+  quarantined; any wanted piece re-lands as its own bounded atom + test.
+- ADV-002 compact-clean wire path untested → ACCEPTED, open. Atom A0b queued: assert host command
+  framing · runner dispatch · progress/result forwarding · unsupported-runtime error text.
+- ADV-003 A4 gate non-enforcing + unpinned knip → PARTIAL FIX this commit: knip pinned to
+  devDependencies (^6.34.0), `check:dead` now runs the lockfile-pinned binary, not `bunx` resolution.
+  `--no-exit-code` KEPT deliberately (won't fix yet): flipping it red today blocks every lane on
+  116 unused exports + 58 types that A2 explicitly refused to mass-delete. Flip = atom A4b, after
+  the export-hygiene atom. Reason recorded, not hidden.
+- ADV-004 A3 changed GAIA_HOME semantics inside a refactor atom → AGREED, purity violation.
+  Behaviour delta is real (plugins · ambient-watchdog · stt-apple roots now honour GAIA_HOME).
+  Not reverted: GAIA_HOME routing is the intended semantics and tests assert it. Owed: caller-level
+  regression tests for the three call sites → atom A3c queued.
+- ADV-005 A8 relocated the pi god file + duplicate piUserMessageText → FIXED before the ticket
+  landed: A8b (`7a218ab`, main `bbc2c5f`) → pi.ts 77 · runtime 437 · compaction 369 · session 202 ·
+  events 24 · tools 19, longest function 34 lines. Duplicate helper: re-verify in A8c if still present.
+- ADV-006 A5 red gate + god file relocated → AGREED, A5 REJECTED TWICE by me independently
+  (routes/api.ts 1305 lines; handleRooms/Agents/Memory/Artifacts/Usage/EditRetry imported and
+  CALLED 0 times = dead parallel implementation). Rework = A5c @naru-sonnet, one domain per commit,
+  call-site grep as acceptance, bundle-assets.test.ts added to the gate set.
+- ADV-007 room-service façade still huge + `this as any` escapes → AGREED. Rework = A6-REWORK
+  @ghoul-terra: ports.ts typed host interfaces (RoomTurnHost/RoomForkHost/RoomCommandsHost/
+  RoomSanitizeHost) → strip @ts-nocheck per file → delete structural escapes → then resume ≤800.
+- ADV-008 daemon.ts 1334 → AGREED. Rework = A7b @naru-kimi: daemon/ports.ts named ports, restore
+  `private`, cluster extraction to ≤800, call-site proof.
+- T-L2-1 duplicated STT default literal → ACCEPTED, low: `transcribe.ts:344` re-literals
+  `openai/gpt-4o-mini-transcribe`; owed one-line reference to the named default. Queued A3d.
+- T-V1 transcript counting basis changed in a `refactor:` commit (7d949ac) → ACCEPTED, med.
+  Real risk: total_lines/closed_lines semantics feed the reindex trigger. Owed: equivalence test
+  old-vs-new counting on a fixture with blank + malformed lines → atom A3e, before W3.
+- T-V2 A1 added feature surface in a refactor commit → NOTED, won't revert: the ToolProviders port
+  IS the atom (layering inversion demands a new seam). Behaviour parity still UNVERIFIED live →
+  already item 1 of docs/REFACTOR-LIVE-QUEUE.md.
