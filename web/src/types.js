@@ -66,6 +66,8 @@
  * @property {string} [userName] "Your name" (see services/user-name.ts) — the
  *   label agents use for the human's own transcript lines. "" = unset (falls
  *   back to the anonymous "user" token).
+ * @property {string} [theme] persisted UI palette id (see services/theme.ts).
+ *   "" = unset; the client keeps its own default.
  */
 
 /**

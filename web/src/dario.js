@@ -6,6 +6,7 @@
 // and apply never deletes: originals land in the room's redactions.jsonl.
 
 import { api } from "./api.js";
+import { agentGlyph } from "./glyphs.js";
 import { $, h } from "./dom.js";
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
@@ -201,7 +202,7 @@ function DarioModal() {
       h(
         "div",
         { class: "panel-head" },
-        h("h2", { text: "🎩 Thanks, Dario" }),
+        h("h2", { text: `${agentGlyph("dario")} Thanks, Dario` }),
         h("button", { onclick: closeDario, text: "x" }),
       ),
       ...ModalBody(),

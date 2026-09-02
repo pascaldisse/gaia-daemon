@@ -10,6 +10,7 @@
 // for the whole gesture and keep firing even when the pointer leaves the window,
 // so we get a trustworthy release point to place the torn-off window at.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { tearOff } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { isNative } from "./native.js";
@@ -47,6 +48,7 @@ function renderTabs() {
   const wsId = snapshot?.workspace.id;
   const currentId = snapshot?.room?.id;
   const tabs = visibleTabs(snapshot);
+  const dictationChip = DictationChip();
   bar.replaceChildren(
     h("button", {
       class: "chrome-btn",
@@ -62,9 +64,12 @@ function renderTabs() {
       "div",
       { class: "tab-strip" },
       tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
-      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
+      snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer" }),
+    // Only present while a recording is live (replaceChildren takes Nodes, so
+    // the idle case is wrapped away rather than passed as null).
+    ...(dictationChip ? [dictationChip] : []),
     h("button", {
       class: "chrome-btn",
       title: state.rightCollapsed ? "show room panel" : "hide room panel",
@@ -75,6 +80,26 @@ function renderTabs() {
       text: "▥",
     }),
   );
+}
+
+/** App-wide "you are dictating, and it belongs THERE" indicator (v2 parity).
+ * The composer's own mic UI only exists in the room on screen; this chip is
+ * what tells you a recording is live after you switched away, and clicking it
+ * takes you back to the room the words are bound to.
+ * @returns {HTMLElement|null} */
+function DictationChip() {
+  const origin = state.dictationOrigin;
+  if ((!state.dictating && !state.dictationBusy) || !origin) return null;
+  const rooms = state.snapshot?.workspace.id === origin.workspaceId ? (state.snapshot?.rooms ?? []) : (state.workspaceRooms[origin.workspaceId] ?? []);
+  const room = rooms.find((entry) => entry.id === origin.roomId);
+  const here = state.snapshot?.room.id === origin.roomId && state.snapshot?.workspace.id === origin.workspaceId;
+  return h("button", {
+    class: "dictation-chip",
+    "aria-live": "polite",
+    title: here ? "recording into this room's composer" : "recording into another room — click to go back to it",
+    onclick: () => void selectRoom(origin.workspaceId, origin.roomId),
+    text: `${state.dictationBusy ? "◌" : "●"} dictating → ${room?.title ?? origin.roomId}`,
+  });
 }
 
 registerRegion("tabs", renderTabs);
@@ -98,8 +123,8 @@ function Tab(room, number, isActive, wsId) {
     },
     h("span", { class: "tab-num", text: String(number) }),
     room.running ? h("span", { class: "tab-dot" }) : null,
-    room.favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null,
-    room.incognito ? h("span", { class: "tab-incognito", title: "incognito — no memory", text: "🕶" }) : null,
+    room.favorite ? h("span", { class: "room-star", title: "favorite", text: UI.favorite }) : null,
+    room.incognito ? h("span", { class: "tab-incognito", title: "incognito — no memory", text: UI.incognito }) : null,
     h("span", { class: "tab-name", text: room.title ?? room.id }),
     h("button", {
       class: "tab-close",

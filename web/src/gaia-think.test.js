@@ -96,7 +96,7 @@ test("AgentText: no leading block -> plain markdown, no thinking expander", () =
 test("SkillInvocationActivity: mirrors Pi's collapsed native skill chip", () => {
   const html = serialize(SkillInvocationActivity({ name: "stoner-mode", location: "/skills/stoner-mode/SKILL.md", content: "# stoner" }));
   expect(html).toContain('class="activity-details tool-call skill-call complete"');
-  expect(html).toContain('class="activity-icon" aria-hidden="true">🧩</span>');
+  expect(html).toContain('class="activity-icon" aria-hidden="true">❖</span>');
   expect(html).toContain("[skill] stoner-mode");
   expect(html).toContain("stoner");
 });

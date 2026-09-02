@@ -3,6 +3,7 @@
 // about the session; arrows are pure CSS so no Nerd Font is required. Also
 // owns the omarchy-style theme palette (the "theme" region).
 import { selectRoom } from "./actions.js";
+import { agentGlyph, UI } from "./glyphs.js";
 import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
@@ -11,7 +12,7 @@ import { stopReadAloud } from "./readaloud.js";
 import { clearError, markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";
-import { applyTheme, currentThemeId, themeById, THEMES } from "./themes.js";
+import { commitTheme, committedThemeId, currentThemeId, previewTheme, revertTheme, themeById, THEMES } from "./themes.js";
 import { jumpToEvent } from "./transcript.js";
 
 /** @typedef {{ spacer: true }|{ spacer?: undefined, text: string, cls: string, title?: string, id?: string, onclick?: () => void }} Seg */
@@ -25,38 +26,81 @@ function renderStatus() {
 
 registerRegion("status", renderStatus);
 
+/** @param {Snapshot} snapshot */
+function activeAgent(snapshot) {
+  const id = snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent;
+  return snapshot.agents.find((agent) => agent.id === id) ?? null;
+}
+
+/** @param {Snapshot} snapshot */
+function roomMeterText(snapshot) {
+  const agent = activeAgent(snapshot);
+  if (!agent) return "No active agent";
+  const context = agent.context;
+  const maxTokens = context?.maxTokens;
+  const percent = context && Number.isFinite(context.usedTokens) && typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+    ? Math.round((context.usedTokens / maxTokens) * 100)
+    : null;
+  return `${agentGlyph(agent.id)} @${agent.id}${percent === null ? " · ctx unavailable" : ` · ctx ${percent}%`}`;
+}
+
+/** @param {Snapshot} snapshot */
+function transcriptStateText(snapshot) {
+  const loaded = snapshot.room.events.length;
+  const total = snapshot.room.eventTotal;
+  const running = activeAgent(snapshot)?.status === "running";
+  return `${loaded.toLocaleString()} loaded · ${total.toLocaleString()} total${running ? " · running" : ""}`;
+}
+
 function renderTopbar() {
   const topbar = $("#topbar");
   if (!topbar) return;
+  topbar.classList.add("room-header");
   const snapshot = state.snapshot;
+  if (!snapshot) {
+    topbar.replaceChildren(
+      h("div", { class: "room-header-primary" },
+        h("div", { class: "room-paths" },
+          h("strong", { title: "No workspace selected" }, LinkedText("No workspace selected")),
+          h("small", { title: "Add an initialized workspace to begin." }, LinkedText("Add an initialized workspace to begin."))),
+      ),
+    );
+    return;
+  }
+  const meter = roomMeterText(snapshot);
   topbar.replaceChildren(
     h(
       "div",
-      {},
-      h("strong", {}, snapshot ? PathText(snapshot.workspace.rootDir) : LinkedText("No workspace selected")),
-      h("small", {}, snapshot ? PathText(snapshot.workspace.configPath) : LinkedText("Add an initialized workspace to begin.")),
+      { class: "room-header-primary" },
+      h(
+        "div",
+        { class: "room-paths" },
+        h("strong", { title: snapshot.workspace.rootDir }, PathText(snapshot.workspace.rootDir)),
+        h("small", { title: snapshot.room.statePath }, PathText(snapshot.room.statePath)),
+      ),
+      h("div", { class: "transcript-state", title: "Durable transcript state", text: transcriptStateText(snapshot) }),
     ),
     h(
       "div",
-      { class: "topbar-right" },
-      // Search THIS chat — the same overlay as ⌘K, pre-scoped to the open room.
-      snapshot
-        ? h("button", {
-            class: "topbar-search",
-            type: "button",
-            title: "search this chat (⌘F)",
-            "aria-label": "search this chat",
-            onclick: () => openSearch("room"),
-            text: "⌕",
-          })
-        : null,
-      h("div", {
-        class: state.voice || state.voiceStatusText ? "status on-call" : "status",
-        text: state.voiceStatusText
-          ? state.voiceStatusText
-          : snapshot
-            ? `${state.voice ? `on call @${state.voice.agentId}` : `@${snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent}`}`
-            : "idle",
+      { class: "room-header-controls" },
+      h("input", {
+        class: "room-search",
+        type: "search",
+        placeholder: "search room",
+        title: "Search this room (Enter)",
+        "aria-label": "Search this room",
+        onkeydown: (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          state.search.query = /** @type {HTMLInputElement} */ (event.currentTarget).value;
+          openSearch("room");
+        },
+      }),
+      h("output", {
+        class: "room-meter",
+        title: "Context is reported by the active harness. Session cost is unavailable: v1 does not expose room cost totals.",
+        "aria-live": "polite",
+        text: meter,
       }),
     ),
   );
@@ -103,7 +147,7 @@ function renderStatusbar() {
       cls: running ? "seg-run on" : "seg-run",
       title: "rooms with a live turn (this room + any running summons)",
     });
-    if (state.voice) segs.push({ text: `🎙 @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
+    if (state.voice) segs.push({ text: `${UI.call} @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
   } else {
     segs.push({ text: "no workspace", cls: "seg-head" });
   }
@@ -209,7 +253,7 @@ export function initStatusbarPref() {
 
 /** The cached usage groups relevant to this room's actual account bindings.
  * A room with no usage-capable active agent intentionally displays nothing;
- * showing a provider-wide fallback is how an old login escaped into the UI.
+ * showing a provider-wide fallback is how an old credential picker escaped into the UI.
  * @returns {import("./types.js").UsageLimits[]} */
 function visibleUsageGroups() {
   const accounts = state.snapshot?.room.usageAccounts ?? [];
@@ -548,7 +592,7 @@ function BgTasksPopover() {
                     h("span", {
                       class: "usage-pct",
                       style: "cursor:pointer;",
-                      text: running ? "■ stop" : "✕ dismiss",
+                      text: running ? `${UI.stop} stop` : `${UI.close} dismiss`,
                       title: running ? "stop this background process" : "dismiss this entry",
                       onclick: (event) => {
                         event.stopPropagation();
@@ -729,20 +773,17 @@ async function jumpToPlaying(playing) {
 // html[data-theme] attribute, no re-render); click commits; Esc or backdrop
 // cancels back to where you were.
 
-/** @type {string|null} */
-let themeCommitted = null;
-
 export function openThemePalette() {
-  themeCommitted = currentThemeId();
   state.themePaletteOpen = true;
   markDirty("theme", "status");
 }
 
 /** @param {boolean} commit */
 export function closeThemePalette(commit) {
-  if (!commit && themeCommitted) applyTheme(themeCommitted);
+  // v2 model: the committed palette is the only thing that survives; anything
+  // still on screen from a hover is a preview and gets dropped on close.
+  if (!commit) revertTheme();
   state.themePaletteOpen = false;
-  themeCommitted = null;
   markDirty("theme", "status");
 }
 
@@ -783,12 +824,14 @@ function ThemePalette() {
           h(
             "button",
             {
-              class: `swatch ${theme.id === currentThemeId() ? "active" : ""}`,
+              class: `swatch ${theme.id === committedThemeId() ? "active" : ""}`,
               "data-theme": theme.id,
-              onmouseenter: () => applyTheme(theme.id),
+              onmouseenter: () => previewTheme(theme.id),
+              onmouseleave: () => revertTheme(),
+              onfocus: () => previewTheme(theme.id),
+              onblur: () => revertTheme(),
               onclick: () => {
-                applyTheme(theme.id);
-                themeCommitted = theme.id;
+                commitTheme(theme.id);
                 closeThemePalette(true);
               },
             },

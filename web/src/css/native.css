@@ -1,0 +1,178 @@
+/* v2 parity partial — native lane (docs/V2-UI-PARITY.md §G4). Owned by ONE
+   lane; styles.css untouched. Tokens reused from styles.css's real palette
+   (--bg/--bg2/--bg3/--fg/--muted/--border/--accent/--accent2/--good/--warn/
+   --danger/--glow) — v2's own token names (--sel/--dim/--alert/--font-emoji)
+   don't exist here and are never introduced. */
+
+/* ---- native-section: shared shell for the room-panel's v2-parity blocks */
+.native-section {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.native-section h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.native-section .empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+/* ---- todo-section — real source: snapshot.tasks (core/types.ts Task),
+   the room's own queued/running/complete/error/cancelled queue. See
+   panel.js TodoSection/TodoRow/TodoCreate. */
+.todo-list {
+  display: grid;
+  gap: 5px;
+}
+
+.todo-row {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: var(--ink, var(--bg2));
+}
+
+.todo-row strong {
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.todo-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.todo-row.todo-running { border-left: 3px solid var(--accent); }
+.todo-row.todo-queued { border-left: 3px solid var(--muted); }
+.todo-row.todo-completed { opacity: 0.7; }
+.todo-row.todo-completed strong { color: var(--good); }
+.todo-row.todo-cancelled { opacity: 0.55; text-decoration: line-through; }
+.todo-row.todo-error strong { color: var(--danger); }
+
+.todo-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.todo-actions button {
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+}
+
+.todo-actions button:hover { border-color: var(--danger); color: var(--danger); }
+
+.todo-create {
+  display: flex;
+  gap: 6px;
+}
+
+.todo-create input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  background: var(--ink, var(--bg2));
+  color: var(--fg);
+}
+
+.todo-create button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+}
+
+.todo-create button:hover { border-color: var(--accent); }
+
+/* question-section — BLOCKED, no markup emitted: v1 has no structured
+   question domain type/route/event (no askingAgentId/spec/options/claim
+   equivalent of v2's StructuredQuestion). Left undefined on purpose — no
+   fake data, no dead CSS for a class the JS never emits. */
+
+/* ---- swarm-phase-tree — real source: RoomSummary.parentRoomId + .running
+   (a `summon` fan-out's whale sub-rooms). Honest 2-state (started while
+   .running, completed once not) — v1 has no per-lane failure flag at the
+   snapshot level, so .swarm-phase-failed is styled for forward parity but
+   never emitted by panel.js. See panel.js SwarmSection/SwarmNode. */
+.swarm-phase-tree {
+  margin: 2px 0;
+  padding: 4px 0 4px 6px;
+  border-left: 2px solid var(--border);
+}
+
+.swarm-phase-level {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+
+.swarm-phase-node { margin: 0; }
+
+.swarm-phase-row {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.swarm-phase-glyph { font-style: normal; }
+
+.swarm-phase-started .swarm-phase-glyph,
+.swarm-phase-started .swarm-phase-title { color: var(--warn); }
+
+.swarm-phase-completed .swarm-phase-glyph,
+.swarm-phase-completed .swarm-phase-title { color: var(--good); }
+
+.swarm-phase-failed .swarm-phase-glyph,
+.swarm-phase-failed .swarm-phase-title { color: var(--danger); }
+
+/* ---- roster-row/roster-status — v2 parity classes riding ALONGSIDE the
+   existing .agent-row layout in panel.js (never replacing it: role/account
+   selects, main-button, call-button all keep working exactly as before).
+   No layout properties here on purpose — .agent-row above (styles.css)
+   still owns the row's actual flex layout; this only styles the added
+   status readout. */
+.roster-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.roster-status output { color: inherit; }
+
+/* ---- unread-dot — v2 parity class riding alongside the existing
+   .room-dot.unread (sidebar.js); same element, same visual result via
+   styles.css's own rule. Styled here too so it also works wherever a
+   future component uses it standalone. */
+.unread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+/* ---- time-separator — GAP item, no lane wired it yet (would live in
+   transcript.js, out of this lane's ownership). Not claimed here. */

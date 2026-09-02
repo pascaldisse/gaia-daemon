@@ -51,6 +51,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   voiceStatusText: string,
  *   micMuted: boolean,
  *   dictating: boolean,
+ *   dictationOrigin: {workspaceId: string, roomId: string}|null,
  *   dictationBusy: boolean,
  *   dictationLevel: number,
  *   dictationBars: number[],
@@ -157,6 +158,11 @@ export const state = {
   // dictationDrafts below is the recovered summary of that server-side layer,
   // not the live recording state.
   dictating: false,
+  // Room the live dictation was STARTED in (v2 parity). Dictation is
+  // room-bound: the transcript belongs to the composer it was spoken into, so
+  // switching rooms mid-recording must not redirect it. Null while idle.
+  /** @type {{workspaceId: string, roomId: string}|null} */
+  dictationOrigin: null,
   dictationBusy: false,
   dictationLevel: 0,
   dictationBars: [],

@@ -4,9 +4,10 @@
 // preview, thinking control, voice buttons), so typing never loses the caret.
 //
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
-// control (💭 #level: click toggles off, right-click menu), queueing while
+// control (◌ #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
 import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
+import { KIND, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { CompactBar, compactDetail } from "./compactprogress.js";
@@ -76,6 +77,12 @@ let modelWrapEl = null;
 /** @type {HTMLElement|null} */
 let voiceWrapEl = null;
 /** @type {HTMLElement|null} */
+let micLevelEl = null;
+/** @type {HTMLButtonElement|null} */
+let retranscribeEl = null;
+/** @type {HTMLElement|null} */
+let draftStatusEl = null;
+/** @type {HTMLElement|null} */
 let ultrawhipWrapEl = null;
 
 // Draft persistence (composer durability — "nothing is ever lost"): the
@@ -102,6 +109,17 @@ function clearDraft() {
   try {
     localStorage.removeItem(k);
   } catch {}
+}
+
+/** Draft persistence status from the actual per-room localStorage source. */
+function draftStatus() {
+  const k = draftKey();
+  if (!k || !state.composerText.trim()) return "";
+  try {
+    return localStorage.getItem(k) === state.composerText ? "draft saved" : "draft unsaved";
+  } catch {
+    return "draft unavailable";
+  }
 }
 
 // Tracks which room's draft has already been restored into state.composerText,
@@ -136,8 +154,8 @@ export function initComposer() {
       onkeydown: onComposerKeydown,
     })
   );
-  sendButton = /** @type {HTMLButtonElement} */ (h("button", { class: "send-button", text: ">" }));
-  autocompleteEl = h("div", { class: "autocomplete", hidden: true });
+  sendButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "send-button", title: "send", text: UI.send }));
+  autocompleteEl = h("div", { class: "command-suggestions", hidden: true });
   // Clicking the label toggles the summon list (only meaningful when this room
   // has running summons — renderComposer adds/removes the `has-summons` class).
   bannerLabelEl = h("span", {
@@ -153,7 +171,7 @@ export function initComposer() {
   // sub-room. Anchored above the banner, populated + shown in renderComposer.
   summonListEl = h("div", { class: "summon-list", hidden: true });
   stopBtnEl = /** @type {HTMLButtonElement} */ (
-    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: "■ stop", onclick: () => void stopActiveRoom() })
+    h("button", { type: "button", class: "stop-btn", title: "stop this room's turn (Esc)", text: `${UI.stop} stop`, onclick: () => void stopActiveRoom() })
   );
   bannerEl = h(
     "div",
@@ -167,20 +185,25 @@ export function initComposer() {
   editBannerEl = h(
     "div",
     { class: "editing-banner", hidden: true },
-    h("span", { text: "✎ editing message — Enter re-sends from that point, later replies are rewound" }),
+    h("span", { text: `${UI.edit} editing message — Enter re-sends from that point, later replies are rewound` }),
     h("button", { type: "button", class: "stop-btn", title: "cancel editing (Esc)", text: "cancel", onclick: () => cancelEditing() }),
   );
-  attachmentsEl = h("div", { class: "attachment-strip", hidden: true });
+  attachmentsEl = h("div", { class: "composer-attachments", hidden: true });
   dictationStatusEl = h("div", { class: "dictation-status", hidden: true });
   targetStatusEl = h("div", { class: "target-status" });
   thinkingWrapEl = h("div", { class: "thinking-wrap" });
   modelWrapEl = h("div", { class: "model-wrap" });
   voiceWrapEl = h("div", { class: "voice-wrap" });
+  micLevelEl = h("span", { class: "mic-level", hidden: true, title: "microphone level" });
+  retranscribeEl = /** @type {HTMLButtonElement} */ (
+    h("button", { type: "button", class: "retranscribe-button", hidden: true, title: "retranscribe the last recording", text: `${UI.retry} retranscribe`, onclick: () => void retryDictation() })
+  );
+  draftStatusEl = h("output", { class: "draft-status", "aria-live": "polite" });
   ultrawhipWrapEl = h("span", {
     class: "ultrawhip-chip",
     hidden: true,
     title: "UltraWhip is on — an auto-repeating steer lands every N tool calls, in whatever turn is running. /ultrawhip to toggle off.",
-    text: "🖤 UltraWhip",
+    text: `${UI.watchdog} UltraWhip`,
   });
 
   form.replaceChildren(
@@ -193,15 +216,20 @@ export function initComposer() {
     editBannerEl,
     attachmentsEl,
     dictationStatusEl,
-    h("div", { class: "input-shell" }, textarea, sendButton),
     h(
       "div",
       { class: "composer-row" },
-      targetStatusEl,
-      thinkingWrapEl,
-      modelWrapEl,
-      ultrawhipWrapEl,
-      h("div", { class: "composer-spacer" }),
+      h("span", { class: "composer-caret", "aria-hidden": "true", text: UI.human }),
+      textarea,
+      sendButton,
+    ),
+    h(
+      "div",
+      { class: "composer-meta-row" },
+      h("div", { class: "composer-meta" }, targetStatusEl, modelWrapEl, thinkingWrapEl, ultrawhipWrapEl),
+      draftStatusEl,
+      retranscribeEl,
+      micLevelEl,
       voiceWrapEl,
     ),
   );
@@ -221,6 +249,9 @@ function renderComposer() {
     !thinkingWrapEl ||
     !modelWrapEl ||
     !voiceWrapEl ||
+    !micLevelEl ||
+    !retranscribeEl ||
+    !draftStatusEl ||
     !ultrawhipWrapEl
   )
     return;
@@ -253,7 +284,7 @@ function renderComposer() {
     : state.voice
       ? `on call with @${state.voice.agentId} - speak, or type`
       : snapshot.room.incognito
-        ? "🕶 incognito — message @agent or /command (nothing saved to memory)"
+        ? `${UI.incognito} incognito — message @agent or /command (nothing saved to memory)`
         : "message @agent or /command";
   textarea.disabled = !snapshot;
   if (textarea.value !== state.composerText) {
@@ -265,7 +296,7 @@ function renderComposer() {
 
   const dictationPending = state.dictating || state.dictationBusy;
   sendButton.disabled = !snapshot;
-  sendButton.textContent = state.dictationBusy ? "…" : busy ? "»" : ">";
+  sendButton.textContent = state.dictationBusy ? "…" : busy ? UI.sendBusy : UI.send;
   sendButton.title = dictationPending
     ? "send voice message — stops recording, transcribes, then sends"
     : busy
@@ -283,7 +314,7 @@ function renderComposer() {
   if (stopBtnEl) {
     const roomBusy = Boolean(activeTask(snapshot));
     stopBtnEl.disabled = !roomBusy;
-    stopBtnEl.textContent = "■ stop";
+    stopBtnEl.textContent = `${UI.stop} stop`;
     stopBtnEl.title = roomBusy
       ? "stop this room's turn (Esc) — summons unaffected; Ctrl+C stops everything"
       : "nothing running in this room — Ctrl+C stops summons too";
@@ -345,7 +376,7 @@ function renderComposer() {
   // fall back to the original generic wording rather than assume a specific
   // plugin is the one running.
   if (ambientWatchdog) {
-    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? "🖤 UltraWhip"} ·${ambientWatchdog.toolCalls}`;
+    ultrawhipWrapEl.textContent = `${ambientWatchdog.label ?? `${UI.watchdog} UltraWhip`} ·${ambientWatchdog.toolCalls}`;
     ultrawhipWrapEl.title = `An auto-repeating steer lands every ${ambientWatchdog.toolCalls} tool calls, in whatever turn is running. Toggle off with the command that turned it on (e.g. /ultrawhip, /ultralove).`;
   }
 
@@ -353,10 +384,17 @@ function renderComposer() {
   thinkingWrapEl.replaceChildren(...(thinking ? [thinking] : []));
 
   const model = ModelChip(snapshot, state.composerText);
-  const context = ContextChip(snapshot, state.composerText);
+  // Context is turn telemetry, not static configuration: match v2 by showing
+  // its meter only while work is running. Model + thinking remain live always.
+  const context = busy ? ContextChip(snapshot, state.composerText) : null;
   const memory = MemoryChip(snapshot);
   modelWrapEl.replaceChildren(...[model, context, memory].filter((chip) => chip !== null));
 
+  draftStatusEl.textContent = draftStatus();
+  const failedDictation = hasFailedDictation();
+  retranscribeEl.hidden = !failedDictation;
+  micLevelEl.hidden = !state.dictating;
+  micLevelEl.style.setProperty("--level", String(Math.max(0, Math.min(1, state.dictationLevel))));
   voiceWrapEl.replaceChildren(...VoiceButtons());
 }
 
@@ -512,7 +550,7 @@ function PendingAttachmentChips() {
       type: "button",
       class: "attach-remove",
       title: `remove ${item.name}`,
-      text: "×",
+      text: UI.close,
       onclick: () => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
         state.pendingAttachments.splice(index, 1);
@@ -522,15 +560,15 @@ function PendingAttachmentChips() {
     if (item.previewUrl) {
       return h(
         "div",
-        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        { class: "composer-attachment attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
         h("img", { class: "attach-thumb", src: item.previewUrl, alt: item.name }),
         remove,
       );
     }
     return h(
       "div",
-      { class: "attach-chip", title: item.name },
-      h("span", { class: "attach-icon", text: "📎" }),
+      { class: "composer-attachment attach-chip", title: item.name },
+      h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
       remove,
@@ -547,7 +585,7 @@ function EditingAttachmentChips() {
       type: "button",
       class: "attach-remove",
       title: `remove ${item.name}`,
-      text: "×",
+      text: UI.close,
       onclick: () => {
         state.editingAttachments.splice(index, 1);
         markDirty("composer");
@@ -556,15 +594,15 @@ function EditingAttachmentChips() {
     if (item.mime.startsWith("image/")) {
       return h(
         "div",
-        { class: "attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
+        { class: "composer-attachment attach-chip image", title: `${item.name} (${humanSize(item.size)})` },
         h("img", { class: "attach-thumb", src: attachmentUrl(item), alt: item.name }),
         remove,
       );
     }
     return h(
       "div",
-      { class: "attach-chip", title: item.name },
-      h("span", { class: "attach-icon", text: "📎" }),
+      { class: "composer-attachment attach-chip", title: item.name },
+      h("span", { class: "attach-icon", text: UI.attach }),
       h("span", { class: "attach-name", text: item.name }),
       h("small", { text: humanSize(item.size) }),
       remove,
@@ -706,6 +744,7 @@ function applyCompletion(completion, option) {
   state.composerText = `${state.composerText.slice(0, completion.start)}${option.value}${option.suffix ?? ""}`;
   state.completionIndex = 0;
   state.completionHidden = true;
+  persistDraft(state.composerText);
 }
 
 /** @param {Completion} completion @returns {HTMLElement[]} */
@@ -898,7 +937,7 @@ function ThinkingControl(snapshot, text) {
       state.thinkingMenuOpen = !state.thinkingMenuOpen;
       markDirty("composer");
     },
-    text: `\u{1F4AD} #${effective}`,
+    text: `${KIND.thinking} #${effective}`,
   });
 
   return h(
@@ -961,7 +1000,7 @@ function ModelChip(snapshot, text) {
         `provider switched models on the last turn: ${fallback.from} → ${fallback.to} — ${fallback.reason} ` +
         `(configured: ${agent.configuredModel}; each turn re-requests it, so this usually reverts on the next clean turn — ` +
         `this chip and each message's model tag always show what actually ran)`,
-      text: `⚠ ${shortModel(agent.modelLabel)}`,
+      text: `${KIND.warning} ${shortModel(agent.modelLabel)}`,
     });
   }
   return h("span", {
@@ -1005,7 +1044,7 @@ function MemoryChip(snapshot) {
   return h("span", {
     class: "model-chip fallback",
     title: `memory subsystem degraded: ${chips.join("; ")} — run \`gaia memory status\` in the workspace for detail`,
-    text: `⚠ memory: ${chips.join(", ")}`,
+    text: `${KIND.warning} memory: ${chips.join(", ")}`,
   });
 }
 
@@ -1097,14 +1136,14 @@ function VoiceButtons() {
         class: state.micMuted ? "voice-button muted" : "voice-button",
         title: state.micMuted ? "unmute microphone" : "mute microphone",
         onclick: () => setMicMuted(!state.micMuted),
-        text: state.micMuted ? "\u{1F507}" : "\u{1F3A4}",
+        text: state.micMuted ? UI.micMuted : UI.mic,
       }),
       h("button", {
         type: "button",
         class: "voice-button end-call",
         title: `hang up @${state.voice.agentId}`,
         onclick: () => void endCall(),
-        text: "⏹",
+        text: UI.stop,
       }),
     ];
   }
@@ -1116,7 +1155,7 @@ function VoiceButtons() {
   return [
     h("button", {
       type: "button",
-      class: `voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
+      class: `mic-button voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,
       title: busy
         ? "transcribing…"
         : recording
@@ -1128,7 +1167,7 @@ function VoiceButtons() {
         event.preventDefault();
         if (recording) cancelDictation();
       },
-      text: busy ? "…" : recording ? "⏺" : "\u{1F3A4}",
+      text: busy ? "…" : recording ? UI.recording : UI.mic,
     }),
   ];
 }
@@ -1268,6 +1307,7 @@ export function installComposerRouting() {
         state.completionHidden = false;
       }
 
+      persistDraft(state.composerText);
       focusComposer();
       markDirty("composer");
     },

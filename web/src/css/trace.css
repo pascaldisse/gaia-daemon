@@ -1,0 +1,87 @@
+/* v2 parity partial — trace lane (lampas). Owned by ONE lane; styles.css untouched.
+   Ported from gaia-daemon-v2 web/src/styles.css §trace/§payload/§rich.
+   Token map v2→v1: --dim→--muted · --alert→--danger · --sel→--bg3. */
+
+/* ---- payload sections inside a tool expander -------------------------- */
+.payload-section { margin-bottom: 9px; }
+.payload-section:last-child { margin-bottom: 0; }
+
+.payload-section h4 {
+  margin: 0 0 2px;
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+}
+
+.payload-section pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- JSON tinting ------------------------------------------------------ */
+.j-key { color: var(--accent2); }
+.j-string, .j-literal { color: var(--good); }
+.j-number { color: var(--warn); }
+
+/* ---- source tinting ---------------------------------------------------- */
+.syn-kw { color: var(--accent); }
+.syn-str { color: var(--good); }
+.syn-num { color: var(--warn); }
+.syn-com { color: var(--muted); }
+
+/* ---- bash / read / write result bodies --------------------------------- */
+.trace-bash-cmd { margin: 0 0 4px !important; color: var(--accent); }
+.trace-bash-output { margin: 0; white-space: pre-wrap; word-break: break-word; }
+
+.trace-exit-code { margin: 4px 0 0; color: var(--good); font-size: 10px; }
+.trace-exit-code.trace-exit-error { color: var(--danger); }
+
+.trace-read-remainder,
+.trace-write-bytes { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+
+.file-preview { margin: 0; white-space: pre-wrap; }
+.file-preview > span { display: block; }
+.line-number { color: var(--muted); user-select: none; }
+
+.trace-show-more {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent2);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.trace-show-more:hover { text-decoration: underline; }
+
+/* ---- diff blocks (word-level highlight) -------------------------------- */
+.diff-block { margin: 8px 0; overflow: auto; }
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 6ch minmax(max-content, 1fr);
+  min-height: 17px;
+  white-space: pre-wrap;
+}
+
+.diff-gutter { color: var(--muted); user-select: none; text-align: right; padding-right: 1ch; }
+.diff-line.context, .diff-line.hunk, .diff-line.meta { color: var(--muted); }
+.diff-line.add { color: var(--good); }
+.diff-line.remove { color: var(--danger); }
+.diff-line.add .chg { background: var(--good); color: var(--bg); }
+.diff-line.remove .chg { background: var(--danger); color: var(--bg); }
+
+/* ---- fenced code blocks ------------------------------------------------ */
+.code-block {
+  position: relative;
+  max-width: 94ch;
+  margin: 8px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.code-block figcaption { padding: 2px 7px; color: var(--muted); font-size: 10px; text-align: right; }
+.code-block pre { margin: 0; overflow: auto; padding: 5px 9px 9px; white-space: pre; }

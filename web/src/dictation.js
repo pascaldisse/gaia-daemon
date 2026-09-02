@@ -15,6 +15,7 @@
 // server-side file after a crash/reload, with zero client-side storage.
 // A failed clip also stays in a module variable so the user can retry or
 // discard it without a round trip to the server.
+import { selectRoom } from "./actions.js";
 import { apiUrl } from "./api.js";
 import { transcriptionTimeoutMs } from "./dictation-timeout.js";
 import { markDirty, setError } from "./render.js";
@@ -87,12 +88,12 @@ async function startDictation() {
   }
   if (!navigator.mediaDevices?.getUserMedia) {
     state.dictationError = "microphone needs HTTPS or localhost";
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return;
   }
   if (typeof MediaRecorder === "undefined") {
     state.dictationError = "this browser can't record audio";
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return;
   }
 
@@ -107,7 +108,7 @@ async function startDictation() {
     });
   } catch {
     state.dictationError = "microphone permission denied or unavailable";
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return;
   }
 
@@ -131,6 +132,10 @@ async function startDictation() {
   };
   session = current;
   state.dictating = true;
+  // Bind the recording to the room it was started in (v2 parity). Everything
+  // downstream — the global chip, insertTranscript — reads this, never "the
+  // room that happens to be open when the transcript comes back".
+  state.dictationOrigin = state.snapshot ? { workspaceId: state.snapshot.workspace.id, roomId: state.snapshot.room.id } : null;
   state.dictationBusy = false;
   state.dictationBars = flatBars();
   state.dictationLevel = 0;
@@ -154,7 +159,7 @@ async function startDictation() {
       .then(() => undefined, () => undefined);
   };
   recorder.start(1000);
-  markDirty("composer");
+  markDirty("composer", "tabs");
 }
 
 /** Stop recording and transcribe what was captured. @returns {Promise<boolean>} */
@@ -163,7 +168,7 @@ async function stopAndTranscribe() {
   if (!current) return false;
   session = null;
   state.dictating = false;
-  markDirty("composer");
+  markDirty("composer", "tabs");
 
   stopMeter(current);
   if (current.timerId) clearTimeout(current.timerId);
@@ -200,7 +205,7 @@ async function stopAndTranscribe() {
   if (!clip || !clip.size) {
     state.dictationError = "no audio captured";
     state.dictationBusy = false;
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return false;
   }
 
@@ -253,7 +258,7 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
   state.dictationBusy = true;
   state.dictating = false;
   state.dictationError = "";
-  markDirty("composer");
+  markDirty("composer", "tabs");
 
   const { signal, settle } = requestSignal(transcriptionTimeoutMs());
   try {
@@ -274,14 +279,14 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
         state.dictationBars = flatBars();
         state.dictationLevel = 0;
         state.dictationBusy = false;
-        markDirty("composer");
+        markDirty("composer", "tabs");
         return true;
       }
       if (viaClip.status !== 404 && viaClip.status !== 0) {
         lastFailedClip = blob;
         state.dictationError = viaClip.error;
         state.dictationBusy = false;
-        markDirty("composer");
+        markDirty("composer", "tabs");
         return false;
       }
     }
@@ -298,13 +303,13 @@ async function runTranscribe(blob, clipId, clipFileComplete) {
       state.dictationBars = flatBars();
       state.dictationLevel = 0;
       state.dictationBusy = false;
-      markDirty("composer");
+      markDirty("composer", "tabs");
       return true;
     }
     lastFailedClip = blob;
     state.dictationError = result.error;
     state.dictationBusy = false;
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return false;
   } finally {
     settle();
@@ -403,7 +408,7 @@ export async function retryDictation() {
 export function discardFailedDictation() {
   lastFailedClip = null;
   state.dictationError = "";
-  markDirty("composer");
+  markDirty("composer", "tabs");
 }
 
 /** @returns {boolean} */
@@ -432,7 +437,7 @@ export function cancelDictation() {
   state.dictationBusy = false;
   state.dictationBars = flatBars();
   state.dictationLevel = 0;
-  markDirty("composer");
+  markDirty("composer", "tabs");
 }
 
 /**
@@ -497,7 +502,7 @@ export async function refreshRecoveredClips() {
     state.dictationDrafts = clips
       .filter((clip) => typeof clip.id === "string" && clip.id !== activeClipId)
       .map((clip) => ({ id: /** @type {string} */ (clip.id), bytes: Number(clip.bytes) || 0, mtimeMs: Number(clip.mtimeMs) || 0 }));
-    markDirty("composer");
+    markDirty("composer", "tabs");
   } catch {
     // Offline / daemon restarting — keep whatever drafts were already shown.
   }
@@ -519,11 +524,11 @@ export async function transcribeRecoveredClip(id) {
     if (result.ok) {
       insertTranscript(result.text);
       state.dictationDrafts = state.dictationDrafts.filter((draft) => draft.id !== id);
-      markDirty("composer");
+      markDirty("composer", "tabs");
       return true;
     }
     state.dictationError = result.error;
-    markDirty("composer");
+    markDirty("composer", "tabs");
     return false;
   } finally {
     settle();
@@ -544,19 +549,35 @@ export async function discardRecoveredClip(id) {
     // Offline — the server-side file just outlives this client's view of it.
   }
   state.dictationDrafts = state.dictationDrafts.filter((draft) => draft.id !== id);
-  markDirty("composer");
+  markDirty("composer", "tabs");
 }
 
 /**
  * Append the transcript to whatever is already in the composer (so dictation
  * augments a partially-typed message instead of clobbering it).
+ *
+ * Room-bound (v2 parity): if the user wandered to another room while the clip
+ * was transcribing, come BACK to the room the words were spoken into before
+ * inserting them — the composer is shared across rooms, so inserting in place
+ * would silently retarget the message at whoever is on screen now.
  * @param {string} text
  */
 function insertTranscript(text) {
+  const origin = state.dictationOrigin;
+  const snapshot = state.snapshot;
+  if (origin && snapshot && (snapshot.workspace.id !== origin.workspaceId || snapshot.room.id !== origin.roomId)) {
+    // Consume the binding BEFORE the hop so a room that no longer exists (or a
+    // failed switch) can't bounce this call forever — the retry inserts
+    // unconditionally.
+    state.dictationOrigin = null;
+    void selectRoom(origin.workspaceId, origin.roomId).finally(() => insertTranscript(text));
+    return;
+  }
+  state.dictationOrigin = null;
   const existing = state.composerText.replace(/\s+$/, "");
   state.composerText = existing ? `${existing} ${text}` : text;
   state.completionHidden = true;
-  markDirty("composer");
+  markDirty("composer", "tabs");
   // Put the caret at the end so the user can keep typing / hit Enter.
   const textarea = document.querySelector(".command-input");
   if (textarea instanceof HTMLTextAreaElement) {
@@ -616,7 +637,7 @@ function pumpMeter(current) {
     current.lastMeterMs = now;
     state.dictationBars = [...state.dictationBars.slice(-WAVE_BARS + 1), Math.max(0.04, rms)];
     state.dictationLevel = rms;
-    markDirty("composer");
+    markDirty("composer", "tabs");
   }
   current.rafId = requestAnimationFrame(() => pumpMeter(current));
 }

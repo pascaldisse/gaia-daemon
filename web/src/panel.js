@@ -1,16 +1,22 @@
 // The right-hand room panel: agents (role select, main-agent star, voice call
 // button) and recent tasks.
-import { addRoomHuman, removeRoomHuman, roomHumans, accountsCatalog, deleteAgent, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { accountsCatalog, cancelActiveTask, deleteAgent, deleteQueuedMessage, sendMessage, setAgentAccount, setAgentDefaultRole, setAgentRole, setDefaultAgent, setRoomAgentDialogue } from "./actions.js";
+import { agentGlyph, STATE, UI } from "./glyphs.js";
 import { armCompactTick, CompactBar, compactDetail } from "./compactprogress.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
 import { shortModel } from "./models.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
-import { api } from "./api.js";
-import { humanSession } from "./auth.js";
-import { state } from "./state.js";
+import { activeTask, state } from "./state.js";
 import { toggleCall } from "./voice.js";
+
+/** Draft text for the todo-section's quick-add row. Module-level (like
+ * accountsCatalogValue above) so it survives the full-subtree replace every
+ * renderPanel() does — an inline input's typed value would otherwise vanish
+ * on the next unrelated snapshot re-render. Local UI-only state; never
+ * touches state.js. */
+let todoDraftText = "";
 
 /** Account catalog for the per-agent picker below: fetched once (accountsCatalog()
  * caches the request itself), held here as the last resolved value so a render
@@ -19,17 +25,6 @@ import { toggleCall } from "./voice.js";
 /** @type {import("./actions.js").AccountsCatalog | null} */
 let accountsCatalogValue = null;
 let accountsCatalogRequested = false;
-/** @type {string[]|null} */ let humanMembers = null;
-/** @type {{id:string,displayName:string,username:string}[]} */ let humans = [];
-let humansRequested = false;
-function ensureHumans() {
-  // The human directory is account-scoped: asking while logged out only earns a
-  // 401 in the console. A later render retries once a session exists.
-  if (humansRequested || !state.snapshot || !humanSession()) return; humansRequested = true;
-  void Promise.all([roomHumans(), api("/api/auth/users")]).then(([members, body]) => { humanMembers = members; humans = body.users ?? []; markDirty("panel"); }).catch(() => { humansRequested = false; });
-}
-async function inviteHuman(/** @type {string} */ id) { try { await addRoomHuman(id); humanMembers = await roomHumans(); markDirty("panel"); } catch (error) { markDirty("panel"); } }
-async function uninviteHuman(/** @type {string} */ id) { try { await removeRoomHuman(id); humanMembers = await roomHumans(); markDirty("panel"); } catch (error) { markDirty("panel"); } }
 
 function ensureAccountsCatalog() {
   if (accountsCatalogRequested) return;
@@ -69,16 +64,14 @@ function renderPanel() {
   const panel = $("#room-panel");
   if (!panel) return;
   ensureAccountsCatalog();
-  ensureHumans();
   const snapshot = state.snapshot;
   const agents = snapshot?.agents ?? [];
-  const memberIds = humanMembers ?? [];
-  const tasks = snapshot?.tasks ?? [];
   // The agent this room is currently addressing: its remembered active agent,
   // or the workspace default when it has none yet. Marks the "active" row and
   // is who a bare next message goes to.
   const activeAgent = snapshot ? (snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent) : undefined;
   const agentMenu = AgentContextMenu();
+  const swarmSection = SwarmSection(snapshot);
   panel.replaceChildren(
     h(
       "div",
@@ -102,13 +95,6 @@ function renderPanel() {
           )
         : null,
     ),
-    h("h3", { text: "people" }),
-    h("div", { class: "human-members" },
-      humanMembers === null ? h("small", { class: "muted", text: "sign in to manage access" }) :
-      memberIds.length === 0 ? h("small", { class: "muted", text: "shared room — everyone may enter" }) :
-      memberIds.map((id) => h("div", { class: "human-member" }, h("span", { text: humans.find((user) => user.id === id)?.displayName || id }), h("button", { title: "remove from room", onclick: () => void uninviteHuman(id), text: "×" }))),
-      humanMembers !== null ? h("select", { value: "", onchange: (event) => { const id = /** @type {HTMLSelectElement} */ (event.target).value; if (id) void inviteHuman(id); } }, h("option", { value: "", text: "invite person…" }), humans.filter((user) => !memberIds.includes(user.id)).map((user) => h("option", { value: user.id, text: user.displayName || user.username }))) : null,
-    ),
     h("h3", { text: "agents" }),
     h(
       "div",
@@ -122,13 +108,16 @@ function renderPanel() {
         const effectiveRole = agent.activeRole === "none" ? undefined : (agent.activeRole ?? agent.defaultRole);
         // Only offer an account picker when there's actually a choice: at least
         // one named account declared for THIS agent's harness. Renders nothing
-        // (not even a "shared login" no-op select) while the catalog is
+        // (not even a default-account no-op select) while the catalog is
         // unresolved, and for harnesses/accounts with zero matches.
         const agentAccounts = (accountsCatalogValue?.accounts ?? []).filter((account) => account.harness === agent.harness);
         return h(
           "div",
           {
-            class: `agent-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
+            // roster-row (v2 parity class) rides ALONGSIDE the existing
+            // agent-row layout — never replaces it, so the role/account
+            // selects below keep their current markup and behavior untouched.
+            class: `agent-row roster-row ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
             oncontextmenu: (/** @type {MouseEvent} */ event) => {
               event.preventDefault();
               state.agentContextMenu = { agentId: agent.id, x: event.clientX, y: event.clientY };
@@ -146,7 +135,9 @@ function renderPanel() {
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
               h("span", { class: `dot ${agent.status}` }),
-              h("strong", { text: `${agent.icon} @${agent.id}` }),
+              // agent.icon is config data and is usually an emoji — chrome is
+              // monochrome, so the roster renders the symbol vocabulary's mark.
+              h("strong", { text: `${agentGlyph(agent.id)} @${agent.id}` }),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.
@@ -163,7 +154,7 @@ function renderPanel() {
                     title: `account for @${agent.id}`,
                     onchange: (event) => void setAgentAccount(agent.id, /** @type {HTMLSelectElement} */ (event.target).value || null),
                   },
-                  h("option", { value: "", text: "shared login", selected: !agent.account }),
+                  h("option", { value: "", text: "default account", selected: !agent.account }),
                   agentAccounts.map((account) =>
                     h("option", { value: account.id, text: account.label || account.id, selected: account.id === agent.account }),
                   ),
@@ -207,26 +198,24 @@ function renderPanel() {
               : `make @${agent.id} the default agent (seeds new rooms; doesn't change who this room is talking to)`,
             disabled: agent.isDefault,
             onclick: () => void setDefaultAgent(agent.id),
-            text: agent.isDefault ? "★" : "☆",
+            text: agent.isDefault ? UI.favorite : UI.favoriteOff,
           }),
           h("button", {
             class: `call-button ${onCall ? "active" : ""}`,
             title: onCall ? `hang up @${agent.id}` : `start voice call with @${agent.id}`,
             disabled: connecting || (Boolean(state.voice) && !onCall),
             onclick: () => void toggleCall(agent.id),
-            text: connecting ? "..." : onCall ? "⏹" : "📞",
+            text: connecting ? "…" : onCall ? UI.stop : UI.call,
           }),
+          // roster-status: the v2 parity hook wrapping an <output> with the same
+          // status text the subtitle already carries. Additive — the existing
+          // <small> subtitle above is untouched.
+          h("span", { class: "roster-status" }, h("output", { text: agentSubtitle(agent, activeAgent) || "ready" })),
         );
       }),
     ),
-    h("h3", { text: "tasks" }),
-    h(
-      "div",
-      { class: "task-list" },
-      tasks.length === 0
-        ? h("div", { class: "empty", text: "no tasks" })
-        : tasks.slice(-5).map((task) => h("div", { class: `task ${task.status}` }, h("span", { text: task.status }), h("small", { text: task.text }))),
-    ),
+    TodoSection(snapshot),
+    ...(swarmSection ? [swarmSection] : []),
     ...(agentMenu ? [agentMenu] : []),
   );
   // Keep the elapsed advancing between server snapshots while any pass runs.
@@ -266,5 +255,145 @@ window.addEventListener("click", (event) => {
   state.agentContextMenu = null;
   markDirty("panel");
 });
+
+/**
+ * v2-parity TODO section (§G4). v1 has no separate agent-authored checklist
+ * tool — the REAL nearest data is the room's own task queue (snapshot.tasks:
+ * queued/running/complete/error/cancelled, see core/types.ts Task), already
+ * shown pre-parity as a plain "tasks" list a few lines above this. This
+ * replaces that plain list with the v2 class contract (.native-section
+ * .todo-section / .todo-list / .todo-row(+modifier) / .todo-actions /
+ * .todo-create) over the SAME real source — cancel wired to the real
+ * deleteQueuedMessage/cancelActiveTask actions, create wired to the real
+ * sendMessage action. No fake data.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot
+ */
+function TodoSection(snapshot) {
+  const tasks = snapshot?.tasks ?? [];
+  const rows = tasks.slice(-8);
+  return h(
+    "section",
+    { class: "native-section todo-section" },
+    h("h3", { text: "todo" }),
+    h(
+      "div",
+      { class: "todo-list" },
+      rows.length === 0 ? h("div", { class: "empty", text: "no queued tasks" }) : rows.map((task) => TodoRow(task)),
+    ),
+    TodoCreate(snapshot),
+  );
+}
+
+/** One task chip. v2 status names are "open"/"in-progress"/"completed"/
+ * "cancelled"; v1's real TaskStatus is "queued"/"running"/"complete"/"error"/
+ * "cancelled" — mapped onto the v2 modifier spelling where it lines up
+ * (completed, cancelled) and kept as-is otherwise (queued, running, error).
+ * @param {import("./types.js").Task} task */
+function TodoRow(task) {
+  const modifier = task.status === "complete" ? "todo-completed" : task.status === "cancelled" ? "todo-cancelled" : `todo-${task.status}`;
+  const glyph = task.status === "running" ? STATE.running : task.status === "complete" ? STATE.done : task.status === "error" ? STATE.error : task.status === "cancelled" ? UI.stop : "";
+  const targets = (task.targets ?? []).map((id) => `@${id}`).join(" ");
+  const canCancel = task.status === "queued" || task.status === "running";
+  return h(
+    "div",
+    { class: `todo-row ${modifier}` },
+    h("strong", { title: task.text, text: task.text || "(no text)" }),
+    h("small", { text: [glyph, task.status, targets].filter(Boolean).join(" ") }),
+    canCancel
+      ? h(
+          "div",
+          { class: "todo-actions" },
+          h("button", {
+            type: "button",
+            text: "cancel",
+            onclick: () => void (task.status === "running" ? cancelActiveTask() : deleteQueuedMessage(task.id)),
+          }),
+        )
+      : null,
+  );
+}
+
+/** Quick-add row: sends straight through the real message pipe (queued if a
+ * turn is already running, dispatched immediately otherwise) — a genuinely
+ * new task lands in snapshot.tasks, same as one typed in the composer.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot */
+function TodoCreate(snapshot) {
+  if (!snapshot) return null;
+  return h(
+    "div",
+    { class: "todo-create" },
+    h("input", {
+      type: "text",
+      placeholder: "new task…",
+      "aria-label": "New task text",
+      value: todoDraftText,
+      oninput: (event) => {
+        todoDraftText = /** @type {HTMLInputElement} */ (event.target).value;
+      },
+      onkeydown: (event) => {
+        if (event.key === "Enter") submitTodoDraft(snapshot);
+      },
+    }),
+    h("button", { type: "button", text: "+ task", onclick: () => submitTodoDraft(snapshot) }),
+  );
+}
+
+/** @param {import("./types.js").Snapshot} snapshot */
+function submitTodoDraft(snapshot) {
+  const text = todoDraftText.trim();
+  if (!text) return;
+  todoDraftText = "";
+  void sendMessage(text, [], { queue: Boolean(activeTask(snapshot)) });
+}
+
+/**
+ * v2-parity swarm phase tree (§G4). v2's tree rides live `swarm.phase`
+ * events (started/completed/failed) rendered inline in the transcript —
+ * transcript.js is out of this lane's ownership, and v1 has no such event on
+ * the wire. The REAL data available here is the child-room roster:
+ * `summon` spawns each whale into its own sub-room with `parentRoomId` set
+ * to this room (see harness/tools-pi.ts createSummonTool + core/types.ts
+ * RoomSummary.parentRoomId/.running). That gives an honest 2-state tree —
+ * started (still running) / completed (not running any more). v1 surfaces
+ * no per-lane failure flag at the snapshot level (would need each child's
+ * own transcript), so "failed" is never emitted — no fake state.
+ * @param {import("./types.js").Snapshot | null | undefined} snapshot
+ */
+function SwarmSection(snapshot) {
+  if (!snapshot) return null;
+  const rooms = snapshot.rooms ?? [];
+  const lanes = rooms.filter((room) => room.parentRoomId === snapshot.room.id);
+  if (lanes.length === 0) return null;
+  return h(
+    "section",
+    { class: "native-section swarm-section" },
+    h("h3", { text: "swarm" }),
+    h(
+      "ol",
+      { class: "swarm-phase-tree" },
+      h(
+        "ul",
+        { class: "swarm-phase-level" },
+        lanes.map((room) => SwarmNode(room)),
+      ),
+    ),
+  );
+}
+
+/** @param {import("./types.js").RoomSummary} room */
+function SwarmNode(room) {
+  const phase = room.running ? "started" : "completed";
+  const glyph = agentGlyph(room.title ?? room.id);
+  return h(
+    "li",
+    { class: `swarm-phase-node swarm-phase-${phase}` },
+    h(
+      "div",
+      { class: "swarm-phase-row" },
+      h("i", { class: "swarm-phase-glyph", text: glyph }),
+      h("span", { class: "swarm-phase-title", text: room.title || room.id }),
+    ),
+  );
+}
 
 registerRegion("panel", renderPanel);

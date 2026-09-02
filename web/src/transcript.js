@@ -8,12 +8,14 @@
 // when the final room-event commits under the same id, the stream entry is
 // dropped and the keyed node swaps to the committed version in place.
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
+import { agentGlyph, KIND, STATE, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
 import { detectArtifacts } from "./design/artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
 import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";
+import { boundedLines, diffBlock, filePreview, jsonHtml, resultNode } from "./rich.js";
 import { MarkdownMessage } from "./markdown.js";
 import { toggleReadAloud } from "./readaloud.js";
 import { markDirty, registerRegion, setError } from "./render.js";
@@ -653,7 +655,7 @@ function Message(view) {
           type: "button",
           class: "msg-action",
           title: "retry — regenerate from the message that produced this reply",
-          text: "⟳",
+          text: UI.retry,
           onclick: () => void retryMessage(view.id),
         })
       : null,
@@ -662,7 +664,7 @@ function Message(view) {
           type: "button",
           class: "msg-action",
           title: "resend — regenerate the failed turn from the message that produced it",
-          text: "⟳",
+          text: UI.retry,
           onclick: () => void retryMessage(view.id),
         })
       : null,
@@ -687,15 +689,22 @@ function Message(view) {
     h(
       "div",
       { class: "message-meta" },
+      // Speaker mark (v2 parity): ❯ for the human, the agent's own identity
+      // glyph otherwise. Theme-coloured via .speaker-glyph, never emoji.
+      h("span", {
+        class: `speaker-glyph${isAgent ? " agent" : ""}`,
+        "aria-hidden": "true",
+        text: isUser ? UI.human : isAgent ? agentGlyph(view.author) : UI.system,
+      }),
       h("span", { text: label }),
       view.queued ? h("small", { class: "channel-tag", title: "queued — runs after the current turn", text: "queued" }) : null,
-      view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: "🎙" }) : null,
+      view.channel === "voice" ? h("small", { class: "channel-tag", title: "spoken on a voice call", text: UI.call }) : null,
       details.model ? h("small", { class: "model-tag", text: details.model }) : null,
       details.modelFallback
         ? h("small", {
             class: "model-tag fallback",
             title: details.modelFallback.reason,
-            text: `⚠ ${details.modelFallback.from} → ${details.modelFallback.to}`,
+            text: `⚠︎ ${details.modelFallback.from} → ${details.modelFallback.to}`,
           })
         : null,
       view.redacted ? RedactedTag() : null,
@@ -724,7 +733,7 @@ function Message(view) {
       ? h("span", {
           class: "stream-stalled",
           title: "upstream connection dropped mid-reply — the harness is reconnecting and will resume where it left off",
-          text: "⚠ reconnecting…",
+          text: "⚠︎ reconnecting…",
         })
       : null,
     view.streaming ? LiveHeartbeat(view) : null,
@@ -735,7 +744,7 @@ function Message(view) {
 /** @param {MessageView} view @returns {HTMLElement} */
 function LiveHeartbeat(view) {
   if (view.connectionStale) {
-    return h("div", { class: "live-heartbeat stale", text: "⚠ connection stale — reconnecting…" });
+    return h("div", { class: "live-heartbeat stale", text: "⚠︎ connection stale — reconnecting…" });
   }
   const elapsed = Math.max(0, Date.now() - Date.parse(view.timestamp));
   const activity = Math.max(0, Date.now() - (view.lastDeltaAt ?? Date.now()));
@@ -768,7 +777,7 @@ function CompactBoundary(view) {
     h(
       "span",
       { class: "compact-boundary-pill" },
-      h("span", { class: "compact-boundary-icon", text: "✂" }),
+      h("span", { class: "compact-boundary-icon", text: "✂︎" }),
       h("span", { text: "Context compacted" }),
       h("small", { text: detail }),
     ),
@@ -824,7 +833,7 @@ function SummonResultActivity(view, summon) {
       id: `summon:${view.id}`,
       className: "summon-result",
       status: summon.failed ? "error" : "complete",
-      icon: summon.failed ? "⚠️" : "↩︎",
+      icon: summon.failed ? KIND.warning : KIND.handoff,
       title: `summon ${summon.childRoomId}`,
       extra: summon.failed ? "failed" : "finished",
     },
@@ -905,7 +914,7 @@ function RedactedTag() {
   return h("small", {
     class: "redacted-tag",
     title: "sanitized by thanks-dario — the original text is preserved in the room's redactions.jsonl",
-    text: "✂",
+    text: "✂︎",
   });
 }
 
@@ -916,7 +925,7 @@ function RedactedTag() {
  */
 function ThinkingActivity(id, text, running) {
   return ActivityDetails(
-    { id, className: "thinking", status: running ? "running" : "complete", icon: "💭", title: "thinking" },
+    { id, className: "thinking", status: running ? "running" : "complete", icon: KIND.thinking, title: "thinking" },
     text && text.trim() ? MarkdownMessage(text) : null,
   );
 }
@@ -973,7 +982,7 @@ function AttachmentGallery(attachments) {
       return h(
         "a",
         { class: "attachment-chip", href: url, target: "_blank", rel: "noopener", title: file.path },
-        h("span", { text: "📎" }),
+        h("span", { text: UI.attach }),
         h("span", { class: "attach-name", text: file.name }),
         h("small", { text: humanSize(file.size) }),
       );
@@ -1021,7 +1030,7 @@ function ToolActivityList(tools) {
  */
 export function SkillInvocationActivity(skill) {
   return ActivityDetails(
-    { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: "🧩", title: `[skill] ${skill.name}` },
+    { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: KIND.skill, title: `[skill] ${skill.name}` },
     MarkdownMessage(skill.content),
   );
 }
@@ -1036,15 +1045,144 @@ export function SkillInvocationActivity(skill) {
 export function ToolActivity(tool) {
   const skillLabel = skillReadLabel(tool);
   const options = skillLabel
-    ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: "🧩", title: `[skill] ${skillLabel}` }
-    : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: "🛠️", title: tool.toolName, extra: toolSummaryText(tool) };
+    ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: KIND.skill, title: `[skill] ${skillLabel}` }
+    : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: KIND.tool, title: tool.toolName, extra: toolSummaryText(tool) };
   return ActivityDetails(
     options,
-    ToolPayload("call", { id: tool.id, name: tool.toolName, status: tool.status }),
-    ToolPayload("args", tool.args),
-    ToolPayload("partial", tool.partialResult),
-    ToolPayload("result", tool.result),
+    PayloadSection("CALL", { id: tool.id, name: tool.toolName, status: tool.status }),
+    tool.args === undefined || tool.args === null ? null : PayloadSection("ARGS", tool.args),
+    tool.partialResult === undefined || tool.partialResult === null ? null : PayloadSection("PARTIAL", tool.partialResult),
+    tool.result === undefined || tool.result === null ? null : ResultSection(tool),
   );
+}
+
+/** RESULT block, rendered by TOOL rather than as a JSON dump: bash -> `$ cmd`
+ * + bounded output + exit code; read -> numbered lines + remainder; write ->
+ * byte count; edit/apply_patch -> word-level diff; anything else -> rich.js's
+ * generic renderer (v2 traceResultNode).
+ * @param {ToolDetail} tool @returns {HTMLElement} */
+function ResultSection(tool) {
+  const { kind, args } = toolKind(tool);
+  const text = toolResultText(tool.result);
+  /** @type {Node} */
+  let body;
+  if (kind === "bash") body = BashResult(args, tool.status, text);
+  else if (kind === "read") body = ReadResult(text || "(empty)");
+  else if (kind === "write") body = WriteResult(args, text);
+  else if (kind === "edit") body = EditResult(args, tool.result, text);
+  else body = resultNode(text || tool.result);
+  return h("section", { class: "payload-section" }, h("h4", { text: "RESULT" }), body);
+}
+
+/** Which renderer a call wants, and the args THAT renderer should read.
+ * GAIA's own unified tool carries the real operation in `{verb, args}` — a
+ * `gaia` call is a bash/read/write/edit call wearing one name, so classify by
+ * the verb and hand on the INNER args. Harness-native tools (pi `bash`,
+ * claude `Bash`/`Read`) classify by name, case-insensitively.
+ * @param {ToolDetail} tool
+ * @returns {{ kind: string, args: Record<string, unknown> }} */
+function toolKind(tool) {
+  const outer = /** @type {Record<string, unknown>} */ (tool.args && typeof tool.args === "object" ? tool.args : {});
+  const name = String(tool.toolName ?? "").toLowerCase();
+  if (name === "gaia" && typeof outer.verb === "string") {
+    const inner = /** @type {Record<string, unknown>} */ (outer.args && typeof outer.args === "object" ? outer.args : {});
+    return { kind: normalizeKind(outer.verb), args: inner };
+  }
+  return { kind: normalizeKind(name), args: outer };
+}
+
+/** @param {string} value @returns {string} */
+function normalizeKind(value) {
+  const kind = value.toLowerCase();
+  if (kind === "bash" || kind === "shell") return "bash";
+  if (kind === "read") return "read";
+  if (kind === "write") return "write";
+  if (kind === "edit" || kind === "multiedit" || kind === "apply_patch") return "edit";
+  return kind;
+}
+
+/** Tool results arrive as a string, as pi's `{content:[{type,text}]}` blocks,
+ * or as a bare `{text}` - flatten to text, empty string when not textual.
+ * @param {unknown} value @returns {string} */
+function toolResultText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        const record = /** @type {{ text?: unknown }} */ (part && typeof part === "object" ? part : {});
+        return typeof record.text === "string" ? record.text : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  const row = /** @type {Record<string, unknown>} */ (value && typeof value === "object" ? value : {});
+  if (Array.isArray(row.content)) return toolResultText(row.content);
+  if (typeof row.text === "string") return row.text;
+  return "";
+}
+
+/** @param {Record<string, unknown>} args @param {string|undefined} status @param {string} text @returns {HTMLElement} */
+function BashResult(args, status, text) {
+  const exitMatch = /Command exited with code (-?\d+)/.exec(text);
+  // pi's bash tool only embeds the exit marker on a nonzero/errored run: a
+  // completed trace with no marker exited 0.
+  const exitCode = exitMatch ? exitMatch[1] : status === "error" ? "?" : "0";
+  return h(
+    "div",
+    { class: "trace-bash" },
+    h("pre", { class: "trace-bash-cmd", text: `$ ${String(args.command ?? "")}` }),
+    boundedLines((text || "(no output)").split("\n"), "trace-bash-output", (line) => document.createTextNode(line)),
+    h("p", { class: `trace-exit-code${exitCode !== "0" ? " trace-exit-error" : ""}`, text: `exit ${exitCode}` }),
+  );
+}
+
+/** pi's read appends a bracketed continuation notice with the remaining line
+ * count - split it off into a footer instead of painting it as file content.
+ * @param {string} text @returns {HTMLElement} */
+function ReadResult(text) {
+  const continuation = /\n\n\[(?:Showing lines \d+-\d+ of (\d+)(?: \([^)]*\))?|(\d+) more lines in file)[^\]]*\]\s*$/.exec(text);
+  const body = continuation ? text.slice(0, continuation.index) : text;
+  const remaining = continuation?.[1] ?? continuation?.[2] ?? "";
+  const wrapper = h("div", {}, filePreview(body));
+  if (remaining) wrapper.append(h("p", { class: "trace-read-remainder", text: `\u2026 ${remaining} more lines` }));
+  return wrapper;
+}
+
+/** @param {Record<string, unknown>} args @param {string} text @returns {HTMLElement} */
+function WriteResult(args, text) {
+  const match = /wrote ([\d,]+) bytes/.exec(text);
+  const content = String(args.content ?? "");
+  const bytes = match ? match[1] : content ? String(new TextEncoder().encode(content).byteLength) : "";
+  return h("p", { class: "trace-write-bytes", text: bytes ? `${bytes} bytes written` : text || "written" });
+}
+
+/** edit/apply_patch: show the replacement as a diff (old -> new) rather than
+ * two opaque blobs. Falls back to the generic renderer when the args carry no
+ * recognisable before/after pair.
+ * @param {Record<string, unknown>} args @param {unknown} result @param {string} text @returns {Node} */
+function EditResult(args, result, text) {
+  if (typeof args.patch === "string") return diffBlock(args.patch);
+  const edits = Array.isArray(args.edits) ? args.edits : [];
+  const pairs = edits.length > 0
+    ? edits.map((edit) => /** @type {Record<string, unknown>} */ (edit && typeof edit === "object" ? edit : {}))
+    : [/** @type {Record<string, unknown>} */ ({ oldText: args.oldText ?? args.old_string, newText: args.newText ?? args.new_string })];
+  const blocks = pairs
+    .filter((pair) => typeof pair.oldText === "string" || typeof pair.old_string === "string")
+    .map((pair) => {
+      const before = String(pair.oldText ?? pair.old_string ?? "");
+      const after = String(pair.newText ?? pair.new_string ?? "");
+      const unified = [...before.split("\n").map((line) => `-${line}`), ...after.split("\n").map((line) => `+${line}`)].join("\n");
+      return diffBlock(unified);
+    });
+  if (blocks.length === 0) return resultNode(text || result);
+  return h("div", { class: "trace-edit" }, blocks);
+}
+
+/** @param {string} label @param {unknown} value @returns {HTMLElement} */
+function PayloadSection(label, value) {
+  const pre = h("pre", {});
+  pre.innerHTML = jsonHtml(value);
+  return h("section", { class: "payload-section" }, h("h4", { text: label }), pre);
 }
 
 /**
@@ -1100,31 +1238,15 @@ function ActivityDetails(options, ...children) {
         class: "activity-result",
         title: statusText,
         "aria-label": statusText,
-        text: options.status === "running" ? "" : options.status === "error" ? "x" : "✓",
+        text: options.status === "running" ? "" : options.status === "error" ? STATE.error : STATE.done,
       }),
     ),
     children,
   );
 }
 
-/** @param {string} label @param {unknown} value */
-function ToolPayload(label, value) {
-  if (value === undefined || value === null) return null;
-  return h("div", { class: "tool-payload" }, h("span", { text: label }), h("pre", {}, LinkedText(formatPayload(value))));
-}
-
 // --- Tool one-line summaries: pick the most subject-like string from the
 // args/results so a collapsed tool row still says what it acted on. ----------
-
-/** @param {unknown} value */
-function formatPayload(value) {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
 
 /**
  * User messages start with the routing mentions; the label already shows the

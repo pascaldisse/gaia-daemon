@@ -3,6 +3,7 @@
 // by default behind a twisty. Nesting is unbounded — grandchildren summon
 // their own children.
 import { addRoom, addWorkspace, deleteWorkspace, loadWorkspace, renameRoom, reorderWorkspaces, selectRoom, setRoomFavorite, setWorkspaceFavorite } from "./actions.js";
+import { UI } from "./glyphs.js";
 import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -49,7 +50,7 @@ function renderSidebar() {
       class: "nav-search",
       title: "search across all chats (⌘K)",
       onclick: () => openSearch("chatwide"),
-      text: "🔍 search chats",
+      text: `${UI.search} search chats`,
     }),
     h(
       "div",
@@ -68,7 +69,7 @@ function renderSidebar() {
             persistWorkspacesCollapsed();
             markDirty("sidebar");
           },
-          text: state.workspacesCollapsed ? "▸" : "▾",
+          text: state.workspacesCollapsed ? UI.twistyClosed : UI.twistyOpen,
         }),
         // Inline + next to the header, same UI element as "rooms"'s new-room +
         // — one click from the top, no separate full-width button buried under
@@ -98,7 +99,7 @@ function renderSidebar() {
                 persistRoomsCollapsed();
                 markDirty("sidebar");
               },
-              text: state.roomsCollapsed ? "▸" : "▾",
+              text: state.roomsCollapsed ? UI.twistyClosed : UI.twistyOpen,
             }),
             h("button", {
               class: `nav-title-add ${state.roomsFavoritesOnly ? "active" : ""}`,
@@ -110,7 +111,7 @@ function renderSidebar() {
               },
               text: "★",
             }),
-            h("button", { class: "nav-title-add", title: "new room (Ctrl+T) · ⌥-click = incognito 🕶", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }),
+            h("button", { class: "nav-title-add", title: "new room (Ctrl+T) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }),
           )
         : null,
     ),
@@ -139,19 +140,22 @@ const WORKSPACES_CHUNK = 8;
  */
 function StatusIcons({ favorite, running, unread, incognito, runningTitle = "agent running", unreadTitle = "unread messages" }) {
   return [
-    h("span", { class: "room-icon-slot" }, favorite ? h("span", { class: "room-star", title: "favorite", text: "★" }) : null),
+    h("span", { class: "room-icon-slot" }, favorite ? h("span", { class: "room-star", title: "favorite", text: UI.favorite }) : null),
     h(
       "span",
       { class: "room-icon-slot" },
       running
         ? h("span", { class: "room-dot running", title: runningTitle })
         : unread
-          ? h("span", { class: "room-dot unread", title: unreadTitle })
+          // v2-parity `.unread-dot` class rides alongside the existing
+          // `.room-dot.unread` — same element, same behavior, native.css
+          // adds the v2 hook without touching styles.css's own rule.
+          ? h("span", { class: "room-dot unread unread-dot", title: unreadTitle })
           : null,
     ),
     incognito === undefined
       ? null
-      : h("span", { class: "room-icon-slot" }, incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: "🕶" }) : null),
+      : h("span", { class: "room-icon-slot" }, incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: UI.incognito }) : null),
   ];
 }
 
