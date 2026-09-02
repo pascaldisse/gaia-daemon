@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomHandle, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
+import { RoomHandle, readTranscriptRecordsFrom, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
@@ -344,6 +344,9 @@ test("transcript: pre-id lines get stable legacy ids; bad lines are skipped but 
   assert.equal(events[0].id, "legacy_0");
   assert.equal(events[1].id, "evt_new");
   assert.equal(nextCursor, 3); // the unparseable line still counts for cursors
+  const rawPage = await readTranscriptRecordsFrom(room.transcriptPath);
+  assert.deepEqual(rawPage.items.map(({ lineIndex, text }) => [lineIndex, text]), [[0, "old"], [2, "new"]]);
+  assert.equal(rawPage.nextCursor, 3);
 
   // Cursor stability: reading from cursor 1 skips the legacy line only.
   const page = await room.eventsFrom(1);

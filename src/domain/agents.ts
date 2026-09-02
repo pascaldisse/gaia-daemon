@@ -7,9 +7,10 @@ import { existsSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { AgentDef, AgentModelConfig, ThinkingLevel } from "../core/types.js";
+import type { AgentDef, AgentModelConfig, AgentProtocolConfig, ThinkingLevel } from "../core/types.js";
 import { DEFAULTS, parseMcpServers, parseMemoryPatch, parseSandboxConfig, parseTtsConfig } from "../core/config.js";
 import { agentPaths, globalPaths } from "../core/paths.js";
+import { canonicalHarnessId } from "../core/harness-id.js";
 import { ensureDir, jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import { MemoryStore } from "./memory.js";
 
@@ -25,6 +26,7 @@ interface RawAgentConfig {
   skills?: unknown;
   model?: AgentModelConfig;
   thinking?: ThinkingLevel;
+  protocols?: unknown;
   turnLaw?: unknown;
   promptLaw?: unknown;
   role?: unknown;
@@ -78,8 +80,16 @@ function parseEnvMap(value: unknown): Record<string, string> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
-// `harness` is canonical; older configs use `runtime`. Prefer harness, fall
-// back to runtime, so a `"runtime": "claude"` no longer silently runs Pi.
+function parseProtocolConfig(value: unknown): AgentProtocolConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const protocols: AgentProtocolConfig = {};
+  for (const [name, enabled] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof enabled === "boolean") protocols[name] = enabled;
+  }
+  return Object.keys(protocols).length ? protocols : undefined;
+}
+
+// `harness` is canonical; older configs use `runtime`.
 function rawHarness(config: RawAgentConfig): unknown {
   return config.harness !== undefined ? config.harness : config.runtime;
 }
@@ -346,6 +356,7 @@ function mergeAgentConfig(base: RawAgentConfig, override: RawAgentConfig): RawAg
     ...override,
     id: base.id,
     model: { ...(base.model ?? {}), ...(override.model ?? {}) },
+    protocols: { ...(base.protocols ?? {}), ...(override.protocols ?? {}) },
     harness: rawHarness(override) !== undefined ? rawHarness(override) : rawHarness(base),
     permissionMode: override.permissionMode !== undefined ? override.permissionMode : base.permissionMode,
     account: override.account !== undefined ? override.account : base.account,
@@ -397,6 +408,7 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
     // reversible per-agent escape hatch for a direct native tool surface.
     const gaiaOnly = raw.gaiaOnly !== false;
     const configuredTools = raw.tools === undefined ? defaultAgentTools(gaiaOnly) : stringList(raw.tools, []);
+    const configuredHarness = rawHarness(raw);
     const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : entry.name;
     const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : id;
     if (raw.nativeCommands === true) {
@@ -427,9 +439,10 @@ export async function loadAgentDefinitions(globalAgentsDir: string, projectAgent
       ...(raw.skills !== undefined ? { skillOverride: stringList(raw.skills, []) } : {}),
       model: raw.model,
       thinking: raw.thinking,
+      protocols: parseProtocolConfig(raw.protocols),
       turnLaw: typeof raw.turnLaw === "string" && raw.turnLaw.trim() ? raw.turnLaw.trim() : undefined,
       promptLaw: typeof raw.promptLaw === "string" && raw.promptLaw.trim() ? raw.promptLaw.trim() : undefined,
-      harness: typeof raw.harness === "string" && raw.harness.trim() ? raw.harness : undefined,
+      harness: typeof configuredHarness === "string" && configuredHarness.trim() ? canonicalHarnessId(configuredHarness) : undefined,
       sandbox: parseSandboxConfig(raw.sandbox),
       trust: raw.trust === false ? false : undefined,
       allowNestedSummon: raw.allowNestedSummon === true,

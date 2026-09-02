@@ -7,12 +7,14 @@
 // (AGENTS.md §RULE #0).
 
 import { DEFAULTS } from "../core/config.js";
+import { canonicalHarnessId } from "../core/harness-id.js";
 import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ResolvedRole } from "../domain/roles.js";
 import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
+import type { ToolProviders } from "./protocol.js";
 
 // --- what a runtime consumes and produces ------------------------------------
 
@@ -94,6 +96,9 @@ export interface AgentRuntime {
    * receives whatever token counts the harness can report as the pass runs
    * (best-effort). Only present when capabilities.supportsCompact. */
   compact?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
+  /** Native compaction that drops prior compaction summaries instead of
+   * chaining them ("clean" pass). Optional: harnesses without it reject. */
+  compactClean?(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult>;
   /** Prepare a native compaction summary without evicting the live session.
    * Only present when capabilities.supportsCompactEdit. */
   compactDraft?(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }>;
@@ -262,6 +267,8 @@ export interface RuntimeCreateContext {
   contextDiet?: ContextDietAccess;
   /** Gracefully end this agent's current room conversation with a visible farewell. */
   endConversation?: EndConversation;
+  /** Service implementations for the shared tool port. */
+  toolProviders?: ToolProviders;
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
@@ -528,17 +535,18 @@ export function harnessSpecs(): HarnessSpec[] {
 }
 
 export function findHarness(id: string): HarnessSpec | undefined {
-  return registry.get(id);
+  return registry.get(canonicalHarnessId(id));
 }
 
 export function harnessSpecFor(id: string): HarnessSpec {
-  const spec = registry.get(id);
+  const canonical = canonicalHarnessId(id);
+  const spec = registry.get(canonical);
   if (!spec) throw new Error(`Unsupported harness: ${id}`);
   return spec;
 }
 
 export function capabilitiesFor(id: string): HarnessCapabilities {
-  const spec = registry.get(id) ?? registry.get(DEFAULTS.harness);
+  const spec = registry.get(canonicalHarnessId(id)) ?? registry.get(DEFAULTS.harness);
   if (!spec) throw new Error("No harnesses registered");
   return spec.capabilities;
 }
@@ -546,21 +554,16 @@ export function capabilitiesFor(id: string): HarnessCapabilities {
 /** A-priori context window for a harness/model, or undefined when unknown.
  * Read uniformly by the context gate — each harness declares its own. */
 export function contextWindowFor(id: string, model: string | undefined): number | undefined {
-  return registry.get(id)?.contextWindow?.(model);
+  return registry.get(canonicalHarnessId(id))?.contextWindow?.(model);
 }
 
 /** Native passthrough commands a harness advertises for autocomplete ([] when
  * none / unregistered). Read uniformly by the snapshot builder. */
 export function nativeCommandsFor(id: string): NativeCommandDef[] {
-  return registry.get(id)?.nativeCommands?.() ?? [];
-}
-
-/** The single harness parser: valid iff registered. */
-export function parseHarness(raw: unknown): string | undefined {
-  return typeof raw === "string" && registry.has(raw) ? raw : undefined;
+  return registry.get(canonicalHarnessId(id))?.nativeCommands?.() ?? [];
 }
 
 /** Effective harness for an agent in a workspace: agent → workspace → "pi". */
 export function harnessIdFor(agent: AgentDef, workspace: Workspace): string {
-  return agent.harness ?? workspace.config.harness ?? DEFAULTS.harness;
+  return canonicalHarnessId(agent.harness ?? workspace.config.harness ?? DEFAULTS.harness);
 }

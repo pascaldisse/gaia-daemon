@@ -31,7 +31,6 @@ import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
 import { SchedulerService } from "./services/scheduler.js";
-import { AccountLoginService } from "./services/account-login.js";
 import { formatDreamProposal } from "./services/consolidate.js";
 import type { ConsolidateLlm, ConsolidateResult } from "./services/consolidate.js";
 import { formatMemoryHits, scrollTranscriptWindow, workspaceRoomRefs, type MemoryHealthRow, type MemorySearchHit, type RoomRef } from "./domain/workspace-index.js";
@@ -56,6 +55,8 @@ import { SttCallBridge } from "./services/voice-stt-bridge.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
 import { readThemeSetting, writeThemeSetting } from "./services/theme.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
+import { createToolProviders } from "./services/tool-providers.js";
+import type { ToolProviders } from "./harness/protocol.js";
 
 // --- workspace registry (recent workspaces in ~/.gaia/app.json) ----------------
 // Registry entries are the WorkspaceRecord wire shape from core/types.ts.
@@ -221,6 +222,8 @@ export class Daemon {
   private readonly servicePending = new Map<string, Promise<RoomService>>();
   private readonly currentRoom = new Map<string, string>();
   private readonly memoryStores = new Map<string, MemoryStore>();
+  /** Service-side tool implementations injected into subprocess harnesses. */
+  private readonly toolProviders = createToolProviders();
   private readonly memoryServices = new Map<string, { service: MemoryService; live: { workspace: Workspace } }>();
   /** One local embedding sidecar per daemon (model server shared across
    * workspaces); MemoryService reaches it through EmbedderDeps. Download and
@@ -238,7 +241,6 @@ export class Daemon {
   /** Subscription-usage meter (account-keyed, disk-cached, self-polling) —
    * see services/usage-service.ts. The daemon only wires broadcast + lifecycle. */
   private readonly usageService = new UsageService({ broadcast: (event) => this.broadcast(event) });
-  readonly accountLogins = new AccountLoginService();
   private hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
   private bridge: HarnessBridge | undefined;
   private scheduler: SchedulerService | undefined;
@@ -975,6 +977,9 @@ export class Daemon {
     return capabilitiesFor(harnessIdFor(workspace.agents[agentId], workspace)).gaiaTools;
   }
 
+  harnessToolProviders(): ToolProviders {
+    return this.toolProviders;
+  }
   async harnessMemoryBatch(
     claims: HarnessTokenClaims,
     file: string,

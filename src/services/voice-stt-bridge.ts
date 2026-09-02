@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
+import { json } from "../core/http.js";
 import { pcmToWav, unpackMessage } from "./read-aloud.js";
 import { transcribe, type TranscribeRequest } from "./transcribe.js";
 import { packMsg } from "./voice-tts-bridge.js";
@@ -77,8 +78,7 @@ export class SttCallBridge {
     const server = createServer((request, response) => {
       const path = (request.url ?? "").split("?")[0];
       if (path === "/api/build_info" || path === "/") {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ service: "gaia-stt-bridge", backend: "replicate", status: "ok", sample_rate: STT_SAMPLE_RATE }));
+        json(response, 200, { service: "gaia-stt-bridge", backend: "replicate", status: "ok", sample_rate: STT_SAMPLE_RATE }, "application/json");
         return;
       }
       response.writeHead(404);

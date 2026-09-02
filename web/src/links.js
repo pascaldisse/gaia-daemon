@@ -2,6 +2,7 @@
 // a new tab, local paths through the daemon's /api/open-target.
 import { api } from "./api.js";
 import { h } from "./dom.js";
+import { isNative } from "./native.js";
 import { setError } from "./render.js";
 import { state } from "./state.js";
 
@@ -76,7 +77,15 @@ function findLinkedSegments(text) {
 async function openLinkedTarget(target) {
   try {
     if (isWebTarget(target)) {
-      window.open(normalizeWebTarget(target), "_blank", "noopener");
+      const url = normalizeWebTarget(target);
+      if (isNative()) {
+        await api("/api/open-target", {
+          method: "POST",
+          body: JSON.stringify({ target: url, workspaceId: state.snapshot?.workspace.id }),
+        });
+      } else {
+        window.open(url, "_blank", "noopener");
+      }
       return;
     }
     await api("/api/open-target", {
@@ -145,6 +154,24 @@ export function PathText(path) {
 }
 
 export function installOpenModifierTracking() {
+  // WKWebView drops target=_blank navigation without a WKUIDelegate. Catch real
+  // HTTP(S) anchors (for example sign-in links) before WebKit handles them, but
+  // leave relative attachment links and every plain-browser navigation alone.
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (!isNative()) return;
+      let element = /** @type {any} */ (event.target);
+      if (typeof element?.closest !== "function") element = element?.parentElement;
+      const anchor = element?.closest?.("a[href]");
+      const target = anchor?.getAttribute?.("href");
+      if (!target || !/^https?:\/\//i.test(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void openLinkedTarget(target);
+    },
+    true,
+  );
   /** @param {boolean} active */
   const update = (active) => document.body.classList.toggle("open-link-mode", active);
   window.addEventListener("keydown", (event) => {

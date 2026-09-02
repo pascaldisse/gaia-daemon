@@ -29,7 +29,7 @@
 // summons run autonomously; the trust tier IS the boundary.
 
 import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDef, SummonDelivery, Workspace } from "../core/types.js";
 import { ResumeEpochRegistry, type ResumeEpoch } from "./resume-epoch.js";
@@ -46,9 +46,10 @@ export interface SummonResultDelivery {
   triggerTarget?: string;
 }
 
-import { RoomHandle } from "../domain/rooms.js";
+import { RoomHandle, readTranscriptRecordsFrom } from "../domain/rooms.js";
 import { ensureRoomWorktree, resolveRoomWorkDir } from "../domain/worktree.js";
 import { workspacePaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { ensureWorkspaceRoom } from "../domain/workspace.js";
 
 export function isTrusted(agent: AgentDef): boolean {
@@ -232,9 +233,9 @@ export function awaitTask(room: { subscribe(listener: (event: SummonTaskEvent) =
  * turn-failure line (failure) so a summon failure message can always show
  * the real error even when the worker itself wrote nothing. */
 async function inspectWorker(rootDir: string, roomId: string, agentId: string): Promise<{ digest: string; active: boolean; lastText: string; failure: string }> {
-  let raw: string;
+  let events: Awaited<ReturnType<typeof readTranscriptRecordsFrom>>["items"];
   try {
-    raw = await readFile(workspacePaths.transcript(rootDir, roomId), "utf8");
+    events = (await readTranscriptRecordsFrom(workspacePaths.transcript(rootDir, roomId))).items;
   } catch {
     return { digest: "", active: false, lastText: "", failure: "" };
   }
@@ -243,20 +244,14 @@ async function inspectWorker(rootDir: string, roomId: string, agentId: string): 
   const texts: string[] = [];
   let active = false;
   let failure = "";
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    let event: { author?: unknown; text?: unknown; timestamp?: unknown; details?: { tools?: unknown[] } };
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const event of events) {
     if (event.author === "system" && typeof event.text === "string" && event.text.startsWith("⚠ turn failed")) {
       failure = event.text;
       continue;
     }
     if (event.author !== agentId) continue;
-    if (Array.isArray(event.details?.tools) && event.details.tools.length > 0) active = true;
+    const details = event.details;
+    if (details && typeof details === "object" && Array.isArray((details as { tools?: unknown[] }).tools) && (details as { tools: unknown[] }).tools.length > 0) active = true;
     if (typeof event.text !== "string" || event.text.length === 0) continue;
     active = true;
     if (!firstTs) firstTs = typeof event.timestamp === "string" ? event.timestamp : "";
@@ -581,7 +576,7 @@ export class SummonCoordinator implements SummonHost {
         .map((child) => this.completions.get(child.roomId))
         .filter((completion): completion is Promise<unknown> => completion !== undefined);
       if (completions.length > 0) await Promise.allSettled(completions);
-      else if (direct.length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      else if (direct.length > 0) await sleep(10);
 
       // Delivery queues (or starts) the parent callback before the child leaves
       // the running set. Waiting here therefore closes the hand-off race.

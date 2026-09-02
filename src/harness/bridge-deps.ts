@@ -7,7 +7,7 @@ import { daemonPost, type DaemonTarget } from "../core/daemon-client.js";
 import { MemoryStore, type MemoryAction, type MemoryMutationResult } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
 import type { ContextDietOverrides, ContextDietPolicy } from "../domain/context-diet.js";
-import { LLM_PROXY_MOUNT } from "./protocol.js";
+import { LLM_PROXY_MOUNT, type ToolProviders } from "./protocol.js";
 import type { ContextDietAccess, ContextDietView, EndConversation, HarnessHost, RecallSearch, ResumeCreate, SummonCreate, ToolResultFetch } from "./spec.js";
 
 /** MemoryStore whose writes go to the daemon (single writer); reads stay on disk. */
@@ -40,6 +40,32 @@ export class BridgeMemoryStore extends MemoryStore {
       return { ok: false, message: `memory bridge error: ${error instanceof Error ? error.message : String(error)}`, state };
     }
   }
+}
+
+/** Tool service client for runner-side Pi tools. The daemon injects service
+ * implementations; this bridge only serializes the port over its existing token. */
+export function bridgeToolProviders(target: DaemonTarget): ToolProviders {
+  const call = async (operation: string, body: Record<string, unknown> = {}): Promise<unknown> => {
+    const { ok, payload } = await daemonPost(target, "/api/harness/tools", { operation, ...body });
+    if (!ok) throw new Error(typeof payload.error === "string" ? payload.error : `${operation} failed`);
+    return payload.result;
+  };
+  return {
+    artifacts: {
+      list: () => call("artifact-list"),
+      read: async (_location, artifactId) => call("artifact-read", { artifactId }) as Promise<{ manifest: unknown; payload: string }>,
+      create: async (_location, input) => call("artifact-create", input),
+      update: async (_location, artifactId, input) => call("artifact-update", { artifactId, ...input }),
+    },
+    web: {
+      search: async (request) => call("web-search", request) as Promise<{ provider: string; results: Array<{ title: string; url: string; snippet: string }> }>,
+      fetch: async (request) => call("web-fetch", request) as Promise<{ url: string; title: string; text: string; video?: { provider: string; videoId: string; lang: string; channel?: string; description?: string; transcript: string; entries: number; truncated: boolean; comments?: Array<{ author: string; likes?: number; text: string }>; commentsUnavailable?: string } }>,
+    },
+    caryll: {
+      compress: (text) => call("caryll-compress", { text }) as Promise<{ output: string; stats: { tokensBefore: number; tokensAfter: number; ratio: number; legendEntries: number } }>,
+      expand: (text) => call("caryll-expand", { text }) as Promise<string>,
+    },
+  };
 }
 
 /** recallSearch that POSTs to the daemon (deep search + reranker run

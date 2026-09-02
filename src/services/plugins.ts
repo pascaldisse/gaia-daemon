@@ -11,10 +11,9 @@
 // room-service.ts for the call sites that consult the loaded map).
 
 import { readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { bundledDir } from "../core/paths.js";
+import { bundledDir, globalPaths } from "../core/paths.js";
 
 export interface PluginAgent {
   id: string;
@@ -145,7 +144,7 @@ export function bundledCommandPluginsDir(): string {
 }
 
 function userCommandPluginsDir(): string {
-  return join(homedir(), ".gaia", "plugins");
+  return globalPaths.commandPluginsDir();
 }
 
 /** Scans the bundled-defaults dir then ~/.gaia/plugins/*.mjs and

@@ -5,12 +5,32 @@
 import type { AgentEvent, CompactProgressUpdate, MessageAttachment } from "../core/types.js";
 import type { AgentInput } from "./spec.js";
 
+/** Service implementations injected into harness tools at runtime. Harnesses
+ * depend on this contract only; service imports stay at composition level. */
+export interface ToolProviders {
+  artifacts: {
+    list(location: { rootDir: string; roomId: string }): Promise<unknown>;
+    read(location: { rootDir: string; roomId: string }, artifactId: string): Promise<{ manifest: unknown; payload: string }>;
+    create(location: { rootDir: string; roomId: string }, input: { name: string; kind: "html" | "json" | "design"; mediaType: string; payload: string }): Promise<unknown>;
+    update(location: { rootDir: string; roomId: string }, artifactId: string, input: { name?: string; kind?: "html" | "json" | "design"; mediaType?: string; payload?: string }): Promise<unknown>;
+  };
+  web: {
+    search(request: { query: string; maxResults?: number; provider?: "brave" | "tavily" | "serper" }): Promise<{ provider: string; results: Array<{ title: string; url: string; snippet: string }> }>;
+    fetch(request: { url: string; maxBytes?: number; transcript?: boolean; lang?: string; comments?: boolean | number }): Promise<{ url: string; title: string; text: string; video?: { provider: string; videoId: string; lang: string; channel?: string; description?: string; transcript: string; entries: number; truncated: boolean; comments?: Array<{ author: string; likes?: number; text: string }>; commentsUnavailable?: string } }>;
+  };
+  caryll: {
+    compress(text: string): Promise<{ output: string; stats: { tokensBefore: number; tokensAfter: number; ratio: number; legendEntries: number } }>;
+    expand(text: string): Promise<string>;
+  };
+}
+
 /** Daemon -> runner. */
 export type RunnerCommand =
   | { type: "turn"; input: AgentInput }
   | { type: "abort" }
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
   | { type: "compact"; roomId: string }
+  | { type: "compact-clean"; roomId: string }
   | { type: "compact-draft"; roomId: string }
   | { type: "compact-apply"; roomId: string; editedSummary: string }
   | { type: "fork"; roomId: string; originEventId: string; userOrdinal: number }

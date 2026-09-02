@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
+import { canonicalHarnessId } from "./harness-id.js";
 
 export const DEFAULTS = {
   harness: "pi",
@@ -320,14 +321,6 @@ export function parseMcpServers(raw: unknown): Record<string, McpServerConfig> |
   return Object.keys(servers).length > 0 ? servers : undefined;
 }
 
-/** Effective MCP servers for an agent: workspace set ∪ agent set (agent wins). */
-export function resolveMcpServers(
-  workspace: Pick<WorkspaceConfig, "mcpServers">,
-  agent: { mcpServers?: Record<string, McpServerConfig> },
-): Record<string, McpServerConfig> {
-  return { ...(workspace.mcpServers ?? {}), ...(agent.mcpServers ?? {}) };
-}
-
 /** Parse a `memory` patch (agent.json override or config.json section).
  * Unknown/bad fields drop; an empty patch returns undefined. */
 export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
@@ -388,7 +381,10 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
     agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
   };
-  if (typeof obj.harness === "string" && validHarness(obj.harness)) config.harness = obj.harness;
+  if (typeof obj.harness === "string") {
+    const harness = canonicalHarnessId(obj.harness);
+    if (validHarness(harness)) config.harness = harness;
+  }
   if (typeof obj.maxSummonsPerRoom === "number" && Number.isInteger(obj.maxSummonsPerRoom) && obj.maxSummonsPerRoom > 0) {
     config.maxSummonsPerRoom = obj.maxSummonsPerRoom;
   }

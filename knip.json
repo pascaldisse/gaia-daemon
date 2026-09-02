@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/cli.ts",
+    "src/daemon.ts",
+    "scripts/*.mjs",
+    "web/src/main.js",
+    "test/**/*.test.ts"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "web/src/**/*.js",
+    "scripts/**/*.mjs"
+  ],
+  "ignore": [
+    "design/**",
+    "unmute/**",
+    "dist/**",
+    "web/dist/**",
+    ".gaia/**",
+    "setups/**"
+  ],
+  "ignoreBinaries": ["tauri", "gaia"],
+  "ignoreDependencies": ["knip"]
+}

@@ -8,10 +8,8 @@
 
 import type { ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { env } from "../core/env.js";
-import { workspacePaths } from "../core/paths.js";
+import { expandHome, workspacePaths } from "../core/paths.js";
 import { accountsPath, findAccount } from "../domain/accounts.js";
 import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
@@ -47,7 +45,6 @@ import {
 export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
   "ANTHROPIC_OAUTH_TOKEN",
   "ANTHROPIC_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN", // per-account subscription token (HarnessSpec.accounts)
   "COPILOT_GITHUB_TOKEN",
   "OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY",
@@ -80,13 +77,6 @@ export const PROVIDER_KEY_ENV_VARS: readonly string[] = [
 export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const name of PROVIDER_KEY_ENV_VARS) delete environment[name];
   return environment;
-}
-
-/** Expand the `~` shorthand HarnessSpec.sandboxPaths declares in (a spec is
- *  static data — it can't know the home dir) to the real home dir. */
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
 // --- the host ---------------------------------------------------------------------
@@ -404,6 +394,10 @@ export class RunnerHost implements AgentRuntime {
     return this.runCompactRequest(roomId, { type: "compact", roomId }, onProgress);
   }
 
+  async compactClean(roomId: string, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
+    return this.runCompactRequest(roomId, { type: "compact-clean", roomId }, onProgress);
+  }
+
   async compactDraft(roomId: string): Promise<{ compacted: boolean; message: string; summary?: string }> {
     if (!this.capabilities.supportsCompactEdit) throw new Error("this harness has no native editable compaction");
     return this.runCompactRequest(roomId, { type: "compact-draft", roomId });
@@ -415,7 +409,7 @@ export class RunnerHost implements AgentRuntime {
   }
 
   /** One daemon↔runner result channel for all native compact variants. */
-  private async runCompactRequest(roomId: string, command: Extract<RunnerCommand, { type: "compact" | "compact-draft" | "compact-apply" }>, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
+  private async runCompactRequest(roomId: string, command: Extract<RunnerCommand, { type: "compact" | "compact-clean" | "compact-draft" | "compact-apply" }>, onProgress?: (update: CompactProgressUpdate) => void): Promise<CompactResult> {
     // A durable session on disk can be compacted even from a cold daemon (no
     // turn since restart): spawn the runner so its harness resumes the persisted
     // handle. Only when there's neither a live child NOR a durable session is

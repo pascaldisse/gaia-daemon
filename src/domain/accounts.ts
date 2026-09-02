@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalPaths } from "../core/paths.js";
+import { canonicalHarnessId } from "../core/harness-id.js";
 
 export interface AccountRecord {
   /** Unique id (what AgentDef.account references). */
@@ -51,7 +52,7 @@ export function listAccounts(): AccountRecord[] {
     return [
       {
         id: record.id.trim(),
-        harness: record.harness.trim(),
+        harness: canonicalHarnessId(record.harness),
         ...(typeof record.label === "string" && record.label.trim() ? { label: record.label.trim() } : {}),
         ...(typeof record.email === "string" && record.email.trim() ? { email: record.email.trim() } : {}),
         credentials,
@@ -89,35 +90,6 @@ export function updateAccount(id: string, patch: { label?: string | null; email?
   list[index] = next;
   writeFileSync(path, JSON.stringify({ ...raw, accounts: list }, null, 2) + "\n", { mode: 0o600 });
   return listAccounts().find((account) => account.id === id);
-}
-
-/** First free id: slugified label ("Work Account" -> "work-account") when given
- * and unused, else `${harness}-2`, `${harness}-3`, ... skipping taken ids. */
-export function newAccountId(harness: string, label?: string): string {
-  const taken = new Set(listAccounts().map((account) => account.id));
-  if (label) {
-    const slug = label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug && !taken.has(slug)) return slug;
-  }
-  for (let n = 2; ; n++) {
-    const candidate = `${harness}-${n}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-}
-
-export function addAccount(record: AccountRecord): void {
-  ensureAccountsFile();
-  const path = accountsPath();
-  const raw = JSON.parse(readFileSync(path, "utf8")) as { accounts?: unknown };
-  const list = Array.isArray(raw.accounts) ? (raw.accounts as unknown[]) : [];
-  if (list.some((entry) => (entry as Partial<AccountRecord>)?.id === record.id)) {
-    throw new Error(`account '${record.id}' already exists`);
-  }
-  list.push(record);
-  writeFileSync(path, JSON.stringify({ ...raw, accounts: list }, null, 2) + "\n", { mode: 0o600 });
 }
 
 export function removeAccount(id: string): boolean {

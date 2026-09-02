@@ -6,12 +6,12 @@ import { createReadStream, existsSync, openSync, readFileSync, writeSync, rmSync
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaBasePath, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
-import { bundledDir, gaiaHome, globalPaths } from "../core/paths.js";
+import { bundledDir, expandHome, gaiaHome, globalPaths } from "../core/paths.js";
+import { sleep } from "../core/retry.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
 import { newId } from "../core/ids.js";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../core/attachments.js";
@@ -89,9 +89,6 @@ const RELOAD_CLOSE_TIMEOUT_MS = 1_000;
 const LISTEN_RETRY_DELAY_MS = 300;
 const LISTEN_RETRIES = 10;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-}
 
 /** Total death (cmd+Q / SIGTERM) needs an authoritative pid: the shell reads
  * this file rather than trusting the pid of whatever it originally spawned,
@@ -720,7 +717,8 @@ export class GaiaWebServer {
           path === "/api/harness/tool-result-fetch" ||
           path === "/api/harness/context-diet" ||
           path === "/api/harness/end-conversation" ||
-          path === "/api/harness/dog"))
+          path === "/api/harness/dog" ||
+          path === "/api/harness/tools"))
     ) {
       return this.handleHarness(request, response, path);
     }
@@ -910,8 +908,7 @@ export class GaiaWebServer {
       return this.respond(response, async () => ({ ok: true }));
     }
 
-    // Named accounts. The login routes are registered BEFORE DELETE
-    // /api/accounts/<id> so "login" is never mistaken for an account id.
+    // Named accounts are managed directly in accounts.json.
     if (method === "GET" && path === "/api/accounts") {
       return this.respond(response, async () => ({
         accounts: redactedAccounts(),
@@ -921,41 +918,12 @@ export class GaiaWebServer {
       }));
     }
 
-    if (method === "POST" && path === "/api/accounts/login") {
-      const body = await parseBody(request);
-      const harness = stringField(body, "harness");
-      const label = stringField(body, "label");
-      return this.respond(response, async () => ({
-        session: this.daemon.accountLogins.start((harness ?? "").trim(), label?.trim() || undefined),
-      }));
-    }
-
-    if (method === "GET" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
-      return this.respond(response, async () => ({ session: this.daemon.accountLogins.status(params![0]) }));
-    }
-
-    if (method === "POST" && (params = match(/^\/api\/accounts\/login\/([^/]+)\/input$/))) {
-      const body = await parseBody(request);
-      const textValue = stringField(body, "text") ?? "";
-      return this.respond(response, async () => {
-        this.daemon.accountLogins.input(params![0], textValue);
-        return { session: this.daemon.accountLogins.status(params![0]) };
-      });
-    }
-
-    if (method === "DELETE" && (params = match(/^\/api\/accounts\/login\/([^/]+)$/))) {
-      return this.respond(response, async () => {
-        this.daemon.accountLogins.cancel(params![0]);
-        return { session: this.daemon.accountLogins.status(params![0]) };
-      });
-    }
 
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       return this.respond(response, async () => ({ removed: removeAccount(params![0]) }));
     }
 
-    // Display metadata only — credentials remain write-only to the harness
-    // login flow / accounts.json and never cross this HTTP boundary.
+    // Display metadata only — credentials remain write-only in accounts.json.
     if (method === "PATCH" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {
       const body = await parseBody(request);
       const value = (key: "label" | "email"): string | null | undefined => {
@@ -1653,12 +1621,13 @@ export class GaiaWebServer {
       | "tool-result-fetch"
       | "context-diet"
       | "end-conversation"
-      | "dog";
+      | "dog"
+      | "tools";
     // tool-result-fetch/context-diet are VERBS of the unified `gaia` tool
     // (09-MEMORY-CONTEXT), not separate GaiaTool ids like memory/summon/recall
     // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
     // `dog` (09-DOG-MODE) is never a GaiaTool grant either — same carve-out.
-    if (verb !== "dream" && verb !== "dog") {
+    if (verb !== "dream" && verb !== "dog" && verb !== "tools") {
       const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : verb;
       if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
         return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
@@ -1666,6 +1635,35 @@ export class GaiaWebServer {
     }
 
     const body = await parseBody(request);
+
+    if (pathname === "/api/harness/tools") {
+      const input = body as Record<string, unknown>;
+      const operation = stringField(body, "operation");
+      const gate: GaiaTool = operation?.startsWith("artifact-") ? "artifact" : "gaia";
+      if (!this.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gate)) {
+        return json(response, 403, { error: `This agent's harness does not grant the ${gate} tool.` });
+      }
+      const providers = this.daemon.harnessToolProviders();
+      const location = { rootDir: workspace.rootDir, roomId: claims.roomId };
+      const text = (field: string) => stringField(body, field) ?? "";
+      try {
+        let result: unknown;
+        switch (operation) {
+          case "artifact-list": result = await providers.artifacts.list(location); break;
+          case "artifact-read": result = await providers.artifacts.read(location, text("artifactId")); break;
+          case "artifact-create": result = await providers.artifacts.create(location, { name: text("name"), kind: text("kind") as "html" | "json" | "design", mediaType: text("mediaType"), payload: text("payload") }); break;
+          case "artifact-update": result = await providers.artifacts.update(location, text("artifactId"), { ...(stringField(body, "name") !== undefined ? { name: text("name") } : {}), ...(stringField(body, "kind") !== undefined ? { kind: text("kind") as "html" | "json" | "design" } : {}), ...(stringField(body, "mediaType") !== undefined ? { mediaType: text("mediaType") } : {}), ...(stringField(body, "payload") !== undefined ? { payload: text("payload") } : {}) }); break;
+          case "web-search": result = await providers.web.search({ query: text("query"), ...(numberField(body, "maxResults") !== undefined ? { maxResults: numberField(body, "maxResults") } : {}), ...(stringField(body, "provider") !== undefined ? { provider: text("provider") as "brave" | "tavily" | "serper" } : {}) }); break;
+          case "web-fetch": result = await providers.web.fetch({ url: text("url"), ...(numberField(body, "maxBytes") !== undefined ? { maxBytes: numberField(body, "maxBytes") } : {}), ...(typeof input.transcript === "boolean" ? { transcript: input.transcript } : {}), ...(stringField(body, "lang") !== undefined ? { lang: text("lang") } : {}), ...(typeof input.comments === "boolean" || typeof input.comments === "number" ? { comments: input.comments } : {}) }); break;
+          case "caryll-compress": result = await providers.caryll.compress(text("text")); break;
+          case "caryll-expand": result = await providers.caryll.expand(text("text")); break;
+          default: return json(response, 400, { error: "unknown tool operation" });
+        }
+        return json(response, 200, { ok: true, result });
+      } catch (error) {
+        return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
 
     if (pathname === "/api/harness/memory") {
       // Batch mode (§5): operations validate together against the FINAL
@@ -2078,7 +2076,7 @@ export class GaiaWebServer {
     if (/^www\./i.test(target)) return `https://${target}`;
 
     const withoutFilePrefix = target.startsWith("file://") ? fileURLToPath(target) : target;
-    const expanded = withoutFilePrefix.startsWith("~/") ? join(homedir(), withoutFilePrefix.slice(2)) : withoutFilePrefix;
+    const expanded = expandHome(withoutFilePrefix);
     const base = workspaceId ? (await this.daemon.workspaceForId(workspaceId))?.rootDir : undefined;
     const path = isAbsolute(expanded) ? expanded : resolve(base ?? this.options.cwd, expanded);
 
