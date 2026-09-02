@@ -134,3 +134,8 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - `f812940`: `test/edit-resend-live.test.ts`; isolated worktree `.gaia/live-test-runs`; Luna scaffold + account shell; cwd workspace has `.gaia/config.json`; env strips `GAIA_PARENT_PID`; `${GAIA_PORT:-18787}`.
 - gate: `bun run check` green; `bun test test/edit-resend-live.test.ts` 4/0 + 1 intentional live skip.
 - live: UNVERIFIED; opt-in token/edit evidence checks transcript + rewound + Pi parent chain; §REFACTOR-LIVE-QUEUE, owner 陰.
+
+## W3 A13 — typed contribution ports (2026-09-03)
+- `e98f6b5`: `services/plugins/contracts.ts`; typed command/tool/channel/provider ports, manifest-declared names only, broker gate before invocation; uniform runner wire in `harness/protocol.ts` fails closed pending A14 install.
+- gate: `bun run check` green; `bun test test/plugins-manifest.test.ts test/plugins-loader.test.ts test/plugins-capabilities.test.ts test/plugins-registry.test.ts test/plugins-contracts.test.ts` 31/0.
+- call-site: registry contribution invokes hold generation lease; protocol has one harness-neutral frame; no harness-id branch. pragma scan touched services/harness: 0. live UNVERIFIED; queue updated.
