@@ -58,28 +58,14 @@ function renderTopbar() {
   const snapshot = state.snapshot;
   if (!snapshot) {
     topbar.replaceChildren(
-      h("div", { class: "room-header-primary" },
-        h("div", { class: "room-paths" },
-          h("strong", { title: "No workspace selected" }, LinkedText("No workspace selected")),
-          h("small", { title: "Add an initialized workspace to begin." }, LinkedText("Add an initialized workspace to begin."))),
-      ),
+      h("strong", { class: "room-workspace-path", title: "Add an initialized workspace to begin." }, LinkedText("No workspace selected")),
     );
     return;
   }
   const meter = roomMeterText(snapshot);
   const usage = usageChipSeg();
   topbar.replaceChildren(
-    h(
-      "div",
-      { class: "room-header-primary" },
-      h(
-        "div",
-        { class: "room-paths" },
-        h("strong", { title: snapshot.workspace.rootDir }, PathText(snapshot.workspace.rootDir)),
-        h("small", { title: snapshot.room.statePath }, PathText(snapshot.room.statePath)),
-      ),
-      h("div", { class: "transcript-state", title: "Durable transcript state", text: transcriptStateText(snapshot) }),
-    ),
+    h("strong", { class: "room-workspace-path", title: snapshot.room.statePath }, PathText(snapshot.workspace.rootDir)),
     h(
       "div",
       { class: "room-header-controls" },
@@ -104,7 +90,7 @@ function renderTopbar() {
         class: `room-artifacts${artifactPanelOpen() ? " on" : ""}`,
         type: "button",
         title: "toggle artifacts",
-        text: artifactPanelOpen() ? "◫ artifacts" : "□ artifacts",
+        text: "▢ artifacts",
         onclick: toggleArtifactPanel,
       }),
       h("output", {

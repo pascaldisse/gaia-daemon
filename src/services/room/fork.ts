@@ -1,10 +1,11 @@
 // @ts-nocheck
 import { hasExplicitMention } from "../commands.js";
 import type { MessageAttachment, Task } from "../../core/types.js";
+import type { RoomForkPort } from "./ports.js";
 
 /** Transcript truncation, retry, edit, and harness-session rewind path. */
 export class RoomFork {
-  constructor(private readonly service: any) {}
+  constructor(private readonly service: RoomForkPort) {}
   async retryMessage(eventId: string): Promise<Task> {
     const origin = await this.forkAtUserMessage(eventId);
     return this.service.sendMessage(origin.text, {

@@ -51,7 +51,7 @@ export const KIND = {
 /** Run states (v2 transcript.ts STATE_GLYPH). */
 export const STATE = {
   running: "⠧",
-  done: "✓",
+  done: "✓\uFE0E", // VS15: 0xProto draws bare U+2713 root-shaped
   error: "×",
 };
 
