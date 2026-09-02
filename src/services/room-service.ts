@@ -13,9 +13,8 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { attachmentMime, sanitizeAttachmentName } from "../core/attachments.js";
@@ -31,7 +30,6 @@ import type {
   AgentEvent,
   AgentModelConfig,
   AgentStatus,
-  BackgroundTask,
   CompactProgress,
   CompactProgressUpdate,
   CompactResult,
@@ -94,6 +92,7 @@ import { installRoomUi, RoomUiMixin } from "./room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "./room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "./room/snapshot.js";
 import { readVoiceSettings } from "./voice.js";
+import { BackgroundTasks } from "./room/background-tasks.js";
 
 export interface RoomServiceOptions {
   workspaceId: string;
@@ -210,18 +209,6 @@ export interface SendMessageOptions {
 
 /** Min gap between durable partial-reply flushes during a streaming turn. */
 export const PARTIAL_FLUSH_MS = 1000;
-const BACKGROUND_TASK_MAX = 20;
-const BACKGROUND_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const BACKGROUND_TASK_OUTPUT_BYTES = 16 * 1024;
-
-/** `lsof` binary used to probe whether a tracked background process still has
- * a live writer on its output file (see backgroundTaskPids). Env-overridable —
- * never hardcode a bare path as the only option. */
-const LSOF_BIN = process.env.GAIA_LSOF_BIN || "/usr/sbin/lsof";
-/** How long backgroundTaskPids waits for `lsof` before giving up and reporting
- * no live writers (a hung/missing lsof must never wedge a snapshot). */
-const BACKGROUND_TASK_LSOF_TIMEOUT_MS = 2000;
-
 /** Render the reason carried by the uniform runtime/channel failure contract. */
 function turnEndReason(error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
@@ -452,11 +439,17 @@ export class RoomService {
    * room's override, file-backed under .gaia/ — backs `/diet` and the
    * `diet`/`tool_result_fetch` gaia-tool verbs. Default OFF (IRON). */
   readonly dietPolicyStore: ContextPolicyStore;
+  private readonly backgroundTasks: BackgroundTasks;
 
   constructor(readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
     this.incognito = options.incognito === true;
     this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
+    this.backgroundTasks = new BackgroundTasks({
+      room: this.room,
+      roomId: this.roomId,
+      emitSnapshot: () => this.emitSnapshot(),
+    });
     // In an incognito room the memory/recall tools are stripped from every agent.
     // The strip happens in the runner subprocess (it re-loads the agent from disk,
     // so a daemon-side strip here would never reach it); we just pass the flag
@@ -2405,116 +2398,15 @@ export class RoomService {
   }
 
   async recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void> {
-    const now = Date.now();
-    const startedAt = new Date(now).toISOString();
-    const cutoff = now - BACKGROUND_TASK_MAX_AGE_MS;
-    await this.room.updateState((state) => {
-      const recent = (state.backgroundTasks ?? []).filter(
-        (task) => Date.parse(task.startedAt) >= cutoff && task.taskId !== event.taskId,
-      );
-      recent.push({
-        taskId: event.taskId,
-        toolName: event.toolName,
-        ...(event.command !== undefined ? { command: event.command } : {}),
-        ...(event.description !== undefined ? { description: event.description } : {}),
-        ...(event.outputPath !== undefined ? { outputPath: event.outputPath } : {}),
-        startedAt,
-        agentId,
-        roomId: this.roomId,
-      });
-      state.backgroundTasks = recent.slice(-BACKGROUND_TASK_MAX);
-    });
-    await this.emitSnapshot();
+    await this.backgroundTasks.record(agentId, event);
   }
-
-  /** PIDs still holding `task.outputPath` open for writing, per `lsof -t`
-   * (a live writer means the shell/process is still running). Best-effort:
-   * no output path, a missing/erroring lsof, or a timeout all report "no live
-   * writers" rather than fail the caller — liveness is advisory, never a hard
-   * dependency for the tray to render. */
-  private async backgroundTaskPids(task: BackgroundTask): Promise<number[]> {
-    if (!task.outputPath) return [];
-    try {
-      const stdout = await new Promise<string>((resolve, reject) => {
-        const child = spawn(LSOF_BIN, ["-t", task.outputPath as string], { stdio: ["ignore", "pipe", "ignore"] });
-        let out = "";
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          child.kill("SIGKILL");
-          reject(new Error("lsof timed out"));
-        }, BACKGROUND_TASK_LSOF_TIMEOUT_MS);
-        child.stdout?.on("data", (chunk: Buffer) => {
-          out += chunk.toString("utf8");
-        });
-        child.once("error", (error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(error);
-        });
-        child.once("close", () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(out);
-        });
-      });
-      return stdout
-        .split(/\s+/)
-        .map((line) => Number(line.trim()))
-        .filter((pid) => Number.isInteger(pid) && pid > 0);
-    } catch {
-      return [];
-    }
-  }
-
-  /** The tail of a tracked background process's output, plus whether it still
-   * has a live writer (see backgroundTaskPids). The path comes only from
-   * durable room state; callers supply a task id, never a filesystem path. */
   async backgroundTaskOutput(taskId: string): Promise<{ text: string; running: boolean } | undefined> {
     await this.init();
-    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
-    if (!task?.outputPath) return undefined;
-    const running = (await this.backgroundTaskPids(task)).length > 0;
-    let file: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      file = await open(task.outputPath, "r");
-      const { size } = await file.stat();
-      const length = Math.min(size, BACKGROUND_TASK_OUTPUT_BYTES);
-      if (length === 0) return { text: "", running };
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await file.read(buffer, 0, length, Math.max(0, size - length));
-      return { text: buffer.subarray(0, bytesRead).toString("utf8"), running };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    } finally {
-      await file?.close();
-    }
+    return this.backgroundTasks.output(taskId);
   }
-
-  /** Stop a tracked background process (SIGTERM every live writer PID) and
-   * drop its tray entry, or just drop the entry when nothing is still
-   * running — either way this is the tray's stop/dismiss action. Returns
-   * false when the task id is unknown (already expired/removed). */
   async stopBackgroundTask(taskId: string): Promise<boolean> {
     await this.init();
-    const task = (await this.room.state()).backgroundTasks?.find((candidate) => candidate.taskId === taskId);
-    if (!task) return false;
-    for (const pid of await this.backgroundTaskPids(task)) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-      }
-    }
-    await this.room.updateState((state) => {
-      state.backgroundTasks = (state.backgroundTasks ?? []).filter((candidate) => candidate.taskId !== taskId);
-    });
-    await this.emitSnapshot();
-    return true;
+    return this.backgroundTasks.stop(taskId);
   }
 
 
