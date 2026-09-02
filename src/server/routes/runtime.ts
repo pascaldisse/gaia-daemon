@@ -39,6 +39,7 @@ import { titleCaseId } from "./agents.js";
 import { stringArrayField } from "./edit-retry.js";
 import { numberField } from "./memory.js";
 import { summonCensusText } from "./usage.js";
+import { artifactRoutePrefix } from "./artifacts.js";
 import { attachmentRefs, sanitizeEditRefs } from "./rooms.js";
 
 export interface WebServerOptions {
@@ -1511,7 +1512,7 @@ export class GaiaWebServer {
 
     const body = await parseBody(request);
 
-    if (pathname === "/api/harness/tools") {
+    if (pathname === artifactRoutePrefix) {
       const input = body as Record<string, unknown>;
       const operation = stringField(body, "operation");
       const gate: GaiaTool = operation?.startsWith("artifact-") ? "artifact" : "gaia";
