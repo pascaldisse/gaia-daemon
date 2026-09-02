@@ -43,7 +43,7 @@
   background: transparent;
   box-shadow: none;
   color: var(--accent);
-  font-size: 15px;
+  font-size: 12.5px;
 }
 .composer-meta-row { display: flex; align-items: center; gap: 1.5ch; min-height: 25px; padding-top: 4px; color: var(--muted); font-size: 11px; }
 .composer-meta { display: flex; align-items: center; min-width: 0; gap: 1.5ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
