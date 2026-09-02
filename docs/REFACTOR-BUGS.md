@@ -404,3 +404,62 @@ Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest mai
 - ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
 - ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
 - post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
+## ADV-PASS-2 · 2026-09-02 · 陰の木 adversarial refactor audit
+
+## ADV-011 · HIGH · A5c LIVE prerequisite cannot deliver required `@luna` turn
+Atom → `gaia/jareth-mtklhqjcox0sbw-pass2@d7d637e` live build; daemon hash `d7d637e`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/naru-kimi-mtkliyd9wo8b3i
+GAIA_HOME="$W/.gaia/livehome" GAIA_PORT=18787 "$W/.gaia/livetest-dist/gaia-daemon"
+# authenticated POST /api/workspaces -> id 3efc0c32a73d6aaf
+# authenticated POST /api/workspaces/3efc0c32a73d6aaf/rooms/default/messages
+# body: {"text":"@luna LIVE-AUDIT-EXACT-TOKEN","queue":true}
+```
+Expected → required exact `@luna` message accepts (202), reserves durable user event, then enables edit/retry and pending-turn recovery audit.
+Actual → HTTP 500 `{ "error":"Unknown agent: @luna. Available agents: @dario, @gaia, @sidia, @terry" }`; GET events remains `[]`; no `transcript.jsonl`, `rewound.jsonl`, or `pi-sessions` evidence exists for this flow.
+Boundary → ticket only; no fix. The isolated daemon did build and listen on 127.0.0.1:18787. UNVERIFIED → agent→agent mention/edit parent chain; web/artifact; SIGKILL/restart exactly-once; settings reload; full registered-route authenticated smoke.
+
+## ADV-012 · LOW · A5c leaves dead parallel route residue
+Atom → `b8db169` route extraction · measured at `main@20eb9b6`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/main-build
+rg -l '\bsanitizeEditRefs\b' "$W/src" "$W/test"
+rg -n '\bbootId\b' "$W/src/server/routes/api.ts"
+bun run check
+```
+Expected → every new `src/server/routes/*.ts` export has production/test caller; split leaf contains no abandoned local duplicate.
+Actual → `sanitizeEditRefs` exported only at `src/server/routes/rooms.ts:9`, zero callsite; `src/server/routes/api.ts:28` retains unused `const bootId = ""` while live SSE uses `ctx.bootId` at line 194. `bun run check` exits 0 because Knip is non-enforcing and reports `sanitizeEditRefs` among 115 unused exports.
+Behavior impact → none measured; dead parallel surface only.
+
+## ADV-PASS-2 · parent verdict · `main@20eb9b6`
+Range → `768115b..20eb9b6` · A5c/A7c/A7d + UI + late-main UI/drafts.
+
+Static 真:
+- PRAGMA → baseline=current: 4 `src/services/room/*` `@ts-nocheck` + 10 façade `as any`; NEW=0; ADV-009 remains open.
+- RULE0 exact → 4 hits, all allowed `typeof ...harness === "string"` guards: `core/config.ts:384` · `domain/accounts.ts:47` · `server/routes/agents.ts:58` · `services/hints.ts:454`.
+- layering upward imports → 0.
+- hardcode scan → only `core/config.ts:41` configured default 8787 + seatbelt canonical `/private/tmp`; new violation=0.
+- route retention → literal `/api|/v1` sets 36/36 exact; parameter regex sets 42/42 exact; missing route=0.
+- new daemon/route export callsites → all ≥2 source/test files except ADV-012 `sanitizeEditRefs`.
+- durability seams → queue/pending-turn recovery focused control 98/0; no late-main daemon/service delta.
+
+Gate 真:
+- `bun run check` at `a0f7bc8` → exit 0; Knip debt non-enforcing.
+- `bun test test/http-routes.test.ts` → 7/0 final head.
+- `bun test test/daemon-delete.test.ts` → 4/0; `bun test test/room-service.test.ts` → 98/0 before late web-only merge.
+- `bun test web/src/composer-drafts.test.js` → 2/0 final head.
+
+Live 真/未驗:
+1. agent→agent mention + edit parent chain → UNVERIFIED; `@luna` prerequisite HTTP 500 → ADV-011.
+2. ToolProviders web/artifact → UNVERIFIED beyond focused artifact HTTP unit.
+3. SIGKILL pending-turn exactly-once → UNVERIFIED beyond 98/0 durability controls.
+4. settings reload without room drop → UNVERIFIED.
+5. full route-table authenticated smoke → UNVERIFIED; static table parity + route-focused 7/0 only.
+- queue → § `docs/REFACTOR-LIVE-QUEUE.md`; blocked-run status appended.
+- UI visual app drive → UNVERIFIED; pass law forbade gaia-daemon.app/8787.
+- cleanup 真 → isolated daemon killed · dist/home removed · port 18787 `lsof` empty.
+
+Atoms clean → A5c route registration parity · A7c harness claim extraction · A7d interaction extraction · UI commits `efc2e48`/`c80a074`/`2d3e9a2` static+check only · late `230ca8e` drafts unit 2/0.
+Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifact salvageable; STATIC performed by parent.
