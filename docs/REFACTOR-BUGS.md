@@ -404,65 +404,76 @@ Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest mai
 - ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
 - ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
 - post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
+## ADV-PASS-2 · 2026-09-02 · 陰の木 adversarial refactor audit
+
+## ADV-011 · HIGH · A5c LIVE prerequisite cannot deliver required `@luna` turn
+Atom → `gaia/jareth-mtklhqjcox0sbw-pass2@d7d637e` live build; daemon hash `d7d637e`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/naru-kimi-mtkliyd9wo8b3i
+GAIA_HOME="$W/.gaia/livehome" GAIA_PORT=18787 "$W/.gaia/livetest-dist/gaia-daemon"
+# authenticated POST /api/workspaces -> id 3efc0c32a73d6aaf
+# authenticated POST /api/workspaces/3efc0c32a73d6aaf/rooms/default/messages
+# body: {"text":"@luna LIVE-AUDIT-EXACT-TOKEN","queue":true}
+```
+Expected → required exact `@luna` message accepts (202), reserves durable user event, then enables edit/retry and pending-turn recovery audit.
+Actual → HTTP 500 `{ "error":"Unknown agent: @luna. Available agents: @dario, @gaia, @sidia, @terry" }`; GET events remains `[]`; no `transcript.jsonl`, `rewound.jsonl`, or `pi-sessions` evidence exists for this flow.
+Boundary → ticket only; no fix. The isolated daemon did build and listen on 127.0.0.1:18787. UNVERIFIED → agent→agent mention/edit parent chain; web/artifact; SIGKILL/restart exactly-once; settings reload; full registered-route authenticated smoke.
+
+## ADV-012 · LOW · A5c leaves dead parallel route residue
+Atom → `b8db169` route extraction · measured at `main@20eb9b6`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/main-build
+rg -l '\bsanitizeEditRefs\b' "$W/src" "$W/test"
+rg -n '\bbootId\b' "$W/src/server/routes/api.ts"
+bun run check
+```
+Expected → every new `src/server/routes/*.ts` export has production/test caller; split leaf contains no abandoned local duplicate.
+Actual → `sanitizeEditRefs` exported only at `src/server/routes/rooms.ts:9`, zero callsite; `src/server/routes/api.ts:28` retains unused `const bootId = ""` while live SSE uses `ctx.bootId` at line 194. `bun run check` exits 0 because Knip is non-enforcing and reports `sanitizeEditRefs` among 115 unused exports.
+Behavior impact → none measured; dead parallel surface only.
+
+## ADV-PASS-2 · parent verdict · `main@20eb9b6`
+Range → `768115b..20eb9b6` · A5c/A7c/A7d + UI + late-main UI/drafts.
+
+Static 真:
+- PRAGMA → baseline=current: 4 `src/services/room/*` `@ts-nocheck` + 10 façade `as any`; NEW=0; ADV-009 remains open.
+- RULE0 exact → 4 hits, all allowed `typeof ...harness === "string"` guards: `core/config.ts:384` · `domain/accounts.ts:47` · `server/routes/agents.ts:58` · `services/hints.ts:454`.
+- layering upward imports → 0.
+- hardcode scan → only `core/config.ts:41` configured default 8787 + seatbelt canonical `/private/tmp`; new violation=0.
+- route retention → literal `/api|/v1` sets 36/36 exact; parameter regex sets 42/42 exact; missing route=0.
+- new daemon/route export callsites → all ≥2 source/test files except ADV-012 `sanitizeEditRefs`.
+- durability seams → queue/pending-turn recovery focused control 98/0; no late-main daemon/service delta.
+
+Gate 真:
+- `bun run check` at `a0f7bc8` → exit 0; Knip debt non-enforcing.
+- `bun test test/http-routes.test.ts` → 7/0 final head.
+- `bun test test/daemon-delete.test.ts` → 4/0; `bun test test/room-service.test.ts` → 98/0 before late web-only merge.
+- `bun test web/src/composer-drafts.test.js` → 2/0 final head.
+
+Live 真/未驗:
+1. agent→agent mention + edit parent chain → UNVERIFIED; `@luna` prerequisite HTTP 500 → ADV-011.
+2. ToolProviders web/artifact → UNVERIFIED beyond focused artifact HTTP unit.
+3. SIGKILL pending-turn exactly-once → UNVERIFIED beyond 98/0 durability controls.
+4. settings reload without room drop → UNVERIFIED.
+5. full route-table authenticated smoke → UNVERIFIED; static table parity + route-focused 7/0 only.
+- queue → § `docs/REFACTOR-LIVE-QUEUE.md`; blocked-run status appended.
+- UI visual app drive → UNVERIFIED; pass law forbade gaia-daemon.app/8787.
+- cleanup 真 → isolated daemon killed · dist/home removed · port 18787 `lsof` empty.
+
+Atoms clean → A5c route registration parity · A7c harness claim extraction · A7d interaction extraction · UI commits `efc2e48`/`c80a074`/`2d3e9a2` static+check only · late `230ca8e` drafts unit 2/0.
+Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifact salvageable; STATIC performed by parent.
 
 ---
 
-## Kali L3 · live-executor ledger · A1/A7/A6
+## ADV-011 resolution · live seed correction — 2026-09-02
+- prior `Unknown agent: luna` → TEST-SETUP; not daemon regression.
+- corrected seed → `<worktree>/.gaia/livehome/agents/luna/` copied whole; whole `accounts.json` + `config.json`; workspace payload listed `luna` before every probe.
+- proof → TOKEN-1/2/3/4 + tool turn committed by luna; evidence `docs/REFACTOR-LIVE-RESULTS-20260902.md`.
+- status → superseded as daemon ticket.
 
-Scope → reviewer-only static map; no daemon/process/summon/test run; no fix.
-
-### LIVE-001 · required execution packet · A1 ToolProviders bridge · UNVERIFIED
-
-Static seam → `src/harness/bridge-deps.ts:47-53` POSTs bearer-authenticated operations to `/api/harness/tools`; `src/server/routes/artifacts.ts:6` owns that route; `src/daemon.ts:224,795` injects `createToolProviders()`; `src/services/tool-providers.ts` owns service imports. Harness upward-import scan remains separate from runtime proof.
-
-Repro:
-```sh
-# compiled isolated daemon + isolated GAIA_HOME; invoke through a Pi runner,
-# not direct provider/unit calls
-# 1 caryll stats README.md => raw output contains `真 caryll.stats`
-# 2 web {url:"not a url"} => `ERROR: invalid url: not a url`
-# 3 artifact create then artifact read => exact payload round-trip
-```
-
-Independent evidence required → runner transcript/tool-result bytes **and** daemon request log showing bearer `/api/harness/tools` calls; on-disk artifact manifest/payload read independently after runner exits; `rg -n 'from "\.\./services/' src/harness` clean. Direct `createToolProviders()` or HTTP-only success is insufficient.
-
-Pass → all three runner-visible contracts exact; one bridge request per operation; no harness→services import. Fail/ticket → missing bridge/auth path, altered raw error/result, or non-persistent artifact.
-
-### LIVE-002 · required execution packet · A7 recovery + deferred reload · UNVERIFIED
-
-Static seam → `src/daemon/wiring.ts:274-307` sequentially scans persisted `pendingTurn|queue` then awaits `serviceFor`; `src/daemon/reload.ts:20-47` deduplicates `pendingReloads`, waits idle, rebuilds service once.
-
-Repro:
-```sh
-# compiled isolated daemon; record pid/log/state/transcript timestamps
-# A: establish a streaming pendingTurn; SIGKILL; restart once.
-# B: establish queued-but-undrained turn; SIGKILL; restart once.
-# C: establish in-flight summon; SIGKILL; restart once.
-# D: while active turn runs, save settings twice; allow settle.
-```
-
-Independent evidence required → pre-kill and post-restart `state.json` + transcript event-id diff; boot log order (`turn recovery`/summon recovery before first client-triggered service use); runner/summon invocation count; settings file mtime plus service lifecycle/broadcast trace. Do not infer recovery from final text alone.
-
-Pass → each owed turn/summon resumes once, persisted FIFO/order retained, no duplicate event id/runner; D yields exactly one post-idle rebuild and snapshot. Fail/ticket → omission, duplication, order inversion, or reload while turn active.
-
-### LIVE-003 · required execution packet · A6 WAL/queue/edit-retry-rewind · UNVERIFIED
-
-Static seam → `src/services/room-service.ts:906-1015` peek-then-drain; `src/services/room/turn-loop.ts:26-49,162-180` reserves queue event id then atomically transfers queue→`pendingTurn`; `src/domain/rooms.ts:1097-1107` performs that custody write. Note: turn-loop is `// @ts-nocheck`; green type gate cannot prove this path (ADV-009).
-
-Repro:
-```sh
-# compiled isolated daemon; retain raw transcript.jsonl, state.json, rewound archive
-# 1 completed multi-event transcript: retry old user; edit old user; /rewind 1.
-# 2 queue successor; restart before drain.
-# 3 stream reply until pendingTurn exists; SIGKILL; restart.
-```
-
-Independent evidence required → fresh harness prompt capture proving old branch/tail absent; raw transcript/archive lineage + event IDs; state snapshots at queue, reserved eventId, pendingTurn, settled; runner process/invocation count. UI text or unit-suite output alone is insufficient.
-
-Pass → retry/edit exactly one regenerated branch; rewind resets affected session; queued successor commits once; partial reply commits/resumes once; no lost queue entry, duplicate user/reply event, or duplicate runner. Fail/ticket → any custody gap/duplication or stale branch in fresh prompt.
-
-### Findings / handoff
-
-- No new static defect asserted: all required runtime claims remain **UNVERIFIED** until the packets above execute.
-- Existing ADV-007/ADV-008 architecture failures and ADV-009 check-exempt durability seam remain applicable; live PASS does not close them.
-- Executor must append actual command, compiled-binary identity, isolated paths, timestamps, raw evidence locations, exact counts, cleanup proof, and residual UNVERIFIEDs; redact bearer tokens.
+## ADV-013 · HIGH · app payload 500 after corrected live seed — 2026-09-02
+- repro → compiled isolated daemon @ `4bd87be`; corrected seed; `GET /api/app`.
+- expected → 200 app payload.
+- actual → 500 `Missing workspace config: .../ghoul-terra-mtklq5ixkikbww/.gaia/config.json`; boot also skips summon recovery for cwd workspace.
+- impact → full authenticated A5c route smoke blocked; no fix in live child.
