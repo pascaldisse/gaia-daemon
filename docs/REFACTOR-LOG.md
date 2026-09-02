@@ -76,9 +76,33 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
   IS the atom (layering inversion demands a new seam). Behaviour parity still UNVERIFIED live →
   already item 1 of docs/REFACTOR-LIVE-QUEUE.md.
 
-## A5c — HTTP route-table adoption (2026-09-02)
-- `refactor/a5c-http` @ f2eebd4 → main merged in adoption branch.
-- move+split: `src/server/http.ts` 2120→642; `routes/api.ts` owns ordered route dispatch; domains agents/rooms/memory/artifacts/usage/edit-retry invoked from real dispatcher; no dead parallel handlers.
-- gate: `bun run check` green; `bun test test/http-routes.test.ts` 7 pass, 0 fail.
-- pragma scan `src/server`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
-- live: route regression test starts isolated test daemon; app/CDP live regression remains owner 陰; queue unchanged.
+## A7d — daemon interaction lifecycle (2026-09-02)
+- `refactor/a7d-daemon` @ 37f23a9 → current main merged in adoption branch.
+- move+split: room/agent/voice interaction lifecycle → `src/daemon/interactions.ts`; explicit `RoomInteractionHost` in `src/daemon/ports.ts`; daemon facade delegates.
+- `src/daemon.ts` 1369→717; call sites remain facade-routed; durability seams untouched.
+- gate: `bun run check` green; voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- pragma scan `src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
+- live: voice/room interaction app path UNVERIFIED; no daemon started outside isolated test process; owner 陰.
+
+## A5c — HTTP route-table integration (2026-09-02)
+- `refactor/a5c-http` integrated with current `main` in `refactor/a5-a7-integration`; root checkout was `fix/native-weblinks`, not `main`, so no root landing claim.
+- `src/server/http.ts` 2120→642; real dispatcher routes agents/rooms/memory/artifacts/usage/edit-retry.
+- gate: `bun run check` green; `http-routes` 7/0; pragma scan `src/server`: 0.
+
+## A7d — main integration checkpoint (2026-09-02)
+- A5c+A7d integration branch re-gated against `main` @ efc2e48; root checkout remains wrong branch, hence UNLANDED.
+- gates: check green; http-routes 7/0 · voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- sizes: http 642 · room-service 2527 · daemon 717. pragma scans server/daemon: 0.
+
+## A5c+A7d — latest-main gate (2026-09-02)
+- `refactor/a7d-adopt` merged `main` @ f383f22 → f71b774; includes A5c route table + A7d interaction lifecycle.
+- gate: `bun run check` green; http-routes 7/0 · voice 25/0 · read-aloud 35/0 · dictation 2/0.
+- call-site grep: daemon facade only delegates `RoomInteractionLifecycle`; no parallel interaction implementation found.
+- pragma scan `src/server src/daemon`: 0 matches (`@ts-nocheck|@ts-ignore|@ts-expect-error|as any`).
+- sizes: room-service 2527 · daemon 717 · http 642.
+- root landing BLOCKED: root checkout is clean `fix/native-weblinks` @ 4bd87be, not `main` @ f383f22; root switching forbidden by merge-only law.
+## A6 ports + ADV-012 checkpoint (2026-09-02)
+- `b942811` → typed `RoomTurnLoopPort`·`RoomForkPort`·`RoomCommandsFacadePort`·`RoomSanitizeFacadePort` in `src/services/room/ports.ts`; erased facade index signatures removed; commands→sanitizePreview explicit; four pragmas retained pending per-file typing.
+- `12d980c` → ADV-012: `sanitizeEditRefs` private to rooms route; dead `api.ts` bootId removed; SSE uses `ctx.bootId`.
+- gates: `bun run check` green; `bun test test/room-service.test.ts` 98/0; `bun test test/http-routes.test.ts` 7/0.
+- pragma scan `src/services`: 15; room-service 2527 lines. A6 four pragma-removal lanes active; W3 blocked; live A6 item remains UNVERIFIED, owned by 陰.

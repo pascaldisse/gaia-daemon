@@ -135,7 +135,9 @@ function renderPanel() {
             h(
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
-              h("strong", { text: `@${agent.id}` }),
+              // Speaker/roster names render PLAIN — @ is for addressing only
+              // (targets, mentions), never a header (V2-SKIN.md design law).
+              h("strong", { text: agent.id }),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.

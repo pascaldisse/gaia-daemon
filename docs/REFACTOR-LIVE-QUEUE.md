@@ -34,3 +34,9 @@
 - repro: compiled daemon → room with a completed multi-event transcript → retry and edit a prior user event, then `/rewind 1`; restart while a queued turn is waiting and while a streamed turn has a `pendingTurn` WAL marker.
 - verify: one regenerated reply after retry/edit; truncated events absent from fresh harness context; rewind resets affected sessions; queued turn drains once after restart; partial reply commits once and resume does not duplicate the runner.
 - status: UNVERIFIED — live daemon slot owned elsewhere; unit coverage run in A6 worktree.
+
+## PASS-2 blocked live slot · `20eb9b6`
+- 18787 compiled daemon/listen → PASS.
+- required `@luna` turn → HTTP 500 unknown agent; available `dario|gaia|sidia|terry` → ADV-011.
+- items A1/A5/A7 → UNVERIFIED; no substitute agent used because protocol required Luna.
+- cleanup → daemon killed · isolated dist/home removed · 18787 listener empty.

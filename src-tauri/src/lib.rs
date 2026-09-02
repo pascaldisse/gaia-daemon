@@ -239,7 +239,7 @@ mod webkit {
             builder = builder
                 .title_bar_style(TitleBarStyle::Overlay)
                 .hidden_title(true)
-                .traffic_light_position(LogicalPosition::new(12.0, 19.0));
+                .traffic_light_position(LogicalPosition::new(12.0, 9.0));
         }
         if let (Some(px), Some(py)) = (x, y) {
             builder = builder.position(px, py);
@@ -635,7 +635,7 @@ mod webkit {
                     main_window_builder = main_window_builder
                         .title_bar_style(TitleBarStyle::Overlay)
                         .hidden_title(true)
-                        .traffic_light_position(LogicalPosition::new(12.0, 19.0));
+                        .traffic_light_position(LogicalPosition::new(12.0, 9.0));
                 }
 
                 // Desktop gets an explicit window size. On iOS/Android a fixed
