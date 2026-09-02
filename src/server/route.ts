@@ -1,8 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { cookieValue, json } from "../core/http.js";
+import { bearerToken, cookieValue, json } from "../core/http.js";
 import { verifySessionToken, type PublicUser } from "../domain/users.js";
 import type { SummonCensusEntry } from "../services/summons.js";
+import type { HarnessTokenClaims } from "../services/bridge.js";
+import type { Workspace } from "../core/types.js";
+import type { GaiaTool } from "../harness/spec.js";
 
 /** Shared route parsing/response adapters; wire format remains core/http.ts. */
 export function matchPath(path: string, pattern: RegExp): string[] | null {
@@ -57,4 +60,34 @@ export async function respond(response: ServerResponse, run: () => Promise<unkno
   } catch (error) {
     json(response, 400, { error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+/** Shared /api/harness/<verb> preamble: bearer-token → claims, claims →
+ * workspace, then the GaiaTool grant gate for that verb (tool-result-fetch/
+ * context-diet/end-conversation gate on the unified "gaia" grant; dream/dog/
+ * tools carve out of the grant check entirely — mirrors handleHarness).
+ * One implementation, called by every /api/harness/* domain route module so
+ * the gate can never drift between them. Responds + returns undefined on
+ * any failure (401/404/403); callers must check the return value. */
+export async function authorizeHarnessCall(
+  ctx: RouteContext,
+  verb: string,
+): Promise<{ claims: HarnessTokenClaims; workspace: Workspace } | undefined> {
+  const claims = ctx.daemon.verifyHarnessToken(bearerToken(ctx.request));
+  if (!claims) { json(ctx.response, 401, { error: "Invalid or missing harness token." }); return undefined; }
+  let workspace: Workspace;
+  try {
+    workspace = (await ctx.daemon.serviceFor(claims.workspaceId, claims.roomId)).workspace;
+  } catch (error) {
+    json(ctx.response, 404, { error: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  }
+  if (verb !== "dream" && verb !== "dog" && verb !== "tools") {
+    const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : (verb as GaiaTool);
+    if (!ctx.daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
+      json(ctx.response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
+      return undefined;
+    }
+  }
+  return { claims, workspace };
 }

@@ -18,7 +18,7 @@ import { createTempDir } from "./helpers/temp.js";
 registerHarness({
   id: "pi",
   capabilities: {
-    gaiaTools: [],
+    gaiaTools: ["memory"],
     nativeTools: [],
     granularTools: true,
     supportsPermissionMode: false,
@@ -145,6 +145,54 @@ test("agents domain: POST /api/agents scaffolds a global agent, missing id is 40
   } finally {
     if (server) await new Promise<void>((resolve, reject) => server!.close((error) => (error ? reject(error) : resolve())));
     await web?.daemon.dispose();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+    await temp.cleanup();
+  }
+});
+
+test("memory domain: GET workspace memory/status shape, POST harness memory writes MEMORY.md", async () => {
+  const temp = await createTempDir();
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  const workspace = join(temp.path, "workspace");
+  const web = new GaiaWebServer({ cwd: workspace, host: "127.0.0.1", port: 0 });
+  let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
+  try {
+    await initWorkspace(workspace);
+    live = await web.listen();
+    const internals = web as unknown as {
+      daemon: {
+        registry: { add(path: string): Promise<{ id: string }> };
+        bridge: { hostFor(workspaceId: string): { mintToken(claims: { agentId: string; roomId: string }): string } };
+      };
+    };
+    const record = await internals.daemon.registry.add(workspace);
+    const base = live.url.replace(/\/$/, "");
+
+    const statusRes = await fetch(`${base}/api/workspaces/${encodeURIComponent(record.id)}/memory/status`);
+    assert.equal(statusRes.status, 200);
+    assert.ok("health" in (await statusRes.json() as Record<string, unknown>));
+
+    const token = internals.daemon.bridge.hostFor(record.id).mintToken({ agentId: "gaia", roomId: "default" });
+    const writeRes = await fetch(`${base}/api/harness/memory`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ action: "add", content: "remember this" }),
+    });
+    assert.equal(writeRes.status, 200);
+    const writeBody = (await writeRes.json()) as { ok: boolean; result: string };
+    assert.equal(writeBody.ok, true);
+    assert.match(writeBody.result, /remember this/);
+
+    const unauthorized = await fetch(`${base}/api/harness/memory`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "add", content: "nope" }),
+    });
+    assert.equal(unauthorized.status, 401);
+  } finally {
+    await live?.close();
     if (previousHome === undefined) delete process.env.GAIA_HOME;
     else process.env.GAIA_HOME = previousHome;
     await temp.cleanup();
