@@ -589,6 +589,18 @@ export interface RoomPage {
   nextCursor: number;
 }
 
+/** Canonical tolerant transcript reader. Physical nonblank-line cursors stay
+ * stable: malformed JSON and non-object lines consume a position but yield no
+ * item, preserving durable replay ordering. */
+export interface TranscriptRecord extends Record<string, unknown> {
+  lineIndex: number;
+}
+export async function readTranscriptRecordsFrom(path: string, cursor = 0): Promise<{ items: TranscriptRecord[]; nextCursor: number }> {
+  return readJsonlFrom<TranscriptRecord>(path, cursor, (raw, lineIndex) =>
+    isRecord(raw) ? { ...raw, lineIndex } : undefined,
+  );
+}
+
 export class RoomHandle {
   private stateCache: RoomState | undefined;
   private stateCacheVersion = -1;
@@ -994,7 +1006,11 @@ export class RoomHandle {
   }
 
   async eventsFrom(cursor: number): Promise<RoomPage> {
-    const page = await readJsonlFrom<RoomEvent>(this.transcriptPath, cursor, roomEventFrom);
+    const records = await readTranscriptRecordsFrom(this.transcriptPath, cursor);
+    const page = {
+      items: records.items.map((record) => roomEventFrom(record, record.lineIndex)).filter((event): event is RoomEvent => event !== undefined),
+      nextCursor: records.nextCursor,
+    };
     // Merge legacy v1 side-table details onto agent events that lack them.
     const state = await this.state();
     const legacy = state.runtimeDetails;
