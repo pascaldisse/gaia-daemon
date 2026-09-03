@@ -3416,6 +3416,50 @@ test("/stt and /tts switch the global dictation engine without erasing voice set
   assert.equal(await readFileText(voicePath, "utf8"), "{malformed", "malformed settings remain untouched");
 });
 
+test("RoomService resolves a newly swapped manifest command in the same open room", async () => {
+  const pluginRoot = await mkdtemp(join(tmpdir(), "gaia-plugin-generation-"));
+  let executions = 0;
+  const registry = new PluginRegistry({
+    pluginsRoot: pluginRoot,
+    placement: "daemon",
+    capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
+    importer: async () => ({
+      register: () => ({
+        contributions: {
+          commands: [{
+            name: "probe",
+            description: "Probe",
+            run: (_context: unknown, request: { args: readonly string[] }) => {
+              executions += 1;
+              return { reply: `probe:${request.args.join(" ")}` };
+            },
+          }],
+        },
+      }),
+    }),
+  });
+  const initial = await registry.stageReload();
+  assert.equal(initial.status, "staged");
+  assert.equal(await registry.applyTurnBoundary(), true);
+  const { service, root } = await makeService({ pluginRegistry: registry });
+  try {
+    await pluginPackage(pluginRoot, "probe", "acme.probe", []);
+    const staged = await registry.stageReload();
+    assert.equal(staged.status, "staged");
+    assert.equal(await registry.applyTurnBoundary(), true);
+
+    await service.sendMessage("/probe next");
+    await service.waitForSettled();
+
+    assert.equal(executions, 1, "the swapped command resolves without reopening the room");
+    const { events } = await service.room.eventsFrom(0);
+    assert.ok(events.some((event) => "kind" in event && event.kind === "plugin-reply" && event.text === "probe:next"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(pluginRoot, { recursive: true, force: true });
+  }
+});
+
 test("RoomService releases the manifest-plugin lease and applies a staged generation only in turn finally", async () => {
   const calls: string[] = [];
   let finish: (() => void) | undefined;

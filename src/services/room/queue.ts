@@ -3,7 +3,7 @@ import type { RenderCap } from "../../domain/render-cap.js";
 import { newRoomEventId, type RoomHandle } from "../../domain/rooms.js";
 import { findHarness, harnessIdFor } from "../../harness/spec.js";
 import { parseCommand, planMentionRoute, type SlashCommand } from "../commands.js";
-import type { CommandPlugin, PluginResult } from "../plugins.js";
+import type { PluginResult } from "../plugins.js";
 import type { SendMessageOptions } from "../room-service.js";
 
 /** Typed service boundary for durable queue custody and message routing. */
@@ -13,7 +13,6 @@ export interface RoomQueuePort {
   readonly workspaceId: string;
   readonly roomId: string;
   readonly runtimes: Record<string, { capabilities: { supportsSteer: boolean } }>;
-  readonly pluginsPromise: Promise<Map<string, CommandPlugin>>;
   activeTask: Task | undefined;
   activeAgentTurn: Task | undefined;
   queuedTasks: Task[];
@@ -27,7 +26,7 @@ export interface RoomQueuePort {
   endedConversationTargets(targets: readonly string[]): Promise<string[]>;
   reactivateConversation(targets: readonly string[]): Promise<void>;
   createTask(text: string, targets: string[]): Task;
-  runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult>;
+  runPluginCommand(command: string, args: string[]): Promise<PluginResult | undefined>;
   runSteerCommand(text?: string, attachments?: SendMessageOptions["attachments"]): Promise<string>;
   runCancelCommand(): Promise<string>;
   steerRunningTurn(target: string, text: string, task: Task, attachments?: SendMessageOptions["attachments"], human?: SendMessageOptions["human"]): Promise<true | string>;
@@ -66,10 +65,9 @@ export class RoomQueue {
       // synchronously here (not queued) so it can steer a turn that's live
       // RIGHT NOW; mirrors the /steer + /cancel gate's reply shape just below.
       const commandName = command.command;
-      const plugin = (await this.service.pluginsPromise).get(commandName);
-      if (plugin) {
-        const args = text.trim().split(/\s+/).slice(1);
-        const result = await this.service.runPlugin(plugin, args, commandName);
+      const args = text.trim().split(/\s+/).slice(1);
+      const result = await this.service.runPluginCommand(commandName, args);
+      if (result) {
         // Generic message-intercept-to-real-turn (PluginResult.rewriteAsMessage
         // — e.g. plugins/defaults/dog-mode.mjs's discipline verbs): the plugin
         // already mutated its own state synchronously (via `result.state`

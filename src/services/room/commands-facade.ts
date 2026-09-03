@@ -86,6 +86,7 @@ const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 export class RoomCommandsMixin {
+  declare withPluginTurn: <T>(run: () => Promise<T>) => Promise<T>;
   /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
    * shape as runSteerCommand below, just without its command-reply return
    * value — a watchdog fires from inside an onEvent callback, not a command.
@@ -133,7 +134,7 @@ export class RoomCommandsMixin {
    * object under each of its keys, and every hook below (panel/prompt/
    * renderCap/turnStart) must run ONCE per plugin, not once per alias. */
   async distinctPlugins(): Promise<CommandPlugin[]> {
-    return [...new Set((await this.pluginsPromise).values())];
+    return [...new Set((await this.commandPlugins()).values())];
   }
 
   /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
@@ -192,9 +193,11 @@ export class RoomCommandsMixin {
    * path as a slash command, so extensions never write room state themselves. */
   async runPluginAction(command: string, args: string[]): Promise<string> {
     await this.init();
-    const plugin = (await this.pluginsPromise).get(command);
-    if (!plugin) throw new Error(`Unknown plugin: ${command}`);
-    return (await this.runPlugin(plugin, args, command)).reply ?? "";
+    return this.withPluginTurn(async () => {
+      const plugin = (await this.commandPlugins()).get(command);
+      if (!plugin) throw new Error(`Unknown plugin: ${command}`);
+      return (await this.runPlugin(plugin, args, command)).reply ?? "";
+    });
   }
 
   async pluginPanels(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<Record<string, PluginPanel> | undefined> {
@@ -276,10 +279,12 @@ export class RoomCommandsMixin {
    * the durable queue), so no original arg text survives and no steer applies —
    * just a bare run + reply. */
   async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
-    const plugin = (await this.pluginsPromise).get(command.command);
-    if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
-    const result = await this.runPlugin(plugin, [], command.command);
-    return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
+    return this.withPluginTurn(async () => {
+      const plugin = (await this.commandPlugins()).get(command.command);
+      if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
+      const result = await this.runPlugin(plugin, [], command.command);
+      return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
+    });
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply

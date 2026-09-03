@@ -766,7 +766,7 @@ Actual @ `62fdfe8` → rc 1, 4 pass / 1 fail, transcript wait timeout; evidence 
 
 Verdict → not a proven regression on this single run alone (prior compiled runs at `0bb260c`/`338db79` both passed 5/0 under the same 120000ms harness default). No fix; ticket only. Boundary → next live attempt MUST raise the invocation to `--timeout 240000` (§`docs/REFACTOR-LIVE-QUEUE.md` W4 A16) before re-asserting pass/fail. If 240000 still times out, that is new evidence and the default-timeout theory is falsified — open a fresh ticket, do not fold into this one.
 
-## PASS5B-002 · HIGH · `POST /api/plugins/reload` does not refresh an already-open RoomService's command map
+## PASS5B-002 · FIXED (unit) · compiled-live rerun pending · `POST /api/plugins/reload` did not refresh an already-open RoomService's command map
 
 Atom → W3 pass 5b compiled live rerun; `docs/REFACTOR-PASS5B-LIVE.md` item 3.
 
@@ -783,4 +783,4 @@ Repro (must stay in ONE already-open room end-to-end — a fresh room/RoomServic
 Expected → held v1 turn completes on its own generation; reload stages v2; the very next turn in the SAME open room R serves v2; disposer for generation 1 fires exactly once (§`docs/REFACTOR-LIVE-QUEUE.md` ROOT #9 W3 live repros, "staged manifest boundary"; matches ADV-022's static `held v1 command → staged v2 → boundary blocked → v1 complete → v2 next → v1 disposer once` claim).
 Actual @ `62fdfe8` → the RoomService instance already open before reload retained its generation-1 command map through the reload; no observed stage/swap boundary inside that open room; only a subsequent settings-file PUT reload (a different reload path, implying new RoomService construction) picked up v2. Evidence → `v2-reload.json`, `v2-daemon.log`, `v3-settings.json`, `v3-daemon.log` under `.gaia/live-test-runs/pass5b-20260903020808/`.
 
-Verdict → escalates PASS5B item 3 from UNVERIFIED to suspected defect: `POST /api/plugins/reload` on an already-open room either does not reach that room's live registry reference, or the open RoomService reads a stale command-map snapshot instead of the daemon-owned `PluginRegistry` through the boundary each turn. No fix (ticket only, static ADV-022 claim re-tested live and not yet confirmed by this repro's constraints).
+Historical verdict → suspected stale RoomService command map. Fix → RoomService now resolves commands per turn from the injected registry under its turn lease; `POST /api/plugins/reload` stages then applies immediately when idle. Unit proof → same open RoomService resolves newly swapped `/probe`; held-turn boundary/disposer control retained; endpoint test proves no settings-file reload needed. Compiled-live case 3 remains 陰-owned/UNVERIFIED.

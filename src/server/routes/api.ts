@@ -53,7 +53,11 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
   if (await handleAgents(ctx)) return;
   if (await handleUsage(ctx)) return;
   if (method === "POST" && path === "/api/plugins/reload") {
-    return respond(response, () => daemon.pluginRegistry.stageReload());
+    return respond(response, async () => {
+      const staged = await daemon.pluginRegistry.stageReload();
+      if (staged.status === "staged") await daemon.pluginRegistry.applyTurnBoundary();
+      return staged;
+    });
   }
     if (method === "GET" && path === "/api/app") {
       const owned = human?.workspace ? await daemon.addWorkspace(human.workspace, human.id) : undefined;

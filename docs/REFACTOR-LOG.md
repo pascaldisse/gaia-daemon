@@ -195,7 +195,7 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 | capability broker | DELIVERED | real workspace/agent/trust sources; fail-closed cases 6/0 |
 | disposer/dependency lifecycle | DELIVERED | serialized lifecycle tail; registry lifecycle tests green |
 ## ATOM 3 — PASS5B ledger restatement (ghoul-sonnet, 2026-09-03)
-- `docs/REFACTOR-PASS5B-LIVE.md` findings ledgered: dog/stfu+capability PASS · pendingTurn SIGKILL/restart PASS · reload staged-boundary UNVERIFIED→`PASS5B-002` (open-room reload does not refresh RoomService command map) · A16 timeout FAIL→`PASS5B-001` (raise to `--timeout 240000`); both tickets appended `docs/REFACTOR-BUGS.md`; live cases 3+4 restated `docs/REFACTOR-LIVE-QUEUE.md`. No code touched.
+- `docs/REFACTOR-PASS5B-LIVE.md` findings ledgered: dog/stfu+capability PASS · pendingTurn SIGKILL/restart PASS · reload staged-boundary UNVERIFIED→`PASS5B-002` (open-room reload command-map fix + unit proof; compiled-live rerun pending) · A16 timeout FAIL→`PASS5B-001` (raise to `--timeout 240000`); tickets updated `docs/REFACTOR-BUGS.md`; live cases 3+4 restated `docs/REFACTOR-LIVE-QUEUE.md`.
 
 ## W3 REAL DELIVERY — ADV-020..023 (2026-09-03)
 - commits → ADV-020 `f218e91`; ADV-021 `077d846` + integration `1dc052a`; ADV-022/023 `2177872`.

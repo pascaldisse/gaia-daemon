@@ -78,7 +78,8 @@ export type PluginModuleLoader = (
 ) => Promise<readonly LoadedPlugin<unknown>[]>;
 
 export interface PluginTurnBoundary {
-  beginTurn(): { end(): void };
+  readonly current?: PluginGeneration;
+  beginTurn(): { readonly generation?: PluginGeneration; end(): void };
   applyTurnBoundary(): Promise<boolean>;
 }
 

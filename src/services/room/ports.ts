@@ -125,7 +125,7 @@ export interface RoomCommandsFacadePort {
   readonly compactCancels: Set<string>;
   readonly queuedTasks: Task[];
   readonly contextUsage: Record<string, { usedTokens: number; maxTokens?: number }>;
-  readonly pluginsPromise: Promise<Map<string, CommandPlugin>>;
+  commandPlugins(): Promise<Map<string, CommandPlugin>>;
   init(): Promise<void>;
   emit(event: UiEvent): void;
   emitSnapshot(): Promise<void>;

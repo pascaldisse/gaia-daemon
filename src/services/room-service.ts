@@ -399,9 +399,9 @@ export class RoomService {
   private readonly settledPetTargets = new Set<string>();
   readonly startedPetTargets = new Set<string>();
   private initPromise: Promise<void> | undefined;
-  /** Local command-plugin extensions from ~/.gaia/plugins/*.mjs (see
-   * services/plugins.ts) — loaded once per RoomService and cached. */
-  readonly pluginsPromise: Promise<Map<string, CommandPlugin>>;
+  /** Adapters belong to one registry generation; a swap discards them. */
+  private pluginAdapterGeneration: number | undefined;
+  private pluginAdapters: Map<string, CommandPlugin> | undefined;
 
   /** Immutable: this room is invisible to long-term memory. See RoomState.incognito. */
   readonly incognito: boolean;
@@ -413,9 +413,6 @@ export class RoomService {
 
   constructor(readonly options: RoomServiceOptions & { room: RoomHandle }) {
     this.room = options.room;
-    this.pluginsPromise = options.pluginRegistry
-      ? loadCommandPlugins(options.pluginRegistry)
-      : Promise.resolve(new Map());
     this.incognito = options.incognito === true;
     this.dietPolicyStore = new ContextPolicyStore(options.workspace.rootDir);
     this.backgroundTasks = new BackgroundTasks({ room: this.room, roomId: this.roomId, emitSnapshot: () => this.emitSnapshot() });
@@ -549,14 +546,35 @@ export class RoomService {
   // --- the turn --------------------------------------------------------------
 
   // --- turn results and context gate ---------------------------------------
-  async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
-    const lease = this.options.pluginRegistry?.beginTurn();
+  async commandPlugins(): Promise<Map<string, CommandPlugin>> {
+    const registry = this.options.pluginRegistry;
+    if (!registry) return new Map();
+    const generation = registry.current?.generation;
+    if (generation === undefined) return loadCommandPlugins(registry);
+    if (this.pluginAdapterGeneration !== generation) {
+      this.pluginAdapters = await loadCommandPlugins(registry);
+      this.pluginAdapterGeneration = generation;
+    }
+    return this.pluginAdapters ?? new Map();
+  }
+  async withPluginTurn<T>(run: () => Promise<T>): Promise<T> {
+    const registry = this.options.pluginRegistry;
+    const lease = registry?.beginTurn();
     try {
-      await new RoomTurnResults(this).runAgentTask(task, text, options);
+      return await run();
     } finally {
       lease?.end();
-      if (lease) await this.options.pluginRegistry?.applyTurnBoundary();
+      if (lease) await registry?.applyTurnBoundary();
     }
+  }
+  async runPluginCommand(command: string, args: string[]): Promise<PluginResult | undefined> {
+    return this.withPluginTurn(async () => {
+      const plugin = (await this.commandPlugins()).get(command);
+      return plugin ? this.runPlugin(plugin, args, command) : undefined;
+    });
+  }
+  async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+    return this.withPluginTurn(() => new RoomTurnResults(this).runAgentTask(task, text, options));
   }
   private contextFor(agent: AgentDef): { usedTokens: number; maxTokens?: number } | undefined {
     return new RoomTurnResults(this).contextFor(agent);

@@ -76,7 +76,7 @@ export class RoomAgentCommandsMixin {
         dynamic.push({ name: command.name, type: "native", description: command.description, native: true });
       }
     }
-    for (const [name, plugin] of (await this.pluginsPromise).entries()) {
+    for (const [name, plugin] of (await this.commandPlugins()).entries()) {
       if (seen.has(name)) continue;
       seen.add(name);
       dynamic.push({ name, type: "native", description: plugin.description ?? "", native: true });
