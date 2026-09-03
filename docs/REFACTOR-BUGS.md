@@ -747,3 +747,15 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 ## Nyari triage — ADV-024 (09-03 02:10)
 - ADV-024 reclassified TEST-SETUP, not main: design submodule pointer bf41ca3 identical b800c07→a995bb0 (b800c07 = Pascal's running build); import `design/src/artifacts.js` dates from d8572f5; `bun run scripts/build-daemon.mjs --out` from .gaia/worktrees/main-build @ a995bb0 → binary 79330658 bytes, rc 0 (Nyari's hand). Child used `bun run build --out` in a fresh worktree; passes 2/4 built the same tree fine.
 - Live recipe law: build ONLY via `bun run scripts/build-daemon.mjs --out <worktree>/.gaia/livetest-dist` after `git -C <worktree> submodule update --init --recursive`.
+
+## PASS5B-001 · P1 · A16 compiled opt-in transcript timeout
+- repro → pass5b compiled daemon, isolated GAIA_HOME/workspace; `GAIA_LIVE_EDIT_RESEND=1 LIVE_WORKSPACE_DIR=<ws> GAIA_PORT=18787 bun test --timeout 120000 test/edit-resend-live.test.ts`.
+- actual → 4 pass · live case times out waiting transcript evidence at 60s; evidence → `docs/REFACTOR-PASS5B-LIVE.md`.
+- expected → live token/edit-resend evidence commits in workspace transcript.
+- no fix attempted.
+
+## PASS5B-002 · P1 · POST plugin reload does not refresh open RoomService command map
+- repro → install global `acme.probe`; `POST /api/plugins/reload`; then `/probe` in already-open room.
+- actual → registry stages/swaps, but slash command routes to LLM; settings-file PUT rebuilds service and then probe executes. Held old-generation lifecycle proof incomplete.
+- expected → stated POST reload lifecycle supports next invocation without settings reload.
+- no fix attempted.
