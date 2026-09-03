@@ -80,6 +80,7 @@ export interface RoomTurnLoopPort {
   fireHooks(type: HookEvent, event: Record<string, unknown>): void;
   commitReply(agentId: string, eventId: string, reply: string, details: EventDetails, channel: "voice" | undefined, nextPending?: PendingTurn, renderCap?: RenderCap): Promise<void>;
   appendTurnFailure(agentId: string, error: unknown): Promise<void>;
+  appendTurnRetry(attempt: number, retries: number): Promise<void>;
   appendTurnStopped(agentId: string): Promise<void>;
   maybeRequeueStall(targets: string[], agentId: string, text: string, error: unknown, partialReply: string, channel: "voice" | undefined, attachments: MessageAttachment[] | undefined, options: SendMessageOptions): Promise<boolean>;
   maybeRequeueAuth(targets: string[], agentId: string, text: string, error: unknown, partialReply: string, channel: "voice" | undefined, attachments: MessageAttachment[] | undefined, options: SendMessageOptions): Promise<boolean>;

@@ -125,6 +125,17 @@ export class RoomTurnResults {
       // The task-error path still surfaces the original error live.
     }
   }
+  /** Durable retry progress; auxiliary commits leave the turn's WAL marker intact. */
+  async appendTurnRetry(attempt: number, retries: number): Promise<void> {
+    const event: RoomEvent = {
+      id: newId("system_turnretry"),
+      timestamp: new Date().toISOString(),
+      author: "system",
+      text: `⏳ upstream overloaded — retrying (${attempt}/${retries})`,
+    };
+    await this.service.room.commitAuxiliaryEvent(event);
+    this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
+  }
 
   /** Durable persistence for a manifest-registry command's system-authored
    * reply, OR a capability denial converted to one (ADV-021) — same

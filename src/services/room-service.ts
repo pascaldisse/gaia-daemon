@@ -603,6 +603,9 @@ export class RoomService {
   async appendTurnFailure(agentId: string, error: unknown): Promise<void> {
     return new RoomTurnResults(this).appendTurnFailure(agentId, error);
   }
+  async appendTurnRetry(attempt: number, retries: number): Promise<void> {
+    return new RoomTurnResults(this).appendTurnRetry(attempt, retries);
+  }
   async appendTurnStopped(agentId: string): Promise<void> {
     return new RoomTurnResults(this).appendTurnStopped(agentId);
   }

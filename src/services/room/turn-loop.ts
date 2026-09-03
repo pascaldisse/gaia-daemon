@@ -10,6 +10,7 @@ import { finalizeInterruptedTools, runAgentTurn } from "../turns.js";
 import { HOOK_TEXT_CAP } from "../hooks.js";
 import { PARTIAL_FLUSH_MS, STALL_NOTICE_THROTTLE_MS, diedWithoutOutput, preservePartialReply, readAmbientWatchdog } from "../room-service.js";
 import type { SendMessageOptions } from "../room-service.js";
+import { isTransientUpstreamError, transientRetryOptions, waitForTransientRetry } from "../transient-upstream.js";
 
 function isContextDietPolicy(value: unknown): value is ContextDietPolicy {
   return typeof value === "object" && value !== null &&
@@ -253,9 +254,7 @@ export class RoomTurnLoop {
       const resolvedDietPolicy = await this.service.dietPolicyStore.effective(this.service.roomId);
       const dietPolicy = isContextDietPolicy(resolvedDietPolicy) ? resolvedDietPolicy : undefined;
 
-      let turn: Awaited<ReturnType<typeof runAgentTurn>>;
-      try {
-        turn = await runAgentTurn({
+      const run = async (): Promise<Awaited<ReturnType<typeof runAgentTurn>>> => runAgentTurn({
           runtime,
           input: {
             roomId: this.service.roomId,
@@ -376,6 +375,22 @@ export class RoomTurnLoop {
             await this.service.room.flushPartialReply(reply);
           },
         });
+      let turn: Awaited<ReturnType<typeof runAgentTurn>>;
+      try {
+        turn = await run();
+        const retry = transientRetryOptions();
+        for (let attempt = 0; attempt < retry.retries && turn.error !== undefined && !turn.cancelled && !turn.reply.trim() && isTransientUpstreamError(turn.error); attempt += 1) {
+          const delay = retry.backoffMs[Math.min(attempt, retry.backoffMs.length - 1)];
+          if (!(await waitForTransientRetry(delay, () => this.service.taskCancelled(task)))) {
+            turn = { ...turn, cancelled: true };
+            break;
+          }
+          await this.service.appendTurnRetry(attempt + 1, retry.retries);
+          this.service.liveTurn = { eventId, taskId: task.id, agentId: target, startedAt: new Date().toISOString(), text: "", details: {} };
+          lastFlush = 0;
+          lastFlushedReply = "";
+          turn = await run();
+        }
       } catch (error) {
         // Last-resort net: runAgentTurn no longer throws for a dying stream
         // (it returns the accumulator with `error` set) — reaching here means
