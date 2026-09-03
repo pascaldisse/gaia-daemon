@@ -9,7 +9,6 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Bus } from "./core/bus.js";
 import { globalPaths, workspacePaths } from "./core/paths.js";
 import { readJson, writeJsonAtomic } from "./core/store.js";
@@ -27,7 +26,7 @@ import { RoomService, scanRoomActivity } from "./services/room-service.js";
 import { CapabilityBroker } from "./services/capabilities/broker.js";
 import { resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "./services/capabilities/index.js";
 import { PluginRegistry, type PluginRegistryEvent } from "./services/plugins/registry.js";
-import { pluginDiscoveryRoots } from "./services/plugins/loader.js";
+import { importPluginModule, pluginDiscoveryRoots } from "./services/plugins/loader.js";
 import { MemoryService } from "./services/memory-service.js";
 import { UsageService } from "./services/usage-service.js";
 import { EmbedSidecar } from "./services/embed-sidecar.js";
@@ -202,7 +201,7 @@ export class Daemon {
   readonly pluginRegistry = new PluginRegistry({
     pluginsRoot: pluginDiscoveryRoots(),
     placement: "daemon",
-    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    importer: (_entrypoint, plugin) => importPluginModule(plugin),
     // Real sources, not the always-deny stub: resolve off this daemon's OWN
     // resident RoomService cache (#liveWorkspaceFor), synchronously —
     // CapabilityGrantSource/CapabilityTrustSource are sync by contract

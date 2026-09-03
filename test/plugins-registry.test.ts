@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import test from "node:test";
 import { CapabilityBroker } from "../src/services/capabilities/index.js";
 import { loadCommandPlugins } from "../src/services/plugins.js";
+import { importPluginModule, pluginModuleUrl } from "../src/services/plugins/loader.js";
+import { readPluginManifest } from "../src/services/plugins/manifest.js";
 import {
   PluginRegistry,
   type PluginRegister,
@@ -257,6 +258,7 @@ test("failed manifest validation or import leaves the active generation intact",
     await failing.applyTurnBoundary();
     const prior = failing.current;
     importFails = true;
+    await writeFile(join(root, "echo", "index.mjs"), "export {}\n// changed\n");
     const failed = await failing.stageReload();
     assert.equal(failed.status, "failed");
     assert.equal(failing.current, prior);
@@ -286,17 +288,17 @@ test("disposes staged failures, replaced generations, and shutdown generations e
     failBeta = true;
     const failed = await registry.stageReload();
     assert.equal(failed.status, "failed");
-    assert.deepEqual(disposed, ["acme.alpha"]);
+    assert.deepEqual(disposed, []);
     assert.equal(registry.current.plugins[0]?.id, "acme.alpha");
 
     failBeta = false;
     const staged = await registry.stageReload();
     assert.equal(staged.status, "staged");
     await registry.applyTurnBoundary();
-    assert.deepEqual(disposed, ["acme.alpha", "acme.alpha"]);
+    assert.deepEqual(disposed, []);
     await registry.shutdown();
     await registry.shutdown();
-    assert.deepEqual(disposed, ["acme.alpha", "acme.alpha", "acme.beta", "acme.alpha"]);
+    assert.deepEqual(disposed, ["acme.beta", "acme.alpha"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -333,20 +335,23 @@ test("entrypoint replacement stages fresh module code at the same path", async (
     await pluginPackage(root, "probe", "acme.probe", "1.0.0", ["probe"]);
     await writeFile(entrypoint, `
 export function register(context) {
-  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v1:\${context.generation}" }) }] } };
+  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v1:" + context.generation }) }] } };
 }
 `);
+    const manifest = await readPluginManifest(join(root, "probe", "plugin.json"), { pluginsRoot: root });
+    assert.match(pluginModuleUrl(manifest), /\?gaia-gen=[a-f0-9]{64}$/);
     const registry = new PluginRegistry({
       pluginsRoot: root,
       placement: "daemon",
       capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
-      importer: (path) => import(pathToFileURL(path).href),
+      importer: (_path, plugin) => importPluginModule(plugin),
     });
-    await registry.stageReload();
+    const first = await registry.stageReload();
+    if (first.status === "failed") throw new Error(first.reason);
     assert.equal(await registry.applyTurnBoundary(), true);
     await writeFile(entrypoint, `
 export function register(context) {
-  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v2:\${context.generation}" }) }] } };
+  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v2:" + context.generation }) }] } };
 }
 `);
     await registry.stageReload();
@@ -355,6 +360,33 @@ export function register(context) {
       await registry.invokeCommand("acme.probe", "probe", { roomId: "room-1", agentId: "agent-1" }, { args: [] }),
       { reply: "v2:2" },
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unchanged entrypoints carry forward without re-import or disposal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
+  let imports = 0;
+  const digests: string[] = [];
+  let disposals = 0;
+  try {
+    await pluginPackage(root, "echo", "acme.echo");
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement: "daemon",
+      importer: async (_path, plugin) => {
+        imports += 1;
+        digests.push(plugin.entrypointDigest);
+        return registered(() => { disposals += 1; });
+      },
+    });
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), true);
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), true);
+    assert.equal(imports, 1, digests.join(","));
+    assert.equal(disposals, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

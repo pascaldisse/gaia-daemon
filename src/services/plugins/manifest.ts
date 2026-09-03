@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { open, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const MANIFEST_KEYS = new Set(["id", "version", "engine", "placement", "process", "requiredCaps", "contributes"]);
@@ -7,6 +8,11 @@ const CONTRIBUTION_KEYS = new Set(["commands", "tools", "channels", "providers"]
 const PLUGIN_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const DECLARATION = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+/** One module identity policy: content changes receive distinct ESM URLs. */
+export const PLUGIN_MODULE_IMPORT_DEFAULTS = Object.freeze({
+  fingerprintAlgorithm: "sha256",
+  generationQueryKey: "gaia-gen",
+});
 
 export type PluginPlacement = "daemon" | "runner";
 export type PluginContributions = Readonly<Record<"commands" | "tools" | "channels" | "providers", readonly string[]>>;
@@ -29,6 +35,8 @@ export interface ValidatedPluginManifest {
   readonly packageRoot: string;
   readonly pluginsRoot: string;
   readonly entrypointPath: string;
+  /** Hash of entrypoint + raw manifest bytes; module identity for a reload generation. */
+  readonly entrypointDigest: string;
   readonly manifest: PluginManifest;
   readonly order: number;
 }
@@ -77,6 +85,15 @@ function declarations(value: unknown, manifestPath: string, label: string): read
   }
   if (new Set(value).size !== value.length) throw new PluginManifestError(`${label} must not contain duplicates`, manifestPath);
   return Object.freeze([...value]);
+}
+
+function entrypointDigest(entrypointBytes: Uint8Array, manifestBytes: Uint8Array): string {
+  return createHash(PLUGIN_MODULE_IMPORT_DEFAULTS.fingerprintAlgorithm)
+    .update("gaia-plugin-entrypoint\0")
+    .update(manifestBytes)
+    .update("\0")
+    .update(entrypointBytes)
+    .digest("hex");
 }
 
 /** Validate data only: this function never resolves or imports package code. */
@@ -135,11 +152,13 @@ export async function readPluginManifest(manifestPath: string, options: PluginMa
   }
 
   let parsed: unknown;
+  let manifestBytes: Uint8Array;
   try {
     const handle = await open(canonicalManifest, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     try {
       if (!(await handle.stat()).isFile()) throw new PluginManifestError("plugin.json must be a regular file", manifestPath);
-      parsed = JSON.parse(await handle.readFile({ encoding: "utf8" })) as unknown;
+      manifestBytes = await handle.readFile();
+      parsed = JSON.parse(new TextDecoder().decode(manifestBytes)) as unknown;
     } finally {
       await handle.close();
     }
@@ -151,14 +170,24 @@ export async function readPluginManifest(manifestPath: string, options: PluginMa
 
   const lexicalEntrypoint = join(lexicalPackage, "index.mjs");
   let entrypointPath: string;
+  let entrypointBytes: Uint8Array;
   try {
     entrypointPath = await realpath(lexicalEntrypoint);
     if (!(await stat(entrypointPath)).isFile()) throw new Error("entrypoint is not a file");
+    entrypointBytes = await readFile(entrypointPath);
   } catch (error) {
     throw new PluginManifestError("plugin package must contain index.mjs", manifestPath, { cause: error });
   }
   contained(packageRoot, entrypointPath, manifestPath, "entrypoint");
-  return Object.freeze({ manifestPath: canonicalManifest, packageRoot, pluginsRoot, entrypointPath, manifest, order: options.order ?? 0 });
+  return Object.freeze({
+    manifestPath: canonicalManifest,
+    packageRoot,
+    pluginsRoot,
+    entrypointPath,
+    entrypointDigest: entrypointDigest(entrypointBytes, manifestBytes),
+    manifest,
+    order: options.order ?? 0,
+  });
 }
 
 /** Complete inventory preflight. Duplicate IDs reject before a loader can import code. */
@@ -176,7 +205,7 @@ export async function readPluginManifests(manifestPaths: readonly string[], opti
 /** Re-read immediately before import so a package swap cannot turn validation into a stale grant. */
 export async function revalidatePluginManifest(previous: ValidatedPluginManifest): Promise<ValidatedPluginManifest> {
   const current = await readPluginManifest(previous.manifestPath, { pluginsRoot: previous.pluginsRoot, order: previous.order });
-  if (current.packageRoot !== previous.packageRoot || current.entrypointPath !== previous.entrypointPath || JSON.stringify(current.manifest) !== JSON.stringify(previous.manifest)) {
+  if (current.packageRoot !== previous.packageRoot || current.entrypointPath !== previous.entrypointPath || current.entrypointDigest !== previous.entrypointDigest || JSON.stringify(current.manifest) !== JSON.stringify(previous.manifest)) {
     throw new PluginManifestError("plugin package changed after inventory validation", previous.manifestPath);
   }
   return current;

@@ -40,10 +40,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { RoomService } from "../src/services/room-service.js";
 import { CapabilityBroker } from "../src/services/capabilities/broker.js";
 import { PluginRegistry } from "../src/services/plugins/registry.js";
+import { importPluginModule } from "../src/services/plugins/loader.js";
 import { bundledDir } from "../src/core/paths.js";
 import { MemoryStore } from "../src/domain/memory.js";
 import type { AgentDef, AgentEvent, RoomEvent, UiEvent, Workspace } from "../src/core/types.js";
@@ -84,7 +84,7 @@ type RoomEventUi = Extract<UiEvent, { type: "room-event" }>;
 async function bundledRegistry(): Promise<PluginRegistry> {
   const registry = new PluginRegistry({
     pluginsRoot: bundledDir("plugins"), placement: "daemon",
-    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    importer: (_entrypoint, plugin) => importPluginModule(plugin),
     capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
   });
   const staged = await registry.stageReload();

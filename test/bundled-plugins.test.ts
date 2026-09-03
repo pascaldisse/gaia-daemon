@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { CapabilityBroker } from "../src/services/capabilities/broker.js";
 import { PluginRegistry } from "../src/services/plugins/registry.js";
 import { bundledDir } from "../src/core/paths.js";
-import { pluginDiscoveryRoots } from "../src/services/plugins/loader.js";
+import { importPluginModule, pluginDiscoveryRoots } from "../src/services/plugins/loader.js";
 import { discoverPluginManifests, readPluginManifests } from "../src/services/plugins/manifest.js";
 
 test("every bundled plugin package has a valid manifest before registry import", async () => {
@@ -28,7 +27,7 @@ test("bundled daemon packages stage through the injected registry", async () => 
   const registry = new PluginRegistry({
     pluginsRoot: bundledDir("plugins"),
     placement: "daemon",
-    importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+    importer: (_entrypoint, plugin) => importPluginModule(plugin),
     capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
   });
   const staged = await registry.stageReload();
@@ -45,7 +44,7 @@ test("every bundled manifest declares callable command contributions", async () 
     const registry = new PluginRegistry({
       pluginsRoot: root,
       placement,
-      importer: (entrypoint) => import(pathToFileURL(entrypoint).href),
+      importer: (_entrypoint, plugin) => importPluginModule(plugin),
       capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
     });
     const staged = await registry.stageReload();

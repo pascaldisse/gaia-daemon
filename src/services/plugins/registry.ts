@@ -75,6 +75,7 @@ export type PluginModuleLoader = (
   pluginsRoot: string | readonly string[],
   placement: PluginPlacement,
   importer: PluginImporter<unknown>,
+  reuse?: (plugin: LoadedPlugin<unknown>["manifest"]) => boolean,
 ) => Promise<readonly LoadedPlugin<unknown>[]>;
 
 export interface PluginTurnBoundary {
@@ -103,6 +104,8 @@ class RegistryLifecycleError extends Error {
 
 interface LivePlugin {
   readonly summary: RegisteredPlugin;
+  /** Content identity; retained unchanged across generation boundaries. */
+  readonly entrypointDigest: string;
   readonly contributions: PluginContributionRegistration;
   readonly dispose?: () => void | Promise<void>;
 }
@@ -215,9 +218,18 @@ export class PluginRegistry implements PluginTurnBoundary {
     this.#staging = true;
     const generation = ++this.#generation;
     const entries: LivePlugin[] = [];
+    const created: LivePlugin[] = [];
     try {
-      const loaded = await this.#loader(this.#pluginsRoot, this.#placement, this.#importer);
-      for (const plugin of loaded) entries.push(await this.#register(plugin, generation));
+      const loaded = await this.#loader(this.#pluginsRoot, this.#placement, this.#importer, (plugin) => this.#retainedPlugin(plugin) !== undefined);
+      for (const plugin of loaded) {
+        const retained = this.#retainedPlugin(plugin.manifest);
+        if (retained) entries.push(retained);
+        else {
+          const entry = await this.#register(plugin, generation);
+          entries.push(entry);
+          created.push(entry);
+        }
+      }
       const candidate: Candidate = Object.freeze({
         generation: Object.freeze({
           generation,
@@ -229,7 +241,7 @@ export class PluginRegistry implements PluginTurnBoundary {
       this.#emit({ kind: "staged", generation, pluginIds: candidate.generation.plugins.map((plugin) => plugin.id) });
       return Object.freeze({ status: "staged", generation: candidate.generation });
     } catch (error) {
-      await this.#dispose(entries, generation);
+      await this.#dispose(created, generation);
       const reason = errorReason(error);
       this.#emit({ kind: "stage-failed", generation, reason });
       return Object.freeze({ status: "failed", reason });
@@ -255,7 +267,7 @@ export class PluginRegistry implements PluginTurnBoundary {
       previousGeneration: previous.generation.generation,
       pluginIds: next.generation.plugins.map((plugin) => plugin.id),
     });
-    await this.#dispose(previous.entries, previous.generation.generation);
+    await this.#dispose(this.#removedEntries(previous.entries, next.entries), previous.generation.generation);
     return true;
   }
 
@@ -285,7 +297,7 @@ export class PluginRegistry implements PluginTurnBoundary {
     this.#closed = true;
     const staged = this.#staged;
     this.#staged = undefined;
-    if (staged) await this.#dispose(staged.entries, staged.generation.generation);
+    if (staged) await this.#dispose(this.#removedEntries(staged.entries, this.#active.entries), staged.generation.generation);
     const active = this.#active;
     this.#active = Object.freeze({
       generation: Object.freeze({ generation: active.generation.generation, plugins: Object.freeze([]) }),
@@ -322,6 +334,7 @@ export class PluginRegistry implements PluginTurnBoundary {
         requiredCaps: loaded.manifest.manifest.requiredCaps,
         contributes: loaded.manifest.manifest.contributes,
       }),
+      entrypointDigest: loaded.manifest.entrypointDigest,
       contributions,
       ...(registration.dispose ? { dispose: registration.dispose } : {}),
     });
@@ -344,6 +357,14 @@ export class PluginRegistry implements PluginTurnBoundary {
   }
   #requester(plugin: LivePlugin): { readonly namespace: string; readonly requiredCaps: readonly string[] } {
     return { namespace: plugin.summary.id, requiredCaps: plugin.summary.requiredCaps };
+  }
+  #retainedPlugin(plugin: LoadedPlugin<unknown>["manifest"]): LivePlugin | undefined {
+    return this.#active.entries.find((entry) =>
+      entry.summary.id === plugin.manifest.id && entry.entrypointDigest === plugin.entrypointDigest,
+    );
+  }
+  #removedEntries(entries: readonly LivePlugin[], retained: readonly LivePlugin[]): readonly LivePlugin[] {
+    return entries.filter((entry) => !retained.includes(entry));
   }
   async #dispose(entries: readonly LivePlugin[], generation: number): Promise<void> {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
