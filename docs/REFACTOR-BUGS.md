@@ -743,3 +743,7 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 - W3 DELIVERED → **NO**.
 - `a995bb0+` safe to build into app → **NO**: production compiled-build command fails at exact baseline.
 
+
+## Nyari triage — ADV-024 (09-03 02:10)
+- ADV-024 reclassified TEST-SETUP, not main: design submodule pointer bf41ca3 identical b800c07→a995bb0 (b800c07 = Pascal's running build); import `design/src/artifacts.js` dates from d8572f5; `bun run scripts/build-daemon.mjs --out` from .gaia/worktrees/main-build @ a995bb0 → binary 79330658 bytes, rc 0 (Nyari's hand). Child used `bun run build --out` in a fresh worktree; passes 2/4 built the same tree fine.
+- Live recipe law: build ONLY via `bun run scripts/build-daemon.mjs --out <worktree>/.gaia/livetest-dist` after `git -C <worktree> submodule update --init --recursive`.
