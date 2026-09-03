@@ -12,3 +12,9 @@
 - actual → rc 1: `src/services/artifacts.ts` exports `../../design/src/artifacts.js` + `artifact-revisions.js`; pinned design contains only `design/src/artifacts.ts` + `artifact-revisions.ts`; Bun resolve errors for both `.js` paths.
 - evidence → /Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/ghoul-terra-mtkrd610i7uwmq/.gaia/live-test-runs/pass5-20260903020111/evidence/build.log; submodule → `git -C design status --short --branch` = detached `bf41ca3`.
 - verdict → 1–5 UNVERIFIED; daemon never started; no source/submodule workaround attempted; no fix.
+
+## cleanup
+
+- generated `dist`/`home`/`ws` removed; daemon PID → none.
+- `lsof -nP -iTCP:18787 -sTCP:LISTEN` → empty → evidence/lsof-after.txt.
+- run-root process sweep → empty → evidence/orphan-sweep.txt.
