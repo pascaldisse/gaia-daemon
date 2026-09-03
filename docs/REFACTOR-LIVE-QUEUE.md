@@ -87,7 +87,11 @@
      EDIT-RESEND-LIVETEST.md § Incidents for why a live daemon restart
      otherwise kills the ephemeral one).
   4. `GAIA_LIVE_EDIT_RESEND=1 LIVE_WORKSPACE_DIR=<that workspace dir>
-     GAIA_PORT=<port> bun test test/edit-resend-live.test.ts`.
+     GAIA_PORT=<port> bun test --timeout 240000 test/edit-resend-live.test.ts` — use a
+     determined `--timeout 240000` (PASS5B-001: the 120000 default produced
+     rc1/4-pass-1-fail transcript-wait timeout on an otherwise-passing suite;
+     240000 unless a re-run at 240000 still fails, in which case log that as
+     new evidence, not a fold-in to PASS5B-001).
 - verify → token round-trip through `/messages` + `/edit`, transcript.jsonl
   (edited text present, pre-edit old tail absent), rewound.jsonl (pre-edit
   old tail preserved off-branch), pi-sessions/luna/*.jsonl parent chain
@@ -113,10 +117,17 @@
 - status→UNVERIFIED; coding lane never starts daemon/port
 ## ROOT #9 W3 live repros · owner 陰
 - plugin command registry turn → compiled daemon; workspace `.gaia/config.json` grants active agent required caps; issue declared bundled command in room; verify transcript command reply and registry generation/command provenance, no loose-module path.
-- staged manifest boundary → begin a deliberately held room turn; stage changed manifest package; verify old generation completes held turn; release lease; next turn invokes new generation only; inspect disposer ordering/event log.
+- staged manifest boundary (PASS5B-002) → begin a deliberately held room turn IN A ROOM THAT IS ALREADY OPEN before any reload; stage changed manifest package via `POST /api/plugins/reload`; verify old generation completes the held turn; release lease; the NEXT turn in that SAME open room (no new room/RoomService) invokes the new generation only; inspect disposer ordering/event log → generation-1 disposer fires exactly once.
 - untrusted capability denial → agent `trust:false`, workspace grants + agent capabilities include `network`; invoke a plugin requiring `network`; verify transcript surfaces denial and plugin contribution side-effect marker is absent.
 ## W3 REAL DELIVERY · ADV-020..023 — owner 陰
 1. bundled command → compiled daemon; issue `/dog on` in default room; expect transcript `kind:"plugin-reply"`, dog reply; registry source `plugins/defaults` real index registration; no loose loader path.
 2. durable denial → seeded `trust:false` agent with workspace/agent grants; invoke `network`-required probe; expect transcript `kind:"capability-denied"`, `details.pluginDenial={pluginId,capability,agentId,reason}`; daemon `[capabilities] denied plugin=...`; side-effect marker unchanged.
-3. staged boundary → hold v1 probe command; mutate v2 manifest/entrypoint; `POST /api/plugins/reload`; expect stage log only while held, v1 completion, boundary swap log, next command v2, exactly one v1 dispose log.
+3. staged boundary (PASS5B-002) → hold v1 probe command in a room already open before reload; mutate v2 manifest/entrypoint; `POST /api/plugins/reload`; expect stage log only while held, v1 completion, boundary swap log, next command in the SAME open room v2, exactly one v1 dispose log. PASS5B measured this open-room boundary UNVERIFIED→failing (§ above); re-test before closing.
 - acceptance evidence → transcript.jsonl + daemon.log + marker counter + execution/disposer log; compiled-live only; no coding-lane daemon.
+
+## PASS5B ledger restatement · ATOM 3 (2026-09-03) · owner 陰
+
+Source → `docs/REFACTOR-PASS5B-LIVE.md` (base `62fdfe8`, run root `.gaia/live-test-runs/pass5b-20260903020808`). Both cases below now carry ticket numbers; do not re-open as fresh unnumbered findings.
+
+- case 3 — staged manifest boundary / `PASS5B-002` → repro MUST stay in one already-open room end-to-end: hold v1 turn in room R → `POST /api/plugins/reload` while held → release v1 (completes on generation 1) → next turn in the SAME open room R (no new RoomService/room) → expect generation 2 (v2) served → disposer for generation 1 fires exactly once. A fresh room/RoomService after reload is not evidence for or against this ticket. PASS5B's own run measured the open-room path retaining generation 1 until an unrelated settings-file PUT reload — that gap is the ticket.
+- case 4 — A16 edit/resend / `PASS5B-001` → run with a determined `--timeout 240000` (not the 120000 default that produced PASS5B's rc1/4-pass-1-fail transcript-wait timeout) unless a re-run at 240000 still fails, in which case that failure is new evidence against the default-timeout theory and must be logged as its own ticket, not folded into PASS5B-001.

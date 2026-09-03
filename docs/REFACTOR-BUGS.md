@@ -747,3 +747,40 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 ## Nyari triage — ADV-024 (09-03 02:10)
 - ADV-024 reclassified TEST-SETUP, not main: design submodule pointer bf41ca3 identical b800c07→a995bb0 (b800c07 = Pascal's running build); import `design/src/artifacts.js` dates from d8572f5; `bun run scripts/build-daemon.mjs --out` from .gaia/worktrees/main-build @ a995bb0 → binary 79330658 bytes, rc 0 (Nyari's hand). Child used `bun run build --out` in a fresh worktree; passes 2/4 built the same tree fine.
 - Live recipe law: build ONLY via `bun run scripts/build-daemon.mjs --out <worktree>/.gaia/livetest-dist` after `git -C <worktree> submodule update --init --recursive`.
+
+## PASS5B ledger pass — 2026-09-03 (ghoul-sonnet, ATOM 3)
+
+Source → `docs/REFACTOR-PASS5B-LIVE.md` (base `62fdfe8`, branch `live/pass5b`, run root `.gaia/live-test-runs/pass5b-20260903020808`). Ledger-only atom; no code touched.
+
+## PASS5B-001 · MED · A16 opt-in compiled-live rerun times out under default 120000ms
+
+Atom → W3 pass 5b compiled live rerun; `docs/REFACTOR-PASS5B-LIVE.md` item 4.
+
+Repro:
+```sh
+GAIA_LIVE_EDIT_RESEND=1 LIVE_WORKSPACE_DIR=<worktree>/.gaia/livews GAIA_PORT=18787 \
+  bun test --timeout 120000 test/edit-resend-live.test.ts
+```
+Expected → 5 pass / 0 fail (matches PASS #3 20260903 evidence: `5 pass · 0 fail` @ `0bb260c`, and PASS #4 evidence: `5 pass · 0 fail` @ `338db79`).
+Actual @ `62fdfe8` → rc 1, 4 pass / 1 fail, transcript wait timeout; evidence `a16-test.log`, `a16-exit.txt` under `.gaia/live-test-runs/pass5b-20260903020808/`.
+
+Verdict → not a proven regression on this single run alone (prior compiled runs at `0bb260c`/`338db79` both passed 5/0 under the same 120000ms harness default). No fix; ticket only. Boundary → next live attempt MUST raise the invocation to `--timeout 240000` (§`docs/REFACTOR-LIVE-QUEUE.md` W4 A16) before re-asserting pass/fail. If 240000 still times out, that is new evidence and the default-timeout theory is falsified — open a fresh ticket, do not fold into this one.
+
+## PASS5B-002 · HIGH · `POST /api/plugins/reload` does not refresh an already-open RoomService's command map
+
+Atom → W3 pass 5b compiled live rerun; `docs/REFACTOR-PASS5B-LIVE.md` item 3.
+
+Repro (must stay in ONE already-open room end-to-end — a fresh room/RoomService after reload is not evidence either way):
+```sh
+# room R already open, RoomService instance already live before any of the below
+1. hold a v1 command turn in room R (blocking probe)
+2. mutate manifest/entrypoint on disk → v2
+3. POST /api/plugins/reload
+4. release the held v1 turn → expect v1 completes on generation 1
+5. issue the next command in the SAME room R → expect generation 2 (v2) served
+6. inspect disposer/event log → expect exactly one v1 dispose entry
+```
+Expected → held v1 turn completes on its own generation; reload stages v2; the very next turn in the SAME open room R serves v2; disposer for generation 1 fires exactly once (§`docs/REFACTOR-LIVE-QUEUE.md` ROOT #9 W3 live repros, "staged manifest boundary"; matches ADV-022's static `held v1 command → staged v2 → boundary blocked → v1 complete → v2 next → v1 disposer once` claim).
+Actual @ `62fdfe8` → the RoomService instance already open before reload retained its generation-1 command map through the reload; no observed stage/swap boundary inside that open room; only a subsequent settings-file PUT reload (a different reload path, implying new RoomService construction) picked up v2. Evidence → `v2-reload.json`, `v2-daemon.log`, `v3-settings.json`, `v3-daemon.log` under `.gaia/live-test-runs/pass5b-20260903020808/`.
+
+Verdict → escalates PASS5B item 3 from UNVERIFIED to suspected defect: `POST /api/plugins/reload` on an already-open room either does not reach that room's live registry reference, or the open RoomService reads a stale command-map snapshot instead of the daemon-owned `PluginRegistry` through the boundary each turn. No fix (ticket only, static ADV-022 claim re-tested live and not yet confirmed by this repro's constraints).
