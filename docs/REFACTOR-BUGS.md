@@ -724,8 +724,22 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 - evidence → `docs/REFACTOR-PASS5-W3-LIVE.md`; child run `/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/ghoul-terra-mtkrd610i7uwmq/.gaia/live-test-runs/pass5-20260903020111/evidence/{build.log,dog-regression.log,lsof-before.txt,lsof-after.txt,orphan-sweep.txt}`.
 - cleanup → generated dist/home/ws removed; daemon PID none; port 18787 listener empty; orphan sweep empty.
 
+### Pass 5 static adversary verdict
+- lane → `naru-sonnet-mtkrd6109tbgfp`; branch `adversary/pass5-static-sonnet`; evidence commit `183f0e8`; detail → `docs/REFACTOR-PASS5-STATIC-SONNET.md`.
+- ADV-020 → PASS: exact dog repro `8 pass · 0 fail`; bundled inventory `4 pass · 0 fail`.
+- ADV-021 → PASS: agent `commitTurn()` + plugin `commitAuxiliaryEvent()` converge on private `commitEventLocked()` → one room lock · idempotent append · transcript line resolution · one atomic state acknowledgement; queue append-before-emit; no second plugin persistence path.
+- ADV-022 → PASS static: API + settings PUT stage reload; lifecycle logger covers staged/swapped/disposed with generation/plugin IDs; registry gate `8 pass · 0 fail`.
+- ADV-023 → PASS: lifecycle classes private; export scan zero.
+- new exports → all production-consumed; RULE0/pragmas/upward-import scans → zero violations.
+- tickets → none from static pass.
+
 ### Pass 5 parent static gate
 - `bun run check` → rc 0.
 - each existing test touched in `ad85ee3..a995bb0`, isolated → `bundled-plugins` 4 · `dog-mode-integration` 8 · `plugins-registry` 8 · `room-service` 101 · `rpg-plugin` 2 = **123 pass · 0 fail**.
 - evidence → `.gaia/pass5-parent-static-gate.log`.
+
+### Pass 5 final verdict
+- W3 live items 1–5 → UNVERIFIED due ADV-024 before daemon boot.
+- W3 DELIVERED → **NO**.
+- `a995bb0+` safe to build into app → **NO**: production compiled-build command fails at exact baseline.
 
