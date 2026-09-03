@@ -131,3 +131,7 @@ Source → `docs/REFACTOR-PASS5B-LIVE.md` (base `62fdfe8`, run root `.gaia/live-
 
 - case 3 — staged manifest boundary / `PASS5B-002` → repro MUST stay in one already-open room end-to-end: hold v1 turn in room R → `POST /api/plugins/reload` while held → release v1 (completes on generation 1) → next turn in the SAME open room R (no new RoomService/room) → expect generation 2 (v2) served → disposer for generation 1 fires exactly once. A fresh room/RoomService after reload is not evidence for or against this ticket. Unit fix now proves per-turn lookup + idle POST swap; compiled-live confirmation remains required.
 - case 4 — A16 edit/resend / `PASS5B-001` → run with a determined `--timeout 240000` (not the 120000 default that produced PASS5B's rc1/4-pass-1-fail transcript-wait timeout) unless a re-run at 240000 still fails, in which case that failure is new evidence against the default-timeout theory and must be logged as its own ticket, not folded into PASS5B-001.
+## PASS5C-001 · case 3 restatement · owner 陰
+- same already-open room R → hold v1 `/probe inflight` → replace `plugin.json` + `index.mjs` v2 → `POST /api/plugins/reload` while held → release v1 → next `/probe next` in R.
+- expect → v1 completion/generation 1; swap/generation 2; `V2 enter generation=2 args=next`; `V1 enter generation=2` absent; v1 disposer exactly once.
+- evidence → transcript.jsonl + daemon log + execution/disposer marker; compiled binary only.

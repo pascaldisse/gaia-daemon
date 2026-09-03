@@ -785,10 +785,12 @@ Actual @ `62fdfe8` → the RoomService instance already open before reload retai
 
 Historical verdict → suspected stale RoomService command map. Fix → RoomService now resolves commands per turn from the injected registry under its turn lease; `POST /api/plugins/reload` stages then applies immediately when idle. Unit proof → same open RoomService resolves newly swapped `/probe`; held-turn boundary/disposer control retained; endpoint test proves no settings-file reload needed. Compiled-live case 3 remains 陰-owned/UNVERIFIED.
 
-## PASS5C-001 · OPEN · compiled-live manifest entrypoint replacement retains old module code across generation swap
+## PASS5C-001 · FIXED (unit) · compiled-live rerun pending
 
 - base → `4333462`; evidence → `docs/REFACTOR-PASS5C-LIVE.md`, `.gaia/live-test-runs/pass5c-20260903022428/`.
-- repro → same open room; v1 held `/probe inflight`; replace `acme.probe/plugin.json` + `index.mjs` with v2; `POST /api/plugins/reload`; release v1; next same-room `/probe next`.
-- expected → held response v1/generation 1; next response v2/generation 2; v1 disposer once.
-- actual → lifecycle correct: staged 2 → swapped 2 → v1 disposed once; next invocation reports generation 2 but runs cached v1 module: `V1 enter generation=2 args=next`; `V2 enter` count `0`.
-- no fix → ticket only; boundary proof incomplete until entrypoint replacement loads v2 code.
+- cause → Bun ESM cache canonicalizes file paths; distinct `?gaia-gen=` queries still returned v1 in-process.
+- fix → `services/plugins/manifest.ts` SHA-256(entrypoint bytes + raw manifest bytes); `loader.ts#importPluginModule` → one content-addressed Blob module helper; query URL retained in generated source identity; registry reuse callback skips unchanged importer/register/dispose.
+- RED → `bun test test/plugins-registry.test.ts` → 8 pass / 1 fail; actual `{reply:"v1:2"}` ≠ expected `{reply:"v2:2"}`.
+- GREEN → `bun test test/plugins-registry.test.ts` → 10 pass / 0 fail; same-path v2 command returns `{reply:"v2:2"}`; unchanged re-stage imports 1, disposes 0.
+- bundled control → `bun test test/bundled-plugins.test.ts` → 4 pass / 0 fail; helper stages bundled daemon/runner/addon packages.
+- atom → `2d1babf`; compiled-live case 3 remains 陰-owned/UNVERIFIED.

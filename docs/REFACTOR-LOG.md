@@ -206,3 +206,7 @@ LAW propagated to all in-flight + future specs: pragmas FORBIDDEN; wrong cut ⇒
 - integration gate → check rc0; dog 8/0 · bundled 4/0 · registry 8/0 · room-service 101/0 · rooms 53/0 · plugin contract/capability/rpg controls green.
 - pragma scan src → 0; sizes → daemon 757 · http 642 · registry 379 · contracts 230.
 - live → UNVERIFIED here; CPU owner 陰; §REFACTOR-LIVE-QUEUE W3 REAL DELIVERY.
+## PASS5C-001 — plugin module identity (2026-09-03)
+- `2d1babf` → manifest SHA-256 identity; shared Blob importer; unchanged carry-forward.
+- RED → registry 8/1: same-path v2 invocation returned v1 generation 2.
+- GREEN → registry 10/0; bundled 4/0; dog 8/0; manifest/loader/room focused gates green; compiled-live remains 陰-owned/UNVERIFIED.
