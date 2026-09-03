@@ -712,3 +712,20 @@ Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-servi
 
 ## Pass 5 W3 sign-off — 2026-09-03
 
+- baseline → `a995bb0`; isolated adversary branch → `adversary/pass5-w3-signoff`.
+- live lane → `ghoul-terra-mtkrd610i7uwmq`; branch `adversary/pass5-live-terra`; evidence commits `84eebe5` + `237ce60`.
+- dog regression → PASS: `bun test test/dog-mode-integration.test.ts` → `8 pass · 0 fail`.
+
+### ADV-024 · P1 · exact baseline cannot produce compiled daemon
+- repro → initialized pinned submodules; `bun run build --out .gaia/live-test-runs/pass5-20260903020111/dist`.
+- expected → compiled daemon from `a995bb0`; W3 live sign-off runnable.
+- actual → rc 1; `src/services/artifacts.ts` imports `../../design/src/{artifacts,artifact-revisions}.js`; pinned design `bf41ca3` contains `.ts` only; Bun cannot resolve either `.js` module.
+- consequence → required live items 1–5 UNVERIFIED; daemon never started; no workaround/fix permitted in adversary pass.
+- evidence → `docs/REFACTOR-PASS5-W3-LIVE.md`; child run `/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/ghoul-terra-mtkrd610i7uwmq/.gaia/live-test-runs/pass5-20260903020111/evidence/{build.log,dog-regression.log,lsof-before.txt,lsof-after.txt,orphan-sweep.txt}`.
+- cleanup → generated dist/home/ws removed; daemon PID none; port 18787 listener empty; orphan sweep empty.
+
+### Pass 5 parent static gate
+- `bun run check` → rc 0.
+- each existing test touched in `ad85ee3..a995bb0`, isolated → `bundled-plugins` 4 · `dog-mode-integration` 8 · `plugins-registry` 8 · `room-service` 101 · `rpg-plugin` 2 = **123 pass · 0 fail**.
+- evidence → `.gaia/pass5-parent-static-gate.log`.
+
