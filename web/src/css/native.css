@@ -31,4 +31,4 @@
 .swarm-phase-completed .swarm-phase-title { color: var(--good); }
 .swarm-phase-failed .swarm-phase-title { color: var(--danger); }
 .roster-status { color: var(--muted); font-size: 10px; }
-.unread-dot { width: 6px; height: 6px; border-radius: 0; background: var(--accent); box-shadow: none; }
+.unread-dot { width: 6px; height: 6px; border-radius: 0; background: var(--warn); box-shadow: none; }

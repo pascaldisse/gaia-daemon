@@ -196,8 +196,12 @@ body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar
 .tab-num { padding: 0; border: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .tab.active .tab-num { color: var(--fg); }
 .tab-dot, .room-dot { flex: 0 0 6px; width: 6px; height: 6px; background: var(--dim, var(--muted)); }
-.tab-dot, .room-dot.running { background: var(--accent); }
-.room-dot.unread { background: var(--accent); animation: none; }
+/* One slot, two mutually exclusive states (a room cannot be working AND unread):
+   green blinking = a turn is mid-flight · static amber = finished, not yet read. */
+.tab-dot, .room-dot.running { background: var(--good); animation: dot-blink 1.1s ease-in-out infinite; }
+.room-dot.unread { background: var(--warn); animation: none; }
+@keyframes dot-blink { 0%, 100% { opacity: 1; } 50% { opacity: .12; } }
+@media (prefers-reduced-motion: reduce) { .tab-dot, .room-dot.running { animation: none; } }
 .room-name.unread { color: var(--fg); font-weight: 600; }
 .tab-name { overflow: hidden; padding-left: 1ch; border-left: 1px solid var(--border); text-overflow: ellipsis; }
 .tab-close { border: 0; background: transparent; color: var(--muted); padding: 0 1px; font-size: 1.15em; line-height: 1; opacity: 0; }
