@@ -18,7 +18,7 @@ import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouch
 import { markDirty, registerRegion } from "./render.js";
 import { state } from "./state.js";
 import { openThemePalette } from "./statusbar.js";
-import { moveTabToIndex, visibleTabs } from "./tabs.js";
+import { closeTabsToRight, moveTabToIndex, visibleTabs } from "./tabs.js";
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 
@@ -50,6 +50,7 @@ function renderTabs() {
   const currentId = snapshot?.room?.id;
   const tabs = visibleTabs(snapshot);
   const dictationChip = DictationChip();
+  const tabMenu = TabContextMenu();
   bar.replaceChildren(
     h("div", { class: "brand", "data-tauri-drag-region": "deep" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
     h(
@@ -69,6 +70,7 @@ function renderTabs() {
       onclick: openThemePalette,
       text: "◈",
     }),
+    ...(tabMenu ? [tabMenu] : []),
   );
 }
 
@@ -111,6 +113,11 @@ function Tab(room, number, isActive, wsId) {
       onpointermove: (event) => moveDrag(event),
       onpointerup: (event) => endDrag(event),
       onpointercancel: (event) => cancelDrag(event),
+      oncontextmenu: (/** @type {MouseEvent} */ event) => {
+        event.preventDefault();
+        state.tabContextMenu = { roomId: room.id, x: event.clientX, y: event.clientY };
+        markDirty("tabs");
+      },
     },
     h("span", { class: "tab-num", text: String(number) }),
     room.running ? h("span", { class: "tab-dot" }) : null,
@@ -302,3 +309,44 @@ function showDropIndicator(strip, rect, clientX) {
 function hideDropIndicator() {
   dropIndicator?.remove();
 }
+
+/** Right-click tab menu (Chrome-style "close tabs to the right"). Positioned
+ *  at the click point, same look as the sidebar's room/workspace menus.
+ *  @returns {HTMLElement|null} */
+function TabContextMenu() {
+  const snapshot = state.snapshot;
+  const open = state.tabContextMenu;
+  if (!snapshot || !open) return null;
+  const wsId = snapshot.workspace.id;
+  const tabs = visibleTabs(snapshot);
+  const index = tabs.findIndex((room) => room.id === open.roomId);
+  if (index === -1) return null;
+  const room = tabs[index];
+  const hasRight = index < tabs.length - 1;
+  const close = () => {
+    state.tabContextMenu = null;
+    markDirty("tabs");
+  };
+  return h(
+    "div",
+    { class: "room-menu", style: `left:${open.x}px;top:${open.y}px`, oncontextmenu: (/** @type {MouseEvent} */ event) => event.preventDefault() },
+    h("div", { class: "room-menu-title", text: room.title ?? room.id }),
+    h("button", {
+      type: "button",
+      disabled: !hasRight,
+      onclick: () => {
+        const next = closeTabsToRight(open.roomId, wsId, snapshot.room?.id);
+        close();
+        if (next) void selectRoom(wsId, next);
+      },
+      text: "Close tabs to the right",
+    }),
+  );
+}
+
+window.addEventListener("click", (event) => {
+  if (!state.tabContextMenu) return;
+  if (event.target instanceof HTMLElement && event.target.closest(".room-menu")) return;
+  state.tabContextMenu = null;
+  markDirty("tabs");
+});

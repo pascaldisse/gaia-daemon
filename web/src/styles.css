@@ -138,6 +138,10 @@ button.active { border-color: var(--accent); color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 textarea, input, select { width: 100%; color: var(--fg); background: var(--bg); border: 1px solid var(--border); padding: 5px 8px; outline: none; }
 textarea, input { caret-color: var(--accent); caret-shape: block; }
+/* Checkboxes/radios must never inherit the 100% text-input width above — that
+   stretches the native square box into a wide rectangle (root cause of the
+   "non-square checkbox" bug; several call sites used to re-fix this locally). */
+input[type="checkbox"], input[type="radio"] { width: auto; accent-color: var(--accent); cursor: pointer; }
 textarea:focus, input:focus, select:focus, :focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 small, time { color: var(--muted); overflow-wrap: anywhere; }
 .muted { opacity: 0.55; }
@@ -154,6 +158,12 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
    the roster; the tab strip occupies the centre column only. */
 .shell, #app { display: grid; grid-template-columns: var(--w-left) minmax(0, 1fr) var(--w-right); grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: 38px minmax(0, 1fr); }
+/* .sidebar/.right span BOTH rows (grid-row: 1/-1 below), so under the macOS
+   overlay title bar their own top edge sits at the real window top -- right
+   where the native traffic lights render. .tabbar (column 2 only) already
+   gets that clearance for free from the 38px row; the side panes need it
+   pushed in as padding so their first child doesn't sit under the dots. */
+body.macos-titlebar-overlay .sidebar { padding-top: 38px; }
 #overlays, #overlays > div, .body { display: contents; }
 .sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
 .sidebar { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -202,8 +212,10 @@ body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar
 /* ============================================================
 sidebar: workspaces + rooms tree
 ============================================================ */
-.nav-search { flex: 0 0 26px; height: 26px; padding: 0 10px; border: 1px solid var(--border); color: var(--muted); text-align: left; }
-.nav-search:hover { color: var(--fg); background: var(--sel); }
+/* Flat lupe+placeholder, no boxed background/border -- just the icon and the
+   label sitting directly on the sidebar (opens the search modal on click). */
+.nav-search { flex: 0 0 26px; display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 4px; color: var(--muted); background: transparent; border: 0; text-align: left; }
+.nav-search:hover { color: var(--fg); }
 .nav-title, h3 { margin: 16px 0 6px; color: var(--muted); font-size: 10px; font-weight: 400; text-transform: uppercase; letter-spacing: .14em; }
 .nav-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .nav-title-add { border: 0; padding: 0 4px; color: var(--muted); }
@@ -796,19 +808,6 @@ sidebar: workspaces + rooms tree
 .sr-snippet { color: var(--fg); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 4.5em; overflow: hidden; }
 .sr-snippet mark { background: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--fg); padding: 0 1px; }
 .sr-speakers { color: var(--muted); font-size: 11px; margin-top: 3px; }
-
-/* Sidebar search entry. */
-.nav-search {
-  background: var(--bg3);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  text-align: left;
-  padding: 7px 11px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  font-family: var(--font);
-}
-.nav-search:hover { border-color: var(--accent); color: var(--accent); }
 
 .scrim { display: none; }
 

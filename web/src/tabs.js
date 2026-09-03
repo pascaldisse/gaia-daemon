@@ -115,6 +115,24 @@ export function moveTabToIndex(fromId, index, workspaceId) {
 }
 
 /**
+ * Close every tab to the right of `roomId` in the working set (Chrome's "close
+ * tabs to the right"). Returns the neighbour id to select next when the
+ * closed range contained the active tab, else null (caller keeps selection).
+ * @param {string} roomId
+ * @param {string} workspaceId
+ * @param {string|undefined} activeId
+ * @returns {string|null}
+ */
+export function closeTabsToRight(roomId, workspaceId, activeId) {
+  const index = state.openTabs.indexOf(roomId);
+  if (index === -1) return null;
+  const removed = state.openTabs.splice(index + 1);
+  if (removed.length === 0) return null;
+  persist(workspaceId);
+  return activeId && removed.includes(activeId) ? roomId : null;
+}
+
+/**
  * The tabs to render: persisted order, filtered to rooms that still exist, with
  * the current room guaranteed present (appended if it was never opened).
  * @param {Snapshot|null} snapshot
