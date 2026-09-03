@@ -784,3 +784,11 @@ Expected → held v1 turn completes on its own generation; reload stages v2; the
 Actual @ `62fdfe8` → the RoomService instance already open before reload retained its generation-1 command map through the reload; no observed stage/swap boundary inside that open room; only a subsequent settings-file PUT reload (a different reload path, implying new RoomService construction) picked up v2. Evidence → `v2-reload.json`, `v2-daemon.log`, `v3-settings.json`, `v3-daemon.log` under `.gaia/live-test-runs/pass5b-20260903020808/`.
 
 Historical verdict → suspected stale RoomService command map. Fix → RoomService now resolves commands per turn from the injected registry under its turn lease; `POST /api/plugins/reload` stages then applies immediately when idle. Unit proof → same open RoomService resolves newly swapped `/probe`; held-turn boundary/disposer control retained; endpoint test proves no settings-file reload needed. Compiled-live case 3 remains 陰-owned/UNVERIFIED.
+
+## PASS5C-001 · OPEN · compiled-live manifest entrypoint replacement retains old module code across generation swap
+
+- base → `4333462`; evidence → `docs/REFACTOR-PASS5C-LIVE.md`, `.gaia/live-test-runs/pass5c-20260903022428/`.
+- repro → same open room; v1 held `/probe inflight`; replace `acme.probe/plugin.json` + `index.mjs` with v2; `POST /api/plugins/reload`; release v1; next same-room `/probe next`.
+- expected → held response v1/generation 1; next response v2/generation 2; v1 disposer once.
+- actual → lifecycle correct: staged 2 → swapped 2 → v1 disposed once; next invocation reports generation 2 but runs cached v1 module: `V1 enter generation=2 args=next`; `V2 enter` count `0`.
+- no fix → ticket only; boundary proof incomplete until entrypoint replacement loads v2 code.
