@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import test from "node:test";
 import { CapabilityBroker } from "../src/services/capabilities/index.js";
@@ -323,4 +324,38 @@ test("room command adapter preserves every legacy command result field", async (
   assert.equal(typeof plugin.prompt, "function");
   assert.equal(typeof plugin.renderCap, "function");
   assert.equal(typeof plugin.turnStart, "function");
+});
+
+test("entrypoint replacement stages fresh module code at the same path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gaia-plugin-registry-"));
+  const entrypoint = join(root, "probe", "index.mjs");
+  try {
+    await pluginPackage(root, "probe", "acme.probe", "1.0.0", ["probe"]);
+    await writeFile(entrypoint, `
+export function register(context) {
+  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v1:\${context.generation}" }) }] } };
+}
+`);
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement: "daemon",
+      capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
+      importer: (path) => import(pathToFileURL(path).href),
+    });
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), true);
+    await writeFile(entrypoint, `
+export function register(context) {
+  return { contributions: { commands: [{ name: "probe", description: "Probe", run: () => ({ reply: "v2:\${context.generation}" }) }] } };
+}
+`);
+    await registry.stageReload();
+    assert.equal(await registry.applyTurnBoundary(), true);
+    assert.deepEqual(
+      await registry.invokeCommand("acme.probe", "probe", { roomId: "room-1", agentId: "agent-1" }, { args: [] }),
+      { reply: "v2:2" },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
