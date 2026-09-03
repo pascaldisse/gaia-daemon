@@ -135,7 +135,9 @@ function renderPanel() {
             h(
               "button",
               { class: "agent-main", title: `open @${agent.id} settings`, onclick: () => void openAgentSettings(agent.id) },
-              h("strong", { text: `@${agent.id}` }),
+              // Speaker/roster names render PLAIN — @ is for addressing only
+              // (targets, mentions), never a header (V2-SKIN.md design law).
+              h("strong", { text: agent.id }),
               h("small", {
                 // One line, ellipsized when narrow — mirror the full text into
                 // title so it stays recoverable on hover.
@@ -374,10 +376,18 @@ function SwarmSection(snapshot) {
   );
 }
 
+/** @param {string | undefined} timestamp */
+function localTime(timestamp) {
+  const date = timestamp ? new Date(timestamp) : null;
+  return date && !Number.isNaN(date.valueOf())
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+    : "";
+}
 /** @param {import("./types.js").RoomSummary} room */
 function SwarmNode(room) {
   const phase = room.running ? "started" : "completed";
-  const glyph = agentGlyph(room.title ?? room.id);
+  const since = localTime(room.runningSince);
+  const glyph = room.running ? "⊛" : agentGlyph(room.title ?? room.id);
   return h(
     "li",
     { class: `swarm-phase-node swarm-phase-${phase}` },
@@ -385,7 +395,8 @@ function SwarmNode(room) {
       "div",
       { class: "swarm-phase-row" },
       h("i", { class: "swarm-phase-glyph", text: glyph }),
-      h("span", { class: "swarm-phase-title", text: room.title || room.id }),
+      h("span", { class: "swarm-phase-title", text: room.running ? room.id : room.title || room.id }),
+      room.running && since ? h("small", { class: "running-since", text: `· since ${since}` }) : null,
     ),
   );
 }

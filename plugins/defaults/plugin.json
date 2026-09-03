@@ -1,0 +1,25 @@
+{
+  "id": "gaia.defaults",
+  "version": "1.0.0",
+  "engine": "gaia-daemon@^2.0.0",
+  "placement": "daemon",
+  "requiredCaps": [],
+  "contributes": {
+    "commands": [
+      "dog",
+      "slap",
+      "shock",
+      "toilet",
+      "stfu",
+      "push",
+      "swallow",
+      "facial",
+      "release",
+      "doggy",
+      "creampie"
+    ],
+    "tools": [],
+    "channels": [],
+    "providers": []
+  }
+}

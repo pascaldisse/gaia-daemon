@@ -26,6 +26,8 @@
 .swarm-phase-row { display: flex; align-items: center; gap: 1ch; min-height: 22px; color: var(--muted); font-size: 11px; }
 .swarm-phase-glyph { width: 2ch; color: var(--muted); font-style: normal; text-align: center; }
 .swarm-phase-started .swarm-phase-title { color: var(--warn); }
+.running-since, .room-running-since { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.room-label .room-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .swarm-phase-completed .swarm-phase-title { color: var(--good); }
 .swarm-phase-failed .swarm-phase-title { color: var(--danger); }
 .roster-status { color: var(--muted); font-size: 10px; }

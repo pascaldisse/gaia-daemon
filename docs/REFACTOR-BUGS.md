@@ -404,3 +404,393 @@ Main moved `2128ac7` → `8fcad7e` after first verdict; branch merged latest mai
 - ADV-007 current measurement → `room-service.ts` 2,527 lines, not 3,718; A6b extracts 1,201 lines but façade remains >3× plan ceiling 800 → ticket remains HIGH.
 - ADV-009 current measurement → check-exempt surface expands: `commands-facade.ts` 514 + `sanitize-facade.ts` 247 join `fork.ts` 178 + `turn-loop.ts` 512 under `// @ts-nocheck` = **1,451 lines**. New façade context types expose `[key: string]: any`; ticket severity remains HIGH.
 - post-merge gate 真 → `bun run check` exit 0 (non-enforcing Knip debt emitted) · `bun test test/room-service.test.ts` **98/0**.
+## ADV-PASS-2 · 2026-09-02 · 陰の木 adversarial refactor audit
+
+## ADV-011 · HIGH · A5c LIVE prerequisite cannot deliver required `@luna` turn
+Atom → `gaia/jareth-mtklhqjcox0sbw-pass2@d7d637e` live build; daemon hash `d7d637e`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/naru-kimi-mtkliyd9wo8b3i
+GAIA_HOME="$W/.gaia/livehome" GAIA_PORT=18787 "$W/.gaia/livetest-dist/gaia-daemon"
+# authenticated POST /api/workspaces -> id 3efc0c32a73d6aaf
+# authenticated POST /api/workspaces/3efc0c32a73d6aaf/rooms/default/messages
+# body: {"text":"@luna LIVE-AUDIT-EXACT-TOKEN","queue":true}
+```
+Expected → required exact `@luna` message accepts (202), reserves durable user event, then enables edit/retry and pending-turn recovery audit.
+Actual → HTTP 500 `{ "error":"Unknown agent: @luna. Available agents: @dario, @gaia, @sidia, @terry" }`; GET events remains `[]`; no `transcript.jsonl`, `rewound.jsonl`, or `pi-sessions` evidence exists for this flow.
+Boundary → ticket only; no fix. The isolated daemon did build and listen on 127.0.0.1:18787. UNVERIFIED → agent→agent mention/edit parent chain; web/artifact; SIGKILL/restart exactly-once; settings reload; full registered-route authenticated smoke.
+
+## ADV-012 · LOW · A5c leaves dead parallel route residue
+Atom → `b8db169` route extraction · measured at `main@20eb9b6`.
+Repro:
+```sh
+W=/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/main-build
+rg -l '\bsanitizeEditRefs\b' "$W/src" "$W/test"
+rg -n '\bbootId\b' "$W/src/server/routes/api.ts"
+bun run check
+```
+Expected → every new `src/server/routes/*.ts` export has production/test caller; split leaf contains no abandoned local duplicate.
+Actual → `sanitizeEditRefs` exported only at `src/server/routes/rooms.ts:9`, zero callsite; `src/server/routes/api.ts:28` retains unused `const bootId = ""` while live SSE uses `ctx.bootId` at line 194. `bun run check` exits 0 because Knip is non-enforcing and reports `sanitizeEditRefs` among 115 unused exports.
+Behavior impact → none measured; dead parallel surface only.
+
+## ADV-PASS-2 · parent verdict · `main@20eb9b6`
+Range → `768115b..20eb9b6` · A5c/A7c/A7d + UI + late-main UI/drafts.
+
+Static 真:
+- PRAGMA → baseline=current: 4 `src/services/room/*` `@ts-nocheck` + 10 façade `as any`; NEW=0; ADV-009 remains open.
+- RULE0 exact → 4 hits, all allowed `typeof ...harness === "string"` guards: `core/config.ts:384` · `domain/accounts.ts:47` · `server/routes/agents.ts:58` · `services/hints.ts:454`.
+- layering upward imports → 0.
+- hardcode scan → only `core/config.ts:41` configured default 8787 + seatbelt canonical `/private/tmp`; new violation=0.
+- route retention → literal `/api|/v1` sets 36/36 exact; parameter regex sets 42/42 exact; missing route=0.
+- new daemon/route export callsites → all ≥2 source/test files except ADV-012 `sanitizeEditRefs`.
+- durability seams → queue/pending-turn recovery focused control 98/0; no late-main daemon/service delta.
+
+Gate 真:
+- `bun run check` at `a0f7bc8` → exit 0; Knip debt non-enforcing.
+- `bun test test/http-routes.test.ts` → 7/0 final head.
+- `bun test test/daemon-delete.test.ts` → 4/0; `bun test test/room-service.test.ts` → 98/0 before late web-only merge.
+- `bun test web/src/composer-drafts.test.js` → 2/0 final head.
+
+Live 真/未驗:
+1. agent→agent mention + edit parent chain → UNVERIFIED; `@luna` prerequisite HTTP 500 → ADV-011.
+2. ToolProviders web/artifact → UNVERIFIED beyond focused artifact HTTP unit.
+3. SIGKILL pending-turn exactly-once → UNVERIFIED beyond 98/0 durability controls.
+4. settings reload without room drop → UNVERIFIED.
+5. full route-table authenticated smoke → UNVERIFIED; static table parity + route-focused 7/0 only.
+- queue → § `docs/REFACTOR-LIVE-QUEUE.md`; blocked-run status appended.
+- UI visual app drive → UNVERIFIED; pass law forbade gaia-daemon.app/8787.
+- cleanup 真 → isolated daemon killed · dist/home removed · port 18787 `lsof` empty.
+
+Atoms clean → A5c route registration parity · A7c harness claim extraction · A7d interaction extraction · UI commits `efc2e48`/`c80a074`/`2d3e9a2` static+check only · late `230ca8e` drafts unit 2/0.
+Dead branch → two Vishnu/naru-opus lanes blocked before output; no disk artifact salvageable; STATIC performed by parent.
+
+---
+
+## ADV-011 resolution · live seed correction — 2026-09-02
+- prior `Unknown agent: luna` → TEST-SETUP; not daemon regression.
+- corrected seed → `<worktree>/.gaia/livehome/agents/luna/` copied whole; whole `accounts.json` + `config.json`; workspace payload listed `luna` before every probe.
+- proof → TOKEN-1/2/3/4 + tool turn committed by luna; evidence `docs/REFACTOR-LIVE-RESULTS-20260902.md`.
+- status → superseded as daemon ticket.
+
+## ADV-013 · HIGH · app payload 500 after corrected live seed — 2026-09-02
+- repro → compiled isolated daemon @ `4bd87be`; corrected seed; `GET /api/app`.
+- expected → 200 app payload.
+- actual → 500 `Missing workspace config: .../ghoul-terra-mtklq5ixkikbww/.gaia/config.json`; boot also skips summon recovery for cwd workspace.
+- impact → full authenticated A5c route smoke blocked; no fix in live child.
+
+## Nyari triage — ADV-013 (09-02 23:35)
+- ADV-013 reclassified PRE-EXISTING / MED, not A5c: throw = src/domain/workspace.ts:147, untouched 768115b..main (`git log -S'Missing workspace config'` empty; cwd-workspace path diff 0).
+- Trigger: daemon cwd inside a dir w/ `.gaia/` but no `.gaia/config.json` (any worktree) → GET /api/app 500 + summon recovery skipped.
+- A5 route smoke → PASS for parity (all other routes 200/401 as expected). Fix = W4 atom (auto-workspace: bootstrap config or skip cwd w/o config), not refactor scope.
+
+## PASS #3 · W3 plugin system + W4 A16 live · 2026-09-03
+
+Scope → `b4c126d..0bb260c` · audit branch `audit/pass3-w3-a16-20260903` · fixes forbidden.
+
+### ADV-014 · HIGH · capability broker is a stub
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'new CapabilityBroker|grantSource|trustSource' -- src/services/plugins.ts scripts/telegram-bridge.mjs src/services/capabilities
+```
+Expected → daemon-owned grant policy + effective room/agent trust feed every manifest contribution invocation; `trust:false` remains forced-empty.
+Actual → only live constructions use `grantSource: () => undefined, trustSource: () => false` (`src/services/plugins.ts:162`, `scripts/telegram-bridge.mjs:69`); nonempty `requiredCaps` permanently deny; no domain/config grant source reaches broker. Cap-free plugins exercise no authorization policy.
+
+### ADV-015 · HIGH · bundled plugins bypass or never reach manifest runtime
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'loadCommandPlugins|PluginRegistry|listBundledPlugins|pluginRegistry:' -- src scripts
+git ls-tree -r --name-only 0bb260c -- addons plugins | rg 'plugin.json|plugins/(defaults|fugu|rpg-engine)'
+```
+Expected → daemon boot discovers + validates bundled manifests before import; daemon retains one registry/lifecycle owner; `RoomService` receives its turn boundary.
+Actual → `RoomService.pluginsPromise` calls `loadCommandPlugins()`; bundled defaults import loose `.mjs` directly (`src/services/plugins.ts:131-153,190-198`). `fugu`/`rpg-engine` have no `plugin.json` or daemon registry caller. Telegram's manifest is reached only by standalone `scripts/telegram-bridge.mjs`, not daemon boot. `RoomServiceOptions.pluginRegistry` remains optional and has no production injection; transient registries are discarded after startup wrappers are copied. Mid-turn manifest staging through the daemon is unreachable.
+
+### ADV-016 · HIGH · two incompatible manifest/lifecycle systems coexist
+
+Repro @ `0bb260c`:
+```sh
+git grep -nE 'interface PluginManifest|class PluginHost|class PluginRegistry' -- src/services
+```
+Expected → one manifest ABI + one lifecycle/registry implementation.
+Actual → `src/services/plugin-manifest.ts` requires `{schema,name,entrypoint,permissions,...}` and feeds `plugin-host.ts`; W3 adds `src/services/plugins/manifest.ts` requiring `{id,placement,contributes,...}` and feeds `plugins/registry.ts`. `addons/telegram/plugin.json` matches only the second. Old `listBundledPlugins`/`PluginHost` have no production caller; parallel surfaces violate zero-duplication and cannot consume the same package.
+
+### ADV-017 · HIGH · generation lifecycle is not serialized across disposer await
+
+Repro @ `0bb260c` → registry candidate G0 disposer blocks on a promise; call `stageReload()` + `applyTurnBoundary()`; before resolving G0 disposer, stage/apply G1.
+Expected → G0 disposal completes before G1 registration/swap/disposal begins.
+Actual → `plugins/registry.ts:236-244` swaps + clears staged before awaiting old disposal; a second stage/apply can overlap G0 disposal with G1 lifecycle. Invocation lease (`:305-313`) protects contribution execution, not lifecycle operation serialization.
+
+### ADV-018 · MED · A16 live assertion does not prove claimed fork parent
+
+Repro @ `f812940`:
+```sh
+nl -ba test/edit-resend-live.test.ts | sed -n '362,371p'
+```
+Expected → `editedEntry.parentId === <assistant reply immediately before U2>.id`.
+Actual → `preEditReplyEntry` is found by token only (may select U1 user entry) and never compared to `editedEntry.parentId`; only optional inequality against one old-tail entry is asserted. Live opt-in may pass with an arbitrary wrong parent.
+
+### ADV-019 · LOW · A6f left a dead duplicate dialogue limit
+
+Repro @ `0bb260c`:
+```sh
+rg -n 'AGENT_DIALOGUE_MAX_HOPS' src/services/room-service.ts src/services/room test/room-service.test.ts
+```
+Expected → one canonical dialogue-hop constant.
+Actual → live canonical `summon-lifecycle.ts:17` is re-exported by `room-service.ts:94`; A6f copied byte-identical `export const AGENT_DIALOGUE_MAX_HOPS = 8` into `task-operations.ts:8`, where nothing imports or reads it. Knip also reports this export.
+
+### A6c–A6h static verdict
+
+- extraction discipline → PASS except ADV-019 residue; new queue/turn-results/summon/lifecycle/task/command/monad bodies have production facade/delegation callsites; no second behavior body found in `room-service.ts`.
+- durability → PASS: queue/pending mutation owns one implementation in `domain/rooms.ts:1051-1157`; physical atomic write owns one implementation in `core/store.ts`; extracted room files invoke/read those seams, never reimplement persistence.
+- A6h transient ledger typo → `bc6c96c` named nonexistent `c8069bb`; `c8023a3` corrected it to landed `a931351`; no HEAD residue.
+- requested stale-branch salvage → `gaia/ghoul-terra-mtkojg90dhpql1@b1647ed` is not an ancestor of `0bb260c`. `b1647ed:room/command-execution.ts` and `a931351:room/command-execution.ts` have identical blob `474815c6`; this is the salvaged part. Dropped extraction-only parts: `615f90e` `room-maintenance.ts` (setup/clear/refresh/fork/event lookup/tool-result methods remain in facade at audited HEAD) and b164's function-style `background-tasks.ts` rewrite (main retains the independently landed class implementation from `8fcea00`). Dropped user behavior → none measured; dropped refactor surface → those two files/variants.
+
+### W3 steal-list delivery
+
+| item | verdict | evidence |
+|---|---|---|
+| manifest-first validation | PARTIAL | new validator/loader exists; bundled defaults bypass; daemon/addon boot discovery absent |
+| atomic swap | PARTIAL | registry algorithm exists; no daemon owner; disposer overlap ADV-017 |
+| turn lease | PARTIAL | registry invocation + optional RoomService seam exist; no production injection |
+| capability broker | MISSING | API exists; real grants/trust absent → ADV-014 |
+| disposer/dependency lifecycle | PARTIAL | reverse disposer exists; no retained shutdown owner/dependency graph; overlap ADV-017 |
+
+### Static non-findings
+
+- `rg -n 'pragma|harness\\s*===|harness\\s*!==' src/services/plugins src/services/capabilities src/services/plugins.ts` → 0.
+- W3 service imports → no server/daemon upward import; harness contribution wire remains data contract.
+- `src/services/plugins/loader.ts` → not test-only: default loader for transient command registry + standalone Telegram registry; no daemon-owned persistent consumer.
+
+### Gate · parent @ `cf73776` (code tree = `0bb260c`; ledger-only delta)
+
+- `bun run check` → exit 0 · 6.80s; TypeScript worlds green; configured `knip --no-exit-code` ran and reported existing debt (4 unused files · 116 unused exports · 77 unused exported types).
+- touched tests discovered by `git diff --name-only b4c126d..0bb260c -- 'test/**'` → 10 files.
+- each file run separately → `edit-resend-live` 4 pass/1 live skip · `plugins-capabilities` 16/0 · `plugins-contracts` 4/0 · `plugins-loader` 2/0 · `plugins-manifest` 4/0 · `plugins-migration` 4/0 · `plugins-registry` 5/0 · `room-service` 99/0 · `rooms` 53/0 · `telegram-bridge-format` 3/0. Aggregate → 194 pass · 1 intentional live skip · 0 fail.
+- Knip enforcement → configured but non-enforcing (`package.json` `check:dead = knip --no-exit-code`); gate cannot fail on dead exports.
+
+### Live verdict · isolated compiled daemon @ `0bb260c`
+
+- A16 → **PASS**. Command: `GAIA_LIVE_EDIT_RESEND=1 ... bun test --timeout 120000 test/edit-resend-live.test.ts` → 5 pass · 0 fail. Token `TOKEN-4435348c`: active transcript contained A1 + A2-EDITED only; `rewound.jsonl` contained A2-OLD; Pi session edited-user `19268617.parentId=69b6694a` (A1 assistant), not old-tail `93aa687d`. Independent disk inspection proves this run's parent chain despite ADV-018's insufficient automated assertion.
+- plugin bundled-command/generation boundary → **FAIL · unreachable**. Production grep found no daemon/server `pluginRegistry` injection; bundled defaults use loose loader. Therefore no honest live path can stage a bundled manifest during a room turn. No invented harness; ADV-015.
+- cleanup → PASS: child killed isolated daemon; removed generated `dist/`, home, workspace; `lsof -nP -iTCP:18787 -sTCP:LISTEN` empty; orphan process sweep empty.
+- live owner branch proof → `gaia/ghoul-terra-mtkotwumdct15f@555941f`.
+
+### Landing gate · merged newer main `249e7b1` into audit branch
+
+- `bun run check` @ `ca5f591` → exit 0 · 6.97s; configured Knip inventory emitted.
+- `bun test test/room-service.test.ts` @ `ca5f591` → 99 pass · 0 fail · 9.45s.
+- scope verdict remains pinned to requested `0bb260c`; newer A6i maintenance extraction is outside PASS #3 scope.
+
+---
+## ROOT #9 closure · 2026-09-03
+
+### ADV-014 · FIXED · `c529bf4`
+- daemon owns broker sources: workspace `.gaia/config.json` `plugins.grants[agentId]` + loaded `agent.json` `capabilities`; default `{}`/`[]`.
+- trust source → existing `isTrusted(agent)`; missing workspace/agent fail closed; `trust:false` bypasses grant lookup → no non-safe capability.
+- evidence → `bun test test/capabilities-daemon-sources.test.ts` 6/0; untrusted network denial · trusted grant allowance · granted/untrusted denial.
+
+### ADV-015 · FIXED · `6641107`
+- manifest inventory → `plugins/{defaults,fugu,rpg-engine,rpg.mjs}` + `addons/telegram`; Telegram `process:"standalone"`.
+- roots → injectable `bundledDir("plugins")` + `globalPaths.commandPluginsDir()`; no loose `readdirSync` command loader.
+- evidence → `test/bundled-plugins.test.ts` validates inventory before import; rpg/dog/Telegram focused tests green.
+
+### ADV-016 · FIXED · `1de4129`
+- one production `PluginRegistry` + `CapabilityBroker` → `src/daemon.ts`; RoomService adapter receives injected typed registry; no module-level loader/default registry.
+- evidence → registry/room/bundled tests green; construction scan below.
+
+### ADV-017 · VERIFIED · inherited `c03795b`
+- `PluginRegistry.#serialize` queues stage/apply/shutdown through one lifecycle tail; disposer await remains serialized.
+- evidence → `test/plugins-registry.test.ts` lifecycle/staging cases green after #9 integration.
+
+### ADV-018 · FIXED · `6bca2e1`
+- A16 fixture reads new Pi-session tail `parentId`; equality to edited message id + inequality to old tail required.
+- red → expected edited id, actual old-tail id; green → `test/edit-resend-live.test.ts` 4/0 + one live skip.
+
+### ADV-019 · FIXED · `6bca2e1`
+- dead `task-operations.ts` duplicate deleted; canonical `room/summon-lifecycle.ts` export retained/re-exported.
+- evidence → canonical-only `rg AGENT_DIALOGUE_MAX_HOPS` scan.
+
+## PASS #4 FINAL — W3 completion live + closing static
+
+### PASS #4 parent gate salvage · code `338db79`
+- `naru-flash` lane → infrastructure failure before output: HTTP 402 `Insufficient Balance`; no repository verdict derived.
+- independent root salvage → `bun run check` rc 0 (6s).
+- touched existing tests, each isolated → `bundled-plugins` 3; `capabilities-daemon-sources` 6; `edit-resend-live` 4 + live opt-in 1 skipped; `plugins-capabilities` 16; `plugins-manifest` 4; `plugins-registry` 6; `room-service` 99; `rpg-plugin` 2; `telegram-bridge-format` 3. Total → 143 pass · 0 fail · 1 live skip.
+- deleted since `4fda75d` → `plugin-host.test.ts` · `plugin-manifest.test.ts` · `plugins-migration.test.ts`.
+- raw gate evidence → `.gaia/pass4-parent-gate.log` (worktree-local; command/output/rc/duration).
+
+### ADV-020 · HIGH · bundled command plugins unreachable through production registry
+- code → `338db79`; introduced across `4589145` · `74b0d70` · `1de4129` · asserted by `6641107`.
+- repro → `bun test test/dog-mode-integration.test.ts`; control → `bun test test/dog-mode-plugin.test.ts`.
+- expected → bundled `/dog` + discipline commands load at zero setup through daemon registry; real plugin behavior retained.
+- actual → integration `0 pass · 8 fail`; replies = `Unknown command: /dog` / `/stfu` / `/push` / `/shock` / `/slap`; pure plugin control `23 pass · 0 fail`.
+- cause → all bundled manifest `contributes.commands=[]`; all manifest `index.mjs` files return `{}`; real `plugins/defaults/dog-mode.mjs` + `plugins/rpg.mjs/plugin.mjs` have no production importer; manifest command result also lacks legacy `state|activeAgent|panel|prompt|rewriteAsMessage|renderCap|turnStart` surface.
+- `plugins/rpg.mjs/` verdict → migration artefact/shim, not functioning manifest package: file-like directory + no-op `index.mjs`; real RPG module stranded as `plugin.mjs`.
+- evidence → `docs/REFACTOR-PASS4-STATIC-SONNET.md`; raw parent runs → `.gaia/pass4-parent-dog-regression.log` + `.gaia/pass4-parent-dog-control.log`.
+
+### ADV-021 · HIGH · registry command results + capability denials disappear from durable room evidence
+- code/build → source `338db79`; compiled tree `a9550fb` = source + docs only.
+- repro → generated manifest command `/probe trusted` then same command with seeded agent `trust:false`; both HTTP `202`, task `complete`.
+- expected → trusted+granted reply in transcript; untrusted non-safe capability denial in transcript/log; denied plugin body never entered.
+- actual → authorization floor works: side-effect marker count remains `1→1`; trusted + denied transcripts/events both empty; denial absent from daemon log; client only receives completed task.
+- cause seam → `RoomQueue.sendMessage()` emits plugin command reply as transient `room-event`; no durable append; `runPlugin()` converts broker rejection to reply, then same transient-only path.
+- evidence → `docs/REFACTOR-PASS4-LIVE.md` LIVE-P4-001; `.gaia/live-test-runs/pass4-20260903012416/{probe-trusted.json,probe-untrusted.json,marker-count-before-denied.txt,marker-count-after-denied.txt,transcript-after-allowed.jsonl,transcript-after-denied.jsonl,daemon.log}`.
+
+### ADV-022 · HIGH · no live manifest staging trigger or daemon lifecycle observability
+- code/build → source `338db79`; compiled tree `a9550fb`.
+- repro → boot probe manifest `1.0.2`; hold `/probe inflight`; replace manifest/entrypoint with `1.0.3`; finish old turn; invoke `/probe next`.
+- expected → old generation completes; staged generation swaps at turn boundary; next invokes `1.0.3`; old disposer exactly once at swap in daemon log.
+- actual → `V102 entered generation=1 args=inflight` + `V102 entered generation=1 args=next`; no stage/swap; disposer only at shutdown.
+- static corroboration → sole production `stageReload()` call = `Daemon.boot()`; daemon registry constructed without `onEvent`; manifest changes cannot request staging or log lifecycle events.
+- evidence → `docs/REFACTOR-PASS4-LIVE.md` LIVE-P4-002; `.gaia/live-test-runs/pass4-20260903012416/{probe-inflight.http,probe-next.http,manifest-executions.txt,evidence/manifest-after-change.json,daemon.log}`.
+
+### ADV-023 · LOW · plugin lifecycle classes exported without production consumers
+- code → `338db79`.
+- repro → `rg -n '\b(RegistryLifecycleError|PluginTurnLease)\b' src --glob '*.ts'`.
+- expected → every export in `src/services/plugins/*` + `src/services/capabilities/*` has non-test production consumer.
+- actual → both symbols occur only inside `src/services/plugins/registry.ts`; unnecessary public surface.
+- evidence → `docs/REFACTOR-PASS4-STATIC-KIMI.md` STATIC-002.
+
+### PASS #4 closing static verdict
+- trust floor → PASS: `trust:false` + agent/workspace `network` grants still denied; all-cap grant source cannot override; trusted+granted allowed; focused static gate `31 pass · 0 fail`.
+- authority scan → PASS: provider/model terms only contribution vocabulary + prohibition comment; no identity-based capability decision; no harness-id security branch.
+- layering/RULE0/pragmas → PASS: capability/plugin services import no daemon/server layer; forbidden branch + pragma scans zero.
+- composition → PASS: one production `new PluginRegistry` + one `new CapabilityBroker` at `src/daemon.ts:192/205`; no `readdirSync` plugin loader.
+- export inventory → FAIL only ADV-023.
+- bundled RPG directory → FAIL under ADV-020; no-op manifest shim, not real command package.
+
+### PASS #4 live queue verdict · compiled source `338db79`
+- A1 ToolProviders bridge → UNVERIFIED in PASS #4; not rerun.
+- A5 HTTP route suite → UNVERIFIED; only authenticated `GET /api/app` rc 0 during seed validation.
+- A7 recovery + deferred settings reload → UNVERIFIED; not rerun.
+- A6 retry/edit/rewind + restart/WAL suite → PARTIAL: A16 edit/resend branch only; remaining scenarios not rerun.
+- A6c durable queue → UNVERIFIED; not rerun.
+- W4 A16 opt-in → PASS: real compiled daemon; `GAIA_LIVE_EDIT_RESEND=1 ... bun test --timeout 120000 test/edit-resend-live.test.ts` → `5 pass · 0 fail` in 7.52s; transcript/rewound/Pi parent-chain disk evidence retained.
+- A10 manifest validation → UNVERIFIED live; not rerun.
+- A13 typed contributions/capabilities → FAIL: trusted body entered + untrusted body blocked, but reply/denial observability missing → ADV-021.
+- A14 manifest command → FAIL: custom fixture executes but durable room proof missing → ADV-021; bundled command unreachable → ADV-020.
+- ROOT #9 bundled command/generation/denial → FAIL: ADV-020 · ADV-021 · ADV-022.
+- cleanup → PASS: daemon killed; generated `dist/home/ws` removed; `lsof -nP -iTCP:18787 -sTCP:LISTEN` = empty; run-root orphan sweep = empty.
+
+### PASS #4 final gate
+- `bun run check` → rc 0 · 6s.
+- every existing test touched in `4fda75d..338db79`, isolated process/file → 143 pass · 0 fail · A16 live opt-in 1 skipped in gate; deleted tests identified, not run.
+- touched files → `bundled-plugins` 3 · `capabilities-daemon-sources` 6 · `edit-resend-live` 4+1 skip · `plugins-capabilities` 16 · `plugins-manifest` 4 · `plugins-registry` 6 · `room-service` 99 · `rpg-plugin` 2 · `telegram-bridge-format` 3.
+- additional regression repro → `dog-mode-integration` 0/8; independent pure-plugin control 23/0 → ADV-020.
+- raw output → `.gaia/pass4-parent-gate.log`.
+
+### PASS #4 overall verdict
+- **W3 NOT DELIVERED** → bundled commands absent + durable command/denial evidence absent + no live reload trigger; queue also not fully rerun within bounded lane.
+
+## W3 REAL DELIVERY · 2026-09-03
+
+### ADV-020 · FIXED · `f218e91`
+- RED → `bun test test/dog-mode-integration.test.ts` → `0 pass · 8 fail`; `/dog` et al. → `Unknown command`.
+- GREEN → `bun test test/dog-mode-integration.test.ts` → `8 pass · 0 fail`.
+- real package registrations → defaults/dog-mode · fugu · rpg-engine · rpg; `plugins/rpg.mjs/` shim removed; Telegram declaration/registration retained standalone.
+- contract → reply · steer · activeAgent · state · rewriteAsMessage · targets · panel · prompt · renderCap · turnStart preserved through registry adapter.
+- inventory proof → `bun test test/bundled-plugins.test.ts` → `4 pass · 0 fail`; every bundled manifest declares commands; each resolves callable through production registry.
+
+### ADV-021 · FIXED · `077d846` · integration `1dc052a`
+- RED → plugin replies/denials emitted transient `room-event` only; transcript empty; denial provenance/log absent.
+- GREEN → `bun test test/room-service.test.ts` → `101 pass · 0 fail`; fresh RoomHandle reread proves transcript persistence.
+- reply → `kind=plugin-reply`; denial → `kind=capability-denied`; `details.pluginDenial={pluginId,capability,agentId,reason}`.
+- durability seam → `appendPluginEvent` → shared room-lock fsynced append + atomic cursor acknowledgement, then live emit; no memory-only reply path.
+- trust:false proof → contribution body counter `0`; denial log `[capabilities] denied plugin=... capability=... agent=... room=... reason=...` captured.
+
+### ADV-022 · FIXED · `2177872`
+- RED → lifecycle gate `7 pass · 1 fail`: missing ordered plugin-id observability.
+- GREEN → `bun test test/plugins-registry.test.ts` → `8 pass · 0 fail`.
+- trigger → settings-file PUT stages registry; `POST /api/plugins/reload` stages only.
+- daemon observation → staged · swapped · disposed logs include generation/plugin IDs.
+- boundary proof → held v1 command → staged v2 → boundary blocked → v1 complete → v2 next → v1 disposer once; ordered events asserted.
+
+### ADV-023 · FIXED · `2177872`
+- lifecycle internals un-exported; production registry owns their use.
+- proof → `rg -n 'export.*(RegistryLifecycleError|PluginTurnLease)' src/services/plugins/registry.ts` → `0`.
+
+## Pass 5 W3 sign-off — 2026-09-03
+
+- baseline → `a995bb0`; isolated adversary branch → `adversary/pass5-w3-signoff`.
+- live lane → `ghoul-terra-mtkrd610i7uwmq`; branch `adversary/pass5-live-terra`; evidence commits `84eebe5` + `237ce60`.
+- dog regression → PASS: `bun test test/dog-mode-integration.test.ts` → `8 pass · 0 fail`.
+
+### ADV-024 · P1 · exact baseline cannot produce compiled daemon
+- repro → initialized pinned submodules; `bun run build --out .gaia/live-test-runs/pass5-20260903020111/dist`.
+- expected → compiled daemon from `a995bb0`; W3 live sign-off runnable.
+- actual → rc 1; `src/services/artifacts.ts` imports `../../design/src/{artifacts,artifact-revisions}.js`; pinned design `bf41ca3` contains `.ts` only; Bun cannot resolve either `.js` module.
+- consequence → required live items 1–5 UNVERIFIED; daemon never started; no workaround/fix permitted in adversary pass.
+- evidence → `docs/REFACTOR-PASS5-W3-LIVE.md`; child run `/Users/pascaldisse/projects/gaia-daemon/.gaia/worktrees/ghoul-terra-mtkrd610i7uwmq/.gaia/live-test-runs/pass5-20260903020111/evidence/{build.log,dog-regression.log,lsof-before.txt,lsof-after.txt,orphan-sweep.txt}`.
+- cleanup → generated dist/home/ws removed; daemon PID none; port 18787 listener empty; orphan sweep empty.
+
+### Pass 5 static adversary verdict
+- lane → `naru-sonnet-mtkrd6109tbgfp`; branch `adversary/pass5-static-sonnet`; evidence commit `183f0e8`; detail → `docs/REFACTOR-PASS5-STATIC-SONNET.md`.
+- ADV-020 → PASS: exact dog repro `8 pass · 0 fail`; bundled inventory `4 pass · 0 fail`.
+- ADV-021 → PASS: agent `commitTurn()` + plugin `commitAuxiliaryEvent()` converge on private `commitEventLocked()` → one room lock · idempotent append · transcript line resolution · one atomic state acknowledgement; queue append-before-emit; no second plugin persistence path.
+- ADV-022 → PASS static: API + settings PUT stage reload; lifecycle logger covers staged/swapped/disposed with generation/plugin IDs; registry gate `8 pass · 0 fail`.
+- ADV-023 → PASS: lifecycle classes private; export scan zero.
+- new exports → all production-consumed; RULE0/pragmas/upward-import scans → zero violations.
+- tickets → none from static pass.
+
+### Pass 5 parent static gate
+- `bun run check` → rc 0.
+- each existing test touched in `ad85ee3..a995bb0`, isolated → `bundled-plugins` 4 · `dog-mode-integration` 8 · `plugins-registry` 8 · `room-service` 101 · `rpg-plugin` 2 = **123 pass · 0 fail**.
+- evidence → `.gaia/pass5-parent-static-gate.log`.
+
+### Pass 5 final verdict
+- W3 live items 1–5 → UNVERIFIED due ADV-024 before daemon boot.
+- W3 DELIVERED → **NO**.
+- `a995bb0+` safe to build into app → **NO**: production compiled-build command fails at exact baseline.
+
+
+## Nyari triage — ADV-024 (09-03 02:10)
+- ADV-024 reclassified TEST-SETUP, not main: design submodule pointer bf41ca3 identical b800c07→a995bb0 (b800c07 = Pascal's running build); import `design/src/artifacts.js` dates from d8572f5; `bun run scripts/build-daemon.mjs --out` from .gaia/worktrees/main-build @ a995bb0 → binary 79330658 bytes, rc 0 (Nyari's hand). Child used `bun run build --out` in a fresh worktree; passes 2/4 built the same tree fine.
+- Live recipe law: build ONLY via `bun run scripts/build-daemon.mjs --out <worktree>/.gaia/livetest-dist` after `git -C <worktree> submodule update --init --recursive`.
+
+## PASS5B ledger pass — 2026-09-03 (ghoul-sonnet, ATOM 3)
+
+Source → `docs/REFACTOR-PASS5B-LIVE.md` (base `62fdfe8`, branch `live/pass5b`, run root `.gaia/live-test-runs/pass5b-20260903020808`). Ledger-only atom; no code touched.
+
+## PASS5B-001 · MED · A16 opt-in compiled-live rerun times out under default 120000ms
+
+Atom → W3 pass 5b compiled live rerun; `docs/REFACTOR-PASS5B-LIVE.md` item 4.
+
+Repro:
+```sh
+GAIA_LIVE_EDIT_RESEND=1 LIVE_WORKSPACE_DIR=<worktree>/.gaia/livews GAIA_PORT=18787 \
+  bun test --timeout 120000 test/edit-resend-live.test.ts
+```
+Expected → 5 pass / 0 fail (matches PASS #3 20260903 evidence: `5 pass · 0 fail` @ `0bb260c`, and PASS #4 evidence: `5 pass · 0 fail` @ `338db79`).
+Actual @ `62fdfe8` → rc 1, 4 pass / 1 fail, transcript wait timeout; evidence `a16-test.log`, `a16-exit.txt` under `.gaia/live-test-runs/pass5b-20260903020808/`.
+
+Verdict → not a proven regression on this single run alone (prior compiled runs at `0bb260c`/`338db79` both passed 5/0 under the same 120000ms harness default). No fix; ticket only. Boundary → next live attempt MUST raise the invocation to `--timeout 240000` (§`docs/REFACTOR-LIVE-QUEUE.md` W4 A16) before re-asserting pass/fail. If 240000 still times out, that is new evidence and the default-timeout theory is falsified — open a fresh ticket, do not fold into this one.
+
+## PASS5B-002 · FIXED (unit) · compiled-live rerun pending · `POST /api/plugins/reload` did not refresh an already-open RoomService's command map
+
+Atom → W3 pass 5b compiled live rerun; `docs/REFACTOR-PASS5B-LIVE.md` item 3.
+
+Repro (must stay in ONE already-open room end-to-end — a fresh room/RoomService after reload is not evidence either way):
+```sh
+# room R already open, RoomService instance already live before any of the below
+1. hold a v1 command turn in room R (blocking probe)
+2. mutate manifest/entrypoint on disk → v2
+3. POST /api/plugins/reload
+4. release the held v1 turn → expect v1 completes on generation 1
+5. issue the next command in the SAME room R → expect generation 2 (v2) served
+6. inspect disposer/event log → expect exactly one v1 dispose entry
+```
+Expected → held v1 turn completes on its own generation; reload stages v2; the very next turn in the SAME open room R serves v2; disposer for generation 1 fires exactly once (§`docs/REFACTOR-LIVE-QUEUE.md` ROOT #9 W3 live repros, "staged manifest boundary"; matches ADV-022's static `held v1 command → staged v2 → boundary blocked → v1 complete → v2 next → v1 disposer once` claim).
+Actual @ `62fdfe8` → the RoomService instance already open before reload retained its generation-1 command map through the reload; no observed stage/swap boundary inside that open room; only a subsequent settings-file PUT reload (a different reload path, implying new RoomService construction) picked up v2. Evidence → `v2-reload.json`, `v2-daemon.log`, `v3-settings.json`, `v3-daemon.log` under `.gaia/live-test-runs/pass5b-20260903020808/`.
+
+Historical verdict → suspected stale RoomService command map. Fix → RoomService now resolves commands per turn from the injected registry under its turn lease; `POST /api/plugins/reload` stages then applies immediately when idle. Unit proof → same open RoomService resolves newly swapped `/probe`; held-turn boundary/disposer control retained; endpoint test proves no settings-file reload needed. Compiled-live case 3 remains 陰-owned/UNVERIFIED.
+
+## PASS5C-001 · FIXED (unit) · compiled-live rerun pending
+
+- base → `4333462`; evidence → `docs/REFACTOR-PASS5C-LIVE.md`, `.gaia/live-test-runs/pass5c-20260903022428/`.
+- cause → Bun ESM cache canonicalizes file paths; distinct `?gaia-gen=` queries still returned v1 in-process.
+- fix → `services/plugins/manifest.ts` SHA-256(entrypoint bytes + raw manifest bytes); `loader.ts#importPluginModule` → one content-addressed Blob module helper; query URL retained in generated source identity; registry reuse callback skips unchanged importer/register/dispose.
+- RED → `bun test test/plugins-registry.test.ts` → 8 pass / 1 fail; actual `{reply:"v1:2"}` ≠ expected `{reply:"v2:2"}`.
+- GREEN → `bun test test/plugins-registry.test.ts` → 10 pass / 0 fail; same-path v2 command returns `{reply:"v2:2"}`; unchanged re-stage imports 1, disposes 0.
+- bundled control → `bun test test/bundled-plugins.test.ts` → 4 pass / 0 fail; helper stages bundled daemon/runner/addon packages.
+- atom → `2d1babf`; compiled-live case 3 remains 陰-owned/UNVERIFIED.

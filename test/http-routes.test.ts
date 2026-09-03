@@ -36,7 +36,11 @@ registerHarness({
 
 type WebInternals = {
   handle(request: IncomingMessage, response: ServerResponse): Promise<void>;
-  daemon: { registry: { add(path: string): Promise<{ id: string }> }; dispose(): Promise<void> };
+  daemon: {
+    registry: { add(path: string): Promise<{ id: string }> };
+    pluginRegistry: { current: { generation: number } };
+    dispose(): Promise<void>;
+  };
 };
 async function listenRoute(web: WebInternals): Promise<{ server: HttpServer; base: string }> {
   const server = createServer((request, response) => void web.handle(request, response));
@@ -59,6 +63,22 @@ test("route modules preserve parsing contracts and API auth JSON", async () => {
     const response = await fetch(`${base}/api/auth/users`);
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: "Not logged in." });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await web.daemon.dispose();
+    await temp.cleanup();
+  }
+});
+
+test("plugins reload endpoint stages and swaps immediately when no turn holds a lease", async () => {
+  const temp = await createTempDir();
+  const web = new GaiaWebServer({ cwd: temp.path }) as unknown as WebInternals;
+  const { server, base } = await listenRoute(web);
+  try {
+    const response = await fetch(`${base}/api/plugins/reload`, { method: "POST" });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { status: string }).status, "staged");
+    assert.ok(web.daemon.pluginRegistry.current.generation > 0, "POST reload swaps without a settings-file reload");
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     await web.daemon.dispose();

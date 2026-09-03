@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -78,15 +77,16 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-
+import type { RoomSanitizeFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
 const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
 const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
+type RoomSanitizeFacadeHost = RoomSanitizeFacadePort;
+
 export class RoomSanitizeMixin {
-  [key: string]: any;
   async sanitizePreview(): Promise<SanitizeProposal> {
     const host = this.options.summonHost;
     if (!host) throw new Error("Summons are not available in this workspace — the reviewer needs them to run.");
@@ -244,4 +244,5 @@ export class RoomSanitizeMixin {
     return join(workspacePaths.roomDir(this.workspace.rootDir, this.roomId), "sanitize.json");
   }
 }
+export interface RoomSanitizeMixin extends RoomSanitizeFacadeHost {}
 export function installRoomSanitize(target: object): void { for (const name of Object.getOwnPropertyNames(RoomSanitizeMixin.prototype)) if (name !== "constructor") Object.defineProperty(target, name, Object.getOwnPropertyDescriptor(RoomSanitizeMixin.prototype, name)!); }

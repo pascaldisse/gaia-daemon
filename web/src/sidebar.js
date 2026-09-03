@@ -153,6 +153,13 @@ function renderSidebar() {
 // fixes). The current workspace is always kept visible even past the cap.
 const WORKSPACES_CHUNK = 8;
 
+/** @param {string | undefined} timestamp */
+function localTime(timestamp) {
+  const date = timestamp ? new Date(timestamp) : null;
+  return date && !Number.isNaN(date.valueOf())
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+    : "";
+}
 /**
  * Running/unread-dot + optional incognito mark, each in its own fixed-width
  * slot so a row's name always starts at the same x whether or not an icon is
@@ -520,6 +527,8 @@ function RoomNode(room, childrenOf, depth) {
   // or drag into Favorites) — same scope as the server's reorderRooms (nested
   // summon children keep their parent-relative position, never reordered).
   const isTop = depth === 0;
+  const since = localTime(room.runningSince);
+  const runningTitle = room.running && since ? `running since ${since}` : "agent running";
   const onClick = () => {
     if (!snapshot) return;
     state.roomContextMenu = null;
@@ -542,10 +551,11 @@ function RoomNode(room, childrenOf, depth) {
         "button",
         {
           class: `nav-item room-item ${isTop ? "room-row-top" : ""} ${room.isCurrent ? "active" : ""} ${focused ? "focused" : ""}`,
-          title: `${label} — ${room.path}`,
+          title: room.running && since ? runningTitle : `${label} — ${room.path}`,
           // Top-level rows use the same pointer press/drag split as workspace
           // rows (a press that never crosses the drag threshold = a click);
-          // nested rows (not draggable) keep a plain click.
+          // nested rows (not draggable) keep a plain click. Clicking also makes
+          // this the delete target (the ⌘⌫ / Del chord acts on it).
           ...(isTop
             ? {
                 onpointerdown: !snapshot ? null : (/** @type {PointerEvent} */ event) => beginDrag(event, "room", room.id),
@@ -554,6 +564,7 @@ function RoomNode(room, childrenOf, depth) {
                 onpointercancel: !snapshot ? null : (/** @type {PointerEvent} */ event) => cancelDrag(event),
               }
             : { onclick: !snapshot ? null : onClick }),
+
           oncontextmenu: snapshot
             ? (/** @type {MouseEvent} */ event) => {
                 event.preventDefault();
@@ -572,8 +583,9 @@ function RoomNode(room, childrenOf, depth) {
         h(
           "span",
           { class: "room-label" },
-          ...StatusIcons({ running: room.running, unread: roomUnread(room), incognito: room.incognito }),
+          ...StatusIcons({ running: room.running, unread: roomUnread(room), incognito: room.incognito, runningTitle }),
           h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
+          depth && room.running && since ? h("small", { class: "room-running-since", text: `· since ${since}` }) : null,
         ),
         h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
       ),

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile as readFileText } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_DIALOGUE_MAX_HOPS, RoomService, type RoomMemoryHooks } from "../src/services/room-service.js";
@@ -15,6 +15,9 @@ import { RunnerHost } from "../src/harness/host.js";
 import { registerHarness, type AgentInput, type AgentRuntime } from "../src/harness/spec.js";
 import type { SummonHost } from "../src/services/summons.js";
 import type { ConsolidateLlm } from "../src/services/consolidate.js";
+import type { CommandPluginRegistry } from "../src/services/plugins.js";
+import { PluginRegistry, type PluginTurnBoundary } from "../src/services/plugins/registry.js";
+import { CapabilityBroker, resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "../src/services/capabilities/index.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -105,6 +108,7 @@ async function makeService(options: {
   summonHost?: SummonHost;
   config?: Partial<WorkspaceConfig>;
   llm?: ConsolidateLlm;
+  pluginRegistry?: PluginTurnBoundary & CommandPluginRegistry;
   /** Room id to open (default "default"). */
   roomId?: string;
   /** Seed the room's state.json as incognito before RoomService.open reads it. */
@@ -165,6 +169,7 @@ async function makeService(options: {
     ...(options.petLoader ? { petLoader: options.petLoader } : {}),
     ...(options.summonHost ? { summonHost: options.summonHost } : {}),
     ...(options.llm ? { llm: options.llm } : {}),
+    ...(options.pluginRegistry ? { pluginRegistry: options.pluginRegistry } : {}),
     runtimeFactory: (agent) => {
       const runtime = options.runtimeFactory ? (options.runtimeFactory(agent, workspace) as ReturnType<typeof scriptedRuntime>) : scriptedRuntime(agent, script);
       runtimes.set(agent.id, runtime);
@@ -3409,4 +3414,241 @@ test("/stt and /tts switch the global dictation engine without erasing voice set
   await writeFile(voicePath, "{malformed", "utf8");
   assert.match(await service.runSttCommand("openai"), /voice\.json is malformed/);
   assert.equal(await readFileText(voicePath, "utf8"), "{malformed", "malformed settings remain untouched");
+});
+
+test("RoomService resolves a newly swapped manifest command in the same open room", async () => {
+  const pluginRoot = await mkdtemp(join(tmpdir(), "gaia-plugin-generation-"));
+  let executions = 0;
+  const registry = new PluginRegistry({
+    pluginsRoot: pluginRoot,
+    placement: "daemon",
+    capabilityBroker: new CapabilityBroker({ grantSource: () => ({}), trustSource: () => true }),
+    importer: async () => ({
+      register: () => ({
+        contributions: {
+          commands: [{
+            name: "probe",
+            description: "Probe",
+            run: (_context: unknown, request: { args: readonly string[] }) => {
+              executions += 1;
+              return { reply: `probe:${request.args.join(" ")}` };
+            },
+          }],
+        },
+      }),
+    }),
+  });
+  const initial = await registry.stageReload();
+  assert.equal(initial.status, "staged");
+  assert.equal(await registry.applyTurnBoundary(), true);
+  const { service, root } = await makeService({ pluginRegistry: registry });
+  try {
+    await pluginPackage(pluginRoot, "probe", "acme.probe", []);
+    const staged = await registry.stageReload();
+    assert.equal(staged.status, "staged");
+    assert.equal(await registry.applyTurnBoundary(), true);
+
+    await service.sendMessage("/probe next");
+    await service.waitForSettled();
+
+    assert.equal(executions, 1, "the swapped command resolves without reopening the room");
+    const { events } = await service.room.eventsFrom(0);
+    assert.ok(events.some((event) => "kind" in event && event.kind === "plugin-reply" && event.text === "probe:next"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(pluginRoot, { recursive: true, force: true });
+  }
+});
+
+test("RoomService releases the manifest-plugin lease and applies a staged generation only in turn finally", async () => {
+  const calls: string[] = [];
+  let finish: (() => void) | undefined;
+  const holding = new Promise<void>((resolve) => { finish = resolve; });
+  const registry: PluginTurnBoundary & CommandPluginRegistry = {
+    commandContributions: () => [],
+    async invokeCommand() {
+      throw new Error("no plugin commands in this lifecycle test");
+    },
+    beginTurn() {
+      calls.push("begin");
+      return { end: () => calls.push("end") };
+    },
+    async applyTurnBoundary() {
+      calls.push("boundary");
+      return true;
+    },
+  };
+  const { service, root } = await makeService({
+    pluginRegistry: registry,
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => []);
+      runtime.send = async function* () {
+        calls.push("runtime");
+        await holding;
+        yield { type: "text-delta", delta: "complete" } as AgentEvent;
+      };
+      return runtime;
+    },
+  });
+  try {
+    await service.sendMessage("hold the turn");
+    for (let index = 0; index < 50 && !calls.includes("runtime"); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(calls, ["begin", "runtime"]);
+    finish?.();
+    for (let index = 0; index < 50 && !calls.includes("boundary"); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.at(-2), "end");
+    assert.equal(calls.at(-1), "boundary");
+    await service.waitForSettled();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function pluginPackage(root: string, directory: string, id: string, requiredCaps: string[]): Promise<void> {
+  const packageRoot = join(root, directory);
+  await mkdir(packageRoot, { recursive: true });
+  // manifest.ts requires the conventional index.mjs to exist on disk (it
+  // resolves + confines the real path before import) even though the
+  // registry's injected `importer` below never actually reads its contents.
+  await writeFile(join(packageRoot, "index.mjs"), "export {}\n");
+  await writeFile(join(packageRoot, "plugin.json"), JSON.stringify({
+    id,
+    version: "1.0.0",
+    engine: "gaia-daemon@^2.0.0",
+    placement: "daemon",
+    requiredCaps,
+    contributes: { commands: ["probe"], tools: [], channels: [], providers: [] },
+  }));
+}
+
+/** ADV-021 fixture: one "probe" command contribution behind requiredCaps
+ * ["probe.act"], incrementing `executions` in its `run()` body — the fixture
+ * proves "denied body never executed" (counter stays 0) as an INDEPENDENT
+ * observation from the transcript/log assertions below (different failure
+ * mode: a broken authorize() gate would still leave the counter provably
+ * wrong even if the transcript happened to look right). `getWorkspace` is a
+ * ref cell: the registry's CapabilityBroker sources close over it, read only
+ * at invocation time — by then the test has assigned the real (possibly
+ * trust-mutated) Workspace RoomService.open() produced. */
+async function probeRegistry(pluginRoot: string, getWorkspace: () => Workspace | undefined): Promise<{ registry: PluginRegistry; executions: { count: number } }> {
+  await pluginPackage(pluginRoot, "probe", "acme.probe", ["probe.act"]);
+  const executions = { count: 0 };
+  const registry = new PluginRegistry({
+    pluginsRoot: pluginRoot,
+    placement: "daemon",
+    capabilityBroker: new CapabilityBroker({
+      grantSource: (context) => resolveWorkspaceGrantPolicy(getWorkspace(), context.agentId),
+      trustSource: (context) => resolveWorkspaceTrust(getWorkspace(), context.agentId),
+    }),
+    importer: async () => ({
+      register: () => ({
+        contributions: {
+          commands: [{
+            name: "probe",
+            description: "Probe",
+            run: (_context: unknown, request: { args: readonly string[] }) => {
+              executions.count += 1;
+              return { reply: `probe ran: ${request.args.join(" ")}` };
+            },
+          }],
+        },
+      }),
+    }),
+  });
+  const staged = await registry.stageReload();
+  assert.equal(staged.status, "staged");
+  await registry.applyTurnBoundary();
+  return { registry, executions };
+}
+
+test("ADV-021: a registry command's reply is durable in transcript through the append+state-write protocol, not a transient room-event", async () => {
+  const pluginRoot = await mkdtemp(join(tmpdir(), "gaia-adv021-reply-"));
+  let live: Workspace | undefined;
+  const { registry, executions } = await probeRegistry(pluginRoot, () => live);
+  const { service, workspace, root, events } = await makeService({
+    config: { defaultAgent: "gaia", plugins: { grants: { gaia: ["probe.act"] } } },
+    pluginRegistry: registry,
+  });
+  live = workspace;
+  try {
+    await service.sendMessage("/probe hi there");
+    assert.equal(executions.count, 1, "the granted+trusted command body ran exactly once");
+
+    const { events: transcript } = await service.room.eventsFrom(0);
+    const replyEvent = transcript.find((event) => "kind" in event && event.kind === "plugin-reply");
+    assert.ok(replyEvent, "a durable plugin-reply event landed in the transcript");
+    assert.equal(replyEvent!.author, "system");
+    assert.equal(replyEvent!.text, "probe ran: hi there");
+
+    // Atomic path proof: a fresh RoomHandle reads both the fsynced transcript
+    // and the acknowledgement cursor written under that same room lock — not
+    // the old transient-only `emit({type:"room-event"})` path.
+    const reopened = await RoomHandle.open(root, "default");
+    const { events: onDisk } = await reopened.eventsFrom(0);
+    assert.ok(onDisk.some((event) => "kind" in event && event.kind === "plugin-reply" && event.text === "probe ran: hi there"), "the reply is on disk, independent of the live service's memory");
+    assert.ok((await reopened.state()).agentCursors.system > 0, "the reply append has an atomic state acknowledgement");
+
+    // The live broadcast still fires (display path unchanged) — durable-first,
+    // not durable-instead-of-live.
+    assert.ok(events.some((event) => event.type === "room-event" && event.event.text === "probe ran: hi there"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(pluginRoot, { recursive: true, force: true });
+  }
+});
+
+test("ADV-021: a trust:false agent's capability denial is durable with pluginId/capability/agentId/reason, logs, and never runs the plugin body", async () => {
+  const pluginRoot = await mkdtemp(join(tmpdir(), "gaia-adv021-denied-"));
+  let live: Workspace | undefined;
+  const { registry, executions } = await probeRegistry(pluginRoot, () => live);
+  const { service, workspace, root } = await makeService({
+    config: { defaultAgent: "terry" },
+    pluginRegistry: registry,
+  });
+  // Untrusted floor: CapabilityBroker.grantsFor never even consults
+  // grantSource once trustSource says false (services/capabilities/broker.ts)
+  // — an all-caps grant for terry could not override this even if configured.
+  workspace.agents.terry = { ...workspace.agents.terry, trust: false };
+  live = workspace;
+
+  const warnCalls: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnCalls.push(args.map(String).join(" ")); };
+  try {
+    await service.sendMessage("/probe hi there");
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  try {
+    assert.equal(executions.count, 0, "the denied plugin's contribution body never ran");
+
+    const { events: transcript } = await service.room.eventsFrom(0);
+    const denyEvent = transcript.find((event) => "kind" in event && event.kind === "capability-denied");
+    assert.ok(denyEvent, "a durable capability-denied event landed in the transcript");
+    assert.equal(denyEvent!.author, "system");
+    const denial = (denyEvent as { details?: { pluginDenial?: { pluginId: string; capability: string; agentId: string; reason: string } } }).details?.pluginDenial;
+    assert.ok(denial, "the denial event carries structured EventDetails.pluginDenial");
+    assert.equal(denial!.pluginId, "acme.probe");
+    assert.equal(denial!.capability, "probe.act");
+    assert.equal(denial!.agentId, "terry");
+    assert.match(denial!.reason, /denied/);
+
+    // Daemon log proof — an independently grep-able line, not just the
+    // transcript row (services/room/commands-facade.ts runPlugin's
+    // CapabilityDeniedError catch).
+    assert.ok(
+      warnCalls.some((line) => line.includes("[capabilities] denied") && line.includes("plugin=acme.probe") && line.includes("capability=probe.act") && line.includes("agent=terry")),
+      `expected a denial log line, got: ${JSON.stringify(warnCalls)}`,
+    );
+
+    // The denial shares the allowed reply's append + atomic acknowledgement.
+    const reopened = await RoomHandle.open(root, "default");
+    const { events: onDisk } = await reopened.eventsFrom(0);
+    assert.ok(onDisk.some((event) => "kind" in event && event.kind === "capability-denied"), "the denial is on disk, independent of the live service's memory");
+    assert.ok((await reopened.state()).agentCursors.system > 0, "the denial append has an atomic state acknowledgement");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(pluginRoot, { recursive: true, force: true });
+  }
 });

@@ -246,6 +246,7 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
   const tools = Array.isArray(value.tools) ? value.tools.map(toolDetail).filter((t): t is NonNullable<typeof t> => Boolean(t)) : undefined;
   const blocks = messageBlocks(value.blocks);
   const summonResult = summonResultFrom(value.summonResult);
+  const pluginDenial = pluginDenialFrom(value.pluginDenial);
   const details: EventDetails = {
     ...(typeof value.model === "string" && value.model.length > 0 ? { model: value.model } : {}),
     ...(value.thinkingStarted === true ? { thinkingStarted: true } : {}),
@@ -253,10 +254,26 @@ export function eventDetailsFrom(value: unknown): EventDetails | undefined {
     ...(tools && tools.length > 0 ? { tools } : {}),
     ...(blocks ? { blocks } : {}),
     ...(summonResult ? { summonResult } : {}),
+    ...(pluginDenial ? { pluginDenial } : {}),
   };
-  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length || details.summonResult
+  return details.model || details.thinkingStarted || details.thinking || details.tools?.length || details.blocks?.length || details.summonResult || details.pluginDenial
     ? details
     : undefined;
+}
+
+/** ADV-021: a capability-broker rejection's durable provenance, reconstructed
+ * from disk exactly like `summonResultFrom` just below — every field is
+ * required (a partial denial record is not trustworthy audit evidence, so it
+ * is dropped wholesale rather than reconstructed with holes). */
+function pluginDenialFrom(value: unknown): EventDetails["pluginDenial"] {
+  if (
+    !isRecord(value)
+    || typeof value.pluginId !== "string" || !value.pluginId
+    || typeof value.capability !== "string" || !value.capability
+    || typeof value.agentId !== "string" || !value.agentId
+    || typeof value.reason !== "string" || !value.reason
+  ) return undefined;
+  return { pluginId: value.pluginId, capability: value.capability, agentId: value.agentId, reason: value.reason };
 }
 
 /** A summon worker's result provenance, reconstructed from disk (see
@@ -507,7 +524,7 @@ function roomEventFrom(raw: unknown, index: number): RoomEvent | undefined {
   // Pre-id transcript lines get a deterministic line-based id.
   const id = typeof raw.id === "string" && raw.id ? raw.id : `legacy_${index}`;
   const kind: RoomEventKind | undefined =
-    raw.kind === "compact-complete" || raw.kind === "turn-failed" ? raw.kind : undefined;
+    raw.kind === "compact-complete" || raw.kind === "turn-failed" || raw.kind === "plugin-reply" || raw.kind === "capability-denied" ? raw.kind : undefined;
   const base = {
     id,
     timestamp: raw.timestamp,
@@ -713,6 +730,14 @@ export class RoomHandle {
 
   async appendEvent(event: RoomEvent): Promise<void> {
     await this.withRoomLock(() => appendJsonlDurable(this.transcriptPath, event));
+  }
+
+  /** Durable non-turn outcome: fsynced transcript append plus one atomic
+   * acknowledgement write, without touching a live turn's pending marker. */
+  async commitAuxiliaryEvent(event: RoomEvent): Promise<void> {
+    await this.withRoomLock(() => this.commitEventLocked(event, (state, cursorAfter) => {
+      state.agentCursors[event.author] = cursorAfter;
+    }));
   }
   /** Append an agent's visible goodbye and durably suppress its automatic
    * follow-ups as one room-lock transaction. */
@@ -1140,24 +1165,23 @@ export class RoomHandle {
     // reserved event id must produce exactly one line (an unlocked check-then-
     // append duplicates it). The cursor scan stays inside too, so the offset
     // matches the file this turn actually committed against.
-    await this.withRoomLock(async () => {
-      // fsynced here, BEFORE the state write below clears pendingTurn and
-      // advances the cursor: the WAL's ordering is only real if the append is
-      // durable first — otherwise a power cut can leave a state that says
-      // "committed" over a transcript that lost the reply.
-      if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
-      const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
-        raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
-      );
-      const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
-      // Keep append→cursor scan→ack contiguous. A crash after append still
-      // retains pendingTurn and resumeMode performs finish-commit.
-      await this.updateStateLocked((state) => {
-        if (nextPending) state.pendingTurn = nextPending;
-        else delete state.pendingTurn;
-        state.agentCursors[event.author] = cursorAfter;
-      });
-    });
+    await this.withRoomLock(() => this.commitEventLocked(event, (state, cursorAfter) => {
+      if (nextPending) state.pendingTurn = nextPending;
+      else delete state.pendingTurn;
+      state.agentCursors[event.author] = cursorAfter;
+    }));
+  }
+
+  /** Transcript append + state acknowledgement under an already-held room
+   * lock. Every durable outcome shares this ordering; callers own only their
+   * state delta, so auxiliary events cannot clear a live pending turn. */
+  private async commitEventLocked(event: RoomEvent, acknowledge: (state: RoomState, cursorAfter: number) => void): Promise<void> {
+    if (!(await this.hasEventLocked(event.id))) await appendJsonlDurable(this.transcriptPath, event);
+    const page = await readJsonlFrom<number>(this.transcriptPath, 0, (raw, lineIndex) =>
+      raw && typeof raw === "object" && (raw as { id?: unknown }).id === event.id ? lineIndex : undefined,
+    );
+    const cursorAfter = page.items.length > 0 ? page.items[page.items.length - 1] + 1 : page.nextCursor;
+    await this.updateStateLocked((state) => acknowledge(state, cursorAfter));
   }
 
   /**

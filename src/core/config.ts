@@ -2,7 +2,7 @@
 // for .gaia/config.json. Anything env-overridable is a function.
 
 import { readFileSync } from "node:fs";
-import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
@@ -401,7 +401,30 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   if (contextGate) config.contextGate = contextGate;
   const envPassthrough = parseEnvPassthrough(obj.env);
   if (envPassthrough) config.env = envPassthrough;
+  const plugins = parsePluginsConfig(obj.plugins);
+  if (plugins) config.plugins = plugins;
   return config;
+}
+
+function parseGrantList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const caps = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return caps.length > 0 ? Object.freeze(caps) : undefined;
+}
+
+/** Parse `.gaia/config.json` `plugins.grants` — per-agent workspace-tier
+ * capability grants consumed by services/capabilities (default {}, i.e. no
+ * grants at all). Unknown/bad entries drop tolerantly; an agentId with no
+ * valid string entries is omitted rather than granted an empty-but-present
+ * list. */
+export function parsePluginsConfig(raw: unknown): PluginsConfig | undefined {
+  if (!isRecord(raw) || !isRecord(raw.grants)) return undefined;
+  const grants: Record<string, readonly string[]> = {};
+  for (const [agentId, value] of Object.entries(raw.grants)) {
+    const caps = parseGrantList(value);
+    if (caps) grants[agentId] = caps;
+  }
+  return Object.keys(grants).length > 0 ? { grants } : undefined;
 }
 
 /** Default context-gate threshold: warn a newly-addressed agent's first turn

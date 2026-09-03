@@ -1,91 +1,64 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
-import {
-  bundledAddonsRoot,
-  bundledPluginNamespace,
-  listBundledPlugins,
-} from "../src/services/bundled-plugins.js";
+import { CapabilityBroker } from "../src/services/capabilities/broker.js";
+import { PluginRegistry } from "../src/services/plugins/registry.js";
+import { bundledDir } from "../src/core/paths.js";
+import { importPluginModule, pluginDiscoveryRoots } from "../src/services/plugins/loader.js";
+import { discoverPluginManifests, readPluginManifests } from "../src/services/plugins/manifest.js";
 
-const repoRoot = join(import.meta.dirname, "..");
-const moduleUrl = pathToFileURL(join(repoRoot, "src", "services", "bundled-plugins.ts")).href;
+test("every bundled plugin package has a valid manifest before registry import", async () => {
+  const roots = [bundledDir("plugins"), bundledDir("addons")];
+  const inventories = await Promise.all(roots.map(async (pluginsRoot) =>
+    readPluginManifests(await discoverPluginManifests(pluginsRoot), { pluginsRoot }),
+  ));
+  assert.deepEqual(inventories[0]?.map((plugin) => plugin.manifest.id), ["gaia.defaults", "gaia.fugu", "gaia.rpg-engine", "gaia.rpg"]);
+  assert.equal(inventories[1]?.[0]?.manifest.process, "standalone");
+});
 
-async function writePackage(
-  bundleRoot: string,
-  directory: string,
-  overrides: Readonly<Record<string, unknown>> = {},
-  entrypoint = 'throw new Error("inventory imported plugin code");\n',
-): Promise<void> {
-  const root = join(bundleRoot, "addons", directory);
-  await mkdir(root, { recursive: true });
-  await writeFile(join(root, "index.mjs"), entrypoint);
-  await writeFile(join(root, "plugin.json"), JSON.stringify({
-    schema: 1,
-    name: `test.${directory}`,
-    version: "1.0.0",
-    engine: "gaia-daemon@>=2.0.0",
-    entrypoint: "./index.mjs",
-    permissions: [],
-    requiredCaps: [],
-    ...overrides,
-  }));
-}
+test("bundled and global discovery roots are injectable", () => {
+  const paths = { commandPluginsDir: () => "/global/plugins" };
+  assert.deepEqual(pluginDiscoveryRoots({ bundled: "/bundle/plugins", paths }), ["/bundle/plugins", "/global/plugins"]);
+  assert.equal(join("plugins", "defaults", "plugin.json"), "plugins/defaults/plugin.json");
+});
 
-async function childInventory(bundleRoot: string): Promise<unknown[]> {
-  const script = `const api = await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.listBundledPlugins("2.0.0")));`;
-  const child = Bun.spawn([process.execPath, "--eval", script], {
-    env: { ...process.env, GAIA_BUNDLE_DIR: bundleRoot },
-    stdout: "pipe",
-    stderr: "pipe",
+
+test("bundled daemon packages stage through the injected registry", async () => {
+  const registry = new PluginRegistry({
+    pluginsRoot: bundledDir("plugins"),
+    placement: "daemon",
+    importer: (_entrypoint, plugin) => importPluginModule(plugin),
+    capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
   });
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  assert.equal(code, 0, stderr);
-  return JSON.parse(stdout) as unknown[];
-}
-
-test("bundled source inventory is empty and namespaced away from legacy plugin registries", async () => {
-  assert.equal(bundledAddonsRoot(), join(repoRoot, "addons"));
-  assert.deepEqual(await listBundledPlugins("2.0.0"), []);
-  assert.equal(bundledPluginNamespace("acme.plugin"), "bundled:acme.plugin");
+  const staged = await registry.stageReload();
+  assert.equal(staged.status, "staged");
+  if (staged.status === "staged") assert.deepEqual(staged.generation.plugins.map((plugin) => plugin.id), ["gaia.defaults", "gaia.rpg"]);
 });
-
-test("compiled-root inventory isolates invalid packages and surfaces incompatible engines", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gaia-bundled-plugins-"));
-  try {
-    await writePackage(root, "throwing");
-    await writePackage(root, "future", { engine: "gaia-daemon@>=3.0.0" });
-    await writePackage(root, "invalid", { permissions: ["trust.enable"] });
-    const inventory = await childInventory(root) as Array<Record<string, unknown>>;
-    assert.deepEqual(inventory.map((item) => item.status), ["unavailable", "invalid", "compatible"]);
-    const compatible = inventory.find((item) => item.status === "compatible");
-    assert.equal(compatible?.namespace, "bundled:test.throwing");
-    const unavailable = inventory.find((item) => item.status === "unavailable");
-    assert.match(String(unavailable?.reason), /requires/);
-    assert.equal(inventory.filter((item) => item.status === "invalid").length, 1);
-    // Both compatible entrypoints throw at module scope; child exit 0 proves inventory did not import either.
-  } finally {
-    await rm(root, { recursive: true, force: true });
+test("every bundled manifest declares callable command contributions", async () => {
+  const roots = [
+    { root: bundledDir("plugins"), placement: "daemon" as const },
+    { root: bundledDir("plugins"), placement: "runner" as const },
+    { root: bundledDir("addons"), placement: "daemon" as const },
+  ];
+  for (const { root, placement } of roots) {
+    const registry = new PluginRegistry({
+      pluginsRoot: root,
+      placement,
+      importer: (_entrypoint, plugin) => importPluginModule(plugin),
+      capabilityBroker: new CapabilityBroker({ grantSource: () => undefined, trustSource: () => false }),
+    });
+    const staged = await registry.stageReload();
+    assert.equal(staged.status, "staged");
+    if (staged.status !== "staged") continue;
+    assert.ok(staged.generation.plugins.length > 0);
+    assert.ok(staged.generation.plugins.every((plugin) => plugin.contributes.commands.length > 0));
+    assert.equal(await registry.applyTurnBoundary(), true);
+    for (const command of registry.commandContributions()) {
+      const result = await registry.invokeCommand(command.pluginId, command.name, { workspaceId: "workspace", roomId: "room", agentId: "agent" }, {
+        args: [],
+        pluginContext: { homedir: "/home/test", workspaceId: "workspace", roomId: "room", agentId: "agent", workspaceRoot: "/workspace", agents: [], command: command.name },
+      });
+      assert.equal(typeof result, "object");
+    }
   }
-});
-
-test("missing bundled add-ons root is an empty inventory", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gaia-bundled-plugins-missing-"));
-  try {
-    assert.deepEqual(await childInventory(root), []);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("bundled inventory has no dynamic import or dependency on legacy loader modules", async () => {
-  const source = await readFile(join(repoRoot, "src", "services", "bundled-plugins.ts"), "utf8");
-  assert.doesNotMatch(source, /\bimport\s*\(/);
-  assert.doesNotMatch(source, /runner-plugins|services\/plugins/);
 });

@@ -128,6 +128,8 @@ export interface RoomSummary {
    * summons. Derived from the durable pendingTurn marker, so a background room's
    * dot lights the moment its turn starts and clears when it commits. */
   running?: boolean;
+  /** ISO timestamp of the durable pending turn's reservation/start. */
+  runningSince?: string;
   title?: string;
   /** Human-pinned room (see RoomState.favorite). */
   favorite?: boolean;

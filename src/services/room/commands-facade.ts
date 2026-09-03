@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -55,6 +54,7 @@ import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../..
 import { readUserNameSetting } from "../user-name.js";
 import { HELP_TEXT, SLASH_COMMANDS, hasExplicitMention, mentionedAgents, parseCommand, planMentionRoute, validateThinkingLevel, type SlashCommand } from "../commands.js";
 import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type PluginContext, type PluginPanel, type PluginResult } from "../plugins.js";
+import { CapabilityDeniedError } from "../capabilities/broker.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "../sanitize.js";
 import { applyEventToDetails, finalizeInterruptedTools, runAgentTurn } from "../turns.js";
 import { ContextPolicyStore } from "../context-policy-store.js";
@@ -78,7 +78,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-
+import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
 const SANITIZE_REVIEW_CHAR_BUDGET = 160_000;
@@ -86,7 +86,7 @@ const PERSONA_CONTEXT_CAP = 16_000;
 type CommandReply = string | { text: string; kind?: RoomEventKind; author?: string };
 type RoomCommand = SlashCommand;
 export class RoomCommandsMixin {
-  [key: string]: any;
+  declare withPluginTurn: <T>(run: () => Promise<T>) => Promise<T>;
   /** A watchdog (role or ambient) firing mid-turn: same persist-then-inject
    * shape as runSteerCommand below, just without its command-reply return
    * value — a watchdog fires from inside an onEvent callback, not a command.
@@ -134,7 +134,7 @@ export class RoomCommandsMixin {
    * object under each of its keys, and every hook below (panel/prompt/
    * renderCap/turnStart) must run ONCE per plugin, not once per alias. */
   async distinctPlugins(): Promise<CommandPlugin[]> {
-    return [...new Set((await this.pluginsPromise).values())];
+    return [...new Set((await this.commandPlugins()).values())];
   }
 
   /** Runs a local command-plugin's .run(), tolerating a thrown/rejected plugin
@@ -145,7 +145,9 @@ export class RoomCommandsMixin {
   pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext {
     return {
       homedir: homedir(),
+      workspaceId: this.workspaceId,
       roomId: this.roomId,
+      agentId: state.activeAgent ?? this.workspace.config.defaultAgent,
       workspaceRoot: this.workspace.rootDir,
       state: state.pluginState?.[pluginStateKey(plugin)],
       agents: Object.values(this.workspace.agents).map((agent) => ({ id: agent.id, displayName: agent.displayName, icon: agent.icon })),
@@ -169,6 +171,20 @@ export class RoomCommandsMixin {
       }
       return result;
     } catch (error) {
+      // The broker (services/plugins/contracts.ts#authorize) rejects BEFORE the
+      // plugin's own contribution code ever runs, so this catch is the ONLY
+      // place a denial's structured provenance (pluginId/capability/agentId/
+      // reason) exists — lost once flattened to a plain string. ADV-021: the
+      // caller (RoomQueue#sendMessage) needs `denial` to persist a durable
+      // `capability-denied` transcript event instead of a generic reply. The
+      // log line here is the daemon-side denial record (grep-able
+      // independent of the transcript, matching the room-lock append below).
+      if (error instanceof CapabilityDeniedError) {
+        const capability = error.missing.join(",");
+        const denial = { pluginId: error.namespace, capability, agentId: error.context.agentId, reason: error.message };
+        console.warn(`[capabilities] denied plugin=${denial.pluginId} capability=${denial.capability} agent=${denial.agentId} room=${error.context.roomId} reason=${denial.reason}`);
+        return { reply: error.message, denial };
+      }
       return { reply: `plugin ${command ?? pluginStateKey(plugin)}: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
@@ -177,9 +193,11 @@ export class RoomCommandsMixin {
    * path as a slash command, so extensions never write room state themselves. */
   async runPluginAction(command: string, args: string[]): Promise<string> {
     await this.init();
-    const plugin = (await this.pluginsPromise).get(command);
-    if (!plugin) throw new Error(`Unknown plugin: ${command}`);
-    return (await this.runPlugin(plugin, args, command)).reply ?? "";
+    return this.withPluginTurn(async () => {
+      const plugin = (await this.commandPlugins()).get(command);
+      if (!plugin) throw new Error(`Unknown plugin: ${command}`);
+      return (await this.runPlugin(plugin, args, command)).reply ?? "";
+    });
   }
 
   async pluginPanels(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<Record<string, PluginPanel> | undefined> {
@@ -261,10 +279,12 @@ export class RoomCommandsMixin {
    * the durable queue), so no original arg text survives and no steer applies —
    * just a bare run + reply. */
   async runUnknownCommand(command: Extract<RoomCommand, { type: "unknown" }>): Promise<string> {
-    const plugin = (await this.pluginsPromise).get(command.command);
-    if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
-    const result = await this.runPlugin(plugin, [], command.command);
-    return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
+    return this.withPluginTurn(async () => {
+      const plugin = (await this.commandPlugins()).get(command.command);
+      if (!plugin) return `Unknown command: /${command.command}. Try /help.`;
+      const result = await this.runPlugin(plugin, [], command.command);
+      return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
+    });
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply
@@ -308,7 +328,10 @@ ${draft.summary}` : ""}`;
       const result = typeof edit === "string"
         ? await runtime.compactApply!(this.roomId, edit, progress)
         : await runtime.compact!(this.roomId, progress);
-      return await this.finishCompactCommand(target, result);
+      // finishCompactCommand's port signature widens `kind` to plain string for
+      // callers outside this file; this file's own CommandReply keeps the exact
+      // RoomEventKind literal the implementation actually returns below.
+      return (await this.finishCompactCommand(target, result)) as CommandReply;
     } catch (error) {
       // /cancel aborted the pass on purpose: report that, not the raw harness
       // exit ("claude exited (signal SIGTERM)…" reads like a crash).
@@ -511,4 +534,6 @@ ${draft.summary}` : ""}`;
    * step. The reviewer runs through the ordinary summon path (sandboxed child
    * room, any harness/provider), so there is nothing harness-specific here. */
 }
+export interface RoomCommandsMixin extends RoomCommandsFacadePort {}
+
 export function installRoomCommands(target: object): void { for (const name of Object.getOwnPropertyNames(RoomCommandsMixin.prototype)) if (name !== "constructor") Object.defineProperty(target, name, Object.getOwnPropertyDescriptor(RoomCommandsMixin.prototype, name)!); }

@@ -1,17 +1,27 @@
-// @ts-nocheck
 import { newId } from "../../core/ids.js";
 import type { AgentDef, PendingTurn, RoomEvent, Task } from "../../core/types.js";
+import type { ContextDietPolicy } from "../../domain/context-diet.js";
 import { newRoomEventId } from "../../domain/rooms.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, resolveAgentRole } from "../../domain/roles.js";
 import { contextWindowFor, harnessIdFor } from "../../harness/spec.js";
 import { readUserNameSetting } from "../user-name.js";
+import type { RoomTurnLoopPort } from "./ports.js";
 import { finalizeInterruptedTools, runAgentTurn } from "../turns.js";
 import { HOOK_TEXT_CAP } from "../hooks.js";
 import { PARTIAL_FLUSH_MS, STALL_NOTICE_THROTTLE_MS, diedWithoutOutput, preservePartialReply, readAmbientWatchdog } from "../room-service.js";
+import type { SendMessageOptions } from "../room-service.js";
+
+function isContextDietPolicy(value: unknown): value is ContextDietPolicy {
+  return typeof value === "object" && value !== null &&
+    "preset" in value && typeof value.preset === "boolean" &&
+    "keepAllToolCalls" in value && typeof value.keepAllToolCalls === "boolean" &&
+    "fullTurnWindow" in value && typeof value.fullTurnWindow === "number" &&
+    "toolTailLines" in value && typeof value.toolTailLines === "number";
+}
 
 /** Durable agent-turn execution; queue custody and WAL ordering remain unchanged. */
 export class RoomTurnLoop {
-  constructor(private readonly service: any) {}
+  constructor(private readonly service: RoomTurnLoopPort) {}
   async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
     // A native command is already pinned to the active agent — it never fans out
     // through the monad.
@@ -240,7 +250,8 @@ export class RoomTurnLoop {
       // next turn, no session rebuild. `preset:false` (the default) renders
       // renderRoomTranscript IDENTICALLY to omitting dietPolicy — IRON, zero
       // cost/behavior change for every room that never opts in.
-      const dietPolicy = await this.service.dietPolicyStore.effective(this.service.roomId);
+      const resolvedDietPolicy = await this.service.dietPolicyStore.effective(this.service.roomId);
+      const dietPolicy = isContextDietPolicy(resolvedDietPolicy) ? resolvedDietPolicy : undefined;
 
       let turn: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
@@ -261,7 +272,7 @@ export class RoomTurnLoop {
             ...(pluginContext ? { pluginContext } : {}),
             ...(options.nativeCommand ? { nativeCommand: true } : {}),
             ...(userName ? { userName } : {}),
-            ...(dietPolicy.preset ? { dietPolicy } : {}),
+            ...(dietPolicy?.preset ? { dietPolicy } : {}),
           },
           isCancelled: () => this.service.taskCancelled(task),
           onEvent: (event) => {

@@ -1,7 +1,7 @@
 // Renders room-local plugin dialogs as a themed, transient overlay popup \u2014
 // never a persistent sidebar panel, never an iframe. A plugin's panel() is
 // present in the snapshot only while its own state says it's open (e.g.
-// rpg.mjs's `open` flag, cleared once an action completes or its `close`
+// rpg's `open` flag, cleared once an action completes or its `close`
 // action runs); like contextgate.js's modal, this is purely snapshot-driven
 // with no independent client-side open/close flag \u2014 resolving/closing always
 // round-trips through the plugin action so the two can't fall out of sync.

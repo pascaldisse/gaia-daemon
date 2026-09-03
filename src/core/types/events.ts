@@ -84,6 +84,25 @@ export interface EventDetails {
    * block reusing the thinking/tool expander — not a plain agent message and
    * never a "user →" bubble. Absent on ordinary turns. */
   summonResult?: SummonResultMeta;
+  /** Provenance for a `capability-denied` system event (ADV-021): a plugin
+   * command's requiredCaps check rejected this room/agent pair BEFORE the
+   * plugin's own contribution code ran (services/plugins/contracts.ts
+   * `authorize`). Durable so a denial is auditable after the fact, not just a
+   * transient toast — mirrors `summonResult` in shape/intent, one denial per
+   * event. */
+  pluginDenial?: PluginDenial;
+}
+
+/** One capability-broker rejection's durable provenance, carried on the
+ * synthesized system event's `EventDetails.pluginDenial` (see AgentRoomEvent
+ * `kind: "capability-denied"`). `capability` is every requiredCaps entry that
+ * was missing, comma-joined (services/capabilities/broker.ts
+ * CapabilityDeniedError#missing) — usually one, occasionally several. */
+export interface PluginDenial {
+  pluginId: string;
+  capability: string;
+  agentId: string;
+  reason: string;
 }
 
 /** Provenance carried on a summon worker's result note so the UI can render a
@@ -138,7 +157,10 @@ export interface UserRoomEvent {
   humanLabel?: string;
 }
 
-export type RoomEventKind = "compact-complete" | "turn-failed";
+/** `plugin-reply` = a manifest-registry command's durable reply (ADV-021: was
+ * transient-only). `capability-denied` = the same path's broker rejection,
+ * carrying `EventDetails.pluginDenial`. */
+export type RoomEventKind = "compact-complete" | "turn-failed" | "plugin-reply" | "capability-denied";
 
 export interface AgentRoomEvent {
   id: string;

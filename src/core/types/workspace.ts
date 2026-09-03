@@ -3,6 +3,16 @@ import type { AgentDef, HooksConfig, McpServerConfig, MemoryConfig, SandboxConfi
 // ---------------------------------------------------------------------------
 // Workspace (.gaia/config.json + resolved layout)
 
+/** Per-agent capability grants at workspace scope (.gaia/config.json
+ * `plugins.grants`, default {}). Keyed by agentId; each entry is that agent's
+ * workspace-tier grant list, unioned with the agent's own agent.json
+ * `capabilities` by the resolver (services/capabilities/resolver.ts) — trust-
+ * floored: an untrusted agent never sees this regardless of what's configured
+ * here (services/capabilities/broker.ts). */
+export interface PluginsConfig {
+  grants?: Record<string, readonly string[]>;
+}
+
 export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
@@ -22,6 +32,7 @@ export interface WorkspaceConfig {
   collab?: CollabConfig;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HooksConfig;
+  plugins?: PluginsConfig;
   /** Context-gate: warn before a NEWLY-addressed agent loads a transcript above
    * this many (estimated) tokens. Omitted → the built-in default. 0 disables. */
   contextGate?: { warnAboveTokens: number };
