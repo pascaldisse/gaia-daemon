@@ -513,6 +513,155 @@ test("PiRuntime.compact surfaces the SDK's summary for durable compaction", asyn
   }
 });
 
+test("PiRuntime.compactClean uses only an explicitly registered summary and leaves ordinary compact untouched", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries", "index.json");
+    await mkdir(join(fx.temp.path, "clean-summaries"), { recursive: true });
+    await writeFile(
+      indexPath,
+      JSON.stringify({ default: { agents: { gaia: "REGISTERED-CLEAN-SUMMARY" } } }),
+      "utf8",
+    );
+    let cleanFloor: string | undefined;
+    let keepRecent = 20_000;
+    const keepRecentHistory: number[] = [];
+    const factory: PiRuntimeSessionFactory = async ({ loader }) => {
+      await loader.reload();
+      const session = new FakeSession("s1");
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          const next = overrides.compaction?.keepRecentTokens;
+          if (next !== undefined) {
+            keepRecent = next;
+            keepRecentHistory.push(next);
+          }
+        },
+      };
+      const hook = loader.getExtensions().extensions[0]!.handlers.get("session_before_compact")![0]!;
+      const preparation = {
+        firstKeptEntryId: "pi-cut",
+        tokensBefore: 9_000,
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        retainedTail: [],
+        fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+      };
+      session.compact = async () => {
+        const result = await hook(
+          { preparation },
+          {
+            model: undefined,
+            modelRegistry: {},
+            sessionManager: {
+              getEntries: () => [
+                { id: "user-1", type: "message", message: { role: "user" } },
+                { id: "assistant-final", type: "message", message: { role: "assistant" } },
+                { id: "tool-tail", type: "tool_result", message: { role: "tool" } },
+                { id: "meta-tail", type: "model_change" },
+              ],
+            },
+          },
+        );
+        if (result?.compaction) {
+          cleanFloor = result.compaction.firstKeptEntryId;
+          return { summary: result.compaction.summary, tokensBefore: preparation.tokensBefore };
+        }
+        return { summary: "ORDINARY-SDK-SUMMARY", tokensBefore: preparation.tokensBefore };
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      cleanCompactionIndexPath: indexPath,
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const clean = await runtime.compactClean("default");
+    assert.equal(clean.compacted, true);
+    assert.equal(clean.summary, "REGISTERED-CLEAN-SUMMARY");
+    assert.equal(cleanFloor, "assistant-final", "clean floor uses 30de282 newest-content semantics");
+    assert.deepEqual(keepRecentHistory, [0, 20_000], "clean pass alone forces a zero tail then restores settings");
+
+    const ordinary = await runtime.compact("default");
+    assert.equal(ordinary.summary, "ORDINARY-SDK-SUMMARY", "registered clean summary never intercepts ordinary /compact");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compactClean is a true no-op when the room has no explicit registration", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries.json");
+    await writeFile(indexPath, "{}", "utf8");
+    let factoryCalls = 0;
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      cleanCompactionIndexPath: indexPath,
+      sessionFactory: async () => {
+        factoryCalls += 1;
+        return { session: new FakeSession("unexpected") };
+      },
+    });
+
+    assert.deepEqual(await runtime.compactClean("default"), {
+      compacted: false,
+      message: "nothing to compact — no clean summary registered for this room and agent.",
+    });
+    assert.equal(factoryCalls, 0, "an unregistered clean request neither creates nor compacts a session");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compactClean reports an already-minimal registered session as completed", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries.json");
+    await writeFile(indexPath, JSON.stringify({ default: { default: "CLEAN-NOOP-SUMMARY" } }), "utf8");
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      let keepRecent = 20_000;
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          if (overrides.compaction?.keepRecentTokens !== undefined) keepRecent = overrides.compaction.keepRecentTokens;
+        },
+      };
+      session.compact = async () => {
+        throw new Error("Session already compacted");
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      cleanCompactionIndexPath: indexPath,
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.deepEqual(await runtime.compactClean("default"), {
+      compacted: true,
+      message: "clean compaction: pi session already minimal; advanced room floor+cursor.",
+      summary: "CLEAN-NOOP-SUMMARY",
+    });
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("PiRuntime.compactDraft captures a summary without evicting, then compactApply commits the edited text", async () => {
   const fx = await harnessFixture();
   try {

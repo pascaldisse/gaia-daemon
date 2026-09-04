@@ -14,6 +14,9 @@ import type { RuntimeCreateContext } from "../spec.js";
 
 export interface PiRuntimeOptions extends RuntimeCreateContext {
   sessionFactory?: PiRuntimeSessionFactory;
+  /** Alternate explicit clean-summary registry for isolated tests. Production
+   * omits this and reads ~/.pi/agent/clean-summaries/index.json. */
+  cleanCompactionIndexPath?: string;
 }
 
 export interface PiSessionLike {
