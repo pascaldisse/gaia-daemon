@@ -304,6 +304,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent, command.edit) : Promise.resolve("")),
+  "dsc-compact": (service, command) => (command.type === "dsc-compact" ? service.runDscCompactCommand(command.agent) : Promise.resolve("")),
   stt: (service, command) => (command.type === "stt" ? service.runSttCommand(command.engine, command.alias) : Promise.resolve("")),
   diet: (service, command) => (command.type === "diet" ? service.runDietCommand(command.sub, command.scope) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),

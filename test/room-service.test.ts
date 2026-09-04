@@ -1284,6 +1284,88 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
   assert.equal(compactEvent.kind, "compact-complete", "compaction completion is persisted with a structured transcript marker");
 });
 
+test("/dsc-compact dispatches the clean runtime and persists its registered summary with floor+cursor", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "safe reply" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted", summary: "REGISTERED-CLEAN-SUMMARY" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  await service.sendMessage("poisoned historical tail");
+  await service.waitForIdle();
+  const room = await RoomHandle.open(root, "default");
+  await room.updateState((state) => {
+    state.agentCursors.gaia = 0;
+  });
+
+  const task = await service.sendMessage("/dsc-compact");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  assert.equal(ordinaryCalls, 0, "clean command never falls through to ordinary compact");
+  const state = await room.state();
+  assert.ok((state.contextFloors?.gaia ?? 0) > 0);
+  assert.equal(state.agentCursors.gaia, state.contextFloors?.gaia, "fc45e43 cursor advances to the clean floor");
+  assert.equal((await room.readCompaction("gaia"))?.summary, "REGISTERED-CLEAN-SUMMARY");
+  const { events } = await room.eventsFrom(0);
+  const reply = events.find((event) => event.author === "system" && /clean compacted/.test(event.text));
+  assert.equal(reply?.kind, "compact-complete");
+});
+
+test("/dsc-compact is a true room-state no-op when no clean summary is registered", async () => {
+  let cleanCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "unused" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: false, message: "nothing to compact — no clean summary registered for this room and agent." };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  const task = await service.sendMessage("/dsc-compact");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  const room = await RoomHandle.open(root, "default");
+  const state = await room.state();
+  assert.equal(state.contextFloors?.gaia, undefined);
+  assert.equal(state.agentCursors.gaia, undefined);
+  assert.equal(await room.readCompaction("gaia"), undefined);
+});
+
+test("ordinary /compact remains on runtime.compact when compactClean is available", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "unused" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ runtimeFactory: factory });
+  const task = await service.sendMessage("/compact");
+  assert.equal(task.status, "complete");
+  assert.equal(ordinaryCalls, 1);
+  assert.equal(cleanCalls, 0);
+});
+
 test("/compact --edit shows a non-evicting draft, then persists the owner-edited summary on apply", async () => {
   let draftCalls = 0;
   let appliedSummary: string | undefined;
