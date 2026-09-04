@@ -12,7 +12,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MEMORY_DEFAULTS } from "../src/core/config.js";
+import { MEMORY_DEFAULTS, parseMemoryPatch, resolveMemoryConfig } from "../src/core/config.js";
 import type { AgentDef, AgentEvent, MemoryConfig, UiEvent, Workspace } from "../src/core/types.js";
 import { appendFactOp } from "../src/domain/facts.js";
 import { MemoryStore } from "../src/domain/memory.js";
@@ -50,6 +50,7 @@ async function makeMemoryService(
     rooms?: Array<{ roomId: string; events: Array<{ author: string; text: string; ts?: string }> }>;
     now?: () => Date;
     embedderDeps?: import("../src/services/embeddings.js").EmbedderDeps;
+    logs?: string[];
   } = {},
 ): Promise<{ service: MemoryService; agent: AgentDef; root: string }> {
   const root = await mkdtemp(join(tmpdir(), "gaia-memsvc-"));
@@ -69,6 +70,8 @@ async function makeMemoryService(
   const config: MemoryConfig = {
     autoRecall: true,
     autoRecallBudget: 1200,
+    autoRecallExcludePatterns: [],
+    autoRecallExcludeRooms: [],
     embeddings: "off",
     reranker: "off",
     consolidate: { enabled: false, idleMinutes: 30, maxPerDay: 8 },
@@ -83,6 +86,7 @@ async function makeMemoryService(
     ...(roomRefs.length ? { roomsFor: () => roomRefs } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.embedderDeps ? { embedderDeps: options.embedderDeps } : {}),
+    ...(options.logs ? { log: (message: string) => options.logs!.push(message) } : {}),
   });
   return { service, agent, root };
 }
@@ -161,6 +165,50 @@ test("autoRecallBlock: a matching fact yields the fenced header + text within bu
   service.dispose();
 });
 
+test("autoRecallBlock: exclusion patterns and rooms drop matching injection hits, while explicit recall keeps them", async () => {
+  const logs: string[] = [];
+  const { service, agent } = await makeMemoryService({
+    config: { autoRecallExcludePatterns: ["cyber"], autoRecallExcludeRooms: ["quarantined"] },
+    rooms: [{ roomId: "quarantined", events: [{ author: "user", text: "orchard quarantine notes" }] }],
+    logs,
+  });
+  await seedFact(agent.memoryDir, "orchard cyber incident response runbook");
+  await seedFact(agent.memoryDir, "orchard release schedule is every Tuesday");
+
+  const block = await service.autoRecallBlock("gaia", "orchard");
+  assert.ok(block.includes("release schedule"), `unexcluded hit injected (got: ${block})`);
+  assert.ok(!block.includes("cyber incident"), `pattern-matched hit excluded (got: ${block})`);
+  assert.ok(!block.includes("quarantine notes"), `room-matched hit excluded (got: ${block})`);
+  assert.ok(logs.some((line) => line.includes("2 excluded")), `dropped count logged (got: ${JSON.stringify(logs)})`);
+
+  const explicit = await service.deepSearch("gaia", "orchard");
+  assert.ok(explicit.hits.some((hit) => hit.text.includes("cyber incident")), "explicit recall keeps pattern-matched hit");
+  assert.ok(explicit.hits.some((hit) => hit.roomId === "quarantined"), "explicit recall keeps room-matched hit");
+  service.dispose();
+});
+
+test("autoRecallBlock: exclusions do not drop non-matching hits", async () => {
+  const logs: string[] = [];
+  const { service, agent } = await makeMemoryService({ config: { autoRecallExcludePatterns: ["cyber"] }, logs });
+  await seedFact(agent.memoryDir, "orchard release schedule is every Tuesday");
+  const block = await service.autoRecallBlock("gaia", "orchard release");
+  assert.ok(block.includes("release schedule"), `non-matching hit injected (got: ${block})`);
+  assert.ok(logs.some((line) => line.includes("0 excluded")), `zero drops logged (got: ${JSON.stringify(logs)})`);
+  service.dispose();
+});
+
+test("memory exclusion config is valid at workspace scope and overrides per agent", () => {
+  const workspace = resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch({
+    autoRecallExcludePatterns: ["cyber", "[invalid"],
+    autoRecallExcludeRooms: ["quarantined"],
+  }));
+  assert.deepEqual(workspace.autoRecallExcludePatterns, ["cyber"], "invalid regex drops at config parse");
+  assert.deepEqual(workspace.autoRecallExcludeRooms, ["quarantined"]);
+  const agent = resolveMemoryConfig(workspace, parseMemoryPatch({ autoRecallExcludePatterns: [], autoRecallExcludeRooms: ["agent-only"] }));
+  assert.deepEqual(agent.autoRecallExcludePatterns, [], "agent may clear workspace patterns");
+  assert.deepEqual(agent.autoRecallExcludeRooms, ["agent-only"], "agent room list overrides workspace list");
+});
+
 test("self-match exclusion: the asking room is dropped; other rooms and compacted-away content come back", async () => {
   const oldTs = new Date(Date.now() - 3 * 86_400_000).toISOString();
   // Pad the old event past the chunk max so the compaction floor falls on a
@@ -207,7 +255,7 @@ test("search surfaces degradation honestly: 'auto' without a sidecar reports lex
   service.dispose();
 });
 
-test("recall degraded is debounced: one slow search doesn't latch the chip; a streak does; a fast search clears it", async () => {
+test("recall degraded is debounced: one slow search doesn't latch the chip; a streak does; a fast search clears it", { timeout: 10_000 }, async () => {
   // A slow EMBED pushes each search past the 1.5s recall budget deterministically
   // (setTimeout guarantees ≥1600ms > SLOW_RECALL_MS). The point: a lone spike
   // must not raise the loud chip — only sustained slowness — and recovery clears.
@@ -399,6 +447,8 @@ test("memory knobs surface as field hints in config.json and agent.json (optiona
   const agentHints = buildFileHints({ label: "agents/gaia/agent.json", kind: "json" }, sources);
   assert.ok(agentHints);
   assert.equal((agentHints["memory.autoRecall"] as FieldHint).input, "boolean");
+  assert.equal((agentHints["memory.autoRecallExcludePatterns"] as FieldHint).input, "json");
+  assert.equal((agentHints["memory.autoRecallExcludePatterns"] as FieldHint).optional, true, "per-agent overrides are optional");
   assert.equal((agentHints["memory.autoRecall"] as FieldHint).optional, true, "per-agent overrides are optional");
   assert.equal((agentHints["memory.embeddings"] as FieldHint).optional, true);
   assert.equal((agentHints["memory.consolidate.maxPerDay"] as FieldHint).input, "number");

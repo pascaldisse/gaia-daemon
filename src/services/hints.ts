@@ -333,6 +333,8 @@ function memoryHints(optional: boolean, models: ModelChoice[]): FileHints {
   return {
     "memory.autoRecall": { input: "boolean", optional },
     "memory.autoRecallBudget": { input: "number", optional },
+    "memory.autoRecallExcludePatterns": { input: "json", optional },
+    "memory.autoRecallExcludeRooms": { input: "json", optional },
     "memory.embeddings": select(
       [
         { value: "auto", description: "local llama.cpp sidecar (nothing leaves this machine); lexical-only when unavailable — NEVER cloud" },

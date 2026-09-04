@@ -59,6 +59,8 @@ export const DEFAULTS = {
 export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecall: true,
   autoRecallBudget: 2_400,
+  autoRecallExcludePatterns: [],
+  autoRecallExcludeRooms: [],
   embeddings: "auto",
   reranker: "auto",
   // Dream v2: background dreaming is OFF by default — consolidation now runs
@@ -328,6 +330,12 @@ export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
   const patch: MemoryConfigPatch = {};
   if (typeof raw.autoRecall === "boolean") patch.autoRecall = raw.autoRecall;
   if (typeof raw.autoRecallBudget === "number" && raw.autoRecallBudget >= 0) patch.autoRecallBudget = Math.floor(raw.autoRecallBudget);
+  if (Array.isArray(raw.autoRecallExcludePatterns)) {
+    patch.autoRecallExcludePatterns = raw.autoRecallExcludePatterns.filter((pattern): pattern is string => typeof pattern === "string" && pattern.trim().length > 0 && isValidRegex(pattern));
+  }
+  if (Array.isArray(raw.autoRecallExcludeRooms)) {
+    patch.autoRecallExcludeRooms = raw.autoRecallExcludeRooms.filter((room): room is string => typeof room === "string" && room.trim().length > 0).map((room) => room.trim());
+  }
   if (raw.embeddings === "auto" || raw.embeddings === "off") patch.embeddings = raw.embeddings;
   else if (isRecord(raw.embeddings) && typeof raw.embeddings.provider === "string" && raw.embeddings.provider.trim()) {
     patch.embeddings = {
@@ -355,12 +363,23 @@ export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
   return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
+function isValidRegex(pattern: string): boolean {
+  try {
+    new RegExp(pattern, "i");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Layer a memory patch over a base config (defaults ← workspace ← agent). */
 export function resolveMemoryConfig(base: MemoryConfig, patch: MemoryConfigPatch | undefined): MemoryConfig {
   if (!patch) return base;
   return {
     autoRecall: patch.autoRecall ?? base.autoRecall,
     autoRecallBudget: patch.autoRecallBudget ?? base.autoRecallBudget,
+    autoRecallExcludePatterns: patch.autoRecallExcludePatterns ?? base.autoRecallExcludePatterns,
+    autoRecallExcludeRooms: patch.autoRecallExcludeRooms ?? base.autoRecallExcludeRooms,
     embeddings: patch.embeddings ?? base.embeddings,
     reranker: patch.reranker ?? base.reranker,
     consolidate: { ...base.consolidate, ...patch.consolidate },
