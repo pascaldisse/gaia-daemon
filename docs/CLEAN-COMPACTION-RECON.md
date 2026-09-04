@@ -29,7 +29,7 @@
 - trigger filtering/model-free fallback confined to that command
 - floor alone insufficient → Gaia `agentCursor` must advance with successful clean compaction
 
-## Proposed repair · not applied
+## Repair · applied on `fix/open-0827`
 
 1. port complete `/dsc-compact` chain into refactored owners
    - command parser/registry → room command facade → host/runner protocol → `PiRuntime` → `PiCompaction`
@@ -47,8 +47,18 @@
 6. live gate after explicit deploy approval
    - compiled daemon · disposable room/session · real `/dsc-compact` · real next turn
 
+## Applied provenance · 2026-09-04
+
+- `ec2a8dd` → `PiCompaction.clean()` + `PiRuntime.compactClean()` · registry-only · ordinary `/compact` isolation
+- `c0e3dea` → parser/dispatch/facade + retained host wire · Gaia floor/cursor
+- `d5eaf26` → next-turn replay window proof
+- later-history semantics → `30de282` final content-entry floor · `fc45e43` cursor advancement · `2372340` registered Pi no-op completion
+- explicit registration retained → `~/.pi/agent/clean-summaries/index.json` untouched `{}`
+
 ## Verification boundary
 
 - static recon + source/history inspection → verified
-- current live daemon clean behavior → UNVERIFIED
-- proposed repair → UNIMPLEMENTED
+- `bun run check` → pass
+- focused clean chain → 74 pass (`pi-runtime`+commands+runner-host+room clean cases)
+- full `room-service` suite → blocked by unrelated pre-existing stall-requeue timeout
+- current live daemon clean behavior → UNVERIFIED · no restart/deploy
