@@ -180,6 +180,13 @@ async function reloadNow(close: () => Promise<void>): Promise<void> {
             const parsed = JSON.parse(readFileSync(sourceJsonPath, "utf8")) as { root: string; bun: string };
             const script = join(parsed.root, "scripts/build-daemon.mjs");
             if (existsSync(script)) plan = { script, out: dirname(process.execPath), bun: parsed.bun };
+            // Pointer survives its target: gaia-source.json keeps naming a
+            // checkout that has since been deleted (a lane worktree, say).
+            // Without this, /rebuild silently degrades to a bare re-exec —
+            // the app relaunches with the OLD bundle and looks like the fix
+            // "broke again" (observed live 2026-09-04, root was a removed
+            // .gaia/worktrees/main-build). Say it out loud instead.
+            else console.error(`gaia: /rebuild cannot build — gaia-source.json root is gone: ${parsed.root} (no scripts/build-daemon.mjs). Re-exec only; rebuild skipped.`);
           } catch (error) {
             console.error(`gaia: failed to read gaia-source.json: ${error instanceof Error ? error.message : String(error)}`);
           }
