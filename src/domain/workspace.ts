@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
+import { AUTO_COMPACT_DEFAULTS, DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
@@ -98,6 +98,7 @@ function defaultConfigJson(): WorkspaceConfig {
     room: DEFAULTS.room,
     transcriptWindow: DEFAULTS.transcriptWindow,
     agentEndConversation: DEFAULTS.agentEndConversation,
+    autoCompact: AUTO_COMPACT_DEFAULTS,
     maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
     // Written out (not just implied) so the memory section is visible and
     // editable in the settings UI from day one.

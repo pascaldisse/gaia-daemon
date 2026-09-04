@@ -144,6 +144,16 @@ export interface RoomGoal {
   stoppedReason?: string;
 }
 
+export interface RoomAutoCompactState {
+/** Per-room overrides; absent fields inherit WorkspaceConfig.autoCompact. */
+thresholdPct?: number | null;
+cooldownTurns?: number;
+/** Durable next-turn passes, keyed by agent. */
+pending?: Record<string, number>;
+/** Remaining completed turns that cannot schedule another pass. */
+cooldowns?: Record<string, number>;
+}
+
 export interface RoomState {
   activeRoles: Record<string, string>;
   /** Room-pinned autonomous objective (see RoomGoal). Absent = no goal. */
@@ -221,6 +231,8 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+/** Per-room auto-compact overrides and durable scheduling state. */
+autoCompact?: RoomAutoCompactState;
   /** Harness-native shells that detached into the background during a turn.
    * These are start records only: the harness exposes no reliable exit marker,
    * so consumers must not infer liveness from their presence. */

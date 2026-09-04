@@ -80,6 +80,9 @@ export class RoomTurnLoop {
       }
       const agent = this.service.workspace.agents[target];
       const runtime = this.service.runtimes[target];
+      // A completed earlier turn may have scheduled the native Pi SDK pass.
+      // It must run before this next prompt is assembled into the session.
+      await this.service.runPendingAutoCompact(target);
       this.service.startedPetTargets.add(this.service.petTargetKey(task.id, target));
       this.service.emitPetProgress(task, target, "working");
       const state = await this.service.room.state();
@@ -495,6 +498,7 @@ export class RoomTurnLoop {
       }
 
       if (producedOutput) await this.service.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (!cancelled) await this.service.scheduleAutoCompact(target);
       this.service.fireHooks("postTurn", {
         agentId: target,
         reply: partialReply.slice(0, HOOK_TEXT_CAP),

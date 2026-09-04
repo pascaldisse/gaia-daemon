@@ -289,7 +289,7 @@ export class RoomCommandsMixin {
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply
    * variant behind a capability flag, never a harness-id branch. */
-  async runCompactCommand(agent?: string, edit?: boolean | string): Promise<CommandReply> {
+  async runCompactCommand(agent?: string, edit?: boolean | string, automatic = false): Promise<CommandReply> {
     const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
@@ -302,7 +302,7 @@ export class RoomCommandsMixin {
     }
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
-    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    if (this.activeAgentTurn && !automatic) return "A turn is running — /cancel it first, or wait for it to finish.";
     this.compactingAgents.add(target);
     const startedAt = Date.now();
     const usedTokens = this.contextUsage[target]?.usedTokens;
