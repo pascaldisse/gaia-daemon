@@ -9,6 +9,7 @@ export type SlashCommand =
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
   | { type: "summon"; agent?: string; task?: string }
+  | { type: "archtree"; action?: "add-root"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "thinking-level"; level: number }
   | { type: "model"; agent?: string; spec?: string }
@@ -61,6 +62,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
+  { name: "archtree", type: "archtree", description: "open the room tree, or add a live root: /archtree add-root [--agent <agent>] <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>, or GAIA-THINK protocol level: /thinking <0-10|off>" },
   { name: "design", type: "design", description: "toggle artifacts, or /design <request> to ask the active agent" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
@@ -135,6 +137,10 @@ export function parseCommand(input: string): SlashCommand {
       return stripped.length >= 2 ? { type: "role", agent: stripped[0], role: stripped[1] } : { type: "role", role: stripped[0] };
     case "summon":
       return { type: "summon", agent: stripped[0] || undefined, task: args.slice(1).join(" ") || undefined };
+    case "archtree": {
+      const parsed = parseArchtreeAddRootArgs(args);
+      return parsed ? { type: "archtree", action: "add-root", ...parsed } : { type: "archtree" };
+    }
     case "thinking": {
       // Two-token form (`/thinking @agent low`) stays the per-agent SDK
       // reasoning-EFFORT command. A single numeric token or bare `off`
@@ -250,6 +256,24 @@ export function parseCommand(input: string): SlashCommand {
     default:
       return { type: command.type } as SlashCommand;
   }
+}
+
+/** Parse the shared CLI/slash `add-root` form. Unknown flags remain task text. */
+export function parseArchtreeAddRootArgs(args: string[]): { agent?: string; task?: string } | undefined {
+  if (args[0]?.toLowerCase() !== "add-root") return undefined;
+  let agent: string | undefined;
+  const task: string[] = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--agent") {
+      agent = args[index + 1]?.replace(/^@/, "").trim() || undefined;
+      index += 1;
+    } else {
+      task.push(arg);
+    }
+  }
+  const text = task.join(" ").trim();
+  return { ...(agent ? { agent } : {}), ...(text ? { task: text } : {}) };
 }
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(

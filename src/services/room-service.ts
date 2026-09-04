@@ -299,6 +299,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
   pet: (service, command) => (command.type === "pet" ? service.runPetCommand(command) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
+  archtree: (service, command) => (command.type === "archtree" && command.action === "add-root" ? service.runArchtreeCommand(command.agent, command.task) : Promise.resolve("Usage: /archtree add-root [--agent <agent>] <task>")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   refresh: (service) => service.runRefreshCommand(),

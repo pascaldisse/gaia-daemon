@@ -13,6 +13,7 @@ import { harnessSpecs, type GaiaTool } from "../../harness/spec.js";
 import { agentRoster } from "../../harness/tools.js";
 import { LLM_PROXY_MOUNT } from "../../services/proxy.js";
 import { summonAck } from "../../services/summons.js";
+import { addArchtreeRoot } from "../../services/archtree.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
 import { AUTH_COOKIE, beginSse, boolField, matchPath, respond, stringField, type RouteContext } from "../route.js";
 import { handleAgents } from "./agents.js";
@@ -126,6 +127,7 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
       (method === "GET" && path === "/api/harness/agents") ||
       (method === "POST" &&
         (path === "/api/harness/summon" ||
+          path === "/api/harness/archtree" ||
           path === "/api/harness/recall" ||
           path === "/api/harness/dream" ||
           path === "/api/harness/resume" ||
@@ -575,6 +577,7 @@ async function handleHarness(ctx: RouteContext, pathname: string): Promise<void>
     const verb = pathname.slice("/api/harness/".length).split("/")[0] as
       | "memory"
       | "summon"
+      | "archtree"
       | "recall"
       | "dream"
       | "resume"
@@ -588,7 +591,7 @@ async function handleHarness(ctx: RouteContext, pathname: string): Promise<void>
     // — gated on the "gaia" grant itself, mirroring dream's own carve-out.
     // `dog` (09-DOG-MODE) is never a GaiaTool grant either — same carve-out.
     if (verb !== "dream" && verb !== "dog" && verb !== "tools") {
-      const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : verb;
+      const gaiaToolGate: GaiaTool = verb === "tool-result-fetch" || verb === "context-diet" || verb === "end-conversation" ? "gaia" : verb === "archtree" ? "summon" : verb;
       if (!daemon.harnessGaiaTools(workspace, claims.agentId).includes(gaiaToolGate)) {
         return json(response, 403, { error: `This agent's harness does not grant the ${gaiaToolGate} tool.` });
       }
@@ -786,6 +789,23 @@ async function handleHarnessActions(ctx: RouteContext, pathname: string, claims:
         }
         const patch = parseContextDietOverrides(rawPatch);
         json(response, 200, { ok: true, ...(await daemon.harnessContextDietSet(claims, scope, patch)) });
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    // /api/harness/archtree — independent root under the calling coordinator.
+    // It reuses SummonCoordinator: parent link, durable delivery, recovery and
+    // heartbeat/cap semantics remain exactly the ordinary summon path.
+    if (pathname === "/api/harness/archtree") {
+      if (!claims.allowSummon) return json(response, 403, { error: "Summoned agents cannot summon." });
+      const agentId = stringField(body, "agent")?.trim() || claims.agentId;
+      const task = stringField(body, "task")?.trim();
+      if (!task) return json(response, 400, { error: "Missing root task" });
+      try {
+        const coordinator = await daemon.coordinatorFor(claims.workspaceId);
+        const roomId = await addArchtreeRoot(coordinator, { parentRoomId: claims.roomId, agentId, task, callerAgentId: claims.agentId });
+        json(response, 200, { roomId, result: `Added archtree root @${agentId} in room '${roomId}'.` });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
       }

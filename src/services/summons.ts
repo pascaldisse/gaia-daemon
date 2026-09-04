@@ -509,6 +509,9 @@ export class SummonCoordinator implements SummonHost {
     const child = await this.serviceForRoom(childRoomId);
     const info: SummonChild = { roomId: childRoomId, parentRoomId, agentId, prompt: task, untrusted };
     this.running.set(childRoomId, info);
+    // Broadcast after durable registration, before the first worker event, so
+    // the parent tree gains the new lane immediately.
+    this.notifyParentRoomsChanged(parentRoomId);
 
     const ledgered = this.runChild(child, info, task, options).then(
       async (reply) => {

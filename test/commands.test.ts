@@ -14,6 +14,9 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/role brainstorm"), { type: "role", role: "brainstorm" });
   assert.deepEqual(parseCommand("/role gaia brainstorm"), { type: "role", agent: "gaia", role: "brainstorm" });
   assert.deepEqual(parseCommand("/summon terry fix the tests"), { type: "summon", agent: "terry", task: "fix the tests" });
+  assert.deepEqual(parseCommand("/archtree add-root map the API"), { type: "archtree", action: "add-root", task: "map the API" });
+  assert.deepEqual(parseCommand("/archtree add-root --agent @ghoul-terra map the API"), { type: "archtree", action: "add-root", agent: "ghoul-terra", task: "map the API" });
+  assert.deepEqual(parseCommand("/archtree"), { type: "archtree" });
   assert.deepEqual(parseCommand("/thinking high"), { type: "thinking", level: "high" });
   assert.deepEqual(parseCommand("/thinking @gaia off"), { type: "thinking", agent: "gaia", level: "off" });
   // GAIA-THINK protocol level: bare numeric or `off` (single token) → thinking-level.
