@@ -27,7 +27,7 @@ import { state } from "./state.js";
 // schedules Web Audio buffer sources from the play frontier and re-anchors on
 // underrun so the playhead clock stays honest.
 
-class AudioTransport {
+export class AudioTransport {
   constructor() {
     /** @type {AudioContext} */
     this.ctx = new AudioContext();
@@ -44,6 +44,19 @@ class AudioTransport {
     this.done = false;
     /** True between play() and pause()/finish. */
     this.playing = false;
+    /** Set ONLY by a real user pause (the toggle button or a timeline drag).
+     * Everything else that stops audio (finish races, device migration, an
+     * underrun) leaves it false, so late audio may re-arm playback. */
+    this.userPaused = false;
+    /** play() was called and no user pause/finish has retired it: a late
+     * append() belongs to this run and must resume it. */
+    this._armed = false;
+    /** Bumped by every append(); _maybeFinish() aborts if it moves under it. */
+    this._appendSeq = 0;
+    /** Appends being prepared upstream (a decode/read in flight). */
+    this.pendingAppends = 0;
+    /** A finish re-check is already queued. */
+    this._finishQueued = false;
     /** ctx.currentTime the current play run was anchored at. */
     this.anchorCtx = 0;
     /** The sample index that anchorCtx corresponds to. */
@@ -63,6 +76,22 @@ class AudioTransport {
     this.onEnded = null;
     /** @type {((error: unknown) => void)|null} visible AudioContext failures */
     this.onError = null;
+    this._bindContextState();
+  }
+
+  /** Watch the context for going non-running under us. WebKit (the native
+   * shell) suspends/interrupts a context when the macOS audio session changes
+   * hands; ctx.currentTime keeps ticking into silence and nothing ever notices.
+   * Only play() checked state before, i.e. never again after start. */
+  _bindContextState() {
+    const ctx = this.ctx;
+    ctx.onstatechange = () => {
+      if (this.ctx !== ctx) return; // stale context from a previous migration
+      if (this._migrating || ctx.state === "closed") return; // our own teardown
+      if (!this.playing || this.userPaused) return;
+      if (ctx.state === "running") return;
+      void this.migrateContext();
+    };
   }
 
   /** @returns {number} */
@@ -94,7 +123,15 @@ class AudioTransport {
     this.segStart.push(this.total);
     this.segments.push(mono);
     this.total += mono.length;
-    if (this.playing) this._pump();
+    this._appendSeq += 1;
+    if (this.playing) {
+      this._pump();
+      return;
+    }
+    // Audio arrived after playback stopped without the user asking for it (a
+    // finish that raced the tail, a migration): re-arm from where we stopped
+    // instead of dropping the remainder on the floor. THIS is the stall bug.
+    if (this._armed && !this.userPaused) this.play(this.pausedSample);
   }
 
   /** Read samples [from, to) into one contiguous Float32Array (across segments).
@@ -148,12 +185,34 @@ class AudioTransport {
     }
   }
 
+  /** Every condition that must hold for playback to be over. */
+  _canFinish() {
+    return this.playing
+      && this.done
+      && this.frontier >= this.total
+      && this.sources.size === 0
+      && this.pendingAppends === 0;
+  }
+
+  /** Finish only if nothing lands in between. The last source's onended fires
+   * before an in-flight append() has been applied, so a synchronous finish can
+   * strand the tail (playing=false, append() no-ops). Re-check on the next
+   * microtask and abort if any append arrived. */
   _maybeFinish() {
-    if (this.playing && this.done && this.frontier >= this.total && this.sources.size === 0) {
+    if (!this._canFinish() || this._finishQueued) return;
+    this._finishQueued = true;
+    const seq = this._appendSeq;
+    queueMicrotask(() => {
+      this._finishQueued = false;
+      if (this._appendSeq !== seq || !this._canFinish()) return;
       this.playing = false;
+      this.userPaused = false;
+      // _armed stays true on purpose: finishing is OUR decision, not the
+      // user's, and a truncated stream can still deliver its tail afterwards.
+      // Only pause()/destroy() retire the run.
       this.pausedSample = this.total;
       this.onEnded?.();
-    }
+    });
   }
 
   /** Start (or resume/seek) playback from a sample index.
@@ -162,6 +221,8 @@ class AudioTransport {
     const from = fromSample ?? Math.round(this.currentTime * this.sampleRate);
     this._stopSources();
     this.playing = true;
+    this.userPaused = false;
+    this._armed = true;
     this.frontier = Math.min(Math.max(0, from), this.total);
     this.anchorCtx = this.ctx.currentTime + 0.08;
     this.anchorSample = this.frontier;
@@ -172,11 +233,15 @@ class AudioTransport {
     this._maybeFinish();
   }
 
+  /** User-initiated pause (toggle button / drag). Sets userPaused, which blocks
+   * append() from re-arming — a paused player must stay paused. */
   pause() {
     if (!this.playing) return;
     this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._stopSources();
     this.playing = false;
+    this.userPaused = true;
+    this._armed = false;
   }
 
   /** @param {number} seconds */
@@ -226,13 +291,22 @@ class AudioTransport {
         // Already closed.
       }
       this.ctx = new AudioContext();
+      this._bindContextState();
       this.play(resumeAt);
+    } catch (error) {
+      // Never leave this.ctx closed and silent: the old context is dead, a new
+      // one could not be built. Say so instead of freezing the playhead.
+      this.playing = false;
+      this._armed = false;
+      this.onError?.(error);
     } finally {
       this._migrating = false;
     }
   }
 
   destroy() {
+    this._armed = false;
+    this.ctx.onstatechange = null;
     this._stopSources();
     void this.ctx.close().catch(() => {});
   }
@@ -260,7 +334,7 @@ let activeOrigin = null;
 // context does not follow the default device on its own, harmless on Chromium
 // where it already does. Registered once; fires only while something plays.
 navigator.mediaDevices?.addEventListener?.("devicechange", () => {
-  void transport?.migrateContext();
+  transport?.migrateContext().catch((error) => transport?.onError?.(error));
 });
 
 /** Whole-message PCM kept after a clean finish, so replays are instant and
@@ -405,7 +479,18 @@ async function feedStream(t, response, controller) {
   let leftover = new Uint8Array(0);
   let pcmFrames = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    /** @type {ReadableStreamReadResult<Uint8Array>} */
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (controller.signal.aborted || transport !== t) return;
+      // The server destroyed the response mid-stream (see rooms.ts): the clip is
+      // TRUNCATED, not finished. Never markDone() here — say where it broke.
+      t.onError?.(new Error(`audio stream aborted at ${fmtTime(t.currentTime)}`, { cause: error }));
+      return;
+    }
+    const { done, value } = chunk;
     if (controller.signal.aborted || transport !== t) {
       try {
         await reader.cancel();
@@ -455,10 +540,17 @@ async function feedChunks(t, base, eventId, total, controller, regenerate = fals
     }
     const count = Number(response.headers.get("x-tts-chunks"));
     if (Number.isInteger(count) && count > 0) total = count;
-    const decoded = await t.ctx.decodeAudioData(await response.arrayBuffer());
-    if (controller.signal.aborted || transport !== t) return;
-    t.setFormat(decoded.sampleRate, decoded.numberOfChannels);
-    t.append(downmix(decoded));
+    // Decode is async: mark the append as in flight so a finish cannot land
+    // between the last source ending and this chunk being appended.
+    t.pendingAppends += 1;
+    try {
+      const decoded = await t.ctx.decodeAudioData(await response.arrayBuffer());
+      if (controller.signal.aborted || transport !== t) return;
+      t.setFormat(decoded.sampleRate, decoded.numberOfChannels);
+      t.append(downmix(decoded));
+    } finally {
+      t.pendingAppends -= 1;
+    }
   }
   t.markDone();
 }
