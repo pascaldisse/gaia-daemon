@@ -91,3 +91,30 @@ test("gaia summon --status (Fix #2 census): posts to /api/harness/summon/status 
     console.error = previousError;
   }
 });
+
+test("gaia archtree add-root posts the parsed task and selected agent", async () => {
+  const previousUrl = process.env.GAIA_DAEMON_URL;
+  const previousToken = process.env.GAIA_DAEMON_TOKEN;
+  const previousAgent = process.env.GAIA_AGENT_ID;
+  const previousFetch = globalThis.fetch;
+  const previousLog = console.log;
+  const requests: Array<{ url: string; body: unknown }> = [];
+  process.env.GAIA_DAEMON_URL = "http://127.0.0.1:8787";
+  process.env.GAIA_DAEMON_TOKEN = "test-token";
+  process.env.GAIA_AGENT_ID = "gaia";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ result: "Added archtree root @terry." }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  console.log = () => {};
+  try {
+    assert.equal(await runHarnessCommand(["archtree", "add-root", "--agent", "terry", "map", "the", "API"]), 0);
+    assert.deepEqual(requests, [{ url: "http://127.0.0.1:8787/api/harness/archtree", body: { agent: "terry", task: "map the API" } }]);
+  } finally {
+    if (previousUrl === undefined) delete process.env.GAIA_DAEMON_URL; else process.env.GAIA_DAEMON_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.GAIA_DAEMON_TOKEN; else process.env.GAIA_DAEMON_TOKEN = previousToken;
+    if (previousAgent === undefined) delete process.env.GAIA_AGENT_ID; else process.env.GAIA_AGENT_ID = previousAgent;
+    globalThis.fetch = previousFetch;
+    console.log = previousLog;
+  }
+});

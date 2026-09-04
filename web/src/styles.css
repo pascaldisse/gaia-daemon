@@ -1358,7 +1358,7 @@ sidebar: workspaces + rooms tree
   color: #e8c88a;
   text-shadow: 0 0 12px rgba(255, 200, 110, 0.45);
 }
-.archtree-close {
+.archtree-close, .archtree-add-root {
   pointer-events: auto;
   background: transparent;
   border: 1px solid rgba(232, 200, 138, 0.35);
@@ -1367,7 +1367,7 @@ sidebar: workspaces + rooms tree
   padding: 2px 8px;
   cursor: pointer;
 }
-.archtree-close:hover { background: rgba(232, 200, 138, 0.12); }
+.archtree-close:hover, .archtree-add-root:hover { background: rgba(232, 200, 138, 0.12); }
 .archtree-hud {
   position: absolute;
   left: 0;

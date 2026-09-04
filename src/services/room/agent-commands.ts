@@ -6,6 +6,7 @@ import { resolveSkillRefs } from "../../domain/skills.js";
 import type { ContextDietView } from "../../harness/spec.js";
 import { findHarness, harnessIdFor, nativeCommandsFor } from "../../harness/spec.js";
 import { SLASH_COMMANDS, validateThinkingLevel } from "../commands.js";
+import { addArchtreeRoot } from "../archtree.js";
 import { sdkThinkingLevels } from "../hints.js";
 
 /** Agent configuration command cohort: native-command target/palette, role
@@ -344,6 +345,14 @@ export class RoomAgentCommandsMixin {
     // turn to trigger — the human reads it).
     const childRoomId = await this.options.summonHost.summon(this.roomId, agent.id, task, { deliver: "note" });
     return `Summoned @${agent.id} in room '${childRoomId}'. Open it from the rooms list (under this room) to watch or steer; its result will be posted back here when it finishes.`;
+  }
+  async runArchtreeCommand(agentId: string | undefined, task: string | undefined): Promise<string> {
+    if (!this.options.summonHost) return "Archtree is unavailable because the summon system is unavailable.";
+    if (!task) return "Usage: /archtree add-root [--agent <agent>] <task>";
+    const target = agentId ?? (await this.nativeCommandTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    const childRoomId = await addArchtreeRoot(this.options.summonHost, { parentRoomId: this.roomId, agentId: target, task });
+    return `Added archtree root @${target} in room '${childRoomId}'. It is live under this coordinator and visible in /archtree.`;
   }
 }
 

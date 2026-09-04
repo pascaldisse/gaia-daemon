@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { json, parseBody, readRawBody } from "../../core/http.js";
 import type { ReadAloudDelivery } from "../../services/read-aloud.js";
+import { addArchtreeRoot } from "../../services/archtree.js";
 import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
 
 export function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined { if (!body || typeof body !== "object") return undefined; const raw = (body as Record<string, unknown>).attachments; if (!Array.isArray(raw)) return undefined; const refs: { id: string; name?: string; mime?: string }[] = []; for (const item of raw) { if (!item || typeof item !== "object") continue; const record = item as Record<string, unknown>; if (typeof record.id !== "string" || !record.id.trim()) continue; refs.push({ id: record.id, ...(typeof record.name === "string" ? { name: record.name } : {}), ...(typeof record.mime === "string" ? { mime: record.mime } : {}) }); } return refs.length ? refs : undefined; }
@@ -259,6 +260,24 @@ async function roomSummons(ctx: RouteContext): Promise<boolean> {
   }
   return true;
 }
+async function roomArchtreeRoot(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/archtree\/add-root$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const body = await parseBody(ctx.request);
+  const task = stringField(body, "task")?.trim();
+  if (!task) { json(ctx.response, 400, { error: "Missing root task" }); return true; }
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const snapshot = await service.getSnapshot();
+  const agentId = stringField(body, "agent")?.trim() || snapshot.room.activeAgent || snapshot.workspace.defaultAgent;
+  try {
+    const coordinator = await ctx.daemon.coordinatorFor(params[0]);
+    const roomId = await addArchtreeRoot(coordinator, { parentRoomId: params[1], agentId, task });
+    json(ctx.response, 202, { roomId });
+  } catch (error) {
+    json(ctx.response, 400, { error: error instanceof Error ? error.message : String(error) });
+  }
+  return true;
+}
 async function cancelRoom(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/cancel$/);
   if (ctx.request.method !== "POST" || !params) return false;
@@ -411,6 +430,7 @@ const roomHandlers = [
   roomSanitize,
   roomSanitizeApply,
   roomSummons,
+  roomArchtreeRoot,
   cancelRoom,
   roomQueueDelete,
   deleteRoom,
