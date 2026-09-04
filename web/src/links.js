@@ -118,7 +118,9 @@ function linkToken(text, target) {
         void openLinkedTarget(target);
       },
       onclick: (event) => {
-        if (!isOpenModifier(event)) return;
+        // Message URLs are ordinary links: a plain click opens them. Keep local
+        // paths modifier-only so transcript text cannot unexpectedly open files.
+        if (!isOpenModifier(event) && !isWebTarget(target)) return;
         event.preventDefault();
         event.stopPropagation();
         if (openedOnMouseDown) {
