@@ -17,7 +17,10 @@ import { findModelWithAlias } from "../model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../prompt.js";
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
-import { PiCompaction } from "./compaction.js";
+import {
+  loadCleanCompactionOverride,
+  PiCompaction,
+} from "./compaction.js";
 import { hasPersistedPiSession, piRoomSessionDir, readOnlyPiSettings, skillPathsKey, toPiThinking, type PiRuntimeOptions, type PiRuntimeSessionFactory, type PiSessionLike, type PiSessionMeta, } from "./session.js";
 export const PI_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "artifact", "summon", "resume", "gaia"],
@@ -81,6 +84,14 @@ export class PiRuntime implements AgentRuntime {
         return meta?.session.compact ? meta.session : undefined;
       },
       this.agent.id,
+      options.cleanCompactionIndexPath
+        ? (roomId, agentId) =>
+            loadCleanCompactionOverride(
+              roomId,
+              agentId,
+              options.cleanCompactionIndexPath,
+            )
+        : undefined,
     );
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
       this.modelRuntime = runtime;
@@ -221,6 +232,9 @@ export class PiRuntime implements AgentRuntime {
   }
   async compact(roomId: string): Promise<CompactResult> {
     return this.compaction.compact(roomId);
+  }
+  async compactClean(roomId: string): Promise<CompactResult> {
+    return this.compaction.clean(roomId);
   }
   async compactDraft(
     roomId: string,

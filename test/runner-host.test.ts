@@ -133,6 +133,8 @@ rl.on("line", (line) => {
     }
   } else if (cmd.type === "compact") {
     send({ type: "compact-result", ok: true, compacted: true, message: "compacted " + cmd.roomId });
+  } else if (cmd.type === "compact-clean") {
+    send({ type: "compact-result", ok: true, compacted: true, message: "clean compacted " + cmd.roomId, summary: "WIRE-CLEAN-SUMMARY" });
   } else if (cmd.type === "dispose") {
     process.exit(0);
   }
@@ -477,6 +479,22 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
     // The runner's structured `compacted` flag rides through the wire.
     assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost forwards /dsc-compact over the retained compact-clean wire", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+    assert.deepEqual(await host.compactClean("default"), {
+      compacted: true,
+      message: "clean compacted default",
+      summary: "WIRE-CLEAN-SUMMARY",
+    });
     await host.dispose();
   } finally {
     await temp.cleanup();

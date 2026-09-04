@@ -33,6 +33,9 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/compact @nyari"), { type: "compact", agent: "nyari" });
   assert.deepEqual(parseCommand("/compact --edit"), { type: "compact", agent: undefined, edit: true });
   assert.deepEqual(parseCommand("/compact --edit reviewed summary"), { type: "compact", agent: undefined, edit: "reviewed summary" });
+  assert.deepEqual(parseCommand("/dsc-compact"), { type: "dsc-compact", agent: undefined });
+  assert.deepEqual(parseCommand("/dsc-compact @nyari"), { type: "dsc-compact", agent: "nyari" });
+  assert.ok(SLASH_COMMANDS.some((command) => command.name === "dsc-compact"), "/dsc-compact is advertised separately");
   assert.deepEqual(parseCommand("/stt"), { type: "stt", engine: undefined });
   assert.deepEqual(parseCommand("/stt RePliCate"), { type: "stt", engine: "replicate" });
   assert.deepEqual(parseCommand("/tts elevenlabs"), { type: "stt", engine: "elevenlabs", alias: "tts" });

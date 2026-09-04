@@ -12,6 +12,9 @@ import { NO_SESSION_TO_COMPACT, type CompactResult } from "../../core/types.js";
 import { findModelWithAlias } from "../model-aliases.js";
 import type { PiSessionLike } from "./session.js";
 const FORCE_COMPACT_KEEP_RECENT_TOKENS = 2000;
+/** `/dsc-compact` must leave no raw recent tail above its explicit clean
+ * summary. Pi's setting is restored immediately after the one operation. */
+const CLEAN_COMPACT_KEEP_RECENT_TOKENS = 0;
 const COMPACT_FALLBACK_MODEL = {
   provider: "anthropic",
   name: "claude-sonnet-5",
@@ -27,6 +30,33 @@ interface MechanicalCompactionInput {
 type SessionMap = {
   get(roomId: string): { session: PiSessionLike } | undefined;
 };
+type CleanSummaryLoader = (roomId: string, agentId: string) => string | undefined;
+const COMPACTION_META_ENTRY_TYPES = new Set([
+  "compaction",
+  "branch_summary",
+  "thinking_level_change",
+  "model_change",
+  "label",
+  "session_info",
+]);
+export function newestContentEntryId(
+  entries: Array<Record<string, unknown>>,
+  fallback: string,
+): string {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const type = String(entry.type ?? "");
+    if (COMPACTION_META_ENTRY_TYPES.has(type)) continue;
+    const role = String(
+      (entry.role as string | undefined) ??
+        ((entry.message as { role?: string } | undefined)?.role ?? ""),
+    );
+    if (/tool/i.test(type) || /tool/i.test(role)) continue;
+    if (entry.id) return String(entry.id);
+  }
+  return fallback;
+}
 type Registry = {
   find(provider: string, name: string): Model<any> | undefined;
   getApiKeyAndHeaders(
@@ -78,15 +108,15 @@ export function mechanicalCompactionFallback(
     details: { readFiles, modifiedFiles },
   };
 }
-function loadCleanCompactionOverride(
+export function loadCleanCompactionOverride(
   roomId: string,
   agentId: string,
+  indexPath = join(homedir(), ".pi", "agent", "clean-summaries", "index.json"),
 ): string | undefined {
   try {
-    const p = join(homedir(), ".pi", "agent", "clean-summaries", "index.json");
-    if (!existsSync(p)) return undefined;
+    if (!existsSync(indexPath)) return undefined;
     const entry = (
-      JSON.parse(readFileSync(p, "utf8")) as Record<
+      JSON.parse(readFileSync(indexPath, "utf8")) as Record<
         string,
         { default?: string; agents?: Record<string, string> }
       >
@@ -166,7 +196,9 @@ export class PiCompaction {
   private readonly drafts = new Map<string, CompactionResult>();
   private readonly operations = new Map<
     string,
-    { kind: "draft" | "apply"; editedSummary?: string }
+    | { kind: "draft" }
+    | { kind: "apply"; editedSummary: string }
+    | { kind: "clean"; summary: string }
   >();
   constructor(
     private readonly sessions: SessionMap,
@@ -174,6 +206,7 @@ export class PiCompaction {
       roomId: string,
     ) => Promise<PiSessionLike | undefined>,
     private readonly agentId: string,
+    private readonly cleanSummary: CleanSummaryLoader = loadCleanCompactionOverride,
   ) {}
   async compact(roomId: string): Promise<CompactResult> {
     const session = await this.session(roomId);
@@ -184,6 +217,46 @@ export class PiCompaction {
       const noOp = this.noOp(error);
       if (noOp) return noOp;
       throw error;
+    }
+  }
+  /** Explicit model-free clean compaction. Registration is mandatory: an
+   * unregistered room is a true no-op and ordinary compact() never consults
+   * the clean-summary registry. Correctness ports: 2372340 (successful Pi
+   * no-op), 30de282 (newest content floor), fc45e43 (Gaia cursor in facade). */
+  async clean(roomId: string): Promise<CompactResult> {
+    const summary = this.cleanSummary(roomId, this.agentId);
+    if (!summary?.trim()) {
+      return {
+        compacted: false,
+        message: "nothing to compact — no clean summary registered for this room and agent.",
+      };
+    }
+    const session = await this.session(roomId);
+    if (!session) return NO_SESSION_TO_COMPACT;
+    this.operations.set(roomId, { kind: "clean", summary });
+    const settings = session.settingsManager;
+    const original = settings?.getCompactionKeepRecentTokens();
+    if (settings) {
+      settings.applyOverrides({
+        compaction: { keepRecentTokens: CLEAN_COMPACT_KEEP_RECENT_TOKENS },
+      });
+    }
+    try {
+      return this.result(await this.native(session));
+    } catch (error) {
+      if (this.noOp(error)) {
+        return {
+          compacted: true,
+          message: "clean compaction: pi session already minimal; advanced room floor+cursor.",
+          summary,
+        };
+      }
+      throw error;
+    } finally {
+      if (settings && original !== undefined) {
+        settings.applyOverrides({ compaction: { keepRecentTokens: original } });
+      }
+      this.operations.delete(roomId);
     }
   }
   async draft(
@@ -239,28 +312,39 @@ export class PiCompaction {
     return (pi) => {
       pi.on("session_before_compact", async (event, ctx) => {
         const operation = this.operations.get(roomId);
-        if (!operation) {
-          const clean = loadCleanCompactionOverride(roomId, this.agentId);
-          if (clean)
-            return {
-              compaction: {
-                summary: clean,
-                firstKeptEntryId: event.preparation.firstKeptEntryId,
-                tokensBefore: event.preparation.tokensBefore,
-                details: this.details(event.preparation),
-              },
-            };
-          return runCompactionFallback(event, ctx, provider, name);
-        }
+        // Ordinary /compact is intentionally unaware of the clean-summary
+        // registry. Only /dsc-compact installs the explicit clean operation.
+        if (!operation) return runCompactionFallback(event, ctx, provider, name);
         if (operation.kind === "apply")
           return {
             compaction: {
-              summary: operation.editedSummary ?? "",
+              summary: operation.editedSummary,
               firstKeptEntryId: event.preparation.firstKeptEntryId,
               tokensBefore: event.preparation.tokensBefore,
               details: this.details(event.preparation),
             },
           };
+        if (operation.kind === "clean") {
+          const sessionManager = (
+            ctx as unknown as {
+              sessionManager?: { getEntries?: () => unknown[] };
+            }
+          ).sessionManager;
+          const newestFloor = newestContentEntryId(
+            (sessionManager?.getEntries?.() ?? []) as Array<
+              Record<string, unknown>
+            >,
+            event.preparation.firstKeptEntryId,
+          );
+          return {
+            compaction: {
+              summary: operation.summary,
+              firstKeptEntryId: newestFloor,
+              tokensBefore: event.preparation.tokensBefore,
+              details: this.details(event.preparation),
+            },
+          };
+        }
         try {
           if (!ctx.model) throw new Error("no model set for compaction");
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);

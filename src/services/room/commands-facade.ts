@@ -345,11 +345,59 @@ ${draft.summary}` : ""}`;
     }
   }
 
+  /** /dsc-compact: the separate, explicitly registered model-free clean pass.
+   * Ordinary /compact stays on runCompactCommand/runtime.compact. */
+  async runDscCompactCommand(agent?: string): Promise<CommandReply> {
+    const target = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    const runtime = this.runtimes[target];
+    if (!runtime.capabilities.supportsCompact || !runtime.compactClean) {
+      return `@${target}'s harness has no clean (dsc) compaction.`;
+    }
+    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    this.compactingAgents.add(target);
+    const startedAt = Date.now();
+    const usedTokens = this.contextUsage[target]?.usedTokens;
+    this.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
+    this.lastCompactEmit = startedAt;
+    await this.emitSnapshot();
+    const progress = (update: CompactProgressUpdate) => {
+      const prev = this.compactProgress.get(target);
+      if (!prev) return;
+      this.compactProgress.set(target, { ...prev, ...update });
+      const now = Date.now();
+      if (now - this.lastCompactEmit < 500) return;
+      this.lastCompactEmit = now;
+      void this.emitSnapshot();
+    };
+    try {
+      const result = await runtime.compactClean(this.roomId, progress);
+      // Missing registration is a true no-op: do not move Gaia's floor/cursor.
+      if (!result.compacted) return `@${target}: ${result.message}`;
+      return (await this.finishCompactCommand(target, result)) as CommandReply;
+    } catch (error) {
+      if (this.compactCancels.has(target)) return `Clean compaction cancelled for @${target}.`;
+      return `Clean compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      this.compactCancels.delete(target);
+      this.compactingAgents.delete(target);
+      this.compactProgress.delete(target);
+      await this.emitSnapshot();
+    }
+  }
+
   /** Shared post-eviction boundary, durable summary, and ctx-chip bookkeeping
-   * for ordinary /compact and reviewed /compact --edit <text>. */
+   * for ordinary /compact, /dsc-compact, and reviewed /compact --edit <text>. */
   async finishCompactCommand(target: string, { compacted, message, summary }: CompactResult): Promise<CommandReply> {
     const { nextCursor } = await this.room.eventsFrom(0);
     await this.setContextFloor(target, nextCursor);
+    // fc45e43: the turn prompt reads agentCursors, not contextFloors. A clean
+    // summary is ineffective if the next turn replays the pre-compaction tail.
+    if (compacted) {
+      await this.room.updateState((current) => {
+        current.agentCursors = { ...(current.agentCursors ?? {}), [target]: nextCursor };
+      }).catch(() => {});
+    }
     if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
     else if (compacted) await this.room.clearCompaction(target);
     const written = this.compactProgress.get(target)?.outputTokens;

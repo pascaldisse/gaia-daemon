@@ -884,21 +884,15 @@ function SummonResultActivity(view, summon) {
  * @param {MessageBlock[]} blocks
  * @param {ToolDetail[]} tools
  */
-function OrderedBlocks(view, blocks, tools) {
+export function OrderedBlocks(view, blocks, tools) {
   const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
   const lastIndex = blocks.length - 1;
   let thinkingIndex = 0;
-  // Only the FIRST text span can carry a leading <gaia:think> block (the reply's
-  // opening) — later text spans render as plain markdown.
-  const firstTextIndex = blocks.findIndex((block) => block.kind === "text" && block.text.trim());
   return blocks.map((block, index) => {
     if (block.kind === "text") {
       if (!block.text.trim()) return null;
-      if (index === firstTextIndex) {
-        const running = Boolean(view.streaming) && index === lastIndex;
-        return AgentText(`gaiathink:${view.id}:${index}`, block.text, running);
-      }
-      return MarkdownMessage(block.text);
+      const running = Boolean(view.streaming) && index === lastIndex;
+      return AgentText(`gaiathink:${view.id}:${index}`, block.text, running);
     }
     if (block.kind === "thinking") {
       // A thinking span still filling in is the running one; an empty span that
