@@ -372,9 +372,16 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
   });
   let clientGone = false;
   ctx.response.on("close", () => { clientGone = true; });
+  // Test-only fault injection (default off): abort the stream after N frames so
+  // the truncation path can be exercised live. Never hardcoded on.
+  const failAfter = Number(process.env.GAIA_TTS_FAIL_AFTER_FRAMES ?? "");
+  const failAt = Number.isInteger(failAfter) && failAfter > 0 ? failAfter : 0;
+  let sent = 0;
+  let streamError: unknown = null;
   try {
     for await (const frame of delivery.frames) {
       if (clientGone || ctx.response.writableEnded) break;
+      if (failAt && sent >= failAt) throw new Error(`GAIA_TTS_FAIL_AFTER_FRAMES=${failAt}: injected mid-stream TTS failure`);
       if (!ctx.response.write(frame)) {
         await new Promise<void>((resolveWrite) => {
           const done = (): void => { ctx.response.off("drain", done); ctx.response.off("close", done); resolveWrite(); };
@@ -382,9 +389,19 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
           ctx.response.once("close", done);
         });
       }
+      sent += 1;
     }
-  } catch {
-    // Mid-stream failure: headers are already sent, so just close.
+  } catch (error) {
+    streamError = error;
+  }
+  if (streamError && !clientGone) {
+    // Headers are already sent, so a clean end() is indistinguishable from a
+    // complete stream: the client would silently play a truncated clip. Destroy
+    // the response instead — the client sees a network error and can surface it.
+    const failure = streamError instanceof Error ? streamError : new Error(String(streamError));
+    console.error(`[read-aloud] mid-stream TTS failure workspace=${params[0]} room=${params[1]} event=${eventId.trim()} after ${sent} frames: ${failure.message}`);
+    ctx.response.destroy(failure);
+    return true;
   }
   if (!ctx.response.writableEnded) ctx.response.end();
   return true;
