@@ -901,10 +901,12 @@ function OrderedBlocks(view, blocks, tools) {
       return MarkdownMessage(block.text);
     }
     if (block.kind === "thinking") {
-      // A thinking span still filling in is the running one; an empty span that
-      // isn't currently streaming carries nothing to show.
+      // A thinking span still filling in is the running one. An empty span is NOT
+      // dropped: models with encrypted/redacted reasoning (adaptive-thinking
+      // Claude) emit thinking_start/end with no text, so dropping it made the
+      // whole row vanish the moment the turn committed. Keep the expander — it
+      // says the model thought, and stays clickable/persistent like a tool row.
       const running = Boolean(view.streaming) && index === lastIndex;
-      if (!block.text.trim() && !running) return null;
       // Number thinking spans independently of text/tool blocks. This keeps
       // the expander id stable if the stream's bucketed view becomes an ordered
       // timeline (or vice versa) when the final room event arrives.
@@ -966,7 +968,14 @@ function RedactedTag() {
 function ThinkingActivity(id, text, running) {
   return ActivityDetails(
     { id, className: "thinking", status: running ? "running" : "complete", icon: KIND.thinking, title: "thinking" },
-    text && text.trim() ? MarkdownMessage(text) : null,
+    text && text.trim()
+      ? MarkdownMessage(text)
+      : running
+        ? null
+        : // Reasoning the provider never sent back in clear text (encrypted or
+          // redacted thinking blocks). The row still opens and says so, rather
+          // than being an unclickable stub or disappearing entirely.
+          h("p", { class: "activity-empty", text: "reasoning not returned by the model (encrypted/redacted)" }),
   );
 }
 

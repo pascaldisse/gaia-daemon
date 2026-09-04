@@ -1382,3 +1382,6 @@ sidebar: workspaces + rooms tree
   background: transparent;
 pointer-events: none;
 }
+
+/* Thinking span the provider returned with no clear-text reasoning. */
+.activity-empty { margin: 0; opacity: 0.7; }
