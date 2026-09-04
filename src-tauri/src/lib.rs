@@ -187,18 +187,27 @@ mod webkit {
 
     /// Build the URL for a spawned window: the same localhost UI the main window
     /// loads, plus a launch hash the web app reads to decide its role.
-    ///   `#gaia?mode=torn&room=<id>`  — a torn-off chat (side panels start collapsed)
-    ///   `#gaia?mode=new`             — a fresh full window (panels normal)
+    ///   `#gaia?mode=torn&room=<id>&workspaceId=<id>` — torn-off chat (side panels collapsed)
+    ///   `#gaia?mode=new` — a fresh full window (panels normal)
     /// The hash is client-only (never sent to the daemon), so the web-serving
-    /// contract is untouched. Room ids are restricted to [A-Za-z0-9._-] by the
-    /// daemon, so no percent-encoding is required.
-    fn window_url(mode: &str, room: Option<&str>) -> Result<tauri::Url, String> {
+    /// contract is untouched. Ids are daemon-generated URL-safe tokens.
+    fn window_url(
+        mode: &str,
+        room: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<tauri::Url, String> {
         let base = resolve_url();
         let mut hash = format!("#gaia?mode={mode}");
         if let Some(r) = room {
             if !r.is_empty() {
                 hash.push_str("&room=");
                 hash.push_str(r);
+            }
+        }
+        if let Some(workspace) = workspace_id {
+            if !workspace.is_empty() {
+                hash.push_str("&workspaceId=");
+                hash.push_str(workspace);
             }
         }
         format!("{base}{hash}")
@@ -215,11 +224,12 @@ mod webkit {
         app: tauri::AppHandle,
         mode: String,
         room: Option<String>,
+        workspace_id: Option<String>,
         x: Option<f64>,
         y: Option<f64>,
     ) -> Result<String, String> {
         let label = format!("win-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
-        let url = window_url(&mode, room.as_deref())?;
+        let url = window_url(&mode, room.as_deref(), workspace_id.as_deref())?;
         let (w, h) = if mode == "torn" {
             (860.0, 760.0)
         } else {
@@ -375,18 +385,21 @@ mod webkit {
         Ok(())
     }
 
-    /// Re-dock a torn-off chat: tell the main window to re-adopt `room` as a tab,
-    /// focus it, and close the calling (torn) window. `window` is the caller,
-    /// injected by Tauri.
+    /// Re-dock a torn-off chat: tell the main window to re-adopt its room/workspace
+    /// pair, focus it, and close the calling (torn) window. `window` is injected by Tauri.
     #[tauri::command]
     fn redock(
         app: tauri::AppHandle,
         window: tauri::WebviewWindow,
-        room: String,
+        room_id: String,
+        workspace_id: String,
     ) -> Result<(), String> {
         if let Some(main) = app.get_webview_window("main") {
-            main.emit("gaia://redock", room)
-                .map_err(|e| e.to_string())?;
+            main.emit(
+                "gaia://redock",
+                serde_json::json!({ "roomId": room_id, "workspaceId": workspace_id }),
+            )
+            .map_err(|e| e.to_string())?;
             let _ = main.set_focus();
         }
         // Don't close the last window out from under the user if main is gone.
@@ -550,7 +563,7 @@ mod webkit {
     fn handle_menu(app: &tauri::AppHandle, id: &str) {
         match id {
             "new_window" => {
-                let _ = open_window(app.clone(), "new".to_string(), None, None, None);
+                let _ = open_window(app.clone(), "new".to_string(), None, None, None, None);
             }
             "close_window" => {
                 if let Some(win) = focused_webview(app) {

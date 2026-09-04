@@ -120,17 +120,17 @@ export async function invoke(cmd, args) {
 
 /**
  * Open a native GAIA window pointed at the same daemon UI.
- * @param {{ mode: "new"|"torn", room?: string|null, x?: number|null, y?: number|null }} opts
+ * @param {{ mode: "new"|"torn", room?: string|null, workspaceId?: string|null, x?: number|null, y?: number|null }} opts
  */
-export async function openWindow({ mode, room = null, x = null, y = null }) {
-  return invoke("open_window", { mode, room, x, y });
+export async function openWindow({ mode, room = null, workspaceId = null, x = null, y = null }) {
+  return invoke("open_window", { mode, room, workspaceId, x, y });
 }
 
 /** Merge this (torn) window's chat back into the main window; the shell then
  *  closes this window. No-op in the main window / a browser.
- *  @param {string} room */
-export async function redockCurrent(room) {
-  return invoke("redock", { room });
+ * @param {{roomId: string, workspaceId: string}} entry */
+export async function redockCurrent(entry) {
+  return invoke("redock", entry);
 }
 
 /**
@@ -167,16 +167,16 @@ export async function closeCurrentWindow() {
  *   #gaia?mode=torn&room=<id>   — a torn-off chat (start with panels collapsed)
  *   #gaia?mode=new              — a fresh full window
  * Absent/!native → the primary window's default view.
- * @returns {{ mode: "main"|"torn"|"new", room: string|null }}
+ * @returns {{ mode: "main"|"torn"|"new", room: string|null, workspaceId: string|null }}
  */
 export function launchIntent() {
   const hash = (typeof window !== "undefined" && window.location.hash) || "";
   const m = hash.match(/^#gaia\?(.*)$/);
-  if (!m) return { mode: "main", room: null };
+  if (!m) return { mode: "main", room: null, workspaceId: null };
   const p = new URLSearchParams(m[1]);
   const raw = p.get("mode");
   const mode = raw === "torn" ? "torn" : raw === "new" ? "new" : "main";
-  return { mode, room: p.get("room") };
+  return { mode, room: p.get("room"), workspaceId: p.get("workspaceId") };
 }
 
 /**

@@ -44,7 +44,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   favoritesOrder: string[],
  *   favoriteContextMenu: {kind: "workspace"|"room", id: string, x: number, y: number}|null,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
- *   openTabs: string[],
+ *   openTabs: {roomId: string, workspaceId: string}[],
  *   sidebarCollapsed: boolean,
  *   rightCollapsed: boolean,
  *   themePaletteOpen: boolean,
@@ -73,7 +73,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   roomContextMenu: {roomId: string, x: number, y: number}|null,
  *   workspaceContextMenu: {workspaceId: string, x: number, y: number}|null,
  *   agentContextMenu: {agentId: string, x: number, y: number}|null,
- *   tabContextMenu: {roomId: string, x: number, y: number}|null,
+ *   tabContextMenu: {roomId: string, workspaceId: string, x: number, y: number}|null,
  *   readMarks: Record<string, number>,
  *   manualUnread: Record<string, boolean>,
  *   workspaceRooms: Record<string, RoomSummary[]>,
@@ -150,8 +150,8 @@ export const state = {
   // strictly preceding the snapshot's tail window. Cleared on room switch and
   // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
   older: { roomId: "", events: [], loading: false, lastTotal: 0 },
-  // The tmux-style working set: room ids open as tabs, in user order. Persisted
-  // per workspace; the sidebar tree remains the full list of every room.
+  // The tmux-style working set: room/workspace pairs open as tabs, in user order.
+  // Global across workspaces; the sidebar tree remains the full list of every room.
   openTabs: [],
   // Collapsible panes (Ctrl+B / Ctrl+G), like zooming a tmux pane.
   sidebarCollapsed: false,

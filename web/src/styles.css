@@ -190,6 +190,7 @@ body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar
 .tab { display: flex; align-items: center; gap: 1ch; padding: 0 10px; border: 0; border-right: 1px solid var(--border); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 240px; user-select: none; touch-action: pan-x; }
 .tab:hover { background: var(--sel); color: var(--fg); }
 .tab.active { color: var(--fg); background: var(--sel); box-shadow: inset 0 2px 0 var(--accent); }
+.tab.tab-foreign .tab-name { opacity: .68; }
 .tab.dragging { opacity: .5; cursor: grabbing; background: var(--sel); }
 .tab.dragging.tearing { opacity: .85; }
 .tab-drop-indicator { position: absolute; top: 4px; bottom: 4px; width: 2px; background: var(--accent); pointer-events: none; z-index: 2; }

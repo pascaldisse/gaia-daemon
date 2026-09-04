@@ -56,7 +56,7 @@ function renderTabs() {
     h(
       "div",
       { class: "tab-strip", "data-tauri-drag-region": "deep" },
-      tabs.map((room, index) => Tab(room, index + 1, room.id === currentId, wsId)),
+      tabs.map((entry, index) => Tab(entry, index + 1, entry.room.id === currentId && entry.workspaceId === wsId, wsId)),
       snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
     h("div", { class: "tab-spacer", "data-tauri-drag-region": "deep" }),
@@ -97,25 +97,28 @@ function DictationChip() {
 registerRegion("tabs", renderTabs);
 
 /**
- * @param {RoomSummary} room
+ * @param {{room: RoomSummary, workspaceId: string}} entry
  * @param {number} number
  * @param {boolean} isActive
- * @param {string|undefined} wsId
+ * @param {string|undefined} currentWorkspaceId
  */
-function Tab(room, number, isActive, wsId) {
+function Tab(entry, number, isActive, currentWorkspaceId) {
+  const { room, workspaceId } = entry;
+  const foreign = workspaceId !== currentWorkspaceId;
+  const workspaceName = state.workspaces.find((workspace) => workspace.id === workspaceId)?.name ?? workspaceId;
   return h(
     "div",
     {
-      class: `tab ${isActive ? "active" : ""} ${room.running ? "running" : ""}`,
-"data-tauri-drag-region": "false",
-      title: room.title ? `${room.title} — ${room.id}` : room.id,
-      onpointerdown: (event) => beginDrag(event, room.id, wsId),
+      class: `tab ${isActive ? "active" : ""} ${foreign ? "tab-foreign" : ""} ${room.running ? "running" : ""}`,
+      "data-tauri-drag-region": "false",
+      title: foreign ? `${workspaceName} · ${room.title ?? room.id}` : room.title ? `${room.title} — ${room.id}` : room.id,
+      onpointerdown: (event) => beginDrag(event, room.id, workspaceId),
       onpointermove: (event) => moveDrag(event),
       onpointerup: (event) => endDrag(event),
       onpointercancel: (event) => cancelDrag(event),
       oncontextmenu: (/** @type {MouseEvent} */ event) => {
         event.preventDefault();
-        state.tabContextMenu = { roomId: room.id, x: event.clientX, y: event.clientY };
+        state.tabContextMenu = { roomId: room.id, workspaceId, x: event.clientX, y: event.clientY };
         markDirty("tabs");
       },
     },
@@ -129,7 +132,7 @@ function Tab(room, number, isActive, wsId) {
       title: "close tab (room is kept)",
       onclick: (event) => {
         event.stopPropagation();
-        void closeRoomTab(room.id);
+        void closeRoomTab(room.id, workspaceId);
       },
       text: "×",
     }),
@@ -241,7 +244,7 @@ function endDrag(event) {
   // A press that never crossed the threshold is a click → open the room.
   if (!d.moved) {
     cleanupDrag(d.el);
-    if (d.roomId !== state.snapshot?.room?.id) void selectRoom(d.wsId, d.roomId);
+    if (d.roomId !== state.snapshot?.room?.id || d.wsId !== state.snapshot?.workspace.id) void selectRoom(d.wsId, d.roomId);
     return;
   }
   if (d.tearing) {
@@ -250,13 +253,13 @@ function endDrag(event) {
     // tab was rather than its top-left corner.
     const sx = window.screenX + event.clientX - 48;
     const sy = window.screenY + event.clientY - 12;
-    if (tearOff(d.roomId, sx, sy)) {
+    if (tearOff(d.roomId, d.wsId, sx, sy)) {
       cleanupDrag(d.el);
-      void closeRoomTab(d.roomId);
+      void closeRoomTab(d.roomId, d.wsId);
       return;
     }
   }
-  if (d.dropIndex >= 0) moveTabToIndex(d.roomId, d.dropIndex, d.wsId);
+  if (d.dropIndex >= 0) moveTabToIndex(d.roomId, d.wsId, d.dropIndex);
   cleanupDrag(d.el);
 }
 
@@ -317,11 +320,11 @@ function TabContextMenu() {
   const snapshot = state.snapshot;
   const open = state.tabContextMenu;
   if (!snapshot || !open) return null;
-  const wsId = snapshot.workspace.id;
   const tabs = visibleTabs(snapshot);
-  const index = tabs.findIndex((room) => room.id === open.roomId);
+  const index = tabs.findIndex((entry) => entry.room.id === open.roomId && entry.workspaceId === open.workspaceId);
   if (index === -1) return null;
-  const room = tabs[index];
+  const entry = tabs[index];
+  const room = entry.room;
   const hasRight = index < tabs.length - 1;
   const close = () => {
     state.tabContextMenu = null;
@@ -335,9 +338,9 @@ function TabContextMenu() {
       type: "button",
       disabled: !hasRight,
       onclick: () => {
-        const next = closeTabsToRight(open.roomId, wsId, snapshot.room?.id);
+        const next = closeTabsToRight(open.roomId, open.workspaceId, snapshot.room ? { roomId: snapshot.room.id, workspaceId: snapshot.workspace.id } : undefined);
         close();
-        if (next) void selectRoom(wsId, next);
+        if (next) void selectRoom(next.workspaceId, next.roomId);
       },
       text: "Close tabs to the right",
     }),
