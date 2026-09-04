@@ -498,6 +498,26 @@ function roomUnreadIn(workspaceId, room) {
   return state.manualUnread[key] === true || (room.lastActivity ?? 0) > mark;
 }
 
+/** Clear a whole workspace's unread in one move: every room's mark jumps to its
+ * own lastActivity and every manual-unread flag drops. The workspace dot rolls
+ * up rooms the sidebar never shows (the list is paginated and sorted by
+ * recency), so an ancient room whose final message landed after you left it
+ * would otherwise keep the dot lit with no reachable row to clear — exactly the
+ * "yellow dot won't go away" report (2026-09-04, 10 such rooms). Sub-rooms are
+ * included: they don't light the rollup, but leaving them marked would resurrect
+ * the dot the moment one is promoted into view.
+ * @param {string} workspaceId */
+export function markWorkspaceRead(workspaceId) {
+  const rooms = state.snapshot?.workspace.id === workspaceId ? (state.snapshot.rooms ?? []) : (state.workspaceRooms[workspaceId] ?? []);
+  for (const room of rooms) {
+    const key = readMarkKey(workspaceId, room.id);
+    state.readMarks[key] = room.lastActivity ?? 0;
+    delete state.manualUnread[key];
+  }
+  persistReadMarks();
+  persistManualUnread();
+}
+
 /** A room has unread agent activity: newer than what we saw while it was open,
  * or explicitly marked unread from the room context menu.
  * @param {RoomSummary} room @returns {boolean} */

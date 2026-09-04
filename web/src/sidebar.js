@@ -16,6 +16,7 @@ import { openSettings } from "./settings.js";
 import {
   effectiveSidebarFocus,
   markRoomRead,
+  markWorkspaceRead,
   markRoomUnread,
   persistFavoritesOrder,
   persistRoomsCollapsed,
@@ -666,6 +667,17 @@ function WorkspaceContextMenu() {
     "div",
     { class: "room-menu", style: `left:${open.x}px;top:${open.y}px`, oncontextmenu: (/** @type {MouseEvent} */ event) => event.preventDefault() },
     h("div", { class: "room-menu-title", text: workspace.name }),
+    workspaceActivity(workspace.id).unread
+      ? h("button", {
+          type: "button",
+          onclick: () => {
+            markWorkspaceRead(workspace.id);
+            refreshAttention();
+            close();
+          },
+          text: "Mark all as read",
+        })
+      : null,
     h("button", {
       type: "button",
       onclick: () => {
