@@ -22,6 +22,7 @@ export type SlashCommand =
   | { type: "consolidate"; agent?: string }
   | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string; edit?: boolean | string }
+  | { type: "autocompact"; value?: string; cooldownTurns?: string }
   | { type: "stt"; engine?: string; alias?: "tts" }
 | { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
@@ -74,6 +75,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent] | /compact --edit [text]" },
+  { name: "autocompact", type: "autocompact", description: "room context auto-compaction: /autocompact <pct|off> [cooldownTurns]" },
   { name: "stt", type: "stt", description: "show or switch the speech-to-text engine: /stt [replicate|elevenlabs|openai]" },
   { name: "tts", type: "stt", description: "voice-input engine switch (alias of /stt): /tts [replicate|elevenlabs|openai]" },
 {
@@ -179,6 +181,8 @@ export function parseCommand(input: string): SlashCommand {
         edit: edited || true,
       };
     }
+    case "autocompact":
+      return { type: "autocompact", value: stripped[0], cooldownTurns: stripped[1] };
     case "stt":
       return { type: "stt", engine: stripped[0]?.toLowerCase(), ...(name === "tts" ? { alias: "tts" as const } : {}) };
     case "diet": {

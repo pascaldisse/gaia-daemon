@@ -22,6 +22,15 @@ export function resolveAutoCompactConfig(workspace: AutoCompactConfig | undefine
   };
 }
 
+
+/** User-facing effective setting. `room` exposes whether each field inherits. */
+export function formatAutoCompactSetting(config: AutoCompactConfig, room?: RoomAutoCompactState): string {
+  const threshold = config.thresholdPct === null ? "off" : `${config.thresholdPct}%`;
+  const thresholdSource = room?.thresholdPct === undefined ? "workspace" : "room";
+  const cooldownSource = room?.cooldownTurns === undefined ? "workspace" : "room";
+  return `Auto-compact: ${threshold}; cooldown ${config.cooldownTurns} turn${config.cooldownTurns === 1 ? "" : "s"} (threshold: ${thresholdSource}, cooldown: ${cooldownSource}).`;
+}
+
 /**
  * Evaluate one completed agent turn. The returned state is deliberately pure so
  * room persistence and tests can supply independent state/usage providers.

@@ -78,6 +78,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
+import { formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
 import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
@@ -285,6 +286,35 @@ export class RoomCommandsMixin {
       const result = await this.runPlugin(plugin, [], command.command);
       return result.reply ?? `plugin ${command.command}: nothing to do (no active turn)`;
     });
+  }
+
+  /** Configure or show room-scoped automatic native compaction. */
+  async runAutoCompactCommand(value?: string, cooldownRaw?: string): Promise<string> {
+    const state = await this.room.state();
+    const workspaceConfig = this.workspace.config.autoCompact;
+    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
+    const off = value.toLowerCase() === "off";
+    const thresholdPct = Number(value);
+    if (!off && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100)) {
+      return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    let cooldownTurns: number | undefined;
+    if (cooldownRaw !== undefined) {
+      cooldownTurns = Number(cooldownRaw);
+      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    await this.room.updateState((current) => {
+      // A changed policy supersedes any scheduled pass/cooldown from the old one.
+      const { pending: _pending, cooldowns: _cooldowns, ...override } = current.autoCompact ?? {};
+      current.autoCompact = {
+        ...override,
+        thresholdPct: off ? null : thresholdPct,
+        ...(cooldownTurns === undefined ? {} : { cooldownTurns }),
+      };
+    });
+    const updated = await this.room.state();
+    await this.emitSnapshot();
+    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact), updated.autoCompact);
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply
