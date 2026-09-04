@@ -91,8 +91,8 @@ async function applyLaunchIntent() {
   state.sidebarCollapsed = true;
   state.rightCollapsed = true;
   markDirty("layout", "tabs");
-  if (intent.room && state.snapshot && intent.room !== state.snapshot.room?.id) {
-    await selectRoom(state.snapshot.workspace.id, intent.room);
+  if (intent.room && intent.workspaceId && state.snapshot && (intent.room !== state.snapshot.room?.id || intent.workspaceId !== state.snapshot.workspace.id)) {
+    await selectRoom(intent.workspaceId, intent.room);
     state.sidebarCollapsed = true;
     state.rightCollapsed = true;
     markDirty("layout", "tabs");
@@ -134,7 +134,10 @@ function installNativeBridge() {
         break;
     }
   });
-  void onNativeEvent("gaia://redock", (event) => adoptRoomTab(String(event.payload)));
+  void onNativeEvent("gaia://redock", (event) => {
+    const entry = /** @type {{roomId?: unknown, workspaceId?: unknown}} */ (event.payload);
+    if (typeof entry?.roomId === "string" && typeof entry.workspaceId === "string") adoptRoomTab({ roomId: entry.roomId, workspaceId: entry.workspaceId });
+  });
 }
 
 function restoreColumnWidths() {

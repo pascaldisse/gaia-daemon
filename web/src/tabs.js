@@ -1,7 +1,7 @@
-// The room tabs are a tmux-style working set: an ordered list of room ids the
-// user has open IN THIS WINDOW. The sidebar tree still lists every room; tabs are
-// just the ones in play. Order is user-controlled (drag) and persisted per
-// workspace. Closing a tab never deletes the room — it only drops it from the
+// The room tabs are a tmux-style working set: an ordered list of room/workspace
+// pairs open IN THIS WINDOW. The sidebar tree still lists every room; tabs are
+// just the ones in play. Order is user-controlled (drag) and global across
+// workspaces. Closing a tab never deletes the room — it only drops it from the
 // working set.
 //
 // PER-WINDOW ISOLATION (why the store is chosen, not fixed):
@@ -20,6 +20,8 @@ import { state } from "./state.js";
 
 /** @typedef {import("./types.js").Snapshot} Snapshot */
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
+/** @typedef {{roomId: string, workspaceId: string}} TabEntry */
+/** @typedef {{room: RoomSummary, workspaceId: string}} VisibleTab */
 
 /** This window's tab store: localStorage for the main window (persists across an
  *  app restart), sessionStorage for a spawned window (isolated per webview,
@@ -32,117 +34,136 @@ function tabStore() {
   }
 }
 
-/** @param {string} workspaceId */
-function storageKey(workspaceId) {
-  return `gaia.tabs.${workspaceId}`;
+function storageKey() {
+  return "gaia.tabs";
 }
 
-/** @param {string|undefined} workspaceId */
-function persist(workspaceId) {
-  if (!workspaceId) return;
+function persist() {
   const store = tabStore();
   if (!store) return;
   try {
-    store.setItem(storageKey(workspaceId), JSON.stringify(state.openTabs));
+    store.setItem(storageKey(), JSON.stringify(state.openTabs));
   } catch {
     // storage disabled — tabs just won't survive a reload.
   }
 }
 
-/**
- * Load the saved tab order for a workspace into state (called on every
- * workspace/room switch so each workspace keeps its own set). Reads from THIS
- * window's store, so windows never inherit each other's tabs.
- * @param {string} workspaceId
- */
-export function restoreTabs(workspaceId) {
+/** @param {unknown} value @returns {value is TabEntry} */
+function isTabEntry(value) {
+  const entry = /** @type {any} */ (value);
+  return Boolean(entry) && typeof entry === "object" && typeof entry.roomId === "string" && typeof entry.workspaceId === "string";
+}
+
+/** Load this window's global tab order. If the global key is absent, migrate the
+ * old per-workspace keys in Storage key order, then remove them. */
+export function restoreTabs() {
   const store = tabStore();
-  /** @type {unknown} */
-  let saved = [];
+  if (!store) {
+    state.openTabs = [];
+    return;
+  }
   try {
-    saved = JSON.parse(store?.getItem(storageKey(workspaceId)) ?? "[]");
+    const saved = store.getItem(storageKey());
+    if (saved !== null) {
+      const parsed = JSON.parse(saved);
+      state.openTabs = Array.isArray(parsed) ? parsed.filter(isTabEntry) : [];
+      return;
+    }
+    /** @type {TabEntry[]} */
+    const migrated = [];
+    /** @type {string[]} */
+    const legacyKeys = [];
+    for (let index = 0; index < store.length; index++) {
+      const key = store.key(index);
+      if (key?.startsWith("gaia.tabs.")) legacyKeys.push(key);
+    }
+    for (const key of legacyKeys) {
+      try {
+        const workspaceId = key.slice("gaia.tabs.".length);
+        const parsed = JSON.parse(store.getItem(key) ?? "[]");
+        if (Array.isArray(parsed)) {
+          for (const roomId of parsed) if (typeof roomId === "string") migrated.push({ roomId, workspaceId });
+        }
+      } catch {
+        // A corrupt legacy entry must not discard other workspaces' tabs.
+      }
+    }
+    state.openTabs = migrated;
+    persist();
+    for (const key of legacyKeys) store.removeItem(key);
   } catch {
-    saved = [];
+    state.openTabs = [];
   }
-  state.openTabs = Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : [];
 }
 
-/**
- * Ensure a room is present as a tab (used whenever a room becomes current).
- * @param {string} roomId
- * @param {string} workspaceId
- */
+/** @param {string} roomId @param {string} workspaceId @returns {number} */
+function tabIndex(roomId, workspaceId) {
+  return state.openTabs.findIndex((entry) => entry.roomId === roomId && entry.workspaceId === workspaceId);
+}
+
+/** Ensure a room/workspace pair is present as a tab (used whenever a room becomes current).
+ * @param {string} roomId @param {string} workspaceId */
 export function openTab(roomId, workspaceId) {
-  if (!roomId) return;
-  if (!state.openTabs.includes(roomId)) {
-    state.openTabs.push(roomId);
-    persist(workspaceId);
+  if (!roomId || !workspaceId) return;
+  if (tabIndex(roomId, workspaceId) === -1) {
+    state.openTabs.push({ roomId, workspaceId });
+    persist();
   }
 }
 
-/**
- * Drop a tab from the working set; returns the neighbour id to select next, or
- * null when it was not the active tab (caller keeps the current selection).
- * @param {string} roomId
- * @param {string} workspaceId
- * @param {boolean} isActive
- * @returns {string|null}
- */
+/** Drop a tab; returns the neighbour pair to select next, or null when inactive.
+ * @param {string} roomId @param {string} workspaceId @param {boolean} isActive
+ * @returns {TabEntry|null} */
 export function closeTab(roomId, workspaceId, isActive) {
-  const index = state.openTabs.indexOf(roomId);
+  const index = tabIndex(roomId, workspaceId);
   if (index === -1) return null;
   state.openTabs.splice(index, 1);
-  persist(workspaceId);
+  persist();
   if (!isActive) return null;
   return state.openTabs[index] ?? state.openTabs[index - 1] ?? null;
 }
 
-/**
- * Reorder to an explicit slot — the pointer-drag drop. `index` is the position
- * in the list WITH the dragged tab already removed (i.e. computed against the
- * other tabs), which is exactly what the splice below produces.
- * @param {string} fromId
- * @param {number} index
- * @param {string} workspaceId
- */
-export function moveTabToIndex(fromId, index, workspaceId) {
-  const from = state.openTabs.indexOf(fromId);
+/** Reorder a room/workspace pair into an explicit slot.
+ * @param {string} roomId @param {string} workspaceId @param {number} index */
+export function moveTabToIndex(roomId, workspaceId, index) {
+  const from = tabIndex(roomId, workspaceId);
   if (from === -1) return;
-  state.openTabs.splice(from, 1);
+  const [entry] = state.openTabs.splice(from, 1);
   const clamped = Math.max(0, Math.min(index, state.openTabs.length));
-  state.openTabs.splice(clamped, 0, fromId);
-  persist(workspaceId);
+  state.openTabs.splice(clamped, 0, entry);
+  persist();
 }
 
-/**
- * Close every tab to the right of `roomId` in the working set (Chrome's "close
- * tabs to the right"). Returns the neighbour id to select next when the
- * closed range contained the active tab, else null (caller keeps selection).
- * @param {string} roomId
- * @param {string} workspaceId
- * @param {string|undefined} activeId
- * @returns {string|null}
- */
-export function closeTabsToRight(roomId, workspaceId, activeId) {
-  const index = state.openTabs.indexOf(roomId);
+/** Close every tab to the right; returns the context pair if active is removed.
+ * @param {string} roomId @param {string} workspaceId
+ * @param {{roomId: string, workspaceId: string}|undefined} active
+ * @returns {TabEntry|null} */
+export function closeTabsToRight(roomId, workspaceId, active) {
+  const index = tabIndex(roomId, workspaceId);
   if (index === -1) return null;
   const removed = state.openTabs.splice(index + 1);
   if (removed.length === 0) return null;
-  persist(workspaceId);
-  return activeId && removed.includes(activeId) ? roomId : null;
+  persist();
+  return active && removed.some((entry) => entry.roomId === active.roomId && entry.workspaceId === active.workspaceId) ? state.openTabs[index] ?? null : null;
 }
 
-/**
- * The tabs to render: persisted order, filtered to rooms that still exist, with
- * the current room guaranteed present (appended if it was never opened).
- * @param {Snapshot|null} snapshot
- * @returns {RoomSummary[]}
- */
+/** The tabs to render: persisted global order, with the current room guaranteed
+ * present. Known workspace lists prune deleted rooms; unknown lists retain a
+ * placeholder until cross-workspace cache data arrives.
+ * @param {Snapshot|null} snapshot @returns {VisibleTab[]} */
 export function visibleTabs(snapshot) {
-  const rooms = snapshot?.rooms ?? [];
-  const byId = new Map(rooms.map((room) => [room.id, room]));
-  const ordered = state.openTabs.filter((id) => byId.has(id));
-  const currentId = snapshot?.room?.id;
-  if (currentId && byId.has(currentId) && !ordered.includes(currentId)) ordered.push(currentId);
-  return ordered.map((id) => /** @type {RoomSummary} */ (byId.get(id)));
+  const currentWorkspaceId = snapshot?.workspace.id;
+  /** @type {VisibleTab[]} */
+  const ordered = [];
+  for (const entry of state.openTabs) {
+    const rooms = entry.workspaceId === currentWorkspaceId ? snapshot?.rooms : state.workspaceRooms[entry.workspaceId];
+    const room = rooms?.find((candidate) => candidate.id === entry.roomId);
+    if (room) ordered.push({ room, workspaceId: entry.workspaceId });
+    else if (rooms === undefined) ordered.push({ room: { id: entry.roomId, path: "", isCurrent: false }, workspaceId: entry.workspaceId });
+  }
+  const current = snapshot?.rooms.find((room) => room.id === snapshot.room.id);
+  if (current && currentWorkspaceId && !ordered.some((entry) => entry.room.id === current.id && entry.workspaceId === currentWorkspaceId)) {
+    ordered.push({ room: current, workspaceId: currentWorkspaceId });
+  }
+  return ordered;
 }

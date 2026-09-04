@@ -40,7 +40,7 @@ async function applyAppPayload(body) {
   // authoritative over this browser's pre-paint localStorage cache.
   adoptServerTheme(body.theme);
   if (state.snapshot) {
-    restoreTabs(state.snapshot.workspace.id);
+    restoreTabs();
     openTab(state.snapshot.room.id, state.snapshot.workspace.id);
   }
   rememberLocation(state.snapshot);
@@ -87,8 +87,8 @@ export async function loadWorkspace(workspaceId) {
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
     applySnapshotPayload(body);
+    restoreTabs();
     if (state.snapshot) {
-      restoreTabs(state.snapshot.workspace.id);
       openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     }
     connectEvents();
@@ -328,13 +328,14 @@ export async function addRoom(opts = {}) {
  * transcript stay put and remain reachable from the sidebar tree. If the closed
  * tab was active, jump to a neighbour so a room is always in view.
  * @param {string} roomId
+ * @param {string} workspaceId
  */
-export async function closeRoomTab(roomId) {
+export async function closeRoomTab(roomId, workspaceId) {
   const snapshot = state.snapshot;
   if (!snapshot) return;
-  const isActive = snapshot.room.id === roomId;
-  const neighbour = closeTab(roomId, snapshot.workspace.id, isActive);
-  if (isActive && neighbour && neighbour !== roomId) await selectRoom(snapshot.workspace.id, neighbour);
+  const isActive = snapshot.room.id === roomId && snapshot.workspace.id === workspaceId;
+  const neighbour = closeTab(roomId, workspaceId, isActive);
+  if (isActive && neighbour) await selectRoom(neighbour.workspaceId, neighbour.roomId);
   else markDirty("tabs", "sidebar");
 }
 

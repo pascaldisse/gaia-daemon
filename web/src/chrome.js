@@ -47,7 +47,8 @@ export function closeCurrent() {
     return;
   }
   const id = currentRoomId();
-  if (id) void closeRoomTab(id);
+  const wsId = workspaceId();
+  if (id && wsId) void closeRoomTab(id, wsId);
 }
 
 export function nextTab() {
@@ -63,17 +64,17 @@ function step(direction) {
   if (tabs.length < 2) return;
   const wsId = workspaceId();
   const currentId = currentRoomId();
-  const current = tabs.findIndex((room) => room.id === currentId);
+  const current = tabs.findIndex((entry) => entry.room.id === currentId && entry.workspaceId === wsId);
   const next = tabs[(current + direction + tabs.length) % tabs.length];
-  if (next && wsId && next.id !== currentId) void selectRoom(wsId, next.id);
+  if (next && (next.room.id !== currentId || next.workspaceId !== wsId)) void selectRoom(next.workspaceId, next.room.id);
 }
 
 /** @param {number} index 0-based tab position (Cmd/Ctrl+1..9). */
 export function jumpTab(index) {
   const tabs = visibleTabs(state.snapshot);
-  const room = tabs[index];
+  const entry = tabs[index];
   const wsId = workspaceId();
-  if (room && wsId && room.id !== currentRoomId()) void selectRoom(wsId, room.id);
+  if (entry && (entry.room.id !== currentRoomId() || entry.workspaceId !== wsId)) void selectRoom(entry.workspaceId, entry.room.id);
 }
 
 
@@ -104,8 +105,9 @@ export function togglePanel() {
  *  The shell relays the room to the main window and closes this one. Native only. */
 export function dockBack() {
   if (isNative() && !isMainWindow()) {
-    const id = currentRoomId();
-    if (id) void redockCurrent(id);
+    const roomId = currentRoomId();
+    const wsId = workspaceId();
+    if (roomId && wsId) void redockCurrent({ roomId, workspaceId: wsId });
   }
 }
 
@@ -114,20 +116,20 @@ export function dockBack() {
  * location). Returns true if it handled the tear-off, so the source strip can
  * drop the tab. No-op (false) in a plain browser.
  * @param {string} roomId
+ * @param {string} workspaceId
  * @param {number} screenX
  * @param {number} screenY
  */
-export function tearOff(roomId, screenX, screenY) {
-  if (!isNative() || !roomId) return false;
-  void openWindow({ mode: "torn", room: roomId, x: Math.round(screenX), y: Math.round(screenY) });
+export function tearOff(roomId, workspaceId, screenX, screenY) {
+  if (!isNative() || !roomId || !workspaceId) return false;
+  void openWindow({ mode: "torn", room: roomId, workspaceId, x: Math.round(screenX), y: Math.round(screenY) });
   return true;
 }
 
 /** Main window receives a redock from a torn window: adopt the room as a tab and
- *  bring it into view. @param {string} roomId */
-export function adoptRoomTab(roomId) {
-  const wsId = workspaceId();
-  if (!roomId || !wsId) return;
-  openTab(roomId, wsId);
-  void selectRoom(wsId, roomId);
+ * bring it into view. @param {{roomId: string, workspaceId: string}} entry */
+export function adoptRoomTab(entry) {
+  if (!entry.roomId || !entry.workspaceId) return;
+  openTab(entry.roomId, entry.workspaceId);
+  void selectRoom(entry.workspaceId, entry.roomId);
 }
