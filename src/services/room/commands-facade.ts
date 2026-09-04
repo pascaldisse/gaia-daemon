@@ -78,6 +78,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
+import { formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
 import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
@@ -287,9 +288,38 @@ export class RoomCommandsMixin {
     });
   }
 
+  /** Configure or show room-scoped automatic native compaction. */
+  async runAutoCompactCommand(value?: string, cooldownRaw?: string): Promise<string> {
+    const state = await this.room.state();
+    const workspaceConfig = this.workspace.config.autoCompact;
+    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
+    const off = value.toLowerCase() === "off";
+    const thresholdPct = Number(value);
+    if (!off && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100)) {
+      return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    let cooldownTurns: number | undefined;
+    if (cooldownRaw !== undefined) {
+      cooldownTurns = Number(cooldownRaw);
+      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    await this.room.updateState((current) => {
+      // A changed policy supersedes any scheduled pass/cooldown from the old one.
+      const { pending: _pending, cooldowns: _cooldowns, ...override } = current.autoCompact ?? {};
+      current.autoCompact = {
+        ...override,
+        thresholdPct: off ? null : thresholdPct,
+        ...(cooldownTurns === undefined ? {} : { cooldownTurns }),
+      };
+    });
+    const updated = await this.room.state();
+    await this.emitSnapshot();
+    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact), updated.autoCompact);
+  }
+
   /** /compact: native harness compaction; --edit adds Pi's review/apply
    * variant behind a capability flag, never a harness-id branch. */
-  async runCompactCommand(agent?: string, edit?: boolean | string): Promise<CommandReply> {
+  async runCompactCommand(agent?: string, edit?: boolean | string, automatic = false): Promise<CommandReply> {
     const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
@@ -302,7 +332,7 @@ export class RoomCommandsMixin {
     }
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
-    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    if (this.activeAgentTurn && !automatic) return "A turn is running — /cancel it first, or wait for it to finish.";
     this.compactingAgents.add(target);
     const startedAt = Date.now();
     const usedTokens = this.contextUsage[target]?.usedTokens;

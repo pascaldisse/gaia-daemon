@@ -13,6 +13,13 @@ export interface PluginsConfig {
   grants?: Record<string, readonly string[]>;
 }
 
+export interface AutoCompactConfig {
+/** Percentage of an agent context window used after a turn; null disables. */
+thresholdPct: number | null;
+/** Completed turns to suppress after an automatic pass is scheduled. */
+cooldownTurns: number;
+}
+
 export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
@@ -20,6 +27,8 @@ export interface WorkspaceConfig {
   /** Enables the agent-initiated graceful conversation-ending tool. Default on;
    * agents choose whether to invoke it. */
   agentEndConversation: boolean;
+  /** Workspace default; a room state autoCompact section may override it. */
+  autoCompact: AutoCompactConfig;
   memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;

@@ -3746,3 +3746,34 @@ test("ADV-021: a trust:false agent's capability denial is durable with pluginId/
     await rm(pluginRoot, { recursive: true, force: true });
   }
 });
+
+test("auto-compact schedules on turn-end usage then uses the native /compact path before the next turn", async () => {
+  let compactCalls = 0;
+  const { service, root, events } = await makeService({
+    config: { autoCompact: { thresholdPct: 15, cooldownTurns: 1 } },
+    script: () => [
+      { type: "text-delta", delta: "reply" } as AgentEvent,
+      { type: "context-usage", usedTokens: 15_000, maxTokens: 100_000 } as AgentEvent,
+    ],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [
+        { type: "text-delta", delta: "reply" } as AgentEvent,
+        { type: "context-usage", usedTokens: 15_000, maxTokens: 100_000 } as AgentEvent,
+      ]);
+      (runtime.capabilities as { supportsCompact?: boolean }).supportsCompact = true;
+      (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compact = async () => {
+        compactCalls += 1;
+        return { compacted: true, message: "session compacted.", summary: "native summary" };
+      };
+      return runtime;
+    },
+  });
+  const first = await service.sendMessage("first");
+  await waitFor(() => first.status === "complete");
+  assert.ok(events.some((event) => event.type === "room-event" && event.event.author === "system" && event.event.text === "auto-compact @15%"));
+  const second = await service.sendMessage("second");
+  await waitFor(() => second.status === "complete");
+  assert.equal(compactCalls, 1, "the pending pass invokes the same runtime.compact used by /compact");
+  assert.ok((await (await RoomHandle.open(root, "default")).state()).contextFloors?.gaia, "native compaction advanced the durable floor");
+  await service.dispose();
+});

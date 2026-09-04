@@ -2,7 +2,7 @@
 // for .gaia/config.json. Anything env-overridable is a function.
 
 import { readFileSync } from "node:fs";
-import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
@@ -56,6 +56,7 @@ export const DEFAULTS = {
 // Memory v4 defaults (MEMORY-DESIGN.md): everything on. `auto` embeddings =
 // LOCAL sidecar or off — never a cloud key that happens to be lying in the
 // environment (§6). Budget is chars (~600 tokens, the context-rot sweet spot).
+export const AUTO_COMPACT_DEFAULTS: AutoCompactConfig = { thresholdPct: null, cooldownTurns: 1 };
 export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecall: true,
   autoRecallBudget: 2_400,
@@ -399,6 +400,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
         : DEFAULTS.transcriptWindow,
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
     agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
+autoCompact: parseAutoCompactConfig(obj.autoCompact),
   };
   if (typeof obj.harness === "string") {
     const harness = canonicalHarnessId(obj.harness);
@@ -425,6 +427,18 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   return config;
 }
 
+/** Parse workspace auto-compaction settings. Invalid fields fall back independently. */
+export function parseAutoCompactConfig(raw: unknown): AutoCompactConfig {
+const value = isRecord(raw) ? raw : {};
+const thresholdPct = value.thresholdPct === null ? null
+: typeof value.thresholdPct === "number" && Number.isFinite(value.thresholdPct) && value.thresholdPct >= 0 && value.thresholdPct <= 100
+? value.thresholdPct
+: AUTO_COMPACT_DEFAULTS.thresholdPct;
+const cooldownTurns = typeof value.cooldownTurns === "number" && Number.isInteger(value.cooldownTurns) && value.cooldownTurns >= 0
+? value.cooldownTurns
+: AUTO_COMPACT_DEFAULTS.cooldownTurns;
+return { thresholdPct, cooldownTurns };
+}
 function parseGrantList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const caps = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
