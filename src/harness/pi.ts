@@ -12,11 +12,7 @@ import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage }
 import { PI_CAPABILITIES, PiRuntime } from "./pi/runtime.js";
 import { hasPersistedPiSession, piRoomSessionDir } from "./pi/session.js";
 export { PiRuntime } from "./pi/runtime.js";
-export {
-  loadCleanCompactionOverride,
-  mechanicalCompactionFallback,
-  newestContentEntryId,
-} from "./pi/compaction.js";
+export { mechanicalCompactionFallback, newestContentEntryId } from "./pi/compaction.js";
 export { piRoomSessionDir } from "./pi/session.js";
 export type { PiRuntimeOptions, PiRuntimeSessionFactory, PiRuntimeSessionFactoryOptions, PiSessionLike } from "./pi/session.js";
 export { redirectProviderFetch, rewriteProviderUrl } from "./pi/tools.js";
