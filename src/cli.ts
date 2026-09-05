@@ -17,7 +17,7 @@ hardenPath();
 
 function usage(): void {
   console.log(
-    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia mem|recall|artifact|summon|archtree … agent room tools (used inside a turn)\n  gaia summon --status [roomId] [--all]   census of summon lanes (state/last-event/delivered?/dirty-worktree)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room (tracked to delivery if it's a summon child)\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia dog on|off|status       09-DOG-MODE persona-register collar for this room\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia web <query> [-n N] [--provider name]             web search; Brave → Tavily → Serper\n  GAIA_GRAPHQL_ENABLED=true gaia                         also serves GraphiQL/GraphQL at /graphql (GAIA_GRAPHQL_PORT, default 4780)\n  gaia --help                  show help`
+    `gaia — local-first multi-agent room\n\nUsage:\n  gaia                         start the GAIA web UI\n  gaia init                    create project room files and seed global personas\n  gaia agent create <id> [name] create a global agent persona scaffold\n  gaia user create <username> <password> [display name]   create a human login\n  gaia user list|remove <id>   manage human logins\n  gaia setup list|activate|status|off   load a saved multi-agent setup into a room\n  gaia serve <room> [--port N] [--adapter id]   serve a monad room as one model\n  gaia plugin search|info|install|remove|update|list|migrate ...   pi package manager (gaia plugin --help for detail)\n  gaia mem|recall|artifact|summon|archtree … agent room tools (used inside a turn)\n  gaia summon --status [roomId] [--all]   census of summon lanes (state/last-event/delivered?/dirty-worktree)\n  gaia resume <roomId> "<message>"   follow-up message into an existing sub-room (tracked to delivery if it's a summon child)\n  gaia dream [agent] [--apply] propose/apply a memory consolidation (user-triggered)\n  gaia dog on|off|status       09-DOG-MODE persona-register collar for this room\n  gaia caryll compress|expand|stats <file> [-o <out>]   lossless context compression\n  gaia web <query> [-n N] [--provider name]             web search; Brave → Tavily → Serper\n  GAIA_GRAPHQL_ENABLED=true gaia                         also serves GraphiQL/GraphQL at /graphql (GAIA_GRAPHQL_PORT, default 4780)\n  gaia --help                  show help`
   );
 }
 
@@ -93,6 +93,12 @@ async function main(): Promise<void> {
   if (args[0] === "mem" || args[0] === "memory" || args[0] === "recall" || args[0] === "artifact" || args[0] === "summon" || args[0] === "archtree" || args[0] === "resume" || args[0] === "caryll" || args[0] === "dream" || args[0] === "dog") {
     const { runHarnessCommand } = await import("./services/cli-tools.js");
     process.exitCode = await runHarnessCommand(args);
+    return;
+  }
+
+  if (args[0] === "plugin") {
+    const { runPluginCli } = await import("./services/plugins/cli.js");
+    process.exitCode = await runPluginCli(args.slice(1));
     return;
   }
 

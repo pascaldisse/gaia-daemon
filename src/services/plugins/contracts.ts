@@ -5,6 +5,13 @@ import { CapabilityBroker } from "../capabilities/broker.js";
 import type { CapabilityContext, CapabilityRequester } from "../capabilities/types.js";
 import type { PluginContributions } from "./manifest.js";
 
+// Doctrine ruling (Pascal 09-05, adversary axis 7+1, docs/PLUGIN-ADVERSARY-0905.md):
+// pi package is THE format, not co-equal with this gaia manifest format
+// (~/projects/gaia-plugins doctrine: "No parallel gaia-only plugin format").
+// "command"/"tool"/"provider" contribution kinds are DEPRECATED — see
+// docs/PLUGIN-FORMAT.md for the timeline. "channel-bridge" has no pi
+// ExtensionAPI analogue (pi has no channel-bridge concept) and stays
+// first-class in this gaia-native format indefinitely.
 export type PluginContributionKind = "command" | "tool" | "channel-bridge" | "provider";
 export type PluginContributionValue = PluginContributionWireValue;
 
@@ -44,20 +51,31 @@ export interface PluginProviderResult {
   readonly output: PluginContributionValue;
 }
 
+/** @deprecated → pi package (ExtensionAPI registerCommand); executes in lane
+ * sandbox, not daemon. See docs/PLUGIN-FORMAT.md. `gaia plugin migrate`
+ * generates the pi-side replacement (src/services/plugins/pi-adapter.ts). */
 export interface PluginCommandContribution {
   readonly name: string;
   readonly description: string;
   run(context: CapabilityContext, request: PluginCommandRequest): PluginCommandResult | Promise<PluginCommandResult>;
 }
+/** @deprecated → pi package (ExtensionAPI registerTool); executes in lane
+ * sandbox, not daemon. See docs/PLUGIN-FORMAT.md. */
 export interface PluginToolContribution {
   readonly name: string;
   readonly description: string;
   execute(context: CapabilityContext, request: PluginToolRequest): PluginToolResult | Promise<PluginToolResult>;
 }
+/** First-class, NOT deprecated — pi's ExtensionAPI has no channel-bridge
+ * concept; this contribution kind has no pi package equivalent and stays
+ * daemon-side indefinitely. See docs/PLUGIN-FORMAT.md. */
 export interface PluginChannelBridgeContribution {
   readonly name: string;
   handle(context: CapabilityContext, request: PluginChannelBridgeRequest): PluginChannelBridgeResult | Promise<PluginChannelBridgeResult>;
 }
+/** @deprecated → pi package (ExtensionAPI registerProvider/registerNativeProvider,
+ * MODEL providers only — a narrower concept than this generic port); executes
+ * in lane sandbox, not daemon. See docs/PLUGIN-FORMAT.md. */
 export interface PluginProviderContribution {
   readonly name: string;
   provide(context: CapabilityContext, request: PluginProviderRequest): PluginProviderResult | Promise<PluginProviderResult>;
