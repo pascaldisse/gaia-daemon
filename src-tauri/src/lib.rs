@@ -47,6 +47,21 @@ mod webkit {
 
     const DEFAULT_PORT: u16 = 8787;
 
+    // Wry y = titlebar-container offset, not button top; 19 → centred in 38px.
+    #[cfg(target_os = "macos")]
+    fn traffic_light_position() -> LogicalPosition<f64> {
+        let coordinate = |name: &str, default: f64| {
+            std::env::var(name).ok()
+                .and_then(|value| value.parse::<f64>().ok())
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(default)
+        };
+        LogicalPosition::new(
+            coordinate("GAIA_TITLEBAR_TRAFFIC_LIGHT_X", 12.0),
+            coordinate("GAIA_TITLEBAR_TRAFFIC_LIGHT_Y", 19.0),
+        )
+    }
+
     // macOS WKWebView microphone/camera capture: wry's WKUIDelegate denies
     // getUserMedia by default, so dictation/voice fails in the native app even
     // though it works in a browser. Patch the delegate's media-capture callback in
@@ -249,7 +264,7 @@ mod webkit {
             builder = builder
                 .title_bar_style(TitleBarStyle::Overlay)
                 .hidden_title(true)
-                .traffic_light_position(LogicalPosition::new(12.0, 9.0));
+                .traffic_light_position(traffic_light_position());
         }
         if let (Some(px), Some(py)) = (x, y) {
             builder = builder.position(px, py);
@@ -648,7 +663,7 @@ mod webkit {
                     main_window_builder = main_window_builder
                         .title_bar_style(TitleBarStyle::Overlay)
                         .hidden_title(true)
-                        .traffic_light_position(LogicalPosition::new(12.0, 9.0));
+                        .traffic_light_position(traffic_light_position());
                 }
 
                 // Desktop gets an explicit window size. On iOS/Android a fixed
