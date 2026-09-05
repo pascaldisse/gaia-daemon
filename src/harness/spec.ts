@@ -269,6 +269,11 @@ export interface RuntimeCreateContext {
   endConversation?: EndConversation;
   /** Service implementations for the shared tool port. */
   toolProviders?: ToolProviders;
+  /** Resolved from this harness's own HarnessSpec.extensions by the agent
+   * runner (runner.ts), once, uniformly for every harness — the runtime reads
+   * this rather than re-deriving harness identity (RULE #0). Absent ⇒ no
+   * extension discovery. */
+  extensions?: { discover: boolean; additionalPaths?: string[] };
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
@@ -439,6 +444,14 @@ export interface HarnessSpec {
    * the sandbox launch uniformly — the backend never learns which harness
    * declared them. Absent ⇒ no extra carves. */
   sandboxPaths?: { writable?: string[]; readonly?: string[] };
+  /** Does this harness's own SDK discover + load on-disk extensions/packages
+   * (pi coding-agent extensions, settings.json packages) for a turn, and any
+   * extra paths to search beyond its own defaults? Data on the spec — read
+   * uniformly by the agent runner (runner.ts) and threaded into
+   * RuntimeCreateContext.extensions; the harness's create() reads
+   * ctx.extensions rather than re-deriving harness identity (RULE #0).
+   * Absent ⇒ no extension discovery (claude/codex today). */
+  extensions?: { discover: boolean; additionalPaths?: string[] };
   /** A-priori context window (tokens) for one of this harness's models, used by
    * the context-gate warning BEFORE a turn runs (the harness only reports the
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.

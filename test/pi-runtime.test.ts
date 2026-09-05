@@ -5,11 +5,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness, type SummonCreate } from "../src/harness/spec.js";
 import { mechanicalCompactionFallback, newestContentEntryId, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
 import { createTempDir } from "./helpers/temp.js";
+
+// LANE A (chat-mto9n58s-bjr1): pi extensions load natively in gaia lanes —
+// HarnessSpec.extensions (data) threaded uniformly by runner.ts into
+// RuntimeCreateContext.extensions, read by PiRuntime.createSessionMeta.
+const PI_EXT_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "register-tool.ts");
 
 class FakeSession implements PiSessionLike {
   readonly sessionId: string;
@@ -1329,6 +1335,112 @@ test("hasDurableSession: true iff the room's pi session dir holds a session file
     await writeFile(join(dir, "session-1.jsonl"), "{}\n", "utf8");
     assert.equal(spec.hasDurableSession!(temp.path, "default", "gaia"), true);
     assert.equal(spec.hasDurableSession!(temp.path, "default", "sidia"), false, "per agent");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+// --- LANE A: extension discovery is data on HarnessSpec.extensions --------
+
+test("pi harness spec declares extensions:{discover:true} (data, RULE #0 — no harness-id branch needed to read it)", () => {
+  const spec = findHarness("pi")!;
+  assert.deepEqual(spec.extensions, { discover: true });
+});
+
+test("PiRuntime: extensions absent ⇒ loader built with noExtensions:true and no additionalExtensionPaths", async () => {
+  const fx = await harnessFixture();
+  try {
+    let capturedLoader: any;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      capturedLoader = options.loader;
+      return { session: new FakeSession("s1") };
+    };
+    // No `extensions` passed to the constructor — mirrors claude/codex, which
+    // never declare HarnessSpec.extensions, so runner.ts threads `undefined`.
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(capturedLoader.noExtensions, true);
+    assert.deepEqual(capturedLoader.additionalExtensionPaths, []);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime: extensions:{discover:true} ⇒ loader built with noExtensions:false and additionalExtensionPaths = spec paths + workspace .pi/extensions", async () => {
+  const fx = await harnessFixture();
+  try {
+    let capturedLoader: any;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      capturedLoader = options.loader;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      extensions: { discover: true, additionalPaths: ["/tmp/gaia-lane-a-extra-ext.ts"] },
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(capturedLoader.noExtensions, false);
+    assert.deepEqual(capturedLoader.additionalExtensionPaths, [
+      "/tmp/gaia-lane-a-extra-ext.ts",
+      join(process.cwd(), ".pi", "extensions"),
+    ]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("pi extension fixture (test/fixtures/pi-ext/register-tool.ts) registers a tool visible on the session's active tool list when discovered (SDK-level, in-process)", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_EXT_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      assert.ok(
+        session.getActiveToolNames().includes("gaia_lane_a_fixture_tool"),
+        `expected fixture tool in active tools, got: ${session.getActiveToolNames().join(", ")}`,
+      );
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("pi extension fixture is NOT loaded when discovery stays off (noExtensions:true, no additionalExtensionPaths — gaia's default for this fixture's cwd)", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      noExtensions: true,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      assert.ok(!session.getActiveToolNames().includes("gaia_lane_a_fixture_tool"));
+    } finally {
+      session.dispose();
+    }
   } finally {
     await temp.cleanup();
   }

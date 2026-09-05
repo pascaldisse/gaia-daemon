@@ -36,6 +36,12 @@ registerHarness({
   capabilities: PI_CAPABILITIES,
   transientAuthPatterns: [/not logged in/i, /token .*expired/i, /re-?authenticat/i, /\bunauthorized\b/i],
   ui: { label: "pi", description: "Pi coding agent (local SDK)" },
+  // Doctrine (Pascal 09-05): gaia plugin = pi extension — ALL pi extensions +
+  // pi packages (settings.json packages, ~/.pi/agent/extensions,
+  // <workspace>/.pi/extensions) load inside lanes. PiRuntime reads
+  // ctx.extensions (threaded uniformly by runner.ts from this field) rather
+  // than a harness-id branch.
+  extensions: { discover: true },
   create: (ctx) => new PiRuntime(ctx),
   // Pi self-persists sessions as files under the room's pi-sessions/<agent>/
   // dir (SessionManager.continueRecent resumes the most recent one). Any file

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -48,6 +49,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly contextDiet?: ContextDietAccess;
   private readonly endConversation?: EndConversation;
   private readonly toolProviders?: RuntimeCreateContext["toolProviders"];
+  private readonly extensionsConfig?: RuntimeCreateContext["extensions"];
   private modelRuntime!: ModelRuntime;
   private modelRegistry!: ModelRegistry;
   private readonly modelRuntimeReady: Promise<void>;
@@ -70,6 +72,7 @@ export class PiRuntime implements AgentRuntime {
     this.contextDiet = options.contextDiet;
     this.endConversation = options.endConversation;
     this.toolProviders = options.toolProviders;
+    this.extensionsConfig = options.extensions;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.compaction = new PiCompaction(
@@ -349,7 +352,6 @@ export class PiRuntime implements AgentRuntime {
     skillPaths: string[],
     key: string,
   ): Promise<PiSessionMeta> {
-    const model = this.resolveModel();
     const roomDir = workspacePaths.roomDir(this.workspace.rootDir, roomId);
     const customTools = await buildPiTools(this.agent.tools, {
       memoryStore: this.memoryStore,
@@ -368,13 +370,55 @@ export class PiRuntime implements AgentRuntime {
       toolProviders: this.toolProviders,
     });
     const systemPromptRef = { current: systemPrompt };
+    // Extension discovery (data on HarnessSpec.extensions, threaded uniformly
+    // by runner.ts — RULE #0, no harness-id branch here). `additionalExtensionPaths`
+    // load unconditionally regardless of noExtensions (DefaultResourceLoader
+    // loads them as "cliEnabledExtensions" ahead of the noExtensions gate — see
+    // resource-loader.js reload()/loadCurrentExtensionSet), so the workspace's
+    // own .pi/extensions is added explicitly here rather than relying on
+    // packageManager.resolve()'s project-trust-gated auto-discovery (which
+    // would otherwise need an interactive trust prompt this headless runner
+    // can never answer).
+    const discover = this.extensionsConfig?.discover ?? false;
+    if (discover && process.env.PI_OFFLINE === undefined) {
+      // Safety default, not a hard requirement: packageManager.resolve() (run
+      // by loader.reload() below whenever noExtensions is false) auto-INSTALLS
+      // any not-yet-present settings.json "packages" entry over the network
+      // when given no onMissing callback (see package-manager.js
+      // resolvePackageSources -> installMissing). That is almost certainly why
+      // this exact ordering was reverted once already (0e6b0ac -> 69c21f3,
+      // 08-27): discovery went from off to unconditionally-on for every pi
+      // agent with no way to scope it, and any global settings.json package
+      // entry would try to fetch it once per turn. PI_OFFLINE=1 makes
+      // resolvePackageSources skip missing sources instead of installing them
+      // (already-installed extensions/packages still load) — set only if the
+      // operator hasn't already configured it explicitly.
+      process.env.PI_OFFLINE = "1";
+    }
     const loader = new DefaultResourceLoader({
       cwd: this.workDir,
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
-      noExtensions: true,
+      noExtensions: !discover,
+      ...(discover
+        ? {
+            additionalExtensionPaths: [
+              ...(this.extensionsConfig?.additionalPaths ?? []),
+              join(this.workDir, ".pi", "extensions"),
+            ],
+          }
+        : {}),
+      // Loaded regardless of noExtensions/discover (disk-discovered extensions
+      // stay off when discover is false) — see compaction.extension() above.
+      // Uses the CONFIGURED model provider/name strings, never the resolved
+      // Model object, so constructing this factory never needs the model
+      // registry populated yet (see the resolveModel() ordering fix below).
       extensionFactories: [
-        this.compaction.extension(roomId, model?.provider, model?.name),
+        this.compaction.extension(
+          roomId,
+          this.agent.model?.provider,
+          this.agent.model?.name,
+        ),
       ],
       noSkills: true,
       noThemes: true,
@@ -386,7 +430,31 @@ export class PiRuntime implements AgentRuntime {
           }
         : { appendSystemPromptOverride: () => [systemPromptRef.current] }),
     });
-    if (!this.sessionFactory) await loader.reload();
+    if (!this.sessionFactory) {
+      await loader.reload();
+      // Extensions discovered above may register model providers
+      // (pi.registerProvider/registerNativeProvider) during load — flush them
+      // into the modelRegistry resolveModel() below reads, and refresh so the
+      // new provider's models are visible, BEFORE resolving the configured
+      // model. Mirrors pi's own AgentSession.bindCore() ordering (flushes
+      // pendingProviderRegistrations the same way before the runner is bound).
+      // Gated behind `discover`: when it's false noExtensions is true and
+      // these queues are always empty anyway.
+      if (discover) {
+        const extensionRuntime = loader.getExtensions().runtime;
+        for (const { name, config } of extensionRuntime.pendingProviderRegistrations)
+          this.modelRegistry.registerProvider(name, config);
+        extensionRuntime.pendingProviderRegistrations = [];
+        for (const { provider } of extensionRuntime.pendingNativeProviderRegistrations)
+          this.modelRegistry.registerProvider(provider);
+        extensionRuntime.pendingNativeProviderRegistrations = [];
+        await this.modelRegistry.refresh();
+      }
+    }
+    // Resolved AFTER extension providers are flushed above — an extension can
+    // register the very provider agent.json configures (see ordering comment
+    // above); resolving earlier throws before it gets the chance.
+    const model = this.resolveModel();
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
       ? await this.sessionFactory({
@@ -418,6 +486,18 @@ export class PiRuntime implements AgentRuntime {
           settingsManager: readOnlyPiSettings(this.workDir),
         });
     if (modelFallbackMessage) console.warn(modelFallbackMessage);
+    // LANE-B: ui bridge — headless safety is ALREADY covered by pi's own SDK:
+    // AgentSession never binds a uiContext here, so ExtensionRunner keeps its
+    // built-in `noOpUIContext` (dist/core/extensions/runner.js) — select/input
+    // resolve undefined, confirm resolves false, notify/setStatus/etc. are
+    // no-ops; NOTHING throws. Nothing to wrap at our layer for correctness.
+    // The real integration seam for Lane B's createUiBridge(emit)
+    // (src/harness/pi/ui-bridge.ts, written in parallel — not created here) is
+    // `(session as PiSessionLike & { bindExtensions?(b: { uiContext?: unknown }): Promise<void> })
+    // .bindExtensions({ uiContext: createUiBridge(emit) })`, called once per
+    // session right here — dist/core/agent-session.js's public
+    // `AgentSession.bindExtensions()` is what stores `_extensionUIContext` and
+    // rebinds it onto the ExtensionRunner (`runner.setUIContext(...)`).
     const meta: PiSessionMeta = {
       session: session as PiSessionLike,
       loader,
