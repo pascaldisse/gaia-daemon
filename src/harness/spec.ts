@@ -8,7 +8,7 @@
 
 import { DEFAULTS } from "../core/config.js";
 import { canonicalHarnessId } from "../core/harness-id.js";
-import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UiPromptReplyValue, UsageProbeResult, Workspace } from "../core/types.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
@@ -88,6 +88,16 @@ export interface AgentRuntime {
    * it; absent on the runner-side harness runtimes. Returns false when no turn
    * is streaming (the marker is simply skipped). */
   injectEvent?(event: AgentEvent): boolean;
+  /** Route a client's `ui.reply` back to a pending `ui.prompt`/`auth.request`
+   * (backs the pi ExtensionUIContext dialogs carried over AgentEvent — see
+   * core/types/harness.ts). Resolves false when unsupported, no such id is
+   * pending, or no reply within the runtime's own timeout. Only present when
+   * capabilities.supportsUi. */
+  uiReply?(roomId: string, id: string, value: UiPromptReplyValue): Promise<boolean>;
+  /** Fire a client-side hotkey press for a `ui.shortcut` `commandId` (backs
+   * pi's registerShortcut handler). Resolves false when unsupported or the
+   * commandId is unknown. Only present when capabilities.supportsUi. */
+  uiShortcutFire?(roomId: string, commandId: string): Promise<boolean>;
   /** Compact the room's session context using the HARNESS's own compaction
    * (backs /compact — gaia never re-implements summarization). Resolves with
    * `{ compacted, message }`: `compacted` is the authoritative "history was
@@ -175,6 +185,11 @@ export interface HarnessCapabilities {
   /** Can inject guidance into a RUNNING turn (pi session.steer, codex
    * turn/steer, claude stream-json stdin)? Backs /steer and steer-by-default. */
   readonly supportsSteer: boolean;
+  /** Carries the pi ExtensionAPI UI/auth/shortcut/lifecycle surface over
+   * AgentEvent (ui.widget/ui.prompt/ui.shortcut/auth.request/ext.lifecycle) and
+   * accepts `uiReply`/`uiShortcutFire` back? Optional — absent (or false) on a
+   * harness with no such surface; the client hides the affordances entirely. */
+  readonly supportsUi?: boolean;
   /** Has a native session-compaction the runtime can invoke (pi
    * session.compact, claude /compact, codex thread compaction)? Backs
    * /compact. */

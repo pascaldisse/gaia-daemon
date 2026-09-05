@@ -1,4 +1,4 @@
-import type { BackgroundTask } from "./harness.js";
+import type { BackgroundTask, UiDeviceCodeInfo, UiPromptField } from "./harness.js";
 import type { EventDetails, LiveTurn, MessageAttachment, ModelFallback, RoomEvent, SkillInvocation } from "./events.js";
 import type { AgentDef } from "./agents.js";
 import type { ContextGatePending, RoomState } from "./rooms.js";
@@ -324,6 +324,15 @@ export type UiEvent =
   // A mid-turn steer landed at this point of the reply's stream. `steerEventId`
   // is the steer's user RoomEvent (scope.eventId is, as always, the REPLY's).
   | ({ type: "steered"; steerEventId: string } & StreamScope)
+  // pi ExtensionAPI surface (see core/types/harness.ts AgentEvent doc comments
+  // for the full ui.widget/ui.prompt/ui.shortcut/auth.request/ext.lifecycle
+  // vocabulary) — identical shape, just scoped to the emitting agent+turn so the
+  // client knows which composer/agent a reply or shortcut fire targets.
+  | ({ type: "ui.widget"; id: string; placement: "aboveEditor" | "belowEditor"; lines: string[] } & StreamScope)
+  | ({ type: "ui.prompt"; id: string; kind: "input" | "select" | "confirm" | "editor"; title: string; message?: string; fields?: UiPromptField[] } & StreamScope)
+  | ({ type: "ui.shortcut"; commandId: string; key: string; description?: string } & StreamScope)
+  | ({ type: "auth.request"; id: string; providerId: string; method: "oauth" | "apiKey" | "device"; url?: string; instructions?: string; deviceCode?: UiDeviceCodeInfo; fields?: UiPromptField[] } & StreamScope)
+  | ({ type: "ext.lifecycle"; id: string; state: "loaded" | "failed" | "disposed"; reason?: string } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
   | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
   // Workspace-TAGGED, globally DELIVERED (NO roomId): the room list of the named

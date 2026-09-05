@@ -21,6 +21,36 @@ export interface BackgroundTask extends BackgroundTaskInfo {
   roomId: string;
 }
 
+// ---------------------------------------------------------------------------
+// pi ExtensionAPI surface carried over the wire, harness-agnostic (RULE #0):
+// any harness that gains an equivalent UI/auth/shortcut surface emits the SAME
+// vocabulary — no `harness === "pi"` branch anywhere shared code touches this.
+
+/** One form field inside a ui.prompt (or auth.request `fields`). `kind:"audio"`
+ * is the composer mic-capture slot (reuses the existing dictation upload path;
+ * `value` on reply is the resulting clip's transcript/id, never raw audio). */
+export interface UiPromptField {
+  name: string;
+  kind: "text" | "select" | "confirm" | "audio";
+  label?: string;
+  placeholder?: string;
+  options?: string[];
+  defaultValue?: string;
+  secret?: boolean;
+}
+
+/** What a client's `ui.reply` carries back for a given prompt/auth id: a
+ * single field's answer (input/select/confirm) or a multi-field form. */
+export type UiPromptReplyValue = string | boolean | Record<string, string>;
+
+/** OAuth device-code leg (pi's OAuthLoginCallbacks.onDeviceCode mirror). */
+export interface UiDeviceCodeInfo {
+  userCode: string;
+  verificationUri: string;
+  intervalSeconds?: number;
+  expiresInSeconds?: number;
+}
+
 export type AgentEvent =
   | { type: "model-info"; provider: string; modelId: string; subscription: boolean }
   | { type: "model-fallback"; fromModel: string; toModel: string; reason: string }
@@ -44,5 +74,27 @@ export type AgentEvent =
   /** Structured surfacing of an out-of-band condition worth telling the
    * consumer about without treating it as reply text — e.g. an upstream
    * stall the claude thinking-proxy detected. Never rendered as reply text. */
-  | { type: "notice"; kind: "upstream-stall"; text: string };
+  | { type: "notice"; kind: "upstream-stall"; text: string }
+  /** pi ctx.ui.setWidget mirror: a persistent row above/below the composer.
+   * `lines: undefined`-equivalent clear is `lines: []`; a client removes the
+   * row when it sees an empty array. */
+  | { type: "ui.widget"; id: string; placement: "aboveEditor" | "belowEditor"; lines: string[] }
+  /** pi ctx.ui.input/select/confirm mirror: a dialog needing a reply. `kind`
+   * is the dialog shape; `fields` carries a multi-field form (e.g. the
+   * composer's audio capture slot) when the dialog is more than one answer.
+   * Reply travels back as `ui.reply` {id, value} (RunnerCommand, daemon→runner). */
+  | { type: "ui.prompt"; id: string; kind: "input" | "select" | "confirm" | "editor"; title: string; message?: string; fields?: UiPromptField[] }
+  /** pi ctx.registerShortcut mirror: a hotkey the client should bind: firing
+   * it posts `ui.shortcut.fire` {commandId} (RunnerCommand, daemon→runner) —
+   * the runner dispatches to the extension's OWN handler, never re-implemented
+   * client-side. */
+  | { type: "ui.shortcut"; commandId: string; key: string; description?: string }
+  /** pi registerProvider's oauth.login(callbacks) mirror — one event per
+   * OAuthLoginCallbacks leg (onAuth→url, onDeviceCode→deviceCode,
+   * onPrompt/onSelect→fields). Reply travels back as `ui.reply` {id, value},
+   * same channel as ui.prompt (uniform: both are "a dialog awaiting one id-keyed
+   * answer", never two reply vocabularies). */
+  | { type: "auth.request"; id: string; providerId: string; method: "oauth" | "apiKey" | "device"; url?: string; instructions?: string; deviceCode?: UiDeviceCodeInfo; fields?: UiPromptField[] }
+  /** pi extension load/failure/dispose mirror — status chips in the transcript. */
+  | { type: "ext.lifecycle"; id: string; state: "loaded" | "failed" | "disposed"; reason?: string };
 

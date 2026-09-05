@@ -11,7 +11,7 @@ import { mkdirSync } from "node:fs";
 import { env } from "../core/env.js";
 import { expandHome, workspacePaths } from "../core/paths.js";
 import { accountsPath, findAccount } from "../domain/accounts.js";
-import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type Workspace } from "../core/types.js";
+import { NO_SESSION_TO_COMPACT, type AgentDef, type AgentEvent, type CompactProgressUpdate, type CompactResult, type MessageAttachment, type UiPromptReplyValue, type Workspace } from "../core/types.js";
 import type { MemoryStore } from "../domain/memory.js";
 import { CircuitBreaker, defaultBreaker } from "./breaker.js";
 import { createEventChannel, type EventChannel } from "./events.js";
@@ -193,6 +193,12 @@ export class RunnerHost implements AgentRuntime {
   private stallDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   /** Resolver for the single in-flight /steer round trip. */
   private steerWaiter: ((ok: boolean) => void) | undefined;
+  /** Resolvers for in-flight `ui.reply`/`ui.shortcut.fire` round trips, keyed by
+   * the prompt/auth `id` or shortcut `commandId` — unlike /steer, a turn CAN have
+   * more than one live dialog outstanding (e.g. an oauth flow's onSelect right
+   * after its onAuth), so this is a map, not a single slot. */
+  private readonly uiReplyWaiters = new Map<string, (ok: boolean) => void>();
+  private readonly uiShortcutWaiters = new Map<string, (ok: boolean) => void>();
   /** Resolver for the single in-flight /compact round trip. */
   private compactWaiter: ((result: { ok: boolean; compacted: boolean; message: string; summary?: string }) => void) | undefined;
   /** Forwards the runner's compact-progress frames to the /compact caller (and
@@ -372,6 +378,44 @@ export class RunnerHost implements AgentRuntime {
         resolve(ok);
       };
       this.write({ type: "steer", roomId, message, ...(attachments?.length ? { attachments } : {}) });
+    });
+  }
+
+  /** Route a client's `ui.reply` to the runner for a pending `ui.prompt`/
+   * `auth.request` id (see AgentRuntime.uiReply). Same shape as steer() —
+   * one waiter per id so a second concurrent dialog does not clobber the
+   * first's resolver. */
+  async uiReply(roomId: string, id: string, value: UiPromptReplyValue): Promise<boolean> {
+    if (!this.child || !this.capabilities.supportsUi) return false;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.uiReplyWaiters.delete(id);
+        resolve(false);
+      }, 5_000);
+      timer.unref?.();
+      this.uiReplyWaiters.set(id, (ok) => {
+        clearTimeout(timer);
+        resolve(ok);
+      });
+      this.write({ type: "ui-reply", roomId, id, value });
+    });
+  }
+
+  /** Route a client's `ui.shortcut.fire` to the runner for a registered
+   * `commandId` (see AgentRuntime.uiShortcutFire). */
+  async uiShortcutFire(roomId: string, commandId: string): Promise<boolean> {
+    if (!this.child || !this.capabilities.supportsUi) return false;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.uiShortcutWaiters.delete(commandId);
+        resolve(false);
+      }, 5_000);
+      timer.unref?.();
+      this.uiShortcutWaiters.set(commandId, (ok) => {
+        clearTimeout(timer);
+        resolve(ok);
+      });
+      this.write({ type: "ui-shortcut-fire", roomId, commandId });
     });
   }
 
@@ -658,6 +702,12 @@ export class RunnerHost implements AgentRuntime {
         this.forkWaiter({ ok: false, message: `agent runner exited during fork (${signal ? `signal ${signal}` : `code ${code}`}).` });
       }
       if (this.steerWaiter && !this.disposed) this.steerWaiter(false);
+      if (!this.disposed) {
+        for (const resolve of this.uiReplyWaiters.values()) resolve(false);
+        this.uiReplyWaiters.clear();
+        for (const resolve of this.uiShortcutWaiters.values()) resolve(false);
+        this.uiShortcutWaiters.clear();
+      }
       // A dead child can hold no turn — release abort()/idle waiters.
       this.settleTurn();
     });
@@ -706,6 +756,22 @@ export class RunnerHost implements AgentRuntime {
       case "steer-result":
         this.steerWaiter?.(message.ok);
         return;
+      case "ui-reply-result": {
+        const resolve = this.uiReplyWaiters.get(message.id);
+        if (resolve) {
+          this.uiReplyWaiters.delete(message.id);
+          resolve(message.ok);
+        }
+        return;
+      }
+      case "ui-shortcut-result": {
+        const resolve = this.uiShortcutWaiters.get(message.commandId);
+        if (resolve) {
+          this.uiShortcutWaiters.delete(message.commandId);
+          resolve(message.ok);
+        }
+        return;
+      }
       case "compact-progress": {
         const { type: _t, ...update } = message;
         this.compactProgress?.(update);

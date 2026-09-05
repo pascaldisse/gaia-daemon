@@ -20,7 +20,7 @@ import { createTempDir } from "./helpers/temp.js";
 
 registerHarness({
   id: "stub",
-  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true },
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true, supportsUi: true },
   ui: { label: "Stub", description: "protocol test double" },
   backgroundTasks: {
     fromToolCall: (toolName, args, result) => {
@@ -135,6 +135,10 @@ rl.on("line", (line) => {
     send({ type: "compact-result", ok: true, compacted: true, message: "compacted " + cmd.roomId });
   } else if (cmd.type === "compact-clean") {
     send({ type: "compact-result", ok: true, compacted: true, message: "clean compacted " + cmd.roomId, summary: "WIRE-CLEAN-SUMMARY" });
+  } else if (cmd.type === "ui-reply") {
+    send({ type: "ui-reply-result", id: cmd.id, ok: cmd.id === "known-prompt" });
+  } else if (cmd.type === "ui-shortcut-fire") {
+    send({ type: "ui-shortcut-result", commandId: cmd.commandId, ok: cmd.commandId === "known-shortcut" });
   } else if (cmd.type === "dispose") {
     process.exit(0);
   }
@@ -321,6 +325,28 @@ test("injectEvent lands in the ACTIVE turn's stream at its current position; ski
       "the marker sits exactly between the pre-steer and post-steer stream",
     );
     assert.equal(host.injectEvent({ type: "steered", eventId: "ev_too_late" }), false, "turn over → marker skipped");
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost.uiReply/uiShortcutFire round-trip real ui-reply/ui-shortcut-fire frames against a live stub runner", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    // No child yet — mirrors steer()'s "no runner, nothing to answer" no-op.
+    assert.equal(await host.uiReply("default", "known-prompt", "yes"), false, "no child yet → false, not a hang");
+    assert.equal(await host.uiShortcutFire("default", "known-shortcut"), false);
+
+    // Spawn the child via an ordinary turn, then exercise the round trip idle.
+    for await (const _event of host.send({ roomId: "default", message: "hi", transcript: [] })) void _event;
+
+    assert.equal(await host.uiReply("default", "known-prompt", { field: "answer" }), true, "the stub's ui-reply-result for a known id resolves true");
+    assert.equal(await host.uiReply("default", "unknown-prompt", "x"), false, "the stub's ui-reply-result for an unknown id resolves false");
+    assert.equal(await host.uiShortcutFire("default", "known-shortcut"), true, "the stub's ui-shortcut-result for a known commandId resolves true");
+    assert.equal(await host.uiShortcutFire("default", "unknown-shortcut"), false);
+
     await host.dispose();
   } finally {
     await temp.cleanup();

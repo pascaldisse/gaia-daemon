@@ -555,6 +555,51 @@ export async function sendMessage(text, attachments = [], options = {}) {
 }
 
 /**
+ * Answer a pending `ui.prompt`/`auth.request` id (pi ExtensionUIContext
+ * dialogs carried headless over AgentEvent — see core/types/harness.ts).
+ * Purely a UI round trip: no transcript event, no busy-state reflection.
+ * @param {string} agentId
+ * @param {string} id
+ * @param {import("../../src/core/types.js").UiPromptReplyValue} value
+ * @returns {Promise<boolean>}
+ */
+export async function sendUiReply(agentId, id, value) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return false;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/ui-reply`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, id, value }),
+    });
+    return body.ok === true;
+  } catch (error) {
+    setError(error);
+    return false;
+  }
+}
+
+/**
+ * Fire a client-side hotkey press for a registered `ui.shortcut` commandId.
+ * @param {string} agentId
+ * @param {string} commandId
+ * @returns {Promise<boolean>}
+ */
+export async function fireUiShortcut(agentId, commandId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return false;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/ui-shortcut`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, commandId }),
+    });
+    return body.ok === true;
+  } catch (error) {
+    setError(error);
+    return false;
+  }
+}
+
+/**
  * Retry: regenerate everything from the user message that produced `eventId`
  * (works on an agent reply or a user message). The server forks the room
  * there — later events move to rewound.jsonl — and re-runs the same text.

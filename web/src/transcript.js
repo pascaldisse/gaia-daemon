@@ -559,6 +559,47 @@ function renderTranscript() {
     nextNodes.push(node);
   }
 
+  // pi ExtensionAPI surface (see core/types/harness.ts): ext.lifecycle status
+  // chips + ui.widget rows, keyed like the older-history indicator below so the
+  // sync loop below picks them up/drops them like any other node. `aboveEditor`
+  // widgets sit at the TOP of the transcript (closest to "just above input" this
+  // scroll-list can express), `belowEditor` at the bottom.
+  if (state.extLifecycle.size > 0) {
+    const chips = [...state.extLifecycle.values()];
+    const version = `ext-lifecycle:${chips.map((c) => `${c.id}:${c.state}`).join(",")}`;
+    const current = existing.get("__ext-lifecycle");
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h(
+            "div",
+            { class: "ext-lifecycle-row" },
+            ...chips.map((chip) =>
+              h("span", {
+                class: `ext-lifecycle-chip ext-lifecycle-${chip.state}`,
+                title: chip.reason ?? "",
+                text: `${chip.id}: ${chip.state}`,
+              }),
+            ),
+          );
+    node.dataset.eventId = "__ext-lifecycle";
+    node.dataset.v = version;
+    nextNodes.push(node);
+  }
+  for (const widget of state.uiWidgets.values()) {
+    const key = `__ui-widget:${widget.id}`;
+    const version = `${key}:${widget.lines.join("\u0000")}`;
+    const current = existing.get(key);
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h("div", { class: "ui-widget-row" }, ...widget.lines.map((line) => h("div", { class: "ui-widget-line", text: line })));
+    node.dataset.eventId = key;
+    node.dataset.v = version;
+    if (widget.placement === "belowEditor") nextNodes.push(node);
+    else nextNodes.unshift(node);
+  }
+
   // Older-history indicator above the transcript, keyed like a message so the
   // sync below keeps it. History now pages in automatically as you scroll toward
   // the top (maybeLoadOlderOnScroll); this row is just a status line — still
