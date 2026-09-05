@@ -149,6 +149,34 @@ export class RoomCommandsMixin {
     return (await runtime.uiShortcutFire?.(this.roomId, commandId)) ?? false;
   }
 
+  /** Trigger @agentId's harness to start an interactive provider login (Lane E,
+   * chat-mto9n58s-bjr1; POST rooms/:id/login). Modeled as a turn —
+   * AgentInput.uiLogin's doc comment explains why a bespoke RPC cannot
+   * deliver auth.request/ui.prompt at all: this method drives runtime.send()
+   * directly (never through the durable queue — nothing here should ever be
+   * replayed or committed as a conversational reply) and re-emits every
+   * yielded event through the SAME toUiEvent scoping ordinary turns use, so
+   * Settings ▸ Accounts' AuthRequestCard sees it exactly like any other
+   * auth.request. */
+  async runUiLogin(providerId: string, method?: "oauth" | "api_key", agent?: string): Promise<{ ok: boolean; message: string }> {
+    const agentId = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[agentId]) return { ok: false, message: this.unknownAgentMessage(agentId) };
+    const runtime = this.runtimes[agentId];
+    if (!runtime.capabilities.supportsUi) return { ok: false, message: `@${agentId}'s harness has no interactive login trigger.` };
+    if (this.activeAgentTurn) return { ok: false, message: "A turn is running — wait for it to finish before triggering a login." };
+    const taskId = newId("login");
+    const eventId = newId("login-evt");
+    try {
+      for await (const event of runtime.send({ roomId: this.roomId, message: "", transcript: [], uiLogin: { providerId, ...(method ? { method } : {}) } })) {
+        const uiEvent = this.toUiEvent(taskId, agentId, eventId, event);
+        if (uiEvent) this.emit(uiEvent);
+      }
+    } catch (error) {
+      return { ok: false, message: `Login for ${providerId} failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    return { ok: true, message: `Login flow started for @${agentId} · ${providerId} — check Settings ▸ Accounts for the sign-in card.` };
+  }
+
   /** Dedupes the loaded plugin map's VALUES — a plugin owning several command
    * names (services/plugins.ts CommandPlugin.command as an array) is the SAME
    * object under each of its keys, and every hook below (panel/prompt/

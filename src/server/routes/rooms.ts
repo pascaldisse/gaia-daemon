@@ -247,6 +247,25 @@ async function roomUiShortcutFire(ctx: RouteContext): Promise<boolean> {
   json(ctx.response, 200, { ok });
   return true;
 }
+// Lane E (chat-mto9n58s-bjr1): trigger a harness's interactive provider login
+// for this room (Charles's account-login route pattern, mirrored for the
+// per-turn pi ExtensionAPI oauth.login surface — see AgentInput.uiLogin's doc
+// comment for why this streams as a turn instead of a bare RPC). `agentId` is
+// optional — defaults to the room's own default target, same convention as
+// /compact and friends.
+async function roomUiLogin(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/login$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const providerId = stringField(body, "providerId");
+  if (!providerId?.trim()) { json(ctx.response, 400, { error: "Missing providerId" }); return true; }
+  const methodRaw = stringField(body, "method");
+  const method = methodRaw === "api_key" ? "api_key" : methodRaw === "oauth" ? "oauth" : undefined;
+  const agentId = stringField(body, "agentId");
+  await respond(ctx.response, () => service.runUiLogin(providerId.trim(), method, agentId?.trim() || undefined));
+  return true;
+}
 // Backwards paging through committed history ("load older" in the
 // transcript): the events immediately before ?before=<eventId>.
 async function roomEvents(ctx: RouteContext): Promise<boolean> {
@@ -488,6 +507,7 @@ const roomHandlers = [
   roomMessages,
   roomUiReply,
   roomUiShortcutFire,
+  roomUiLogin,
   roomEvents,
   roomSanitize,
   roomSanitizeApply,

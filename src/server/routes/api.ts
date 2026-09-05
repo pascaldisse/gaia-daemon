@@ -284,7 +284,18 @@ async function handleApiWorkspaceRoutes(ctx: RouteContext): Promise<void> {
         accounts: redactedAccounts(),
         harnesses: harnessSpecs()
           .filter((s) => s.accounts)
-          .map((s) => ({ id: s.id, label: s.accounts?.label, login: Boolean(s.accounts?.login) })),
+          .map((s) => ({
+            id: s.id,
+            label: s.accounts?.label,
+            login: Boolean(s.accounts?.login),
+            // Lane E (chat-mto9n58s-bjr1): distinct from `login` above (that's
+            // Charles's pseudo-tty account-CREATION flow) — this is whether a
+            // room can trigger this harness's OWN interactive provider login
+            // for an ALREADY-bound agent (capabilities.supportsUi, data —
+            // RULE #0, only pi sets it true today). Backs Settings ▸ Accounts'
+            // "Login via room" button; POST rooms/:id/login.
+            uiLogin: Boolean(s.capabilities.supportsUi),
+          })),
       }));
     }
     if (method === "DELETE" && (params = match(/^\/api\/accounts\/([^/]+)$/))) {

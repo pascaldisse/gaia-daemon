@@ -19,7 +19,7 @@ import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../p
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
 import { createUiBridge } from "./ui-bridge.js";
-import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext } from "./ui-context.js";
+import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "./ui-context.js";
 import {
   loadCleanCompactionOverride,
   PiCompaction,
@@ -171,6 +171,27 @@ export class PiRuntime implements AgentRuntime {
     const unsubscribe = session.subscribe((event) =>
       forwardPiEvent(event, session, channel),
     );
+    // Lane E (chat-mto9n58s-bjr1): the login trigger's whole turn body — see
+    // AgentInput.uiLogin's doc comment for why this must be a turn rather than
+    // a bespoke RPC. ModelRuntime.login's own auth.request/ui.prompt dialog
+    // rides the SAME channel/uiBridge as any other mid-turn dialog; no session
+    // prompt is ever built. `credential` itself is opaque here (accounts.json
+    // storage, if any, is this harness's own concern elsewhere) — only
+    // success/failure matters to the turn's confirmation reply.
+    if (input.uiLogin) {
+      const { providerId, method } = input.uiLogin;
+      Promise.resolve()
+        .then(() => this.modelRuntime.login(providerId, method ?? "oauth", wrapAuthInteraction(meta.uiBridge, providerId)))
+        .then(() => channel.push({ type: "text-delta", delta: `Signed in to ${providerId}.` }))
+        .catch((cause) => channel.fail(cause))
+        .finally(() => {
+          unsubscribe();
+          channel.close();
+          meta.turnEmit.current = () => {};
+        });
+      for await (const event of channel.stream()) yield event;
+      return;
+    }
     // Lane E (chat-mto9n58s-bjr1): a native-passthrough `/word` that matches a
     // REAL registered extension command dispatches through the SDK's own
     // ExtensionRunner (registerCommand's actual invocation point) instead of

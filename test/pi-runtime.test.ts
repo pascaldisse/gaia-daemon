@@ -1916,6 +1916,92 @@ test("PiRuntime.send dispatches a nativeCommand /word that matches a REAL regist
   }
 });
 
+test("PiRuntime.send({uiLogin}) drives a stub ModelRuntime.login through wrapAuthInteraction: the auth_url leg reaches the turn's channel as auth.request, and a successful login yields a confirmation reply (Lane E, item 3)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new FakeSession("login-1");
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    // Prime modelRuntimeReady with the real ModelRuntime, then swap in a stub
+    // (TS-private, JS-public field — same reach-in idiom as PiRuntime's own
+    // packageManager wrap; see createSessionMeta's doc comment for precedent).
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    uiSession!.prompts = [];
+    const loginCalls: { providerId: string; type: string }[] = [];
+    (runtime as unknown as { modelRuntime: { login: (providerId: string, type: string, interaction: any) => Promise<unknown> } }).modelRuntime = {
+      login: async (providerId, type, interaction) => {
+        loginCalls.push({ providerId, type });
+        interaction.notify({ type: "auth_url", url: "https://example.com/auth" });
+        return {};
+      },
+    };
+
+    const events = await collect(runtime.send({ roomId: "default", message: "", transcript: [], uiLogin: { providerId: "corp-ai" } }));
+
+    assert.deepEqual(loginCalls, [{ providerId: "corp-ai", type: "oauth" }], "method must default to oauth when unspecified");
+    const authEvent = events.find((e) => e.type === "auth.request") as Extract<AgentEvent, { type: "auth.request" }> | undefined;
+    assert.ok(authEvent, "ModelRuntime.login's auth_url leg must reach the turn's own channel as auth.request");
+    assert.equal(authEvent!.providerId, "corp-ai");
+    assert.equal(authEvent!.url, "https://example.com/auth");
+    const reply = events.find((e) => e.type === "text-delta") as Extract<AgentEvent, { type: "text-delta" }> | undefined;
+    assert.ok(reply, "a successful login must yield a confirmation reply, never a raw model prompt");
+    assert.match(reply!.delta, /corp-ai/);
+    assert.deepEqual(uiSession!.prompts, [], "a uiLogin turn must never build/send a session prompt");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.send({uiLogin}) apiKey/secret leg: auth.request awaits a REAL ui.reply through this room's OWN bridge before login (and the turn) completes (Lane E, item 3)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new FakeSession("login-2");
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    let capturedKey: string | undefined;
+    (runtime as unknown as { modelRuntime: { login: (providerId: string, type: string, interaction: any) => Promise<unknown> } }).modelRuntime = {
+      login: async (_providerId, _type, interaction) => {
+        capturedKey = await interaction.prompt({ type: "secret", message: "Enter API key" });
+        return { key: capturedKey };
+      },
+    };
+
+    const collected: AgentEvent[] = [];
+    const iterator = runtime
+      .send({ roomId: "default", message: "", transcript: [], uiLogin: { providerId: "corp-ai", method: "api_key" } })
+      [Symbol.asyncIterator]();
+    let authEvent: Extract<AgentEvent, { type: "auth.request" }> | undefined;
+    while (!authEvent) {
+      const step = await iterator.next();
+      if (step.done) break;
+      collected.push(step.value);
+      if (step.value.type === "auth.request") authEvent = step.value;
+    }
+    assert.ok(authEvent, "the secret prompt leg must emit auth.request before login() resolves");
+    assert.equal(authEvent!.method, "apiKey");
+
+    assert.equal(await runtime.uiReply!("default", authEvent!.id, "sk-live-xyz"), true, "uiReply must resolve the pending prompt via THIS room's own bridge");
+
+    for (;;) {
+      const step = await iterator.next();
+      if (step.done) break;
+      collected.push(step.value);
+    }
+    assert.equal(capturedKey, "sk-live-xyz", "login()'s own interaction.prompt() must resolve with the client's reply");
+    const reply = collected.find((e) => e.type === "text-delta") as Extract<AgentEvent, { type: "text-delta" }> | undefined;
+    assert.ok(reply, "the turn must complete with a confirmation reply once login() resolves");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("pi harness capabilities.supportsUi is data (RULE #0) — PiRuntime declares it, turning on host.ts's ui-reply/ui-shortcut-fire wiring for pi specifically without any harness-id branch in shared code", () => {
   const spec = findHarness("pi")!;
   assert.equal(spec.capabilities.supportsUi, true);

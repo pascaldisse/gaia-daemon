@@ -132,6 +132,7 @@ export interface RoomCommandsFacadePort {
   init(): Promise<void>;
   emit(event: UiEvent): void;
   emitSnapshot(): Promise<void>;
+  toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent | undefined;
   distinctPlugins(): Promise<CommandPlugin[]>;
   pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext;
   runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult>;

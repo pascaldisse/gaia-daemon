@@ -53,6 +53,16 @@ export interface AgentInput {
    * sets this for harnesses that declare `supportsNativeCommands`; any other
    * harness ignores it and runs `message` as an ordinary turn. */
   nativeCommand?: boolean;
+  /** This turn IS an interactive provider login trigger (Lane E,
+   * chat-mto9n58s-bjr1), not an ordinary prompt — modeled as a turn rather
+   * than a bespoke RPC because auth.request/ui.prompt only ever reach a room
+   * DURING an active turn's event channel (RunnerHost.send's activeChannel;
+   * the wire has no out-of-band AgentEvent delivery path today). A harness
+   * that supports capabilities.supportsUi drives its own login flow
+   * (pi: ModelRuntime.login via wrapAuthInteraction) and yields its
+   * auth.request/ui.prompt dialog exactly like any other turn event; no
+   * session prompt is ever built for this turn. Absent on every other turn. */
+  uiLogin?: { providerId: string; method?: "oauth" | "api_key" };
   /** Settings ▸ General ▸ "Your name" (services/user-name.ts): the label the
    * shared transcript renderer uses for the human's own messages, in place of
    * the anonymous "user" token. "" / absent keeps that default. */
