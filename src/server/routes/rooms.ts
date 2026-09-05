@@ -23,6 +23,7 @@ async function selectRoom(ctx: RouteContext): Promise<boolean> {
 async function roomSnapshot(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/snapshot$/);
   if (ctx.request.method !== "GET" || !params) return false;
+  if (!(await requireRoomAccess(ctx, params[0], params[1]))) return true;
   await respond(ctx.response, () => ctx.daemon.roomSnapshot(params[0], params[1]));
   return true;
 }

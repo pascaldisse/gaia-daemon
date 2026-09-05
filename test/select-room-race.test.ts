@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { GaiaWebServer } from "../src/server/http.js";
 import { ensureWorkspaceRoom, initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
+import { RoomHandle } from "../src/domain/rooms.js";
+import { createUser, issueSessionToken } from "../src/domain/users.js";
 import { registerHarness } from "../src/harness/spec.js";
 import { createTempDir } from "./helpers/temp.js";
 
@@ -40,7 +42,7 @@ test("HTTP room selection preserves invocation order, releases before response r
   let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
   try {
     await initWorkspace(workspace);
-    for (const roomId of ["first", "latest", "slow-read", "read-winner", "recovered"]) {
+    for (const roomId of ["first", "latest", "slow-read", "read-winner", "recovered", "private-snapshot"]) {
       await ensureWorkspaceRoom(workspace, roomId);
     }
     live = await web.listen();
@@ -63,11 +65,14 @@ test("HTTP room selection preserves invocation order, releases before response r
     // the first lookup is released, rather than merely sitting in the HTTP stack.
     const originalSelect = daemon.selectRoom.bind(daemon);
     let selectCalls = 0;
-    let secondInvoked = deferred();
+    const secondInvoked = deferred();
+    let nextInvocation: (() => void) | undefined;
     daemon.selectRoom = (...args) => {
       const result = originalSelect(...args);
       selectCalls += 1;
       if (selectCalls === 2) secondInvoked.resolve();
+      nextInvocation?.();
+      nextInvocation = undefined;
       return result;
     };
 
@@ -137,12 +142,29 @@ test("HTTP room selection preserves invocation order, releases before response r
       }
       return originalFind(id);
     };
+    const rejectedInvoked = deferred();
+    nextInvocation = rejectedInvoked.resolve;
     const rejected = select(base, record.id, "first");
+    await rejectedInvoked.promise;
     const recovered = select(base, record.id, "recovered");
     assert.equal((await rejected).status, 400);
     assert.equal((await recovered).status, 200);
     assert.equal((await loadWorkspace(workspace)).config.room, "recovered");
     assert.equal(daemon.currentRoom.get(record.id), "recovered");
+
+    // Snapshot resync exposes the full transcript payload, so it must share the
+    // same durable membership gate as GET .../events.
+    const member = createUser("snapshot-member", "test-password");
+    const privateRoom = await RoomHandle.open(workspace, "private-snapshot");
+    await privateRoom.updateState((state) => { state.humans = [member.id]; });
+    const snapshotUrl = `${base}/api/workspaces/${encodeURIComponent(record.id)}/rooms/private-snapshot/snapshot`;
+    const deniedSnapshot = await fetch(snapshotUrl);
+    assert.equal(deniedSnapshot.status, 403);
+    assert.deepEqual(await deniedSnapshot.json(), { error: "Not a member of this room." });
+    const allowedSnapshot = await fetch(snapshotUrl, {
+      headers: { cookie: `gaia_user=${issueSessionToken(member.id)}` },
+    });
+    assert.equal(allowedSnapshot.status, 200, await allowedSnapshot.text());
   } finally {
     await live?.close();
     if (previousHome === undefined) delete process.env.GAIA_HOME;
