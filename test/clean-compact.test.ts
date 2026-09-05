@@ -77,3 +77,28 @@ test("real SDK: enabled clean hook commits newest active-branch floor; ordinary 
     assert.equal(await readFile(index, "utf8"), registryBefore);
   } finally { dispose?.(); await temp.cleanup(); }
 });
+
+test("new command registers only the explicit target before dispatch; empty input never writes", async () => {
+  const { runCompactCleanCommand } = await import("../src/services/room/compact-clean.js");
+  const temp = await createTempDir();
+  try {
+    const index = join(temp.path, "index.json");
+    const calls: string[] = [];
+    const service = {
+      roomId: "throwaway", workspace: { agents: { gaia: {} } },
+      runtimes: { gaia: { capabilities: { supportsCompact: true }, compactClean: async () => ({ compacted: true, message: "clean" }) } },
+      activeAgentTurn: undefined, compactingAgents: new Set<string>(),
+      roomDefaultTarget: async () => "gaia", unknownAgentMessage: (id: string) => `unknown ${id}`,
+      runDscCompactCommand: async (id: string) => { calls.push(id); assert.equal(loadCleanCompactionOverride("throwaway", id, index), "Task → continue."); return "clean complete"; },
+    } as unknown as Parameters<typeof runCompactCleanCommand>[0];
+    assert.equal(await runCompactCleanCommand(service, { type: "compact-clean", summary: "Task → continue." }, index), "clean complete");
+    assert.deepEqual(calls, ["gaia"]);
+    const before = await readFile(index, "utf8");
+    assert.match(String(await runCompactCleanCommand(service, { type: "compact-clean", summary: " " }, index)), /Usage/);
+    assert.equal(await readFile(index, "utf8"), before);
+    service.compactingAgents.add("gaia");
+    assert.match(String(await runCompactCleanCommand(service, { type: "compact-clean", summary: "overwrite" }, index)), /already running/);
+    assert.equal(await readFile(index, "utf8"), before);
+    assert.deepEqual(calls, ["gaia"]);
+  } finally { await temp.cleanup(); }
+});
