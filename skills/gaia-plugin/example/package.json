@@ -1,0 +1,14 @@
+{
+  "name": "gaia-plugin-example",
+  "version": "1.0.0",
+  "description": "Minimal gaia plugin (pi package): one command, one tool, one ui.confirm.",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extension.mjs"]
+  }
+}
