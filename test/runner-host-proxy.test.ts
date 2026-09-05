@@ -13,31 +13,34 @@ function makeHost(root: string, incognito = false, configEnv?: Record<string, st
   const agent = { id: "scout", memoryDir: join(root, "mem"), model: { provider: "deepseek", name: "deepseek-v4-pro" } } as unknown as AgentDef;
   return new RunnerHost({ workspace, agent, harness: "pi", ...(incognito ? { incognito: true } : {}), harnessHost: () => ({ baseUrl: "http://127.0.0.1:9999", llmProxyUrl: "http://127.0.0.1:9999/api/harness/llm", mintToken: () => "tok-123" }), allowSummon: () => true, sandbox: () => ({ enabled: true, backend: "macos-seatbelt" }) });
 }
-function envFor(host: RunnerHost, roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
-  return (host as unknown as { envFor(r: string, p: SandboxPolicy): NodeJS.ProcessEnv }).envFor(roomId, policy);
+function envFor(host: RunnerHost, roomId: string, policy: SandboxPolicy, parentEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return (host as unknown as { envFor(r: string, p: SandboxPolicy, e?: NodeJS.ProcessEnv): NodeJS.ProcessEnv }).envFor(roomId, policy, parentEnv);
 }
 const PROXY_ON: SandboxPolicy = { enabled: true, backend: "macos-seatbelt", credentialProxy: true };
 const PROXY_OFF: SandboxPolicy = { enabled: true, backend: "macos-seatbelt", credentialProxy: false };
+const PARENT_ENV: NodeJS.ProcessEnv = {
+  PATH: process.env.PATH,
+  DEEPSEEK_API_KEY: "sk-real-deepseek",
+  OPENAI_API_KEY: "sk-real-openai",
+  ANTHROPIC_API_KEY: "sk-real-anthropic",
+  DAEMON_INTERNAL_SECRET: "must-not-reach-proxy-child",
+};
 function withTemp(fn: (root: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "gaia-proxy-"));
-  const previous = { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, OPENAI_API_KEY: process.env.OPENAI_API_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
   try {
-    process.env.DEEPSEEK_API_KEY = "sk-real-deepseek";
-    process.env.OPENAI_API_KEY = "sk-real-openai";
-    process.env.ANTHROPIC_API_KEY = "sk-real-anthropic";
     fn(root);
   } finally {
-    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : (process.env[key] = value);
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 test("Pi proxy strips provider keys and materializes an empty isolated auth store", () => {
   withTemp((root) => {
-    const childEnv = envFor(makeHost(root), "room1", PROXY_ON);
+    const childEnv = envFor(makeHost(root), "room1", PROXY_ON, PARENT_ENV);
     assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
     assert.equal(childEnv.OPENAI_API_KEY, undefined);
     assert.equal(childEnv.ANTHROPIC_API_KEY, undefined);
+    assert.equal(childEnv.DAEMON_INTERNAL_SECRET, undefined);
     assert.equal(childEnv.GAIA_LLM_PROXY_URL, "http://127.0.0.1:9999/api/harness/llm");
     assert.equal(childEnv.GAIA_DAEMON_TOKEN, "tok-123");
     const scratch = join(root, ".gaia", "rooms", "room1", "proxy-scratch");
@@ -49,11 +52,11 @@ test("Pi proxy strips provider keys and materializes an empty isolated auth stor
 
 test("Pi proxy-off and incognito env retain the expected runner flags", () => {
   withTemp((root) => {
-    const direct = envFor(makeHost(root), "room1", PROXY_OFF);
+    const direct = envFor(makeHost(root), "room1", PROXY_OFF, PARENT_ENV);
     assert.equal(direct.DEEPSEEK_API_KEY, "sk-real-deepseek");
     assert.equal(direct.GAIA_LLM_PROXY_URL, undefined);
     assert.equal(direct.GAIA_RUNNER_HARNESS, "pi");
-    const incognito = envFor(makeHost(root, true), "room1", PROXY_OFF);
+    const incognito = envFor(makeHost(root, true), "room1", PROXY_OFF, PARENT_ENV);
     assert.equal(incognito.GAIA_RUNNER_INCOGNITO, "1");
   });
 });

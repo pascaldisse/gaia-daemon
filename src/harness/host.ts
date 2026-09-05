@@ -78,6 +78,23 @@ export function stripProviderKeys(environment: NodeJS.ProcessEnv): NodeJS.Proces
   for (const name of PROVIDER_KEY_ENV_VARS) delete environment[name];
   return environment;
 }
+/** Ambient values a proxied child needs. Never inherit its parent's complete
+ * environment: provider credentials and unrelated daemon secrets must not cross
+ * this process boundary. */
+const PROXY_CHILD_ENV_ALLOWLIST = [
+  "HOME", "USER", "LOGNAME", "SHELL", "PATH", "TMPDIR", "TMP", "TEMP",
+  "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR",
+  "CI", "TZ", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "SSH_AUTH_SOCK",
+  "GIT_ASKPASS", "GIT_TERMINAL_PROMPT", "GAIA_HOME",
+] as const;
+function proxyChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {};
+  for (const name of PROXY_CHILD_ENV_ALLOWLIST) {
+    const value = parentEnv[name];
+    if (value !== undefined) childEnv[name] = value;
+  }
+  return childEnv;
+}
 
 // --- the host ---------------------------------------------------------------------
 
@@ -757,9 +774,11 @@ export class RunnerHost implements AgentRuntime {
     return { host, token, proxy };
   }
 
-  private buildEnv(roomId: string, ctx: ProxyLaunch): NodeJS.ProcessEnv {
+  private buildEnv(roomId: string, ctx: ProxyLaunch, parentEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+      // A proxied child gets a purpose-built baseline, not the daemon's complete
+      // ambient environment. Direct runners retain the historical inherited env.
+      ...(ctx.proxy ? proxyChildEnv(parentEnv) : parentEnv),
       // Generic runner env passthrough from .gaia/config.json `env` (skill API
       // keys etc.) — merged right after the process.env spread, so it flows
       // through the SAME stripProviderKeys() pass below when the credential
@@ -818,8 +837,8 @@ export class RunnerHost implements AgentRuntime {
 
   // Test seam: the full child env for a (room, policy), resolving the bridge token
   // + harness proxy wiring exactly as spawnChild does.
-  private envFor(roomId: string, policy: SandboxPolicy): NodeJS.ProcessEnv {
-    return this.buildEnv(roomId, this.resolveProxyLaunch(roomId, policy));
+  private envFor(roomId: string, policy: SandboxPolicy, parentEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+    return this.buildEnv(roomId, this.resolveProxyLaunch(roomId, policy), parentEnv);
   }
 
   // A per-room writable scratch dir a proxied harness may relocate its cred store
