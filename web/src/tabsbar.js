@@ -51,15 +51,16 @@ function renderTabs() {
   const tabs = visibleTabs(snapshot);
   const dictationChip = DictationChip();
   const tabMenu = TabContextMenu();
+  // Tauri drag markers → direct targets only; no nonstandard deep/false values.
   bar.replaceChildren(
-    h("div", { class: "brand", "data-tauri-drag-region": "deep" }, h("span", { class: "tab-logo", text: "◆" }), h("span", { text: "GAIA" })),
+    h("div", { class: "brand", "data-tauri-drag-region": true }, h("span", { class: "tab-logo", text: "◆", "data-tauri-drag-region": true }), h("span", { text: "GAIA", "data-tauri-drag-region": true })),
     h(
       "div",
-      { class: "tab-strip", "data-tauri-drag-region": "deep" },
+      { class: "tab-strip", "data-tauri-drag-region": true },
       tabs.map((entry, index) => Tab(entry, index + 1, entry.room.id === currentId && entry.workspaceId === wsId, wsId)),
       snapshot ? h("button", { class: "tab-new", title: "new room (⌘T / ⌘⇧N) · ⌥-click = incognito ⊚", onclick: (/** @type {MouseEvent} */ e) => void addRoom({ incognito: e.altKey }), text: "+" }) : null,
     ),
-    h("div", { class: "tab-spacer", "data-tauri-drag-region": "deep" }),
+    h("div", { class: "tab-spacer", "data-tauri-drag-region": true }),
     // Only present while a recording is live (replaceChildren takes Nodes, so
     // the idle case is wrapped away rather than passed as null).
     ...(dictationChip ? [dictationChip] : []),
@@ -110,7 +111,6 @@ function Tab(entry, number, isActive, currentWorkspaceId) {
     "div",
     {
       class: `tab ${isActive ? "active" : ""} ${foreign ? "tab-foreign" : ""} ${room.running ? "running" : ""}`,
-      "data-tauri-drag-region": "false",
       title: foreign ? `${workspaceName} · ${room.title ?? room.id}` : room.title ? `${room.title} — ${room.id}` : room.id,
       onpointerdown: (event) => beginDrag(event, room.id, workspaceId),
       onpointermove: (event) => moveDrag(event),

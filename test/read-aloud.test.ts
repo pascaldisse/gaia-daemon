@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
@@ -408,7 +408,11 @@ test("readAloud: archives new renders without replacing the first archived hash"
     assert.ok(audioName);
     assert.ok(metadataName);
     assert.equal((await readFile(join(archive.path, audioName))).toString(), "AUDIO:1");
-    assert.deepEqual(JSON.parse(await readFile(join(archive.path, metadataName), "utf8")), { contentType: "audio/test" });
+    const metadata = JSON.parse(await readFile(join(archive.path, metadataName), "utf8"));
+    assert.equal(metadata.contentType, "audio/test");
+    assert.equal(metadata.identity.voice, "default");
+    assert.equal(metadata.identity.model, "default");
+    assert.match(metadata.identity.textHash, /^[a-f0-9]{64}$/);
 
     // A regeneration overwrites the LRU cache but never the durable archive.
     await readAloud({ ...request, regenerate: true });

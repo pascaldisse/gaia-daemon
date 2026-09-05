@@ -7,7 +7,7 @@
 // Falsified without the room lock:
 //   (b) two processes replaying one reserved event id -> two committed lines
 //   (c) a full rewrite (redact) racing appends -> lost or torn lines
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

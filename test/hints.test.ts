@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import "../src/harness/index.js";
 import { buildFileHints, sdkThinkingLevels, sdkToolNames, type FieldHint, type FileHints, type HintSources } from "../src/services/hints.js";

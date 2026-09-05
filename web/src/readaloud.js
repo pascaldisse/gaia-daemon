@@ -7,8 +7,7 @@
 //      currentTime + duration. Playback starts the instant the first audio lands
 //      (low latency, like before) and the buffer keeps filling behind the
 //      playhead, so you can scrub while it is still arriving. When a message
-//      finishes we keep its whole PCM (client cache) so a replay is instant and
-//      fully seekable with no server round-trip.
+//      finishes, replay resolves the current voice through the server cache.
 //
 //   2. The mini player UI — a play/pause button, a clickable + draggable
 //      timeline with a thumb, and current/total time, rendered above the running
@@ -337,12 +336,6 @@ navigator.mediaDevices?.addEventListener?.("devicechange", () => {
   transport?.migrateContext().catch((error) => transport?.onError?.(error));
 });
 
-/** Whole-message PCM kept after a clean finish, so replays are instant and
- * fully seekable without touching the server. Small LRU by message. */
-const MAX_CACHED_MESSAGES = 8;
-/** @type {Map<string, { pcm: Float32Array, rate: number }>} */
-const pcmCache = new Map();
-
 /** @param {ReadAloudPhase} phase */
 function setPhase(phase) {
   if (state.readAloud?.eventId === activeEventId && activeOrigin) {
@@ -355,7 +348,7 @@ function setPhase(phase) {
  * one, toggle play/pause (during loading, cancel it).
  * @param {string} eventId */
 export function toggleReadAloud(eventId) {
-  if (activeEventId === eventId && transport) {
+  if (activeEventId === eventId && transport && activeOrigin?.workspaceId === state.snapshot?.workspace.id && activeOrigin?.roomId === state.snapshot?.room.id) {
     if (state.readAloud?.phase === "loading") stopReadAloud();
     else playerToggle();
     return;
@@ -390,17 +383,18 @@ export function stopReadAloud() {
   updatePlayerUi();
 }
 
-/** @param {string} eventId @param {boolean} [regenerate] skip both caches and
- * re-synthesize (the ⟳ button), replacing a bad cached clip. */
-async function startReadAloud(eventId, regenerate = false) {
+/** @param {string} eventId @param {boolean} [regenerate] skip the server cache and
+ * re-synthesize (the ⟳ button), replacing a bad cached clip.
+ * @param {{workspaceId: string, roomId: string}|null} [playbackOrigin] */
+async function startReadAloud(eventId, regenerate = false, playbackOrigin = null) {
   stopReadAloud();
   const snapshot = state.snapshot;
-  if (!snapshot) return;
+  const origin = playbackOrigin ?? (snapshot ? { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id } : null);
+  if (!origin) return;
 
-  const base = apiUrl(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}`);
+  const base = apiUrl(`/api/workspaces/${encodeURIComponent(origin.workspaceId)}/rooms/${encodeURIComponent(origin.roomId)}`);
   // Bind playback to the room it started in, so switching rooms mid-play never
   // re-points fetches and the now-playing chip can jump back to this message.
-  const origin = { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id };
   activeEventId = eventId;
   activeOrigin = origin;
 
@@ -412,7 +406,6 @@ async function startReadAloud(eventId, regenerate = false) {
   t.onEnded = () => {
     stopTick();
     if (activeEventId === eventId) setPhase("ended");
-    rememberPcm(eventId, t);
     updatePlayerUi();
   };
   t.onError = (error) => {
@@ -424,18 +417,7 @@ async function startReadAloud(eventId, regenerate = false) {
   state.readAloud = { eventId, phase: "loading", ...origin };
   markDirty("transcript", "status");
 
-  // Instant, fully-seekable replay from the client PCM cache (skipped on regen).
-  const cached = regenerate ? undefined : pcmCache.get(eventId);
-  if (cached) {
-    t.setFormat(cached.rate, 1);
-    t.append(cached.pcm.slice());
-    t.markDone();
-    t.play(0);
-    setPhase("playing");
-    startTick();
-    return;
-  }
-
+  // Re-resolve voice/model/text on every replay; eventId alone is not audio identity.
   const controller = new AbortController();
   fetchController = controller;
   t.play(0); // arm the transport; audio schedules as soon as the first bytes land
@@ -553,17 +535,6 @@ async function feedChunks(t, base, eventId, total, controller, regenerate = fals
     }
   }
   t.markDone();
-}
-
-/** @param {string} eventId @param {AudioTransport} t */
-function rememberPcm(eventId, t) {
-  if (!t.total || !t.rate) return;
-  pcmCache.delete(eventId);
-  pcmCache.set(eventId, { pcm: t.concatPcm(), rate: t.rate });
-  for (const key of pcmCache.keys()) {
-    if (pcmCache.size <= MAX_CACHED_MESSAGES) break;
-    pcmCache.delete(key);
-  }
 }
 
 /** @param {Uint8Array} bytes whole s16le frames @param {number} channels @returns {Float32Array} */
@@ -707,19 +678,22 @@ function playerToggle() {
   }
   // Resume, or replay from the top if we were sitting at the end.
   const atEnd = transport.done && transport.currentTime >= transport.duration - 0.05;
-  transport.play(atEnd ? 0 : undefined);
+  if (atEnd) {
+    void startReadAloud(activeEventId, false, activeOrigin);
+    return;
+  }
+  transport.play();
   setPhase("playing");
   startTick();
 }
 
 /** Re-synthesize the active message from scratch, replacing a bad cached clip
- * (e.g. an old truncated stream). Busts the client PCM cache and tells the
+ * (e.g. an old truncated stream). Tells the
  * server to skip its disk cache and overwrite the entry. */
 function regenerateAudio() {
   const id = activeEventId;
   if (!id) return;
-  pcmCache.delete(id);
-  void startReadAloud(id, true);
+  void startReadAloud(id, true, activeOrigin);
 }
 
 function startTick() {

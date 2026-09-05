@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { CapabilityBroker } from "../src/services/capabilities/index.js";
 import { loadCommandPlugins } from "../src/services/plugins.js";
 import { importPluginModule, pluginModuleUrl } from "../src/services/plugins/loader.js";

@@ -24,6 +24,7 @@ export type SlashCommand =
   | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string; edit?: boolean | string }
   | { type: "dsc-compact"; agent?: string }
+  | { type: "compact-clean"; agent?: string; summary?: string }
   | { type: "autocompact"; value?: string; cooldownTurns?: string }
   | { type: "stt"; engine?: string; alias?: "tts" }
 | { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
@@ -78,6 +79,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent] | /compact --edit [text]" },
+  { name: "compact-clean", type: "compact-clean", description: "apply a model-free clean summary: /compact-clean [agent] [--summary <text>]" },
   { name: "dsc-compact", type: "dsc-compact", description: "apply an explicitly registered model-free clean summary: /dsc-compact [agent]" },
   { name: "autocompact", type: "autocompact", description: "room context auto-compaction: /autocompact <pct|off> [cooldownTurns]" },
   { name: "stt", type: "stt", description: "show or switch the speech-to-text engine: /stt [replicate|elevenlabs|openai]" },
@@ -178,6 +180,11 @@ export function parseCommand(input: string): SlashCommand {
       const apply = args.some((arg) => arg.toLowerCase() === "--apply");
       const agent = stripped.find((arg) => arg.toLowerCase() !== "--apply");
       return { type: "dream", agent: agent || undefined, apply };
+    }
+    case "compact-clean": {
+      const summaryAt = args.indexOf("--summary");
+      return { type: "compact-clean", agent: (summaryAt === 0 ? undefined : stripped[0]) || undefined,
+        ...(summaryAt >= 0 ? { summary: args.slice(summaryAt + 1).join(" ") } : {}) };
     }
     case "dsc-compact":
       return { type: "dsc-compact", agent: stripped[0] || undefined };

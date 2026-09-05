@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { PiCleanCompaction } from "./clean-compact.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
 import type { ExtensionFactory, ExtensionRunner, PackageManager } from "@earendil-works/pi-coding-agent";
@@ -60,6 +61,7 @@ export class PiRuntime implements AgentRuntime {
     meta.session.dispose(),
   );
   private readonly compaction: PiCompaction;
+  private readonly cleanCompaction: PiCleanCompaction;
   private readonly label: ModelLabel;
   private readonly cwd: string;
   private readonly workDir: string;
@@ -97,6 +99,17 @@ export class PiRuntime implements AgentRuntime {
               agentId,
               options.cleanCompactionIndexPath,
             )
+        : undefined,
+    );
+    this.cleanCompaction = new PiCleanCompaction(
+      this.sessions,
+      async (roomId) => {
+        if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return undefined;
+        return (await this.ensureSession(roomId, undefined)).session;
+      },
+      this.agent.id,
+      options.cleanCompactionIndexPath
+        ? (roomId, agentId) => loadCleanCompactionOverride(roomId, agentId, options.cleanCompactionIndexPath)
         : undefined,
     );
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
@@ -337,7 +350,7 @@ export class PiRuntime implements AgentRuntime {
     return this.compaction.compact(roomId);
   }
   async compactClean(roomId: string): Promise<CompactResult> {
-    return this.compaction.clean(roomId);
+    return this.cleanCompaction.clean(roomId);
   }
   async compactDraft(
     roomId: string,
@@ -499,11 +512,15 @@ export class PiRuntime implements AgentRuntime {
       // Model object, so constructing this factory never needs the model
       // registry populated yet (see the resolveModel() ordering fix below).
       extensionFactories: [
-        this.compaction.extension(
+        this.cleanCompaction.guardOrdinaryExtension(
           roomId,
-          this.agent.model?.provider,
-          this.agent.model?.name,
+          this.compaction.extension(
+            roomId,
+            this.agent.model?.provider,
+            this.agent.model?.name,
+          ),
         ),
+        { name: "clean-compact", factory: this.cleanCompaction.extension(roomId) },
       ],
       noSkills: true,
       noThemes: true,

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AgentDef } from "../src/core/types.js";
 import { gaiaCliPointer } from "../src/harness/prompt.js";

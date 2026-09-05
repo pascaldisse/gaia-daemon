@@ -2,7 +2,7 @@
 // GraphQL server (src/server/graphql.ts) on an ephemeral localhost port and
 // drives it with plain `fetch`, exactly like a browser hitting GraphiQL would
 // — no daemon restart, no mocked transport.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { scaffoldGlobalAgent } from "../src/domain/agents.js";

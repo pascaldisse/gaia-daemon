@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { effectiveAgentSkills, effectiveAgentTools, parseRoleMarkdown } from "../src/domain/roles.js";
 import { agentConfigTemplate, gaiaOnlyTools } from "../src/domain/agents.js";

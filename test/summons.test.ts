@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -237,16 +237,20 @@ test("background summon never blocks: launch resolves first, then the result is 
   assert.equal(coordinator.runningChildren().length, 0);
 });
 
-test("archtree add-root registers a live child under its coordinator", async () => {
+test("archtree add-root preserves two running siblings and registers a third", async () => {
   const { workspace, path } = await makeWorkspace();
   const child = fakeRoom("root report");
   const parent = fakeRoom("");
   const coordinator = new SummonCoordinator(workspace, path, async (roomId) => (roomId === "default" ? parent : child), async () => 8, () => {});
-  const roomId = await addArchtreeRoot(coordinator, { parentRoomId: "default", agentId: "terry", task: "independent root" });
+  const first = await coordinator.summon("default", "terry", "BUILD", { deliver: "note" });
+  const second = await coordinator.summon("default", "terry", "ADVERSARY", { deliver: "note" });
+  await mkdir(join(path, ".gaia/skills/gaia-archtree"), { recursive: true });
+  await writeFile(join(path, ".gaia/skills/gaia-archtree/SKILL.md"), "# Archtree\nbun only · own worktree");
+  const roomId = await addArchtreeRoot(coordinator, { workspace, parentRoomId: "default", agentId: "terry", task: "independent root" });
   const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
   assert.equal(state.parentRoomId, "default", "visualizer reads this durable tree edge");
   assert.equal(state.summon?.status, "running");
-  assert.deepEqual(coordinator.runningChildren("default").map((entry) => entry.roomId), [roomId]);
+  assert.deepEqual(coordinator.runningChildren("default").map((entry) => entry.roomId), [first, second, roomId]);
   child.settle();
 });
 test("a parent summon stays live until nested workers return and its callback settles", async () => {
@@ -850,6 +854,8 @@ test("resume: an ALREADY-delivered summon child registers a new durable contract
     summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: new Date().toISOString() },
   });
   const child = fakeRoom("resumed and finished the extra task");
+  // Model the live turn: this fake's waitForSettled otherwise resolves immediately.
+  child.holdPending();
   const parent = fakeRoom("");
   const services = new Map<string, SummonRoomAccess>([
     ["default", parent],
@@ -879,6 +885,7 @@ test("resume: an ALREADY-delivered summon child registers a new durable contract
   assert.equal(coordinator.runningChildren("default").length, 1, "visible to census/cap while the resumed turn is in flight");
 
   child.settle();
+  child.releasePending();
   for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(parent.delivered.length, 1);
   assert.equal(parent.delivered[0].from, "terry");

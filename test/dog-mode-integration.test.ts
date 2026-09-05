@@ -35,7 +35,7 @@
 // (renderCap.note, synthesized fresh at every display — see RoomService
 // #withRenderCapNotes) shown right after the capped reply, never merged into
 // the agent's own message.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

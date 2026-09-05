@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { buildSanitizePrompt, parseSanitizeProposal } from "../src/services/sanitize.js";
 import { formatEventTimestamp } from "../src/harness/prompt.js";

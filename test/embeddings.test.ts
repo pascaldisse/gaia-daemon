@@ -4,7 +4,7 @@
 // successful probe embed (key-EXISTS ≠ key-WORKS — failure #1). All network +
 // key lookup is injected — no real calls.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { EMBEDDING_PROVIDERS, resolveEmbedder, resolveReranker, cosine, textHash } from "../src/services/embeddings.js";
 import type { EmbeddingsConfig } from "../src/services/embeddings.js";
