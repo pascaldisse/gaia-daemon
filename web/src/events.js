@@ -3,6 +3,7 @@
 // event id in state.streams. No author+text snapshot-merge heuristic exists:
 // the final room-event with the same id simply replaces the stream entry.
 import { api, apiUrl } from "./api.js";
+import { navigation } from "./navigation.js";
 import { refreshAttention } from "./attention.js";
 import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
@@ -44,7 +45,7 @@ export function connectEvents(resyncOnReady = false) {
     state.eventSource.close();
     state.eventSource = null;
   }
-  if (!snapshot) return;
+  if (!snapshot || navigation.pending) return;
   syncLiveTimers();
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
@@ -54,6 +55,7 @@ export function connectEvents(resyncOnReady = false) {
   /** @param {string} type @param {(event: { data: string }) => void} handler */
   const listen = (type, handler) =>
     source.addEventListener(type, (event) => {
+      if (state.eventSource !== source || navigation.pending) return;
       lastEventAt = Date.now();
       if (connectionStale) {
         connectionStale = false;
@@ -87,10 +89,7 @@ export function connectEvents(resyncOnReady = false) {
 
   listen("snapshot", (event) => {
     const payload = /** @type {Ev<"snapshot">} */ (JSON.parse(event.data));
-    void (async () => {
-      await adoptSnapshotKeepingRoom(payload.snapshot);
-      syncDarioFromSnapshot();
-    })();
+    adoptSnapshotKeepingRoom(payload.snapshot);
   });
 
   // A room somewhere started/finished a turn or advanced its activity. The
@@ -389,53 +388,51 @@ function syncLiveTimers() {
   }
 }
 
-/**
- * Missed events are unrecoverable after an SSE drop; a fresh snapshot is the
- * resync. Only applied if the user hasn't switched workspace in the meantime.
- * @param {string} workspaceId
- */
+/** @type {{ source: typeof state.eventSource, promise: Promise<void> }|null} */
+let resyncInFlight = null;
+
+/** Reconnect repair → room-scoped read; no selection writes or duplicate fetches.
+ * @param {string} workspaceId */
 async function resyncSnapshot(workspaceId) {
-  try {
-    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
-    if (state.snapshot?.workspace.id !== workspaceId) return;
-    state.voice = body.voice ?? null;
-    await adoptSnapshotKeepingRoom(body.snapshot);
-  } catch {
-    // Server unreachable again — the next successful reconnect retries.
-  }
+  const current = state.snapshot;
+  const source = state.eventSource;
+  if (!current || current.workspace.id !== workspaceId || navigation.pending) return;
+  if (resyncInFlight?.source === source) return resyncInFlight.promise;
+  const generation = navigation.generation;
+  const roomId = current.room.id;
+  const promise = (async () => {
+    try {
+      const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/snapshot`, { signal: AbortSignal.timeout(navigation.timeoutMs) });
+      if (!navigation.current(generation) || navigation.pending || state.eventSource !== source) return;
+      if (state.snapshot?.workspace.id !== workspaceId || state.snapshot.room.id !== roomId) return;
+      if ("voice" in body) state.voice = body.voice ?? null;
+      adoptSnapshotKeepingRoom(body.snapshot);
+    } catch {
+      // Next successful reconnect retries.
+    }
+  })();
+  const flight = { source, promise };
+  resyncInFlight = flight;
+  try { await promise; }
+  finally { if (resyncInFlight === flight) resyncInFlight = null; }
 }
 
-/**
- * Server snapshots are advisory about WHICH room is open — the client's room
- * choice is sticky and only changes by user action or room deletion.
- *
- * If a fresh snapshot points at a different room than the one currently open,
- * and that open room still exists in the fresh snapshot's room list, re-fetch
- * the open room's own snapshot (the same endpoint `selectRoom` in actions.js
- * uses) and adopt that instead, so a server-pushed or resynced snapshot never
- * yanks the user out of the room they're looking at. Falls back to the passed
- * snapshot if that re-fetch fails.
- * @param {Snapshot} snapshot
- */
-async function adoptSnapshotKeepingRoom(snapshot) {
-  const wantedRoomId = state.snapshot?.room?.id;
-  if (wantedRoomId && snapshot.room.id !== wantedRoomId && snapshot.rooms.some((room) => room.id === wantedRoomId)) {
-    try {
-      const body = await api(
-        `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(wantedRoomId)}/select`,
-        { method: "POST", body: JSON.stringify({}) },
-      );
-      snapshot = body.snapshot;
-    } catch {
-      // Re-fetch failed — fall back to adopting the snapshot as pushed.
-    }
-  }
+/** Pushed snapshots cannot change client selection except on room deletion.
+ * No corrective POST: multiple windows must never fight over server selection.
+ * @param {Snapshot} snapshot */
+function adoptSnapshotKeepingRoom(snapshot) {
+  const current = state.snapshot;
+  if (!current || navigation.pending || snapshot.workspace.id !== current.workspace.id) return;
+  const changedRoom = snapshot.room.id !== current.room.id;
+  if (changedRoom && snapshot.rooms.some((room) => room.id === current.room.id)) return;
   state.snapshot = snapshot;
   pruneStreams();
   seedLiveTurn();
   syncReadMarks();
   refreshAttention();
   syncOlderFromSnapshot();
+  syncDarioFromSnapshot();
+  if (changedRoom) connectEvents();
   markDirty();
 }
 

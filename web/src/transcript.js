@@ -10,6 +10,7 @@
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { agentGlyph, KIND, STATE, UI } from "./glyphs.js";
 import { api } from "./api.js";
+import { navigation } from "./navigation.js";
 import { attachmentUrl } from "./attachments.js";
 import { detectArtifacts } from "./design/artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
@@ -149,12 +150,15 @@ export function syncOlderFromSnapshot() {
 }
 
 /** Page one chunk of older committed events in above the current history. */
-async function loadOlderEvents() {
+export async function loadOlderEvents() {
   const snapshot = state.snapshot;
   if (!snapshot || state.older.loading) return;
   const oldest = committedEvents()[0];
   if (!oldest) return;
-  state.older.loading = true;
+  const older = state.older;
+  const generation = navigation.generation;
+  const current = () => navigation.current(generation) && state.older === older;
+  older.loading = true;
   markDirty("transcript");
   const container = $("#transcript");
   const heightBefore = container ? container.scrollHeight : 0;
@@ -163,12 +167,13 @@ async function loadOlderEvents() {
     const body = await api(`${base}?before=${encodeURIComponent(oldest.id)}&limit=100`);
     /** @type {import("./types.js").RoomEvent[]} */
     const events = body.events ?? [];
-    if (state.older.roomId !== snapshot.room.id) state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+    if (!current()) return;
     const have = new Set(committedEvents().map((event) => event.id));
     state.older.events = [...events.filter((event) => !have.has(event.id)), ...state.older.events];
   } catch (error) {
-    setError(error instanceof Error ? error.message : String(error));
+    if (current()) setError(error instanceof Error ? error.message : String(error));
   } finally {
+    if (!current()) { older.loading = false; return; }
     // Insert the chunk, then re-anchor in the SAME frame it lands: markDirty
     // queues the transcript flush first, so this rAF runs after it and reading
     // scrollHeight already reflects the added height — grow scrollTop by exactly
@@ -178,6 +183,7 @@ async function loadOlderEvents() {
     // this programmatic scroll can't cascade the loader into draining everything.
     markDirty("transcript");
     requestAnimationFrame(() => {
+      if (!current()) { older.loading = false; return; }
       const el = $("#transcript");
       if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
       state.older.loading = false;
