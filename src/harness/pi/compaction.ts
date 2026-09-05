@@ -1,7 +1,7 @@
 // Pi-native compaction behavior and its one SDK hook.
-import { homedir } from "node:os";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { loadCleanCompactionOverride } from "../../domain/clean-summaries.js";
+export { loadCleanCompactionOverride } from "../../domain/clean-summaries.js";
+import { cleanCompactExtension } from "./clean-compact.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { compact as generatePiCompaction } from "@earendil-works/pi-coding-agent";
 import type {
@@ -107,27 +107,6 @@ export function mechanicalCompactionFallback(
     tokensBefore: preparation.tokensBefore,
     details: { readFiles, modifiedFiles },
   };
-}
-export function loadCleanCompactionOverride(
-  roomId: string,
-  agentId: string,
-  indexPath = join(homedir(), ".pi", "agent", "clean-summaries", "index.json"),
-): string | undefined {
-  try {
-    if (!existsSync(indexPath)) return undefined;
-    const entry = (
-      JSON.parse(readFileSync(indexPath, "utf8")) as Record<
-        string,
-        { default?: string; agents?: Record<string, string> }
-      >
-    )[roomId];
-    if (!entry) return undefined;
-    if (entry.agents && typeof entry.agents[agentId] === "string")
-      return entry.agents[agentId];
-    return typeof entry.default === "string" ? entry.default : undefined;
-  } catch {
-    return undefined;
-  }
 }
 async function runCompactionFallback(
   event: {
@@ -304,16 +283,18 @@ export class PiCompaction {
       this.drafts.delete(roomId);
     }
   }
+  cleanExtension(roomId: string, factory = cleanCompactExtension): ExtensionFactory {
+    return factory(roomId, this.agentId, () => {
+      const operation = this.operations.get(roomId);
+      return operation?.kind === "clean" ? operation.summary : undefined;
+    });
+  }
   extension(
     roomId: string,
     provider: string | undefined,
     name: string | undefined,
   ): ExtensionFactory {
     return (pi) => {
-      pi.on("session_compact", (event) => {
-        if (this.operations.get(roomId)?.kind === "clean")
-          console.warn(`compact-clean: committed room=${roomId} agent=${this.agentId} floor=${event.compactionEntry.firstKeptEntryId}`);
-      });
       pi.on("session_before_compact", async (event, ctx) => {
         const operation = this.operations.get(roomId);
         // Ordinary /compact is intentionally unaware of the clean-summary
@@ -328,28 +309,7 @@ export class PiCompaction {
               details: this.details(event.preparation),
             },
           };
-        if (operation.kind === "clean") {
-          const sessionManager = (
-            ctx as unknown as {
-              sessionManager?: { getEntries?: () => unknown[] };
-            }
-          ).sessionManager;
-          const newestFloor = newestContentEntryId(
-            (event.branchEntries ?? sessionManager?.getEntries?.() ?? []) as Array<
-              Record<string, unknown>
-            >,
-            event.preparation.firstKeptEntryId,
-          );
-          console.warn(`compact-clean: room=${roomId} agent=${this.agentId} newestValidCutId=${newestFloor} preparationFloor=${event.preparation.firstKeptEntryId}`);
-          return {
-            compaction: {
-              summary: operation.summary,
-              firstKeptEntryId: newestFloor,
-              tokensBefore: event.preparation.tokensBefore,
-              details: this.details(event.preparation),
-            },
-          };
-        }
+        if (operation.kind === "clean") return;
         try {
           if (!ctx.model) throw new Error("no model set for compaction");
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);

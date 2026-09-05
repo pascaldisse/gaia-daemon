@@ -13,6 +13,7 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
+import { runCompactCleanCommand } from "./room/compact-clean.js";
 import { readFileSync } from "node:fs";
 import { appendFile, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -306,6 +307,7 @@ const COMMANDS: Record<string, CommandHandler> = {
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent, command.edit) : Promise.resolve("")),
+  "compact-clean": (service, command) => command.type === "compact-clean" ? runCompactCleanCommand(service, command) : Promise.resolve(""),
   "dsc-compact": (service, command) => (command.type === "dsc-compact" ? service.runDscCompactCommand(command.agent) : Promise.resolve("")),
   autocompact: (service, command) => (command.type === "autocompact" ? service.runAutoCompactCommand(command.value, command.cooldownTurns) : Promise.resolve("")),
   stt: (service, command) => (command.type === "stt" ? service.runSttCommand(command.engine, command.alias) : Promise.resolve("")),

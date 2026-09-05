@@ -1333,6 +1333,56 @@ test("/dsc-compact dispatches the clean runtime and persists its registered summ
   assert.ok(!replayed.includes("poisoned historical tail"));
 });
 
+test("/compact-clean dispatches the clean runtime and persists its registered summary with floor+cursor", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const inputs: AgentInput[] = [];
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "safe reply" } as AgentEvent]);
+    const send = runtime.send.bind(runtime);
+    runtime.send = async function* (input: AgentInput) {
+      inputs.push(input);
+      yield* send(input);
+    } as typeof runtime.send;
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted", summary: "REGISTERED-CLEAN-SUMMARY" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  await service.sendMessage("poisoned historical tail");
+  await service.waitForIdle();
+  const room = await RoomHandle.open(root, "default");
+  await room.updateState((state) => {
+    state.agentCursors.gaia = 0;
+  });
+
+  const task = await service.sendMessage("/compact-clean");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  assert.equal(ordinaryCalls, 0, "clean command never falls through to ordinary compact");
+  const state = await room.state();
+  assert.ok((state.contextFloors?.gaia ?? 0) > 0);
+  assert.equal(state.agentCursors.gaia, state.contextFloors?.gaia, "fc45e43 cursor advances to the clean floor");
+  assert.equal((await room.readCompaction("gaia"))?.summary, "REGISTERED-CLEAN-SUMMARY");
+  const { events } = await room.eventsFrom(0);
+  const reply = events.find((event) => event.author === "system" && /clean compacted/.test(event.text));
+  assert.equal(reply?.kind, "compact-complete");
+
+  await service.sendMessage("fresh after clean");
+  await service.waitForIdle();
+  const replayed = inputs.at(-1)?.transcript.map((event) => event.text) ?? [];
+  assert.deepEqual(replayed, ["fresh after clean"], "the advanced cursor leaves an empty old-event window on the next turn");
+  assert.ok(!replayed.includes("poisoned historical tail"));
+});
+
+
 test("/dsc-compact is a true room-state no-op when no clean summary is registered", async () => {
   let cleanCalls = 0;
   const factory = (agent: AgentDef) => {

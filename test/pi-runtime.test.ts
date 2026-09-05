@@ -539,7 +539,11 @@ test("PiRuntime.compactClean uses only an explicitly registered summary and leav
           }
         },
       };
-      const hook = loader.getExtensions().extensions[0]!.handlers.get("session_before_compact")![0]!;
+      assert.ok(loader.getExtensions().extensions.some(e => e.path === "<inline:clean-compact>"));
+      const hooks = loader.getExtensions().extensions.flatMap(e => e.handlers.get("session_before_compact") ?? []);
+      const hook = async (event: any, ctx: any) => {
+        for (const handler of hooks) { const result = await handler(event, ctx); if (result) return result; }
+      };
       const preparation = {
         firstKeptEntryId: "pi-cut",
         tokensBefore: 9_000,

@@ -375,6 +375,7 @@ export class PiRuntime implements AgentRuntime {
       noExtensions: true,
       extensionFactories: [
         this.compaction.extension(roomId, model?.provider, model?.name),
+        { name: "clean-compact", factory: this.compaction.cleanExtension(roomId) },
       ],
       noSkills: true,
       noThemes: true,
