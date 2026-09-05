@@ -242,7 +242,7 @@ test("SECURITY [FAIL, HIGH]: any authenticated user can bootstrap-invite themsel
       body: JSON.stringify({ userId: bob.id }),
     });
     assert.equal(grab.status, 200);
-    assert.deepEqual((await grab.json()).humans, [bob.id]);
+    assert.deepEqual(new Set((await grab.json()).humans), new Set([alice.id, bob.id]), "bootstrap retains prior authenticated participants");
 
     // Alice, who was using this room seconds ago, is now locked out of every
     // surface: read AND self-re-invite (POST/GET 403 enforcement itself is

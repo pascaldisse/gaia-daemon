@@ -33,6 +33,11 @@ function serializeEvents(events: RoomEvent[]): string {
   return events.length ? events.map((event) => JSON.stringify(event)).join("\n") + "\n" : "";
 }
 
+/** Absent allowlist → legacy open room; configured allowlist → members only. */
+export function roomAllowsHuman(state: Pick<RoomState, "humans">, humanId?: string): boolean {
+  return state.humans === undefined || state.humans.includes(humanId ?? "");
+}
+
 export function newRoomEventId(): string {
   return newId("evt");
 }
@@ -685,6 +690,21 @@ export class RoomHandle {
     const next = shared.chain.then(run, run);
     shared.chain = next.catch(() => {});
     return next;
+  }
+
+  /** First membership configuration retains prior authenticated participants.
+   * Transcript scan + allowlist write share the room lock: no concurrent post
+   * or invite can disappear between the two observations. */
+  async inviteHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      return this.updateStateLocked((state) => {
+        if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+        const prior = state.humans ?? events.flatMap((event) =>
+          event.author === "user" && "humanId" in event && event.humanId ? [event.humanId] : []);
+        state.humans = [...new Set([...prior, ...(requesterId ? [requesterId] : []), userId])];
+      });
+    });
   }
 
   async state(): Promise<RoomState> {

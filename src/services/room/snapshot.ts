@@ -8,7 +8,7 @@ import { globalPaths, workspacePaths } from "../../core/paths.js";
 import type { AgentDef, AgentStatus, MessageAttachment, PendingTurn, RoomEvent, Snapshot } from "../../core/types.js";
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
 import { displayEventText } from "../../domain/render-cap.js";
-import { normalizeRoomState, normalizeRoomTitle } from "../../domain/rooms.js";
+import { normalizeRoomState, normalizeRoomTitle, roomAllowsHuman } from "../../domain/rooms.js";
 import { listAgentRoles } from "../../domain/roles.js";
 import { harnessIdFor, usageAccountFor } from "../../harness/spec.js";
 import { configuredModelLabel } from "../../harness/model-label.js";
@@ -213,8 +213,7 @@ export class RoomSnapshotMixin {
    * room has at least one human explicitly added. */
   async canAccessRoom(humanId?: string): Promise<boolean> {
     await this.init();
-    const humans = (await this.room.state()).humans;
-    return humans === undefined || humans.includes(humanId ?? "");
+    return roomAllowsHuman(await this.room.state(), humanId);
   }
 
   async roomHumans(): Promise<string[]> {
@@ -222,13 +221,9 @@ export class RoomSnapshotMixin {
     return (await this.room.state()).humans ?? [];
   }
 
-  async inviteHuman(userId: string): Promise<string[]> {
+  async inviteHuman(userId: string, requesterId?: string): Promise<string[]> {
     await this.init();
-    const state = await this.room.updateState((state: any) => {
-      const set = new Set(state.humans ?? []);
-      set.add(userId);
-      state.humans = [...set];
-    });
+    const state = await this.room.inviteHuman(userId, requesterId);
     await this.emitRoomsChanged();
     return state.humans ?? [];
   }

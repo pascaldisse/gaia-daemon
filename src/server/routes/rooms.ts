@@ -101,12 +101,11 @@ async function roomHumansPost(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const body = await parseBody(ctx.request);
   const userId = stringField(body, "userId");
   if (!userId?.trim()) { json(ctx.response, 400, { error: "Missing userId" }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim()) }));
+  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim(), requester.id) }));
   return true;
 }
 async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
@@ -115,8 +114,7 @@ async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2]) }));
   return true;
 }
