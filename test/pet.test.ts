@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { DEFAULT_PET_NAME, loadPet } from "../src/server/pet.js";
 import { listWorkspacePetBindings } from "../src/domain/pets.js";
 import { PET_ANIMATIONS, petProgressView } from "../web/src/pet-state.js";

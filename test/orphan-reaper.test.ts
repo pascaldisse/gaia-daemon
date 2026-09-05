@@ -2,7 +2,7 @@
 // the guarded reapOrphans driver via injected process-list / kill / sleep seams —
 // no real `ps`, no real signals.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { installId, parsePsTable, selectOrphans, reapOrphans, INSTALL_MARKER_FLAG } from "../src/harness/reaper.js";
 

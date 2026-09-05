@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { runAgentTurn, applyEventToDetails, finalizeInterruptedTools, recordBlockEvent } from "../src/services/turns.js";
 import { eventDetailsFrom } from "../src/domain/rooms.js";

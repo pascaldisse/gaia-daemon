@@ -295,7 +295,7 @@ export async function deleteAgent(agentId) {
 }
 
 /** @typedef {{ id: string, harness: string, label?: string, email?: string }} AccountRecordSummary */
-/** @typedef {{ id: string, label?: string }} AccountHarnessSummary */
+/** @typedef {{ id: string, label?: string, login?: boolean, uiLogin?: boolean }} AccountHarnessSummary */
 /** @typedef {{ accounts: AccountRecordSummary[], harnesses: AccountHarnessSummary[] }} AccountsCatalog */
 
 /** Cached GET /api/accounts — every caller (Settings' Accounts tab, the
@@ -605,6 +605,75 @@ export async function sendMessage(text, attachments = [], options = {}) {
   } catch (error) {
     setError(error);
     return false;
+  }
+}
+
+/**
+ * Answer a pending `ui.prompt`/`auth.request` id (pi ExtensionUIContext
+ * dialogs carried headless over AgentEvent — see core/types/harness.ts).
+ * Purely a UI round trip: no transcript event, no busy-state reflection.
+ * @param {string} agentId
+ * @param {string} id
+ * @param {import("../../src/core/types.js").UiPromptReplyValue} value
+ * @returns {Promise<boolean>}
+ */
+export async function sendUiReply(agentId, id, value) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return false;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/ui-reply`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, id, value }),
+    });
+    return body.ok === true;
+  } catch (error) {
+    setError(error);
+    return false;
+  }
+}
+
+/**
+ * Fire a client-side hotkey press for a registered `ui.shortcut` commandId.
+ * @param {string} agentId
+ * @param {string} commandId
+ * @returns {Promise<boolean>}
+ */
+export async function fireUiShortcut(agentId, commandId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return false;
+  try {
+    const body = await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/ui-shortcut`, {
+      method: "POST",
+      body: JSON.stringify({ agentId, commandId }),
+    });
+    return body.ok === true;
+  } catch (error) {
+    setError(error);
+    return false;
+  }
+}
+
+/**
+ * Trigger the CURRENT room's default agent (or an explicit one) to start an
+ * interactive provider login (Lane E, chat-mto9n58s-bjr1) — the resulting
+ * auth.request dialog shows up in this SAME Settings ▸ Accounts panel via
+ * the ordinary auth.request SSE listener, no extra fetch needed here.
+ * @param {string} providerId
+ * @param {"oauth"|"api_key"} [method]
+ * @param {string} [agentId]
+ * @returns {Promise<{ok: boolean, message: string}>}
+ */
+export async function sendUiLogin(providerId, method, agentId) {
+  const snapshot = state.snapshot;
+  if (!snapshot) return { ok: false, message: "no room is open" };
+  try {
+    return await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/login`, {
+      method: "POST",
+      body: JSON.stringify({ providerId, ...(method ? { method } : {}), ...(agentId ? { agentId } : {}) }),
+    });
+  } catch (error) {
+    setError(error);
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -144,6 +144,16 @@ export interface RoomGoal {
   stoppedReason?: string;
 }
 
+export interface RoomAutoCompactState {
+/** Per-room overrides; absent fields inherit WorkspaceConfig.autoCompact. */
+thresholdPct?: number | null;
+cooldownTurns?: number;
+/** Durable next-turn passes, keyed by agent. */
+pending?: Record<string, number>;
+/** Remaining completed turns that cannot schedule another pass. */
+cooldowns?: Record<string, number>;
+}
+
 export interface RoomState {
   activeRoles: Record<string, string>;
   /** Room-pinned autonomous objective (see RoomGoal). Absent = no goal. */
@@ -221,6 +231,8 @@ export interface RoomState {
    * blanking until the next turn re-reports. Harness-agnostic — every runtime
    * feeds the same `context-usage` event. */
   contextUsage?: Record<string, { usedTokens: number; maxTokens?: number }>;
+/** Per-room auto-compact overrides and durable scheduling state. */
+autoCompact?: RoomAutoCompactState;
   /** Harness-native shells that detached into the background during a turn.
    * These are start records only: the harness exposes no reliable exit marker,
    * so consumers must not infer liveness from their presence. */
@@ -249,11 +261,9 @@ export interface RoomState {
    * ensureWorkspaceRoom only seeds it on a brand-new room. Off/absent = a normal
    * room that participates in memory. */
   incognito?: boolean;
-  /** Human-membership allowlist (domain/users.ts ids). Absent/empty = today's
-   * default: unrestricted, any request may read/post here regardless of
-   * login — unchanged behavior for every room that predates this field or
-   * never opts in. Non-empty = only these humans (by id) may read/post;
-   * enforced in server/http.ts, this is just the durable allowlist. */
+  /** Human-membership allowlist (domain/users.ts ids).
+   * Absent → legacy open room; present → only listed humans; [] → deny all.
+   * Last-member removal preserves [] rather than reopening prior content. */
   humans?: string[];
   /** DogMode (09-DOG-MODE, and every other multi-command persona-register
    * style plugin) durable state now lives generically in `pluginState` above,

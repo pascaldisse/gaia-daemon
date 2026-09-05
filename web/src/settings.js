@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, sendUiLogin, sendUiReply, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -21,7 +21,7 @@ import { commitTheme, committedThemeId, previewTheme, revertTheme, THEMES } from
 /** @typedef {(string|number)[]} JsonPath */
 /** @typedef {{ key: string, hint: FieldHint, path: JsonPath }} FieldEntry */
 /** @typedef {{ id: string, harness: string, label?: string, email?: string }} Account */
-/** @typedef {{ id: string, label?: string }} AccountHarness */
+/** @typedef {{ id: string, label?: string, login?: boolean, uiLogin?: boolean }} AccountHarness */
 /** @typedef {{ accounts: Account[], harnesses: AccountHarness[] }} AccountsCatalog */
 /**
  * @typedef {{
@@ -470,8 +470,22 @@ async function loadAccounts() {
   markDirty("settings");
 }
 
-/** @param {Account} account @returns {HTMLElement} */
-function AccountRow(account) {
+/** @type {string} */
+let uiLoginNotice = "";
+/** Lane E (chat-mto9n58s-bjr1): triggers the CURRENT room's default agent on
+ * this harness to start an interactive provider login — the resulting
+ * auth.request card appears in THIS same panel via the ordinary SSE listener
+ * (no polling, no new fetch layer beyond this one POST). Uses the account's
+ * OWN id as providerId (gaia's account.id convention names the provider a
+ * harness's own ModelRuntime knows, e.g. "anthropic"). @param {Account} account */
+async function loginViaRoom(account) {
+  uiLoginNotice = "";
+  const result = await sendUiLogin(account.id);
+  uiLoginNotice = result.message;
+  markDirty("settings");
+}
+/** @param {Account} account @param {AccountHarness} harness @returns {HTMLElement} */
+function AccountRow(account, harness) {
   const draft = accountDraft(account);
   return h(
     "div",
@@ -497,6 +511,7 @@ function AccountRow(account) {
         },
       }),
       h("button", { onclick: () => void saveAccount(account), text: "Save" }),
+      harness.uiLogin ? h("button", { title: "Trigger this provider's sign-in flow for the current room's default agent", onclick: () => void loginViaRoom(account), text: "Login via room" }) : null,
       h("button", { class: "settings2-row-remove", title: "remove this account", onclick: () => void removeAccount(account.id), text: "Remove" }),
     ),
   );
@@ -509,7 +524,7 @@ function HarnessAccountsGroup(harness) {
     "div",
     { class: "settings2-form" },
     h("div", { class: "nav-title", text: harness.label ?? harness.id }),
-    accounts.length === 0 ? h("div", { class: "empty", text: "no accounts" }) : accounts.map((account) => AccountRow(account)),
+    accounts.length === 0 ? h("div", { class: "empty", text: "no accounts" }) : accounts.map((account) => AccountRow(account, harness)),
 
   );
 }
@@ -524,6 +539,7 @@ function AccountsSection() {
     h("p", { class: "muted", text: "Manage the named accounts GAIA can bind to agents. Room usage is scoped to that room; this page is the only all-account overview." }),
     accountsError ? h("div", { class: "settings2-error-line", text: accountsError }) : null,
     accountsNotice ? h("div", { class: "settings2-notice", text: accountsNotice }) : null,
+    uiLoginNotice ? h("div", { class: "settings2-notice", text: uiLoginNotice }) : null,
     accountsCatalog === null
       ? h("div", { class: "empty", text: "loading…" })
       : accountsCatalog.harnesses.length === 0
@@ -541,7 +557,65 @@ function AccountsSection() {
             h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") }),
           );
         }),
+    AuthRequestsPanel(),
   );
+}
+
+// pi ExtensionAPI registerProvider oauth.login(callbacks) surface, carried
+// headless over AgentEvent as `auth.request` (see core/types/harness.ts) —
+// one login card per pending id: an oauth/device URL to open, or an
+// apiKey/prompt form to fill and submit as a `ui.reply`.
+function AuthRequestsPanel() {
+  if (state.authRequests.size === 0) return null;
+  return h(
+    "div",
+    { class: "settings2-form auth-requests-panel" },
+    h("div", { class: "nav-title", text: "Sign-in requests" }),
+    ...[...state.authRequests.values()].map((request) => AuthRequestCard(request)),
+  );
+}
+
+/** @param {import("./types.js").Ev<"auth.request">} request */
+function AuthRequestCard(request) {
+  const dismiss = () => { state.authRequests.delete(request.id); markDirty("settings"); };
+  const reply = (/** @type {import("../../src/core/types.js").UiPromptReplyValue} */ value) =>
+    void sendUiReply(request.agentId, request.id, value).then((ok) => { if (ok) dismiss(); });
+  const rows = [
+    h("div", { class: "nav-title", text: `@${request.agentId} · ${request.providerId} · ${request.method}` }),
+    request.instructions ? h("p", { class: "muted", text: request.instructions }) : null,
+  ];
+  if (request.method === "oauth" && request.url) {
+    rows.push(h("a", { class: "settings2-row-remove", href: request.url, target: "_blank", rel: "noopener", text: "Open sign-in page ↗" }));
+    rows.push(h("button", { onclick: () => reply(true), text: "I've signed in" }));
+  } else if (request.method === "device" && request.deviceCode) {
+    const device = request.deviceCode;
+    rows.push(h("p", { text: `Go to ${device.verificationUri} and enter code:` }));
+    rows.push(h("code", { text: device.userCode }));
+    rows.push(h("button", { onclick: () => reply(true), text: "I've entered the code" }));
+  } else {
+    // apiKey / prompt form: one text input per field, submitted as a
+    // Record<string,string> (single field → that field's bare string).
+    const fields = /** @type {import("../../src/core/types.js").UiPromptField[]} */ (request.fields?.length ? request.fields : [{ name: "value", kind: "text", label: "Value" }]);
+    /** @type {Record<string, string>} */
+    const draft = {};
+    rows.push(
+      ...fields.map((field) =>
+        h(
+          "label",
+          { class: "settings2-row" },
+          h("span", { text: field.label ?? field.name }),
+          h("input", {
+            type: field.secret ? "password" : "text",
+            placeholder: field.placeholder ?? "",
+            onchange: (/** @type {Event} */ event) => { draft[field.name] = /** @type {HTMLInputElement} */ (event.target).value; },
+          }),
+        ),
+      ),
+      h("button", { onclick: () => reply(fields.length > 1 ? draft : (draft[fields[0].name] ?? "")), text: "Submit" }),
+    );
+  }
+  rows.push(h("button", { class: "settings2-row-remove", onclick: dismiss, text: "Dismiss" }));
+  return h("div", { class: "settings2-form auth-request-card" }, ...rows);
 }
 
 // ---------------------------------------------------------------------------

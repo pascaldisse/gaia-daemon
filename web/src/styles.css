@@ -20,6 +20,7 @@
   --w-left: 28ch;
   --w-right: 32ch;
   --titlebar-inset: 0px;
+  --macos-titlebar-height: 38px;
   font-family: var(--font);
   font-size: 12.5px;
 }
@@ -157,13 +158,9 @@ small, time { color: var(--muted); overflow-wrap: anywhere; }
    them reach the window edge so an unused strip never floats above search or
    the roster; the tab strip occupies the centre column only. */
 .shell, #app { display: grid; grid-template-columns: var(--w-left) minmax(0, 1fr) var(--w-right); grid-template-rows: 30px minmax(0, 1fr); height: 100vh; overflow: hidden; }
-body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: 38px minmax(0, 1fr); }
-/* .sidebar/.right span BOTH rows (grid-row: 1/-1 below), so under the macOS
-   overlay title bar their own top edge sits at the real window top -- right
-   where the native traffic lights render. .tabbar (column 2 only) already
-   gets that clearance for free from the 38px row; the side panes need it
-   pushed in as padding so their first child doesn't sit under the dots. */
-body.macos-titlebar-overlay .sidebar { padding-top: 38px; }
+body.macos-titlebar-overlay .shell, body.macos-titlebar-overlay #app { grid-template-rows: var(--macos-titlebar-height) minmax(0, 1fr); }
+/* Native titlebar → full-width first row; panes + resize handles → below. */
+body.macos-titlebar-overlay :is(.sidebar, .right, .col-resizer) { grid-row: 2; }
 #overlays, #overlays > div, .body { display: contents; }
 .sidebar, .right { background: var(--bg); padding: 10px 8px; overflow: auto; min-width: 0; }
 .sidebar { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -181,7 +178,7 @@ body.resizing { cursor: col-resize; user-select: none; }
    tabbar
    ============================================================ */
 .tabbar { grid-column: 2; grid-row: 1; display: flex; align-items: stretch; height: 30px; min-width: 0; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); }
-body.macos-titlebar-overlay .tabbar { height: 30px; padding-left: var(--titlebar-inset); }
+body.macos-titlebar-overlay .tabbar { grid-column: 1 / -1; height: var(--macos-titlebar-height); padding-left: var(--titlebar-inset); }
 .brand, .tab-brand { display: flex; flex: 0 0 14ch; align-items: center; justify-content: center; gap: 1ch; border-right: 1px solid var(--border); color: var(--fg); font-weight: 700; letter-spacing: .18em; }
 .brand span, .tab-logo, .tab-new { color: var(--accent); }
 .chrome-btn { display: none; }
@@ -1327,6 +1324,16 @@ sidebar: workspaces + rooms tree
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
 
+/* --- pi ExtensionAPI surface: ui.widget rows + ext.lifecycle chips (see core/types/harness.ts) --- */
+.ext-lifecycle-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px; }
+.ext-lifecycle-chip {
+  font-size: 0.78em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+}
+.ext-lifecycle-loaded { border-color: var(--accent); color: var(--accent); }
+.ext-lifecycle-failed { border-color: #c33; color: #c33; }
+.ui-widget-row { padding: 6px 12px; border: 1px solid var(--border); background: var(--bg3); font-size: 0.9em; }
+.ui-widget-line { white-space: pre-wrap; }
+
 /* --- archtree view (web/src/archtree/) ---------------------------------- */
 .archtree-view {
   position: fixed;
@@ -1359,7 +1366,7 @@ sidebar: workspaces + rooms tree
   color: #e8c88a;
   text-shadow: 0 0 12px rgba(255, 200, 110, 0.45);
 }
-.archtree-close {
+.archtree-close, .archtree-add-root {
   pointer-events: auto;
   background: transparent;
   border: 1px solid rgba(232, 200, 138, 0.35);
@@ -1368,7 +1375,7 @@ sidebar: workspaces + rooms tree
   padding: 2px 8px;
   cursor: pointer;
 }
-.archtree-close:hover { background: rgba(232, 200, 138, 0.12); }
+.archtree-close:hover, .archtree-add-root:hover { background: rgba(232, 200, 138, 0.12); }
 .archtree-hud {
   position: absolute;
   left: 0;

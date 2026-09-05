@@ -623,7 +623,11 @@ Use it for repo conventions, commands, constraints, safety notes, and preference
 {
   "defaultAgent": "gaia",
   "room": "default",
-  "transcriptWindow": 20
+  "transcriptWindow": 20,
+  "memory": {
+    "autoRecallExcludePatterns": ["cyber", "hacking", "reverse-engineering", "exploit"],
+    "autoRecallExcludeRooms": []
+  }
 }
 ```
 
@@ -635,6 +639,10 @@ Optional keys:
   **Summons**)
 - `"sandbox"` sets the workspace-wide isolation policy, overridden per agent
   (see **Sandbox**)
+- `"memory.autoRecallExcludePatterns"` case-insensitive regexes and
+  `"memory.autoRecallExcludeRooms"` room ids omit matching hits from per-turn
+  auto-recall only. Explicit `gaia recall` and `/recall` remain unfiltered;
+  either setting can be overridden per agent in `agent.json`.
 
 All settings are plain text files. The web UI's formatted view renders smart
 controls on top of them (dropdowns for agents, rooms, models, tool

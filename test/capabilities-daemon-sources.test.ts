@@ -8,7 +8,7 @@
 //   2. trusted agent with the capability granted (workspace or agent tier)
 //      → allowed;
 //   3. granted but trust:false → denied regardless of the grant.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { resolveCapabilityGrants } from "../src/services/capabilities/resolver.js";

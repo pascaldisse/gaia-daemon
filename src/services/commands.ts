@@ -9,6 +9,7 @@ export type SlashCommand =
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
   | { type: "summon"; agent?: string; task?: string }
+  | { type: "archtree"; action?: "add-root"; agent?: string; task?: string }
   | { type: "thinking"; agent?: string; level?: string }
   | { type: "thinking-level"; level: number }
   | { type: "model"; agent?: string; spec?: string }
@@ -22,6 +23,9 @@ export type SlashCommand =
   | { type: "consolidate"; agent?: string }
   | { type: "dream"; agent?: string; apply?: boolean }
   | { type: "compact"; agent?: string; edit?: boolean | string }
+  | { type: "dsc-compact"; agent?: string }
+  | { type: "compact-clean"; agent?: string; summary?: string }
+  | { type: "autocompact"; value?: string; cooldownTurns?: string }
   | { type: "stt"; engine?: string; alias?: "tts" }
 | { type: "diet"; sub: "on" | "off" | "status"; scope: "room" | "workspace" }
   | { type: "schedule"; sub: "list" | "run"; id?: string }
@@ -59,6 +63,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "roles", type: "roles", description: "list roles for an agent" },
   { name: "role", type: "role", description: "set or clear an agent role" },
   { name: "summon", type: "summon", description: "summon a private worker agent: /summon <agent> <task>" },
+  { name: "archtree", type: "archtree", description: "open the room tree, or add a live root: /archtree add-root [--agent <agent>] <task>" },
   { name: "thinking", type: "thinking", description: "set thinking effort: /thinking [agent] <level>, or GAIA-THINK protocol level: /thinking <0-10|off>" },
   { name: "design", type: "design", description: "toggle artifacts, or /design <request> to ask the active agent" },
   { name: "model", type: "model", description: "switch an agent's model: /model [agent] <provider/name> (or 'none' to clear)" },
@@ -74,6 +79,9 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "consolidate", type: "consolidate", description: "distill recent episodes into long-term memory: /consolidate [agent]" },
   { name: "dream", type: "dream", description: "propose (or apply) a reviewable memory consolidation: /dream [agent] [--apply]" },
   { name: "compact", type: "compact", description: "compact an agent's session context via its harness: /compact [agent] | /compact --edit [text]" },
+  { name: "compact-clean", type: "compact-clean", description: "apply a model-free clean summary: /compact-clean [agent] [--summary <text>]" },
+  { name: "dsc-compact", type: "dsc-compact", description: "apply an explicitly registered model-free clean summary: /dsc-compact [agent]" },
+  { name: "autocompact", type: "autocompact", description: "room context auto-compaction: /autocompact <pct|off> [cooldownTurns]" },
   { name: "stt", type: "stt", description: "show or switch the speech-to-text engine: /stt [replicate|elevenlabs|openai]" },
   { name: "tts", type: "stt", description: "voice-input engine switch (alias of /stt): /tts [replicate|elevenlabs|openai]" },
 {
@@ -131,6 +139,10 @@ export function parseCommand(input: string): SlashCommand {
       return stripped.length >= 2 ? { type: "role", agent: stripped[0], role: stripped[1] } : { type: "role", role: stripped[0] };
     case "summon":
       return { type: "summon", agent: stripped[0] || undefined, task: args.slice(1).join(" ") || undefined };
+    case "archtree": {
+      const parsed = parseArchtreeAddRootArgs(args);
+      return parsed ? { type: "archtree", action: "add-root", ...parsed } : { type: "archtree" };
+    }
     case "thinking": {
       // Two-token form (`/thinking @agent low`) stays the per-agent SDK
       // reasoning-EFFORT command. A single numeric token or bare `off`
@@ -169,6 +181,13 @@ export function parseCommand(input: string): SlashCommand {
       const agent = stripped.find((arg) => arg.toLowerCase() !== "--apply");
       return { type: "dream", agent: agent || undefined, apply };
     }
+    case "compact-clean": {
+      const summaryAt = args.indexOf("--summary");
+      return { type: "compact-clean", agent: (summaryAt === 0 ? undefined : stripped[0]) || undefined,
+        ...(summaryAt >= 0 ? { summary: args.slice(summaryAt + 1).join(" ") } : {}) };
+    }
+    case "dsc-compact":
+      return { type: "dsc-compact", agent: stripped[0] || undefined };
     case "compact": {
       const editAt = args.findIndex((arg) => arg.toLowerCase() === "--edit");
       if (editAt < 0) return { type: "compact", agent: stripped[0] || undefined };
@@ -179,6 +198,8 @@ export function parseCommand(input: string): SlashCommand {
         edit: edited || true,
       };
     }
+    case "autocompact":
+      return { type: "autocompact", value: stripped[0], cooldownTurns: stripped[1] };
     case "stt":
       return { type: "stt", engine: stripped[0]?.toLowerCase(), ...(name === "tts" ? { alias: "tts" as const } : {}) };
     case "diet": {
@@ -242,6 +263,24 @@ export function parseCommand(input: string): SlashCommand {
     default:
       return { type: command.type } as SlashCommand;
   }
+}
+
+/** Parse the shared CLI/slash `add-root` form. Unknown flags remain task text. */
+export function parseArchtreeAddRootArgs(args: string[]): { agent?: string; task?: string } | undefined {
+  if (args[0]?.toLowerCase() !== "add-root") return undefined;
+  let agent: string | undefined;
+  const task: string[] = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--agent") {
+      agent = args[index + 1]?.replace(/^@/, "").trim() || undefined;
+      index += 1;
+    } else {
+      task.push(arg);
+    }
+  }
+  const text = task.join(" ").trim();
+  return { ...(agent ? { agent } : {}), ...(text ? { task: text } : {}) };
 }
 
 export const HELP_TEXT = `Commands:\n${SLASH_COMMANDS.map((command) => `  /${command.name.padEnd(8)} ${command.description}`).join(

@@ -17,6 +17,7 @@ import { workspacePaths, workspaceRootFromRoomDir } from "../core/paths.js";
 import { isArtifactKind } from "../domain/artifacts.js";
 import { CORE_MEMORY_FILE, MemoryStore } from "../domain/memory.js";
 import { gaiaToolByVerb } from "../harness/tools.js";
+import { parseArchtreeAddRootArgs } from "./commands.js";
 import { createArtifact, listArtifacts, readArtifact, updateArtifact } from "./artifacts.js";
 import { compressCaryll, expandCaryll } from "./caryll.js";
 
@@ -35,6 +36,7 @@ const RECALL_USAGE = `Usage: gaia recall [--limit N] [--summarize] <query>
 const SUMMON_USAGE = `Usage: gaia summon [--worktree] <agent> <task>
        gaia summon --status [roomId] [--all]   census of summon lanes (state/last-event/delivered?/dirty-worktree); default room: current room`;
 const RESUME_USAGE = `Usage: gaia resume <roomId> "<message>"`;
+const ARCHTREE_USAGE = `Usage: gaia archtree add-root [--agent <agent>] <task>`;
 const END_CONVERSATION_USAGE = `Usage: gaia end-conversation <farewell>`;
 const ARTIFACT_USAGE = `Usage:
   gaia artifact create --name N --kind html|json|design --media-type T [--file F | --content C]
@@ -308,6 +310,15 @@ async function runSummonStatus(args: string[]): Promise<number> {
 // brand-new summon. Same fire-and-forget shape as summon: the daemon's
 // sendMessage steers a running turn or starts a fresh one if idle, and this
 // call returns as soon as that's kicked off, never waiting on the turn.
+async function runArchtree(args: string[]): Promise<number> {
+  const parsed = parseArchtreeAddRootArgs(args);
+  const agent = parsed?.agent ?? env("GAIA_AGENT_ID");
+  if (!parsed?.task || !agent) return fail(ARCHTREE_USAGE);
+  const result = await daemonPost("/api/harness/archtree", { agent, task: parsed.task });
+  console.log(result.text);
+  return result.ok ? 0 : 1;
+}
+
 async function runResume(args: string[]): Promise<number> {
   const { positional } = parseFlags(args);
   const room = positional[0];
@@ -458,7 +469,7 @@ async function runCaryll(args: string[]): Promise<number> {
   return fail(CARYLL_USAGE);
 }
 
-/** Dispatches `gaia mem|recall|summon|resume|caryll|dream …`. Returns a process exit code. */
+/** Dispatches `gaia mem|recall|summon|archtree|resume|caryll|dream …`. Returns a process exit code. */
 export async function runHarnessCommand(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   // `caryll` is a plain file-transform CLI utility, not an agent GaiaTool
@@ -473,6 +484,7 @@ export async function runHarnessCommand(args: string[]): Promise<number> {
   // `dog` (09-DOG-MODE) is daemon-backed room state like dream/summon but
   // never a GaiaTool grant either — dispatched directly, same tier as dream.
   if (command === "dog") return runDog(rest);
+  if (command === "archtree") return runArchtree(rest);
   if (command === "end-conversation") return runEndConversation(rest);
   const tool = command ? gaiaToolByVerb(command) : undefined;
   switch (tool?.id) {

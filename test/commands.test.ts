@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { hasExplicitMention, parseCommand, planMentionRoute, SLASH_COMMANDS, validateThinkingLevel, THINKING_LEVEL_MAX } from "../src/services/commands.js";
 
@@ -14,6 +14,9 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/role brainstorm"), { type: "role", role: "brainstorm" });
   assert.deepEqual(parseCommand("/role gaia brainstorm"), { type: "role", agent: "gaia", role: "brainstorm" });
   assert.deepEqual(parseCommand("/summon terry fix the tests"), { type: "summon", agent: "terry", task: "fix the tests" });
+  assert.deepEqual(parseCommand("/archtree add-root map the API"), { type: "archtree", action: "add-root", task: "map the API" });
+  assert.deepEqual(parseCommand("/archtree add-root --agent @ghoul-terra map the API"), { type: "archtree", action: "add-root", agent: "ghoul-terra", task: "map the API" });
+  assert.deepEqual(parseCommand("/archtree"), { type: "archtree" });
   assert.deepEqual(parseCommand("/thinking high"), { type: "thinking", level: "high" });
   assert.deepEqual(parseCommand("/thinking @gaia off"), { type: "thinking", agent: "gaia", level: "off" });
   // GAIA-THINK protocol level: bare numeric or `off` (single token) → thinking-level.
@@ -33,6 +36,9 @@ test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/compact @nyari"), { type: "compact", agent: "nyari" });
   assert.deepEqual(parseCommand("/compact --edit"), { type: "compact", agent: undefined, edit: true });
   assert.deepEqual(parseCommand("/compact --edit reviewed summary"), { type: "compact", agent: undefined, edit: "reviewed summary" });
+  assert.deepEqual(parseCommand("/dsc-compact"), { type: "dsc-compact", agent: undefined });
+  assert.deepEqual(parseCommand("/dsc-compact @nyari"), { type: "dsc-compact", agent: "nyari" });
+  assert.ok(SLASH_COMMANDS.some((command) => command.name === "dsc-compact"), "/dsc-compact is advertised separately");
   assert.deepEqual(parseCommand("/stt"), { type: "stt", engine: undefined });
   assert.deepEqual(parseCommand("/stt RePliCate"), { type: "stt", engine: "replicate" });
   assert.deepEqual(parseCommand("/tts elevenlabs"), { type: "stt", engine: "elevenlabs", alias: "tts" });

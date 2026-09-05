@@ -13,7 +13,7 @@
 // renderCap (whip 349: `{maxLines}` ONLY, never a prefix baked into the
 // agent's text — the collar reminder is a separate SYSTEM `note`), and
 // turnStart (the transient /facial marker expiring at the next turn).
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

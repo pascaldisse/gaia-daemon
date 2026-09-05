@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -862,11 +862,11 @@ test("normalizeRoomState: incognito flag survives the whitelist (only literal tr
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).incognito, undefined);
 });
 
-test("normalizeRoomState: humans allowlist survives the whitelist, dedupes, and empty never persists", () => {
+test("normalizeRoomState: humans allowlist survives the whitelist, dedupes, and preserves empty deny-all", () => {
   const withHumans = normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: ["u_a", "u_b", "u_a"] });
   assert.deepEqual(withHumans.humans, ["u_a", "u_b"]);
-  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [] }).humans, undefined);
-  assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [1, null, "", "  "] }).humans, undefined);
+  assert.deepEqual(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [] }).humans, []);
+  assert.deepEqual(normalizeRoomState({ activeRoles: {}, agentCursors: {}, humans: [1, null, "", "  "] }).humans, []);
   assert.equal(normalizeRoomState({ activeRoles: {}, agentCursors: {} }).humans, undefined);
 });
 

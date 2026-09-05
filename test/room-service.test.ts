@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile, readFile as readFileText } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1282,6 +1282,150 @@ test("/compact runs on an idle room (does not self-block), shows a compacting st
   const compactEvent = transcript.find((event) => event.author === "system" && /session compacted \(999 tokens before\)/.test(event.text));
   assert.ok(compactEvent, "compaction reply is written to the transcript");
   assert.equal(compactEvent.kind, "compact-complete", "compaction completion is persisted with a structured transcript marker");
+});
+
+test("/dsc-compact dispatches the clean runtime and persists its registered summary with floor+cursor", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const inputs: AgentInput[] = [];
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "safe reply" } as AgentEvent]);
+    const send = runtime.send.bind(runtime);
+    runtime.send = async function* (input: AgentInput) {
+      inputs.push(input);
+      yield* send(input);
+    } as typeof runtime.send;
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted", summary: "REGISTERED-CLEAN-SUMMARY" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  await service.sendMessage("poisoned historical tail");
+  await service.waitForIdle();
+  const room = await RoomHandle.open(root, "default");
+  await room.updateState((state) => {
+    state.agentCursors.gaia = 0;
+  });
+
+  const task = await service.sendMessage("/dsc-compact");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  assert.equal(ordinaryCalls, 0, "clean command never falls through to ordinary compact");
+  const state = await room.state();
+  assert.ok((state.contextFloors?.gaia ?? 0) > 0);
+  assert.equal(state.agentCursors.gaia, state.contextFloors?.gaia, "fc45e43 cursor advances to the clean floor");
+  assert.equal((await room.readCompaction("gaia"))?.summary, "REGISTERED-CLEAN-SUMMARY");
+  const { events } = await room.eventsFrom(0);
+  const reply = events.find((event) => event.author === "system" && /clean compacted/.test(event.text));
+  assert.equal(reply?.kind, "compact-complete");
+
+  await service.sendMessage("fresh after clean");
+  await service.waitForIdle();
+  const replayed = inputs.at(-1)?.transcript.map((event) => event.text) ?? [];
+  assert.deepEqual(replayed, ["fresh after clean"], "the advanced cursor leaves an empty old-event window on the next turn");
+  assert.ok(!replayed.includes("poisoned historical tail"));
+});
+
+test("/compact-clean dispatches the clean runtime and persists its registered summary with floor+cursor", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const inputs: AgentInput[] = [];
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "safe reply" } as AgentEvent]);
+    const send = runtime.send.bind(runtime);
+    runtime.send = async function* (input: AgentInput) {
+      inputs.push(input);
+      yield* send(input);
+    } as typeof runtime.send;
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted", summary: "REGISTERED-CLEAN-SUMMARY" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  await service.sendMessage("poisoned historical tail");
+  await service.waitForIdle();
+  const room = await RoomHandle.open(root, "default");
+  await room.updateState((state) => {
+    state.agentCursors.gaia = 0;
+  });
+
+  const task = await service.sendMessage("/compact-clean");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  assert.equal(ordinaryCalls, 0, "clean command never falls through to ordinary compact");
+  const state = await room.state();
+  assert.ok((state.contextFloors?.gaia ?? 0) > 0);
+  assert.equal(state.agentCursors.gaia, state.contextFloors?.gaia, "fc45e43 cursor advances to the clean floor");
+  assert.equal((await room.readCompaction("gaia"))?.summary, "REGISTERED-CLEAN-SUMMARY");
+  const { events } = await room.eventsFrom(0);
+  const reply = events.find((event) => event.author === "system" && /clean compacted/.test(event.text));
+  assert.equal(reply?.kind, "compact-complete");
+
+  await service.sendMessage("fresh after clean");
+  await service.waitForIdle();
+  const replayed = inputs.at(-1)?.transcript.map((event) => event.text) ?? [];
+  assert.deepEqual(replayed, ["fresh after clean"], "the advanced cursor leaves an empty old-event window on the next turn");
+  assert.ok(!replayed.includes("poisoned historical tail"));
+});
+
+
+test("/dsc-compact is a true room-state no-op when no clean summary is registered", async () => {
+  let cleanCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "unused" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: false, message: "nothing to compact — no clean summary registered for this room and agent." };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service, root } = await makeService({ runtimeFactory: factory });
+  const task = await service.sendMessage("/dsc-compact");
+  assert.equal(task.status, "complete");
+  assert.equal(cleanCalls, 1);
+  const room = await RoomHandle.open(root, "default");
+  const state = await room.state();
+  assert.equal(state.contextFloors?.gaia, undefined);
+  assert.equal(state.agentCursors.gaia, undefined);
+  assert.equal(await room.readCompaction("gaia"), undefined);
+});
+
+test("ordinary /compact remains on runtime.compact when compactClean is available", async () => {
+  let cleanCalls = 0;
+  let ordinaryCalls = 0;
+  const factory = (agent: AgentDef) => {
+    const runtime = scriptedRuntime(agent, () => [{ type: "text-delta", delta: "unused" } as AgentEvent]);
+    runtime.capabilities = { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true };
+    (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string }> }).compact = async () => {
+      ordinaryCalls += 1;
+      return { compacted: true, message: "ordinary compacted" };
+    };
+    (runtime as unknown as { compactClean: () => Promise<{ compacted: boolean; message: string }> }).compactClean = async () => {
+      cleanCalls += 1;
+      return { compacted: true, message: "clean compacted" };
+    };
+    return runtime as unknown as AgentRuntime;
+  };
+  const { service } = await makeService({ runtimeFactory: factory });
+  const task = await service.sendMessage("/compact");
+  assert.equal(task.status, "complete");
+  assert.equal(ordinaryCalls, 1);
+  assert.equal(cleanCalls, 0);
 });
 
 test("/compact --edit shows a non-evicting draft, then persists the owner-edited summary on apply", async () => {
@@ -3651,4 +3795,35 @@ test("ADV-021: a trust:false agent's capability denial is durable with pluginId/
     await rm(root, { recursive: true, force: true });
     await rm(pluginRoot, { recursive: true, force: true });
   }
+});
+
+test("auto-compact schedules on turn-end usage then uses the native /compact path before the next turn", async () => {
+  let compactCalls = 0;
+  const { service, root, events } = await makeService({
+    config: { autoCompact: { thresholdPct: 15, cooldownTurns: 1 } },
+    script: () => [
+      { type: "text-delta", delta: "reply" } as AgentEvent,
+      { type: "context-usage", usedTokens: 15_000, maxTokens: 100_000 } as AgentEvent,
+    ],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => [
+        { type: "text-delta", delta: "reply" } as AgentEvent,
+        { type: "context-usage", usedTokens: 15_000, maxTokens: 100_000 } as AgentEvent,
+      ]);
+      (runtime.capabilities as { supportsCompact?: boolean }).supportsCompact = true;
+      (runtime as unknown as { compact: () => Promise<{ compacted: boolean; message: string; summary: string }> }).compact = async () => {
+        compactCalls += 1;
+        return { compacted: true, message: "session compacted.", summary: "native summary" };
+      };
+      return runtime;
+    },
+  });
+  const first = await service.sendMessage("first");
+  await waitFor(() => first.status === "complete");
+  assert.ok(events.some((event) => event.type === "room-event" && event.event.author === "system" && event.event.text === "auto-compact @15%"));
+  const second = await service.sendMessage("second");
+  await waitFor(() => second.status === "complete");
+  assert.equal(compactCalls, 1, "the pending pass invokes the same runtime.compact used by /compact");
+  assert.ok((await (await RoomHandle.open(root, "default")).state()).contextFloors?.gaia, "native compaction advanced the durable floor");
+  await service.dispose();
 });

@@ -4,7 +4,7 @@
 // box can write the file directly, and a writer this pattern does not match
 // (a helper, a dynamic path, a shell-out) passes silently. It exists so the
 // coordination added in rooms.ts is not quietly bypassed again by new code.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";

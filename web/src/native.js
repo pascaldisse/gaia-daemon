@@ -30,8 +30,9 @@ export function isMacNativeShell() {
  * Put the web chrome beneath macOS's overlay title bar. The inset is owned here
  * so CSS has one parameter and fullscreen can remove it without a second magic
  * value. Browser and non-macOS shell layouts stay at their existing 30px bar.
+ * @param {{ inset?: string }} [options]
  */
-export function installMacTitlebar() {
+export function installMacTitlebar({ inset = MACOS_TITLEBAR_INSET } = {}) {
   if (!isMacNativeShell()) return;
   const root = document.documentElement;
   const sync = async () => {
@@ -41,7 +42,7 @@ export function installMacTitlebar() {
     } catch {
       // Keep the normal titlebar inset if the bridge is temporarily unavailable.
     }
-    root.style.setProperty("--titlebar-inset", fullscreen ? "0px" : MACOS_TITLEBAR_INSET);
+    root.style.setProperty("--titlebar-inset", fullscreen ? "0px" : inset);
     document.body.classList.toggle("macos-titlebar-fullscreen", fullscreen);
   };
   document.body.classList.add("macos-titlebar-overlay");

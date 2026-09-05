@@ -1,7 +1,7 @@
 // GraphQL config surface: gaiaGraphqlEnabled/gaiaGraphqlPort precedence
 // (env > .gaia/config.json `graphql` section > DEFAULTS) plus
 // parseGraphqlConfig's tolerant parsing of that section.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

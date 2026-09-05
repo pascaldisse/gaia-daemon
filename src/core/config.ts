@@ -2,7 +2,7 @@
 // for .gaia/config.json. Anything env-overridable is a function.
 
 import { readFileSync } from "node:fs";
-import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
@@ -56,9 +56,12 @@ export const DEFAULTS = {
 // Memory v4 defaults (MEMORY-DESIGN.md): everything on. `auto` embeddings =
 // LOCAL sidecar or off — never a cloud key that happens to be lying in the
 // environment (§6). Budget is chars (~600 tokens, the context-rot sweet spot).
+export const AUTO_COMPACT_DEFAULTS: AutoCompactConfig = { thresholdPct: null, cooldownTurns: 1 };
 export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecall: true,
   autoRecallBudget: 2_400,
+  autoRecallExcludePatterns: [],
+  autoRecallExcludeRooms: [],
   embeddings: "auto",
   reranker: "auto",
   // Dream v2: background dreaming is OFF by default — consolidation now runs
@@ -328,6 +331,12 @@ export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
   const patch: MemoryConfigPatch = {};
   if (typeof raw.autoRecall === "boolean") patch.autoRecall = raw.autoRecall;
   if (typeof raw.autoRecallBudget === "number" && raw.autoRecallBudget >= 0) patch.autoRecallBudget = Math.floor(raw.autoRecallBudget);
+  if (Array.isArray(raw.autoRecallExcludePatterns)) {
+    patch.autoRecallExcludePatterns = raw.autoRecallExcludePatterns.filter((pattern): pattern is string => typeof pattern === "string" && pattern.trim().length > 0 && isValidRegex(pattern));
+  }
+  if (Array.isArray(raw.autoRecallExcludeRooms)) {
+    patch.autoRecallExcludeRooms = raw.autoRecallExcludeRooms.filter((room): room is string => typeof room === "string" && room.trim().length > 0).map((room) => room.trim());
+  }
   if (raw.embeddings === "auto" || raw.embeddings === "off") patch.embeddings = raw.embeddings;
   else if (isRecord(raw.embeddings) && typeof raw.embeddings.provider === "string" && raw.embeddings.provider.trim()) {
     patch.embeddings = {
@@ -355,12 +364,23 @@ export function parseMemoryPatch(raw: unknown): MemoryConfigPatch | undefined {
   return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
+function isValidRegex(pattern: string): boolean {
+  try {
+    new RegExp(pattern, "i");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Layer a memory patch over a base config (defaults ← workspace ← agent). */
 export function resolveMemoryConfig(base: MemoryConfig, patch: MemoryConfigPatch | undefined): MemoryConfig {
   if (!patch) return base;
   return {
     autoRecall: patch.autoRecall ?? base.autoRecall,
     autoRecallBudget: patch.autoRecallBudget ?? base.autoRecallBudget,
+    autoRecallExcludePatterns: patch.autoRecallExcludePatterns ?? base.autoRecallExcludePatterns,
+    autoRecallExcludeRooms: patch.autoRecallExcludeRooms ?? base.autoRecallExcludeRooms,
     embeddings: patch.embeddings ?? base.embeddings,
     reranker: patch.reranker ?? base.reranker,
     consolidate: { ...base.consolidate, ...patch.consolidate },
@@ -380,6 +400,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
         : DEFAULTS.transcriptWindow,
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
     agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
+autoCompact: parseAutoCompactConfig(obj.autoCompact),
   };
   if (typeof obj.harness === "string") {
     const harness = canonicalHarnessId(obj.harness);
@@ -406,6 +427,18 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
   return config;
 }
 
+/** Parse workspace auto-compaction settings. Invalid fields fall back independently. */
+export function parseAutoCompactConfig(raw: unknown): AutoCompactConfig {
+const value = isRecord(raw) ? raw : {};
+const thresholdPct = value.thresholdPct === null ? null
+: typeof value.thresholdPct === "number" && Number.isFinite(value.thresholdPct) && value.thresholdPct >= 0 && value.thresholdPct <= 100
+? value.thresholdPct
+: AUTO_COMPACT_DEFAULTS.thresholdPct;
+const cooldownTurns = typeof value.cooldownTurns === "number" && Number.isInteger(value.cooldownTurns) && value.cooldownTurns >= 0
+? value.cooldownTurns
+: AUTO_COMPACT_DEFAULTS.cooldownTurns;
+return { thresholdPct, cooldownTurns };
+}
 function parseGrantList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const caps = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);

@@ -8,7 +8,7 @@
 
 import { DEFAULTS } from "../core/config.js";
 import { canonicalHarnessId } from "../core/harness-id.js";
-import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UsageProbeResult, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UiPromptReplyValue, UsageProbeResult, Workspace } from "../core/types.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
@@ -53,6 +53,16 @@ export interface AgentInput {
    * sets this for harnesses that declare `supportsNativeCommands`; any other
    * harness ignores it and runs `message` as an ordinary turn. */
   nativeCommand?: boolean;
+  /** This turn IS an interactive provider login trigger (Lane E,
+   * chat-mto9n58s-bjr1), not an ordinary prompt — modeled as a turn rather
+   * than a bespoke RPC because auth.request/ui.prompt only ever reach a room
+   * DURING an active turn's event channel (RunnerHost.send's activeChannel;
+   * the wire has no out-of-band AgentEvent delivery path today). A harness
+   * that supports capabilities.supportsUi drives its own login flow
+   * (pi: ModelRuntime.login via wrapAuthInteraction) and yields its
+   * auth.request/ui.prompt dialog exactly like any other turn event; no
+   * session prompt is ever built for this turn. Absent on every other turn. */
+  uiLogin?: { providerId: string; method?: "oauth" | "api_key" };
   /** Settings ▸ General ▸ "Your name" (services/user-name.ts): the label the
    * shared transcript renderer uses for the human's own messages, in place of
    * the anonymous "user" token. "" / absent keeps that default. */
@@ -88,6 +98,16 @@ export interface AgentRuntime {
    * it; absent on the runner-side harness runtimes. Returns false when no turn
    * is streaming (the marker is simply skipped). */
   injectEvent?(event: AgentEvent): boolean;
+  /** Route a client's `ui.reply` back to a pending `ui.prompt`/`auth.request`
+   * (backs the pi ExtensionUIContext dialogs carried over AgentEvent — see
+   * core/types/harness.ts). Resolves false when unsupported, no such id is
+   * pending, or no reply within the runtime's own timeout. Only present when
+   * capabilities.supportsUi. */
+  uiReply?(roomId: string, id: string, value: UiPromptReplyValue): Promise<boolean>;
+  /** Fire a client-side hotkey press for a `ui.shortcut` `commandId` (backs
+   * pi's registerShortcut handler). Resolves false when unsupported or the
+   * commandId is unknown. Only present when capabilities.supportsUi. */
+  uiShortcutFire?(roomId: string, commandId: string): Promise<boolean>;
   /** Compact the room's session context using the HARNESS's own compaction
    * (backs /compact — gaia never re-implements summarization). Resolves with
    * `{ compacted, message }`: `compacted` is the authoritative "history was
@@ -175,6 +195,11 @@ export interface HarnessCapabilities {
   /** Can inject guidance into a RUNNING turn (pi session.steer, codex
    * turn/steer, claude stream-json stdin)? Backs /steer and steer-by-default. */
   readonly supportsSteer: boolean;
+  /** Carries the pi ExtensionAPI UI/auth/shortcut/lifecycle surface over
+   * AgentEvent (ui.widget/ui.prompt/ui.shortcut/auth.request/ext.lifecycle) and
+   * accepts `uiReply`/`uiShortcutFire` back? Optional — absent (or false) on a
+   * harness with no such surface; the client hides the affordances entirely. */
+  readonly supportsUi?: boolean;
   /** Has a native session-compaction the runtime can invoke (pi
    * session.compact, claude /compact, codex thread compaction)? Backs
    * /compact. */
@@ -269,6 +294,25 @@ export interface RuntimeCreateContext {
   endConversation?: EndConversation;
   /** Service implementations for the shared tool port. */
   toolProviders?: ToolProviders;
+  /** Resolved from this harness's own HarnessSpec.extensions by the agent
+   * runner (runner.ts), once, uniformly for every harness — the runtime reads
+   * this rather than re-deriving harness identity (RULE #0). Absent ⇒ no
+   * extension discovery. */
+  extensions?: HarnessExtensionsConfig;
+}
+
+/** Extension/package-discovery capability, shared by HarnessSpec.extensions and
+ * RuntimeCreateContext.extensions (same shape, threaded verbatim by runner.ts
+ * — RULE #0, no harness-id branch). */
+interface HarnessExtensionsConfig {
+  discover: boolean;
+  additionalPaths?: string[];
+  /** Default false ⇒ a missing settings.json package source is SKIPPED, never
+   * fetched over the network mid-turn (see PiRuntime's scoped
+   * packageManager.resolve() wrap — never a process-global PI_OFFLINE, which
+   * would silence remote model-catalog refresh for every other lane sharing
+   * this daemon process). Set true to allow on-demand installs instead. */
+  installMissing?: boolean;
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
@@ -439,6 +483,14 @@ export interface HarnessSpec {
    * the sandbox launch uniformly — the backend never learns which harness
    * declared them. Absent ⇒ no extra carves. */
   sandboxPaths?: { writable?: string[]; readonly?: string[] };
+  /** Does this harness's own SDK discover + load on-disk extensions/packages
+   * (pi coding-agent extensions, settings.json packages) for a turn, and any
+   * extra paths to search beyond its own defaults? Data on the spec — read
+   * uniformly by the agent runner (runner.ts) and threaded into
+   * RuntimeCreateContext.extensions; the harness's create() reads
+   * ctx.extensions rather than re-deriving harness identity (RULE #0).
+   * Absent ⇒ no extension discovery (claude/codex today). */
+  extensions?: HarnessExtensionsConfig;
   /** A-priori context window (tokens) for one of this harness's models, used by
    * the context-gate warning BEFORE a turn runs (the harness only reports the
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.

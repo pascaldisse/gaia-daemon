@@ -74,6 +74,8 @@ export interface RoomTurnLoopPort {
   pluginPrompt(state: Awaited<ReturnType<RoomHandle["state"]>>, agentId: string): Promise<string | undefined>;
   pluginRenderCap(state: Awaited<ReturnType<RoomHandle["state"]>>): Promise<RenderCap | undefined>;
   fireWatchdogSteer(target: string, runtime: AgentRuntime, message: string): Promise<void>;
+scheduleAutoCompact(target: string): Promise<void>;
+runPendingAutoCompact(target: string): Promise<void>;
   recordBackgroundTask(agentId: string, event: Extract<AgentEvent, { type: "background-task" }>): Promise<void>;
   applyLiveTurn(eventId: string, event: AgentEvent): void;
   toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent | undefined;
@@ -130,6 +132,7 @@ export interface RoomCommandsFacadePort {
   init(): Promise<void>;
   emit(event: UiEvent): void;
   emitSnapshot(): Promise<void>;
+  toUiEvent(taskId: string, agentId: string, eventId: string, event: AgentEvent): UiEvent | undefined;
   distinctPlugins(): Promise<CommandPlugin[]>;
   pluginContext(plugin: CommandPlugin, state: Awaited<ReturnType<RoomHandle["state"]>>, command?: string): PluginContext;
   runPlugin(plugin: CommandPlugin, args: string[], command?: string): Promise<PluginResult>;

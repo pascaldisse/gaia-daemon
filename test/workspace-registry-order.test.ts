@@ -1,7 +1,7 @@
 // Workspace sidebar favorites + drag-drop reorder (daemon.ts WorkspaceRegistry
 // + Daemon.setWorkspaceFavorite/reorderWorkspaces) — the server half of the
 // "reorder workspaces by drag/drop, favorites always on top" feature.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

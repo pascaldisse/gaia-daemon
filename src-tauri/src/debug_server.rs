@@ -260,6 +260,11 @@ fn route(request: Request, app: tauri::AppHandle, state: Arc<DebugState>) -> Vec
         ),
         ("GET", "/info") => info_response(app),
         ("GET", "/screenshot") => screenshot_response(app, "main"),
+        #[cfg(target_os = "macos")]
+        ("GET", "/screenshot/window") => match native_window_png(app, "main") {
+            Ok(bytes) => raw_response(200, "image/png", bytes),
+            Err(error) => json_response(500, json!({ "ok": false, "error": error })),
+        },
         _ => json_response(404, json!({ "ok": false, "error": "unknown endpoint" })),
     }
 }
@@ -741,4 +746,47 @@ fn raw_response(status: u16, content_type: &str, body: Vec<u8>) -> Vec<u8> {
     let mut response = headers.into_bytes();
     response.extend_from_slice(&body);
     response
+}
+
+// Native frame capture → includes traffic lights; own window only, no shell/TCC helper.
+#[cfg(target_os = "macos")]
+fn native_window_png(app: tauri::AppHandle, label: &str) -> Result<Vec<u8>, String> {
+    let window = app.get_webview_window(label).ok_or("no window")?;
+    let (tx, rx) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        let result = (|| unsafe {
+            use objc2::{class, msg_send};
+            use objc2::runtime::AnyObject;
+            #[repr(C)]
+            struct Rect { x: f64, y: f64, width: f64, height: f64 }
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGWindowListCreateImage(rect: Rect, option: u32, window: u32, image_option: u32) -> *mut std::ffi::c_void;
+                fn CGImageRelease(image: *mut std::ffi::c_void);
+            }
+            let ns_window = window.ns_window().map_err(|e| e.to_string())?.cast::<AnyObject>();
+            let number: isize = msg_send![&*ns_window, windowNumber];
+            // IncludingWindow + BoundsIgnoreFraming → native-scale window, no shadow.
+            let image = CGWindowListCreateImage(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }, 8, number as u32, 1);
+            if image.is_null() { return Err("native window capture unavailable".to_string()); }
+            let allocated: *mut AnyObject = msg_send![class!(NSBitmapImageRep), alloc];
+            let rep: *mut AnyObject = msg_send![allocated, initWithCGImage: image];
+            CGImageRelease(image);
+            if rep.is_null() { return Err("native bitmap unavailable".to_string()); }
+            let props: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
+            let png: *mut AnyObject = msg_send![rep, representationUsingType: 4usize, properties: props];
+            let result = if png.is_null() {
+                Err("native PNG unavailable".to_string())
+            } else {
+                let len: usize = msg_send![png, length];
+                let bytes: *const u8 = msg_send![png, bytes];
+                if bytes.is_null() || len == 0 { Err("empty native PNG".to_string()) }
+                else { Ok(std::slice::from_raw_parts(bytes, len).to_vec()) }
+            };
+            let _: () = msg_send![rep, release];
+            result
+        })();
+        let _ = tx.send(result);
+    }).map_err(|e| e.to_string())?;
+    rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?
 }

@@ -12,6 +12,7 @@
 // open (close -> dispose -> no WebGL context, no rAF).
 
 import { selectRoom } from "../actions.js";
+import { api } from "../api.js";
 import { $, h } from "./../dom.js";
 import { state } from "../state.js";
 import { buildModel } from "./model.js";
@@ -73,6 +74,23 @@ async function jumpToRoom(roomId) {
   await selectRoom(workspaceId, roomId);
 }
 
+/** Prompt for an orthogonal root task and create it under this view's room. */
+async function addRootFromArchtree() {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const task = window.prompt("New archtree root task");
+  if (!task?.trim()) return;
+  const agent = snapshot.room.activeAgent ?? snapshot.workspace.defaultAgent;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/archtree/add-root`, {
+      method: "POST",
+      body: JSON.stringify({ agent, task: task.trim() }),
+    });
+  } catch (error) {
+    reportUnavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
 /** Last open failure, kept readable for the UI/tests. @type {string|null} */
 export let archtreeError = null;
 
@@ -113,6 +131,7 @@ export function openArchtree() {
       "div",
       { class: "archtree-chrome" },
       h("span", { class: "archtree-title", text: "陽 ・ archtree ・ 陰" }),
+      h("button", { class: "archtree-add-root", title: "create a root lane under this coordinator", onclick: () => void addRootFromArchtree(), text: "+ root" }),
       h("button", { class: "archtree-close", title: "close (esc)", onclick: () => closeArchtree(), text: "✕" }),
     ),
     hud,

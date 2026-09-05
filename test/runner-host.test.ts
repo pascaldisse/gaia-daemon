@@ -4,7 +4,7 @@
 // ever reads spec DATA (capabilities, credentialProxy), so a stub harness spec
 // stands in for the real adapters — no harness CLI is ever spawned.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
@@ -20,7 +20,7 @@ import { createTempDir } from "./helpers/temp.js";
 
 registerHarness({
   id: "stub",
-  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true },
+  capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true, supportsSteer: true, supportsUi: true },
   ui: { label: "Stub", description: "protocol test double" },
   backgroundTasks: {
     fromToolCall: (toolName, args, result) => {
@@ -133,6 +133,12 @@ rl.on("line", (line) => {
     }
   } else if (cmd.type === "compact") {
     send({ type: "compact-result", ok: true, compacted: true, message: "compacted " + cmd.roomId });
+  } else if (cmd.type === "compact-clean") {
+    send({ type: "compact-result", ok: true, compacted: true, message: "clean compacted " + cmd.roomId, summary: "WIRE-CLEAN-SUMMARY" });
+  } else if (cmd.type === "ui-reply") {
+    send({ type: "ui-reply-result", id: cmd.id, ok: cmd.id === "known-prompt" });
+  } else if (cmd.type === "ui-shortcut-fire") {
+    send({ type: "ui-shortcut-result", commandId: cmd.commandId, ok: cmd.commandId === "known-shortcut" });
   } else if (cmd.type === "dispose") {
     process.exit(0);
   }
@@ -325,6 +331,28 @@ test("injectEvent lands in the ACTIVE turn's stream at its current position; ski
   }
 });
 
+test("RunnerHost.uiReply/uiShortcutFire round-trip real ui-reply/ui-shortcut-fire frames against a live stub runner", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    // No child yet — mirrors steer()'s "no runner, nothing to answer" no-op.
+    assert.equal(await host.uiReply("default", "known-prompt", "yes"), false, "no child yet → false, not a hang");
+    assert.equal(await host.uiShortcutFire("default", "known-shortcut"), false);
+
+    // Spawn the child via an ordinary turn, then exercise the round trip idle.
+    for await (const _event of host.send({ roomId: "default", message: "hi", transcript: [] })) void _event;
+
+    assert.equal(await host.uiReply("default", "known-prompt", { field: "answer" }), true, "the stub's ui-reply-result for a known id resolves true");
+    assert.equal(await host.uiReply("default", "unknown-prompt", "x"), false, "the stub's ui-reply-result for an unknown id resolves false");
+    assert.equal(await host.uiShortcutFire("default", "known-shortcut"), true, "the stub's ui-shortcut-result for a known commandId resolves true");
+    assert.equal(await host.uiShortcutFire("default", "unknown-shortcut"), false);
+
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("encodeFrame: U+2028/U+2029 in content never reach the wire raw", () => {
   const frame = { type: "turn", input: { roomId: "r", message: "a\u2028b\u2029c", transcript: [] } } as Parameters<typeof encodeFrame>[0];
   const wire = encodeFrame(frame);
@@ -477,6 +505,22 @@ test("RunnerHost forwards /compact over the wire and relays the harness's result
     for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
     // The runner's structured `compacted` flag rides through the wire.
     assert.deepEqual(await host.compact("default"), { compacted: true, message: "compacted default" });
+    await host.dispose();
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("RunnerHost forwards /dsc-compact over the retained compact-clean wire", async () => {
+  const temp = await createTempDir();
+  try {
+    const host = await makeHost(temp.path);
+    for await (const _ of host.send({ roomId: "default", message: "hi", transcript: [] })) void _;
+    assert.deepEqual(await host.compactClean("default"), {
+      compacted: true,
+      message: "clean compacted default",
+      summary: "WIRE-CLEAN-SUMMARY",
+    });
     await host.dispose();
   } finally {
     await temp.cleanup();

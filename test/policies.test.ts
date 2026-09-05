@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { MonadConfig, MonadObservation, MonadStep } from "../src/core/types.js";
 import type { RoutingPolicyContext } from "../src/services/policies/registry.js";

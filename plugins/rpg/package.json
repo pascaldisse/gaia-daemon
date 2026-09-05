@@ -1,0 +1,12 @@
+{
+  "name": "gaia.rpg",
+  "version": "1.0.0",
+  "description": "gaia plugin gaia.rpg (migrated to a pi package by `gaia plugin migrate`)",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./pi-extension.mjs"
+    ]
+  }
+}

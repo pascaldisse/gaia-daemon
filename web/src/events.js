@@ -9,7 +9,7 @@ import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { forwardNativePetProgress, syncNativePets } from "./pet.js";
 import { markDirty, setError } from "./render.js";
-import { state, syncReadMarks } from "./state.js";
+import { recordHarnessEvent, state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
@@ -189,6 +189,51 @@ export function connectEvents(resyncOnReady = false) {
     if (payload.usage) state.usage[payload.account] = payload.usage;
     else delete state.usage[payload.account];
     markDirty("status", "usage");
+  });
+
+  // pi ExtensionAPI surface carried headless over AgentEvent (see
+  // core/types/harness.ts) — live rows/dialogs/hotkeys/status chips. `id`/
+  // `commandId` is the daemon-assigned key a reply/fire targets; storing the
+  // agentId ON the entry (StreamScope carries it) is what lets actions.js
+  // route the reply back to the right runtime without the caller threading it.
+  listen("ui.widget", (event) => {
+    const payload = /** @type {Ev<"ui.widget">} */ (JSON.parse(event.data));
+    if (payload.lines.length === 0) state.uiWidgets.delete(payload.id);
+    else state.uiWidgets.set(payload.id, payload);
+    markDirty("transcript");
+  });
+
+  listen("ui.prompt", (event) => {
+    const payload = /** @type {Ev<"ui.prompt">} */ (JSON.parse(event.data));
+    state.uiPrompts.set(payload.id, payload);
+    markDirty("transcript", "composer");
+  });
+
+  listen("ui.shortcut", (event) => {
+    const payload = /** @type {Ev<"ui.shortcut">} */ (JSON.parse(event.data));
+    state.uiShortcuts.set(payload.commandId, payload);
+    markDirty("composer");
+  });
+
+  listen("auth.request", (event) => {
+    const payload = /** @type {Ev<"auth.request">} */ (JSON.parse(event.data));
+    state.authRequests.set(payload.id, payload);
+    markDirty("settings");
+  });
+
+  listen("ext.lifecycle", (event) => {
+    const payload = /** @type {Ev<"ext.lifecycle">} */ (JSON.parse(event.data));
+    state.extLifecycle.set(payload.id, payload);
+    markDirty("transcript");
+  });
+
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated mapping above — rendered as a collapsed debug row, same section
+  // as ext.lifecycle (see core/types/harness.ts, transcript.js).
+  listen("harness.event", (event) => {
+    const payload = /** @type {Ev<"harness.event">} */ (JSON.parse(event.data));
+    recordHarnessEvent(payload);
+    markDirty("transcript");
   });
 
   listen("model-fallback", (event) => {

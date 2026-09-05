@@ -2,7 +2,7 @@
 // + src/core/http.ts + src/server/http.ts auth surface. These assert the SECURE
 // behavior; they are currently RED against the audited code (see room report).
 // Fix is out of scope for this ghoul (審=検, 非=修正) — left for the target agent.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { readFileSync, mkdtempSync } from "node:fs";
@@ -209,6 +209,7 @@ test("L5 SECURITY: logout must revoke the session token server-side, not just cl
     const meAfter = await fetch(`${listening.baseUrl}/api/auth/me`, {
       headers: { cookie: `gaia_user=${stolenCookie}` },
     });
+    assert.equal(meAfter.status, 401);
     const afterUser = (await meAfter.json() as { user: { username: string } | null }).user;
     assert.equal(
       afterUser,
@@ -216,6 +217,21 @@ test("L5 SECURITY: logout must revoke the session token server-side, not just cl
       `stolen token still authenticates as ${JSON.stringify(afterUser)} after the victim logged out — ` +
         `logout only clears the client cookie, never revokes the token server-side.`,
     );
+    const protectedReplay = await fetch(`${listening.baseUrl}/api/auth/users`, {
+      headers: { cookie: `gaia_user=${stolenCookie}` },
+    });
+    assert.equal(protectedReplay.status, 401);
+    const relogin = await fetch(`${listening.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "logout-victim", password: "correcthorsebatterystaple123" }),
+    });
+    assert.equal(relogin.status, 200);
+    const newCookie = /gaia_user=([^;]+)/.exec(relogin.headers.get("set-cookie") ?? "")?.[1];
+    assert.ok(newCookie);
+    assert.notEqual(newCookie, stolenCookie);
+    const freshMe = await fetch(`${listening.baseUrl}/api/auth/me`, { headers: { cookie: `gaia_user=${newCookie}` } });
+    assert.equal(freshMe.status, 200);
   } finally {
     if (server) await closeServer(server);
     if (previousHome === undefined) delete process.env.GAIA_HOME;

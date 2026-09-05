@@ -3,7 +3,7 @@
 // POST /api/workspaces/reorder against a live GaiaWebServer, unauthenticated
 // (legacy shared scope — the ownership gate that /favorite sits behind, and
 // the pre-gate placement of /reorder, both get exercised for real).
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
