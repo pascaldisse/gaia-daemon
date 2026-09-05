@@ -112,6 +112,9 @@ function hashPassword(password: string): string {
   return `scrypt$${salt}$${hash}`;
 }
 
+// Missing users take the same KDF + constant-time comparison path as known users.
+const DUMMY_PASSWORD_HASH = `scrypt$${randomBytes(16).toString("hex")}$${randomBytes(64).toString("hex")}`;
+
 function verifyPassword(password: string, stored: string): boolean {
   const parts = stored.split("$");
   if (parts.length !== 3 || parts[0] !== "scrypt") return false;
@@ -171,8 +174,8 @@ export function removeUser(id: string): boolean {
 /** Null on wrong username OR wrong password — never distinguish which, to a caller. */
 export function authenticate(username: string, password: string): PublicUser | null {
   const user = findUserByUsername(username);
-  if (!user) return null;
-  return verifyPassword(password, user.passwordHash) ? toPublic(user) : null;
+  const valid = verifyPassword(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
+  return user && valid ? toPublic(user) : null;
 }
 
 // --- sessions ----------------------------------------------------------------
