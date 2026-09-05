@@ -5,7 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { PackageManager } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness, type SummonCreate } from "../src/harness/spec.js";
 import { mechanicalCompactionFallback, newestContentEntryId, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
@@ -1441,6 +1442,42 @@ test("pi extension fixture is NOT loaded when discovery stays off (noExtensions:
     } finally {
       session.dispose();
     }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("pi package resolution: a missing settings.json package source is SKIPPED (no network install attempt, no throw) through the exact scoped wrap PiRuntime applies to its OWN loader instance only", async () => {
+  const temp = await createTempDir();
+  try {
+    const missingSource = "npm:gaia-lane-a-does-not-exist-9f3d2c1";
+    // In-memory settings — no file I/O, no touching a real ~/.pi/agent/settings.json.
+    const settingsManager = SettingsManager.inMemory({ packages: [missingSource] });
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      settingsManager,
+      noExtensions: false,
+    });
+
+    // Mirrors PiRuntime.createSessionMeta's exact patch (src/harness/pi/runtime.ts,
+    // right after `new DefaultResourceLoader(...)`, before `loader.reload()`):
+    // wrap THIS loader's own already-constructed packageManager.resolve() with a
+    // default onMissing — scoped to this one instance, never process.env.PI_OFFLINE.
+    const packageManager = (loader as unknown as { packageManager: PackageManager }).packageManager;
+    const originalResolve = packageManager.resolve.bind(packageManager);
+    const onMissingCalls: string[] = [];
+    packageManager.resolve = (onMissing) =>
+      originalResolve(
+        onMissing ??
+          (async (source: string) => {
+            onMissingCalls.push(source);
+            return "skip" as const;
+          }),
+      );
+
+    await assert.doesNotReject(() => loader.reload());
+    assert.deepEqual(onMissingCalls, [missingSource], "onMissing must fire for the missing source, proving the skip path (not install) ran");
   } finally {
     await temp.cleanup();
   }

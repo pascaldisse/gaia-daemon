@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, PackageManager } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../../core/attachments.js";
 import { type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type Workspace, } from "../../core/types.js";
 import { workspacePaths } from "../../core/paths.js";
@@ -380,21 +380,6 @@ export class PiRuntime implements AgentRuntime {
     // would otherwise need an interactive trust prompt this headless runner
     // can never answer).
     const discover = this.extensionsConfig?.discover ?? false;
-    if (discover && process.env.PI_OFFLINE === undefined) {
-      // Safety default, not a hard requirement: packageManager.resolve() (run
-      // by loader.reload() below whenever noExtensions is false) auto-INSTALLS
-      // any not-yet-present settings.json "packages" entry over the network
-      // when given no onMissing callback (see package-manager.js
-      // resolvePackageSources -> installMissing). That is almost certainly why
-      // this exact ordering was reverted once already (0e6b0ac -> 69c21f3,
-      // 08-27): discovery went from off to unconditionally-on for every pi
-      // agent with no way to scope it, and any global settings.json package
-      // entry would try to fetch it once per turn. PI_OFFLINE=1 makes
-      // resolvePackageSources skip missing sources instead of installing them
-      // (already-installed extensions/packages still load) — set only if the
-      // operator hasn't already configured it explicitly.
-      process.env.PI_OFFLINE = "1";
-    }
     const loader = new DefaultResourceLoader({
       cwd: this.workDir,
       agentDir: getAgentDir(),
@@ -430,6 +415,40 @@ export class PiRuntime implements AgentRuntime {
           }
         : { appendSystemPromptOverride: () => [systemPromptRef.current] }),
     });
+    // Scoped, per-loader-instance — NOT process.env.PI_OFFLINE (rejected,
+    // Pascal 09-05: that flag is read process-wide by core/model-runtime.js:71
+    // (kills remote model-catalog refresh for EVERY lane sharing this daemon
+    // process, not just this one), utils/tools-manager.js, utils/version-check.js
+    // — a global env mutation for a per-lane concern, forbidden). Every
+    // `loader.reload()` call — regardless of `discover`/noExtensions — runs
+    // `packageManager.resolve()` UNCONDITIONALLY (resource-loader.js reload():
+    // resolve() happens before noExtensions is ever consulted; noExtensions
+    // only filters which of the RESOLVED extension paths get merged
+    // afterward). `resolve()` reads settings.json "packages" for ALL FOUR
+    // resource kinds (extensions/skills/prompts/themes) and, given no
+    // `onMissing` callback, auto-INSTALLS any not-yet-present source over the
+    // network (package-manager.js resolvePackageSources -> installMissing()).
+    // DefaultResourceLoader.reload() never forwards an onMissing callback to
+    // PackageManager.resolve() itself (verified: zero occurrences of
+    // "onMissing" in resource-loader.js/.d.ts — ResourceLoaderReloadOptions
+    // only exposes resolveProjectTrust), and DefaultResourceLoaderOptions has
+    // no constructor hook to inject a custom PackageManager either. The
+    // `packageManager` field is TS-private only (resource-loader.d.ts) — a
+    // plain, real, JS-public property at runtime — so this reaches THIS
+    // loader's own already-constructed instance and wraps only ITS resolve(),
+    // never anything global or shared with another lane's loader.
+    {
+      const packageManager = (
+        loader as unknown as { packageManager: PackageManager }
+      ).packageManager;
+      const originalResolve = packageManager.resolve.bind(packageManager);
+      packageManager.resolve = (onMissing) =>
+        originalResolve(
+          onMissing ??
+            (async () =>
+              this.extensionsConfig?.installMissing ? "install" : "skip"),
+        );
+    }
     if (!this.sessionFactory) {
       await loader.reload();
       // Extensions discovered above may register model providers

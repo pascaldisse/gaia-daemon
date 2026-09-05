@@ -273,7 +273,21 @@ export interface RuntimeCreateContext {
    * runner (runner.ts), once, uniformly for every harness — the runtime reads
    * this rather than re-deriving harness identity (RULE #0). Absent ⇒ no
    * extension discovery. */
-  extensions?: { discover: boolean; additionalPaths?: string[] };
+  extensions?: HarnessExtensionsConfig;
+}
+
+/** Extension/package-discovery capability, shared by HarnessSpec.extensions and
+ * RuntimeCreateContext.extensions (same shape, threaded verbatim by runner.ts
+ * — RULE #0, no harness-id branch). */
+interface HarnessExtensionsConfig {
+  discover: boolean;
+  additionalPaths?: string[];
+  /** Default false ⇒ a missing settings.json package source is SKIPPED, never
+   * fetched over the network mid-turn (see PiRuntime's scoped
+   * packageManager.resolve() wrap — never a process-global PI_OFFLINE, which
+   * would silence remote model-catalog refresh for every other lane sharing
+   * this daemon process). Set true to allow on-demand installs instead. */
+  installMissing?: boolean;
 }
 
 /** Pages a diet-collapsed own tool-call stub's original content back, 32k
@@ -451,7 +465,7 @@ export interface HarnessSpec {
    * RuntimeCreateContext.extensions; the harness's create() reads
    * ctx.extensions rather than re-deriving harness identity (RULE #0).
    * Absent ⇒ no extension discovery (claude/codex today). */
-  extensions?: { discover: boolean; additionalPaths?: string[] };
+  extensions?: HarnessExtensionsConfig;
   /** A-priori context window (tokens) for one of this harness's models, used by
    * the context-gate warning BEFORE a turn runs (the harness only reports the
    * real window mid-turn). Data on the spec, read uniformly — never id-branched.
