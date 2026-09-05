@@ -351,7 +351,7 @@ export class RoomAgentCommandsMixin {
     if (!task) return "Usage: /archtree add-root [--agent <agent>] <task>";
     const target = agentId ?? (await this.nativeCommandTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
-    const childRoomId = await addArchtreeRoot(this.options.summonHost, { parentRoomId: this.roomId, agentId: target, task });
+    const childRoomId = await addArchtreeRoot(this.options.summonHost, { workspace: this.workspace, parentRoomId: this.roomId, agentId: target, task });
     return `Added archtree root @${target} in room '${childRoomId}'. It is live under this coordinator and visible in /archtree.`;
   }
 }

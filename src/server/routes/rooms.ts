@@ -271,7 +271,7 @@ async function roomArchtreeRoot(ctx: RouteContext): Promise<boolean> {
   const agentId = stringField(body, "agent")?.trim() || snapshot.room.activeAgent || snapshot.workspace.defaultAgent;
   try {
     const coordinator = await ctx.daemon.coordinatorFor(params[0]);
-    const roomId = await addArchtreeRoot(coordinator, { parentRoomId: params[1], agentId, task });
+    const roomId = await addArchtreeRoot(coordinator, { workspace: service.workspace, parentRoomId: params[1], agentId, task });
     json(ctx.response, 202, { roomId });
   } catch (error) {
     json(ctx.response, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -237,16 +237,20 @@ test("background summon never blocks: launch resolves first, then the result is 
   assert.equal(coordinator.runningChildren().length, 0);
 });
 
-test("archtree add-root registers a live child under its coordinator", async () => {
+test("archtree add-root preserves two running siblings and registers a third", async () => {
   const { workspace, path } = await makeWorkspace();
   const child = fakeRoom("root report");
   const parent = fakeRoom("");
   const coordinator = new SummonCoordinator(workspace, path, async (roomId) => (roomId === "default" ? parent : child), async () => 8, () => {});
-  const roomId = await addArchtreeRoot(coordinator, { parentRoomId: "default", agentId: "terry", task: "independent root" });
+  const first = await coordinator.summon("default", "terry", "BUILD", { deliver: "note" });
+  const second = await coordinator.summon("default", "terry", "ADVERSARY", { deliver: "note" });
+  await mkdir(join(path, ".gaia/skills/gaia-archtree"), { recursive: true });
+  await writeFile(join(path, ".gaia/skills/gaia-archtree/SKILL.md"), "# Archtree\nbun only · own worktree");
+  const roomId = await addArchtreeRoot(coordinator, { workspace, parentRoomId: "default", agentId: "terry", task: "independent root" });
   const state = normalizeRoomState(await readJson(workspacePaths.roomState(path, roomId)));
   assert.equal(state.parentRoomId, "default", "visualizer reads this durable tree edge");
   assert.equal(state.summon?.status, "running");
-  assert.deepEqual(coordinator.runningChildren("default").map((entry) => entry.roomId), [roomId]);
+  assert.deepEqual(coordinator.runningChildren("default").map((entry) => entry.roomId), [first, second, roomId]);
   child.settle();
 });
 test("a parent summon stays live until nested workers return and its callback settles", async () => {
