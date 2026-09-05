@@ -804,7 +804,9 @@ async function handleHarnessActions(ctx: RouteContext, pathname: string, claims:
       if (!task) return json(response, 400, { error: "Missing root task" });
       try {
         const coordinator = await daemon.coordinatorFor(claims.workspaceId);
-        const roomId = await addArchtreeRoot(coordinator, { parentRoomId: claims.roomId, agentId, task, callerAgentId: claims.agentId });
+        const workspace = await daemon.workspaceForId(claims.workspaceId);
+        if (!workspace) throw new Error("Archtree workspace unavailable");
+        const roomId = await addArchtreeRoot(coordinator, { workspace, parentRoomId: claims.roomId, agentId, task, callerAgentId: claims.agentId });
         json(response, 200, { roomId, result: `Added archtree root @${agentId} in room '${roomId}'.` });
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) });
