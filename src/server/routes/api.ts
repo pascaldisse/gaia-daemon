@@ -5,10 +5,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expandHome, globalPaths } from "../../core/paths.js";
 import { newId } from "../../core/ids.js";
-import { bearerToken, cookieHeader, json, parseBody, readRawBody } from "../../core/http.js";
+import { bearerToken, cookieHeader, cookieValue, json, parseBody, readRawBody, secureCookieForRequest } from "../../core/http.js";
 import { parseContextDietOverrides } from "../../domain/context-diet.js";
 import { redactedAccounts, removeAccount, updateAccount } from "../../domain/accounts.js";
-import { authenticate, createUser, issueSessionToken, listUsers } from "../../domain/users.js";
+import { authenticate, createUser, issueSessionToken, listUsers, revokeSessionToken } from "../../domain/users.js";
 import { harnessSpecs, type GaiaTool } from "../../harness/spec.js";
 import { agentRoster } from "../../harness/tools.js";
 import { LLM_PROXY_MOUNT } from "../../services/proxy.js";
@@ -244,6 +244,7 @@ async function handleApiWorkspaceRoutes(ctx: RouteContext): Promise<void> {
     // required; every user after that requires an existing valid session
     // (prevents an open internet-facing registration endpoint).
     if (method === "GET" && path === "/api/auth/me") {
+      if (!human && cookieValue(request, AUTH_COOKIE)) return json(response, 401, { user: null, error: "Invalid or expired session." });
       return respond(response, async () => ({ user: human }));
     }
     if (method === "GET" && path === "/api/auth/users") {
@@ -271,11 +272,13 @@ async function handleApiWorkspaceRoutes(ctx: RouteContext): Promise<void> {
       const user = username && password ? authenticate(username, password) : null;
       if (!user) return json(response, 401, { error: "Invalid username or password." });
       const token = issueSessionToken(user.id);
-      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, token, 30 * 24 * 60 * 60));
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, token, 30 * 24 * 60 * 60, secureCookieForRequest(request)));
       return respond(response, async () => ({ user }));
     }
     if (method === "POST" && path === "/api/auth/logout") {
-      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0));
+      const token = cookieValue(request, AUTH_COOKIE);
+      if (token) revokeSessionToken(token);
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0, secureCookieForRequest(request)));
       return respond(response, async () => ({ ok: true }));
     }
     // Named accounts are managed directly in accounts.json.
