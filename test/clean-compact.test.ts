@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { parseCommand } from "../src/services/commands.js";
 import { loadCleanCompactionOverride, registerCleanSummary } from "../src/domain/clean-summaries.js";
+import { PiCleanCompaction } from "../src/harness/pi/clean-compact.js";
 import { PiCompaction } from "../src/harness/pi/compaction.js";
 import { createTempDir } from "./helpers/temp.js";
 
@@ -42,8 +43,9 @@ test("real SDK: enabled clean hook commits newest active-branch floor; ordinary 
     const registryBefore = await readFile(index, "utf8");
     const sessions = new Map();
     const compaction = new PiCompaction(sessions, async () => undefined, "gaia", (room, agent) => loadCleanCompactionOverride(room, agent, index));
+    const cleanCompaction = new PiCleanCompaction(sessions, async () => undefined, "gaia", (room, agent) => loadCleanCompactionOverride(room, agent, index));
     const loader = new DefaultResourceLoader({ cwd: temp.path, agentDir: temp.path, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [compaction.extension("room", undefined, undefined), { name: "clean-compact", factory: compaction.cleanExtension("room") }],
+      extensionFactories: [cleanCompaction.guardOrdinaryExtension("room", compaction.extension("room", "anthropic", "claude-sonnet-4-5")), { name: "clean-compact", factory: cleanCompaction.extension("room") }],
     });
     await loader.reload();
     assert.deepEqual(loader.getExtensions().errors, []);
@@ -61,7 +63,7 @@ test("real SDK: enabled clean hook commits newest active-branch floor; ordinary 
     const { session } = await createAgentSession({ cwd: temp.path, model, modelRuntime: models, resourceLoader: loader, sessionManager: sm, settingsManager: SettingsManager.inMemory(), tools: [] });
     dispose = () => session.dispose();
     sessions.set("room", { session });
-    const result = await compaction.clean("room");
+    const result = await cleanCompaction.clean("room");
     assert.equal(result.compacted, true);
     assert.equal(result.summary, "Task → verify clean compaction.");
     const entry = sm.getLeafEntry();
