@@ -15,7 +15,7 @@
 // subprocess. The live HTTP flow is owned by 陰 (see docs/REFACTOR-LIVE-QUEUE.md)
 // and is opt-in via GAIA_LIVE_EDIT_RESEND=1; default runs `test.skip` it.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";

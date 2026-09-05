@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "bun:test";
 
 let home = "";
 let previous: string | undefined;

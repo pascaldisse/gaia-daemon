@@ -3,7 +3,7 @@
 // repositories — stale dirs, missing .git links, and submodule gitlinks need
 // a real filesystem to reproduce.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";

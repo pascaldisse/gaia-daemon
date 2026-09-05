@@ -6,7 +6,7 @@
 // the vulnerability is live. No fix is applied in this file — see the audit
 // report for remediation specs. Do not "fix" these tests to make them pass
 // without also fixing src/server/http.ts; that would hide the bug.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { join } from "node:path";

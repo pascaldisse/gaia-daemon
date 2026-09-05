@@ -1,7 +1,7 @@
 // v2 port of test/pi-runtime.test.ts — every v1 scenario, driven through the
 // injectable sessionFactory against the REAL MemoryStore + prompt assembly.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";

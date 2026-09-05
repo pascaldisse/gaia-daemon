@@ -4,7 +4,7 @@
 // ever reads spec DATA (capabilities, credentialProxy), so a stub harness spec
 // stands in for the real adapters — no harness CLI is ever spawned.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";

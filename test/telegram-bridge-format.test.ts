@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import test from "node:test";
+import { test } from "bun:test";
 import { CapabilityBroker } from "../src/services/capabilities/broker.js";
 import { PluginRegistry } from "../src/services/plugins/registry.js";
 

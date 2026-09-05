@@ -2,7 +2,7 @@
 // + src/core/http.ts + src/server/http.ts auth surface. These assert the SECURE
 // behavior; they are currently RED against the audited code (see room report).
 // Fix is out of scope for this ghoul (審=検, 非=修正) — left for the target agent.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { readFileSync, mkdtempSync } from "node:fs";
