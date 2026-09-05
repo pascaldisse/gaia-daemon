@@ -4,6 +4,7 @@
 // genuinely-identical logic lives here; surface-specific shaping stays local.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { TLSSocket } from "node:tls";
 
 /** Largest request body we buffer before rejecting (1 MiB). */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -92,10 +93,27 @@ export function cookieValue(request: IncomingMessage, name: string): string | un
   return undefined;
 }
 
-/** `Set-Cookie` value: HttpOnly + SameSite=Lax always; `maxAgeSeconds` undefined
- * clears it (session-scoped cookie, browser drops on close) — pass 0 to delete. */
-export function cookieHeader(name: string, value: string, maxAgeSeconds?: number): string {
+/** TLS → always secure; GAIA_SECURE_COOKIES=0/false → explicit HTTP opt-out.
+ * Default → secure outside localhost. Forwarded HTTPS can only tighten policy. */
+export function secureCookieForRequest(request: IncomingMessage, configured: boolean | undefined =
+  process.env.GAIA_SECURE_COOKIES === undefined ? undefined : !/^(0|false)$/i.test(process.env.GAIA_SECURE_COOKIES),
+): boolean {
+  const forwarded = request.headers["x-forwarded-proto"];
+  const protocols = (Array.isArray(forwarded) ? forwarded.join(",") : forwarded ?? "").split(",");
+  if ((request.socket as TLSSocket).encrypted || protocols.some((protocol) => protocol.trim().toLowerCase() === "https")) return true;
+  if (configured !== undefined) return configured;
+  try {
+    const host = new URL(`http://${request.headers.host ?? ""}`).hostname;
+    return !["localhost", "127.0.0.1", "[::1]"].includes(host);
+  } catch {
+    return true;
+  }
+}
+
+/** HttpOnly + SameSite=Lax; Secure by default; maxAgeSeconds=0 → delete. */
+export function cookieHeader(name: string, value: string, maxAgeSeconds?: number, secure = true): string {
   const parts = [`${name}=${encodeURIComponent(value)}`, "Path=/", "HttpOnly", "SameSite=Lax"];
   if (maxAgeSeconds !== undefined) parts.push(`Max-Age=${maxAgeSeconds}`);
+  if (secure) parts.push("Secure");
   return parts.join("; ");
 }

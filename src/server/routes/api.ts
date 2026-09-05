@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expandHome, globalPaths } from "../../core/paths.js";
 import { newId } from "../../core/ids.js";
-import { bearerToken, cookieHeader, json, parseBody, readRawBody } from "../../core/http.js";
+import { bearerToken, cookieHeader, json, parseBody, readRawBody, secureCookieForRequest } from "../../core/http.js";
 import { parseContextDietOverrides } from "../../domain/context-diet.js";
 import { redactedAccounts, removeAccount, updateAccount } from "../../domain/accounts.js";
 import { authenticate, createUser, issueSessionToken, listUsers } from "../../domain/users.js";
@@ -271,11 +271,11 @@ async function handleApiWorkspaceRoutes(ctx: RouteContext): Promise<void> {
       const user = username && password ? authenticate(username, password) : null;
       if (!user) return json(response, 401, { error: "Invalid username or password." });
       const token = issueSessionToken(user.id);
-      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, token, 30 * 24 * 60 * 60));
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, token, 30 * 24 * 60 * 60, secureCookieForRequest(request)));
       return respond(response, async () => ({ user }));
     }
     if (method === "POST" && path === "/api/auth/logout") {
-      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0));
+      response.setHeader("Set-Cookie", cookieHeader(AUTH_COOKIE, "", 0, secureCookieForRequest(request)));
       return respond(response, async () => ({ ok: true }));
     }
     // Named accounts are managed directly in accounts.json.
