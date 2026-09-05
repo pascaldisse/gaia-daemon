@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { appendFile, mkdtemp, readFile } from "node:fs/promises";

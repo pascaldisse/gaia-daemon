@@ -4,7 +4,7 @@
 // guarded writers the agent uses (dup drop, caps, secret filter), plus the
 // cursor/ledger durability and MemoryService's concurrency guard.
 
-import test, { describe } from "node:test";
+import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import type { AgentDef, MemoryConfig } from "../src/core/types.js";
 import { appendEpisode } from "../src/domain/episodes.js";
 import type { Episode } from "../src/domain/episodes.js";
 import { appendFactOp, readFactOpsFrom, replayFacts } from "../src/domain/facts.js";
-import { CORE_MEMORY_FILE, MemoryStore } from "../src/domain/memory.js";
+import { CORE_MEMORY_FILE, memoryFileLimit, MemoryStore } from "../src/domain/memory.js";
 import {
   applyDreamProposal,
   DREAM_PROPOSAL_FILE,
@@ -225,8 +225,8 @@ test("guarded applies: an over-cap memory-edit and a secret-looking fact-add are
   const before = await readFile(join(dir, CORE_MEMORY_FILE), "utf8");
 
   const ops = [
-    // Pushes MEMORY.md far past its 4000-char cap → mutate rejects.
-    { kind: "memory-edit", file: "MEMORY.md", action: "add", content: "x".repeat(4200) },
+    // Exceeds the live cap; derives it so this guard follows the production budget.
+    { kind: "memory-edit", file: CORE_MEMORY_FILE, action: "add", content: "x".repeat(memoryFileLimit(CORE_MEMORY_FILE)) },
     // Secret filter applies to the facts log exactly as to memory files.
     { kind: "fact-add", text: `the api key is sk-${"a".repeat(24)}` },
   ];

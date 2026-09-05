@@ -19,6 +19,12 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").FileHints} FileHints */
 /** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
 /** @typedef {import("./eventchannel.js").EventChannel} EventChannel */
+/** @typedef {import("./types.js").Ev<"ui.widget">} UiWidgetEvent */
+/** @typedef {import("./types.js").Ev<"ui.prompt">} UiPromptEvent */
+/** @typedef {import("./types.js").Ev<"ui.shortcut">} UiShortcutEvent */
+/** @typedef {import("./types.js").Ev<"auth.request">} AuthRequestEvent */
+/** @typedef {import("./types.js").Ev<"ext.lifecycle">} ExtLifecycleEvent */
+/** @typedef {import("./types.js").Ev<"harness.event"> & {agentId?: string, at: number}} HarnessEventEntry */
 
 /**
  * @type {{
@@ -92,6 +98,12 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsError: string,
  *   keepAwake: KeepAwakeCapability,
  *   userName: string,
+ *   uiWidgets: Map<string, UiWidgetEvent>,
+ *   uiPrompts: Map<string, UiPromptEvent>,
+ *   authRequests: Map<string, AuthRequestEvent>,
+ *   uiShortcuts: Map<string, UiShortcutEvent>,
+ *   extLifecycle: Map<string, ExtLifecycleEvent>,
+ *   harnessEvents: HarnessEventEntry[],
  * }}
  */
 export const state = {
@@ -265,7 +277,30 @@ export const state = {
   // "Your name" (Settings ▸ General) — replaces the anonymous "user" token in
   // what agents see of the human's own messages. "" = unset.
   userName: "",
+  // pi ExtensionAPI surface carried headless over AgentEvent (see
+  // core/types/harness.ts): live rows/dialogs/hotkeys/status chips, keyed by
+  // the id the daemon assigned so a reply/fire targets the right one.
+  uiWidgets: new Map(),
+  uiPrompts: new Map(),
+  authRequests: new Map(),
+  uiShortcuts: new Map(),
+  extLifecycle: new Map(),
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated AgentEvent mapping (see core/types/harness.ts harness.event,
+  // src/harness/pi/events.ts forwardPiEvent) — a small ring buffer so the
+  // transcript can render a collapsed debug row per kind without growing
+  // unbounded over a long room's lifetime.
+  harnessEvents: [],
 };
+
+/** Cap on state.harnessEvents — oldest entries drop first (ring buffer). */
+const HARNESS_EVENTS_MAX = 200;
+
+/** @param {import("./types.js").Ev<"harness.event">} payload — already StreamScope-tagged (agentId etc.) by the server's toUiEvent. */
+export function recordHarnessEvent(payload) {
+  state.harnessEvents.push({ .../** @type {any} */ (payload), at: Date.now() });
+  if (state.harnessEvents.length > HARNESS_EVENTS_MAX) state.harnessEvents.splice(0, state.harnessEvents.length - HARNESS_EVENTS_MAX);
+}
 
 /** @param {string} workspaceId @param {string} roomId */
 function readMarkKey(workspaceId, roomId) {

@@ -2,7 +2,7 @@
 // subprocess. One newline-delimited JSON object per line, both directions.
 // The runner is single-flight: at most one active turn per runner.
 
-import type { AgentEvent, CompactProgressUpdate, MessageAttachment } from "../core/types.js";
+import type { AgentEvent, CompactProgressUpdate, MessageAttachment, UiPromptReplyValue } from "../core/types.js";
 import type { AgentInput } from "./spec.js";
 
 /** Service implementations injected into harness tools at runtime. Harnesses
@@ -51,6 +51,8 @@ export type RunnerCommand =
   | { type: "turn"; input: AgentInput }
   | { type: "abort" }
   | { type: "steer"; roomId: string; message: string; attachments?: MessageAttachment[] }
+  | { type: "ui-reply"; roomId: string; id: string; value: UiPromptReplyValue }
+  | { type: "ui-shortcut-fire"; roomId: string; commandId: string }
   | { type: "compact"; roomId: string }
   | { type: "compact-clean"; roomId: string }
   | { type: "compact-draft"; roomId: string }
@@ -73,6 +75,8 @@ export type RunnerMessage =
   | { type: "turn-end" }
   | { type: "turn-error"; message: string }
   | { type: "steer-result"; ok: boolean }
+  | { type: "ui-reply-result"; id: string; ok: boolean }
+  | { type: "ui-shortcut-result"; commandId: string; ok: boolean }
   | ({ type: "compact-progress" } & CompactProgressUpdate)
   // `ok` = the pass ran without error; `compacted` = history was actually
   // evicted into a summary (false for a no-op). The daemon draws the visible
@@ -159,6 +163,10 @@ export function parseRunnerMessage(raw: unknown): RunnerMessage | undefined {
       return { type: "turn-error", message: typeof msg.message === "string" ? msg.message : "turn failed" };
     case "steer-result":
       return { type: "steer-result", ok: msg.ok === true };
+    case "ui-reply-result":
+      return typeof msg.id === "string" ? { type: "ui-reply-result", id: msg.id, ok: msg.ok === true } : undefined;
+    case "ui-shortcut-result":
+      return typeof msg.commandId === "string" ? { type: "ui-shortcut-result", commandId: msg.commandId, ok: msg.ok === true } : undefined;
     case "compact-progress":
       return {
         type: "compact-progress",

@@ -2,7 +2,7 @@
 // naked), fail-closed launches, the Seatbelt profile's write-allowlist /
 // read-denylist posture, and the `gaia __sandbox-exec` confinement entrypoint.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import {
   registerSandbox,

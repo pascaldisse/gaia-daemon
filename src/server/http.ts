@@ -50,6 +50,8 @@ interface SseClient {
   workspaceId?: string;
   roomId?: string;
   response: ServerResponse;
+  humanId?: string;
+  delivery: Promise<void>;
 }
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -468,7 +470,7 @@ export class GaiaWebServer {
     const url = new URL(request.url ?? "/", "http://gaia.local");
     if (url.pathname.startsWith("/api/")) {
       if (url.pathname === LLM_PROXY_MOUNT || url.pathname.startsWith(`${LLM_PROXY_MOUNT}/`)) return this.handleLlmProxy(request, response, url);
-      return handleApi({ request, response, url, daemon: this.daemon, human: requestingHuman(request), humanScope: requestingHuman(request)?.workspace ? requestingHuman(request)?.id : undefined, boundUrl: this.boundUrl, cwd: this.options.cwd, bootId, broadcast: (event) => this.broadcast(event), registerSse: (workspaceId, roomId) => this.registerSse(response, workspaceId, roomId) });
+      return handleApi({ request, response, url, daemon: this.daemon, human: requestingHuman(request), humanScope: requestingHuman(request)?.workspace ? requestingHuman(request)?.id : undefined, boundUrl: this.boundUrl, cwd: this.options.cwd, bootId, broadcast: (event) => this.broadcast(event), registerSse: (workspaceId, roomId) => this.registerSse(response, workspaceId, roomId, requestingHuman(request)?.id) });
     }
     if (url.pathname.startsWith("/v1/")) return this.handleOpenAi(request, response, url);
     await this.serveStatic(response, url.pathname);
@@ -620,8 +622,8 @@ export class GaiaWebServer {
     }
     return path;
   }
-  private registerSse(response: ServerResponse, workspaceId?: string, roomId?: string): void {
-    const client: SseClient = { id: newId("client"), workspaceId, roomId, response };
+  private registerSse(response: ServerResponse, workspaceId?: string, roomId?: string, humanId?: string): void {
+    const client: SseClient = { id: newId("client"), workspaceId, roomId, response, humanId, delivery: Promise.resolve() };
     this.clients.add(client);
     const keepalive = setInterval(() => response.write("event: ping\ndata: {}\n\n"), 15_000);
     response.on("close", () => { clearInterval(keepalive); this.clients.delete(client); });
@@ -640,7 +642,19 @@ export class GaiaWebServer {
         if (client.workspaceId && scoped.workspaceId && client.workspaceId !== scoped.workspaceId) continue;
         if (client.roomId && scoped.roomId && client.roomId !== scoped.roomId) continue;
       }
-      client.response.write(payload);
+      // Recheck durable membership per delivery, including wildcard subscriptions.
+      // Serialize per client: asynchronous authorization must not reorder deltas.
+      client.delivery = client.delivery.then(async () => {
+        if (!this.clients.has(client)) return;
+        if (scoped.workspaceId && scoped.roomId) {
+          const service = await this.daemon.serviceFor(scoped.workspaceId, scoped.roomId);
+          if (!(await service.canAccessRoom(client.humanId))) return;
+        }
+        if (this.clients.has(client)) client.response.write(payload);
+      }).catch((error) => {
+        // Authorization failures are fail-closed; keep later deliveries usable.
+        console.error("[sse] delivery denied:", error);
+      });
     }
   }
 }

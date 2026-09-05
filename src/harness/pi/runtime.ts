@@ -1,8 +1,10 @@
+import { join } from "node:path";
+import { PiCleanCompaction } from "./clean-compact.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, ExtensionRunner, PackageManager } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../../core/attachments.js";
-import { type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type Workspace, } from "../../core/types.js";
+import { type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type UiPromptReplyValue, type Workspace, } from "../../core/types.js";
 import { workspacePaths } from "../../core/paths.js";
 import type { MemoryStore } from "../../domain/memory.js";
 import type { ResolvedRole } from "../../domain/roles.js";
@@ -17,7 +19,12 @@ import { findModelWithAlias } from "../model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../prompt.js";
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
-import { PiCompaction } from "./compaction.js";
+import { createUiBridge } from "./ui-bridge.js";
+import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "./ui-context.js";
+import {
+  loadCleanCompactionOverride,
+  PiCompaction,
+} from "./compaction.js";
 import { hasPersistedPiSession, piRoomSessionDir, readOnlyPiSettings, skillPathsKey, toPiThinking, type PiRuntimeOptions, type PiRuntimeSessionFactory, type PiSessionLike, type PiSessionMeta, } from "./session.js";
 export const PI_CAPABILITIES: HarnessCapabilities = {
   gaiaTools: ["memory", "recall", "artifact", "summon", "resume", "gaia"],
@@ -30,6 +37,7 @@ export const PI_CAPABILITIES: HarnessCapabilities = {
   supportsCompactEdit: true,
   supportsForkAtMessage: true,
   supportsNativeCommands: true,
+  supportsUi: true,
   fanOutTools: [],
 };
 export class PiRuntime implements AgentRuntime {
@@ -45,6 +53,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly contextDiet?: ContextDietAccess;
   private readonly endConversation?: EndConversation;
   private readonly toolProviders?: RuntimeCreateContext["toolProviders"];
+  private readonly extensionsConfig?: RuntimeCreateContext["extensions"];
   private modelRuntime!: ModelRuntime;
   private modelRegistry!: ModelRegistry;
   private readonly modelRuntimeReady: Promise<void>;
@@ -52,6 +61,7 @@ export class PiRuntime implements AgentRuntime {
     meta.session.dispose(),
   );
   private readonly compaction: PiCompaction;
+  private readonly cleanCompaction: PiCleanCompaction;
   private readonly label: ModelLabel;
   private readonly cwd: string;
   private readonly workDir: string;
@@ -67,6 +77,7 @@ export class PiRuntime implements AgentRuntime {
     this.contextDiet = options.contextDiet;
     this.endConversation = options.endConversation;
     this.toolProviders = options.toolProviders;
+    this.extensionsConfig = options.extensions;
     this.cwd = options.workspace.rootDir;
     this.workDir = process.cwd();
     this.compaction = new PiCompaction(
@@ -81,6 +92,25 @@ export class PiRuntime implements AgentRuntime {
         return meta?.session.compact ? meta.session : undefined;
       },
       this.agent.id,
+      options.cleanCompactionIndexPath
+        ? (roomId, agentId) =>
+            loadCleanCompactionOverride(
+              roomId,
+              agentId,
+              options.cleanCompactionIndexPath,
+            )
+        : undefined,
+    );
+    this.cleanCompaction = new PiCleanCompaction(
+      this.sessions,
+      async (roomId) => {
+        if (!hasPersistedPiSession(this.workspace.rootDir, roomId, this.agent.id)) return undefined;
+        return (await this.ensureSession(roomId, undefined)).session;
+      },
+      this.agent.id,
+      options.cleanCompactionIndexPath
+        ? (roomId, agentId) => loadCleanCompactionOverride(roomId, agentId, options.cleanCompactionIndexPath)
+        : undefined,
     );
     this.modelRuntimeReady = ModelRuntime.create().then((runtime) => {
       this.modelRuntime = runtime;
@@ -136,9 +166,67 @@ export class PiRuntime implements AgentRuntime {
       yield info;
     }
     const channel = createEventChannel();
+    // LANE-D: repoint this session's ui bridge at the LIVE turn's stream (see
+    // createSessionMeta's turnEmit doc comment) so ui.*/auth.request/
+    // ext.lifecycle events interleave with everything else this turn yields;
+    // reset to a no-op once the turn settles so a late ui-bridge push after
+    // this channel closes doesn't try to write into a drained stream.
+    meta.turnEmit.current = (event) => channel.push(event);
+    // First turn this session ever streams to a client: NOW there is
+    // somewhere for ui.shortcut/ext.lifecycle to land (see createSessionMeta's
+    // comment on why this can't run any earlier).
+    if (!meta.uiBound && meta.extensionRunner) {
+      meta.uiBound = true;
+      bindPiShortcuts(meta.extensionRunner, meta.uiBridge);
+      bindPiLifecycle(meta.loader, meta.extensionRunner, meta.uiBridge);
+      bindPiCommands(meta.extensionRunner, meta.uiBridge);
+    }
     const unsubscribe = session.subscribe((event) =>
       forwardPiEvent(event, session, channel),
     );
+    // Lane E (chat-mto9n58s-bjr1): the login trigger's whole turn body — see
+    // AgentInput.uiLogin's doc comment for why this must be a turn rather than
+    // a bespoke RPC. ModelRuntime.login's own auth.request/ui.prompt dialog
+    // rides the SAME channel/uiBridge as any other mid-turn dialog; no session
+    // prompt is ever built. `credential` itself is opaque here (accounts.json
+    // storage, if any, is this harness's own concern elsewhere) — only
+    // success/failure matters to the turn's confirmation reply.
+    if (input.uiLogin) {
+      const { providerId, method } = input.uiLogin;
+      Promise.resolve()
+        .then(() => this.modelRuntime.login(providerId, method ?? "oauth", wrapAuthInteraction(meta.uiBridge, providerId)))
+        .then(() => channel.push({ type: "text-delta", delta: `Signed in to ${providerId}.` }))
+        .catch((cause) => channel.fail(cause))
+        .finally(() => {
+          unsubscribe();
+          channel.close();
+          meta.turnEmit.current = () => {};
+        });
+      for await (const event of channel.stream()) yield event;
+      return;
+    }
+    // Lane E (chat-mto9n58s-bjr1): a native-passthrough `/word` that matches a
+    // REAL registered extension command dispatches through the SDK's own
+    // ExtensionRunner (registerCommand's actual invocation point) instead of
+    // being prompted to the model as raw text — the prior gap, see
+    // resolveExtCommand's own doc comment and docs/PLUGIN-ADVERSARY-0905.md §1.
+    const extCommand = input.nativeCommand
+      ? this.resolveExtCommand(meta, input.message)
+      : undefined;
+    if (extCommand && meta.extensionRunner) {
+      const command = meta.extensionRunner.getCommand(extCommand.name)!;
+      const ctx = meta.extensionRunner.createCommandContext();
+      Promise.resolve()
+        .then(() => command.handler(extCommand.args, ctx))
+        .catch((cause) => channel.fail(cause))
+        .finally(() => {
+          unsubscribe();
+          channel.close();
+          meta.turnEmit.current = () => {};
+        });
+      for await (const event of channel.stream()) yield event;
+      return;
+    }
     const prompt = input.nativeCommand
       ? this.nativeCommandPrompt(meta, input.message)
       : await buildTurnPromptFor(
@@ -164,6 +252,7 @@ export class PiRuntime implements AgentRuntime {
       .finally(() => {
         unsubscribe();
         channel.close();
+        meta.turnEmit.current = () => {};
       });
     for await (const event of channel.stream()) yield event;
   }
@@ -175,6 +264,28 @@ export class PiRuntime implements AgentRuntime {
       .getSkills()
       .skills.find(({ name }) => name === match[1]);
     return skill ? `/skill:${skill.name}${match[2]}` : trimmed;
+  }
+  /** Does `message` name a REAL registered extension command on this session
+   * (as opposed to a skill, which nativeCommandPrompt already handles, or
+   * plain content)? A pi package's own `pi.registerCommand("foo", …)` was
+   * previously unreachable from a gaia room: queue.ts's native-passthrough
+   * already flags ANY unclaimed `/word` as a nativeCommand turn for pi
+   * (capabilities.supportsNativeCommands is unconditional), but send() only
+   * ever remapped it to a skill invocation or fed it to the model as raw
+   * prompt text — never dispatched to the extension's own handler (see
+   * docs/PLUGIN-ADVERSARY-0905.md §1's registerCommand finding). */
+  private resolveExtCommand(
+    meta: PiSessionMeta,
+    message: string,
+  ): { name: string; args: string } | undefined {
+    const trimmed = message.trim();
+    const match = /^\/([^\s]+)([\s\S]*)$/.exec(trimmed);
+    if (!match || !meta.extensionRunner) return undefined;
+    const name = match[1];
+    if (name.startsWith("skill:")) return undefined;
+    return meta.extensionRunner.getCommand(name)
+      ? { name, args: match[2].trim() }
+      : undefined;
   }
   dispose(): void {
     this.sessions.disposeAll();
@@ -219,8 +330,27 @@ export class PiRuntime implements AgentRuntime {
     await session.steer(message, images.length ? images : undefined);
     return true;
   }
+  /** Route a client's `ui.reply` back to whichever `ui.prompt`/`auth.request`
+   * this session's ui bridge is holding pending for `id` (see
+   * AgentRuntime.uiReply — host.ts/runner.ts already drive this in from the
+   * daemon; capabilities.supportsUi:true above is what turns that on). */
+  async uiReply(
+    roomId: string,
+    id: string,
+    value: UiPromptReplyValue,
+  ): Promise<boolean> {
+    return this.sessions.get(roomId)?.uiBridge.resolvePrompt(id, value) ?? false;
+  }
+  /** Dispatch a client-fired hotkey `commandId` to the extension's OWN
+   * registered shortcut handler (see AgentRuntime.uiShortcutFire). */
+  async uiShortcutFire(roomId: string, commandId: string): Promise<boolean> {
+    return this.sessions.get(roomId)?.uiBridge.fireShortcut(commandId) ?? false;
+  }
   async compact(roomId: string): Promise<CompactResult> {
     return this.compaction.compact(roomId);
+  }
+  async compactClean(roomId: string): Promise<CompactResult> {
+    return this.cleanCompaction.clean(roomId);
   }
   async compactDraft(
     roomId: string,
@@ -335,7 +465,6 @@ export class PiRuntime implements AgentRuntime {
     skillPaths: string[],
     key: string,
   ): Promise<PiSessionMeta> {
-    const model = this.resolveModel();
     const roomDir = workspacePaths.roomDir(this.workspace.rootDir, roomId);
     const customTools = await buildPiTools(this.agent.tools, {
       memoryStore: this.memoryStore,
@@ -354,13 +483,44 @@ export class PiRuntime implements AgentRuntime {
       toolProviders: this.toolProviders,
     });
     const systemPromptRef = { current: systemPrompt };
+    // Extension discovery (data on HarnessSpec.extensions, threaded uniformly
+    // by runner.ts — RULE #0, no harness-id branch here). `additionalExtensionPaths`
+    // load unconditionally regardless of noExtensions (DefaultResourceLoader
+    // loads them as "cliEnabledExtensions" ahead of the noExtensions gate — see
+    // resource-loader.js reload()/loadCurrentExtensionSet), so the workspace's
+    // own .pi/extensions is added explicitly here rather than relying on
+    // packageManager.resolve()'s project-trust-gated auto-discovery (which
+    // would otherwise need an interactive trust prompt this headless runner
+    // can never answer).
+    const discover = this.extensionsConfig?.discover ?? false;
     const loader = new DefaultResourceLoader({
       cwd: this.workDir,
       agentDir: getAgentDir(),
       additionalSkillPaths: skillPaths,
-      noExtensions: true,
+      noExtensions: !discover,
+      ...(discover
+        ? {
+            additionalExtensionPaths: [
+              ...(this.extensionsConfig?.additionalPaths ?? []),
+              join(this.workDir, ".pi", "extensions"),
+            ],
+          }
+        : {}),
+      // Loaded regardless of noExtensions/discover (disk-discovered extensions
+      // stay off when discover is false) — see compaction.extension() above.
+      // Uses the CONFIGURED model provider/name strings, never the resolved
+      // Model object, so constructing this factory never needs the model
+      // registry populated yet (see the resolveModel() ordering fix below).
       extensionFactories: [
-        this.compaction.extension(roomId, model?.provider, model?.name),
+        this.cleanCompaction.guardOrdinaryExtension(
+          roomId,
+          this.compaction.extension(
+            roomId,
+            this.agent.model?.provider,
+            this.agent.model?.name,
+          ),
+        ),
+        { name: "clean-compact", factory: this.cleanCompaction.extension(roomId) },
       ],
       noSkills: true,
       noThemes: true,
@@ -372,7 +532,65 @@ export class PiRuntime implements AgentRuntime {
           }
         : { appendSystemPromptOverride: () => [systemPromptRef.current] }),
     });
-    if (!this.sessionFactory) await loader.reload();
+    // Scoped, per-loader-instance — NOT process.env.PI_OFFLINE (rejected,
+    // Pascal 09-05: that flag is read process-wide by core/model-runtime.js:71
+    // (kills remote model-catalog refresh for EVERY lane sharing this daemon
+    // process, not just this one), utils/tools-manager.js, utils/version-check.js
+    // — a global env mutation for a per-lane concern, forbidden). Every
+    // `loader.reload()` call — regardless of `discover`/noExtensions — runs
+    // `packageManager.resolve()` UNCONDITIONALLY (resource-loader.js reload():
+    // resolve() happens before noExtensions is ever consulted; noExtensions
+    // only filters which of the RESOLVED extension paths get merged
+    // afterward). `resolve()` reads settings.json "packages" for ALL FOUR
+    // resource kinds (extensions/skills/prompts/themes) and, given no
+    // `onMissing` callback, auto-INSTALLS any not-yet-present source over the
+    // network (package-manager.js resolvePackageSources -> installMissing()).
+    // DefaultResourceLoader.reload() never forwards an onMissing callback to
+    // PackageManager.resolve() itself (verified: zero occurrences of
+    // "onMissing" in resource-loader.js/.d.ts — ResourceLoaderReloadOptions
+    // only exposes resolveProjectTrust), and DefaultResourceLoaderOptions has
+    // no constructor hook to inject a custom PackageManager either. The
+    // `packageManager` field is TS-private only (resource-loader.d.ts) — a
+    // plain, real, JS-public property at runtime — so this reaches THIS
+    // loader's own already-constructed instance and wraps only ITS resolve(),
+    // never anything global or shared with another lane's loader.
+    {
+      const packageManager = (
+        loader as unknown as { packageManager: PackageManager }
+      ).packageManager;
+      const originalResolve = packageManager.resolve.bind(packageManager);
+      packageManager.resolve = (onMissing) =>
+        originalResolve(
+          onMissing ??
+            (async () =>
+              this.extensionsConfig?.installMissing ? "install" : "skip"),
+        );
+    }
+    if (!this.sessionFactory) {
+      await loader.reload();
+      // Extensions discovered above may register model providers
+      // (pi.registerProvider/registerNativeProvider) during load — flush them
+      // into the modelRegistry resolveModel() below reads, and refresh so the
+      // new provider's models are visible, BEFORE resolving the configured
+      // model. Mirrors pi's own AgentSession.bindCore() ordering (flushes
+      // pendingProviderRegistrations the same way before the runner is bound).
+      // Gated behind `discover`: when it's false noExtensions is true and
+      // these queues are always empty anyway.
+      if (discover) {
+        const extensionRuntime = loader.getExtensions().runtime;
+        for (const { name, config } of extensionRuntime.pendingProviderRegistrations)
+          this.modelRegistry.registerProvider(name, config);
+        extensionRuntime.pendingProviderRegistrations = [];
+        for (const { provider } of extensionRuntime.pendingNativeProviderRegistrations)
+          this.modelRegistry.registerProvider(provider);
+        extensionRuntime.pendingNativeProviderRegistrations = [];
+        await this.modelRegistry.refresh();
+      }
+    }
+    // Resolved AFTER extension providers are flushed above — an extension can
+    // register the very provider agent.json configures (see ordering comment
+    // above); resolving earlier throws before it gets the chance.
+    const model = this.resolveModel();
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
       ? await this.sessionFactory({
@@ -404,13 +622,38 @@ export class PiRuntime implements AgentRuntime {
           settingsManager: readOnlyPiSettings(this.workDir),
         });
     if (modelFallbackMessage) console.warn(modelFallbackMessage);
+    // LANE-D: ui bridge — bound once per session (pending prompts/shortcuts
+    // must survive across turns — a ui.reply can land after the turn that
+    // raised it ended, e.g. mid-steer). `turnEmit` is a mutable pointer
+    // send() repoints to the CURRENT turn's EventChannel.push every turn (see
+    // send() below) so ui.* events interleave in the exact stream listening
+    // for them; between turns it's a no-op — nothing pushes a mid-session
+    // ui.widget/lifecycle event without an active turn anyway (see
+    // ui-context.ts's own doc comments for the full method-by-method table).
+    const typedSession = session as PiSessionLike;
+    const turnEmit: { current: (event: AgentEvent) => void } = { current: () => {} };
+    const uiBridge = createUiBridge((event) => turnEmit.current(event));
+    // bindExtensions() itself must run NOW (session creation) — an extension's
+    // own session_start handler can call ctx.ui.* synchronously inside it, and
+    // that needs the real uiContext already wired. What canNOT run yet is
+    // bindPiShortcuts/bindPiLifecycle's EMIT side: turnEmit.current is still
+    // this construction-time no-op (send() hasn't created a channel yet), so
+    // those are deferred to send()'s first turn (meta.uiBound below) instead.
+    let extensionRunner: ExtensionRunner | undefined;
+    if (typedSession.bindExtensions) {
+      await typedSession.bindExtensions({ uiContext: buildPiUiContext(uiBridge) });
+      extensionRunner = typedSession.extensionRunner as ExtensionRunner | undefined;
+    }
     const meta: PiSessionMeta = {
-      session: session as PiSessionLike,
+      session: typedSession,
       loader,
       systemPromptRef,
       skillPathsKey: key,
+      uiBridge,
+      turnEmit,
+      ...(extensionRunner ? { extensionRunner } : {}),
     };
-    const baseThinking = (session as PiSessionLike).thinkingLevel;
+    const baseThinking = typedSession.thinkingLevel;
     if (baseThinking !== undefined) meta.baseThinking = baseThinking;
     return meta;
   }

@@ -6,7 +6,7 @@
 // Features: / command preview + @ agent preview (↑/↓/Tab/Enter/Esc), thinking
 // control (◌ #level: click toggles off, right-click menu), queueing while
 // busy, panic stop, and bare-key routing (typing anywhere lands here).
-import { editMessage, selectRoom, sendMessage, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
+import { editMessage, fireUiShortcut, selectRoom, sendMessage, sendUiReply, stopActiveRoom, stopAll, uploadAttachment } from "./actions.js";
 import { agentGlyph, KIND, UI } from "./glyphs.js";
 import { api } from "./api.js";
 import { attachmentUrl } from "./attachments.js";
@@ -124,6 +124,10 @@ function draftStatus() {
 let restoredRoomKey = null;
 /** @type {Snapshot|null} */
 let restoredSnapshot = null;
+/** pi ExtensionAPI ui.prompt banner (see core/types/harness.ts) — confirm/
+ * select/input/audio dialogs awaiting a ui.reply. Persistent node, contents
+ * rebuilt in renderComposer(). @type {HTMLElement|null} */
+let uiPromptBannerEl = null;
 
 export function initComposer() {
   const form = $("#composer");
@@ -204,6 +208,7 @@ export function initComposer() {
     text: `${UI.watchdog} UltraWhip`,
   });
 
+  uiPromptBannerEl = h("div", { class: "ui-prompt-banner", hidden: true });
   form.replaceChildren(
     autocompleteEl,
     // The read-aloud mini player (play/pause + seekable timeline). Built once and
@@ -212,6 +217,7 @@ export function initComposer() {
     buildAudioPlayer(),
     bannerEl,
     editBannerEl,
+    uiPromptBannerEl,
     attachmentsEl,
     dictationStatusEl,
     h(
@@ -250,11 +256,13 @@ function renderComposer() {
     !micLevelEl ||
     !retranscribeEl ||
     !draftStatusEl ||
-    !ultrawhipWrapEl
+    !ultrawhipWrapEl ||
+    !uiPromptBannerEl
   )
     return;
   const snapshot = state.snapshot;
   const busy = isBusy(snapshot);
+  renderUiPromptBanner();
 
   const currentDraftKey = draftKey();
   const roomChanged = currentDraftKey !== restoredRoomKey;
@@ -392,6 +400,96 @@ function renderComposer() {
   micLevelEl.hidden = !state.dictating;
   micLevelEl.style.setProperty("--level", String(Math.max(0, Math.min(1, state.dictationLevel))));
   voiceWrapEl.replaceChildren(...VoiceButtons());
+}
+
+/** Answer a pending ui.prompt and drop it locally (fire-and-forget — a failed
+ * POST leaves the banner up so the user can retry, sendUiReply already
+ * surfaces the error via setError).
+ * @param {string} agentId @param {string} id @param {import("../../src/core/types.js").UiPromptReplyValue} value */
+function submitUiPromptReply(agentId, id, value) {
+  void sendUiReply(agentId, id, value).then((ok) => {
+    if (ok) {
+      state.uiPrompts.delete(id);
+      markDirty("composer");
+    }
+  });
+}
+
+/** pi ExtensionAPI ui.prompt banner (ctx.ui.input/select/confirm carried
+ * headless over AgentEvent — see core/types/harness.ts). One prompt shown at a
+ * time (the oldest pending); confirm/select answer immediately, input/audio
+ * need a submit. The audio field reuses the composer's OWN dictation pipeline
+ * (toggleDictation → state.composerText) — no second recorder — "use this
+ * recording" lifts the transcribed text out of the main composer box into the
+ * reply instead of sending it as a room message. */
+function renderUiPromptBanner() {
+  if (!uiPromptBannerEl) return;
+  const prompt = state.uiPrompts.values().next().value;
+  if (!prompt) {
+    uiPromptBannerEl.hidden = true;
+    uiPromptBannerEl.replaceChildren();
+    return;
+  }
+  uiPromptBannerEl.hidden = false;
+  const audioField = prompt.fields?.find((field) => field.kind === "audio");
+  /** @type {HTMLElement[]} */
+  const controls = [];
+  if (prompt.kind === "confirm") {
+    controls.push(
+      h("button", { type: "button", class: "stop-btn", text: "yes", onclick: () => submitUiPromptReply(prompt.agentId, prompt.id, true) }),
+      h("button", { type: "button", class: "stop-btn", text: "no", onclick: () => submitUiPromptReply(prompt.agentId, prompt.id, false) }),
+    );
+  } else if (prompt.kind === "select" && !audioField) {
+    const options = prompt.fields?.find((field) => field.kind === "select")?.options ?? [];
+    for (const option of options) {
+      controls.push(h("button", { type: "button", class: "stop-btn", text: option, onclick: () => submitUiPromptReply(prompt.agentId, prompt.id, option) }));
+    }
+  } else if (audioField) {
+    const canUseRecording = !state.dictating && !state.dictationBusy && state.composerText.trim().length > 0;
+    controls.push(
+      h("button", {
+        type: "button",
+        class: "stop-btn",
+        text: state.dictating ? `${UI.stop} stop recording` : `${UI.send} record`,
+        onclick: () => void toggleDictation(),
+      }),
+      h("button", {
+        type: "button",
+        class: "stop-btn",
+        text: "use this recording",
+        ...(canUseRecording ? {} : { disabled: true }),
+        onclick: () => {
+          const text = state.composerText.trim();
+          if (!text) return;
+          state.composerText = "";
+          if (textarea) textarea.value = "";
+          submitUiPromptReply(prompt.agentId, prompt.id, prompt.fields && prompt.fields.length > 1 ? { [audioField.name]: text } : text);
+        },
+      }),
+    );
+  } else {
+    controls.push(
+      h("button", {
+        type: "button",
+        class: "stop-btn",
+        text: "use composer text as reply",
+        onclick: () => {
+          const text = state.composerText.trim();
+          if (!text) return;
+          state.composerText = "";
+          if (textarea) textarea.value = "";
+          submitUiPromptReply(prompt.agentId, prompt.id, text);
+        },
+      }),
+    );
+  }
+  controls.push(
+    h("button", { type: "button", class: "stop-btn", text: "dismiss", onclick: () => { state.uiPrompts.delete(prompt.id); markDirty("composer"); } }),
+  );
+  uiPromptBannerEl.replaceChildren(
+    h("span", { class: "running-label", text: `@${prompt.agentId} — ${prompt.title}${prompt.message ? `: ${prompt.message}` : ""}` }),
+    ...controls,
+  );
 }
 
 registerRegion("composer", renderComposer);
@@ -1217,6 +1315,29 @@ function shouldRouteKeyToComposer(event) {
   return ["Enter", "Backspace", "Delete"].includes(event.key);
 }
 
+/** Match a KeyboardEvent against a pi KeyId string ("ctrl+k", "meta+shift+enter",
+ * bare "k"/"escape"/...) — see node_modules/@earendil-works/pi-tui keys.d.ts.
+ * `super` maps to Cmd on macOS / the Meta key elsewhere (pi's own convention).
+ * @param {KeyboardEvent} event @param {string} keyId @returns {boolean} */
+function matchesUiShortcutKey(event, keyId) {
+  const parts = keyId.toLowerCase().split("+");
+  const base = parts[parts.length - 1];
+  const modifiers = new Set(parts.slice(0, -1));
+  const SPECIAL = /** @type {Record<string, string>} */ ({
+    escape: "Escape", esc: "Escape", enter: "Enter", return: "Enter", tab: "Tab", space: " ",
+    backspace: "Backspace", delete: "Delete", insert: "Insert", home: "Home", end: "End",
+    pageup: "PageUp", pagedown: "PageDown", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
+  });
+  const expectedKey = SPECIAL[base] ?? base;
+  const eventKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (eventKey !== expectedKey && event.key.toLowerCase() !== base) return false;
+  if (modifiers.has("ctrl") !== event.ctrlKey) return false;
+  if (modifiers.has("shift") !== event.shiftKey) return false;
+  if (modifiers.has("alt") !== event.altKey) return false;
+  if (modifiers.has("super") !== event.metaKey) return false;
+  return true;
+}
+
 export function installComposerRouting() {
   // Paste-anywhere: files pasted while no input is focused land in the
   // composer, exactly like bare typing does. Text pastes into the composer's
@@ -1245,6 +1366,19 @@ export function installComposerRouting() {
   window.addEventListener(
     "keydown",
     (event) => {
+      // pi ExtensionAPI registerShortcut mirror (see core/types/harness.ts's
+      // ui.shortcut) — checked FIRST (extensions bind arbitrary chords, they
+      // must not lose to a built-in that happens to reuse the same one; a
+      // colliding built-in below simply never fires while the extension owns
+      // the key, same as pi's own shortcut precedence).
+      if (state.uiShortcuts.size > 0 && !isEditableElement(event.target)) {
+        for (const shortcut of state.uiShortcuts.values()) {
+          if (!matchesUiShortcutKey(event, shortcut.key)) continue;
+          event.preventDefault();
+          void fireUiShortcut(shortcut.agentId, shortcut.commandId);
+          return;
+        }
+      }
       // Esc while dictating cancels the recording (before panic-stop, which
       // targets running turns — a recording isn't one).
       if (event.key === "Escape" && state.dictating) {

@@ -100,6 +100,11 @@ export async function runAgentRunner(): Promise<void> {
   // The daemon already resolved the harness (agent > workspace > default) and
   // passed it down; fall back to recomputing if the env is somehow absent.
   const harness = env(RUNNER_ENV.harness) ?? harnessIdFor(agent, workspace);
+  // Extension discovery is data on the harness's own spec (HarnessSpec.extensions)
+  // — resolved ONCE here, uniformly for every harness, and threaded into the
+  // runtime via RuntimeCreateContext.extensions. Shared code never branches on
+  // harness id (RULE #0); only pi's spec sets a truthy value today.
+  const extensionsConfig = harnessSpecFor(harness).extensions;
   const createRuntime = (runtimeAgent: typeof agent): AgentRuntime =>
     harnessSpecFor(harness).create({
       workspace,
@@ -113,6 +118,7 @@ export async function runAgentRunner(): Promise<void> {
       contextDiet,
       endConversation,
       toolProviders,
+      extensions: extensionsConfig,
     });
   let runtime = createRuntime(agent);
   let runtimeKey = JSON.stringify({ tools: agent.tools, skills: agent.skills ?? [] });
@@ -177,6 +183,16 @@ export async function runAgentRunner(): Promise<void> {
         void (runtime.steer?.(command.roomId, command.message, command.attachments) ?? Promise.resolve(false))
           .catch(() => false)
           .then((ok) => send({ type: "steer-result", ok }));
+        return;
+      case "ui-reply":
+        void (runtime.uiReply?.(command.roomId, command.id, command.value) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((ok) => send({ type: "ui-reply-result", id: command.id, ok }));
+        return;
+      case "ui-shortcut-fire":
+        void (runtime.uiShortcutFire?.(command.roomId, command.commandId) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((ok) => send({ type: "ui-shortcut-result", commandId: command.commandId, ok }));
         return;
       case "compact":
         void (

@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
+import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomAutoCompactState, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
 import { normalizePetBindings } from "./pets.js";
 import { appendJsonl, appendJsonlBatchDurable, appendJsonlDurable, ensureDir, readJson, readJsonlFrom, readText, writeJsonAtomic, writeTextAtomic, writeTextIfMissing } from "../core/store.js";
 import { workspacePaths } from "../core/paths.js";
@@ -31,6 +31,11 @@ import { withSqliteImmediateLock } from "../core/sqlite.js";
  * produces, so a rewrite never changes the format. */
 function serializeEvents(events: RoomEvent[]): string {
   return events.length ? events.map((event) => JSON.stringify(event)).join("\n") + "\n" : "";
+}
+
+/** Absent allowlist → legacy open room; configured allowlist → members only. */
+export function roomAllowsHuman(state: Pick<RoomState, "humans">, humanId?: string): boolean {
+  return state.humans === undefined || state.humans.includes(humanId ?? "");
 }
 
 export function newRoomEventId(): string {
@@ -141,6 +146,15 @@ function cursorRecord(value: unknown): Record<string, number> {
 /** Per-agent context accounting persisted in state.json. A malformed entry is
  * dropped (never bricks the room); an entry needs a finite usedTokens, and a
  * finite positive maxTokens is carried when present. */
+function autoCompactFrom(value: unknown): RoomAutoCompactState | undefined {
+if (!isRecord(value)) return undefined;
+const thresholdPct = value.thresholdPct === null ? null : typeof value.thresholdPct === "number" && Number.isFinite(value.thresholdPct) && value.thresholdPct >= 0 && value.thresholdPct <= 100 ? value.thresholdPct : undefined;
+const cooldownTurns = typeof value.cooldownTurns === "number" && Number.isInteger(value.cooldownTurns) && value.cooldownTurns >= 0 ? value.cooldownTurns : undefined;
+const numberRecord = (raw: unknown): Record<string, number> | undefined => !isRecord(raw) ? undefined : (() => { const entries = Object.entries(raw).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0).map(([key, number]) => [key, Math.floor(number)] as const); return entries.length ? Object.fromEntries(entries) : undefined; })();
+const pending = numberRecord(value.pending);
+const cooldowns = numberRecord(value.cooldowns);
+return thresholdPct === undefined && cooldownTurns === undefined && !pending && !cooldowns ? undefined : { ...(thresholdPct === undefined ? {} : { thresholdPct }), ...(cooldownTurns === undefined ? {} : { cooldownTurns }), ...(pending ? { pending } : {}), ...(cooldowns ? { cooldowns } : {}) };
+}
 function contextUsageFrom(value: unknown): Record<string, { usedTokens: number; maxTokens?: number }> | undefined {
   if (!isRecord(value)) return undefined;
   const out: Record<string, { usedTokens: number; maxTokens?: number }> = {};
@@ -453,6 +467,7 @@ export function normalizeRoomState(value: unknown): RoomState {
   const pendingTurn = pendingTurnFrom(value.pendingTurn);
   const queue = queueFrom(value.queue);
   const contextUsage = contextUsageFrom(value.contextUsage);
+const autoCompact = autoCompactFrom(value.autoCompact);
   const backgroundTasks = backgroundTasksFrom(value.backgroundTasks);
   const contextGate = contextGateFrom(value.contextGate);
   const contextFloors = cursorRecord(value.contextFloors);
@@ -484,13 +499,14 @@ export function normalizeRoomState(value: unknown): RoomState {
     ...(pendingTurn ? { pendingTurn } : {}),
     ...(queue ? { queue } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+...(autoCompact ? { autoCompact } : {}),
     ...(backgroundTasks ? { backgroundTasks } : {}),
     ...(contextGate ? { contextGate } : {}),
     ...(value.thanksDario === true ? { thanksDario: true } : {}),
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
     ...(value.incognito === true ? { incognito: true } : {}),
-    ...(stringArray(value.humans).length > 0 ? { humans: stringArray(value.humans) } : {}),
+    ...(Array.isArray(value.humans) ? { humans: stringArray(value.humans) } : {}),
   };
 }
 
@@ -648,6 +664,15 @@ export class RoomHandle {
     return handle;
   }
 
+  /** Read-only authorization: selecting a new room must not consume its seed. */
+  static async canAccess(workspaceRoot: string, roomId: string, humanId?: string): Promise<boolean> {
+    const state = await readRoomState(workspacePaths.roomState(workspaceRoot, roomId)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    return roomAllowsHuman(normalizeRoomState(state), humanId);
+  }
+
   get transcriptPath(): string {
     return workspacePaths.transcript(this.workspaceRoot, this.roomId);
   }
@@ -674,6 +699,28 @@ export class RoomHandle {
     const next = shared.chain.then(run, run);
     shared.chain = next.catch(() => {});
     return next;
+  }
+
+  /** First membership configuration retains prior authenticated participants.
+   * Transcript scan + allowlist write share the room lock: no concurrent post
+   * or invite can disappear between the two observations. */
+  async inviteHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      return this.updateStateLocked((state) => {
+        if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+        const prior = state.humans ?? events.flatMap((event) =>
+          event.author === "user" && "humanId" in event && event.humanId ? [event.humanId] : []);
+        state.humans = [...new Set([...prior, ...(requesterId ? [requesterId] : []), userId])];
+      });
+    });
+  }
+
+  async removeHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.updateState((state) => {
+      if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+      if (state.humans !== undefined) state.humans = state.humans.filter((id) => id !== userId);
+    });
   }
 
   async state(): Promise<RoomState> {

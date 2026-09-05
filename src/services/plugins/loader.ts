@@ -46,6 +46,23 @@ export async function importPluginModule(plugin: ValidatedPluginManifest): Promi
   }
 }
 
+// Doctrine ruling (Pascal 09-05, docs/PLUGIN-ADVERSARY-0905.md axis 7+1): pi
+// package is THE plugin format; this gaia manifest format is deprecated for
+// command/tool/provider contributions (channel-bridge stays first-class, no
+// pi analogue — see contracts.ts). One-line warning per load, never fatal:
+// existing manifest plugins keep working until "gaia plugin migrate" moves
+// them and the kinds are removed (docs/PLUGIN-FORMAT.md timeline).
+function warnDeprecatedContributionKinds(plugin: ValidatedPluginManifest): void {
+  const deprecated: string[] = [];
+  if (plugin.manifest.contributes.commands.length > 0) deprecated.push("commands");
+  if (plugin.manifest.contributes.tools.length > 0) deprecated.push("tools");
+  if (plugin.manifest.contributes.providers.length > 0) deprecated.push("providers");
+  if (deprecated.length === 0) return;
+  console.warn(
+    `[plugins] ${plugin.manifest.id}: ${deprecated.join("/")} contribution${deprecated.length > 1 ? "s" : ""} use the DEPRECATED gaia manifest format — migrate to a pi package (\`gaia plugin migrate ${plugin.packageRoot}\`). See docs/PLUGIN-FORMAT.md.`,
+  );
+}
+
 export interface PluginDiscoveryPaths {
   commandPluginsDir(): string;
 }
@@ -86,6 +103,7 @@ export async function loadPlugins<T>(
   const current = await Promise.all(selected.map((plugin) => revalidatePluginManifest(plugin)));
   const loaded: LoadedPlugin<T | undefined>[] = [];
   for (const plugin of current) {
+    warnDeprecatedContributionKinds(plugin);
     loaded.push(Object.freeze({
       manifest: plugin,
       module: reuse?.(plugin) ? undefined : await importer(plugin.entrypointPath, plugin),

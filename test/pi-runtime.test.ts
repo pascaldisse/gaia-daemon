@@ -1,15 +1,37 @@
 // v2 port of test/pi-runtime.test.ts — every v1 scenario, driven through the
 // injectable sessionFactory against the REAL MemoryStore + prompt assembly.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { PackageManager } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "../src/domain/memory.js";
 import { findHarness, type SummonCreate } from "../src/harness/spec.js";
-import { mechanicalCompactionFallback, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
+import { mechanicalCompactionFallback, newestContentEntryId, PiRuntime, piRoomSessionDir, type PiRuntimeSessionFactory, type PiSessionLike } from "../src/harness/pi.js";
 import { collect, harnessFixture } from "./helpers/fixture.js";
 import { createTempDir } from "./helpers/temp.js";
+import type { AgentEvent } from "../src/core/types.js";
+import { createUiBridge } from "../src/harness/pi/ui-bridge.js";
+import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "../src/harness/pi/ui-context.js";
+import { forwardPiEvent } from "../src/harness/pi/events.js";
+
+// LANE D (chat-mto9n58s-bjr1): pi ExtensionUIContext -> ui-bridge -> AgentEvent,
+// exercised against the REAL SDK (createAgentSession + a real extension file
+// loaded through DefaultResourceLoader) -- no mocks of pi. See
+// test/fixtures/pi-ext/ui-calls.ts for the extension under test and
+// src/harness/pi/ui-context.ts for the adapter.
+const PI_UI_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "ui-calls.ts");
+
+// LANE A (chat-mto9n58s-bjr1): pi extensions load natively in gaia lanes —
+// HarnessSpec.extensions (data) threaded uniformly by runner.ts into
+// RuntimeCreateContext.extensions, read by PiRuntime.createSessionMeta.
+const PI_EXT_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "register-tool.ts");
+
+// LANE E (chat-mto9n58s-bjr1): pi registerCommand reachability fixture — see
+// test/fixtures/pi-ext/register-command.ts and ui-context.ts's bindPiCommands.
+const PI_COMMAND_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "register-command.ts");
 
 class FakeSession implements PiSessionLike {
   readonly sessionId: string;
@@ -507,6 +529,159 @@ test("PiRuntime.compact surfaces the SDK's summary for durable compaction", asyn
     // The SDK summary rides back on CompactResult so the daemon persists it
     // (durable compaction) — pi's session.compact() always returns one.
     assert.equal(result.summary, "the story so far");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compactClean uses only an explicitly registered summary and leaves ordinary compact untouched", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries", "index.json");
+    await mkdir(join(fx.temp.path, "clean-summaries"), { recursive: true });
+    await writeFile(
+      indexPath,
+      JSON.stringify({ default: { agents: { gaia: "REGISTERED-CLEAN-SUMMARY" } } }),
+      "utf8",
+    );
+    let cleanFloor: string | undefined;
+    let keepRecent = 20_000;
+    const keepRecentHistory: number[] = [];
+    const factory: PiRuntimeSessionFactory = async ({ loader }) => {
+      await loader.reload();
+      const session = new FakeSession("s1");
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          const next = overrides.compaction?.keepRecentTokens;
+          if (next !== undefined) {
+            keepRecent = next;
+            keepRecentHistory.push(next);
+          }
+        },
+      };
+      assert.ok(loader.getExtensions().extensions.some(e => e.path === "<inline:clean-compact>"));
+      const hooks = loader.getExtensions().extensions.flatMap(e => e.handlers.get("session_before_compact") ?? []);
+      const hook = async (event: any, ctx: any) => {
+        for (const handler of hooks) { const result = await handler(event, ctx); if (result) return result; }
+      };
+      const preparation = {
+        firstKeptEntryId: "pi-cut",
+        tokensBefore: 9_000,
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        retainedTail: [],
+        fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+      };
+      session.compact = async () => {
+        const result = await hook(
+          { preparation },
+          {
+            model: undefined,
+            modelRegistry: {},
+            sessionManager: {
+              getEntries: () => [
+                { id: "user-1", type: "message", message: { role: "user" } },
+                { id: "assistant-final", type: "message", message: { role: "assistant" } },
+                { id: "tool-tail", type: "tool_result", message: { role: "tool" } },
+                { id: "meta-tail", type: "model_change" },
+              ],
+            },
+          },
+        );
+        if (result?.compaction) {
+          cleanFloor = result.compaction.firstKeptEntryId;
+          return { summary: result.compaction.summary, tokensBefore: preparation.tokensBefore };
+        }
+        return { summary: "ORDINARY-SDK-SUMMARY", tokensBefore: preparation.tokensBefore };
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      cleanCompactionIndexPath: indexPath,
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const clean = await runtime.compactClean("default");
+    assert.equal(clean.compacted, true);
+    assert.equal(clean.summary, "REGISTERED-CLEAN-SUMMARY");
+    assert.equal(cleanFloor, "assistant-final", "clean floor uses 30de282 newest-content semantics");
+    assert.deepEqual(keepRecentHistory, [0, 20_000], "clean pass alone forces a zero tail then restores settings");
+
+    const ordinary = await runtime.compact("default");
+    assert.equal(ordinary.summary, "ORDINARY-SDK-SUMMARY", "registered clean summary never intercepts ordinary /compact");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compactClean is a true no-op when the room has no explicit registration", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries.json");
+    await writeFile(indexPath, "{}", "utf8");
+    let factoryCalls = 0;
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      cleanCompactionIndexPath: indexPath,
+      sessionFactory: async () => {
+        factoryCalls += 1;
+        return { session: new FakeSession("unexpected") };
+      },
+    });
+
+    assert.deepEqual(await runtime.compactClean("default"), {
+      compacted: false,
+      message: "nothing to compact — no clean summary registered for this room and agent.",
+    });
+    assert.equal(factoryCalls, 0, "an unregistered clean request neither creates nor compacts a session");
+    runtime.dispose();
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.compactClean reports an already-minimal registered session as completed", async () => {
+  const fx = await harnessFixture();
+  try {
+    const indexPath = join(fx.temp.path, "clean-summaries.json");
+    await writeFile(indexPath, JSON.stringify({ default: { default: "CLEAN-NOOP-SUMMARY" } }), "utf8");
+    const factory: PiRuntimeSessionFactory = async () => {
+      const session = new FakeSession("s1");
+      let keepRecent = 20_000;
+      session.settingsManager = {
+        getCompactionKeepRecentTokens: () => keepRecent,
+        applyOverrides: (overrides) => {
+          if (overrides.compaction?.keepRecentTokens !== undefined) keepRecent = overrides.compaction.keepRecentTokens;
+        },
+      };
+      session.compact = async () => {
+        throw new Error("Session already compacted");
+      };
+      return { session };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      cleanCompactionIndexPath: indexPath,
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.deepEqual(await runtime.compactClean("default"), {
+      compacted: true,
+      message: "clean compaction: pi session already minimal; advanced room floor+cursor.",
+      summary: "CLEAN-NOOP-SUMMARY",
+    });
     runtime.dispose();
   } finally {
     await fx.cleanup();
@@ -1074,6 +1249,40 @@ test("PiRuntime with NO configured model still passes undefined through to the p
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// /dsc-compact floor selection — a single oversized prompt entry can itself be
+// Pi's calculated cut point. The clean summary must instead retain only the
+// newest content-bearing entry, skipping tool and session metadata entries.
+// ---------------------------------------------------------------------------
+
+test("newestContentEntryId skips trailing tool and metadata entries", () => {
+  assert.equal(
+    newestContentEntryId(
+      [
+        { id: "user-1", type: "message", message: { role: "user" } },
+        { id: "assistant-1", type: "message", message: { role: "assistant" } },
+        { id: "tool-1", type: "tool_result", message: { role: "tool" } },
+        { id: "meta-1", type: "model_change" },
+      ],
+      "pi-cut",
+    ),
+    "assistant-1",
+  );
+});
+
+test("newestContentEntryId falls back to Pi's cut when no content entry exists", () => {
+  assert.equal(
+    newestContentEntryId(
+      [
+        { id: "tool-1", type: "tool_result" },
+        { id: "meta-1", type: "compaction" },
+      ],
+      "pi-cut",
+    ),
+    "pi-cut",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // mechanicalCompactionFallback — 08-25 fix: when the room's own model IS the
 // compact-fallback model (Solas compacting Solas), a failed LLM summarize
 // has no diversity left to retry with (see compactionFallbackExtension's
@@ -1149,4 +1358,655 @@ test("hasDurableSession: true iff the room's pi session dir holds a session file
   } finally {
     await temp.cleanup();
   }
+});
+
+// --- LANE A: extension discovery is data on HarnessSpec.extensions --------
+
+test("forwardPiEvent: a pi ExtensionEvent kind with no dedicated case (e.g. turn_start) surfaces as harness.event instead of being silently dropped (Lane E, docs/PLUGIN-ADVERSARY-0905.md §top-fix-3)", () => {
+  const events: AgentEvent[] = [];
+  const channel = { push: (e: AgentEvent) => events.push(e), fail: () => {} };
+  const fakeSession = { getContextUsage: () => undefined } as unknown as PiSessionLike;
+
+  forwardPiEvent({ type: "turn_start", turnId: "t1" }, fakeSession, channel);
+  forwardPiEvent({ type: "message_update", assistantMessageEvent: { type: "tool_call_delta", delta: "x" } }, fakeSession, channel);
+  // A KNOWN kind must still take its dedicated mapping, never a harness.event duplicate.
+  forwardPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } }, fakeSession, channel);
+
+  assert.deepEqual(events, [
+    { type: "harness.event", kind: "turn_start", payload: { type: "turn_start", turnId: "t1" } },
+    { type: "harness.event", kind: "message_update", payload: { type: "message_update", assistantMessageEvent: { type: "tool_call_delta", delta: "x" } } },
+    { type: "text-delta", delta: "hi" },
+  ]);
+});
+
+test("forwardPiEvent's harness.event payload caps depth/size instead of ever throwing on a cyclic or huge internal SDK event", () => {
+  const events: AgentEvent[] = [];
+  const channel = { push: (e: AgentEvent) => events.push(e), fail: () => {} };
+  const fakeSession = { getContextUsage: () => undefined } as unknown as PiSessionLike;
+
+  const cyclic: Record<string, unknown> = { type: "agent_settled" };
+  cyclic.self = cyclic;
+  assert.doesNotThrow(() => forwardPiEvent(cyclic, fakeSession, channel));
+  const cyclicEvent = events.find((e) => e.type === "harness.event") as Extract<AgentEvent, { type: "harness.event" }>;
+  assert.equal((cyclicEvent.payload as { self: unknown }).self, "[circular]");
+
+  events.length = 0;
+  const huge = { type: "agent_end", blob: "x".repeat(64 * 1024) };
+  forwardPiEvent(huge, fakeSession, channel);
+  const hugeEvent = events.find((e) => e.type === "harness.event") as Extract<AgentEvent, { type: "harness.event" }>;
+  assert.equal((hugeEvent.payload as { truncated?: boolean }).truncated, true);
+});
+
+test("pi harness spec declares extensions:{discover:true} (data, RULE #0 — no harness-id branch needed to read it)", () => {
+  const spec = findHarness("pi")!;
+  assert.deepEqual(spec.extensions, { discover: true });
+});
+
+test("PiRuntime: extensions absent ⇒ loader built with noExtensions:true and no additionalExtensionPaths", async () => {
+  const fx = await harnessFixture();
+  try {
+    let capturedLoader: any;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      capturedLoader = options.loader;
+      return { session: new FakeSession("s1") };
+    };
+    // No `extensions` passed to the constructor — mirrors claude/codex, which
+    // never declare HarnessSpec.extensions, so runner.ts threads `undefined`.
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(capturedLoader.noExtensions, true);
+    assert.deepEqual(capturedLoader.additionalExtensionPaths, []);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime: extensions:{discover:true} ⇒ loader built with noExtensions:false and additionalExtensionPaths = spec paths + workspace .pi/extensions", async () => {
+  const fx = await harnessFixture();
+  try {
+    let capturedLoader: any;
+    const factory: PiRuntimeSessionFactory = async (options) => {
+      capturedLoader = options.loader;
+      return { session: new FakeSession("s1") };
+    };
+    const runtime = new PiRuntime({
+      workspace: fx.workspace,
+      agent: fx.agent,
+      memoryStore: new MemoryStore(),
+      sessionFactory: factory,
+      extensions: { discover: true, additionalPaths: ["/tmp/gaia-lane-a-extra-ext.ts"] },
+    });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.equal(capturedLoader.noExtensions, false);
+    assert.deepEqual(capturedLoader.additionalExtensionPaths, [
+      "/tmp/gaia-lane-a-extra-ext.ts",
+      join(process.cwd(), ".pi", "extensions"),
+    ]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("pi extension fixture (test/fixtures/pi-ext/register-tool.ts) registers a tool visible on the session's active tool list when discovered (SDK-level, in-process)", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_EXT_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      assert.ok(
+        session.getActiveToolNames().includes("gaia_lane_a_fixture_tool"),
+        `expected fixture tool in active tools, got: ${session.getActiveToolNames().join(", ")}`,
+      );
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("pi extension fixture is NOT loaded when discovery stays off (noExtensions:true, no additionalExtensionPaths — gaia's default for this fixture's cwd)", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      noExtensions: true,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      assert.ok(!session.getActiveToolNames().includes("gaia_lane_a_fixture_tool"));
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("pi package resolution: a missing settings.json package source is SKIPPED (no network install attempt, no throw) through the exact scoped wrap PiRuntime applies to its OWN loader instance only", async () => {
+  const temp = await createTempDir();
+  try {
+    const missingSource = "npm:gaia-lane-a-does-not-exist-9f3d2c1";
+    // In-memory settings — no file I/O, no touching a real ~/.pi/agent/settings.json.
+    const settingsManager = SettingsManager.inMemory({ packages: [missingSource] });
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      settingsManager,
+      noExtensions: false,
+    });
+
+    // Mirrors PiRuntime.createSessionMeta's exact patch (src/harness/pi/runtime.ts,
+    // right after `new DefaultResourceLoader(...)`, before `loader.reload()`):
+    // wrap THIS loader's own already-constructed packageManager.resolve() with a
+    // default onMissing — scoped to this one instance, never process.env.PI_OFFLINE.
+    const packageManager = (loader as unknown as { packageManager: PackageManager }).packageManager;
+    const originalResolve = packageManager.resolve.bind(packageManager);
+    const onMissingCalls: string[] = [];
+    packageManager.resolve = (onMissing) =>
+      originalResolve(
+        onMissing ??
+          (async (source: string) => {
+            onMissingCalls.push(source);
+            return "skip" as const;
+          }),
+      );
+
+    await assert.doesNotReject(() => loader.reload());
+    assert.deepEqual(onMissingCalls, [missingSource], "onMissing must fire for the missing source, proving the skip path (not install) ran");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// LANE D (chat-mto9n58s-bjr1): pi ExtensionUIContext -> ui-bridge -> AgentEvent.
+// Group 1: real SDK, in-process (createAgentSession + test/fixtures/pi-ext/
+// ui-calls.ts loaded through DefaultResourceLoader) -- proves ui-context.ts's
+// adapter against pi's ACTUAL ExtensionUIContext/ExtensionRunner/ToolDefinition
+// shapes, no mocks of pi. Group 2 (further below): PiRuntime's OWN
+// createSessionMeta/send() wiring via an injected FakeSession that implements
+// the new optional bindExtensions/extensionRunner members.
+
+test("pi ExtensionUIContext: ctx.ui.setWidget/ctx.ui.confirm reach the room via ui-bridge; a ui.reply resolves confirm() with true (SDK-level, in-process, no LLM call)", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_UI_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const events: AgentEvent[] = [];
+      const bridge = createUiBridge((event) => events.push(event));
+      await (session as unknown as { bindExtensions(b: { uiContext?: unknown }): Promise<void> }).bindExtensions({
+        uiContext: buildPiUiContext(bridge),
+      });
+      const runner = (session as unknown as { extensionRunner: { getToolDefinition(name: string): any; createContext(): any } }).extensionRunner;
+
+      const toolDef = runner.getToolDefinition("gaia_lane_d_ui_tool");
+      assert.ok(toolDef, "fixture tool must be registered");
+      const resultPromise = toolDef.execute("call-1", {}, undefined, undefined, runner.createContext());
+
+      const widgetEvent = events.find((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }> | undefined;
+      assert.ok(widgetEvent, "ctx.ui.setWidget must emit a ui.widget event");
+      assert.equal(widgetEvent!.id, "gaia-lane-d-widget");
+      assert.deepEqual(widgetEvent!.lines, ["hello from lane d"]);
+
+      const promptEvent = events.find((e) => e.type === "ui.prompt") as Extract<AgentEvent, { type: "ui.prompt" }> | undefined;
+      assert.ok(promptEvent, "ctx.ui.confirm must emit a ui.prompt event");
+      assert.equal(promptEvent!.kind, "confirm");
+
+      assert.equal(bridge.resolvePrompt(promptEvent!.id, true), true);
+      const result = await resultPromise;
+      assert.equal(result.content[0]?.text, "confirmed");
+      assert.deepEqual(result.details, { confirmed: true });
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("pi registerShortcut is discovered at load via bindPiShortcuts (runner.getShortcuts) and fireShortcut dispatches to the extension's OWN handler, never a re-implementation", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_UI_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const events: AgentEvent[] = [];
+      const bridge = createUiBridge((event) => events.push(event));
+      // The shortcut's OWN handler calls ctx.ui.setWidget — ctx.ui is whatever
+      // the runner's uiContext currently is, so it must be OUR bridge (bound
+      // via bindExtensions), not pi's own noOpUIContext default.
+      await (session as unknown as { bindExtensions(b: { uiContext?: unknown }): Promise<void> }).bindExtensions({
+        uiContext: buildPiUiContext(bridge),
+      });
+      const runner = (session as unknown as { extensionRunner: any }).extensionRunner;
+      bindPiShortcuts(runner, bridge);
+
+      const shortcutEvent = events.find((e) => e.type === "ui.shortcut") as Extract<AgentEvent, { type: "ui.shortcut" }> | undefined;
+      assert.ok(shortcutEvent, "extension's registerShortcut must be discovered and emitted at load");
+      assert.equal(shortcutEvent!.key, "ctrl+g");
+      assert.equal(shortcutEvent!.description, "Gaia Lane D fixture shortcut");
+
+      assert.equal(bridge.fireShortcut(shortcutEvent!.commandId), true);
+      const widgetEvent = events.find((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }> | undefined;
+      assert.ok(widgetEvent, "firing the shortcut must run the extension's REAL handler");
+      assert.equal(widgetEvent!.id, "gaia-lane-d-shortcut");
+
+      assert.equal(bridge.fireShortcut("unknown-command"), false);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("bindPiLifecycle emits ext.lifecycle 'loaded' for the real fixture and 'failed' (with a reason) for a broken extension path", async () => {
+  const temp = await createTempDir();
+  try {
+    const missingPath = join(temp.path, "does-not-exist.ts");
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_UI_FIXTURE, missingPath],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const events: AgentEvent[] = [];
+      const bridge = createUiBridge((event) => events.push(event));
+      const runner = (session as unknown as { extensionRunner: any }).extensionRunner;
+      bindPiLifecycle(loader, runner, bridge);
+
+      const lifecycleEvents = events.filter((e) => e.type === "ext.lifecycle") as Extract<AgentEvent, { type: "ext.lifecycle" }>[];
+      const loaded = lifecycleEvents.find((e) => e.id === PI_UI_FIXTURE);
+      assert.ok(loaded, "the real fixture must be reported loaded");
+      assert.equal(loaded!.state, "loaded");
+
+      const failed = lifecycleEvents.find((e) => e.id === missingPath);
+      assert.ok(failed, "the missing extension path must be reported failed");
+      assert.equal(failed!.state, "failed");
+      assert.ok(failed!.reason && failed!.reason.length > 0);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("bindPiCommands emits ext.commands for the real fixture's registerCommand, and runner.getCommand()'s REAL handler dispatch reaches the room via ui-bridge (SDK-level, in-process, no LLM call) — Lane E", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_COMMAND_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const events: AgentEvent[] = [];
+      const bridge = createUiBridge((event) => events.push(event));
+      await (session as unknown as { bindExtensions(b: { uiContext?: unknown }): Promise<void> }).bindExtensions({
+        uiContext: buildPiUiContext(bridge),
+      });
+      const runner = (session as unknown as { extensionRunner: any }).extensionRunner;
+      bindPiCommands(runner, bridge);
+
+      const commandsEvent = events.find((e) => e.type === "ext.commands") as Extract<AgentEvent, { type: "ext.commands" }> | undefined;
+      assert.ok(commandsEvent, "registerCommand must be discovered and emitted as ext.commands at load");
+      assert.ok(commandsEvent!.commands.some((c) => c.name === "fugu-ping"), `expected fugu-ping in ${JSON.stringify(commandsEvent!.commands)}`);
+
+      const resolved = runner.getCommand("fugu-ping");
+      assert.ok(resolved, "runner.getCommand must resolve the registered command by name");
+      await resolved.handler("hello", runner.createCommandContext());
+
+      const widgetEvent = events.find((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }> | undefined;
+      assert.ok(widgetEvent, "the command's REAL handler must run and reach the room via ui-bridge, never a re-implementation");
+      assert.deepEqual(widgetEvent!.lines, ["pong:hello"]);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("buildPiUiContext's confirm()/select()/input() fall back to pi's OWN noOp default when the timeout elapses before any ui.reply arrives (never hangs the turn)", async () => {
+  const bridge = createUiBridge(() => {});
+  const uiContext = buildPiUiContext(bridge);
+  assert.equal(await uiContext.confirm("Proceed?", "message", { timeout: 5 }), false, "pi's own noOp confirm() default is false");
+  assert.equal(await uiContext.select("Pick", ["a", "b"], { timeout: 5 }), undefined, "pi's own noOp select() default is undefined");
+  assert.equal(await uiContext.input("Enter", undefined, { timeout: 5 }), undefined, "pi's own noOp input() default is undefined");
+});
+
+test("buildPiUiContext's notify()/setStatus() route through the SAME bridge.widget() setWidget() uses (no separate ui.notify AgentEvent kind)", () => {
+  const events: AgentEvent[] = [];
+  const bridge = createUiBridge((event) => events.push(event));
+  const uiContext = buildPiUiContext(bridge);
+  uiContext.notify("hello", "warning");
+  uiContext.setStatus("branch", "main");
+  uiContext.setStatus("branch", undefined);
+  const widgets = events.filter((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }>[];
+  assert.equal(widgets.length, 3);
+  assert.deepEqual(widgets[0]!.lines, ["[warning] hello"]);
+  assert.equal(widgets[1]!.id, "status:branch");
+  assert.deepEqual(widgets[1]!.lines, ["main"]);
+  assert.deepEqual(widgets[2]!.lines, [], "setStatus(key, undefined) clears the row");
+});
+
+test("wrapAuthInteraction's prompt() routes through bridge.authRequest and resolves via the SAME ui.reply channel as ui.prompt; notify() bridges auth_url/device_code legs", async () => {
+  const events: AgentEvent[] = [];
+  const bridge = createUiBridge((event) => events.push(event));
+  const interaction = wrapAuthInteraction(bridge, "corp-ai");
+
+  interaction.notify({ type: "auth_url", url: "https://example.com/auth", instructions: "open this" });
+  const authUrlEvent = events.find((e) => e.type === "auth.request") as Extract<AgentEvent, { type: "auth.request" }> | undefined;
+  assert.ok(authUrlEvent, "onAuth leg must emit auth.request");
+  assert.equal(authUrlEvent!.method, "oauth");
+  assert.equal(authUrlEvent!.url, "https://example.com/auth");
+
+  const promptPromise = interaction.prompt({ type: "secret", message: "Enter API key" });
+  const secretEvent = events.filter((e) => e.type === "auth.request").at(-1) as Extract<AgentEvent, { type: "auth.request" }>;
+  assert.equal(secretEvent.method, "apiKey");
+  assert.equal(bridge.resolvePrompt(secretEvent.id, { value: "sk-live-xyz" }), true);
+  assert.equal(await promptPromise, "sk-live-xyz");
+});
+
+// --- Group 2: PiRuntime's OWN createSessionMeta/send() wiring (FakeSession simulating a real AgentSession) ---
+
+class FakeExtensionRunner {
+  shortcuts = new Map<string, { description?: string; handler: () => void }>();
+  // Lane E: minimal registerCommand mirror — `handler` records every call so
+  // a test can assert real dispatch ran without a real SDK ExtensionRunner.
+  commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => void | Promise<void>; calls: string[] }>();
+  createContext(): unknown {
+    return {};
+  }
+  createCommandContext(): unknown {
+    return this.createContext();
+  }
+  onError(): () => void {
+    return () => {};
+  }
+  getShortcuts(): Map<string, { description?: string; handler: () => void }> {
+    return this.shortcuts;
+  }
+  getRegisteredCommands(): { invocationName: string; description?: string }[] {
+    return [...this.commands.entries()].map(([invocationName, command]) => ({
+      invocationName,
+      ...(command.description ? { description: command.description } : {}),
+    }));
+  }
+  getCommand(name: string): { handler: (args: string, ctx: unknown) => void | Promise<void> } | undefined {
+    const command = this.commands.get(name);
+    if (!command) return undefined;
+    return {
+      handler: (args, ctx) => {
+        command.calls.push(args);
+        return command.handler(args, ctx);
+      },
+    };
+  }
+}
+
+class UiFakeSession implements PiSessionLike {
+  model: { provider: string; id: string } | undefined;
+  thinkingLevel = "medium";
+  listeners: Array<(event: any) => void> = [];
+  uiContext: any;
+  confirmPromise?: Promise<unknown>;
+  fired = 0;
+  prompts: string[] = [];
+  readonly extensionRunner = new FakeExtensionRunner();
+
+  constructor() {
+    this.extensionRunner.shortcuts.set("ctrl+g", {
+      description: "fake shortcut",
+      handler: () => {
+        this.fired += 1;
+      },
+    });
+  }
+
+  async bindExtensions(bindings: { uiContext?: unknown }): Promise<void> {
+    this.uiContext = bindings.uiContext;
+  }
+
+  subscribe(listener: (event: any) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((candidate) => candidate !== listener);
+    };
+  }
+
+  async prompt(text?: string): Promise<void> {
+    if (text !== undefined) this.prompts.push(text);
+    // Simulates a tool call mid-turn awaiting ctx.ui.confirm() — fires the
+    // prompt (pushing ui.prompt onto the LIVE turn's channel) but does not
+    // await it, exactly like a real tool execute() awaiting user input.
+    this.confirmPromise = this.uiContext.confirm("Proceed?", "message");
+    for (const listener of this.listeners) {
+      listener({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+    }
+  }
+
+  async abort(): Promise<void> {}
+  async reload(): Promise<void> {}
+  dispose(): void {}
+}
+
+test("PiRuntime.createSessionMeta binds a real ExtensionUIContext via bindExtensions, and PiRuntime.uiReply resolves the pending prompt through THIS room's own bridge", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: UiFakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new UiFakeSession();
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    assert.ok(uiSession?.uiContext, "createSessionMeta must call bindExtensions with a real ExtensionUIContext");
+    const promptEvent = events.find((e) => e.type === "ui.prompt") as Extract<AgentEvent, { type: "ui.prompt" }> | undefined;
+    assert.ok(promptEvent, "ctx.ui.confirm() called mid-turn must emit ui.prompt on the SAME turn stream");
+
+    assert.equal(await runtime.uiReply!("default", promptEvent!.id, true), true, "uiReply must resolve the pending prompt via this room's bridge");
+    assert.equal(await uiSession!.confirmPromise, true);
+
+    assert.equal(await runtime.uiReply!("default", "unknown-id", true), false);
+    assert.equal(await runtime.uiReply!("unknown-room", promptEvent!.id, true), false);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.createSessionMeta discovers the session's registered shortcuts via bindPiShortcuts, and PiRuntime.uiShortcutFire dispatches to the REAL handler", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: UiFakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new UiFakeSession();
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    const events = await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+
+    const shortcutEvent = events.find((e) => e.type === "ui.shortcut") as Extract<AgentEvent, { type: "ui.shortcut" }> | undefined;
+    assert.ok(shortcutEvent, "createSessionMeta must discover the session's shortcuts at session creation");
+
+    assert.equal(await runtime.uiShortcutFire!("default", shortcutEvent!.commandId), true);
+    assert.equal(uiSession!.fired, 1);
+    assert.equal(await runtime.uiShortcutFire!("default", "unknown-command"), false);
+    assert.equal(await runtime.uiShortcutFire!("unknown-room", shortcutEvent!.commandId), false);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.send dispatches a nativeCommand /word that matches a REAL registered extension command through runner.getCommand()'s OWN handler — never prompted to the model as raw text (Lane E, docs/PLUGIN-ADVERSARY-0905.md §1)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: UiFakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new UiFakeSession();
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    // Prime the session first (ordinary turn) so extensionRunner is bound.
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    uiSession!.prompts = [];
+    uiSession!.extensionRunner.commands.set("fugu-ping", { description: "fixture command", calls: [], handler: () => {} });
+
+    const events = await collect(
+      runtime.send({ roomId: "default", message: "/fugu-ping hello", nativeCommand: true, transcript: [] }),
+    );
+
+    assert.deepEqual(uiSession!.extensionRunner.commands.get("fugu-ping")!.calls, ["hello"], "the fixture's REAL handler must run with the command's own args");
+    assert.deepEqual(uiSession!.prompts, [], "a matched extension command must NEVER be fed to the model as a raw prompt");
+    assert.deepEqual(events, [], "the fixture handler here emits no ui.* events — dispatch alone is the assertion");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.send({uiLogin}) drives a stub ModelRuntime.login through wrapAuthInteraction: the auth_url leg reaches the turn's channel as auth.request, and a successful login yields a confirmation reply (Lane E, item 3)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new FakeSession("login-1");
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    // Prime modelRuntimeReady with the real ModelRuntime, then swap in a stub
+    // (TS-private, JS-public field — same reach-in idiom as PiRuntime's own
+    // packageManager wrap; see createSessionMeta's doc comment for precedent).
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    uiSession!.prompts = [];
+    const loginCalls: { providerId: string; type: string }[] = [];
+    (runtime as unknown as { modelRuntime: { login: (providerId: string, type: string, interaction: any) => Promise<unknown> } }).modelRuntime = {
+      login: async (providerId, type, interaction) => {
+        loginCalls.push({ providerId, type });
+        interaction.notify({ type: "auth_url", url: "https://example.com/auth" });
+        return {};
+      },
+    };
+
+    const events = await collect(runtime.send({ roomId: "default", message: "", transcript: [], uiLogin: { providerId: "corp-ai" } }));
+
+    assert.deepEqual(loginCalls, [{ providerId: "corp-ai", type: "oauth" }], "method must default to oauth when unspecified");
+    const authEvent = events.find((e) => e.type === "auth.request") as Extract<AgentEvent, { type: "auth.request" }> | undefined;
+    assert.ok(authEvent, "ModelRuntime.login's auth_url leg must reach the turn's own channel as auth.request");
+    assert.equal(authEvent!.providerId, "corp-ai");
+    assert.equal(authEvent!.url, "https://example.com/auth");
+    const reply = events.find((e) => e.type === "text-delta") as Extract<AgentEvent, { type: "text-delta" }> | undefined;
+    assert.ok(reply, "a successful login must yield a confirmation reply, never a raw model prompt");
+    assert.match(reply!.delta, /corp-ai/);
+    assert.deepEqual(uiSession!.prompts, [], "a uiLogin turn must never build/send a session prompt");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.send({uiLogin}) apiKey/secret leg: auth.request awaits a REAL ui.reply through this room's OWN bridge before login (and the turn) completes (Lane E, item 3)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: FakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new FakeSession("login-2");
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    let capturedKey: string | undefined;
+    (runtime as unknown as { modelRuntime: { login: (providerId: string, type: string, interaction: any) => Promise<unknown> } }).modelRuntime = {
+      login: async (_providerId, _type, interaction) => {
+        capturedKey = await interaction.prompt({ type: "secret", message: "Enter API key" });
+        return { key: capturedKey };
+      },
+    };
+
+    const collected: AgentEvent[] = [];
+    const iterator = runtime
+      .send({ roomId: "default", message: "", transcript: [], uiLogin: { providerId: "corp-ai", method: "api_key" } })
+      [Symbol.asyncIterator]();
+    let authEvent: Extract<AgentEvent, { type: "auth.request" }> | undefined;
+    while (!authEvent) {
+      const step = await iterator.next();
+      if (step.done) break;
+      collected.push(step.value);
+      if (step.value.type === "auth.request") authEvent = step.value;
+    }
+    assert.ok(authEvent, "the secret prompt leg must emit auth.request before login() resolves");
+    assert.equal(authEvent!.method, "apiKey");
+
+    assert.equal(await runtime.uiReply!("default", authEvent!.id, "sk-live-xyz"), true, "uiReply must resolve the pending prompt via THIS room's own bridge");
+
+    for (;;) {
+      const step = await iterator.next();
+      if (step.done) break;
+      collected.push(step.value);
+    }
+    assert.equal(capturedKey, "sk-live-xyz", "login()'s own interaction.prompt() must resolve with the client's reply");
+    const reply = collected.find((e) => e.type === "text-delta") as Extract<AgentEvent, { type: "text-delta" }> | undefined;
+    assert.ok(reply, "the turn must complete with a confirmation reply once login() resolves");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("pi harness capabilities.supportsUi is data (RULE #0) — PiRuntime declares it, turning on host.ts's ui-reply/ui-shortcut-fire wiring for pi specifically without any harness-id branch in shared code", () => {
+  const spec = findHarness("pi")!;
+  assert.equal(spec.capabilities.supportsUi, true);
 });

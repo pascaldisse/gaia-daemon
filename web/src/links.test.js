@@ -76,6 +76,21 @@ test("native chat web links use the daemon open-target API", () => {
     body: JSON.stringify({ target: "https://example.com/docs", workspaceId: undefined }),
   }]]);
 });
+test("plain click on an agent-message HTTP(S) link dispatches native open-target", () => {
+  const requests = [];
+  nativeFetch(requests);
+  const root = LinkedText("https://example.com/plain");
+  const token = root.childNodes.find((node) => node instanceof Element && node._class === "link-token");
+  const click = mouseEvent();
+  token.listeners.click(click);
+  expect(click.prevented).toBe(true);
+  expect(click.stopped).toBe(true);
+  expect(requests).toEqual([["/api/open-target", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target: "https://example.com/plain", workspaceId: undefined }),
+  }]]);
+});
 test("native captures HTTP(S) anchors, including plain clicks, but leaves attachment links alone", () => {
   const requests = [];
   nativeFetch(requests);

@@ -35,6 +35,7 @@ import type {
   Snapshot,
   Task,
   UiEvent,
+  UiPromptReplyValue,
   Workspace,
 } from "../../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../../core/config.js";
@@ -78,6 +79,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
+import { formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
 import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
@@ -127,6 +129,52 @@ export class RoomCommandsMixin {
     // Same stream-position marker as steer-by-default (see steerRunningTurn).
     if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
+  }
+
+  /** `ui.reply`: route a client's answer to a pending `ui.prompt`/`auth.request`
+   * id back to the agent's runner (backs the pi ExtensionUIContext dialogs
+   * carried headless over AgentEvent — see core/types/harness.ts). Purely a UI
+   * round trip, never a transcript event (no room-event emitted, unlike /steer). */
+  async runUiReply(agentId: string, id: string, value: UiPromptReplyValue): Promise<boolean> {
+    const runtime = this.runtimes[agentId];
+    if (!runtime) return false;
+    return (await runtime.uiReply?.(this.roomId, id, value)) ?? false;
+  }
+
+  /** `ui.shortcut.fire`: a client-side hotkey press for a registered `commandId`
+   * (backs pi's registerShortcut handler). */
+  async runUiShortcutFire(agentId: string, commandId: string): Promise<boolean> {
+    const runtime = this.runtimes[agentId];
+    if (!runtime) return false;
+    return (await runtime.uiShortcutFire?.(this.roomId, commandId)) ?? false;
+  }
+
+  /** Trigger @agentId's harness to start an interactive provider login (Lane E,
+   * chat-mto9n58s-bjr1; POST rooms/:id/login). Modeled as a turn —
+   * AgentInput.uiLogin's doc comment explains why a bespoke RPC cannot
+   * deliver auth.request/ui.prompt at all: this method drives runtime.send()
+   * directly (never through the durable queue — nothing here should ever be
+   * replayed or committed as a conversational reply) and re-emits every
+   * yielded event through the SAME toUiEvent scoping ordinary turns use, so
+   * Settings ▸ Accounts' AuthRequestCard sees it exactly like any other
+   * auth.request. */
+  async runUiLogin(providerId: string, method?: "oauth" | "api_key", agent?: string): Promise<{ ok: boolean; message: string }> {
+    const agentId = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[agentId]) return { ok: false, message: this.unknownAgentMessage(agentId) };
+    const runtime = this.runtimes[agentId];
+    if (!runtime.capabilities.supportsUi) return { ok: false, message: `@${agentId}'s harness has no interactive login trigger.` };
+    if (this.activeAgentTurn) return { ok: false, message: "A turn is running — wait for it to finish before triggering a login." };
+    const taskId = newId("login");
+    const eventId = newId("login-evt");
+    try {
+      for await (const event of runtime.send({ roomId: this.roomId, message: "", transcript: [], uiLogin: { providerId, ...(method ? { method } : {}) } })) {
+        const uiEvent = this.toUiEvent(taskId, agentId, eventId, event);
+        if (uiEvent) this.emit(uiEvent);
+      }
+    } catch (error) {
+      return { ok: false, message: `Login for ${providerId} failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    return { ok: true, message: `Login flow started for @${agentId} · ${providerId} — check Settings ▸ Accounts for the sign-in card.` };
   }
 
   /** Dedupes the loaded plugin map's VALUES — a plugin owning several command
@@ -287,9 +335,38 @@ export class RoomCommandsMixin {
     });
   }
 
+  /** Configure or show room-scoped automatic native compaction. */
+  async runAutoCompactCommand(value?: string, cooldownRaw?: string): Promise<string> {
+    const state = await this.room.state();
+    const workspaceConfig = this.workspace.config.autoCompact;
+    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
+    const off = value.toLowerCase() === "off";
+    const thresholdPct = Number(value);
+    if (!off && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100)) {
+      return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    let cooldownTurns: number | undefined;
+    if (cooldownRaw !== undefined) {
+      cooldownTurns = Number(cooldownRaw);
+      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+    }
+    await this.room.updateState((current) => {
+      // A changed policy supersedes any scheduled pass/cooldown from the old one.
+      const { pending: _pending, cooldowns: _cooldowns, ...override } = current.autoCompact ?? {};
+      current.autoCompact = {
+        ...override,
+        thresholdPct: off ? null : thresholdPct,
+        ...(cooldownTurns === undefined ? {} : { cooldownTurns }),
+      };
+    });
+    const updated = await this.room.state();
+    await this.emitSnapshot();
+    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact), updated.autoCompact);
+  }
+
   /** /compact: native harness compaction; --edit adds Pi's review/apply
    * variant behind a capability flag, never a harness-id branch. */
-  async runCompactCommand(agent?: string, edit?: boolean | string): Promise<CommandReply> {
+  async runCompactCommand(agent?: string, edit?: boolean | string, automatic = false): Promise<CommandReply> {
     const target = agent ?? (await this.roomDefaultTarget());
     if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
     const runtime = this.runtimes[target];
@@ -302,7 +379,7 @@ export class RoomCommandsMixin {
     }
     // `activeTask` here is the /compact command's own task; only a real
     // streaming agent turn should block compaction.
-    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    if (this.activeAgentTurn && !automatic) return "A turn is running — /cancel it first, or wait for it to finish.";
     this.compactingAgents.add(target);
     const startedAt = Date.now();
     const usedTokens = this.contextUsage[target]?.usedTokens;
@@ -345,11 +422,59 @@ ${draft.summary}` : ""}`;
     }
   }
 
+  /** /dsc-compact: the separate, explicitly registered model-free clean pass.
+   * Ordinary /compact stays on runCompactCommand/runtime.compact. */
+  async runDscCompactCommand(agent?: string): Promise<CommandReply> {
+    const target = agent ?? (await this.roomDefaultTarget());
+    if (!this.workspace.agents[target]) return this.unknownAgentMessage(target);
+    const runtime = this.runtimes[target];
+    if (!runtime.capabilities.supportsCompact || !runtime.compactClean) {
+      return `@${target}'s harness has no clean (dsc) compaction.`;
+    }
+    if (this.activeAgentTurn) return "A turn is running — /cancel it first, or wait for it to finish.";
+    this.compactingAgents.add(target);
+    const startedAt = Date.now();
+    const usedTokens = this.contextUsage[target]?.usedTokens;
+    this.compactProgress.set(target, { startedAt, ...(usedTokens ? { contextTokens: usedTokens } : {}) });
+    this.lastCompactEmit = startedAt;
+    await this.emitSnapshot();
+    const progress = (update: CompactProgressUpdate) => {
+      const prev = this.compactProgress.get(target);
+      if (!prev) return;
+      this.compactProgress.set(target, { ...prev, ...update });
+      const now = Date.now();
+      if (now - this.lastCompactEmit < 500) return;
+      this.lastCompactEmit = now;
+      void this.emitSnapshot();
+    };
+    try {
+      const result = await runtime.compactClean(this.roomId, progress);
+      // Missing registration is a true no-op: do not move Gaia's floor/cursor.
+      if (!result.compacted) return `@${target}: ${result.message}`;
+      return (await this.finishCompactCommand(target, result)) as CommandReply;
+    } catch (error) {
+      if (this.compactCancels.has(target)) return `Clean compaction cancelled for @${target}.`;
+      return `Clean compaction failed for @${target}: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      this.compactCancels.delete(target);
+      this.compactingAgents.delete(target);
+      this.compactProgress.delete(target);
+      await this.emitSnapshot();
+    }
+  }
+
   /** Shared post-eviction boundary, durable summary, and ctx-chip bookkeeping
-   * for ordinary /compact and reviewed /compact --edit <text>. */
+   * for ordinary /compact, /dsc-compact, and reviewed /compact --edit <text>. */
   async finishCompactCommand(target: string, { compacted, message, summary }: CompactResult): Promise<CommandReply> {
     const { nextCursor } = await this.room.eventsFrom(0);
     await this.setContextFloor(target, nextCursor);
+    // fc45e43: the turn prompt reads agentCursors, not contextFloors. A clean
+    // summary is ineffective if the next turn replays the pre-compaction tail.
+    if (compacted) {
+      await this.room.updateState((current) => {
+        current.agentCursors = { ...(current.agentCursors ?? {}), [target]: nextCursor };
+      }).catch(() => {});
+    }
     if (compacted && summary) await this.room.writeCompaction(target, nextCursor, summary);
     else if (compacted) await this.room.clearCompaction(target);
     const written = this.compactProgress.get(target)?.outputTokens;

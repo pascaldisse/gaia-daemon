@@ -10,6 +10,7 @@
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { agentGlyph, KIND, STATE, UI } from "./glyphs.js";
 import { api } from "./api.js";
+import { navigation } from "./navigation.js";
 import { attachmentUrl } from "./attachments.js";
 import { detectArtifacts } from "./design/artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
@@ -149,12 +150,15 @@ export function syncOlderFromSnapshot() {
 }
 
 /** Page one chunk of older committed events in above the current history. */
-async function loadOlderEvents() {
+export async function loadOlderEvents() {
   const snapshot = state.snapshot;
   if (!snapshot || state.older.loading) return;
   const oldest = committedEvents()[0];
   if (!oldest) return;
-  state.older.loading = true;
+  const older = state.older;
+  const generation = navigation.generation;
+  const current = () => navigation.current(generation) && state.older === older;
+  older.loading = true;
   markDirty("transcript");
   const container = $("#transcript");
   const heightBefore = container ? container.scrollHeight : 0;
@@ -163,12 +167,13 @@ async function loadOlderEvents() {
     const body = await api(`${base}?before=${encodeURIComponent(oldest.id)}&limit=100`);
     /** @type {import("./types.js").RoomEvent[]} */
     const events = body.events ?? [];
-    if (state.older.roomId !== snapshot.room.id) state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+    if (!current()) return;
     const have = new Set(committedEvents().map((event) => event.id));
     state.older.events = [...events.filter((event) => !have.has(event.id)), ...state.older.events];
   } catch (error) {
-    setError(error instanceof Error ? error.message : String(error));
+    if (current()) setError(error instanceof Error ? error.message : String(error));
   } finally {
+    if (!current()) { older.loading = false; return; }
     // Insert the chunk, then re-anchor in the SAME frame it lands: markDirty
     // queues the transcript flush first, so this rAF runs after it and reading
     // scrollHeight already reflects the added height — grow scrollTop by exactly
@@ -178,6 +183,7 @@ async function loadOlderEvents() {
     // this programmatic scroll can't cascade the loader into draining everything.
     markDirty("transcript");
     requestAnimationFrame(() => {
+      if (!current()) { older.loading = false; return; }
       const el = $("#transcript");
       if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
       state.older.loading = false;
@@ -559,6 +565,70 @@ function renderTranscript() {
     nextNodes.push(node);
   }
 
+  // pi ExtensionAPI surface (see core/types/harness.ts): ext.lifecycle status
+  // chips + ui.widget rows, keyed like the older-history indicator below so the
+  // sync loop below picks them up/drops them like any other node. `aboveEditor`
+  // widgets sit at the TOP of the transcript (closest to "just above input" this
+  // scroll-list can express), `belowEditor` at the bottom.
+  if (state.extLifecycle.size > 0) {
+    const chips = [...state.extLifecycle.values()];
+    const version = `ext-lifecycle:${chips.map((c) => `${c.id}:${c.state}`).join(",")}`;
+    const current = existing.get("__ext-lifecycle");
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h(
+            "div",
+            { class: "ext-lifecycle-row" },
+            ...chips.map((chip) =>
+              h("span", {
+                class: `ext-lifecycle-chip ext-lifecycle-${chip.state}`,
+                title: chip.reason ?? "",
+                text: `${chip.id}: ${chip.state}`,
+              }),
+            ),
+          );
+    node.dataset.eventId = "__ext-lifecycle";
+    node.dataset.v = version;
+    nextNodes.push(node);
+  }
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated rendering (core/types/harness.ts harness.event) — a single
+  // collapsed debug row, grouped by kind with a running count, so nothing an
+  // extension emits is silently invisible even before it earns real UI.
+  if (state.harnessEvents.length > 0) {
+    /** @type {Map<string, number>} */
+    const counts = new Map();
+    for (const entry of state.harnessEvents) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
+    const version = `harness-events:${[...counts.entries()].map(([kind, count]) => `${kind}:${count}`).join(",")}`;
+    const current = existing.get("__harness-events");
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h(
+            "details",
+            { class: "harness-events-row" },
+            h("summary", { text: `harness events (${state.harnessEvents.length})` }),
+            ...[...counts.entries()].map(([kind, count]) => h("div", { class: "harness-event-line", text: `${kind} ×${count}` })),
+          );
+    node.dataset.eventId = "__harness-events";
+    node.dataset.v = version;
+    nextNodes.push(node);
+  }
+  for (const widget of state.uiWidgets.values()) {
+    const key = `__ui-widget:${widget.id}`;
+    const version = `${key}:${widget.lines.join("\u0000")}`;
+    const current = existing.get(key);
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h("div", { class: "ui-widget-row" }, ...widget.lines.map((line) => h("div", { class: "ui-widget-line", text: line })));
+    node.dataset.eventId = key;
+    node.dataset.v = version;
+    if (widget.placement === "belowEditor") nextNodes.push(node);
+    else nextNodes.unshift(node);
+  }
+
   // Older-history indicator above the transcript, keyed like a message so the
   // sync below keeps it. History now pages in automatically as you scroll toward
   // the top (maybeLoadOlderOnScroll); this row is just a status line — still
@@ -884,21 +954,15 @@ function SummonResultActivity(view, summon) {
  * @param {MessageBlock[]} blocks
  * @param {ToolDetail[]} tools
  */
-function OrderedBlocks(view, blocks, tools) {
+export function OrderedBlocks(view, blocks, tools) {
   const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
   const lastIndex = blocks.length - 1;
   let thinkingIndex = 0;
-  // Only the FIRST text span can carry a leading <gaia:think> block (the reply's
-  // opening) — later text spans render as plain markdown.
-  const firstTextIndex = blocks.findIndex((block) => block.kind === "text" && block.text.trim());
   return blocks.map((block, index) => {
     if (block.kind === "text") {
       if (!block.text.trim()) return null;
-      if (index === firstTextIndex) {
-        const running = Boolean(view.streaming) && index === lastIndex;
-        return AgentText(`gaiathink:${view.id}:${index}`, block.text, running);
-      }
-      return MarkdownMessage(block.text);
+      const running = Boolean(view.streaming) && index === lastIndex;
+      return AgentText(`gaiathink:${view.id}:${index}`, block.text, running);
     }
     if (block.kind === "thinking") {
       // A thinking span still filling in is the running one. An empty span is NOT

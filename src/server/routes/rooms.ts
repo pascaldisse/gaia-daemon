@@ -2,8 +2,10 @@ import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { json, parseBody, readRawBody } from "../../core/http.js";
-import type { ReadAloudDelivery } from "../../services/read-aloud.js";
-import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
+import type { UiPromptReplyValue } from "../../core/types.js";
+import type { ReadAloudDelivery, TtsCacheIdentity } from "../../services/read-aloud.js";
+import { addArchtreeRoot } from "../../services/archtree.js";
+import { matchPath, boolField, respond, requireRoomAccess, requestingHuman, stringField, type RouteContext } from "../route.js";
 
 export function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined { if (!body || typeof body !== "object") return undefined; const raw = (body as Record<string, unknown>).attachments; if (!Array.isArray(raw)) return undefined; const refs: { id: string; name?: string; mime?: string }[] = []; for (const item of raw) { if (!item || typeof item !== "object") continue; const record = item as Record<string, unknown>; if (typeof record.id !== "string" || !record.id.trim()) continue; refs.push({ id: record.id, ...(typeof record.name === "string" ? { name: record.name } : {}), ...(typeof record.mime === "string" ? { mime: record.mime } : {}) }); } return refs.length ? refs : undefined; }
 function sanitizeEditRefs(body: unknown): { eventId: string; quote: string; replacement: string }[] { if (!body || typeof body !== "object") return []; const raw = (body as Record<string, unknown>).edits; if (!Array.isArray(raw)) return []; return raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").filter((item) => typeof item.eventId === "string" && !!item.eventId.trim() && typeof item.quote === "string" && !!item.quote.length && typeof item.replacement === "string").map((item) => ({ eventId: item.eventId as string, quote: item.quote as string, replacement: item.replacement as string })); }
@@ -14,6 +16,7 @@ async function selectRoom(ctx: RouteContext): Promise<boolean> {
   const body = await parseBody(ctx.request);
   const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
   if (!roomId?.trim()) { json(ctx.response, 400, { error: "Missing room id" }); return true; }
+  if (!(await requireRoomAccess(ctx, params[0], roomId.trim()))) return true;
   await respond(ctx.response, () => ctx.daemon.selectRoom(params[0], roomId.trim(), { incognito: boolField(body, "incognito") }));
   return true;
 }
@@ -88,12 +91,8 @@ async function roomsReorder(ctx: RouteContext): Promise<boolean> {
   await respond(ctx.response, () => ctx.daemon.reorderRooms(params[0], ids));
   return true;
 }
-// Room-level human membership (RoomState.humans). Absent/empty = today's
-// unrestricted default for every existing room; a room only starts gating
-// reads/posts (see the /messages and /events routes below) the moment it
-// gets its first member. Every write here requires an authenticated human
-// who is EITHER already a member OR the room has none yet (so someone can
-// bootstrap membership on a room they otherwise already had full access to).
+// Absent allowlist → open; explicit [] → closed. Membership writes require
+// login + current access; first configuration preserves prior participants.
 async function roomHumansGet(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/);
   if (ctx.request.method !== "GET" || !params) return false;
@@ -107,12 +106,11 @@ async function roomHumansPost(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const body = await parseBody(ctx.request);
   const userId = stringField(body, "userId");
   if (!userId?.trim()) { json(ctx.response, 400, { error: "Missing userId" }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim()) }));
+  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim(), requester.id) }));
   return true;
 }
 async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
@@ -121,9 +119,8 @@ async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2]) }));
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2], requester.id) }));
   return true;
 }
 // Attachment upload: the pasted file's bytes as the raw body, original
@@ -200,8 +197,7 @@ async function roomMessages(ctx: RouteContext): Promise<boolean> {
   // durable queue instead of injecting into the running turn.
   const queue = (body as { queue?: unknown }).queue === true;
   const human = requestingHuman(ctx.request);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(human?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const task = await service.sendMessage(textValue, {
     ...(attachments ? { attachments } : {}),
     ...(queue ? { queue } : {}),
@@ -210,14 +206,74 @@ async function roomMessages(ctx: RouteContext): Promise<boolean> {
   json(ctx.response, 202, { task });
   return true;
 }
+// pi ExtensionAPI surface reverse wire (see core/types/harness.ts AgentEvent
+// ui.prompt/auth.request docs): the client's answer to an id-keyed dialog.
+// Purely a UI round trip to the runner — no transcript event, no membership
+// gate beyond "a room member can answer a dialog their own client is showing".
+async function roomUiReply(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/ui-reply$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const agentId = stringField(body, "agentId");
+  const id = stringField(body, "id");
+  if (!agentId || !id) { json(ctx.response, 400, { error: "Missing agentId/id" }); return true; }
+  const value = uiPromptReplyValue((body as { value?: unknown }).value);
+  const ok = await service.runUiReply(agentId, id, value);
+  json(ctx.response, 200, { ok });
+  return true;
+}
+/** Narrow an arbitrary JSON `value` field down to AgentRuntime.uiReply's
+ * accepted shape (core/types/harness.ts UiPromptReplyValue) — a bad/absent
+ * value degrades to "" rather than reaching the runner untyped. */
+function uiPromptReplyValue(value: unknown): UiPromptReplyValue {
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const out: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(value)) if (typeof entry === "string") out[key] = entry;
+    return out;
+  }
+  return "";
+}
+// pi registerShortcut reverse wire: the client's hotkey fired a commandId.
+async function roomUiShortcutFire(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/ui-shortcut$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const agentId = stringField(body, "agentId");
+  const commandId = stringField(body, "commandId");
+  if (!agentId || !commandId) { json(ctx.response, 400, { error: "Missing agentId/commandId" }); return true; }
+  const ok = await service.runUiShortcutFire(agentId, commandId);
+  json(ctx.response, 200, { ok });
+  return true;
+}
+// Lane E (chat-mto9n58s-bjr1): trigger a harness's interactive provider login
+// for this room (Charles's account-login route pattern, mirrored for the
+// per-turn pi ExtensionAPI oauth.login surface — see AgentInput.uiLogin's doc
+// comment for why this streams as a turn instead of a bare RPC). `agentId` is
+// optional — defaults to the room's own default target, same convention as
+// /compact and friends.
+async function roomUiLogin(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/login$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const providerId = stringField(body, "providerId");
+  if (!providerId?.trim()) { json(ctx.response, 400, { error: "Missing providerId" }); return true; }
+  const methodRaw = stringField(body, "method");
+  const method = methodRaw === "api_key" ? "api_key" : methodRaw === "oauth" ? "oauth" : undefined;
+  const agentId = stringField(body, "agentId");
+  await respond(ctx.response, () => service.runUiLogin(providerId.trim(), method, agentId?.trim() || undefined));
+  return true;
+}
 // Backwards paging through committed history ("load older" in the
 // transcript): the events immediately before ?before=<eventId>.
 async function roomEvents(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/);
   if (ctx.request.method !== "GET" || !params) return false;
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(requestingHuman(ctx.request)?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(ctx.human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const before = ctx.url.searchParams.get("before")?.trim() || undefined;
   const limit = Math.min(200, Math.max(1, Number(ctx.url.searchParams.get("limit")) || 50));
   await respond(ctx.response, async () => service.eventsBefore(before, limit));
@@ -261,6 +317,24 @@ async function roomSummons(ctx: RouteContext): Promise<boolean> {
     // UI-initiated: the human reads the result as a note in the parent room.
     const childRoomId = await coordinator.summon(params[1], agentId, taskText.trim(), { deliver: "note" });
     json(ctx.response, 202, { roomId: childRoomId });
+  } catch (error) {
+    json(ctx.response, 400, { error: error instanceof Error ? error.message : String(error) });
+  }
+  return true;
+}
+async function roomArchtreeRoot(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/archtree\/add-root$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const body = await parseBody(ctx.request);
+  const task = stringField(body, "task")?.trim();
+  if (!task) { json(ctx.response, 400, { error: "Missing root task" }); return true; }
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const snapshot = await service.getSnapshot();
+  const agentId = stringField(body, "agent")?.trim() || snapshot.room.activeAgent || snapshot.workspace.defaultAgent;
+  try {
+    const coordinator = await ctx.daemon.coordinatorFor(params[0]);
+    const roomId = await addArchtreeRoot(coordinator, { workspace: service.workspace, parentRoomId: params[1], agentId, task });
+    json(ctx.response, 202, { roomId });
   } catch (error) {
     json(ctx.response, 400, { error: error instanceof Error ? error.message : String(error) });
   }
@@ -312,6 +386,10 @@ async function roomContextGate(ctx: RouteContext): Promise<boolean> {
   }
   return true;
 }
+function ttsIdentityHeaders(identity: TtsCacheIdentity): Record<string, string> {
+  return { "x-tts-voice": encodeURIComponent(identity.voice), "x-tts-model": encodeURIComponent(identity.model), "x-tts-text-hash": identity.textHash };
+}
+
 // Read-aloud: one committed agent message → speech audio (the transcript
 // play button), one chunk per request. The daemon resolves the author's
 // engine+voice; this layer only streams the bytes. The x-tts-chunks
@@ -326,11 +404,12 @@ async function roomReadAloud(ctx: RouteContext): Promise<boolean> {
   const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   try {
-    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate);
+    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
     ctx.response.writeHead(200, {
       "content-type": audio.contentType,
       "content-length": audio.audio.length,
       "cache-control": "no-store",
+      ...ttsIdentityHeaders(audio.identity),
       "x-tts-chunks": String(audio.chunks),
       "x-tts-chunk": String(audio.chunk),
     });
@@ -358,7 +437,7 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   let delivery: ReadAloudDelivery;
   try {
-    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate);
+    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     json(
@@ -368,7 +447,12 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
     );
     return true;
   }
-  if (delivery.mode === "chunks") { json(ctx.response, 200, { mode: "chunks", chunks: delivery.chunks }); return true; }
+  for (const [key, value] of Object.entries(ttsIdentityHeaders(delivery.identity))) ctx.response.setHeader(key, value);
+  if (delivery.mode === "chunks") {
+    ctx.response.setHeader("cache-control", "no-store");
+    json(ctx.response, 200, { mode: "chunks", chunks: delivery.chunks, voice: delivery.identity.voice, model: delivery.identity.model });
+    return true;
+  }
   ctx.response.writeHead(200, {
     "content-type": "audio/pcm",
     "cache-control": "no-store",
@@ -379,9 +463,16 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
   });
   let clientGone = false;
   ctx.response.on("close", () => { clientGone = true; });
+  // Test-only fault injection (default off): abort the stream after N frames so
+  // the truncation path can be exercised live. Never hardcoded on.
+  const failAfter = Number(process.env.GAIA_TTS_FAIL_AFTER_FRAMES ?? "");
+  const failAt = Number.isInteger(failAfter) && failAfter > 0 ? failAfter : 0;
+  let sent = 0;
+  let streamError: unknown = null;
   try {
     for await (const frame of delivery.frames) {
       if (clientGone || ctx.response.writableEnded) break;
+      if (failAt && sent >= failAt) throw new Error(`GAIA_TTS_FAIL_AFTER_FRAMES=${failAt}: injected mid-stream TTS failure`);
       if (!ctx.response.write(frame)) {
         await new Promise<void>((resolveWrite) => {
           const done = (): void => { ctx.response.off("drain", done); ctx.response.off("close", done); resolveWrite(); };
@@ -389,9 +480,19 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
           ctx.response.once("close", done);
         });
       }
+      sent += 1;
     }
-  } catch {
-    // Mid-stream failure: headers are already sent, so just close.
+  } catch (error) {
+    streamError = error;
+  }
+  if (streamError && !clientGone) {
+    // Headers are already sent, so a clean end() is indistinguishable from a
+    // complete stream: the client would silently play a truncated clip. Destroy
+    // the response instead — the client sees a network error and can surface it.
+    const failure = streamError instanceof Error ? streamError : new Error(String(streamError));
+    console.error(`[read-aloud] mid-stream TTS failure workspace=${params[0]} room=${params[1]} event=${eventId.trim()} after ${sent} frames: ${failure.message}`);
+    ctx.response.destroy(failure);
+    return true;
   }
   if (!ctx.response.writableEnded) ctx.response.end();
   return true;
@@ -415,10 +516,14 @@ const roomHandlers = [
   roomBackgroundTaskOutput,
   roomBackgroundTaskDelete,
   roomMessages,
+  roomUiReply,
+  roomUiShortcutFire,
+  roomUiLogin,
   roomEvents,
   roomSanitize,
   roomSanitizeApply,
   roomSummons,
+  roomArchtreeRoot,
   cancelRoom,
   roomQueueDelete,
   deleteRoom,

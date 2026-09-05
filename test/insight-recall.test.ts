@@ -6,7 +6,7 @@
 // GaiaDaemon (heavy: registry, bus, scheduler, embed sidecar \u2014 out of scope
 // for a unit test of the gate + windowing logic itself).
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

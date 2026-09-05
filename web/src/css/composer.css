@@ -88,6 +88,13 @@
 .running-banner .summon-list { position: absolute; bottom: 100%; left: 0; z-index: 20; display: grid; min-width: 220px; max-height: 240px; overflow-y: auto; padding: 4px; border: 1px solid var(--border); border-radius: 0; background: var(--bg); box-shadow: none; }
 .running-banner .summon-row { display: flex; align-items: center; gap: 1ch; width: 100%; min-height: 22px; padding: 1px 6px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--fg); text-align: left; }
 .running-banner .summon-row:hover { background: var(--bg3); }
+
+/* pi ExtensionAPI ui.prompt banner (see core/types/harness.ts) */
+.ui-prompt-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 1ch;
+  padding: 4px 6px; border: 1px solid var(--border); background: var(--bg3); font-size: 11px;
+}
+.ui-prompt-banner .running-label { flex-basis: 100%; color: var(--fg); }
 .running-banner .summon-row-dot { width: 6px; height: 6px; background: var(--accent); }
 .running-banner .summon-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .running-banner .summon-row-hint { color: var(--muted); font-size: 10px; }

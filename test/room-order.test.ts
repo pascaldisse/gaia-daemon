@@ -2,7 +2,7 @@
 // Daemon.reorderRooms + services/room/snapshot.ts scanRoomActivity) — the
 // server half of "reorder rooms by drag/drop", room-scoped counterpart of
 // test/workspace-registry-order.test.ts.
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

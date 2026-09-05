@@ -34,6 +34,7 @@ export const globalPaths = {
   users: () => join(gaiaHome(), "users.json"),
   /** HMAC secret signing session tokens issued at login. */
   sessionSecret: () => join(gaiaHome(), "session-secret"),
+  sessionRevocations: () => join(gaiaHome(), "session-revocations.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   /** Always-loaded global prompt protocols: every *.md here (sorted by
    * filename) loads verbatim into EVERY agent's system prompt as a
@@ -73,6 +74,9 @@ export const globalPaths = {
   ttsArchiveDir: () => join(gaiaHome(), "voice-archive", "tts"),
   /** Local model files (embedding/reranker GGUFs) pulled once, checksummed. */
   modelsCacheDir: () => join(gaiaHome(), "cache", "models"),
+  /** `gaia plugin search|info` registry fetch cache (24h TTL), see
+   * src/services/plugins/registry-client.ts. */
+  pluginRegistryCacheDir: () => join(gaiaHome(), "state", "plugin-registry"),
 };
 
 // --- per-agent layout (inside an agent dir, global or project overlay) ------

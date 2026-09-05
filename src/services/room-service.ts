@@ -13,6 +13,7 @@
 // - Runtime details commit onto the transcript event itself (v1 kept a
 //   50-entry LRU side-table: metadata amnesia by design).
 
+import { runCompactCleanCommand } from "./room/compact-clean.js";
 import { readFileSync } from "node:fs";
 import { appendFile, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -45,6 +46,7 @@ import type {
   Workspace,
 } from "../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
+import { resolveAutoCompactConfig, scheduleAutoCompactAfterTurn, takePendingAutoCompact } from "./room/auto-compact.js";
 import type { RenderCap } from "../domain/render-cap.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -298,12 +300,16 @@ const COMMANDS: Record<string, CommandHandler> = {
   model: (service, command) => (command.type === "model" ? service.runModelCommand(command.agent, command.spec) : Promise.resolve("")),
   pet: (service, command) => (command.type === "pet" ? service.runPetCommand(command) : Promise.resolve("")),
   summon: (service, command) => (command.type === "summon" ? service.runSummonCommand(command.agent, command.task) : Promise.resolve("")),
+  archtree: (service, command) => (command.type === "archtree" && command.action === "add-root" ? service.runArchtreeCommand(command.agent, command.task) : Promise.resolve("Usage: /archtree add-root [--agent <agent>] <task>")),
   setup: (service, command) => (command.type === "setup" ? service.runSetupCommand(command) : Promise.resolve("")),
   clear: (service) => service.runClearCommand(),
   refresh: (service) => service.runRefreshCommand(),
   consolidate: (service, command) => (command.type === "consolidate" ? service.runConsolidateCommand(command.agent) : Promise.resolve("")),
   dream: (service, command) => (command.type === "dream" ? service.runDreamCommand(command.agent, command.apply) : Promise.resolve("")),
   compact: (service, command) => (command.type === "compact" ? service.runCompactCommand(command.agent, command.edit) : Promise.resolve("")),
+  "compact-clean": (service, command) => command.type === "compact-clean" ? runCompactCleanCommand(service, command) : Promise.resolve(""),
+  "dsc-compact": (service, command) => (command.type === "dsc-compact" ? service.runDscCompactCommand(command.agent) : Promise.resolve("")),
+  autocompact: (service, command) => (command.type === "autocompact" ? service.runAutoCompactCommand(command.value, command.cooldownTurns) : Promise.resolve("")),
   stt: (service, command) => (command.type === "stt" ? service.runSttCommand(command.engine, command.alias) : Promise.resolve("")),
   diet: (service, command) => (command.type === "diet" ? service.runDietCommand(command.sub, command.scope) : Promise.resolve("")),
   reload: (service) => service.runReloadCommand(),
@@ -538,6 +544,42 @@ export class RoomService {
       roomId: this.roomId,
       event: { id: newRoomEventId(), timestamp: new Date().toISOString(), author: "system", text },
     });
+  }
+
+  /** Persist a next-turn Pi SDK compaction after a completed turn crosses the threshold. */
+  async scheduleAutoCompact(target: string): Promise<void> {
+    // Off is the default: do not take the room's serialized state-write lock
+    // after every ordinary turn.
+    const current = await this.room.state();
+    if (resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact).thresholdPct === null) return;
+    let scheduledPct: number | undefined;
+    await this.room.updateState((state) => {
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const decision = scheduleAutoCompactAfterTurn(config, state.autoCompact, target, {
+        usageFor: (agentId) => this.contextUsage[agentId],
+      });
+      state.autoCompact = decision.state;
+      scheduledPct = decision.scheduledPct;
+    });
+    if (scheduledPct === undefined) return;
+    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: "system", text: `auto-compact @${scheduledPct}%` };
+    await this.room.appendEvent(event);
+    this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
+  }
+  /** Consume the durable schedule before the agent receives its next prompt. */
+  async runPendingAutoCompact(target: string): Promise<void> {
+    const current = await this.room.state();
+    if (resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact).thresholdPct === null || current.autoCompact?.pending?.[target] === undefined) return;
+    let pct: number | undefined;
+    await this.room.updateState((state) => {
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const pending = takePendingAutoCompact(state.autoCompact, target);
+      state.autoCompact = pending.state;
+      if (config.thresholdPct !== null) pct = pending.pct;
+    });
+    if (pct === undefined) return;
+    // Same runtime.compact + durable floor path as /compact; no clean-summary override.
+    await this.runCompactCommand(target, undefined, true);
   }
 
   /** Toggle room agent-dialogue (agents replying to each other's @mentions).

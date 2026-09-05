@@ -29,6 +29,10 @@ export interface MemoryConsolidateConfig {
 export interface MemoryConfig {
   autoRecall: boolean;
   autoRecallBudget: number;
+  /** Case-insensitive regexes: matching hits stay available to explicit recall but are not injected per turn. */
+  autoRecallExcludePatterns: string[];
+  /** Room ids whose hits stay available to explicit recall but are not injected per turn. */
+  autoRecallExcludeRooms: string[];
   embeddings: "auto" | "off" | MemoryEmbeddingsProviderConfig;
   /** Deep-path reranker (local-only; "auto" = managed sidecar or GAIA_RERANK_URL). */
   reranker: "auto" | "off";
@@ -39,6 +43,8 @@ export interface MemoryConfig {
 export interface MemoryConfigPatch {
   autoRecall?: boolean;
   autoRecallBudget?: number;
+  autoRecallExcludePatterns?: string[];
+  autoRecallExcludeRooms?: string[];
   embeddings?: MemoryConfig["embeddings"];
   reranker?: MemoryConfig["reranker"];
   consolidate?: Partial<MemoryConsolidateConfig>;
