@@ -73,6 +73,9 @@ export const globalPaths = {
   ttsArchiveDir: () => join(gaiaHome(), "voice-archive", "tts"),
   /** Local model files (embedding/reranker GGUFs) pulled once, checksummed. */
   modelsCacheDir: () => join(gaiaHome(), "cache", "models"),
+  /** `gaia plugin search|info` registry fetch cache (24h TTL), see
+   * src/services/plugins/registry-client.ts. */
+  pluginRegistryCacheDir: () => join(gaiaHome(), "state", "plugin-registry"),
 };
 
 // --- per-agent layout (inside an agent dir, global or project overlay) ------
