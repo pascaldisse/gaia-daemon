@@ -1,0 +1,81 @@
+{
+  "bar": {
+    "bottom": 38,
+    "height": 38,
+    "left": 0,
+    "right": 914,
+    "top": 0,
+    "width": 914,
+    "x": 0,
+    "y": 0
+  },
+  "brand": {
+    "bottom": 37,
+    "height": 37,
+    "left": 76,
+    "right": 184.5,
+    "top": 0,
+    "width": 108.5,
+    "x": 76,
+    "y": 0
+  },
+  "inset": "76px",
+  "rows": [
+    {
+      "drag": true,
+      "marker": "",
+      "selector": "#tabbar"
+    },
+    {
+      "drag": true,
+      "marker": "",
+      "selector": ".brand"
+    },
+    {
+      "drag": true,
+      "marker": "",
+      "selector": ".tab-logo"
+    },
+    {
+      "drag": true,
+      "marker": "",
+      "selector": ".brand span:last-child"
+    },
+    {
+      "drag": true,
+      "marker": "",
+      "selector": ".tab-strip"
+    },
+    {
+      "drag": true,
+      "marker": "",
+      "selector": ".tab-spacer"
+    },
+    {
+      "drag": false,
+      "marker": null,
+      "selector": ".tab"
+    },
+    {
+      "drag": false,
+      "marker": null,
+      "selector": ".tab-name"
+    },
+    {
+      "drag": false,
+      "marker": null,
+      "selector": ".tab-new"
+    },
+    {
+      "drag": false,
+      "marker": null,
+      "selector": ".tab-close"
+    },
+    {
+      "drag": false,
+      "marker": null,
+      "selector": ".theme-btn"
+    }
+  ],
+  "verification": "real injected handler + IPC capture; OS movement deliberately not invoked"
+}
