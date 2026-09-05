@@ -6,16 +6,22 @@ import { connectEvents, seedLiveTurn } from "./events.js";
 import { confirmDialog, promptText } from "./prompt.js";
 import { markDirty, setError } from "./render.js";
 import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, syncReadMarks } from "./state.js";
-import { closeTab, openTab, restoreTabs } from "./tabs.js";
+import { closeTab, navigateTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
 import { adoptServerTheme, setThemePersist } from "./themes.js";
 import { pinTranscriptToBottom } from "./transcript.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
-
+/** @returns {import("./tabs.js").TabEntry|null} */
+function activeTab() {
+  const snapshot = state.snapshot;
+  return snapshot ? { roomId: snapshot.room.id, workspaceId: snapshot.workspace.id } : null;
+}
+let tabsRestored = false;
 /** @param {AppPayload} body */
 async function applyAppPayload(body) {
+  const prev = activeTab();
   state.workspaces = body.workspaces ?? [];
   // Seed the cross-workspace activity cache BEFORE syncReadMarks so every
   // workspace's rooms get a first-sight baseline (nothing retroactively unread).
@@ -39,16 +45,17 @@ async function applyAppPayload(body) {
   // Theme is a daemon setting (v2 parity, services/theme.ts): the payload is
   // authoritative over this browser's pre-paint localStorage cache.
   adoptServerTheme(body.theme);
-  if (state.snapshot) {
+  if (!tabsRestored) {
     restoreTabs();
-    openTab(state.snapshot.room.id, state.snapshot.workspace.id);
+    tabsRestored = true;
   }
+  const next = activeTab();
+  if (next) navigateTab(prev, next);
   rememberLocation(state.snapshot);
   connectEvents();
   state.error = "";
   markDirty();
 }
-
 /**
  * @param {string} [currentWorkspaceId] Preferred workspace to open (e.g. the one
  *   the user last had open). Ignored if it no longer exists, so a removed
@@ -68,7 +75,10 @@ export async function loadApp(currentWorkspaceId) {
 
 /** @param {SnapshotPayload} body */
 function applySnapshotPayload(body) {
+  const prev = activeTab();
   state.snapshot = body.snapshot;
+  const next = activeTab();
+  if (next) navigateTab(prev, next);
   state.streams.clear();
   seedLiveTurn();
   const current = body.snapshot.rooms.find((room) => room.id === body.snapshot.room.id);
@@ -81,16 +91,11 @@ function applySnapshotPayload(body) {
   state.voice = body.voice ?? null;
   rememberLocation(state.snapshot);
 }
-
 /** @param {string} workspaceId */
 export async function loadWorkspace(workspaceId) {
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
     applySnapshotPayload(body);
-    restoreTabs();
-    if (state.snapshot) {
-      openTab(state.snapshot.room.id, state.snapshot.workspace.id);
-    }
     connectEvents();
     state.error = "";
     markDirty();
@@ -134,7 +139,6 @@ export async function selectRoom(workspaceId, roomId, opts = {}) {
       body: JSON.stringify(opts.incognito ? { incognito: true } : {}),
     });
     applySnapshotPayload(body);
-    if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
     state.error = "";
     markDirty();
@@ -317,6 +321,7 @@ export async function addRoom(opts = {}) {
   const incognito = opts.incognito === true;
   const roomId = newAutoRoomId(incognito ? "incognito-" : "chat-");
   try {
+    openTab(roomId, snapshot.workspace.id);
     await selectRoom(snapshot.workspace.id, roomId, { incognito });
   } catch (error) {
     setError(error);
@@ -432,7 +437,6 @@ export async function deleteRoom(roomId) {
     });
     state.sidebarFocus = null; // the target is gone; fall back to the new current room
     applySnapshotPayload(body);
-    if (state.snapshot) openTab(state.snapshot.room.id, state.snapshot.workspace.id);
     connectEvents();
     state.error = "";
     markDirty();

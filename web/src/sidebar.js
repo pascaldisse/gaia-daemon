@@ -9,6 +9,7 @@ import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
 import { refreshAttention } from "./attention.js";
+import { openTab } from "./tabs.js";
 import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
@@ -191,6 +192,17 @@ function StatusIcons({ running, unread, incognito, runningTitle = "agent running
   ];
 }
 
+/** Cmd/Ctrl-click follows browser tab semantics on every platform.
+ * @param {MouseEvent|PointerEvent} event */
+function hasPrimaryModifier(event) {
+  return event.metaKey || event.ctrlKey;
+}
+/** @param {import("./types.js").Snapshot} snapshot @param {RoomSummary} room @param {boolean} newTab */
+function selectSidebarRoom(snapshot, room, newTab) {
+  if (newTab) openTab(room.id, snapshot.workspace.id);
+  if (newTab || !room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
+  else markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
+}
 // --- favorites (Finder-style: pinned workspaces + rooms, mixed) -------------
 
 /** @typedef {{kind: "workspace", workspace: WorkspaceRecord}|{kind: "room", room: RoomSummary}} FavoriteEntry */
@@ -249,7 +261,8 @@ function FavoriteRow(entry) {
   const path = entry.kind === "workspace" ? entry.workspace.path : entry.room.path;
   const active = entry.kind === "workspace" ? entry.workspace.id === state.snapshot?.workspace.id : entry.room.id === state.snapshot?.room.id;
   const act = entry.kind === "workspace" ? workspaceActivity(entry.workspace.id) : { running: entry.room.running, unread: roomUnread(entry.room) };
-  const onClick = () => {
+  /** @param {MouseEvent|PointerEvent} [event] */
+  const onClick = (event) => {
     if (entry.kind === "workspace") {
       state.sidebarFocus = { kind: "workspace", id: entry.workspace.id };
       if (entry.workspace.isInitialized) void loadWorkspace(entry.workspace.id);
@@ -259,9 +272,20 @@ function FavoriteRow(entry) {
       if (!snapshot) return;
       state.roomContextMenu = null;
       state.sidebarFocus = { kind: "room", id: entry.room.id };
-      if (entry.room.isCurrent) markRoomRead(snapshot.workspace.id, entry.room.id, entry.room.lastActivity ?? 0);
-      else void selectRoom(snapshot.workspace.id, entry.room.id);
+      selectSidebarRoom(snapshot, entry.room, Boolean(event && hasPrimaryModifier(event)));
     }
+    markDirty("sidebar");
+    closeSidebarOverlay();
+  };
+  /** @param {MouseEvent} event */
+  const onAuxClick = (event) => {
+    if (entry.kind !== "room" || event.button !== 1) return;
+    const snapshot = state.snapshot;
+    if (!snapshot) return;
+    event.preventDefault();
+    state.roomContextMenu = null;
+    state.sidebarFocus = { kind: "room", id: entry.room.id };
+    selectSidebarRoom(snapshot, entry.room, true);
     markDirty("sidebar");
     closeSidebarOverlay();
   };
@@ -274,6 +298,7 @@ function FavoriteRow(entry) {
       onpointermove: (/** @type {PointerEvent} */ event) => moveDrag(event),
       onpointerup: (/** @type {PointerEvent} */ event) => endDrag(event, onClick),
       onpointercancel: (/** @type {PointerEvent} */ event) => cancelDrag(event),
+      onauxclick: onAuxClick,
       oncontextmenu: (/** @type {MouseEvent} */ event) => {
         event.preventDefault();
         state.favoriteContextMenu = { kind: entry.kind, id, x: event.clientX, y: event.clientY };
@@ -289,7 +314,6 @@ function FavoriteRow(entry) {
     h("small", {}, PathText(path)),
   );
 }
-
 /** @returns {HTMLElement|null} */
 function FavoriteContextMenu() {
   const open = state.favoriteContextMenu;
@@ -530,13 +554,23 @@ function RoomNode(room, childrenOf, depth) {
   const isTop = depth === 0;
   const since = localTime(room.runningSince);
   const runningTitle = room.running && since ? `running since ${since}` : "agent running";
-  const onClick = () => {
+  /** @param {MouseEvent|PointerEvent} [event] */
+  const onClick = (event) => {
     if (!snapshot) return;
     state.roomContextMenu = null;
     state.sidebarFocus = { kind: "room", id: room.id };
-    if (room.isCurrent) markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
-    if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
-    else markDirty("sidebar");
+    selectSidebarRoom(snapshot, room, Boolean(event && hasPrimaryModifier(event)));
+    markDirty("sidebar");
+    closeSidebarOverlay();
+  };
+  /** @param {MouseEvent} event */
+  const onAuxClick = (event) => {
+    if (event.button !== 1 || !snapshot) return;
+    event.preventDefault();
+    state.roomContextMenu = null;
+    state.sidebarFocus = { kind: "room", id: room.id };
+    selectSidebarRoom(snapshot, room, true);
+    markDirty("sidebar");
     closeSidebarOverlay();
   };
   return h(
@@ -566,7 +600,8 @@ function RoomNode(room, childrenOf, depth) {
               }
             : { onclick: !snapshot ? null : onClick }),
 
-          oncontextmenu: snapshot
+          onauxclick: !snapshot ? null : onAuxClick,
+      oncontextmenu: snapshot
             ? (/** @type {MouseEvent} */ event) => {
                 event.preventDefault();
                 state.sidebarFocus = { kind: "room", id: room.id };
@@ -820,7 +855,7 @@ function computeDropIndex(event, list, selector) {
   showDropIndicator(list, rect, boundary);
 }
 
-/** @param {PointerEvent} event @param {() => void} onClick invoked when the press never crossed the drag threshold (a plain click) */
+/** @param {PointerEvent} event @param {(event: PointerEvent) => void} onClick invoked when the press never crossed the drag threshold (a plain click) */
 function endDrag(event, onClick) {
   if (!drag || event.pointerId !== drag.pointerId) return;
   const d = drag;
@@ -835,7 +870,7 @@ function endDrag(event, onClick) {
   setFavoritesHighlight(false);
   if (!d.moved) {
     cleanupDrag(d.el);
-    onClick();
+    onClick(event);
     return;
   }
   applyDrop(d);

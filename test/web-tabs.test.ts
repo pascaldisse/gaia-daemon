@@ -16,7 +16,7 @@ const sessionStorage = new StorageStub();
 Object.assign(globalThis, { localStorage, sessionStorage, window: { localStorage, sessionStorage } });
 
 const { state } = await import("../web/src/state.js");
-const { closeTab, openTab, restoreTabs, visibleTabs } = await import("../web/src/tabs.js");
+const { closeTab, navigateTab, openTab, restoreTabs, visibleTabs } = await import("../web/src/tabs.js");
 
 function reset(): void {
   localStorage.clear();
@@ -68,4 +68,26 @@ test("visibleTabs resolves cached foreign rooms and keeps unknown workspace entr
     ["two", "foreign"],
     ["three", "unknown"],
   ]);
+
+  reset();
+  openTab("first", "one");
+  openTab("other", "two");
+  navigateTab({ roomId: "first", workspaceId: "one" }, { roomId: "next", workspaceId: "three" });
+  assert.deepEqual(state.openTabs, [{ roomId: "next", workspaceId: "three" }, { roomId: "other", workspaceId: "two" }]);
+
+  reset();
+  openTab("first", "one");
+  openTab("target", "two");
+  navigateTab({ roomId: "first", workspaceId: "one" }, { roomId: "target", workspaceId: "two" });
+  assert.deepEqual(state.openTabs, [{ roomId: "first", workspaceId: "one" }, { roomId: "target", workspaceId: "two" }]);
+
+  reset();
+  openTab("open", "one");
+  navigateTab({ roomId: "missing", workspaceId: "two" }, { roomId: "next", workspaceId: "three" });
+  assert.deepEqual(state.openTabs, [{ roomId: "open", workspaceId: "one" }, { roomId: "next", workspaceId: "three" }]);
+
+  reset();
+  openTab("same", "one");
+  navigateTab({ roomId: "same", workspaceId: "one" }, { roomId: "same", workspaceId: "one" });
+  assert.deepEqual(state.openTabs, [{ roomId: "same", workspaceId: "one" }]);
 });

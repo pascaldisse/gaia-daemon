@@ -110,6 +110,18 @@ export function openTab(roomId, workspaceId) {
     persist();
   }
 }
+/** Navigate from one active room/workspace pair to another without growing the
+ * working set. Existing targets stay put; otherwise replace the prior active
+ * entry in place, falling back to an initial append when no prior entry exists.
+ * @param {TabEntry|null} prev @param {TabEntry} next */
+export function navigateTab(prev, next) {
+  if (!next?.roomId || !next.workspaceId) return;
+  if (tabIndex(next.roomId, next.workspaceId) !== -1) return;
+  const previous = prev && tabIndex(prev.roomId, prev.workspaceId);
+  if (previous !== null && previous !== -1) state.openTabs.splice(previous, 1, { ...next });
+  else state.openTabs.push({ ...next });
+  persist();
+}
 
 /** Drop a tab; returns the neighbour pair to select next, or null when inactive.
  * @param {string} roomId @param {string} workspaceId @param {boolean} isActive
