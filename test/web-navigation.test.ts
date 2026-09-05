@@ -1,4 +1,5 @@
-import test from "node:test";
+// Browser-relative design mount → bun test --preserve-symlinks test/web-navigation.test.ts
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createNavigation } from "../web/src/navigation.js";
 
@@ -25,7 +26,7 @@ class Channel {
 }
 Object.assign(globalThis, {
   localStorage: storage, sessionStorage: storage,
-  window: { localStorage: storage, sessionStorage: storage, setInterval, clearInterval, setTimeout, clearTimeout },
+  window: { localStorage: storage, sessionStorage: storage, setInterval, clearInterval, setTimeout, clearTimeout, addEventListener() {} },
   document: { visibilityState: "hidden", hasFocus: () => false, querySelector: () => null },
   requestAnimationFrame: () => 0,
   EventSource: Channel,
@@ -287,4 +288,20 @@ test("request deadline aborts a stuck navigation fetch", async () => {
   assert.equal(request.signal.reason.name, "TimeoutError");
   nav.finish(request.id);
   assert.equal(nav.pending, false);
+});
+
+test("sidebar current-room click cancels a pending departure instead of trusting stale rendered isCurrent", async () => {
+  setup("sidebar");
+  const { roomIsSelected } = await import("../web/src/sidebar.js");
+  assert.equal(roomIsSelected("sidebar", "a"), true);
+  assert.equal(roomIsSelected("other", "a"), false);
+  const away = selectRoom("sidebar", "b");
+  assert.equal(state.snapshot?.room.id, "a");
+  assert.equal(roomIsSelected("sidebar", "a"), false, "click must issue a new intent while departure is pending");
+  const back = selectRoom("sidebar", "a");
+  pending[1].resolve(payload("sidebar", "a"));
+  await back;
+  pending[0].resolve(payload("sidebar", "b"));
+  await away;
+  assert.equal(roomIsSelected("sidebar", "a"), true);
 });

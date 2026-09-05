@@ -4,6 +4,8 @@
 // room.parentRoomId) and is collapsed by default behind a twisty. Nesting is
 // unbounded — grandchildren summon their own children.
 import { addRoom, addWorkspace, deleteWorkspace, loadWorkspace, renameRoom, reorderRooms, reorderWorkspaces, selectRoom, setRoomFavorite, setWorkspaceFavorite } from "./actions.js";
+import { navigation } from "./navigation.js";
+
 import { UI } from "./glyphs.js";
 import { closeSidebarOverlay } from "./chrome.js";
 import { $, h } from "./dom.js";
@@ -26,6 +28,12 @@ import {
   state,
   workspaceActivity,
 } from "./state.js";
+
+/** Click-time selection; rendered isCurrent may precede a pending navigation.
+ * @param {string} workspaceId @param {string} roomId */
+export function roomIsSelected(workspaceId, roomId) {
+  return !navigation.pending && state.snapshot?.workspace.id === workspaceId && state.snapshot.room.id === roomId;
+}
 
 /** @typedef {import("./types.js").RoomSummary} RoomSummary */
 /** @typedef {import("./types.js").WorkspaceRecord} WorkspaceRecord */
@@ -244,6 +252,7 @@ function FavoritesSection() {
 
 /** @param {FavoriteEntry} entry */
 function FavoriteRow(entry) {
+  const snapshot = state.snapshot;
   const id = favEntryId(entry);
   const name = entry.kind === "workspace" ? entry.workspace.name : (entry.room.title ?? entry.room.id);
   const path = entry.kind === "workspace" ? entry.workspace.path : entry.room.path;
@@ -255,11 +264,10 @@ function FavoriteRow(entry) {
       if (entry.workspace.isInitialized) void loadWorkspace(entry.workspace.id);
       else setError(`Missing .gaia workspace: ${entry.workspace.path}`);
     } else {
-      const snapshot = state.snapshot;
       if (!snapshot) return;
       state.roomContextMenu = null;
       state.sidebarFocus = { kind: "room", id: entry.room.id };
-      if (entry.room.isCurrent) markRoomRead(snapshot.workspace.id, entry.room.id, entry.room.lastActivity ?? 0);
+      if (roomIsSelected(snapshot.workspace.id, entry.room.id)) markRoomRead(snapshot.workspace.id, entry.room.id, entry.room.lastActivity ?? 0);
       else void selectRoom(snapshot.workspace.id, entry.room.id);
     }
     markDirty("sidebar");
@@ -534,9 +542,10 @@ function RoomNode(room, childrenOf, depth) {
     if (!snapshot) return;
     state.roomContextMenu = null;
     state.sidebarFocus = { kind: "room", id: room.id };
-    if (room.isCurrent) markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
-    if (!room.isCurrent) void selectRoom(snapshot.workspace.id, room.id);
-    else markDirty("sidebar");
+    if (roomIsSelected(snapshot.workspace.id, room.id)) {
+      markRoomRead(snapshot.workspace.id, room.id, room.lastActivity ?? 0);
+      markDirty("sidebar");
+    } else void selectRoom(snapshot.workspace.id, room.id);
     closeSidebarOverlay();
   };
   return h(
