@@ -45,3 +45,26 @@ types + invoke path) ONLY after BOTH:
    still work end-to-end in a real lane.
 `channel-bridge` is exempt from this timeline — it has no pi replacement and
 is never removed.
+
+## Reachability (Lane E, chat-mto9n58s-bjr1 — closes docs/PLUGIN-ADVERSARY-0905.md §1/§4 top-fixes 3+4)
+- **Slash commands**: `pi.registerCommand` now DISPATCHES for real —
+  `src/harness/pi/runtime.ts` `resolveExtCommand`/`send()`'s ext-command
+  branch calls `runner.getCommand(name)!.handler(args, runner.createCommandContext())`
+  (the SDK's own invocation, never re-implemented) instead of prompting the
+  model with raw `/word` text. `bindPiCommands` (`src/harness/pi/ui-context.ts`)
+  emits a new `ext.commands` AgentEvent so a room can see what's registered.
+- **Event passthrough**: `forwardPiEvent` (`src/harness/pi/events.ts`) no
+  longer silently drops unmapped `ExtensionEvent` kinds — every one becomes a
+  generic `harness.event {kind, payload}` AgentEvent (depth/size-capped
+  `safePayload`, default 32KB). Web renders it as a collapsed debug row
+  (`web/src/transcript.js`, grouped by kind+count).
+- **Login trigger**: `AgentInput.uiLogin {providerId, method?}`
+  (`src/harness/spec.ts`) — modeled as a turn, not a bare RPC, because
+  `ui.prompt`/`auth.request` only ever reach a room during an active turn's
+  event channel. `PiRuntime.send()` drives `ModelRuntime.login()` through
+  `wrapAuthInteraction` (`src/harness/pi/ui-context.ts`, previously
+  unreachable). Trigger: `RoomCommandsMixin.runUiLogin` →
+  `POST /api/workspaces/:ws/rooms/:id/login {providerId, method?, agentId?}`
+  (`src/server/routes/rooms.ts`). Web: Settings ▸ Accounts "Login via room"
+  button per account (`web/src/settings.js`), gated on
+  `GET /api/accounts`'s `harnesses[].uiLogin` (data: `capabilities.supportsUi`).
