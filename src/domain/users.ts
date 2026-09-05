@@ -18,7 +18,7 @@ export interface HumanUser {
    * absent on legacy/shared users for backwards compatibility. */
   home?: string;
   workspace?: string;
-  /** "scrypt$<saltHex>$<hashHex>" — never leaves this module. */
+  /** scrypt$<saltHex>$<hashHex>[$<N>] — absent N → legacy cost. */
   passwordHash: string;
   createdAt: string;
 }
@@ -106,10 +106,30 @@ function toPublic(user: HumanUser): PublicUser {
   };
 }
 
-function hashPassword(password: string): string {
+const LEGACY_SCRYPT_N = 2 ** 14;
+const MIN_SCRYPT_N = 2 ** 15;
+
+/** GAIA_SCRYPT_N → configurable power-of-two work factor; floor enforced. */
+function passwordCost(): number {
+  const N = Number(process.env.GAIA_SCRYPT_N ?? MIN_SCRYPT_N);
+  if (!Number.isSafeInteger(N) || N < MIN_SCRYPT_N || !Number.isInteger(Math.log2(N))) {
+    throw new Error("GAIA_SCRYPT_N must be a power of two >= 32768");
+  }
+  return N;
+}
+
+function derivePassword(password: string, salt: string, length: number, N: number): Buffer {
+  return scryptSync(password, salt, length, { N, r: 8, p: 1, maxmem: 128 * N * 8 + 1024 * 1024 });
+}
+
+function storedPasswordCost(stored: string): number {
+  return Number(stored.split("$")[3] ?? LEGACY_SCRYPT_N);
+}
+
+function hashPassword(password: string, N = passwordCost()): string {
   const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `scrypt$${salt}$${hash}`;
+  const hash = derivePassword(password, salt, 64, N).toString("hex");
+  return `scrypt$${salt}$${hash}$${N}`;
 }
 
 // Missing users take the same KDF + constant-time comparison path as known users.
@@ -117,10 +137,10 @@ const DUMMY_PASSWORD_HASH = `scrypt$${randomBytes(16).toString("hex")}$${randomB
 
 function verifyPassword(password: string, stored: string): boolean {
   const parts = stored.split("$");
-  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  if ((parts.length !== 3 && parts.length !== 4) || parts[0] !== "scrypt") return false;
   const [, salt, hashHex] = parts;
   const expected = Buffer.from(hashHex, "hex");
-  const actual = scryptSync(password, salt, expected.length);
+  const actual = derivePassword(password, salt, expected.length, storedPasswordCost(stored));
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -173,9 +193,24 @@ export function removeUser(id: string): boolean {
 
 /** Null on wrong username OR wrong password — never distinguish which, to a caller. */
 export function authenticate(username: string, password: string): PublicUser | null {
-  const user = findUserByUsername(username);
-  const valid = verifyPassword(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
-  return user && valid ? toPublic(user) : null;
+  const users = readAll();
+  const target = username.trim().toLowerCase();
+  const user = users.find((entry) => entry.username.toLowerCase() === target);
+  const N = passwordCost();
+  // Mixed-cost migration → same KDF schedule for every username, including missing.
+  const costs = new Set([N, ...users.map((entry) => storedPasswordCost(entry.passwordHash))]);
+  let valid = false;
+  for (const cost of costs) {
+    const real = user !== undefined && storedPasswordCost(user.passwordHash) === cost;
+    const matched = verifyPassword(password, real ? user.passwordHash : `${DUMMY_PASSWORD_HASH}$${cost}`);
+    if (real && matched) valid = true;
+  }
+  if (!user || !valid) return null;
+  if (storedPasswordCost(user.passwordHash) < N) {
+    user.passwordHash = hashPassword(password, N);
+    writeAll(users);
+  }
+  return toPublic(user);
 }
 
 // --- sessions ----------------------------------------------------------------
