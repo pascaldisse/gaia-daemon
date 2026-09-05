@@ -308,3 +308,65 @@ test("SECURITY [FAIL, MEDIUM, footgun]: removing the last room member silently r
     assert.equal(anonReadAfter.status, 403, "VULNERABLE: last-member self-removal reopened a previously-gated room to anonymous read");
   });
 });
+
+// Delivery matrix → identity, wildcard subscriptions, open rooms, revocation, ordering.
+test("SSE authorizes members and rechecks membership on existing subscriptions", async () => {
+  await withHarness(async (ctx: any) => {
+    const { baseUrl, workspaceId, workspace, web } = ctx;
+    const alice = createUser("sse-alice", "pw", "Alice");
+    const bob = createUser("sse-bob", "pw", "Bob");
+    const room = await RoomHandle.open(workspace, "sse-private");
+    await room.updateState((state) => { state.humans = [alice.id]; });
+    const clients: { controller: AbortController; text: string; read: Promise<void> }[] = [];
+    try {
+      for (const cookie of [undefined, cookieFor(bob.id), cookieFor(alice.id)]) {
+        const controller = new AbortController();
+        const response = await fetch(`${baseUrl}/api/events`, {
+          signal: controller.signal,
+          ...(cookie ? { headers: { cookie } } : {}),
+        });
+        assert.equal(response.status, 200);
+        const client = { controller, text: "", read: Promise.resolve() };
+        clients.push(client);
+        client.read = (async () => {
+          const reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) return;
+              client.text += decoder.decode(value, { stream: true });
+            }
+          } catch { /* aborted on cleanup */ }
+        })();
+      }
+      const send = (roomId: string, text: string) => web.daemon.broadcast({
+        type: "room-event", workspaceId, roomId,
+        event: { id: text, timestamp: new Date().toISOString(), author: "system", text },
+      });
+      const fence = async (account: string) => {
+        web.daemon.broadcast({ type: "usage-limits", account, usage: null });
+        const deadline = Date.now() + 2000;
+        while (!clients.every((client) => client.text.includes(account)) && Date.now() < deadline) await Bun.sleep(10);
+        assert.ok(clients.every((client) => client.text.includes(account)), "all delivery queues drained");
+      };
+      send("sse-private", "PRIVATE-FIRST");
+      send("sse-private", "PRIVATE-SECOND");
+      send("sse-open", "OPEN-CONTROL");
+      await fence("fence-before-revocation");
+      for (const client of clients.slice(0, 2)) assert.ok(!client.text.includes("PRIVATE-"));
+      assert.ok(clients.every((client) => client.text.includes("OPEN-CONTROL")));
+      assert.ok(clients[2]!.text.includes("PRIVATE-FIRST"));
+      assert.ok(clients[2]!.text.indexOf("PRIVATE-FIRST") < clients[2]!.text.indexOf("PRIVATE-SECOND"));
+      await room.updateState((state) => { state.humans = [bob.id]; });
+      send("sse-private", "PRIVATE-AFTER-REVOCATION");
+      await fence("fence-after-revocation");
+      assert.ok(!clients[0]!.text.includes("PRIVATE-AFTER-REVOCATION"));
+      assert.ok(clients[1]!.text.includes("PRIVATE-AFTER-REVOCATION"));
+      assert.ok(!clients[2]!.text.includes("PRIVATE-AFTER-REVOCATION"));
+    } finally {
+      for (const client of clients) client.controller.abort();
+      await Promise.all(clients.map((client) => client.read));
+    }
+  });
+});

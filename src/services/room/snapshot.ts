@@ -211,6 +211,12 @@ export class RoomSnapshotMixin {
   /** Human-membership allowlist (RoomState.humans). Absent/empty = today's
    * unrestricted default — enforcement (server/http.ts) only kicks in once a
    * room has at least one human explicitly added. */
+  async canAccessRoom(humanId?: string): Promise<boolean> {
+    await this.init();
+    const humans = (await this.room.state()).humans;
+    return humans === undefined || humans.includes(humanId ?? "");
+  }
+
   async roomHumans(): Promise<string[]> {
     await this.init();
     return (await this.room.state()).humans ?? [];

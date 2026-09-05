@@ -194,8 +194,7 @@ async function roomMessages(ctx: RouteContext): Promise<boolean> {
   // durable queue instead of injecting into the running turn.
   const queue = (body as { queue?: unknown }).queue === true;
   const human = requestingHuman(ctx.request);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(human?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const task = await service.sendMessage(textValue, {
     ...(attachments ? { attachments } : {}),
     ...(queue ? { queue } : {}),
@@ -210,8 +209,7 @@ async function roomEvents(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/);
   if (ctx.request.method !== "GET" || !params) return false;
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(requestingHuman(ctx.request)?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(ctx.human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const before = ctx.url.searchParams.get("before")?.trim() || undefined;
   const limit = Math.min(200, Math.max(1, Number(ctx.url.searchParams.get("limit")) || 50));
   await respond(ctx.response, async () => service.eventsBefore(before, limit));
