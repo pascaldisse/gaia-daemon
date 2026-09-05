@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { bearerToken, cookieValue, json } from "../core/http.js";
+import { RoomHandle } from "../domain/rooms.js";
 import { verifySessionToken, type PublicUser } from "../domain/users.js";
 import type { SummonCensusEntry } from "../services/summons.js";
 import type { HarnessTokenClaims } from "../services/bridge.js";
@@ -54,6 +55,14 @@ export interface RouteContext {
   bootId: string;
   registerSse(workspaceId?: string, roomId?: string): void;
 }
+/** Named-room HTTP gate → shared durable membership policy; no room creation. */
+export async function requireRoomAccess(ctx: RouteContext, workspaceId: string, roomId: string): Promise<boolean> {
+  const record = await ctx.daemon.registry.findForHuman(workspaceId, ctx.humanScope);
+  if (record && await RoomHandle.canAccess(record.path, roomId, ctx.human?.id)) return true;
+  json(ctx.response, 403, { error: "Not a member of this room." });
+  return false;
+}
+
 export async function respond(response: ServerResponse, run: () => Promise<unknown>): Promise<void> {
   try {
     json(response, 200, await run());

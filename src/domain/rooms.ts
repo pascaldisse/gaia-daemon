@@ -664,6 +664,15 @@ export class RoomHandle {
     return handle;
   }
 
+  /** Read-only authorization: selecting a new room must not consume its seed. */
+  static async canAccess(workspaceRoot: string, roomId: string, humanId?: string): Promise<boolean> {
+    const state = await readRoomState(workspacePaths.roomState(workspaceRoot, roomId)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    return roomAllowsHuman(normalizeRoomState(state), humanId);
+  }
+
   get transcriptPath(): string {
     return workspacePaths.transcript(this.workspaceRoot, this.roomId);
   }

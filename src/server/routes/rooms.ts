@@ -4,7 +4,7 @@ import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js"
 import { json, parseBody, readRawBody } from "../../core/http.js";
 import type { ReadAloudDelivery, TtsCacheIdentity } from "../../services/read-aloud.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
-import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
+import { matchPath, boolField, respond, requireRoomAccess, requestingHuman, stringField, type RouteContext } from "../route.js";
 
 export function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined { if (!body || typeof body !== "object") return undefined; const raw = (body as Record<string, unknown>).attachments; if (!Array.isArray(raw)) return undefined; const refs: { id: string; name?: string; mime?: string }[] = []; for (const item of raw) { if (!item || typeof item !== "object") continue; const record = item as Record<string, unknown>; if (typeof record.id !== "string" || !record.id.trim()) continue; refs.push({ id: record.id, ...(typeof record.name === "string" ? { name: record.name } : {}), ...(typeof record.mime === "string" ? { mime: record.mime } : {}) }); } return refs.length ? refs : undefined; }
 function sanitizeEditRefs(body: unknown): { eventId: string; quote: string; replacement: string }[] { if (!body || typeof body !== "object") return []; const raw = (body as Record<string, unknown>).edits; if (!Array.isArray(raw)) return []; return raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").filter((item) => typeof item.eventId === "string" && !!item.eventId.trim() && typeof item.quote === "string" && !!item.quote.length && typeof item.replacement === "string").map((item) => ({ eventId: item.eventId as string, quote: item.quote as string, replacement: item.replacement as string })); }
@@ -15,6 +15,7 @@ async function selectRoom(ctx: RouteContext): Promise<boolean> {
   const body = await parseBody(ctx.request);
   const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
   if (!roomId?.trim()) { json(ctx.response, 400, { error: "Missing room id" }); return true; }
+  if (!(await requireRoomAccess(ctx, params[0], roomId.trim()))) return true;
   await respond(ctx.response, () => ctx.daemon.selectRoom(params[0], roomId.trim(), { incognito: boolField(body, "incognito") }));
   return true;
 }

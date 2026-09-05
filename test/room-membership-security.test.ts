@@ -390,3 +390,40 @@ test("last-member removal persists deny-all and cannot bootstrap back to open", 
     assert.deepEqual((await reopened.state()).humans, []);
   });
 });
+
+test("room bootstrap and selection payloads enforce membership before side effects", async () => {
+  await withHarness(async (ctx: any) => {
+    const { baseUrl, workspaceId, workspace } = ctx;
+    const alice = createUser("payload-alice", "pw", "Alice");
+    const bob = createUser("payload-bob", "pw", "Bob");
+    const room = await RoomHandle.open(workspace, "default");
+    await room.addUserMessage("PRIVATE-BOOTSTRAP", [], undefined, undefined, undefined, { id: alice.id, label: "Alice" });
+    await room.updateState((state) => { state.humans = [alice.id]; });
+    const base = `${baseUrl}/api/workspaces/${workspaceId}`;
+    for (const [cookie, member] of [[undefined, false], [cookieFor(bob.id), false], [cookieFor(alice.id), true]] as const) {
+      const headers = cookie ? { cookie } : undefined;
+      const app = await fetch(`${baseUrl}/api/app`, { headers });
+      assert.equal(app.status, 200);
+      const payload = await app.json();
+      assert.equal(Boolean(payload.snapshot), member);
+      assert.equal(JSON.stringify(payload).includes("PRIVATE-BOOTSTRAP"), member);
+      for (const suffix of ["/snapshot", "/rooms/default/events", "/rooms/default/humans"]) {
+        const response = await fetch(`${base}${suffix}`, { headers });
+        assert.equal(response.status, member ? 200 : 403, suffix);
+      }
+      for (const suffix of ["/rooms", "/rooms/default/select", "/rooms/default/activate"]) {
+        const response = await fetch(`${base}${suffix}`, {
+          method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ roomId: "default" }),
+        });
+        assert.equal(response.status, member ? 200 : 403, suffix);
+        assert.equal((await response.text()).includes("PRIVATE-BOOTSTRAP"), member);
+      }
+    }
+    const created = await fetch(`${base}/rooms/fresh-private/select`, {
+      method: "POST", headers: { cookie: cookieFor(alice.id), "content-type": "application/json" }, body: JSON.stringify({ incognito: true }),
+    });
+    const createdPayload = await created.json();
+    assert.equal(created.status, 200, JSON.stringify(createdPayload));
+    assert.equal(createdPayload.snapshot.room.incognito, true, "authorization must not create rooms before their incognito seed");
+  });
+});
