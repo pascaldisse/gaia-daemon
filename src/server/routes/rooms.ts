@@ -2,7 +2,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { json, parseBody, readRawBody } from "../../core/http.js";
-import type { ReadAloudDelivery } from "../../services/read-aloud.js";
+import type { ReadAloudDelivery, TtsCacheIdentity } from "../../services/read-aloud.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
 import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
 
@@ -324,6 +324,10 @@ async function roomContextGate(ctx: RouteContext): Promise<boolean> {
   }
   return true;
 }
+function ttsIdentityHeaders(identity: TtsCacheIdentity): Record<string, string> {
+  return { "x-tts-voice": encodeURIComponent(identity.voice), "x-tts-model": encodeURIComponent(identity.model), "x-tts-text-hash": identity.textHash };
+}
+
 // Read-aloud: one committed agent message → speech audio (the transcript
 // play button), one chunk per request. The daemon resolves the author's
 // engine+voice; this layer only streams the bytes. The x-tts-chunks
@@ -338,11 +342,12 @@ async function roomReadAloud(ctx: RouteContext): Promise<boolean> {
   const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   try {
-    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate);
+    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
     ctx.response.writeHead(200, {
       "content-type": audio.contentType,
       "content-length": audio.audio.length,
       "cache-control": "no-store",
+      ...ttsIdentityHeaders(audio.identity),
       "x-tts-chunks": String(audio.chunks),
       "x-tts-chunk": String(audio.chunk),
     });
@@ -370,7 +375,7 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   let delivery: ReadAloudDelivery;
   try {
-    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate);
+    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     json(
@@ -380,7 +385,12 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
     );
     return true;
   }
-  if (delivery.mode === "chunks") { json(ctx.response, 200, { mode: "chunks", chunks: delivery.chunks }); return true; }
+  for (const [key, value] of Object.entries(ttsIdentityHeaders(delivery.identity))) ctx.response.setHeader(key, value);
+  if (delivery.mode === "chunks") {
+    ctx.response.setHeader("cache-control", "no-store");
+    json(ctx.response, 200, { mode: "chunks", chunks: delivery.chunks, voice: delivery.identity.voice, model: delivery.identity.model });
+    return true;
+  }
   ctx.response.writeHead(200, {
     "content-type": "audio/pcm",
     "cache-control": "no-store",

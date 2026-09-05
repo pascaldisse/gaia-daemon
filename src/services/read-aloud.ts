@@ -323,6 +323,8 @@ export interface TtsSynthesisContext {
   voice?: string;
   /** Correlates every helper request and failure in the daemon logs. */
   requestId?: string;
+  /** Effective synthesis model; absent on callers using engine defaults. */
+  model?: string;
   settings: VoiceSettings;
   /** Bring up the bundled unmute TTS service if needed → its HTTP base URL. */
   ensureTts(onStatus: (message: string) => void): Promise<{ ttsUrl: string }>;
@@ -338,6 +340,8 @@ export interface TtsEngineSpec {
   voices: string[];
   /** Resolve/validate an explicit per-request voice when this engine requires it. */
   resolveVoice?(voice: string | undefined, settings: VoiceSettings): string | undefined;
+  /** Engines with selectable models resolve request overrides + settings here. */
+  resolveModel?(model: string | undefined, settings: VoiceSettings): string;
   synthesize(context: TtsSynthesisContext): Promise<TtsAudio>;
   /** Optional: synthesize the whole message as ONE continuous stream, played
    * frame-by-frame as it arrives (matches the claude.ai desktop app). Declaring
@@ -379,12 +383,15 @@ export function ttsEngineIds(): string[] {
 export function resolveTtsChoice(
   agent: { voice?: string; tts?: AgentTtsConfig } | undefined,
   settings: VoiceSettings,
-): { engine: TtsEngineSpec; voice?: string } {
+  overrides: TtsOverrides = {},
+): { engine: TtsEngineSpec; voice?: string; model: string } {
   const engineId = agent?.tts?.engine ?? settings.ttsEngine;
   const engine = findTtsEngine(engineId);
   if (!engine) throw new Error(`Unknown TTS engine "${engineId}" (available: ${ttsEngineIds().join(", ")})`);
-  const requestedVoice = agent?.tts?.voice ?? agent?.voice;
-  return { engine, voice: engine.resolveVoice ? engine.resolveVoice(requestedVoice, settings) : requestedVoice };
+  const requestedVoice = overrides.voice ?? agent?.tts?.voice ?? agent?.voice;
+  if (!engine.resolveModel && overrides.model && overrides.model !== "default") throw new Error(`TTS engine "${engine.id}" does not support model overrides`);
+  const model = engine.resolveModel?.(overrides.model, settings) ?? "default";
+  return { engine, model, voice: engine.resolveVoice ? engine.resolveVoice(requestedVoice, settings) : requestedVoice };
 }
 
 // ---------------------------------------------------------------------------
@@ -395,22 +402,51 @@ export function resolveTtsChoice(
 /** Newest cache entries kept by the size sweep (audio+meta pairs). */
 const TTS_CACHE_MAX_ENTRIES = 500;
 
-function ttsCacheKey(engineId: string, voice: string | undefined, text: string): string {
-  return createHash("sha256").update([engineId, voice ?? "", text].join("\n")).digest("hex");
+export interface TtsOverrides {
+  voice?: string;
+  model?: string;
 }
 
-async function readCachedAudio(dir: string, key: string): Promise<TtsAudio | undefined> {
+export interface TtsCacheIdentity {
+  engine: string;
+  voice: string;
+  model: string;
+  textHash: string;
+}
+
+function cacheIdentity(engine: string, voice: string | undefined, text: string, model = "default"): TtsCacheIdentity {
+  return { engine, voice: voice ?? "default", model, textHash: createHash("sha256").update(text).digest("hex") };
+}
+
+export function ttsCacheKey(engine: string, voice: string | undefined, text: string, model = "default"): string {
+  return identityKey(cacheIdentity(engine, voice, text, model));
+}
+
+function identityKey(identity: TtsCacheIdentity): string {
+  return createHash("sha256").update(JSON.stringify(["tts-v2", identity.engine, identity.voice, identity.model, identity.textHash])).digest("hex");
+}
+
+function matchesIdentity(actual: TtsCacheIdentity | undefined, expected: TtsCacheIdentity): boolean {
+  return !!actual?.voice && actual.engine === expected.engine && actual.voice === expected.voice
+    && actual.model === expected.model && actual.textHash === expected.textHash;
+}
+
+async function readCachedAudio(dir: string, key: string, identity: TtsCacheIdentity): Promise<TtsAudio | undefined> {
   try {
-    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { contentType?: string };
+    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { contentType?: string; identity?: TtsCacheIdentity };
+    if (!matchesIdentity(meta.identity, identity)) return undefined;
     const audio = await readFile(join(dir, `${key}.audio`));
+    if (!audio.length) return undefined;
     return { audio, contentType: meta.contentType ?? "audio/wav" };
   } catch {
     return undefined;
   }
 }
 
-function cachedAudioMetadata(result: TtsAudio, format?: TtsStreamFormat): string {
-  return JSON.stringify({ contentType: result.contentType, ...(format ? { format } : {}) });
+type IdentifiedAudio = TtsAudio & { identity: TtsCacheIdentity };
+
+function cachedAudioMetadata(result: IdentifiedAudio, format?: TtsStreamFormat): string {
+  return JSON.stringify({ contentType: result.contentType, identity: result.identity, ...(format ? { format } : {}) });
 }
 
 function isAlreadyArchived(error: unknown): boolean {
@@ -418,7 +454,7 @@ function isAlreadyArchived(error: unknown): boolean {
 }
 
 /** Write missing archive halves without ever replacing an existing render. */
-async function archiveCachedAudio(dir: string, key: string, result: TtsAudio, format?: TtsStreamFormat): Promise<void> {
+async function archiveCachedAudio(dir: string, key: string, result: IdentifiedAudio, format?: TtsStreamFormat): Promise<void> {
   await mkdir(dir, { recursive: true });
   const audioPath = join(dir, `${key}.audio`);
   const metadataPath = join(dir, `${key}.json`);
@@ -441,7 +477,7 @@ async function archiveCachedAudio(dir: string, key: string, result: TtsAudio, fo
 async function writeCachedAudio(
   dir: string,
   key: string,
-  result: TtsAudio,
+  result: IdentifiedAudio,
   format?: TtsStreamFormat,
   archiveDir?: string,
   log: (message: string) => void = () => {},
@@ -472,10 +508,10 @@ async function writeCachedAudio(
 /** Cache read for the streaming path: the whole-message PCM plus its format
  * (stored as an `.audio`/`.json` pair like every other entry, so the size
  * sweep covers it too). Undefined when there is no PCM entry for this key. */
-async function readCachedPcm(dir: string, key: string): Promise<{ pcm: Buffer; format: TtsStreamFormat } | undefined> {
+async function readCachedPcm(dir: string, key: string, identity: TtsCacheIdentity): Promise<{ pcm: Buffer; format: TtsStreamFormat } | undefined> {
   try {
-    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { format?: TtsStreamFormat };
-    if (!meta.format) return undefined;
+    const meta = JSON.parse(await readFile(join(dir, `${key}.json`), "utf8")) as { format?: TtsStreamFormat; identity?: TtsCacheIdentity };
+    if (!matchesIdentity(meta.identity, identity) || !meta.format) return undefined;
     return { pcm: await readFile(join(dir, `${key}.audio`)), format: meta.format };
   } catch {
     return undefined;
@@ -500,7 +536,7 @@ async function sweepTtsCache(dir: string): Promise<void> {
 // One call = one CHUNK of the message: the client asks for chunk 0, learns the
 // total from the result, and fetches/plays the rest back-to-back.
 
-export interface ReadAloudRequest {
+export interface ReadAloudRequest extends TtsOverrides {
   event: { author: string; text: string };
   agent?: { voice?: string; tts?: AgentTtsConfig };
   settings: VoiceSettings;
@@ -520,6 +556,7 @@ export interface ReadAloudRequest {
 }
 
 export interface ReadAloudResult extends TtsAudio {
+  identity: TtsCacheIdentity;
   /** Total speech chunks in this message. */
   chunks: number;
   /** The chunk this audio is for. */
@@ -540,32 +577,34 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
   const log = request.log ?? (() => {});
   let choice: ReturnType<typeof resolveTtsChoice>;
   try {
-    choice = resolveTtsChoice(request.agent, request.settings);
+    choice = resolveTtsChoice(request.agent, request.settings, request);
   } catch (error) {
     log(`voice: TTS selection failed: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
-  const { engine, voice } = choice;
+  const { engine, voice, model } = choice;
   const requestId = newId("tts");
-  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"}`);
+  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
-  const key = ttsCacheKey(engine.id, voice, chunks[index]);
+  const identity = cacheIdentity(engine.id, voice, chunks[index], model);
+  const key = identityKey(identity);
   if (!request.regenerate) {
-    const cached = await readCachedAudio(cacheDir, key);
-    if (cached) return { ...cached, chunks: chunks.length, chunk: index };
+    const cached = await readCachedAudio(cacheDir, key, identity);
+    if (cached) return { ...cached, chunks: chunks.length, chunk: index, identity };
   }
 
   const result = await engine.synthesize({
     text: chunks[index],
     voice,
+    model,
     settings: request.settings,
     ensureTts: request.ensureTts,
     log,
     requestId,
   });
-  await writeCachedAudio(cacheDir, key, result, undefined, archiveDir, log);
-  return { ...result, chunks: chunks.length, chunk: index };
+  await writeCachedAudio(cacheDir, key, { ...result, identity }, undefined, archiveDir, log);
+  return { ...result, chunks: chunks.length, chunk: index, identity };
 }
 
 // ---------------------------------------------------------------------------
@@ -576,9 +615,9 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
 // client keeps the per-chunk path. Dispatch is on the capability, never on the
 // engine id (RULE #0) — and the client, in turn, dispatches on `mode`.
 
-export type ReadAloudDelivery =
+export type ReadAloudDelivery = { identity: TtsCacheIdentity } & (
   | { mode: "chunks"; chunks: number }
-  | ({ mode: "stream" } & TtsStream);
+  | ({ mode: "stream" } & TtsStream));
 
 /** ~32 KB PCM frames when replaying a cached whole-message stream. */
 const PCM_REPLAY_FRAME_BYTES = 32 * 1024;
@@ -597,6 +636,7 @@ async function* teeFramesToCache(
   frames: AsyncIterable<Buffer>,
   dir: string,
   key: string,
+  identity: TtsCacheIdentity,
   format: TtsStreamFormat,
   archiveDir: string,
   log: (message: string) => void,
@@ -611,7 +651,7 @@ async function* teeFramesToCache(
     complete = true;
   } finally {
     if (complete && collected.length) {
-      await writeCachedAudio(dir, key, { audio: Buffer.concat(collected), contentType: "audio/pcm" }, format, archiveDir, log).catch(() => {});
+      await writeCachedAudio(dir, key, { audio: Buffer.concat(collected), contentType: "audio/pcm", identity }, format, archiveDir, log).catch(() => {});
     }
   }
 }
@@ -624,34 +664,36 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
   const log = request.log ?? (() => {});
   let choice: ReturnType<typeof resolveTtsChoice>;
   try {
-    choice = resolveTtsChoice(request.agent, request.settings);
+    choice = resolveTtsChoice(request.agent, request.settings, request);
   } catch (error) {
     log(`voice: TTS selection failed: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
-  const { engine, voice } = choice;
+  const { engine, voice, model } = choice;
   const requestId = newId("tts");
-  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"}`);
+  log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
+  const identity = cacheIdentity(engine.synthesizeStream ? `${engine.id}:stream` : engine.id, voice, text, model);
   // Batch-only engine (local TTS): the client uses the chunked path unchanged.
-  if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length };
+  if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length, identity };
 
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
-  const key = ttsCacheKey(`${engine.id}:stream`, voice, text);
+  const key = identityKey(identity);
   if (!request.regenerate) {
-    const cached = await readCachedPcm(cacheDir, key);
-    if (cached) return { mode: "stream", format: cached.format, frames: framesFromBuffer(cached.pcm) };
+    const cached = await readCachedPcm(cacheDir, key, identity);
+    if (cached) return { mode: "stream", identity, format: cached.format, frames: framesFromBuffer(cached.pcm) };
   }
 
   const stream = await engine.synthesizeStream({
     text,
     voice,
+    model,
     settings: request.settings,
     ensureTts: request.ensureTts,
     log,
     requestId,
   });
-  return { mode: "stream", format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, stream.format, archiveDir, log) };
+  return { mode: "stream", identity, format: stream.format, frames: teeFramesToCache(stream.frames, cacheDir, key, identity, stream.format, archiveDir, log) };
 }
 
 /** VoiceSettings → the stack subset ensureTts needs (mirrors startVoiceCall). */
@@ -1133,7 +1175,7 @@ const ELEVENLABS_SYNTH_TIMEOUT_MS = 180_000;
 async function elevenLabsFetch(context: TtsSynthesisContext, stream: boolean): Promise<Response> {
   const key = elevenLabsKey(context.settings);
   const voiceId = context.voice || context.settings.elevenLabsVoice;
-  const model = context.settings.elevenLabsModel;
+  const model = context.model ?? context.settings.elevenLabsModel;
   const path = `/v1/text-to-speech/${encodeURIComponent(voiceId)}${stream ? "/stream" : ""}?output_format=pcm_${ELEVENLABS_SAMPLE_RATE}`;
   const response = await fetch(`${ELEVENLABS_BASE}${path}`, {
     method: "POST",
@@ -1165,6 +1207,8 @@ async function elevenLabsSynthesizeStream(context: TtsSynthesisContext): Promise
 
 registerTtsEngine({
   id: "elevenlabs",
+  resolveVoice: (voice, settings) => voice?.trim() || settings.elevenLabsVoice,
+  resolveModel: (model, settings) => model?.trim() || settings.elevenLabsModel,
   // Voices are account-specific voice ids (this key can't list them); free-form.
   voices: [],
   synthesize: elevenLabsSynthesize,
