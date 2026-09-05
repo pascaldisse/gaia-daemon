@@ -82,12 +82,8 @@ async function roomsReorder(ctx: RouteContext): Promise<boolean> {
   await respond(ctx.response, () => ctx.daemon.reorderRooms(params[0], ids));
   return true;
 }
-// Room-level human membership (RoomState.humans). Absent/empty = today's
-// unrestricted default for every existing room; a room only starts gating
-// reads/posts (see the /messages and /events routes below) the moment it
-// gets its first member. Every write here requires an authenticated human
-// who is EITHER already a member OR the room has none yet (so someone can
-// bootstrap membership on a room they otherwise already had full access to).
+// Absent allowlist → open; explicit [] → closed. Membership writes require
+// login + current access; first configuration preserves prior participants.
 async function roomHumansGet(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/);
   if (ctx.request.method !== "GET" || !params) return false;
@@ -115,7 +111,7 @@ async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
   if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2]) }));
+  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2], requester.id) }));
   return true;
 }
 // Attachment upload: the pasted file's bytes as the raw body, original

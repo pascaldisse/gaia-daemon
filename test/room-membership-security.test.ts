@@ -370,3 +370,23 @@ test("SSE authorizes members and rechecks membership on existing subscriptions",
     }
   });
 });
+
+test("last-member removal persists deny-all and cannot bootstrap back to open", async () => {
+  await withHarness(async (ctx: any) => {
+    const { baseUrl, workspaceId, workspace } = ctx;
+    const alice = createUser("leave-alice", "pw", "Alice");
+    const cookie = cookieFor(alice.id);
+    const room = await RoomHandle.open(workspace, "leave-private");
+    await room.updateState((state) => { state.humans = [alice.id]; });
+    const url = `${baseUrl}/api/workspaces/${workspaceId}/rooms/leave-private`;
+    assert.equal((await fetch(`${url}/humans/${alice.id}`, { method: "DELETE", headers: { cookie } })).status, 200);
+    const reopened = await RoomHandle.open(workspace, "leave-private");
+    assert.deepEqual((await reopened.state()).humans, []);
+    assert.equal((await fetch(`${url}/events`, { headers: { cookie } })).status, 403);
+    assert.equal((await fetch(`${url}/humans`, {
+      method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ userId: alice.id }),
+    })).status, 403);
+    assert.equal((await fetch(`${url}/humans/${alice.id}`, { method: "DELETE", headers: { cookie } })).status, 403);
+    assert.deepEqual((await reopened.state()).humans, []);
+  });
+});

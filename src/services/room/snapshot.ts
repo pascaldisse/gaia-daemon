@@ -208,9 +208,7 @@ export class RoomSnapshotMixin {
     await this.emitRoomsChanged();
   }
 
-  /** Human-membership allowlist (RoomState.humans). Absent/empty = today's
-   * unrestricted default — enforcement (server/http.ts) only kicks in once a
-   * room has at least one human explicitly added. */
+  /** Membership policy → roomAllowsHuman; UI list → roomHumans. */
   async canAccessRoom(humanId?: string): Promise<boolean> {
     await this.init();
     return roomAllowsHuman(await this.room.state(), humanId);
@@ -228,16 +226,10 @@ export class RoomSnapshotMixin {
     return state.humans ?? [];
   }
 
-  /** Removing the LAST member clears the allowlist back to unrestricted
-   * (empty array is never persisted — normalizeRoomState drops it), not a
-   * zero-human room nobody can post in. */
-  async removeHuman(userId: string): Promise<string[]> {
+  /** Last-member removal → durable empty allowlist, never declassification. */
+  async removeHuman(userId: string, requesterId?: string): Promise<string[]> {
     await this.init();
-    const state = await this.room.updateState((state: any) => {
-      const kept = (state.humans ?? []).filter((id: string) => id !== userId);
-      if (kept.length > 0) state.humans = kept;
-      else delete state.humans;
-    });
+    const state = await this.room.removeHuman(userId, requesterId);
     await this.emitRoomsChanged();
     return state.humans ?? [];
   }

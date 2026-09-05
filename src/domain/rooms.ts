@@ -506,7 +506,7 @@ const autoCompact = autoCompactFrom(value.autoCompact);
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
     ...(value.incognito === true ? { incognito: true } : {}),
-    ...(stringArray(value.humans).length > 0 ? { humans: stringArray(value.humans) } : {}),
+    ...(Array.isArray(value.humans) ? { humans: stringArray(value.humans) } : {}),
   };
 }
 
@@ -704,6 +704,13 @@ export class RoomHandle {
           event.author === "user" && "humanId" in event && event.humanId ? [event.humanId] : []);
         state.humans = [...new Set([...prior, ...(requesterId ? [requesterId] : []), userId])];
       });
+    });
+  }
+
+  async removeHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.updateState((state) => {
+      if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+      if (state.humans !== undefined) state.humans = state.humans.filter((id) => id !== userId);
     });
   }
 

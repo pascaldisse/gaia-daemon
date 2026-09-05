@@ -261,11 +261,9 @@ autoCompact?: RoomAutoCompactState;
    * ensureWorkspaceRoom only seeds it on a brand-new room. Off/absent = a normal
    * room that participates in memory. */
   incognito?: boolean;
-  /** Human-membership allowlist (domain/users.ts ids). Absent/empty = today's
-   * default: unrestricted, any request may read/post here regardless of
-   * login — unchanged behavior for every room that predates this field or
-   * never opts in. Non-empty = only these humans (by id) may read/post;
-   * enforced in server/http.ts, this is just the durable allowlist. */
+  /** Human-membership allowlist (domain/users.ts ids).
+   * Absent → legacy open room; present → only listed humans; [] → deny all.
+   * Last-member removal preserves [] rather than reopening prior content. */
   humans?: string[];
   /** DogMode (09-DOG-MODE, and every other multi-command persona-register
    * style plugin) durable state now lives generically in `pluginState` above,
