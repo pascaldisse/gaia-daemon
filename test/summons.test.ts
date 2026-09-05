@@ -854,6 +854,8 @@ test("resume: an ALREADY-delivered summon child registers a new durable contract
     summon: { agentId: "terry", deliver: "turn", callerAgentId: "gaia", status: "delivered", launchedAt: new Date().toISOString() },
   });
   const child = fakeRoom("resumed and finished the extra task");
+  // Model the live turn: this fake's waitForSettled otherwise resolves immediately.
+  child.holdPending();
   const parent = fakeRoom("");
   const services = new Map<string, SummonRoomAccess>([
     ["default", parent],
@@ -883,6 +885,7 @@ test("resume: an ALREADY-delivered summon child registers a new durable contract
   assert.equal(coordinator.runningChildren("default").length, 1, "visible to census/cap while the resumed turn is in flight");
 
   child.settle();
+  child.releasePending();
   for (let i = 0; i < 100 && parent.delivered.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(parent.delivered.length, 1);
   assert.equal(parent.delivered[0].from, "terry");
