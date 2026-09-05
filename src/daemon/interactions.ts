@@ -86,6 +86,13 @@ export class RoomInteractionLifecycle {
     return { snapshot, workspaceFiles: await this.host.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
   }
 
+  /** Read one existing room without changing the workspace's durable/current
+   * selection or broadcasting a navigation event. Used by client resyncs. */
+  async roomSnapshot(workspaceId: string, roomId: string): Promise<{ snapshot: Snapshot }> {
+    const service = await this.serviceForExistingRoom(workspaceId, roomId);
+    return { snapshot: await service.getSnapshot() };
+  }
+
   /** Rename a room's display title without changing its durable id/path. */
   async renameRoom(workspaceId: string, roomId: string, title: string): Promise<{ rooms: Snapshot["rooms"] }> {
     const service = await this.serviceForExistingRoom(workspaceId, roomId);

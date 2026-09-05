@@ -90,6 +90,9 @@ test("live scratch daemon isolates two assigned human workspace and room graphs"
     const foreignSnapshot = await jsonRequest<{ error: string }>(base, `/api/workspaces/${aliceId}/snapshot`, undefined, bobLogin.cookie);
     assert.equal(foreignSnapshot.status, 403);
     assert.match(foreignSnapshot.body.error, /assigned scope/);
+    const foreignRoomSnapshot = await jsonRequest<{ error: string }>(base, `/api/workspaces/${aliceId}/rooms/alice-private/snapshot`, undefined, bobLogin.cookie);
+    assert.equal(foreignRoomSnapshot.status, 403);
+    assert.match(foreignRoomSnapshot.body.error, /assigned scope/);
     const foreignSearch = await jsonRequest<{ error: string }>(base, `/api/search?q=anything&workspace=${aliceId}`, undefined, bobLogin.cookie);
     assert.equal(foreignSearch.status, 403);
     assert.match(foreignSearch.body.error, /assigned scope/);
