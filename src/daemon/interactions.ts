@@ -81,9 +81,14 @@ export class RoomInteractionLifecycle {
     this.host.currentRoom.set(workspaceId, roomId);
 
     const service = await this.host.serviceFor(workspaceId, roomId);
-    const snapshot = await service.getSnapshot();
+    // Snapshot assembly and workspace-file discovery are independent reads.
+    // Keep both in the response, but pay only the slower latency on selection.
+    const [snapshot, workspaceFiles] = await Promise.all([
+      service.getSnapshot(),
+      this.host.files.listWorkspace(workspaceId),
+    ]);
     this.host.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
-    return { snapshot, workspaceFiles: await this.host.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+    return { snapshot, workspaceFiles, voice: this.voiceFor(workspaceId) };
   }
 
   /** Read one existing room without changing the workspace's durable/current

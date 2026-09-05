@@ -76,10 +76,11 @@ export class RoomSnapshotMixin {
 
   async getSnapshot(): Promise<Snapshot> {
     await this.init();
-    const all = (await this.room.eventsFrom(0)).events;
+    const [{ events: all }, state] = await Promise.all([
+      this.room.eventsFrom(0),
+      this.room.state(),
+    ]);
     const events = this.displayEvents(all.slice(-this.workspace.config.transcriptWindow));
-    const state = await this.room.state();
-    const pluginPanels = await this.pluginPanels(state);
     // The selected agent plus any agents actively executing this room's turn
     // are the only identities that can spend here. This is deliberately not
     // the workspace roster: an unrelated agent/account in another room must
@@ -96,6 +97,41 @@ export class RoomSnapshotMixin {
       .map((id) => this.workspace.agents[id])
       .flatMap((agent) => (agent ? [usageAccountFor(agent, this.workspace)] : []))
       .filter((account): account is string => Boolean(account));
+    // Independent snapshot facets should overlap their filesystem/plugin reads;
+    // room selection waits for the slowest facet rather than their sum.
+    const [pluginPanels, rooms, commands, agents, memoryChips] = await Promise.all([
+      this.pluginPanels(state),
+      this.listRooms(),
+      this.paletteCommands(),
+      Promise.all(
+        ((Object.values(this.workspace.agents) as AgentDef[])).map(async (agent) => ({
+          id: agent.id,
+          displayName: agent.displayName,
+          icon: agent.icon,
+          modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
+          configuredModel: configuredModelLabel(agent.model, "default"),
+          ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),
+          ...(this.contextFor(agent) ? { context: this.contextFor(agent) } : {}),
+          tools: agent.tools,
+          voice: agent.voice,
+          thinking: state.thinkingOverrides[agent.id] ?? agent.thinking,
+          activeRole: state.activeRoles[agent.id],
+          defaultRole: agent.defaultRole,
+          harness: harnessIdFor(agent, this.workspace),
+          ...(agent.account ? { account: agent.account } : {}),
+          ...(usageAccountFor(agent, this.workspace) ? { usageAccount: usageAccountFor(agent, this.workspace) } : {}),
+          roles: await listAgentRoles(agent),
+          status: (this.compactingAgents.has(agent.id)
+            ? "compacting"
+            : this.activeTask?.targets.includes(agent.id)
+              ? "running"
+              : "idle") as AgentStatus["status"],
+          ...(this.compactProgress.has(agent.id) ? { compact: this.compactProgress.get(agent.id) } : {}),
+          isDefault: agent.id === this.workspace.config.defaultAgent,
+        })),
+      ),
+      this.memoryChips(),
+    ]);
     return {
       workspace: {
         id: this.workspaceId,
@@ -123,41 +159,15 @@ export class RoomSnapshotMixin {
           return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
         })(),
       },
-      rooms: await this.listRooms(),
-      commands: await this.paletteCommands(),
-      agents: await Promise.all(
-        ((Object.values(this.workspace.agents) as AgentDef[])).map(async (agent) => ({
-          id: agent.id,
-          displayName: agent.displayName,
-          icon: agent.icon,
-          modelLabel: this.runtimes[agent.id]?.modelLabel ?? "unknown",
-          configuredModel: configuredModelLabel(agent.model, "default"),
-          ...(this.modelFallbacks[agent.id] ? { modelFallback: this.modelFallbacks[agent.id] } : {}),
-          ...(this.contextFor(agent) ? { context: this.contextFor(agent) } : {}),
-          tools: agent.tools,
-          voice: agent.voice,
-          thinking: state.thinkingOverrides[agent.id] ?? agent.thinking,
-          activeRole: state.activeRoles[agent.id],
-          defaultRole: agent.defaultRole,
-          harness: harnessIdFor(agent, this.workspace),
-          ...(agent.account ? { account: agent.account } : {}),
-          ...(usageAccountFor(agent, this.workspace) ? { usageAccount: usageAccountFor(agent, this.workspace) } : {}),
-          roles: await listAgentRoles(agent),
-          status: (this.compactingAgents.has(agent.id)
-            ? "compacting"
-            : this.activeTask?.targets.includes(agent.id)
-              ? "running"
-              : "idle") as AgentStatus["status"],
-          ...(this.compactProgress.has(agent.id) ? { compact: this.compactProgress.get(agent.id) } : {}),
-          isDefault: agent.id === this.workspace.config.defaultAgent,
-        })),
-      ),
+      rooms,
+      commands,
+      agents,
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
       backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.
-      ...(await this.memoryChips()),
+      ...memoryChips,
     };
   }
 
