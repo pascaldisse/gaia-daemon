@@ -683,7 +683,7 @@ export class Daemon {
 
   // --- app payload -----------------------------------------------------------------------
 
-  async appPayload(currentWorkspaceId?: string, humanId?: string): Promise<{
+  async appPayload(currentWorkspaceId?: string, humanId?: string, requestingHumanId = humanId): Promise<{
     workspaces: WorkspaceRecord[];
     currentWorkspaceId: string | undefined;
     globalFiles: EditableFileDescriptor[];
@@ -697,6 +697,8 @@ export class Daemon {
   }> {
     const workspaces = await this.registry.listForHuman(humanId);
     const current = currentWorkspaceId ?? workspaces.find((workspace) => workspace.isInitialized)?.id;
+    const service = current ? await this.serviceFor(current) : undefined;
+    const canReadSnapshot = service && await service.canAccessRoom(requestingHumanId);
     // Seed the sidebar's workspace-level running/unread dots: a disk-only room
     // scan per initialized workspace (no live services spun up), kept fresh
     // afterwards by the same cross-workspace `rooms` broadcasts. A scan failure
@@ -717,7 +719,7 @@ export class Daemon {
       workspaces,
       currentWorkspaceId: current,
       globalFiles: await this.files.listGlobal(),
-      snapshot: current ? await (await this.serviceFor(current)).getSnapshot() : undefined,
+      snapshot: canReadSnapshot ? await service.getSnapshot() : undefined,
       workspaceFiles: current ? await this.files.listWorkspace(current) : [],
       voice: this.voiceFor(current),
       workspaceRooms,

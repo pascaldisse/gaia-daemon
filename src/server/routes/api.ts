@@ -15,7 +15,7 @@ import { LLM_PROXY_MOUNT } from "../../services/proxy.js";
 import { summonAck } from "../../services/summons.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
 import { DEFAULT_PET_NAME, loadPet } from "../pet.js";
-import { AUTH_COOKIE, beginSse, boolField, matchPath, respond, stringField, type RouteContext } from "../route.js";
+import { AUTH_COOKIE, beginSse, boolField, matchPath, respond, requireRoomAccess, stringField, type RouteContext } from "../route.js";
 import { handleAgents } from "./agents.js";
 import { handleRooms } from "./rooms.js";
 import { handleMemory } from "./memory.js";
@@ -62,7 +62,7 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
   }
     if (method === "GET" && path === "/api/app") {
       const owned = human?.workspace ? await daemon.addWorkspace(human.workspace, human.id) : undefined;
-      json(response, 200, await daemon.appPayload(owned?.id, humanScope));
+      json(response, 200, await daemon.appPayload(owned?.id, humanScope, human?.id));
       return;
     }
     // Codex-compatible pet packages live outside the web root. Resolve and
@@ -168,7 +168,7 @@ if (method === "POST" && path === "/api/pick-directory") {
         return json(response, 403, { error: "Workspace is outside your assigned scope." });
       }
       const record = await daemon.addWorkspace(workspacePathValue, humanScope);
-      json(response, 200, await daemon.appPayload(record.id, humanScope));
+      json(response, 200, await daemon.appPayload(record.id, humanScope, human?.id));
       return;
     }
     // Sidebar drag-drop reorder: `ids` is the full new order for this human's
@@ -325,10 +325,15 @@ async function handleApiAccounts(ctx: RouteContext): Promise<void> {
         return json(response, 403, { error: "Workspace is outside your assigned scope." });
       }
     }
+    const roomRoute = match(/^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)(?:\/|$)/);
+    if (roomRoute && !(method === "POST" && path.endsWith("/rooms/reorder"))) {
+      if (!(await requireRoomAccess(ctx, roomRoute[0], roomRoute[1]))) return;
+    }
     if (await handleRooms(ctx)) return;
     if (await handleEditRetry(ctx)) return;
     if (method === "GET" && (params = match(/^\/api\/workspaces\/([^/]+)\/snapshot$/))) {
       const service = await daemon.serviceFor(params[0]);
+      if (!(await service.canAccessRoom(human?.id))) return json(response, 403, { error: "Not a member of this room." });
       json(response, 200, {
         snapshot: await service.getSnapshot(),
         workspaceFiles: await daemon.files.listWorkspace(service.workspaceId),

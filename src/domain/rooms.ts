@@ -33,6 +33,11 @@ function serializeEvents(events: RoomEvent[]): string {
   return events.length ? events.map((event) => JSON.stringify(event)).join("\n") + "\n" : "";
 }
 
+/** Absent allowlist → legacy open room; configured allowlist → members only. */
+export function roomAllowsHuman(state: Pick<RoomState, "humans">, humanId?: string): boolean {
+  return state.humans === undefined || state.humans.includes(humanId ?? "");
+}
+
 export function newRoomEventId(): string {
   return newId("evt");
 }
@@ -501,7 +506,7 @@ const autoCompact = autoCompactFrom(value.autoCompact);
     ...(typeof value.activeAgent === "string" && value.activeAgent.trim() ? { activeAgent: value.activeAgent } : {}),
     ...(value.agentDialogue === true ? { agentDialogue: true } : {}),
     ...(value.incognito === true ? { incognito: true } : {}),
-    ...(stringArray(value.humans).length > 0 ? { humans: stringArray(value.humans) } : {}),
+    ...(Array.isArray(value.humans) ? { humans: stringArray(value.humans) } : {}),
   };
 }
 
@@ -659,6 +664,15 @@ export class RoomHandle {
     return handle;
   }
 
+  /** Read-only authorization: selecting a new room must not consume its seed. */
+  static async canAccess(workspaceRoot: string, roomId: string, humanId?: string): Promise<boolean> {
+    const state = await readRoomState(workspacePaths.roomState(workspaceRoot, roomId)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    return roomAllowsHuman(normalizeRoomState(state), humanId);
+  }
+
   get transcriptPath(): string {
     return workspacePaths.transcript(this.workspaceRoot, this.roomId);
   }
@@ -685,6 +699,28 @@ export class RoomHandle {
     const next = shared.chain.then(run, run);
     shared.chain = next.catch(() => {});
     return next;
+  }
+
+  /** First membership configuration retains prior authenticated participants.
+   * Transcript scan + allowlist write share the room lock: no concurrent post
+   * or invite can disappear between the two observations. */
+  async inviteHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.withRoomLock(async () => {
+      const { events } = await this.readEventsLocked();
+      return this.updateStateLocked((state) => {
+        if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+        const prior = state.humans ?? events.flatMap((event) =>
+          event.author === "user" && "humanId" in event && event.humanId ? [event.humanId] : []);
+        state.humans = [...new Set([...prior, ...(requesterId ? [requesterId] : []), userId])];
+      });
+    });
+  }
+
+  async removeHuman(userId: string, requesterId?: string): Promise<RoomState> {
+    return this.updateState((state) => {
+      if (requesterId && !roomAllowsHuman(state, requesterId)) throw new Error("Not a member of this room.");
+      if (state.humans !== undefined) state.humans = state.humans.filter((id) => id !== userId);
+    });
   }
 
   async state(): Promise<RoomState> {

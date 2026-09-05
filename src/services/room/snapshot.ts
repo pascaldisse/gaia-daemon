@@ -8,7 +8,7 @@ import { globalPaths, workspacePaths } from "../../core/paths.js";
 import type { AgentDef, AgentStatus, MessageAttachment, PendingTurn, RoomEvent, Snapshot } from "../../core/types.js";
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
 import { displayEventText } from "../../domain/render-cap.js";
-import { normalizeRoomState, normalizeRoomTitle } from "../../domain/rooms.js";
+import { normalizeRoomState, normalizeRoomTitle, roomAllowsHuman } from "../../domain/rooms.js";
 import { listAgentRoles } from "../../domain/roles.js";
 import { harnessIdFor, usageAccountFor } from "../../harness/spec.js";
 import { configuredModelLabel } from "../../harness/model-label.js";
@@ -208,35 +208,28 @@ export class RoomSnapshotMixin {
     await this.emitRoomsChanged();
   }
 
-  /** Human-membership allowlist (RoomState.humans). Absent/empty = today's
-   * unrestricted default — enforcement (server/http.ts) only kicks in once a
-   * room has at least one human explicitly added. */
+  /** Membership policy → roomAllowsHuman; UI list → roomHumans. */
+  async canAccessRoom(humanId?: string): Promise<boolean> {
+    await this.init();
+    return roomAllowsHuman(await this.room.state(), humanId);
+  }
+
   async roomHumans(): Promise<string[]> {
     await this.init();
     return (await this.room.state()).humans ?? [];
   }
 
-  async inviteHuman(userId: string): Promise<string[]> {
+  async inviteHuman(userId: string, requesterId?: string): Promise<string[]> {
     await this.init();
-    const state = await this.room.updateState((state: any) => {
-      const set = new Set(state.humans ?? []);
-      set.add(userId);
-      state.humans = [...set];
-    });
+    const state = await this.room.inviteHuman(userId, requesterId);
     await this.emitRoomsChanged();
     return state.humans ?? [];
   }
 
-  /** Removing the LAST member clears the allowlist back to unrestricted
-   * (empty array is never persisted — normalizeRoomState drops it), not a
-   * zero-human room nobody can post in. */
-  async removeHuman(userId: string): Promise<string[]> {
+  /** Last-member removal → durable empty allowlist, never declassification. */
+  async removeHuman(userId: string, requesterId?: string): Promise<string[]> {
     await this.init();
-    const state = await this.room.updateState((state: any) => {
-      const kept = (state.humans ?? []).filter((id: string) => id !== userId);
-      if (kept.length > 0) state.humans = kept;
-      else delete state.humans;
-    });
+    const state = await this.room.removeHuman(userId, requesterId);
     await this.emitRoomsChanged();
     return state.humans ?? [];
   }

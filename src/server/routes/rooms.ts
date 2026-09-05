@@ -4,7 +4,7 @@ import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js"
 import { json, parseBody, readRawBody } from "../../core/http.js";
 import type { ReadAloudDelivery, TtsCacheIdentity } from "../../services/read-aloud.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
-import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
+import { matchPath, boolField, respond, requireRoomAccess, requestingHuman, stringField, type RouteContext } from "../route.js";
 
 export function attachmentRefs(body: unknown): { id: string; name?: string; mime?: string }[] | undefined { if (!body || typeof body !== "object") return undefined; const raw = (body as Record<string, unknown>).attachments; if (!Array.isArray(raw)) return undefined; const refs: { id: string; name?: string; mime?: string }[] = []; for (const item of raw) { if (!item || typeof item !== "object") continue; const record = item as Record<string, unknown>; if (typeof record.id !== "string" || !record.id.trim()) continue; refs.push({ id: record.id, ...(typeof record.name === "string" ? { name: record.name } : {}), ...(typeof record.mime === "string" ? { mime: record.mime } : {}) }); } return refs.length ? refs : undefined; }
 function sanitizeEditRefs(body: unknown): { eventId: string; quote: string; replacement: string }[] { if (!body || typeof body !== "object") return []; const raw = (body as Record<string, unknown>).edits; if (!Array.isArray(raw)) return []; return raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").filter((item) => typeof item.eventId === "string" && !!item.eventId.trim() && typeof item.quote === "string" && !!item.quote.length && typeof item.replacement === "string").map((item) => ({ eventId: item.eventId as string, quote: item.quote as string, replacement: item.replacement as string })); }
@@ -15,6 +15,7 @@ async function selectRoom(ctx: RouteContext): Promise<boolean> {
   const body = await parseBody(ctx.request);
   const roomId = stringField(body, "roomId") ?? stringField(body, "id") ?? stringField(body, "room");
   if (!roomId?.trim()) { json(ctx.response, 400, { error: "Missing room id" }); return true; }
+  if (!(await requireRoomAccess(ctx, params[0], roomId.trim()))) return true;
   await respond(ctx.response, () => ctx.daemon.selectRoom(params[0], roomId.trim(), { incognito: boolField(body, "incognito") }));
   return true;
 }
@@ -82,12 +83,8 @@ async function roomsReorder(ctx: RouteContext): Promise<boolean> {
   await respond(ctx.response, () => ctx.daemon.reorderRooms(params[0], ids));
   return true;
 }
-// Room-level human membership (RoomState.humans). Absent/empty = today's
-// unrestricted default for every existing room; a room only starts gating
-// reads/posts (see the /messages and /events routes below) the moment it
-// gets its first member. Every write here requires an authenticated human
-// who is EITHER already a member OR the room has none yet (so someone can
-// bootstrap membership on a room they otherwise already had full access to).
+// Absent allowlist → open; explicit [] → closed. Membership writes require
+// login + current access; first configuration preserves prior participants.
 async function roomHumansGet(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/humans$/);
   if (ctx.request.method !== "GET" || !params) return false;
@@ -101,12 +98,11 @@ async function roomHumansPost(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const body = await parseBody(ctx.request);
   const userId = stringField(body, "userId");
   if (!userId?.trim()) { json(ctx.response, 400, { error: "Missing userId" }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim()) }));
+  await respond(ctx.response, async () => ({ humans: await service.inviteHuman(userId.trim(), requester.id) }));
   return true;
 }
 async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
@@ -115,9 +111,8 @@ async function roomHumansDelete(ctx: RouteContext): Promise<boolean> {
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
   const requester = requestingHuman(ctx.request);
   if (!requester) { json(ctx.response, 401, { error: "Log in before managing room membership." }); return true; }
-  const existing = await service.roomHumans();
-  if (existing.length > 0 && !existing.includes(requester.id)) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
-  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2]) }));
+  if (!(await service.canAccessRoom(requester.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  await respond(ctx.response, async () => ({ humans: await service.removeHuman(params[2], requester.id) }));
   return true;
 }
 // Attachment upload: the pasted file's bytes as the raw body, original
@@ -194,8 +189,7 @@ async function roomMessages(ctx: RouteContext): Promise<boolean> {
   // durable queue instead of injecting into the running turn.
   const queue = (body as { queue?: unknown }).queue === true;
   const human = requestingHuman(ctx.request);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(human?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const task = await service.sendMessage(textValue, {
     ...(attachments ? { attachments } : {}),
     ...(queue ? { queue } : {}),
@@ -210,8 +204,7 @@ async function roomEvents(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events$/);
   if (ctx.request.method !== "GET" || !params) return false;
   const service = await ctx.daemon.serviceFor(params[0], params[1]);
-  const membership = await service.roomHumans();
-  if (membership.length > 0 && !membership.includes(requestingHuman(ctx.request)?.id ?? "")) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  if (!(await service.canAccessRoom(ctx.human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
   const before = ctx.url.searchParams.get("before")?.trim() || undefined;
   const limit = Math.min(200, Math.max(1, Number(ctx.url.searchParams.get("limit")) || 50));
   await respond(ctx.response, async () => service.eventsBefore(before, limit));
