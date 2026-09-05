@@ -9,6 +9,13 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, gaiaBasePath, gaiaCodesignIdentity, gaiaHost, gaiaPort } from "../core/config.js";
+
+/** Public mount prefix a trusted reverse proxy announces per request (`X-Forwarded-Prefix: /phone`). Untrusted/malformed → "" (root). */
+export function forwardedPrefix(header: string | string[] | undefined): string {
+  const raw = (Array.isArray(header) ? header[0] : header ?? "").trim();
+  if (!/^\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\/?$/.test(raw)) return "";
+  return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+}
 import { bundledDir, expandHome, gaiaHome, globalPaths } from "../core/paths.js";
 import { sleep } from "../core/retry.js";
 import { bundleSwapNames } from "../core/bundle-assets.js";
@@ -473,7 +480,7 @@ export class GaiaWebServer {
       return handleApi({ request, response, url, daemon: this.daemon, human: requestingHuman(request), humanScope: requestingHuman(request)?.workspace ? requestingHuman(request)?.id : undefined, boundUrl: this.boundUrl, cwd: this.options.cwd, bootId, broadcast: (event) => this.broadcast(event), registerSse: (workspaceId, roomId) => this.registerSse(response, workspaceId, roomId, requestingHuman(request)?.id) });
     }
     if (url.pathname.startsWith("/v1/")) return this.handleOpenAi(request, response, url);
-    await this.serveStatic(response, url.pathname);
+    await this.serveStatic(response, url.pathname, forwardedPrefix(request.headers["x-forwarded-prefix"]));
   }
   private async handleLlmProxy(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const claims = this.daemon.verifyHarnessToken(bearerToken(request));
@@ -570,7 +577,7 @@ export class GaiaWebServer {
     response.end();
   }
   // --- static ---------------------------------------------------------------------
-  private async serveStatic(response: ServerResponse, pathname: string): Promise<void> {
+  private async serveStatic(response: ServerResponse, pathname: string, requestPrefix = ""): Promise<void> {
     const root = bundledDir("web");
     const requested = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
     const resolved = resolve(root, requested);
@@ -588,7 +595,10 @@ export class GaiaWebServer {
     // HTML entry points need the prefix baked in, since the browser resolves
     // their root-relative href/src against the *public* URL, not ours. Empty
     // (root-mounted, the default) takes the exact pre-existing stream path.
-    const basePath = gaiaBasePath();
+    // Per-request prefix wins (one daemon behind several public mounts, e.g.
+    // Caddy `handle_path /phone/*` + `header_up X-Forwarded-Prefix /phone`);
+    // GAIA_BASE_PATH stays the daemon-wide default.
+    const basePath = requestPrefix || gaiaBasePath();
     const isHtmlEntry = path.endsWith(`${sep}index.html`) || path.endsWith(`${sep}pet.html`);
     if (basePath && isHtmlEntry) {
       let html = await readFile(path, "utf8");
