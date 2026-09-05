@@ -35,6 +35,7 @@ import type {
   Snapshot,
   Task,
   UiEvent,
+  UiPromptReplyValue,
   Workspace,
 } from "../../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../../core/config.js";
@@ -128,6 +129,24 @@ export class RoomCommandsMixin {
     // Same stream-position marker as steer-by-default (see steerRunningTurn).
     if (ok) runtime.injectEvent?.({ type: "steered", eventId: event.id });
     return ok ? `Steering @${target}'s running turn.` : `Could not steer @${target} — the turn may have just finished.`;
+  }
+
+  /** `ui.reply`: route a client's answer to a pending `ui.prompt`/`auth.request`
+   * id back to the agent's runner (backs the pi ExtensionUIContext dialogs
+   * carried headless over AgentEvent — see core/types/harness.ts). Purely a UI
+   * round trip, never a transcript event (no room-event emitted, unlike /steer). */
+  async runUiReply(agentId: string, id: string, value: UiPromptReplyValue): Promise<boolean> {
+    const runtime = this.runtimes[agentId];
+    if (!runtime) return false;
+    return (await runtime.uiReply?.(this.roomId, id, value)) ?? false;
+  }
+
+  /** `ui.shortcut.fire`: a client-side hotkey press for a registered `commandId`
+   * (backs pi's registerShortcut handler). */
+  async runUiShortcutFire(agentId: string, commandId: string): Promise<boolean> {
+    const runtime = this.runtimes[agentId];
+    if (!runtime) return false;
+    return (await runtime.uiShortcutFire?.(this.roomId, commandId)) ?? false;
   }
 
   /** Dedupes the loaded plugin map's VALUES — a plugin owning several command

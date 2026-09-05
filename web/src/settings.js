@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { deleteAgent, loadSettingsFile, saveSettingsFile, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, sendUiReply, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -541,7 +541,65 @@ function AccountsSection() {
             h("small", { class: "muted", text: limits.windows.map((window) => `${window.label}: ${window.percent}%`).join(" · ") }),
           );
         }),
+    AuthRequestsPanel(),
   );
+}
+
+// pi ExtensionAPI registerProvider oauth.login(callbacks) surface, carried
+// headless over AgentEvent as `auth.request` (see core/types/harness.ts) —
+// one login card per pending id: an oauth/device URL to open, or an
+// apiKey/prompt form to fill and submit as a `ui.reply`.
+function AuthRequestsPanel() {
+  if (state.authRequests.size === 0) return null;
+  return h(
+    "div",
+    { class: "settings2-form auth-requests-panel" },
+    h("div", { class: "nav-title", text: "Sign-in requests" }),
+    ...[...state.authRequests.values()].map((request) => AuthRequestCard(request)),
+  );
+}
+
+/** @param {import("./types.js").Ev<"auth.request">} request */
+function AuthRequestCard(request) {
+  const dismiss = () => { state.authRequests.delete(request.id); markDirty("settings"); };
+  const reply = (/** @type {import("../../src/core/types.js").UiPromptReplyValue} */ value) =>
+    void sendUiReply(request.agentId, request.id, value).then((ok) => { if (ok) dismiss(); });
+  const rows = [
+    h("div", { class: "nav-title", text: `@${request.agentId} · ${request.providerId} · ${request.method}` }),
+    request.instructions ? h("p", { class: "muted", text: request.instructions }) : null,
+  ];
+  if (request.method === "oauth" && request.url) {
+    rows.push(h("a", { class: "settings2-row-remove", href: request.url, target: "_blank", rel: "noopener", text: "Open sign-in page ↗" }));
+    rows.push(h("button", { onclick: () => reply(true), text: "I've signed in" }));
+  } else if (request.method === "device" && request.deviceCode) {
+    const device = request.deviceCode;
+    rows.push(h("p", { text: `Go to ${device.verificationUri} and enter code:` }));
+    rows.push(h("code", { text: device.userCode }));
+    rows.push(h("button", { onclick: () => reply(true), text: "I've entered the code" }));
+  } else {
+    // apiKey / prompt form: one text input per field, submitted as a
+    // Record<string,string> (single field → that field's bare string).
+    const fields = /** @type {import("../../src/core/types.js").UiPromptField[]} */ (request.fields?.length ? request.fields : [{ name: "value", kind: "text", label: "Value" }]);
+    /** @type {Record<string, string>} */
+    const draft = {};
+    rows.push(
+      ...fields.map((field) =>
+        h(
+          "label",
+          { class: "settings2-row" },
+          h("span", { text: field.label ?? field.name }),
+          h("input", {
+            type: field.secret ? "password" : "text",
+            placeholder: field.placeholder ?? "",
+            onchange: (/** @type {Event} */ event) => { draft[field.name] = /** @type {HTMLInputElement} */ (event.target).value; },
+          }),
+        ),
+      ),
+      h("button", { onclick: () => reply(fields.length > 1 ? draft : (draft[fields[0].name] ?? "")), text: "Submit" }),
+    );
+  }
+  rows.push(h("button", { class: "settings2-row-remove", onclick: dismiss, text: "Dismiss" }));
+  return h("div", { class: "settings2-form auth-request-card" }, ...rows);
 }
 
 // ---------------------------------------------------------------------------

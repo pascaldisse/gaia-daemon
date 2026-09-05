@@ -157,6 +157,16 @@ export class RoomUiMixin {
         return { ...scope, type: "tool-end", toolName: event.toolName, toolCallId: event.toolCallId, result: event.result, isError: event.isError };
       case "steered":
         return { ...scope, type: "steered", steerEventId: event.eventId };
+      case "ui.widget":
+        return { ...scope, type: "ui.widget", id: event.id, placement: event.placement, lines: event.lines };
+      case "ui.prompt":
+        return { ...scope, type: "ui.prompt", id: event.id, kind: event.kind, title: event.title, message: event.message, fields: event.fields };
+      case "ui.shortcut":
+        return { ...scope, type: "ui.shortcut", commandId: event.commandId, key: event.key, description: event.description };
+      case "auth.request":
+        return { ...scope, type: "auth.request", id: event.id, providerId: event.providerId, method: event.method, url: event.url, instructions: event.instructions, deviceCode: event.deviceCode, fields: event.fields };
+      case "ext.lifecycle":
+        return { ...scope, type: "ext.lifecycle", id: event.id, state: event.state, reason: event.reason };
       case "notice":
         // Not a UI transport event — no-op. Never rendered as reply text.
         return undefined;

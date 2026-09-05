@@ -192,6 +192,42 @@ export function connectEvents(resyncOnReady = false) {
     markDirty("status", "usage");
   });
 
+  // pi ExtensionAPI surface carried headless over AgentEvent (see
+  // core/types/harness.ts) — live rows/dialogs/hotkeys/status chips. `id`/
+  // `commandId` is the daemon-assigned key a reply/fire targets; storing the
+  // agentId ON the entry (StreamScope carries it) is what lets actions.js
+  // route the reply back to the right runtime without the caller threading it.
+  listen("ui.widget", (event) => {
+    const payload = /** @type {Ev<"ui.widget">} */ (JSON.parse(event.data));
+    if (payload.lines.length === 0) state.uiWidgets.delete(payload.id);
+    else state.uiWidgets.set(payload.id, payload);
+    markDirty("transcript");
+  });
+
+  listen("ui.prompt", (event) => {
+    const payload = /** @type {Ev<"ui.prompt">} */ (JSON.parse(event.data));
+    state.uiPrompts.set(payload.id, payload);
+    markDirty("transcript", "composer");
+  });
+
+  listen("ui.shortcut", (event) => {
+    const payload = /** @type {Ev<"ui.shortcut">} */ (JSON.parse(event.data));
+    state.uiShortcuts.set(payload.commandId, payload);
+    markDirty("composer");
+  });
+
+  listen("auth.request", (event) => {
+    const payload = /** @type {Ev<"auth.request">} */ (JSON.parse(event.data));
+    state.authRequests.set(payload.id, payload);
+    markDirty("settings");
+  });
+
+  listen("ext.lifecycle", (event) => {
+    const payload = /** @type {Ev<"ext.lifecycle">} */ (JSON.parse(event.data));
+    state.extLifecycle.set(payload.id, payload);
+    markDirty("transcript");
+  });
+
   listen("model-fallback", (event) => {
     const payload = /** @type {Ev<"model-fallback">} */ (JSON.parse(event.data));
     const fallback = { from: payload.fromModel, to: payload.toModel, reason: payload.reason };

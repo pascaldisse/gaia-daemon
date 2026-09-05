@@ -178,6 +178,16 @@ export async function runAgentRunner(): Promise<void> {
           .catch(() => false)
           .then((ok) => send({ type: "steer-result", ok }));
         return;
+      case "ui-reply":
+        void (runtime.uiReply?.(command.roomId, command.id, command.value) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((ok) => send({ type: "ui-reply-result", id: command.id, ok }));
+        return;
+      case "ui-shortcut-fire":
+        void (runtime.uiShortcutFire?.(command.roomId, command.commandId) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((ok) => send({ type: "ui-shortcut-result", commandId: command.commandId, ok }));
+        return;
       case "compact":
         void (
           runtime.compact?.(command.roomId, (update) => send({ type: "compact-progress", ...update })) ??

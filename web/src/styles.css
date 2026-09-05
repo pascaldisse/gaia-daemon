@@ -1327,6 +1327,16 @@ sidebar: workspaces + rooms tree
 .load-older:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-older:disabled { opacity: 0.6; cursor: wait; }
 
+/* --- pi ExtensionAPI surface: ui.widget rows + ext.lifecycle chips (see core/types/harness.ts) --- */
+.ext-lifecycle-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px; }
+.ext-lifecycle-chip {
+  font-size: 0.78em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+}
+.ext-lifecycle-loaded { border-color: var(--accent); color: var(--accent); }
+.ext-lifecycle-failed { border-color: #c33; color: #c33; }
+.ui-widget-row { padding: 6px 12px; border: 1px solid var(--border); background: var(--bg3); font-size: 0.9em; }
+.ui-widget-line { white-space: pre-wrap; }
+
 /* --- archtree view (web/src/archtree/) ---------------------------------- */
 .archtree-view {
   position: fixed;

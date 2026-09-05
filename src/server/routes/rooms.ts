@@ -2,6 +2,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { json, parseBody, readRawBody } from "../../core/http.js";
+import type { UiPromptReplyValue } from "../../core/types.js";
 import type { ReadAloudDelivery } from "../../services/read-aloud.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
 import { matchPath, boolField, respond, requestingHuman, stringField, type RouteContext } from "../route.js";
@@ -202,6 +203,48 @@ async function roomMessages(ctx: RouteContext): Promise<boolean> {
     ...(human ? { human: { id: human.id, label: human.displayName } } : {}),
   });
   json(ctx.response, 202, { task });
+  return true;
+}
+// pi ExtensionAPI surface reverse wire (see core/types/harness.ts AgentEvent
+// ui.prompt/auth.request docs): the client's answer to an id-keyed dialog.
+// Purely a UI round trip to the runner — no transcript event, no membership
+// gate beyond "a room member can answer a dialog their own client is showing".
+async function roomUiReply(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/ui-reply$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const agentId = stringField(body, "agentId");
+  const id = stringField(body, "id");
+  if (!agentId || !id) { json(ctx.response, 400, { error: "Missing agentId/id" }); return true; }
+  const value = uiPromptReplyValue((body as { value?: unknown }).value);
+  const ok = await service.runUiReply(agentId, id, value);
+  json(ctx.response, 200, { ok });
+  return true;
+}
+/** Narrow an arbitrary JSON `value` field down to AgentRuntime.uiReply's
+ * accepted shape (core/types/harness.ts UiPromptReplyValue) — a bad/absent
+ * value degrades to "" rather than reaching the runner untyped. */
+function uiPromptReplyValue(value: unknown): UiPromptReplyValue {
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const out: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(value)) if (typeof entry === "string") out[key] = entry;
+    return out;
+  }
+  return "";
+}
+// pi registerShortcut reverse wire: the client's hotkey fired a commandId.
+async function roomUiShortcutFire(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/ui-shortcut$/);
+  if (ctx.request.method !== "POST" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  const body = await parseBody(ctx.request);
+  const agentId = stringField(body, "agentId");
+  const commandId = stringField(body, "commandId");
+  if (!agentId || !commandId) { json(ctx.response, 400, { error: "Missing agentId/commandId" }); return true; }
+  const ok = await service.runUiShortcutFire(agentId, commandId);
+  json(ctx.response, 200, { ok });
   return true;
 }
 // Backwards paging through committed history ("load older" in the
@@ -443,6 +486,8 @@ const roomHandlers = [
   roomBackgroundTaskOutput,
   roomBackgroundTaskDelete,
   roomMessages,
+  roomUiReply,
+  roomUiShortcutFire,
   roomEvents,
   roomSanitize,
   roomSanitizeApply,

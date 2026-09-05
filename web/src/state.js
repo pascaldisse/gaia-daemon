@@ -19,6 +19,11 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").FileHints} FileHints */
 /** @typedef {import("./types.js").KeepAwakeCapability} KeepAwakeCapability */
 /** @typedef {import("./eventchannel.js").EventChannel} EventChannel */
+/** @typedef {import("./types.js").Ev<"ui.widget">} UiWidgetEvent */
+/** @typedef {import("./types.js").Ev<"ui.prompt">} UiPromptEvent */
+/** @typedef {import("./types.js").Ev<"ui.shortcut">} UiShortcutEvent */
+/** @typedef {import("./types.js").Ev<"auth.request">} AuthRequestEvent */
+/** @typedef {import("./types.js").Ev<"ext.lifecycle">} ExtLifecycleEvent */
 
 /**
  * @type {{
@@ -92,6 +97,11 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsError: string,
  *   keepAwake: KeepAwakeCapability,
  *   userName: string,
+ *   uiWidgets: Map<string, UiWidgetEvent>,
+ *   uiPrompts: Map<string, UiPromptEvent>,
+ *   authRequests: Map<string, AuthRequestEvent>,
+ *   uiShortcuts: Map<string, UiShortcutEvent>,
+ *   extLifecycle: Map<string, ExtLifecycleEvent>,
  * }}
  */
 export const state = {
@@ -265,6 +275,14 @@ export const state = {
   // "Your name" (Settings ▸ General) — replaces the anonymous "user" token in
   // what agents see of the human's own messages. "" = unset.
   userName: "",
+  // pi ExtensionAPI surface carried headless over AgentEvent (see
+  // core/types/harness.ts): live rows/dialogs/hotkeys/status chips, keyed by
+  // the id the daemon assigned so a reply/fire targets the right one.
+  uiWidgets: new Map(),
+  uiPrompts: new Map(),
+  authRequests: new Map(),
+  uiShortcuts: new Map(),
+  extLifecycle: new Map(),
 };
 
 /** @param {string} workspaceId @param {string} roomId */
