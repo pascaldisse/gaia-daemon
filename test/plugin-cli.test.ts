@@ -3,10 +3,12 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { PackageManager } from "@earendil-works/pi-coding-agent";
 import { runPluginCli } from "../src/services/plugins/cli.js";
 import { migratePluginDir } from "../src/services/plugins/migrate.js";
 import { fetchPluginRegistry, lookupPluginRegistryEntry, searchPluginRegistry } from "../src/services/plugins/registry-client.js";
+import { createTempDir } from "./helpers/temp.js";
 
 async function tmp(prefix: string): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
@@ -179,6 +181,11 @@ test("migrate: turns a fixture copy of the bundled defaults plugin into a pi pac
   try {
     await mkdir(fixtureDir, { recursive: true });
     await cp(DEFAULTS_PLUGIN_DIR, fixtureDir, { recursive: true });
+    // The source tree may itself already be migrated (real `gaia plugin
+    // migrate` was run in-tree) -- strip any pre-existing pi package files so
+    // this fixture always starts pristine, independent of that state.
+    await rm(join(fixtureDir, "package.json"), { force: true });
+    await rm(join(fixtureDir, "pi-extension.mjs"), { force: true });
 
     const first = await migratePluginDir(fixtureDir);
     assert.equal(first.status, "migrated");
@@ -197,6 +204,45 @@ test("migrate: turns a fixture copy of the bundled defaults plugin into a pi pac
     assert.equal(entryAfterSecond, entryAfterFirst);
     assert.equal(packageJsonAfterSecond, packageJsonAfterFirst);
   } finally {
+    await work.cleanup();
+  }
+});
+
+test("migrate: pi's OWN SDK (DefaultResourceLoader + createAgentSession, real in-process) loads the generated pi-extension.mjs and registers the plugin's gaia command as a pi slash command", async () => {
+  const work = await tmp("gaia-plugin-migrate-");
+  const temp = await createTempDir();
+  const fixtureDir = join(work.dir, "fugu");
+  try {
+    await mkdir(fixtureDir, { recursive: true });
+    await cp(join(import.meta.dirname, "..", "plugins", "fugu"), fixtureDir, { recursive: true });
+    // Pristine fixture, independent of whatever migration state plugins/fugu
+    // itself is currently in (see note in the defaults-fixture test above).
+    await rm(join(fixtureDir, "package.json"), { force: true });
+    await rm(join(fixtureDir, "pi-extension.mjs"), { force: true });
+    const migrated = await migratePluginDir(fixtureDir);
+    assert.equal(migrated.status, "migrated");
+    assert.deepEqual(migrated.movedToPi, ["commands(1)"]);
+
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [join(fixtureDir, "pi-extension.mjs")],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const registered = session.extensionRunner.getRegisteredCommands().map((c) => c.name);
+      assert.ok(registered.includes("fugu"), `expected "fugu" pi command, got: ${registered.join(", ")}`);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
     await work.cleanup();
   }
 });
@@ -221,6 +267,8 @@ test("plugin cli: migrate subcommand reports a fixture migration end to end", as
   try {
     await mkdir(fixtureDir, { recursive: true });
     await cp(DEFAULTS_PLUGIN_DIR, fixtureDir, { recursive: true });
+    await rm(join(fixtureDir, "package.json"), { force: true });
+    await rm(join(fixtureDir, "pi-extension.mjs"), { force: true });
     const code = await runPluginCli(["migrate", fixtureDir]);
     assert.equal(code, 0);
     assert.ok(await readFile(join(fixtureDir, "pi-extension.mjs"), "utf8"));
