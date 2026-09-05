@@ -34,6 +34,7 @@ export const globalPaths = {
   users: () => join(gaiaHome(), "users.json"),
   /** HMAC secret signing session tokens issued at login. */
   sessionSecret: () => join(gaiaHome(), "session-secret"),
+  sessionRevocations: () => join(gaiaHome(), "session-revocations.json"),
   agentsDir: () => join(gaiaHome(), "agents"),
   /** Always-loaded global prompt protocols: every *.md here (sorted by
    * filename) loads verbatim into EVERY agent's system prompt as a

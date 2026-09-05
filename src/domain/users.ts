@@ -5,7 +5,7 @@
 // literal "user" everywhere (zero behavior change to existing checks); a
 // logged-in human's id/label ride alongside as optional metadata (see
 // UserRoomEvent.humanId/humanLabel in core/types.ts).
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHmac } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { globalPaths } from "../core/paths.js";
@@ -214,10 +214,8 @@ export function authenticate(username: string, password: string): PublicUser | n
 }
 
 // --- sessions ----------------------------------------------------------------
-// Stateless signed tokens (HMAC-SHA256), same shape/ethos as edge-proxy.mjs's
-// bearer token: no server-side session table, so login survives a daemon
-// restart. Tradeoff: logout can't force-revoke a token before it expires
-// (30d) — acceptable for a first cut, tighten later if needed.
+// Signed tokens + durable revocation ledger; login/logout survive restart.
+// Revocations keyed by verified signature → alternate token encodings cannot bypass.
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -234,16 +232,14 @@ function sign(payload: string): string {
   return createHmac("sha256", sessionSecret()).update(payload).digest("hex");
 }
 
-/** `<userId>.<expiryEpochMs>.<hmacHex>`, base64url-wrapped for safe cookie transport. */
+/** userId.expiry.nonce.hmac → base64url; legacy nonce-less tokens still verify. */
 export function issueSessionToken(userId: string): string {
-  const payload = `${userId}.${Date.now() + SESSION_TTL_MS}`;
+  const payload = `${userId}.${Date.now() + SESSION_TTL_MS}.${randomBytes(16).toString("hex")}`;
   const token = `${payload}.${sign(payload)}`;
   return Buffer.from(token, "utf8").toString("base64url");
 }
 
-/** Verifies signature + expiry, returns the user (re-reads from disk — cheap,
- * tiny file, and a removed/renamed user must stop authenticating immediately). */
-export function verifySessionToken(token: string): PublicUser | null {
+function sessionClaims(token: string): { userId: string; expiry: number; signature: string } | null {
   let raw: string;
   try {
     raw = Buffer.from(token, "base64url").toString("utf8");
@@ -254,13 +250,55 @@ export function verifySessionToken(token: string): PublicUser | null {
   if (lastDot < 0) return null;
   const payload = raw.slice(0, lastDot);
   const signature = raw.slice(lastDot + 1);
+  if (!/^[a-f0-9]{64}$/i.test(signature)) return null;
   const expected = sign(payload);
   const sigBuf = Buffer.from(signature, "hex");
   const expBuf = Buffer.from(expected, "hex");
   if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
-  const [userId, expiryStr] = payload.split(".");
+  const parts = payload.split(".");
+  if (parts.length !== 2 && parts.length !== 3) return null;
+  const [userId, expiryStr] = parts;
   const expiry = Number(expiryStr);
-  if (!userId || !Number.isFinite(expiry) || expiry < Date.now()) return null;
-  const user = findUserById(userId);
+  if (!userId || !Number.isFinite(expiry) || expiry <= Date.now()) return null;
+  return { userId, expiry, signature: expected };
+}
+
+function readRevocations(): Record<string, number> {
+  const path = globalPaths.sessionRevocations();
+  if (!existsSync(path)) return {};
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+      Object.entries(raw).some(([key, expiry]) => !/^[a-f0-9]{64}$/.test(key) || typeof expiry !== "number" || !Number.isFinite(expiry))) {
+    throw new Error("Invalid session revocation ledger");
+  }
+  return raw as Record<string, number>;
+}
+
+/** Persist before acknowledging logout; synchronous → no interleaved lost updates. */
+export function revokeSessionToken(token: string): void {
+  const claims = sessionClaims(token);
+  if (!claims) return;
+  const now = Date.now();
+  const revoked = Object.fromEntries(Object.entries(readRevocations()).filter(([, expiry]) => expiry > now));
+  revoked[claims.signature] = claims.expiry;
+  const path = globalPaths.sessionRevocations();
+  mkdirSync(dirname(path), { recursive: true });
+  const staged = `${path}.${randomUUID()}.staged`;
+  writeFileSync(staged, JSON.stringify(revoked) + "\n", { mode: 0o600 });
+  const fd = openSync(staged, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(staged, path);
+}
+
+/** Signature + expiry + durable revocation + current user existence. */
+export function verifySessionToken(token: string): PublicUser | null {
+  const claims = sessionClaims(token);
+  if (!claims) return null;
+  try {
+    if (readRevocations()[claims.signature] !== undefined) return null;
+  } catch {
+    return null; // Unreadable/corrupt ledger → fail closed.
+  }
+  const user = findUserById(claims.userId);
   return user ? toPublic(user) : null;
 }
