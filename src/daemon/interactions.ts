@@ -7,7 +7,7 @@ import type { MemoryStore } from "../domain/memory.js";
 import { RoomService, writeRoomOrder } from "../services/room-service.js";
 import { MemoryService } from "../services/memory-service.js";
 import { VoiceStackManager, classifyVoiceTurn, clearCallOverride, persistCallOverride, readVoiceSettings, type VoiceSettings } from "../services/voice.js";
-import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult } from "../services/read-aloud.js";
+import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult, type TtsOverrides } from "../services/read-aloud.js";
 import { transcribe, type SttAudioInput } from "../services/transcribe.js";
 import { TtsCallBridge } from "../services/voice-tts-bridge.js";
 import { SttCallBridge } from "../services/voice-stt-bridge.js";
@@ -457,7 +457,7 @@ export class RoomInteractionLifecycle {
   /** Read one committed agent message aloud: resolve the author's TTS engine +
    * voice, format the text for speech, and return one chunk of the audio
    * (cached on disk; the result carries the chunk count for the client). */
-  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0, regenerate = false): Promise<ReadAloudResult> {
+  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0, regenerate = false, overrides: TtsOverrides = {}): Promise<ReadAloudResult> {
     const service = await this.host.serviceFor(workspaceId, roomId);
     // display:true — a collared room reads aloud the SAME capped text it
     // shows (09-DOG-MODE, Pascal 2026-08-23); the stored event keeps the full
@@ -471,6 +471,7 @@ export class RoomInteractionLifecycle {
       settings,
       chunk,
       regenerate,
+      ...overrides,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
       log: (message) => this.host.log(message),
     });
@@ -480,7 +481,7 @@ export class RoomInteractionLifecycle {
    * continuous PCM pass played frame-by-frame (mode "stream"); for batch-only
    * engines (local TTS), mode "chunks" so the client keeps the per-chunk path.
    * The author's engine decides — this method never branches on the engine. */
-  async readAloudStream(workspaceId: string, roomId: string, eventId: string, regenerate = false): Promise<ReadAloudDelivery> {
+  async readAloudStream(workspaceId: string, roomId: string, eventId: string, regenerate = false, overrides: TtsOverrides = {}): Promise<ReadAloudDelivery> {
     const service = await this.host.serviceFor(workspaceId, roomId);
     // display:true — same reasoning as readAloud above.
     const event = await service.eventById(eventId, { display: true });
@@ -491,6 +492,7 @@ export class RoomInteractionLifecycle {
       agent: service.workspace.agents[event.author],
       settings,
       regenerate,
+      ...overrides,
       ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
       log: (message) => this.host.log(message),
     });
