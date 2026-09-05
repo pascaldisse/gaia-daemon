@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { hasExplicitMention, parseCommand, planMentionRoute, SLASH_COMMANDS, validateThinkingLevel, THINKING_LEVEL_MAX } from "../src/services/commands.js";
 

@@ -5,7 +5,7 @@
 // logs and transcripts are the source of truth; index.db is derived and
 // rebuilds itself. Scores are only ever asserted RELATIVELY.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, appendFile, writeFile, utimes } from "node:fs/promises";

@@ -3,7 +3,7 @@
 // as live recall. The regression here was real: the eval once searched
 // lexical-only while live recall ran hybrid, silently grading the wrong system.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

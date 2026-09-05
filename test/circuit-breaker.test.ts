@@ -3,7 +3,7 @@
 // a clean launch, reopen with a longer cooldown if the probe fails, and reset
 // after an idle window.
 
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { CircuitBreaker } from "../src/harness/breaker.js";
 

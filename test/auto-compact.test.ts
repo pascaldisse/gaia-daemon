@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { scheduleAutoCompactAfterTurn, type ContextUsageProvider } from "../src/services/room/auto-compact.js";
 import { parseCommand, SLASH_COMMANDS } from "../src/services/commands.js";

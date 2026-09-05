@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { findVideoTranscriptProvider, VIDEO_TRANSCRIPT_PROVIDERS } from "../src/services/video-transcript.js";
 

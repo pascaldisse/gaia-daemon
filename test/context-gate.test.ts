@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { estimateTokens } from "../src/core/tokens.js";
 import { DEFAULT_CONTEXT_WARN_TOKENS, parseWorkspaceConfig } from "../src/core/config.js";
