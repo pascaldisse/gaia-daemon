@@ -47,7 +47,7 @@ mod webkit {
 
     const DEFAULT_PORT: u16 = 8787;
 
-    // Wry y = titlebar-container offset, not button top; 19 → centred in 38px.
+    // Wry y = titlebar-container offset, not button top; 21 → 12px top padding + 14px controls in 38px.
     #[cfg(target_os = "macos")]
     fn traffic_light_position() -> LogicalPosition<f64> {
         let coordinate = |name: &str, default: f64| {
@@ -58,7 +58,7 @@ mod webkit {
         };
         LogicalPosition::new(
             coordinate("GAIA_TITLEBAR_TRAFFIC_LIGHT_X", 12.0),
-            coordinate("GAIA_TITLEBAR_TRAFFIC_LIGHT_Y", 19.0),
+            coordinate("GAIA_TITLEBAR_TRAFFIC_LIGHT_Y", 21.0),
         )
     }
 

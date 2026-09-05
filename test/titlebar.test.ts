@@ -29,7 +29,7 @@ test("main and spawned windows share configurable centred traffic-light coordina
   const rust = source("src-tauri/src/lib.rs");
   assert.equal((rust.match(/\.traffic_light_position\(traffic_light_position\(\)\)/g) ?? []).length, 2);
   assert.match(rust, /coordinate\("GAIA_TITLEBAR_TRAFFIC_LIGHT_X", 12\.0\)/);
-  assert.match(rust, /coordinate\("GAIA_TITLEBAR_TRAFFIC_LIGHT_Y", 19\.0\)/);
+  assert.match(rust, /coordinate\("GAIA_TITLEBAR_TRAFFIC_LIGHT_Y", 21\.0\)/);
 });
 
 test("native inset follows OS + DOM fullscreen, restores custom/default inset, browser untouched", async () => {
@@ -101,4 +101,12 @@ test("native inset follows OS + DOM fullscreen, restores custom/default inset, b
       else Reflect.deleteProperty(globalThis, key);
     }
   }
+});
+
+test("native pixel proof captures this process's window, not an external screen helper", () => {
+  const rust = source("src-tauri/src/debug_server.rs");
+  assert.match(rust, /\("GET", "\/screenshot\/window"\) => match native_window_png\(app, "main"\)/);
+  assert.match(rust, /window\.ns_window\(\)/);
+  assert.match(rust, /CGWindowListCreateImage\(Rect/);
+  assert.match(rust, /CGImageRelease\(image\)/);
 });
