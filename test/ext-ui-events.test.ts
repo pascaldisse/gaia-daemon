@@ -64,6 +64,14 @@ test("toUiEvent projects every new AgentEvent kind into its scoped UiEvent, verb
 
   const lifecycle: AgentEvent = { type: "ext.lifecycle", id: "ext-1", state: "failed", reason: "boom" };
   assert.deepEqual(mixin.toUiEvent("task-1", "agent-1", "evt-1", lifecycle), { ...scope, ...lifecycle });
+
+  // Lane E (chat-mto9n58s-bjr1, docs/PLUGIN-ADVERSARY-0905.md §1/§3): the two
+  // reachability-fix event kinds must project the same way, never silently drop.
+  const commands: AgentEvent = { type: "ext.commands", commands: [{ name: "fugu-ping", description: "ping" }] };
+  assert.deepEqual(mixin.toUiEvent("task-1", "agent-1", "evt-1", commands), { ...scope, ...commands });
+
+  const harnessEvent: AgentEvent = { type: "harness.event", kind: "turn_start", payload: { turnId: "t1" } };
+  assert.deepEqual(mixin.toUiEvent("task-1", "agent-1", "evt-1", harnessEvent), { ...scope, ...harnessEvent });
 });
 
 // --- 3. pi ui-bridge adapter: emit shape + reply routing (prompt/authRequest <-> resolvePrompt, shortcut fire) ---
@@ -73,9 +81,11 @@ test("ui-bridge widget()/lifecycle() emit the exact AgentEvent shape", () => {
   const bridge = createUiBridge((e) => events.push(e));
   bridge.widget("w1", "belowEditor", ["a", "b"]);
   bridge.lifecycle("ext-1", "loaded");
+  bridge.commands([{ name: "fugu-ping", description: "ping" }]);
   assert.deepEqual(events, [
     { type: "ui.widget", id: "w1", placement: "belowEditor", lines: ["a", "b"] },
     { type: "ext.lifecycle", id: "ext-1", state: "loaded" },
+    { type: "ext.commands", commands: [{ name: "fugu-ping", description: "ping" }] },
   ]);
 });
 

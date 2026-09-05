@@ -96,5 +96,19 @@ export type AgentEvent =
    * answer", never two reply vocabularies). */
   | { type: "auth.request"; id: string; providerId: string; method: "oauth" | "apiKey" | "device"; url?: string; instructions?: string; deviceCode?: UiDeviceCodeInfo; fields?: UiPromptField[] }
   /** pi extension load/failure/dispose mirror — status chips in the transcript. */
-  | { type: "ext.lifecycle"; id: string; state: "loaded" | "failed" | "disposed"; reason?: string };
+  | { type: "ext.lifecycle"; id: string; state: "loaded" | "failed" | "disposed"; reason?: string }
+  /** pi registerCommand mirror (Lane E, chat-mto9n58s-bjr1): every command an
+   * extension has registered on THIS session, discovered once at first-turn
+   * bind (same timing as ext.lifecycle/ui.shortcut — see ui-context.ts's
+   * bindPiCommands). Lets a client/other harness introspect what `/word`s a
+   * pi session can now dispatch for real (PiRuntime.send's ext-command
+   * dispatch — see docs/PLUGIN-ADVERSARY-0905.md §1/§top-fix-4). */
+  | { type: "ext.commands"; commands: { name: string; description?: string }[] }
+  /** Any pi ExtensionEvent kind with no dedicated AgentEvent mapping above —
+   * generic passthrough (Lane E) so nothing a pi extension/lifecycle event
+   * emits is silently dropped (see src/harness/pi/events.ts forwardPiEvent's
+   * former closed 9-case allowlist, docs/PLUGIN-ADVERSARY-0905.md §top-fix-3).
+   * `payload` is depth/size-capped wire-safe JSON, never the raw SDK event
+   * object. A client renders unknown kinds as a collapsed debug row. */
+  | { type: "harness.event"; kind: string; payload: unknown };
 

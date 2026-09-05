@@ -24,6 +24,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
 /** @typedef {import("./types.js").Ev<"ui.shortcut">} UiShortcutEvent */
 /** @typedef {import("./types.js").Ev<"auth.request">} AuthRequestEvent */
 /** @typedef {import("./types.js").Ev<"ext.lifecycle">} ExtLifecycleEvent */
+/** @typedef {import("./types.js").Ev<"harness.event"> & {agentId?: string, at: number}} HarnessEventEntry */
 
 /**
  * @type {{
@@ -102,6 +103,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   authRequests: Map<string, AuthRequestEvent>,
  *   uiShortcuts: Map<string, UiShortcutEvent>,
  *   extLifecycle: Map<string, ExtLifecycleEvent>,
+ *   harnessEvents: HarnessEventEntry[],
  * }}
  */
 export const state = {
@@ -283,7 +285,22 @@ export const state = {
   authRequests: new Map(),
   uiShortcuts: new Map(),
   extLifecycle: new Map(),
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated AgentEvent mapping (see core/types/harness.ts harness.event,
+  // src/harness/pi/events.ts forwardPiEvent) — a small ring buffer so the
+  // transcript can render a collapsed debug row per kind without growing
+  // unbounded over a long room's lifetime.
+  harnessEvents: [],
 };
+
+/** Cap on state.harnessEvents — oldest entries drop first (ring buffer). */
+const HARNESS_EVENTS_MAX = 200;
+
+/** @param {import("./types.js").Ev<"harness.event">} payload — already StreamScope-tagged (agentId etc.) by the server's toUiEvent. */
+export function recordHarnessEvent(payload) {
+  state.harnessEvents.push({ .../** @type {any} */ (payload), at: Date.now() });
+  if (state.harnessEvents.length > HARNESS_EVENTS_MAX) state.harnessEvents.splice(0, state.harnessEvents.length - HARNESS_EVENTS_MAX);
+}
 
 /** @param {string} workspaceId @param {string} roomId */
 function readMarkKey(workspaceId, roomId) {

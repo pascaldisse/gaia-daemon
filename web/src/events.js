@@ -8,7 +8,7 @@ import { openEventChannel } from "./eventchannel.js";
 import { maybeAutoDario, syncDarioFromSnapshot } from "./dario.js";
 import { forwardNativePetProgress, syncNativePets } from "./pet.js";
 import { markDirty, setError } from "./render.js";
-import { state, syncReadMarks } from "./state.js";
+import { recordHarnessEvent, state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
 
@@ -225,6 +225,15 @@ export function connectEvents(resyncOnReady = false) {
   listen("ext.lifecycle", (event) => {
     const payload = /** @type {Ev<"ext.lifecycle">} */ (JSON.parse(event.data));
     state.extLifecycle.set(payload.id, payload);
+    markDirty("transcript");
+  });
+
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated mapping above — rendered as a collapsed debug row, same section
+  // as ext.lifecycle (see core/types/harness.ts, transcript.js).
+  listen("harness.event", (event) => {
+    const payload = /** @type {Ev<"harness.event">} */ (JSON.parse(event.data));
+    recordHarnessEvent(payload);
     markDirty("transcript");
   });
 

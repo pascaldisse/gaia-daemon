@@ -586,6 +586,29 @@ function renderTranscript() {
     node.dataset.v = version;
     nextNodes.push(node);
   }
+  // Lane E (chat-mto9n58s-bjr1): generic pi ExtensionEvent passthrough with no
+  // dedicated rendering (core/types/harness.ts harness.event) — a single
+  // collapsed debug row, grouped by kind with a running count, so nothing an
+  // extension emits is silently invisible even before it earns real UI.
+  if (state.harnessEvents.length > 0) {
+    /** @type {Map<string, number>} */
+    const counts = new Map();
+    for (const entry of state.harnessEvents) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
+    const version = `harness-events:${[...counts.entries()].map(([kind, count]) => `${kind}:${count}`).join(",")}`;
+    const current = existing.get("__harness-events");
+    const node =
+      current && current.dataset.v === version
+        ? current
+        : h(
+            "details",
+            { class: "harness-events-row" },
+            h("summary", { text: `harness events (${state.harnessEvents.length})` }),
+            ...[...counts.entries()].map(([kind, count]) => h("div", { class: "harness-event-line", text: `${kind} ×${count}` })),
+          );
+    node.dataset.eventId = "__harness-events";
+    node.dataset.v = version;
+    nextNodes.push(node);
+  }
   for (const widget of state.uiWidgets.values()) {
     const key = `__ui-widget:${widget.id}`;
     const version = `${key}:${widget.lines.join("\u0000")}`;

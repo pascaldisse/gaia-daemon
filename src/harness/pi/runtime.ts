@@ -19,7 +19,7 @@ import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../p
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
 import { createUiBridge } from "./ui-bridge.js";
-import { bindPiLifecycle, bindPiShortcuts, buildPiUiContext } from "./ui-context.js";
+import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext } from "./ui-context.js";
 import {
   loadCleanCompactionOverride,
   PiCompaction,
@@ -166,10 +166,33 @@ export class PiRuntime implements AgentRuntime {
       meta.uiBound = true;
       bindPiShortcuts(meta.extensionRunner, meta.uiBridge);
       bindPiLifecycle(meta.loader, meta.extensionRunner, meta.uiBridge);
+      bindPiCommands(meta.extensionRunner, meta.uiBridge);
     }
     const unsubscribe = session.subscribe((event) =>
       forwardPiEvent(event, session, channel),
     );
+    // Lane E (chat-mto9n58s-bjr1): a native-passthrough `/word` that matches a
+    // REAL registered extension command dispatches through the SDK's own
+    // ExtensionRunner (registerCommand's actual invocation point) instead of
+    // being prompted to the model as raw text — the prior gap, see
+    // resolveExtCommand's own doc comment and docs/PLUGIN-ADVERSARY-0905.md §1.
+    const extCommand = input.nativeCommand
+      ? this.resolveExtCommand(meta, input.message)
+      : undefined;
+    if (extCommand && meta.extensionRunner) {
+      const command = meta.extensionRunner.getCommand(extCommand.name)!;
+      const ctx = meta.extensionRunner.createCommandContext();
+      Promise.resolve()
+        .then(() => command.handler(extCommand.args, ctx))
+        .catch((cause) => channel.fail(cause))
+        .finally(() => {
+          unsubscribe();
+          channel.close();
+          meta.turnEmit.current = () => {};
+        });
+      for await (const event of channel.stream()) yield event;
+      return;
+    }
     const prompt = input.nativeCommand
       ? this.nativeCommandPrompt(meta, input.message)
       : await buildTurnPromptFor(
@@ -207,6 +230,28 @@ export class PiRuntime implements AgentRuntime {
       .getSkills()
       .skills.find(({ name }) => name === match[1]);
     return skill ? `/skill:${skill.name}${match[2]}` : trimmed;
+  }
+  /** Does `message` name a REAL registered extension command on this session
+   * (as opposed to a skill, which nativeCommandPrompt already handles, or
+   * plain content)? A pi package's own `pi.registerCommand("foo", …)` was
+   * previously unreachable from a gaia room: queue.ts's native-passthrough
+   * already flags ANY unclaimed `/word` as a nativeCommand turn for pi
+   * (capabilities.supportsNativeCommands is unconditional), but send() only
+   * ever remapped it to a skill invocation or fed it to the model as raw
+   * prompt text — never dispatched to the extension's own handler (see
+   * docs/PLUGIN-ADVERSARY-0905.md §1's registerCommand finding). */
+  private resolveExtCommand(
+    meta: PiSessionMeta,
+    message: string,
+  ): { name: string; args: string } | undefined {
+    const trimmed = message.trim();
+    const match = /^\/([^\s]+)([\s\S]*)$/.exec(trimmed);
+    if (!match || !meta.extensionRunner) return undefined;
+    const name = match[1];
+    if (name.startsWith("skill:")) return undefined;
+    return meta.extensionRunner.getCommand(name)
+      ? { name, args: match[2].trim() }
+      : undefined;
   }
   dispose(): void {
     this.sessions.disposeAll();

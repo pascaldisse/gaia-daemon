@@ -14,7 +14,8 @@ import { collect, harnessFixture } from "./helpers/fixture.js";
 import { createTempDir } from "./helpers/temp.js";
 import type { AgentEvent } from "../src/core/types.js";
 import { createUiBridge } from "../src/harness/pi/ui-bridge.js";
-import { bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "../src/harness/pi/ui-context.js";
+import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "../src/harness/pi/ui-context.js";
+import { forwardPiEvent } from "../src/harness/pi/events.js";
 
 // LANE D (chat-mto9n58s-bjr1): pi ExtensionUIContext -> ui-bridge -> AgentEvent,
 // exercised against the REAL SDK (createAgentSession + a real extension file
@@ -27,6 +28,10 @@ const PI_UI_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "ui-call
 // HarnessSpec.extensions (data) threaded uniformly by runner.ts into
 // RuntimeCreateContext.extensions, read by PiRuntime.createSessionMeta.
 const PI_EXT_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "register-tool.ts");
+
+// LANE E (chat-mto9n58s-bjr1): pi registerCommand reachability fixture — see
+// test/fixtures/pi-ext/register-command.ts and ui-context.ts's bindPiCommands.
+const PI_COMMAND_FIXTURE = join(process.cwd(), "test", "fixtures", "pi-ext", "register-command.ts");
 
 class FakeSession implements PiSessionLike {
   readonly sessionId: string;
@@ -1353,6 +1358,41 @@ test("hasDurableSession: true iff the room's pi session dir holds a session file
 
 // --- LANE A: extension discovery is data on HarnessSpec.extensions --------
 
+test("forwardPiEvent: a pi ExtensionEvent kind with no dedicated case (e.g. turn_start) surfaces as harness.event instead of being silently dropped (Lane E, docs/PLUGIN-ADVERSARY-0905.md §top-fix-3)", () => {
+  const events: AgentEvent[] = [];
+  const channel = { push: (e: AgentEvent) => events.push(e), fail: () => {} };
+  const fakeSession = { getContextUsage: () => undefined } as unknown as PiSessionLike;
+
+  forwardPiEvent({ type: "turn_start", turnId: "t1" }, fakeSession, channel);
+  forwardPiEvent({ type: "message_update", assistantMessageEvent: { type: "tool_call_delta", delta: "x" } }, fakeSession, channel);
+  // A KNOWN kind must still take its dedicated mapping, never a harness.event duplicate.
+  forwardPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } }, fakeSession, channel);
+
+  assert.deepEqual(events, [
+    { type: "harness.event", kind: "turn_start", payload: { type: "turn_start", turnId: "t1" } },
+    { type: "harness.event", kind: "message_update", payload: { type: "message_update", assistantMessageEvent: { type: "tool_call_delta", delta: "x" } } },
+    { type: "text-delta", delta: "hi" },
+  ]);
+});
+
+test("forwardPiEvent's harness.event payload caps depth/size instead of ever throwing on a cyclic or huge internal SDK event", () => {
+  const events: AgentEvent[] = [];
+  const channel = { push: (e: AgentEvent) => events.push(e), fail: () => {} };
+  const fakeSession = { getContextUsage: () => undefined } as unknown as PiSessionLike;
+
+  const cyclic: Record<string, unknown> = { type: "agent_settled" };
+  cyclic.self = cyclic;
+  assert.doesNotThrow(() => forwardPiEvent(cyclic, fakeSession, channel));
+  const cyclicEvent = events.find((e) => e.type === "harness.event") as Extract<AgentEvent, { type: "harness.event" }>;
+  assert.equal((cyclicEvent.payload as { self: unknown }).self, "[circular]");
+
+  events.length = 0;
+  const huge = { type: "agent_end", blob: "x".repeat(64 * 1024) };
+  forwardPiEvent(huge, fakeSession, channel);
+  const hugeEvent = events.find((e) => e.type === "harness.event") as Extract<AgentEvent, { type: "harness.event" }>;
+  assert.equal((hugeEvent.payload as { truncated?: boolean }).truncated, true);
+});
+
 test("pi harness spec declares extensions:{discover:true} (data, RULE #0 — no harness-id branch needed to read it)", () => {
   const spec = findHarness("pi")!;
   assert.deepEqual(spec.extensions, { discover: true });
@@ -1635,6 +1675,49 @@ test("bindPiLifecycle emits ext.lifecycle 'loaded' for the real fixture and 'fai
   }
 });
 
+test("bindPiCommands emits ext.commands for the real fixture's registerCommand, and runner.getCommand()'s REAL handler dispatch reaches the room via ui-bridge (SDK-level, in-process, no LLM call) — Lane E", async () => {
+  const temp = await createTempDir();
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd: temp.path,
+      agentDir: join(temp.path, "agent-dir"),
+      additionalExtensionPaths: [PI_COMMAND_FIXTURE],
+      noExtensions: false,
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({
+      cwd: temp.path,
+      resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(),
+    });
+    try {
+      const events: AgentEvent[] = [];
+      const bridge = createUiBridge((event) => events.push(event));
+      await (session as unknown as { bindExtensions(b: { uiContext?: unknown }): Promise<void> }).bindExtensions({
+        uiContext: buildPiUiContext(bridge),
+      });
+      const runner = (session as unknown as { extensionRunner: any }).extensionRunner;
+      bindPiCommands(runner, bridge);
+
+      const commandsEvent = events.find((e) => e.type === "ext.commands") as Extract<AgentEvent, { type: "ext.commands" }> | undefined;
+      assert.ok(commandsEvent, "registerCommand must be discovered and emitted as ext.commands at load");
+      assert.ok(commandsEvent!.commands.some((c) => c.name === "fugu-ping"), `expected fugu-ping in ${JSON.stringify(commandsEvent!.commands)}`);
+
+      const resolved = runner.getCommand("fugu-ping");
+      assert.ok(resolved, "runner.getCommand must resolve the registered command by name");
+      await resolved.handler("hello", runner.createCommandContext());
+
+      const widgetEvent = events.find((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }> | undefined;
+      assert.ok(widgetEvent, "the command's REAL handler must run and reach the room via ui-bridge, never a re-implementation");
+      assert.deepEqual(widgetEvent!.lines, ["pong:hello"]);
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("buildPiUiContext's confirm()/select()/input() fall back to pi's OWN noOp default when the timeout elapses before any ui.reply arrives (never hangs the turn)", async () => {
   const bridge = createUiBridge(() => {});
   const uiContext = buildPiUiContext(bridge);
@@ -1680,14 +1763,36 @@ test("wrapAuthInteraction's prompt() routes through bridge.authRequest and resol
 
 class FakeExtensionRunner {
   shortcuts = new Map<string, { description?: string; handler: () => void }>();
+  // Lane E: minimal registerCommand mirror — `handler` records every call so
+  // a test can assert real dispatch ran without a real SDK ExtensionRunner.
+  commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => void | Promise<void>; calls: string[] }>();
   createContext(): unknown {
     return {};
+  }
+  createCommandContext(): unknown {
+    return this.createContext();
   }
   onError(): () => void {
     return () => {};
   }
   getShortcuts(): Map<string, { description?: string; handler: () => void }> {
     return this.shortcuts;
+  }
+  getRegisteredCommands(): { invocationName: string; description?: string }[] {
+    return [...this.commands.entries()].map(([invocationName, command]) => ({
+      invocationName,
+      ...(command.description ? { description: command.description } : {}),
+    }));
+  }
+  getCommand(name: string): { handler: (args: string, ctx: unknown) => void | Promise<void> } | undefined {
+    const command = this.commands.get(name);
+    if (!command) return undefined;
+    return {
+      handler: (args, ctx) => {
+        command.calls.push(args);
+        return command.handler(args, ctx);
+      },
+    };
   }
 }
 
@@ -1698,6 +1803,7 @@ class UiFakeSession implements PiSessionLike {
   uiContext: any;
   confirmPromise?: Promise<unknown>;
   fired = 0;
+  prompts: string[] = [];
   readonly extensionRunner = new FakeExtensionRunner();
 
   constructor() {
@@ -1720,7 +1826,8 @@ class UiFakeSession implements PiSessionLike {
     };
   }
 
-  async prompt(): Promise<void> {
+  async prompt(text?: string): Promise<void> {
+    if (text !== undefined) this.prompts.push(text);
     // Simulates a tool call mid-turn awaiting ctx.ui.confirm() — fires the
     // prompt (pushing ui.prompt onto the LIVE turn's channel) but does not
     // await it, exactly like a real tool execute() awaiting user input.
@@ -1778,6 +1885,32 @@ test("PiRuntime.createSessionMeta discovers the session's registered shortcuts v
     assert.equal(uiSession!.fired, 1);
     assert.equal(await runtime.uiShortcutFire!("default", "unknown-command"), false);
     assert.equal(await runtime.uiShortcutFire!("unknown-room", shortcutEvent!.commandId), false);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("PiRuntime.send dispatches a nativeCommand /word that matches a REAL registered extension command through runner.getCommand()'s OWN handler — never prompted to the model as raw text (Lane E, docs/PLUGIN-ADVERSARY-0905.md §1)", async () => {
+  const fx = await harnessFixture();
+  try {
+    let uiSession: UiFakeSession | undefined;
+    const factory: PiRuntimeSessionFactory = async () => {
+      uiSession = new UiFakeSession();
+      return { session: uiSession };
+    };
+    const runtime = new PiRuntime({ workspace: fx.workspace, agent: fx.agent, memoryStore: new MemoryStore(), sessionFactory: factory });
+    // Prime the session first (ordinary turn) so extensionRunner is bound.
+    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+    uiSession!.prompts = [];
+    uiSession!.extensionRunner.commands.set("fugu-ping", { description: "fixture command", calls: [], handler: () => {} });
+
+    const events = await collect(
+      runtime.send({ roomId: "default", message: "/fugu-ping hello", nativeCommand: true, transcript: [] }),
+    );
+
+    assert.deepEqual(uiSession!.extensionRunner.commands.get("fugu-ping")!.calls, ["hello"], "the fixture's REAL handler must run with the command's own args");
+    assert.deepEqual(uiSession!.prompts, [], "a matched extension command must NEVER be fed to the model as a raw prompt");
+    assert.deepEqual(events, [], "the fixture handler here emits no ui.* events — dispatch alone is the assertion");
   } finally {
     await fx.cleanup();
   }

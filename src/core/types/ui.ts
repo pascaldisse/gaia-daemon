@@ -333,6 +333,8 @@ export type UiEvent =
   | ({ type: "ui.shortcut"; commandId: string; key: string; description?: string } & StreamScope)
   | ({ type: "auth.request"; id: string; providerId: string; method: "oauth" | "apiKey" | "device"; url?: string; instructions?: string; deviceCode?: UiDeviceCodeInfo; fields?: UiPromptField[] } & StreamScope)
   | ({ type: "ext.lifecycle"; id: string; state: "loaded" | "failed" | "disposed"; reason?: string } & StreamScope)
+  | ({ type: "ext.commands"; commands: { name: string; description?: string }[] } & StreamScope)
+  | ({ type: "harness.event"; kind: string; payload: unknown } & StreamScope)
   | { type: "settings-saved"; workspaceId?: string; roomId?: string; fileId: string }
   | { type: "voice-status"; workspaceId: string; roomId: string; voice: VoiceCallInfo | null; pending?: { agentId: string; message: string } }
   // Workspace-TAGGED, globally DELIVERED (NO roomId): the room list of the named

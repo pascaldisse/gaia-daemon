@@ -221,6 +221,22 @@ export function bindPiLifecycle(
   runner.onError((err) => bridge.lifecycle(err.extensionPath, "failed", `${err.event}: ${err.error}`));
 }
 
+/** Extension-registered slash commands (Lane E, chat-mto9n58s-bjr1): the ONE
+ * enumeration point (`runner.getRegisteredCommands()`, same accessor family
+ * as getShortcuts) mirrors every registered `pi.registerCommand(name, …)`
+ * into `ext.commands` so a client/room can see what real dispatch now exists
+ * (see runtime.ts's send()'s ext-command branch — the actual invocation site,
+ * via `runner.getCommand(name)!.handler(args, runner.createCommandContext())`,
+ * never re-implemented here). Called once per session right after
+ * bindPiShortcuts/bindPiLifecycle (same first-turn timing — see `uiBound`). */
+export function bindPiCommands(runner: ExtensionRunner, bridge: UiBridge): void {
+  const commands = runner.getRegisteredCommands().map((command) => ({
+    name: command.invocationName,
+    ...(command.description ? { description: command.description } : {}),
+  }));
+  bridge.commands(commands);
+}
+
 // ---------------------------------------------------------------------------
 // Provider OAuth login wrap (Lane D task item 3). `ModelRuntime.login(
 // providerId, type, interaction)` (dist/core/model-runtime.d.ts:74, public —

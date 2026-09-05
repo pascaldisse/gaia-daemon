@@ -59,6 +59,10 @@ export interface UiBridge {
   fireShortcut(commandId: string): boolean;
   /** Extension load/failure/dispose status chip. */
   lifecycle(id: string, state: "loaded" | "failed" | "disposed", reason?: string): void;
+  /** registerCommand mirror (Lane E): this session's full registered-command
+   * list, so a client/room can introspect what `/word`s now dispatch for
+   * real (see runtime.ts's ext-command dispatch in send()). */
+  commands(list: { name: string; description?: string }[]): void;
 }
 
 /** Build one UiBridge bound to a turn's event sink. `emit` is typically
@@ -123,6 +127,10 @@ export function createUiBridge(emit: (event: AgentEvent) => void): UiBridge {
 
     lifecycle(id, state, reason) {
       emit({ type: "ext.lifecycle", id, state, ...(reason ? { reason } : {}) });
+    },
+
+    commands(list) {
+      emit({ type: "ext.commands", commands: list });
     },
   };
 }

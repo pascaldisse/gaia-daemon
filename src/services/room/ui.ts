@@ -167,6 +167,10 @@ export class RoomUiMixin {
         return { ...scope, type: "auth.request", id: event.id, providerId: event.providerId, method: event.method, url: event.url, instructions: event.instructions, deviceCode: event.deviceCode, fields: event.fields };
       case "ext.lifecycle":
         return { ...scope, type: "ext.lifecycle", id: event.id, state: event.state, reason: event.reason };
+      case "ext.commands":
+        return { ...scope, type: "ext.commands", commands: event.commands };
+      case "harness.event":
+        return { ...scope, type: "harness.event", kind: event.kind, payload: event.payload };
       case "notice":
         // Not a UI transport event — no-op. Never rendered as reply text.
         return undefined;
