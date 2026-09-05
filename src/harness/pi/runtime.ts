@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
-import type { ExtensionFactory, PackageManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, ExtensionRunner, PackageManager } from "@earendil-works/pi-coding-agent";
 import { loadNativeImages } from "../../core/attachments.js";
-import { type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type Workspace, } from "../../core/types.js";
+import { type AgentDef, type AgentEvent, type CompactResult, type MessageAttachment, type UiPromptReplyValue, type Workspace, } from "../../core/types.js";
 import { workspacePaths } from "../../core/paths.js";
 import type { MemoryStore } from "../../domain/memory.js";
 import type { ResolvedRole } from "../../domain/roles.js";
@@ -18,6 +18,8 @@ import { findModelWithAlias } from "../model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../prompt.js";
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
+import { createUiBridge } from "./ui-bridge.js";
+import { bindPiLifecycle, bindPiShortcuts, buildPiUiContext } from "./ui-context.js";
 import {
   loadCleanCompactionOverride,
   PiCompaction,
@@ -34,6 +36,7 @@ export const PI_CAPABILITIES: HarnessCapabilities = {
   supportsCompactEdit: true,
   supportsForkAtMessage: true,
   supportsNativeCommands: true,
+  supportsUi: true,
   fanOutTools: [],
 };
 export class PiRuntime implements AgentRuntime {
@@ -150,6 +153,20 @@ export class PiRuntime implements AgentRuntime {
       yield info;
     }
     const channel = createEventChannel();
+    // LANE-D: repoint this session's ui bridge at the LIVE turn's stream (see
+    // createSessionMeta's turnEmit doc comment) so ui.*/auth.request/
+    // ext.lifecycle events interleave with everything else this turn yields;
+    // reset to a no-op once the turn settles so a late ui-bridge push after
+    // this channel closes doesn't try to write into a drained stream.
+    meta.turnEmit.current = (event) => channel.push(event);
+    // First turn this session ever streams to a client: NOW there is
+    // somewhere for ui.shortcut/ext.lifecycle to land (see createSessionMeta's
+    // comment on why this can't run any earlier).
+    if (!meta.uiBound && meta.extensionRunner) {
+      meta.uiBound = true;
+      bindPiShortcuts(meta.extensionRunner, meta.uiBridge);
+      bindPiLifecycle(meta.loader, meta.extensionRunner, meta.uiBridge);
+    }
     const unsubscribe = session.subscribe((event) =>
       forwardPiEvent(event, session, channel),
     );
@@ -178,6 +195,7 @@ export class PiRuntime implements AgentRuntime {
       .finally(() => {
         unsubscribe();
         channel.close();
+        meta.turnEmit.current = () => {};
       });
     for await (const event of channel.stream()) yield event;
   }
@@ -232,6 +250,22 @@ export class PiRuntime implements AgentRuntime {
     );
     await session.steer(message, images.length ? images : undefined);
     return true;
+  }
+  /** Route a client's `ui.reply` back to whichever `ui.prompt`/`auth.request`
+   * this session's ui bridge is holding pending for `id` (see
+   * AgentRuntime.uiReply — host.ts/runner.ts already drive this in from the
+   * daemon; capabilities.supportsUi:true above is what turns that on). */
+  async uiReply(
+    roomId: string,
+    id: string,
+    value: UiPromptReplyValue,
+  ): Promise<boolean> {
+    return this.sessions.get(roomId)?.uiBridge.resolvePrompt(id, value) ?? false;
+  }
+  /** Dispatch a client-fired hotkey `commandId` to the extension's OWN
+   * registered shortcut handler (see AgentRuntime.uiShortcutFire). */
+  async uiShortcutFire(roomId: string, commandId: string): Promise<boolean> {
+    return this.sessions.get(roomId)?.uiBridge.fireShortcut(commandId) ?? false;
   }
   async compact(roomId: string): Promise<CompactResult> {
     return this.compaction.compact(roomId);
@@ -505,25 +539,38 @@ export class PiRuntime implements AgentRuntime {
           settingsManager: readOnlyPiSettings(this.workDir),
         });
     if (modelFallbackMessage) console.warn(modelFallbackMessage);
-    // LANE-B: ui bridge — headless safety is ALREADY covered by pi's own SDK:
-    // AgentSession never binds a uiContext here, so ExtensionRunner keeps its
-    // built-in `noOpUIContext` (dist/core/extensions/runner.js) — select/input
-    // resolve undefined, confirm resolves false, notify/setStatus/etc. are
-    // no-ops; NOTHING throws. Nothing to wrap at our layer for correctness.
-    // The real integration seam for Lane B's createUiBridge(emit)
-    // (src/harness/pi/ui-bridge.ts, written in parallel — not created here) is
-    // `(session as PiSessionLike & { bindExtensions?(b: { uiContext?: unknown }): Promise<void> })
-    // .bindExtensions({ uiContext: createUiBridge(emit) })`, called once per
-    // session right here — dist/core/agent-session.js's public
-    // `AgentSession.bindExtensions()` is what stores `_extensionUIContext` and
-    // rebinds it onto the ExtensionRunner (`runner.setUIContext(...)`).
+    // LANE-D: ui bridge — bound once per session (pending prompts/shortcuts
+    // must survive across turns — a ui.reply can land after the turn that
+    // raised it ended, e.g. mid-steer). `turnEmit` is a mutable pointer
+    // send() repoints to the CURRENT turn's EventChannel.push every turn (see
+    // send() below) so ui.* events interleave in the exact stream listening
+    // for them; between turns it's a no-op — nothing pushes a mid-session
+    // ui.widget/lifecycle event without an active turn anyway (see
+    // ui-context.ts's own doc comments for the full method-by-method table).
+    const typedSession = session as PiSessionLike;
+    const turnEmit: { current: (event: AgentEvent) => void } = { current: () => {} };
+    const uiBridge = createUiBridge((event) => turnEmit.current(event));
+    // bindExtensions() itself must run NOW (session creation) — an extension's
+    // own session_start handler can call ctx.ui.* synchronously inside it, and
+    // that needs the real uiContext already wired. What canNOT run yet is
+    // bindPiShortcuts/bindPiLifecycle's EMIT side: turnEmit.current is still
+    // this construction-time no-op (send() hasn't created a channel yet), so
+    // those are deferred to send()'s first turn (meta.uiBound below) instead.
+    let extensionRunner: ExtensionRunner | undefined;
+    if (typedSession.bindExtensions) {
+      await typedSession.bindExtensions({ uiContext: buildPiUiContext(uiBridge) });
+      extensionRunner = typedSession.extensionRunner as ExtensionRunner | undefined;
+    }
     const meta: PiSessionMeta = {
-      session: session as PiSessionLike,
+      session: typedSession,
       loader,
       systemPromptRef,
       skillPathsKey: key,
+      uiBridge,
+      turnEmit,
+      ...(extensionRunner ? { extensionRunner } : {}),
     };
-    const baseThinking = (session as PiSessionLike).thinkingLevel;
+    const baseThinking = typedSession.thinkingLevel;
     if (baseThinking !== undefined) meta.baseThinking = baseThinking;
     return meta;
   }

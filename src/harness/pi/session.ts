@@ -7,9 +7,11 @@ import {
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentDef, ThinkingLevel, Workspace } from "../../core/types.js";
+import type { ExtensionRunner } from "@earendil-works/pi-coding-agent";
+import type { AgentDef, AgentEvent, ThinkingLevel, Workspace } from "../../core/types.js";
 import { workspacePaths } from "../../core/paths.js";
 import type { RuntimeCreateContext } from "../spec.js";
+import type { UiBridge } from "./ui-bridge.js";
 // ---------------------------------------------------------------------------
 
 export interface PiRuntimeOptions extends RuntimeCreateContext {
@@ -104,6 +106,16 @@ export interface PiSessionLike {
   abort(): Promise<void>;
   reload(): Promise<void>;
   dispose(): void;
+  /** LANE-D: real AgentSession's public bindExtensions() (dist/core/
+   * agent-session.d.ts) — stores + rebinds the ExtensionRunner's uiContext.
+   * Optional here only because FakeSession (tests) doesn't implement it. */
+  bindExtensions?(bindings: { uiContext?: unknown }): Promise<void>;
+  /** LANE-D: real AgentSession's public `extensionRunner` getter — the SDK's
+   * one accessor for enumerating registered shortcuts / listening for
+   * runtime extension errors (see ui-context.ts's bindPiShortcuts/
+   * bindPiLifecycle). `unknown` here (not pi's ExtensionRunner type) keeps
+   * this pi-agnostic interface free of pi SDK imports — callers narrow it. */
+  readonly extensionRunner?: unknown;
 }
 
 export interface PiRuntimeSessionFactoryOptions {
@@ -133,6 +145,29 @@ export interface PiSessionMeta {
   // Thinking level the session was created with; turns without an explicit
   // override restore it (voice mode may have switched it off).
   baseThinking?: string;
+  /** LANE-D: this session's ExtensionUIContext bridge — lives for the WHOLE
+   * session (pending prompts/shortcuts must survive across turns: a ui.reply
+   * can land after the turn that raised it ended, e.g. mid-steer). Driven by
+   * PiRuntime.uiReply/uiShortcutFire. */
+  uiBridge: UiBridge;
+  /** LANE-D: the bridge's emit target, repointed to the CURRENT turn's
+   * EventChannel.push by send() every turn so ui-bridge events interleave in
+   * the exact turn stream listening for them; a no-op between turns. */
+  turnEmit: { current: (event: AgentEvent) => void };
+  /** LANE-D: this session's ExtensionRunner (narrowed from
+   * PiSessionLike.extensionRunner), captured once at createSessionMeta so
+   * send() can discover shortcuts/lifecycle lazily — see `uiBound` below for
+   * why this can't happen eagerly in createSessionMeta itself. Absent when
+   * the session doesn't support bindExtensions (e.g. FakeSession in tests
+   * that don't opt in). */
+  extensionRunner?: ExtensionRunner;
+  /** LANE-D: true once bindPiShortcuts/bindPiLifecycle have run for this
+   * session. MUST happen on the first send() turn, NOT in createSessionMeta:
+   * turnEmit.current is still the construction-time no-op at that point (the
+   * channel doesn't exist until send() creates it), so any ui.shortcut/
+   * ext.lifecycle emitted during createSessionMeta itself would silently
+   * vanish — nothing was listening yet. */
+  uiBound?: boolean;
 }
 
 export function piRoomSessionDir(
