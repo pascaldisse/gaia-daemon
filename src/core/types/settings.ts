@@ -81,3 +81,20 @@ export interface EditableFileContent extends EditableFileDescriptor {
   content: string;
 }
 
+
+// ---------------------------------------------------------------------------
+// Daemon-wide Pi extension policy (~/.gaia/config.json `pi.extensions`).
+// User-global Pi extensions run inside every Pi lane, so opt in explicitly.
+export type PiUserGlobalExtensionsPolicy = "off" | "allowlist" | "all";
+export interface PiExtensionsSettings {
+  /** `allowlist` by default: ~/.pi/agent/extensions loads nothing until named. */
+  userGlobal: PiUserGlobalExtensionsPolicy;
+  /** Glob/basename allowlist for ~/.pi/agent/extensions; default []. */
+  allow: string[];
+}
+export interface PiSettings {
+  extensions: PiExtensionsSettings;
+}
+export const PI_SETTINGS_DEFAULTS: PiSettings = {
+  extensions: { userGlobal: "allowlist", allow: [] },
+};

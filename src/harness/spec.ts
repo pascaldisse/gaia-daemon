@@ -307,6 +307,10 @@ export interface RuntimeCreateContext {
 interface HarnessExtensionsConfig {
   discover: boolean;
   additionalPaths?: string[];
+  /** Glob/basename patterns denied from user-global extension discovery. */
+  exclude?: string[];
+  /** Glob/basename patterns allowed from user-global extension discovery. */
+  allow?: string[];
   /** Default false ⇒ a missing settings.json package source is SKIPPED, never
    * fetched over the network mid-turn (see PiRuntime's scoped
    * packageManager.resolve() wrap — never a process-global PI_OFFLINE, which

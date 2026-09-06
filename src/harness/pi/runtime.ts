@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { PI_SETTINGS_DEFAULTS } from "../../core/types/settings.js";
 import { PiCleanCompaction } from "./clean-compact.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, ModelRuntime, SessionManager, } from "@earendil-works/pi-coding-agent";
@@ -19,6 +20,7 @@ import { findModelWithAlias } from "../model-aliases.js";
 import { buildBaseSystemPrompt, buildTurnPromptFor, promptCacheKey, } from "../prompt.js";
 import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
+import { discoverUserGlobalExtensionPaths, filterUserGlobalExtensions } from "./extensions.js";
 import { createUiBridge } from "./ui-bridge.js";
 import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "./ui-context.js";
 import {
@@ -493,19 +495,32 @@ export class PiRuntime implements AgentRuntime {
     // would otherwise need an interactive trust prompt this headless runner
     // can never answer).
     const discover = this.extensionsConfig?.discover ?? false;
+    const agentDir = getAgentDir();
+    const discoveredUserGlobal = discover ? discoverUserGlobalExtensionPaths(agentDir) : [];
+    const extensionSettings = this.workspace.config.pi?.extensions ?? PI_SETTINGS_DEFAULTS.extensions;
+    const userGlobal = filterUserGlobalExtensions({
+      paths: discoveredUserGlobal,
+      policy: extensionSettings.userGlobal,
+      allow: [...extensionSettings.allow, ...(this.extensionsConfig?.allow ?? [])],
+      exclude: this.extensionsConfig?.exclude,
+    });
+    // `noExtensions` must stay true: DefaultResourceLoader otherwise implicitly
+    // re-adds every ~/.pi/agent/extensions entry. Project-local extensions and
+    // opted-in user-global files are explicit paths, which load before that gate.
+    const additionalExtensionPaths = discover
+      ? [
+          ...(this.extensionsConfig?.additionalPaths ?? []),
+          ...userGlobal.loaded,
+          join(this.workDir, ".pi", "extensions"),
+        ]
+      : [];
+    if (discover) console.info(`pi extensions: user-global loaded=[${userGlobal.loaded.join(", ") || "none"}] skipped=[${userGlobal.skipped.join(", ") || "none"}]`);
     const loader = new DefaultResourceLoader({
       cwd: this.workDir,
-      agentDir: getAgentDir(),
+      agentDir,
       additionalSkillPaths: skillPaths,
-      noExtensions: !discover,
-      ...(discover
-        ? {
-            additionalExtensionPaths: [
-              ...(this.extensionsConfig?.additionalPaths ?? []),
-              join(this.workDir, ".pi", "extensions"),
-            ],
-          }
-        : {}),
+      noExtensions: true,
+      ...(discover ? { additionalExtensionPaths } : {}),
       // Loaded regardless of noExtensions/discover (disk-discovered extensions
       // stay off when discover is false) — see compaction.extension() above.
       // Uses the CONFIGURED model provider/name strings, never the resolved

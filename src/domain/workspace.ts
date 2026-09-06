@@ -138,6 +138,9 @@ async function mergeGlobalEnv(cwd: string, config: WorkspaceConfig): Promise<voi
   if (resolve(cwd) === resolve(homedir())) return;
   const globalConfig = parseWorkspaceConfig(await readJson(globalPaths.config()), () => true);
   if (globalConfig.env) config.env = { ...globalConfig.env, ...config.env };
+  // Pi's user-global extension policy is daemon-wide: ~/.gaia/config.json
+  // wins over any legacy/workspace value.
+  if (globalConfig.pi) config.pi = globalConfig.pi;
 }
 
 export async function loadWorkspace(cwd: string): Promise<Workspace> {

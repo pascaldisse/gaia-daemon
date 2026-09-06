@@ -2,7 +2,8 @@
 // for .gaia/config.json. Anything env-overridable is a function.
 
 import { readFileSync } from "node:fs";
-import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PiSettings, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
+import { PI_SETTINGS_DEFAULTS } from "./types/settings.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
@@ -215,6 +216,20 @@ export function parseEnvPassthrough(raw: unknown): Record<string, string> | unde
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Parse ~/.gaia/config.json `pi.extensions`. Invalid values retain the safe
+ * allowlist/empty defaults; patterns are data, never extension names in code. */
+export function parsePiSettings(raw: unknown): PiSettings | undefined {
+  if (!isRecord(raw)) return undefined;
+  const extensions = isRecord(raw.extensions) ? raw.extensions : {};
+  const userGlobal = extensions.userGlobal === "off" || extensions.userGlobal === "all" || extensions.userGlobal === "allowlist"
+    ? extensions.userGlobal
+    : PI_SETTINGS_DEFAULTS.extensions.userGlobal;
+  const allow = Array.isArray(extensions.allow)
+    ? extensions.allow.filter((pattern): pattern is string => typeof pattern === "string" && pattern.trim().length > 0).map((pattern) => pattern.trim())
+    : PI_SETTINGS_DEFAULTS.extensions.allow;
+  return { extensions: { userGlobal, allow } };
+}
+
 export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   if (!isRecord(raw)) return undefined;
   const config: SandboxConfig = {};
@@ -424,6 +439,8 @@ autoCompact: parseAutoCompactConfig(obj.autoCompact),
   if (envPassthrough) config.env = envPassthrough;
   const plugins = parsePluginsConfig(obj.plugins);
   if (plugins) config.plugins = plugins;
+  const pi = parsePiSettings(obj.pi);
+  if (pi) config.pi = pi;
   return config;
 }
 

@@ -1,4 +1,5 @@
 import type { AgentDef, HooksConfig, McpServerConfig, MemoryConfig, SandboxConfig, CollabConfig } from "./agents.js";
+import type { PiSettings } from "./settings.js";
 
 // ---------------------------------------------------------------------------
 // Workspace (.gaia/config.json + resolved layout)
@@ -51,6 +52,8 @@ export interface WorkspaceConfig {
    * provider key past the proxy (host.ts buildEnv). Uniform across harnesses;
    * this layer has no idea what any key means. */
   env?: Record<string, string>;
+  /** Daemon-wide Pi policy, sourced from ~/.gaia/config.json when present. */
+  pi?: PiSettings;
 }
 
 export interface ContextFile {
