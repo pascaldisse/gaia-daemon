@@ -1422,28 +1422,36 @@ test("PiRuntime: extensions absent ⇒ loader built with noExtensions:true and n
   }
 });
 
-test("PiRuntime: extensions:{discover:true} ⇒ loader built with noExtensions:false and additionalExtensionPaths = spec paths + workspace .pi/extensions", async () => {
+test("PiRuntime: extensions:{discover:true} keeps implicit user-global discovery off while explicit paths include workspace .pi/extensions", async () => {
   const fx = await harnessFixture();
   try {
     let capturedLoader: any;
-    const factory: PiRuntimeSessionFactory = async (options) => {
-      capturedLoader = options.loader;
-      return { session: new FakeSession("s1") };
-    };
-    const runtime = new PiRuntime({
-      workspace: fx.workspace,
-      agent: fx.agent,
-      memoryStore: new MemoryStore(),
-      sessionFactory: factory,
-      extensions: { discover: true, additionalPaths: ["/tmp/gaia-lane-a-extra-ext.ts"] },
-    });
-    await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
-
-    assert.equal(capturedLoader.noExtensions, false);
-    assert.deepEqual(capturedLoader.additionalExtensionPaths, [
-      "/tmp/gaia-lane-a-extra-ext.ts",
-      join(process.cwd(), ".pi", "extensions"),
-    ]);
+    const infos: string[] = [];
+    const originalInfo = console.info;
+    console.info = (...args: unknown[]) => infos.push(args.join(" "));
+    try {
+      const factory: PiRuntimeSessionFactory = async (options) => {
+        capturedLoader = options.loader;
+        return { session: new FakeSession("s1") };
+      };
+      const runtime = new PiRuntime({
+        workspace: fx.workspace,
+        agent: fx.agent,
+        memoryStore: new MemoryStore(),
+        sessionFactory: factory,
+        extensions: { discover: true, additionalPaths: ["/tmp/gaia-lane-a-extra-ext.ts"] },
+      });
+      await collect(runtime.send({ roomId: "default", message: "hi", transcript: [] }));
+      assert.equal(capturedLoader.noExtensions, true);
+      assert.deepEqual(capturedLoader.additionalExtensionPaths, [
+        "/tmp/gaia-lane-a-extra-ext.ts",
+        join(process.cwd(), ".pi", "extensions"),
+      ]);
+      assert.equal(infos.length, 1);
+      assert.match(infos[0]!, /^pi extensions: user-global loaded=\[none\] skipped=\[/);
+    } finally {
+      console.info = originalInfo;
+    }
   } finally {
     await fx.cleanup();
   }
