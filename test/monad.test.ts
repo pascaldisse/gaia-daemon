@@ -243,6 +243,7 @@ test("setup: discover the bundled monad setup, activate it, then deactivate", as
     assert.equal(result.monad.policy, "prompt-driven");
     assert.equal(result.monad.slots.length, 3);
     assert.equal(result.monad.coordinatorAgentId, "gaia");
+    assert.equal(result.monad.workerSeesRequest, true);
     assert.ok(result.monad.rolePrompts?.verifier?.includes("ACCEPT"), "verifier role prompt should be inlined");
     assert.ok(result.placedRoles.includes("terry:worker"), "role files should be placed into the project overlay");
 
