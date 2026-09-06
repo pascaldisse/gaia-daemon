@@ -141,6 +141,18 @@ test("a suspended context resumes before it schedules PCM", async () => {
   expect(ctx.resumeCalls).toBe(1);
   expect(ctx.sources).toHaveLength(1);
 });
+test("a closed context is replaced before PCM is scheduled", async () => {
+  const { t, ctx } = armed();
+  t.pause();
+  ctx.setState("closed");
+  t.append(pcm(16000));
+  t.play();
+  await flush();
+  expect(contexts).toHaveLength(2);
+  expect(t.ctx).toBe(contexts[1]);
+  expect(contexts[1]?.sources).toHaveLength(1);
+  t.destroy();
+});
 test("a frozen audio clock recreates the pipeline once and reports it", async () => {
   contexts = [];
   const t = new AudioTransport({ healthCheckMs: 1 });
