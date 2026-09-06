@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { findModelWithAlias } from "../harness/model-aliases.js";
 import type { AgentDef } from "../core/types.js";
+import { normalizeImageRequest } from "../core/image-request.js";
 
 export interface UpstreamCredential {
   /** Real provider base URL (trailing slash trimmed). */
@@ -81,7 +82,16 @@ const UPSTREAM_STALL_MS = 300_000;
  */
 export async function forwardLlmRequest(request: IncomingMessage, response: ServerResponse, upstream: UpstreamCredential, subpath: string): Promise<void> {
   const method = request.method ?? "POST";
-  const body = method === "GET" || method === "HEAD" ? undefined : await readBody(request);
+  let body = method === "GET" || method === "HEAD" ? undefined : await readBody(request);
+  if (body) {
+    try {
+      const rewritten = await normalizeImageRequest(body.toString("utf8"));
+      if (rewritten !== undefined) body = Buffer.from(rewritten);
+    } catch (error) {
+      fail(response, 400, `llm proxy: image normalization failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+  }
   const target = joinUrl(upstream.baseUrl, subpath);
 
   // Stall net: armed until headers arrive, re-armed per body chunk. Aborting

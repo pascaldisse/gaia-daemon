@@ -5,6 +5,7 @@
 // room dir, so a request can't reach elsewhere).
 
 import { readFile } from "node:fs/promises";
+import { normalizeImage } from "./image.js";
 import type { MessageAttachment } from "./types.js";
 
 /** Largest single pasted file the upload route accepts (25 MiB). */
@@ -59,7 +60,8 @@ export async function loadNativeImages(
   const images: { attachment: MessageAttachment; base64: string }[] = [];
   for (const attachment of nativeImageAttachments(attachments)) {
     try {
-      images.push({ attachment, base64: (await readFile(attachment.path)).toString("base64") });
+      const image = await normalizeImage(await readFile(attachment.path), attachment.mime);
+      images.push({ attachment: image.mimeType === attachment.mime ? attachment : { ...attachment, mime: image.mimeType }, base64: image.data });
     } catch {
       // Breadcrumb-only fallback.
     }

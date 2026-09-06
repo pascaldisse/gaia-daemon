@@ -11,6 +11,7 @@
 
 import { createInterface } from "node:readline";
 import { env } from "../core/env.js";
+import { wrapImageRequestFetch } from "../core/image-request.js";
 import { loadWorkspace } from "../domain/workspace.js";
 import { BridgeMemoryStore, bridgeContextDiet, bridgeEndConversation, bridgeRecallSearch, bridgeResumeCreate, bridgeSummonCreate, bridgeToolProviders, bridgeToolResultFetch, fixedTokenHost } from "./bridge-deps.js";
 // Self-register every harness before the lookup — this subprocess starts with
@@ -58,6 +59,7 @@ export async function runAgentRunner(): Promise<void> {
   // Load user-space runner plugins (~/.gaia/plugins/runner/*.mjs) before any
   // harness runtime is built, so their fetch transforms are in place for the
   // first outbound request. Uniform across harnesses (RULE #0); never throws.
+  globalThis.fetch = wrapImageRequestFetch(globalThis.fetch);
   await installRunnerPlugins();
 
   const workspacePath = env(RUNNER_ENV.workspacePath);

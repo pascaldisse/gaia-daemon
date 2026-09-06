@@ -1,28 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import type * as Photon from "@silvia-odwyer/photon-node";
-import { expandHome, photonNodeAssetPath } from "../core/paths.js";
-
-// Lazy + dynamic on purpose: a compiled binary must never statically import
-// "@silvia-odwyer/photon-node" at module scope (see vendor/photon-node/
-// README-GAIA.md — its internal __dirname-based wasm load bakes to the BUILD
-// MACHINE's literal path, killing every agent turn, not just image reads,
-// because this module is imported eagerly by the harness). Loading the real
-// on-disk vendor/ file via a genuine runtime import() keeps __dirname correct.
-let photonModulePromise: Promise<typeof Photon> | undefined;
-function loadPhoton(): Promise<typeof Photon> {
-  if (!photonModulePromise) {
-    const assetPath = photonNodeAssetPath();
-    photonModulePromise = assetPath
-      ? (import(pathToFileURL(assetPath).href) as Promise<typeof Photon>)
-      : (import("@silvia-odwyer/photon-node") as Promise<typeof Photon>);
-  }
-  return photonModulePromise;
-}
+import { expandHome } from "../core/paths.js";
+import { loadPhoton, encodeUnderCap, type RenderedImage } from "../core/image.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
-const MAX_BASE64_BYTES = Math.floor(4.5 * 1024 * 1024);
 
 export type ImageReadDetail = "low" | "med" | "high" | "full";
 export type ImageReadRegion = "A1" | "B1" | "C1" | "A2" | "B2" | "C2" | "A3" | "B3" | "C3";
@@ -34,12 +16,6 @@ interface Rect {
   height: number;
 }
 
-interface RenderedImage {
-  data: string;
-  mimeType: "image/png" | "image/jpeg";
-  width: number;
-  height: number;
-}
 
 export interface GaiaImageReadResult {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: "image/png" | "image/jpeg" }>;
@@ -107,36 +83,6 @@ function allGridRects(width: number, height: number): Array<[ImageReadRegion, Re
 
 function formatRect(rect: Rect): string {
   return `(${rect.x},${rect.y},${rect.width},${rect.height})`;
-}
-
-function encodeUnderCap(photon: typeof Photon, image: Photon.PhotonImage, width: number, height: number): RenderedImage {
-  let currentWidth = width;
-  let currentHeight = height;
-  while (true) {
-    const resized = currentWidth === image.get_width() && currentHeight === image.get_height()
-      ? undefined
-      : photon.resize(image, currentWidth, currentHeight, photon.SamplingFilter.Lanczos3);
-    const source = resized ?? image;
-    try {
-      const candidates: Array<{ bytes: Uint8Array; mimeType: "image/png" | "image/jpeg" }> = [
-        { bytes: source.get_bytes(), mimeType: "image/png" },
-        ...[80, 70, 55, 40].map((quality) => ({ bytes: source.get_bytes_jpeg(quality), mimeType: "image/jpeg" as const })),
-      ];
-      const eligible = candidates
-        .map((candidate) => ({ ...candidate, data: Buffer.from(candidate.bytes).toString("base64") }))
-        .filter((candidate) => Buffer.byteLength(candidate.data) <= MAX_BASE64_BYTES)
-        .sort((a, b) => a.data.length - b.data.length);
-      if (eligible.length) {
-        const best = eligible[0];
-        return { data: best.data, mimeType: best.mimeType, width: currentWidth, height: currentHeight };
-      }
-    } finally {
-      resized?.free();
-    }
-    if (currentWidth === 1 && currentHeight === 1) throw new Error("could not encode image under provider byte cap");
-    currentWidth = Math.max(1, Math.floor(currentWidth * 0.75));
-    currentHeight = Math.max(1, Math.floor(currentHeight * 0.75));
-  }
 }
 
 function render(photon: typeof Photon, image: Photon.PhotonImage, edge: number | undefined): RenderedImage {

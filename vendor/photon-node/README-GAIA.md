@@ -17,7 +17,7 @@ harness/image-read.ts imported the package statically at module scope).
 Fix: ship these files unbundled, snapshotted next to the binary like
 web/setups/design/addons (core/bundle-assets.ts BUNDLE_ASSET_DIRS), and load
 via a genuine runtime `import()` of the real on-disk path
-(core/paths.ts photonNodeAssetDir, harness/image-read.ts loadPhoton) — a real
+(core/paths.ts photonNodeAssetDir, core/image.ts loadPhoton) — a real
 file loaded by Bun's normal module loader gets `__dirname` correct, no
 bundler involved. Source/dev runs with no vendor/ snapshot fall back to the
 bare `@silvia-odwyer/photon-node` package import (works fine unbundled).
