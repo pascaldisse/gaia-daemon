@@ -11,7 +11,7 @@
 // so we get a trustworthy release point to place the torn-off window at.
 import { addRoom, closeRoomTab, selectRoom } from "./actions.js";
 import { UI } from "./glyphs.js";
-import { tearOff } from "./chrome.js";
+import { tearOff, toggleSidebar, togglePanel } from "./chrome.js";
 import { $, h } from "./dom.js";
 import { isNative } from "./native.js";
 import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
@@ -53,7 +53,22 @@ function renderTabs() {
   const tabMenu = TabContextMenu();
   // Tauri drag markers → direct targets only; no nonstandard deep/false values.
   bar.replaceChildren(
-    h("div", { class: "brand", "data-tauri-drag-region": true }, h("span", { class: "tab-logo", text: "◆", "data-tauri-drag-region": true }), h("span", { text: "GAIA", "data-tauri-drag-region": true })),
+    h(
+      "div",
+      {
+        class: "brand",
+        role: "button",
+        tabindex: 0,
+        "aria-label": "toggle sessions sidebar",
+        title: "toggle sessions sidebar",
+        "data-tauri-drag-region": true,
+        // Fires on a stationary press; an actual native window drag never
+        // reaches click. Safe in every layout — desktop just gains a target.
+        onclick: toggleSidebar,
+      },
+      h("span", { class: "tab-logo", text: "◆", "data-tauri-drag-region": true }),
+      h("span", { text: "GAIA", "data-tauri-drag-region": true }),
+    ),
     h(
       "div",
       { class: "tab-strip", "data-tauri-drag-region": true },
@@ -64,6 +79,13 @@ function renderTabs() {
     // Only present while a recording is live (replaceChildren takes Nodes, so
     // the idle case is wrapped away rather than passed as null).
     ...(dictationChip ? [dictationChip] : []),
+    h("button", {
+      class: "panel-btn",
+      title: "toggle room panel (⌘⌥B)",
+      "aria-label": "toggle room panel",
+      onclick: togglePanel,
+      text: UI.panel,
+    }),
     h("button", {
       class: "theme-btn",
       title: "themes (Alt+T)",

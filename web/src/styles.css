@@ -205,10 +205,14 @@ body.macos-titlebar-overlay .tabbar { grid-column: 1 / -1; height: var(--macos-t
 .tab-close { border: 0; background: transparent; color: var(--muted); padding: 0 1px; font-size: 1.15em; line-height: 1; opacity: 0; }
 .tab:hover .tab-close, .tab.active .tab-close { opacity: .65; }
 .tab-close:hover { color: var(--alert); opacity: 1; }
-.tab-new, .theme-btn { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 12px; color: var(--accent); font-size: 1.15em; }
-.tab-new:hover, .theme-btn:hover { color: var(--accent); background: var(--sel); }
+.tab-new, .theme-btn, .panel-btn { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 12px; color: var(--accent); font-size: 1.15em; }
+.tab-new:hover, .theme-btn:hover, .panel-btn:hover { color: var(--accent); background: var(--sel); }
 .tab-spacer { flex: 1; }
-.theme-btn { margin-left: auto; border-left: 1px solid var(--border); border-right: 0; color: var(--muted); }
+/* panel-btn carries the auto margin (spacer's fallback when it's hidden on
+   phones, see the overlay media query) so it and the theme-btn that follows
+   it land together at the far right. */
+.panel-btn { margin-left: auto; border-left: 1px solid var(--border); color: var(--muted); }
+.theme-btn { border-left: 0; border-right: 0; color: var(--muted); }
 .dictation-chip { display: flex; flex: 0 0 auto; align-items: center; margin-right: 8px; padding: 0 8px; border: 1px solid var(--warn); background: transparent; color: var(--warn); font-size: 10px; white-space: nowrap; }
 .dictation-chip:hover { background: var(--sel); color: var(--warn); }
 /* ============================================================

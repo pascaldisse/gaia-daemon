@@ -60,6 +60,7 @@ export const STATE = {
 export const UI = {
   brand: "◆",
   theme: "◈",
+  panel: "◨",
   human: "❯",
   system: "◇",
   send: "▸",

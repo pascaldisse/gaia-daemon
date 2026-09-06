@@ -83,12 +83,26 @@ export function isOverlayLayout() {
   return window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 }
 
-/** Close the left sessions sidebar when it is acting as a phone overlay. */
-export function closeSidebarOverlay() {
-  if (!isOverlayLayout() || state.sidebarCollapsed) return;
-  state.sidebarCollapsed = true;
-  markDirty("layout", "tabs");
+/** Close whichever side pane(s) are acting as a phone overlay — sidebar,
+ * right panel, or both. No-op outside overlay layout (desktop panes are not
+ * overlays, so nothing to dismiss). */
+export function closeOverlays() {
+  if (!isOverlayLayout()) return;
+  let changed = false;
+  if (!state.sidebarCollapsed) {
+    state.sidebarCollapsed = true;
+    changed = true;
+  }
+  if (!state.rightCollapsed) {
+    state.rightCollapsed = true;
+    changed = true;
+  }
+  if (changed) markDirty("layout", "tabs");
 }
+
+/** @deprecated alias for {@link closeOverlays} — kept for existing imports of
+ * the old, sidebar-only name. */
+export const closeSidebarOverlay = closeOverlays;
 
 /** Toggle the left sessions sidebar. */
 export function toggleSidebar() {

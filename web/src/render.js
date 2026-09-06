@@ -68,7 +68,7 @@ export function mountApp() {
       "div",
       { class: "body", id: "body" },
       h("nav", { class: "sidebar", id: "sidebar" }),
-      h("div", { class: "scrim", id: "scrim", onclick: () => { void import("./chrome.js").then((mod) => mod.closeSidebarOverlay()); } }),
+      h("div", { class: "scrim", id: "scrim", onclick: () => { void import("./chrome.js").then((mod) => mod.closeOverlays()); } }),
       h("div", { class: "col-resizer", id: "resizer-left", title: "drag to resize", onpointerdown: (event) => startResize(event, "left") }),
       h(
         "main",
@@ -121,7 +121,8 @@ function renderLayout() {
   const rightResizer = $("#resizer-right");
   if (!app || !sidebar || !left || !right || !rightResizer) return;
   sidebar.hidden = state.sidebarCollapsed;
-  if (scrim) scrim.hidden = state.sidebarCollapsed;
+  // Either overlay open (phone) keeps the scrim up; both closed drops it.
+  if (scrim) scrim.hidden = state.sidebarCollapsed && state.rightCollapsed;
   left.hidden = state.sidebarCollapsed;
   right.hidden = state.rightCollapsed;
   rightResizer.hidden = state.rightCollapsed;
