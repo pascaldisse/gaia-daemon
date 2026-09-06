@@ -1730,19 +1730,17 @@ test("buildPiUiContext's confirm()/select()/input() fall back to pi's OWN noOp d
   assert.equal(await uiContext.input("Enter", undefined, { timeout: 5 }), undefined, "pi's own noOp input() default is undefined");
 });
 
-test("buildPiUiContext's notify()/setStatus() route through the SAME bridge.widget() setWidget() uses (no separate ui.notify AgentEvent kind)", () => {
+test("buildPiUiContext's setStatus() is TUI-only no-op; notify() still routes through bridge.widget()", () => {
   const events: AgentEvent[] = [];
   const bridge = createUiBridge((event) => events.push(event));
   const uiContext = buildPiUiContext(bridge);
-  uiContext.notify("hello", "warning");
   uiContext.setStatus("branch", "main");
   uiContext.setStatus("branch", undefined);
+  assert.equal(events.filter((e) => e.type === "ui.widget").length, 0);
+  uiContext.notify("hello", "warning");
   const widgets = events.filter((e) => e.type === "ui.widget") as Extract<AgentEvent, { type: "ui.widget" }>[];
-  assert.equal(widgets.length, 3);
+  assert.equal(widgets.length, 1);
   assert.deepEqual(widgets[0]!.lines, ["[warning] hello"]);
-  assert.equal(widgets[1]!.id, "status:branch");
-  assert.deepEqual(widgets[1]!.lines, ["main"]);
-  assert.deepEqual(widgets[2]!.lines, [], "setStatus(key, undefined) clears the row");
 });
 
 test("wrapAuthInteraction's prompt() routes through bridge.authRequest and resolves via the SAME ui.reply channel as ui.prompt; notify() bridges auth_url/device_code legs", async () => {

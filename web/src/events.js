@@ -199,6 +199,8 @@ export function connectEvents(resyncOnReady = false) {
   // route the reply back to the right runtime without the caller threading it.
   listen("ui.widget", (event) => {
     const payload = /** @type {Ev<"ui.widget">} */ (JSON.parse(event.data));
+    // pi footer-status = TUI-only chrome; reject stale binaries/other extension paths.
+    if (payload.id.startsWith("status:")) return;
     if (payload.lines.length === 0) state.uiWidgets.delete(payload.id);
     else state.uiWidgets.set(payload.id, payload);
     markDirty("transcript");

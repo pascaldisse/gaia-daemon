@@ -112,9 +112,9 @@ export function buildPiUiContext(bridge: UiBridge): ExtensionUIContext {
     onTerminalInput() {
       return () => {};
     },
-    setStatus(key, text) {
-      bridge.widget(`status:${key}`, "belowEditor", text !== undefined ? [text] : []);
-    },
+    // pi footer-status = TUI chrome (ext usage/branch lines) · gaia statusbar
+    // owns usage/ctx display · no room analogue → no-op (Pascal 09-06: duplicate Usage row banned).
+    setStatus() {},
     // Streaming-loader chrome (spinner frames/visibility/label) is rendered by
     // the CLIENT from its own turn-streaming state, not driven by the agent —
     // no room analogue; matches pi's own no-op defaults.
