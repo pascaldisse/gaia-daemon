@@ -484,6 +484,9 @@ interface ServeRoomService extends SummonRoomAccess {
 
 /** Dispatches `gaia serve …`. Returns a process exit code (long-running on success). */
 export async function runServeCli(args: string[], cwd = process.cwd()): Promise<number> {
+  // The CLI deliberately imports this module without the daemon runtime graph.
+  // Serve opens RoomService itself, so it must register harness specs on demand.
+  await import("../harness/index.js");
   const { room, port, host, adapter } = parseServeArgs(args);
   if (!room) {
     console.error(SERVE_USAGE);
