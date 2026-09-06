@@ -7,8 +7,9 @@ import { MonadEngine } from "../src/services/monad.js";
 import { extractJsonObject, replyAccepts, routingPolicyIds } from "../src/services/policies/index.js";
 import type { MonadConfig } from "../src/core/types.js";
 import { normalizeRoomState } from "../src/domain/rooms.js";
-import { activateSetup, deactivateMonad, discoverSetups, readRoomMonad } from "../src/services/setups.js";
+import { activateSetup, deactivateMonad, discoverSetups, readRoomMonad, runServeCli } from "../src/services/setups.js";
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
+import { harnessSpecFor } from "../src/harness/spec.js";
 
 const TRIO: MonadConfig = {
   policy: "prompt-driven",
@@ -26,6 +27,11 @@ const TRIO: MonadConfig = {
 
 test("policies self-register via the barrel", () => {
   for (const id of ["prompt-driven", "conductor-dag", "trinity-head"]) assert.ok(routingPolicyIds().includes(id), `missing policy ${id}`);
+});
+test("serve CLI registers the pi harness before dispatch", async () => {
+  const exitCode = await runServeCli(["--adapter", "not-a-real-adapter"]);
+  assert.equal(exitCode, 1);
+  assert.equal(harnessSpecFor("pi").id, "pi");
 });
 
 // ---------- util ----------
