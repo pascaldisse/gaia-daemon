@@ -27,6 +27,7 @@ class FakeContext {
   destination = {};
   onstatechange: (() => void) | null = null;
   sources: FakeSource[] = [];
+  resumeCalls = 0;
   constructor() {
     if (ctxFailures > 0) { ctxFailures -= 1; throw new Error("AudioContext unavailable"); }
     contexts.push(this);
@@ -36,7 +37,7 @@ class FakeContext {
     return { length, getChannelData: () => data };
   }
   createBufferSource(): FakeSource { const src = new FakeSource(); this.sources.push(src); return src; }
-  resume(): Promise<void> { return Promise.resolve(); }
+  resume(): Promise<void> { this.resumeCalls += 1; this.state = "running"; return Promise.resolve(); }
   close(): Promise<void> { this.state = "closed"; return Promise.resolve(); }
   /** Fire the state-change listener the transport installs. */
   setState(next: string): void { this.state = next; this.onstatechange?.(); }
@@ -129,6 +130,31 @@ test("a pending append blocks the finish", async () => {
   expect(t.playing).toBe(false);
 });
 
+test("a suspended context resumes before it schedules PCM", async () => {
+  const { t, ctx } = armed();
+  t.pause();
+  ctx.setState("suspended");
+  t.append(pcm(16000));
+  t.play();
+  expect(ctx.sources).toHaveLength(0);
+  await flush();
+  expect(ctx.resumeCalls).toBe(1);
+  expect(ctx.sources).toHaveLength(1);
+});
+test("a frozen audio clock recreates the pipeline once and reports it", async () => {
+  contexts = [];
+  const t = new AudioTransport({ healthCheckMs: 1 });
+  t.setFormat(16000, 1);
+  let resets = 0;
+  t.onPipelineReset = () => { resets += 1; };
+  t.play(0);
+  t.append(pcm(16000));
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  expect(contexts).toHaveLength(2);
+  expect(t.ctx).toBe(contexts[1]);
+  expect(resets).toBe(1);
+  t.destroy();
+});
 test("a context that stops running mid-play migrates instead of going silent", async () => {
   const { t, ctx } = armed();
   t.append(pcm(16000));

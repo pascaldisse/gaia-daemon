@@ -26,8 +26,17 @@ import { state } from "./state.js";
 // schedules Web Audio buffer sources from the play frontier and re-anchors on
 // underrun so the playhead clock stays honest.
 
+export const AUDIO_TRANSPORT_DEFAULTS = Object.freeze({
+  /** Grace period before a started stream must move the Web Audio clock. */
+  healthCheckMs: 3000,
+  /** Avoid treating sub-millisecond clock jitter as real playback. */
+  clockProgressEpsilonSec: 0.01,
+});
 export class AudioTransport {
-  constructor() {
+  /** @param {{healthCheckMs?: number, clockProgressEpsilonSec?: number}} [options] */
+  constructor(options = {}) {
+    this.healthCheckMs = options.healthCheckMs ?? AUDIO_TRANSPORT_DEFAULTS.healthCheckMs;
+    this.clockProgressEpsilonSec = options.clockProgressEpsilonSec ?? AUDIO_TRANSPORT_DEFAULTS.clockProgressEpsilonSec;
     /** @type {AudioContext} */
     this.ctx = new AudioContext();
     /** Engine sample rate; buffers are created at it and Web Audio resamples to
@@ -69,6 +78,16 @@ export class AudioTransport {
     this.firstAudioSeen = false;
     /** Guards migrateContext() against overlapping device-change events. */
     this._migrating = false;
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    this._healthTimer = null;
+    /** The health guard gets one recovery attempt per transport stream. */
+    this._healthRecoveryAttempted = false;
+    /** Increments when a scheduled buffer ends; complements the audio clock check. */
+    this._bufferEndSeq = 0;
+    /** @type {(() => void)|null} visible non-fatal recovery notice */
+    this.onPipelineReset = null;
+    /** Visible text retained after a successful automatic recovery. */
+    this.pipelineNotice = "";
     /** @type {(() => void)|null} fired once when the first source is scheduled */
     this.onFirstAudio = null;
     /** @type {(() => void)|null} fired when the last sample finishes playing */
@@ -175,6 +194,7 @@ export class AudioTransport {
       this.sources.add(src);
       src.onended = () => {
         this.sources.delete(src);
+        this._bufferEndSeq += 1;
         this._maybeFinish();
       };
     }
@@ -182,6 +202,33 @@ export class AudioTransport {
       this.firstAudioSeen = true;
       this.onFirstAudio?.();
     }
+    this._armHealthGuard();
+  }
+
+  /** A stream may continue to arrive even though an AudioContext has become a
+   * silent dead route. Detect a frozen clock before the player has advanced far
+   * enough to masquerade as healthy, recreate its graph once, and keep PCM. */
+  _armHealthGuard() {
+    if (this._healthTimer || this._healthRecoveryAttempted || !this.playing || !this.sources.size) return;
+    const ctx = this.ctx;
+    const startedAt = ctx.currentTime;
+    const endedAt = this._bufferEndSeq;
+    this._healthTimer = setTimeout(() => {
+      this._healthTimer = null;
+      if (!this.playing || this.userPaused || this.ctx !== ctx || !this.sources.size) return;
+      const advanced = ctx.currentTime > startedAt + this.clockProgressEpsilonSec;
+      const ended = this._bufferEndSeq !== endedAt;
+      if (advanced || ended) return;
+      this._healthRecoveryAttempted = true;
+      this.onPipelineReset?.();
+      void this.migrateContext();
+    }, this.healthCheckMs);
+  }
+
+  _clearHealthGuard() {
+    if (!this._healthTimer) return;
+    clearTimeout(this._healthTimer);
+    this._healthTimer = null;
   }
 
   /** Every condition that must hold for playback to be over. */
@@ -218,24 +265,46 @@ export class AudioTransport {
    * @param {number} [fromSample] defaults to the current playhead */
   play(fromSample) {
     const from = fromSample ?? Math.round(this.currentTime * this.sampleRate);
+    this._clearHealthGuard();
     this._stopSources();
     this.playing = true;
     this.userPaused = false;
     this._armed = true;
+    // Every stream/replay starts from a fresh scheduling anchor. Never carry a
+    // clock calculated before a helper/browser/audio-session reconnect.
     this.frontier = Math.min(Math.max(0, from), this.total);
     this.anchorCtx = this.ctx.currentTime + 0.08;
     this.anchorSample = this.frontier;
-    void this.ctx.resume().then(() => {
-      if (this.ctx.state !== "running") throw new Error(`Audio output is ${this.ctx.state}`);
+    if (this.ctx.state === "running") {
+      this._pump();
+      this._maybeFinish();
+      return;
+    }
+    void this._ensureRunning().then(() => {
+      if (!this.playing || this.userPaused) return;
+      this.anchorCtx = this.ctx.currentTime + 0.08;
+      this.anchorSample = this.frontier;
+      this._pump();
+      this._maybeFinish();
     }).catch((error) => this.onError?.(error));
-    this._pump();
-    this._maybeFinish();
+  }
+
+  /** Resume a suspended context before scheduling. A closed context cannot
+   * resume, so replace it and bind the replacement to the current device. */
+  async _ensureRunning() {
+    if (this.ctx.state === "closed") {
+      this.ctx = new AudioContext();
+      this._bindContextState();
+    }
+    if (this.ctx.state !== "running") await this.ctx.resume();
+    if (this.ctx.state !== "running") throw new Error(`Audio output is ${this.ctx.state}`);
   }
 
   /** User-initiated pause (toggle button / drag). Sets userPaused, which blocks
    * append() from re-arming — a paused player must stay paused. */
   pause() {
     if (!this.playing) return;
+    this._clearHealthGuard();
     this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._stopSources();
     this.playing = false;
@@ -283,6 +352,7 @@ export class AudioTransport {
     this._migrating = true;
     try {
       const resumeAt = Math.round(this.currentTime * this.sampleRate);
+      this._clearHealthGuard();
       this._stopSources();
       try {
         await this.ctx.close();
@@ -305,6 +375,7 @@ export class AudioTransport {
 
   destroy() {
     this._armed = false;
+    this._clearHealthGuard();
     this.ctx.onstatechange = null;
     this._stopSources();
     void this.ctx.close().catch(() => {});
@@ -370,6 +441,7 @@ export function stopReadAloud() {
   if (transport) {
     transport.onEnded = null;
     transport.onFirstAudio = null;
+    transport.onPipelineReset = null;
     transport.onError = null;
     transport.destroy();
     transport = null;
@@ -406,6 +478,11 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   t.onEnded = () => {
     stopTick();
     if (activeEventId === eventId) setPhase("ended");
+    updatePlayerUi();
+  };
+  t.onPipelineReset = () => {
+    if (transport !== t) return;
+    t.pipelineNotice = "audio pipeline reset";
     updatePlayerUi();
   };
   t.onError = (error) => {
@@ -577,6 +654,8 @@ let durTimeEl = null;
 /** @type {HTMLElement|null} */
 let liveEl = null;
 /** @type {HTMLElement|null} */
+let pipelineNoticeEl = null;
+/** @type {HTMLElement|null} */
 let trackEl = null;
 /** @type {HTMLElement|null} */
 let playedEl = null;
@@ -602,6 +681,7 @@ export function buildAudioPlayer() {
   // and grows in real-time (claude-voice generates at ~speaking speed), so this
   // says "still generating" instead of letting a partial length look truncated.
   liveEl = h("span", { class: "ap-live", hidden: true, title: "still generating — the length grows until synthesis finishes" }, "⋯ live");
+  pipelineNoticeEl = h("span", { class: "ap-pipeline-notice", hidden: true, role: "status" }, "audio pipeline reset");
   playerRoot = h(
     "div",
     { class: "audio-player", hidden: true },
@@ -610,6 +690,7 @@ export function buildAudioPlayer() {
     trackEl,
     durTimeEl,
     liveEl,
+    pipelineNoticeEl,
     h("button", { type: "button", class: "ap-regen", title: "regenerate audio (re-synthesize, replaces the cached clip)", text: "⟳", onclick: regenerateAudio }),
     h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: stopReadAloud }),
   );
@@ -733,6 +814,7 @@ function updatePlayerUi(overrideFrac) {
   const generating = !transport.done;
   durTimeEl.textContent = `${generating ? "~" : ""}${fmtTime(dur)}`;
   liveEl.hidden = !generating;
+  if (pipelineNoticeEl) pipelineNoticeEl.hidden = transport.pipelineNotice !== "audio pipeline reset";
   const playing = transport.playing;
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.title = playing ? "pause" : "play";

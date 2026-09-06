@@ -145,6 +145,7 @@
 .audio-player .ap-thumb { position: absolute; left: 0; width: 5px; height: 8px; border-radius: 0; background: var(--accent); box-shadow: none; transform: translateX(-50%); }
 .audio-player.generating .ap-track::before { background: var(--border); animation: none; }
 .audio-player .ap-live { color: var(--warn); }
+.audio-player .ap-pipeline-notice { color: var(--warn); white-space: nowrap; }
 .dictation-status { margin-bottom: 4px; }
 .dictation-panel { display: grid; grid-template-columns: minmax(100px, 160px) minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; }
 .dictation-panel.failed { border-color: var(--danger); background: transparent; }
