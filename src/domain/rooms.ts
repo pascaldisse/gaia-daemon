@@ -341,6 +341,7 @@ function monadFrom(value: unknown): MonadConfig | undefined {
     roles: Array.isArray(value.roles) ? value.roles.filter((r): r is string => typeof r === "string" && r.trim().length > 0) : [],
     maxTurns: typeof value.maxTurns === "number" && Number.isFinite(value.maxTurns) && value.maxTurns > 0 ? Math.floor(value.maxTurns) : 5,
     ...(typeof value.coordinatorAgentId === "string" && value.coordinatorAgentId.trim() ? { coordinatorAgentId: value.coordinatorAgentId } : {}),
+    ...(typeof value.workerSeesRequest === "boolean" ? { workerSeesRequest: value.workerSeesRequest } : {}),
     ...(terminate ? { terminate } : {}),
     ...(rolePrompts && Object.keys(rolePrompts).length > 0 ? { rolePrompts } : {}),
   };

@@ -92,6 +92,41 @@ test("engine: model-led routing is honored when the coordinator returns a decisi
   assert.equal(result.terminatedBy, "accept");
 });
 
+test("engine: workers see original request content by default", async () => {
+  let task = "";
+  const engine = new MonadEngine({
+    config: { ...TRIO, maxTurns: 1 },
+    parentRoomId: "r",
+    dispatch: async (_agentId, workerTask) => {
+      task = workerTask;
+      return "RESULT";
+    },
+    invoke: async () => '{"action":"dispatch","agent":"terry","role":"worker","subtask":"answer it","sees":[]}',
+  });
+  await engine.run([
+    { role: "system", content: "SYSTEM CONTEXT" },
+    { role: "user", content: "ORIGINAL USER CONTENT\nCONTEXT: r2_draft_stale" },
+  ]);
+  assert.ok(task.includes("The request:\n"));
+  assert.ok(task.includes("ORIGINAL USER CONTENT\nCONTEXT: r2_draft_stale"), `worker task missing request: ${task}`);
+});
+
+test("engine: workerSeesRequest false keeps request out of worker tasks", async () => {
+  let task = "";
+  const engine = new MonadEngine({
+    config: { ...TRIO, maxTurns: 1, workerSeesRequest: false },
+    parentRoomId: "r",
+    dispatch: async (_agentId, workerTask) => {
+      task = workerTask;
+      return "RESULT";
+    },
+    invoke: async () => '{"action":"dispatch","agent":"terry","role":"worker","subtask":"answer it","sees":[]}',
+  });
+  await engine.run([{ role: "user", content: "ORIGINAL USER CONTENT\nCONTEXT: r2_draft_stale" }]);
+  assert.ok(!task.includes("The request:"));
+  assert.ok(!task.includes("ORIGINAL USER CONTENT\nCONTEXT: r2_draft_stale"), `worker task unexpectedly has request: ${task}`);
+});
+
 test("engine: stops at maxTurns and still returns the last worker result", async () => {
   const config: MonadConfig = { ...TRIO, maxTurns: 2, terminate: undefined };
   const dispatch = async (agentId: string): Promise<string> => (agentId === "terry" ? "partial" : "PLAN");

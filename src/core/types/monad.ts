@@ -24,6 +24,8 @@ export interface MonadStep {
 
 export interface MonadObservation {
   query: string;
+  /** Full incoming chat request, retained so workers can inspect original context. */
+  messages: ChatMessage[];
   steps: MonadStep[];
 }
 
@@ -43,6 +45,8 @@ export interface MonadConfig {
   roles: string[];
   maxTurns: number;
   coordinatorAgentId?: string;
+  /** Include the original chat request in every worker task. Defaults to true. */
+  workerSeesRequest?: boolean;
   terminate?: { on: "verifier-accept"; acceptToken: string };
   /** Role prompt text inlined at setup activation — the room is self-contained. */
   rolePrompts?: Record<string, string>;

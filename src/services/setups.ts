@@ -42,6 +42,7 @@ interface RawMonad {
   roles?: string[];
   maxTurns?: number;
   coordinatorAgentId?: string;
+  workerSeesRequest?: boolean;
   terminate?: { on?: string; acceptToken?: string };
 }
 
@@ -205,6 +206,7 @@ export async function buildMonadConfig(setupDir: string, manifest: SetupManifest
     roles,
     maxTurns: typeof monad.maxTurns === "number" && monad.maxTurns > 0 ? Math.floor(monad.maxTurns) : 5,
     coordinatorAgentId,
+    workerSeesRequest: monad.workerSeesRequest !== false,
     ...(terminate ? { terminate } : {}),
     ...(Object.keys(rolePrompts).length > 0 ? { rolePrompts } : {}),
   };
@@ -404,13 +406,6 @@ function parseServeArgs(args: string[]): { room?: string; port: number; host: st
   return { room, port, host, adapter };
 }
 
-function lastUserMessage(messages: ChatMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return messages[i].content;
-  }
-  return messages.length > 0 ? messages[messages.length - 1].content : "";
-}
-
 function chatMessagesFrom(body: unknown): ChatMessage[] {
   const raw = body && typeof body === "object" ? (body as { messages?: unknown }).messages : undefined;
   if (!Array.isArray(raw)) return [];
@@ -545,7 +540,7 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
         return (await resolveAgentRole(agent, role))?.prompt ?? "";
       },
     });
-    const result = await engine.run(lastUserMessage(messages));
+    const result = await engine.run(messages);
     return result.final;
   };
 

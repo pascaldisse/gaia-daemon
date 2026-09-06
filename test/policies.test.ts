@@ -85,7 +85,11 @@ test("prompt-driven: an erroring model falls back to the rule cycle", async () =
 
 test("prompt-driven: honors a parseable model decision, including sees indices", async () => {
   const policy = new PromptDrivenPolicy({});
-  const obs: MonadObservation = { query: "q", steps: [step(0, "gaia", "thinker", "PLAN"), step(1, "terry", "worker", "RESULT")] };
+  const obs: MonadObservation = {
+  query: "q",
+  messages: [{ role: "user", content: "q" }],
+  steps: [step(0, "gaia", "thinker", "PLAN"), step(1, "terry", "worker", "RESULT")],
+};
   const ctx = ctxStub(TRIO_SLOTS, async () => '{"action":"dispatch","agent":"sidia","role":"verifier","subtask":"check it","sees":[1,9]}');
   const out = await policy.next(obs, ctx);
   assert.equal(out.kind, "dispatch");
@@ -156,7 +160,7 @@ test("trinity-head decisionFromRouter: maps (agent_id, role_id) onto the pool", 
     { index: 0, agentId: "terry", defaultRole: "worker" },
     { index: 1, agentId: "sidia", defaultRole: "verifier" },
   ]);
-  const obs: MonadObservation = { query: "q", steps: [] };
+  const obs: MonadObservation = { query: "q", messages: [{ role: "user", content: "q" }], steps: [] };
   const withRoles = decisionFromRouter({ agent_id: 1, role_id: 2 }, obs, ctx, true);
   assert.equal(withRoles?.agentId, "sidia");
   assert.equal(withRoles?.role, "verifier"); // role_id 2 → verifier

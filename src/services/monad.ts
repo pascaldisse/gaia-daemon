@@ -43,10 +43,12 @@ export class MonadEngine {
     this.config = options.config;
   }
 
-  async run(query: string, runOptions: MonadRunOptions = {}): Promise<MonadResult> {
+  async run(request: string | ChatMessage[], runOptions: MonadRunOptions = {}): Promise<MonadResult> {
+    const messages = typeof request === "string" ? [{ role: "user", content: request }] : request;
+    const query = lastUserMessage(messages);
     const isCancelled = runOptions.isCancelled ?? (() => false);
     const policy = this.options.policy ?? routingPolicySpecFor(this.config.policy).create(this.config.policyConfig);
-    const obs: MonadObservation = { query, steps: [] };
+    const obs: MonadObservation = { query, messages, steps: [] };
 
     for (let turn = 0; turn < this.config.maxTurns; turn++) {
       if (isCancelled()) return this.finalize(obs, "stop");
@@ -90,7 +92,12 @@ export class MonadEngine {
     const context = seen
       .map((step) => `<step ${step.index} · ${step.role} (@${step.agentId})>\n${step.reply.trim()}\n</step ${step.index}>`)
       .join("\n\n");
-    return [rolePrompt.trim(), context && `Context from earlier steps:\n${context}`, `Your task: ${decision.subtask}`]
+    return [
+      rolePrompt.trim(),
+      this.config.workerSeesRequest !== false && `The request:\n${renderMessages(obs.messages)}`,
+      context && `Context from earlier steps:\n${context}`,
+      `Your task: ${decision.subtask}`,
+    ]
       .filter(Boolean)
       .join("\n\n");
   }
@@ -128,4 +135,11 @@ export class MonadEngine {
     const step = obs.steps.find((candidate) => candidate.index === index);
     return { final: step?.reply ?? "", steps: obs.steps, terminatedBy };
   }
+}
+
+function lastUserMessage(messages: ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return messages[i].content;
+  }
+  return messages[messages.length - 1]?.content ?? "";
 }
