@@ -53,6 +53,7 @@ export interface RoomTurnLoopPort {
   readonly workspaceId: string;
   readonly runtimes: Record<string, AgentRuntime>;
   readonly options: RoomServiceOptions;
+  unknownAgentMessage(agentId: string): string;
   readonly incognito: boolean;
   readonly dietPolicyStore: { effective(roomId: string): Promise<{ preset: boolean }> };
   agentDialogueHops: number;

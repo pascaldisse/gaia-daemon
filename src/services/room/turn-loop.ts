@@ -80,6 +80,27 @@ export class RoomTurnLoop {
       }
       const agent = this.service.workspace.agents[target];
       const runtime = this.service.runtimes[target];
+      // A target queued (or WAL-resumed) before its agent config was deleted
+      // (agent dir removed / renamed) is still a valid transcript author but
+      // no longer resolves to a live agent or runtime — queue.ts only checks
+      // existence at enqueue time, not at replay time. Surface it as a system
+      // notice and move on instead of crashing below on an undefined runtime.
+      if (!agent || !runtime) {
+        const notice: RoomEvent = {
+          id: newId("system_unknown_agent"),
+          timestamp: new Date().toISOString(),
+          author: "system",
+          text: this.service.unknownAgentMessage(target),
+        };
+        await this.service.room.appendEvent(notice);
+        this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event: notice });
+        // A boot-drained durable queue entry is only consumed by markPendingTurn
+        // (below, never reached on this path) or here — leaving it in place
+        // would redrain and re-hit this exact branch forever every idle tick.
+        if (options.queued) await this.service.room.spliceQueued(options.queued.taskId);
+        remaining.shift();
+        continue;
+      }
       // A completed earlier turn may have scheduled the native Pi SDK pass.
       // It must run before this next prompt is assembled into the session.
       await this.service.runPendingAutoCompact(target);

@@ -3189,6 +3189,25 @@ test("a sixth transient auth failure falls through to the normal terminal failur
   assert.equal((await room.state()).queue, undefined);
 });
 
+test("a queued turn whose target agent no longer exists (deleted after enqueue) settles cleanly instead of crashing on an undefined runtime", async () => {
+  const { service, runtimes, root } = await makeService({
+    agents: ["gaia"], // "opus5" was removed from the roster between enqueue and replay
+    queued: [{ taskId: "task_ghost_agent", text: "hi", targets: ["opus5"], queuedAt: new Date().toISOString() }],
+  });
+
+  await service.waitForSettled();
+
+  const room = await RoomHandle.open(root, "default");
+  const { events: transcript } = await room.eventsFrom(0);
+  assert.equal(
+    transcript.some((event) => event.author === "system" && event.text.startsWith("Unknown agent: @opus5")),
+    true,
+    "the stale target is surfaced, not silently dropped",
+  );
+  assert.equal(runtimes.get("gaia")?.sends ?? 0, 0, "the live agent is never substituted for the vanished target");
+  await service.dispose();
+});
+
 // `gaia resume <roomId> "<message>"` (server/http.ts's /api/harness/resume
 // branch) is a thin, inlined call: validate room+message, resolve the target
 // room's service via daemon.serviceFor(claims.workspaceId, room), then
