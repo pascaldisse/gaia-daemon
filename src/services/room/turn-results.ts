@@ -207,7 +207,7 @@ export class RoomTurnResults {
     };
     await this.service.room.appendEvent(event);
     this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
-    const retryTask = this.service.createTask(text, targets);
+    const retryTask = this.service.createTask(options.displayText ?? text, targets);
     retryTask.status = "queued";
     await this.service.room.enqueue({
       taskId: retryTask.id,
@@ -215,6 +215,8 @@ export class RoomTurnResults {
       targets,
       ...(channel ? { channel } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(options.projectInit ? { projectInit: true } : {}),
+      ...(options.displayText ? { displayText: options.displayText } : {}),
       stallRetried: true,
       queuedAt: retryTask.startedAt,
     });
@@ -246,7 +248,7 @@ export class RoomTurnResults {
     };
     await this.service.room.appendEvent(event);
     this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event });
-    const retryTask = this.service.createTask(text, targets);
+    const retryTask = this.service.createTask(options.displayText ?? text, targets);
     retryTask.status = "queued";
     await this.service.room.enqueue({
       taskId: retryTask.id,
@@ -254,6 +256,8 @@ export class RoomTurnResults {
       targets,
       ...(channel ? { channel } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(options.projectInit ? { projectInit: true } : {}),
+      ...(options.displayText ? { displayText: options.displayText } : {}),
       authRetries: attempt,
       notBefore: new Date(Date.now() + backoff).toISOString(),
       queuedAt: retryTask.startedAt,

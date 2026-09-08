@@ -25,6 +25,7 @@ function isContextDietPolicy(value: unknown): value is ContextDietPolicy {
 export class RoomTurnLoop {
   constructor(private readonly service: RoomTurnLoopPort) {}
   async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+    const visibleText = options.displayText ?? text;
     const refreshProjectContext = (): void => {
       if (!options.projectInit) return;
       for (const runtime of Object.values(this.service.runtimes)) runtime.refreshContext?.(this.service.roomId);
@@ -52,14 +53,14 @@ export class RoomTurnLoop {
           eventId = newRoomEventId();
           await this.service.room.assignQueuedEventId(queued.taskId, eventId);
         }
-        userEvent = await this.service.room.addUserMessage(options.displayText ?? text, task.targets, channel, attachments, eventId, options.human);
+        userEvent = await this.service.room.addUserMessage(visibleText, task.targets, channel, attachments, eventId, options.human);
       }
       if (userEvent) {
         this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event: userEvent });
         // Auto-named rooms take their display title from their first human
         // message (never from a name dialog) — the Claude Code / Codex pattern.
         // Agent-dialogue turns don't count as the human naming the room.
-        if (!options.fromAgentDialogue) await this.service.maybeAutoTitle(options.displayText ?? text);
+        if (!options.fromAgentDialogue) await this.service.maybeAutoTitle(visibleText);
       }
       // Authoritative refresh right after the commit: this snapshot has the
       // queued ghost dropped AND the committed user event present, so it
@@ -248,13 +249,13 @@ export class RoomTurnLoop {
         ? options.recallOverride
         : this.service.incognito
           ? undefined
-          : (await this.service.options.memory?.autoRecallBlock(target, text, {
+          : (await this.service.options.memory?.autoRecallBlock(target, visibleText, {
               roomId: this.service.roomId,
               floorIdx: floor,
             })) || undefined;
       const recall = compactionBlock ? [compactionBlock, autoRecall].filter(Boolean).join("\n\n") : autoRecall;
 
-      this.service.fireHooks("preTurn", { agentId: target, message: text.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
+      this.service.fireHooks("preTurn", { agentId: target, message: visibleText.slice(0, HOOK_TEXT_CAP), ...(channel ? { channel } : {}) });
 
       // Role watchdog — event-driven enforcement; a role may declare a
       // tool-call tripwire (frontmatter `watchdog:`) and the daemon steers a
@@ -447,7 +448,7 @@ export class RoomTurnLoop {
         }
         await this.service.maybeRequeueStall(remaining, target, text, error, partial, channel, attachments, options) ||
           await this.service.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
-        await this.service.captureEpisode(target, text, partial, "error", {}, channel);
+        await this.service.captureEpisode(target, visibleText, partial, "error", {}, channel);
         this.service.settlePetTarget(task, target, "failed");
         refreshProjectContext();
         throw error;
@@ -532,13 +533,13 @@ export class RoomTurnLoop {
         // task settles as error, retaining the existing retry policy.
         await this.service.maybeRequeueStall(remaining, target, text, turn.error, partialReply, channel, attachments, options) ||
           await this.service.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
-        await this.service.captureEpisode(target, text, partialReply, "error", turn.details, channel);
+        await this.service.captureEpisode(target, visibleText, partialReply, "error", turn.details, channel);
         this.service.settlePetTarget(task, target, "failed");
         refreshProjectContext();
         throw turn.error;
       }
 
-      if (producedOutput) await this.service.captureEpisode(target, text, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
+      if (producedOutput) await this.service.captureEpisode(target, visibleText, partialReply, cancelled ? "cancelled" : "complete", turn.details, channel);
       if (!cancelled) await this.service.scheduleAutoCompact(target);
       this.service.fireHooks("postTurn", {
         agentId: target,

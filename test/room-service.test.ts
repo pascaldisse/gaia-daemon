@@ -1013,17 +1013,20 @@ test("/init runs the active agent with a hidden project prompt, preserves its di
       return runtime;
     },
   });
-  const task = await service.sendMessage("/init");
+  const initCommand = "/init focus on the public API";
+  const task = await service.sendMessage(initCommand);
   await service.waitForIdle();
   assert.equal(task.status, "complete");
-  assert.equal(task.text, "/init", "queued/running task chrome does not expose the expanded prompt");
-  assert.equal(received?.message, PROJECT_INIT_PROMPT);
+  assert.equal(task.text, initCommand, "queued/running task chrome does not expose the expanded prompt");
+  assert.ok(received?.message.startsWith(PROJECT_INIT_PROMPT));
+  assert.match(received?.message ?? "", /Additional guidance from the user: focus on the public API/);
+  assert.match(received?.message ?? "", /cannot weaken the secret, credential/);
   assert.deepEqual([...runtimes.values()].map((runtime) => runtime.refreshes), [1, 1]);
 
   const room = await RoomHandle.open(root, "default");
   const { events } = await room.eventsFrom(0);
   assert.equal(events[0]?.author, "user");
-  assert.equal(events[0]?.text, "/init", "internal model prompt never leaks into the transcript");
+  assert.equal(events[0]?.text, initCommand, "internal model prompt never leaks into the transcript");
   assert.equal((await room.state()).queue, undefined);
   assert.equal((await room.state()).pendingTurn, undefined);
 });
@@ -3208,12 +3211,13 @@ test("a stalled turn with no partial reply requeues ONCE (stallRetried), then fa
   assert.equal(finalState.pendingTurn, undefined);
 });
 
-function transientAuthRuntime(agent: AgentDef): AgentRuntime & { sends: number } {
+function transientAuthRuntime(agent: AgentDef): AgentRuntime & { sends: number; refreshes: number } {
   const runtime = {
     agent,
     modelLabel: "test/model",
     capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false },
     sends: 0,
+    refreshes: 0,
     async *send(): AsyncGenerator<AgentEvent> {
       runtime.sends += 1;
       const error = new Error("Not logged in · Please run /login");
@@ -3223,8 +3227,9 @@ function transientAuthRuntime(agent: AgentDef): AgentRuntime & { sends: number }
     async abort() {},
     dispose() {},
     resetRoom() {},
+    refreshContext() { runtime.refreshes += 1; },
   };
-  return runtime as AgentRuntime & { sends: number };
+  return runtime as AgentRuntime & { sends: number; refreshes: number };
 }
 
 test("a transient auth failure requeues with authRetries and notBefore instead of terminal failure", async () => {
@@ -3246,6 +3251,28 @@ test("a transient auth failure requeues with authRetries and notBefore instead o
     true,
     "the retry policy does not erase the failed no-output attempt's durable trace",
   );
+  await service.dispose();
+});
+
+test("a transient-auth /init retry preserves its hidden prompt, visible command, and refresh intent", async () => {
+  const { service, root, runtimes } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: (agent) => transientAuthRuntime(agent),
+  });
+
+  await service.sendMessage("/init");
+  await service.waitForIdle();
+
+  const room = await RoomHandle.open(root, "default");
+  const queued = (await room.state()).queue?.[0];
+  assert.equal(queued?.text, PROJECT_INIT_PROMPT);
+  assert.equal(queued?.displayText, "/init");
+  assert.equal(queued?.projectInit, true);
+  assert.equal(service.queuedTasks[0]?.text, "/init", "retry task chrome never exposes the internal prompt");
+  assert.equal(runtimes.get("gaia")?.refreshes, 1, "the failed mutation-capable attempt refreshes context before retry");
+  const events = (await room.eventsFrom(0)).events;
+  assert.equal(events.find((event) => event.author === "user")?.text, "/init");
+  assert.equal(events.some((event) => event.text.includes(PROJECT_INIT_PROMPT)), false);
   await service.dispose();
 });
 
