@@ -34,7 +34,8 @@ export function agentReasoning(agent) {
  * @property {"none"|"unknown"|"known"} state
  * @property {string[]} available   Level ids offered as menu options.
  * @property {string} requested     What agent.json / the room override asks for.
- * @property {string} effective     What actually applies (clamped by the model).
+ * @property {string} [effective]   Descriptor-confirmed level; absent for call overrides/unknown.
+ * @property {boolean} [unverified] Requested level only; effective unavailable.
  * @property {boolean} diverged     requested !== effective.
  * @property {string} [resolution]  "requested"|"inherited"|"conservative".
  * @property {string} [source]      "discovered"|"override".
@@ -51,10 +52,11 @@ export function agentReasoning(agent) {
  * @param {ModelReasoningDescriptor|undefined} desc
  * @param {string} requestedFallback
  * @param {string[]} [legacyLevels]
+ * @param {string} [callOverride] Explicit call request; room effective is inapplicable.
  * @returns {ReasoningView}
  */
-export function reasoningView(desc, requestedFallback, legacyLevels = []) {
-  const req = requestedFallback || "off";
+export function reasoningView(desc, requestedFallback, legacyLevels = [], callOverride) {
+  const req = callOverride ?? (requestedFallback || "off");
 
   if (!desc) {
     // Transitional only: no descriptor at all. Behave as the old universal
@@ -63,19 +65,20 @@ export function reasoningView(desc, requestedFallback, legacyLevels = []) {
       state: legacyLevels.length ? "known" : "none",
       available: [...legacyLevels],
       requested: req,
-      effective: req,
+      effective: callOverride === undefined ? req : undefined,
+      unverified: callOverride !== undefined,
       diverged: false,
       legacy: true,
     };
   }
 
   if (desc.status === "unknown") {
-    const requested = desc.requestedLevel ?? req;
+    const requested = callOverride ?? desc.requestedLevel ?? req;
     return {
       state: "unknown",
       available: [],
       requested,
-      effective: requested,
+      unverified: true,
       diverged: false,
     };
   }
@@ -85,15 +88,16 @@ export function reasoningView(desc, requestedFallback, legacyLevels = []) {
   if (available.length === 0 || (available.length === 1 && available[0] === "off")) {
     return { state: "none", available: [], requested: req, effective: req, diverged: false };
   }
-  const requested = desc.requestedLevel ?? req;
-  const effective = desc.effectiveLevel ?? requested;
+  const requested = callOverride ?? desc.requestedLevel ?? req;
+  const effective = callOverride === undefined ? desc.effectiveLevel : undefined;
   return {
     state: "known",
     available,
     requested,
     effective,
-    diverged: requested !== effective,
-    resolution: desc.resolution,
+    diverged: effective !== undefined && requested !== effective,
+    unverified: effective === undefined,
+    resolution: callOverride === undefined ? desc.resolution : undefined,
     source: desc.source,
     adaptive: desc.adaptive,
     defaultLevel: desc.defaultLevel,
@@ -116,4 +120,16 @@ export function reasoningReturnLevel(view, remembered) {
   if (offered(view.defaultLevel)) return view.defaultLevel;
   if (offered(view.effective)) return view.effective;
   return view.available.find((level) => level !== "off");
+}
+
+/**
+ * Toggle → offered targets only; unknown/always-on → no action.
+ * @param {ReasoningView} view
+ * @param {string} [remembered]
+ * @returns {string|undefined}
+ */
+export function reasoningToggleTarget(view, remembered) {
+  if (view.state !== "known" || !view.available.includes("off")) return undefined;
+  const current = view.effective ?? view.requested;
+  return current === "off" ? reasoningReturnLevel(view, remembered) : "off";
 }
