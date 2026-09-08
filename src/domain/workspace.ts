@@ -7,6 +7,7 @@ import { mkdir, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUTO_COMPACT_DEFAULTS, DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
+import { mergeModelReasoningOverrides } from "../core/model-reasoning-config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
@@ -138,6 +139,7 @@ async function mergeGlobalEnv(cwd: string, config: WorkspaceConfig): Promise<voi
   if (resolve(cwd) === resolve(homedir())) return;
   const globalConfig = parseWorkspaceConfig(await readJson(globalPaths.config()), () => true);
   if (globalConfig.env) config.env = { ...globalConfig.env, ...config.env };
+  config.modelReasoningOverrides = mergeModelReasoningOverrides(globalConfig.modelReasoningOverrides, config.modelReasoningOverrides);
   // Pi's user-global extension policy is daemon-wide: ~/.gaia/config.json
   // wins over any legacy/workspace value.
   if (globalConfig.pi) config.pi = globalConfig.pi;

@@ -1,4 +1,4 @@
-import type { AgentDef, HooksConfig, McpServerConfig, MemoryConfig, SandboxConfig, CollabConfig } from "./agents.js";
+import type { AgentDef, HooksConfig, McpServerConfig, MemoryConfig, ModelReasoningOverride, SandboxConfig, CollabConfig } from "./agents.js";
 import type { PiSettings } from "./settings.js";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,8 @@ export interface WorkspaceConfig {
    * provider key past the proxy (host.ts buildEnv). Uniform across harnesses;
    * this layer has no idea what any key means. */
   env?: Record<string, string>;
+  /** Exact provider/model reasoning choices; global base + workspace per-model override. */
+  modelReasoningOverrides?: Record<string, Record<string, ModelReasoningOverride>>;
   /** Daemon-wide Pi policy, sourced from ~/.gaia/config.json when present. */
   pi?: PiSettings;
 }

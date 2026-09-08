@@ -1,10 +1,11 @@
 import { readJson, writeJsonAtomic } from "../../core/store.js";
-import type { AgentDef, AgentModelConfig, SlashCommandDefinition } from "../../core/types.js";
+import type { AgentDef, AgentModelConfig, SlashCommandDefinition, ThinkingLevel } from "../../core/types.js";
 import type { ContextDietOverrides } from "../../domain/context-diet.js";
+import { modelReasoningOverride, resolveReasoningLevel } from "../../domain/model-reasoning.js";
 import { effectiveAgentSkills, effectiveRoleName, listAgentRoles, resolveAgentRole } from "../../domain/roles.js";
 import { resolveSkillRefs } from "../../domain/skills.js";
 import type { ContextDietView } from "../../harness/spec.js";
-import { findHarness, harnessIdFor, nativeCommandsFor } from "../../harness/spec.js";
+import { findHarness, harnessIdFor, nativeCommandsFor, reasoningFor } from "../../harness/spec.js";
 import { SLASH_COMMANDS, validateThinkingLevel } from "../commands.js";
 import { addArchtreeRoot } from "../archtree.js";
 import { sdkThinkingLevels } from "../hints.js";
@@ -155,6 +156,12 @@ export class RoomAgentCommandsMixin {
       return `Usage: /thinking [agent] <${sdkThinkingLevels().join("|")}>\n@${agent.id} thinking is ${effective}.`;
     }
     try {
+      const identity = this.runtimes[agent.id]?.effectiveModel ?? agent.model;
+      const override = modelReasoningOverride(this.workspace.config.modelReasoningOverrides, identity && ("model" in identity ? { provider: identity.provider, name: identity.model } : identity));
+      const descriptor = await reasoningFor(harnessIdFor(agent, this.workspace), identity, override);
+      if (!descriptor || descriptor.status === "unknown") throw new Error(`Reasoning capabilities are unknown for ${identity?.provider ?? "unknown"}/${identity && "model" in identity ? identity.model : identity?.name ?? "unknown"}; refusing an unchecked thinking level.`);
+      const resolved = resolveReasoningLevel(descriptor, level as ThinkingLevel, true);
+      level = resolved.status === "known" ? resolved.effectiveLevel ?? level : level;
       // Routes through the daemon closure so an active voice CALL still gets
       // call-scoped thinking (reverts on hang-up); the non-call path resolves
       // to THIS room's scope via daemon.applyThinking → setRoomThinking below.

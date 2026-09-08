@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PiSettings, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { PI_SETTINGS_DEFAULTS } from "./types/settings.js";
 import { env } from "./env.js";
+import { parseModelReasoningOverrides } from "./model-reasoning-config.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
 
@@ -439,6 +440,8 @@ autoCompact: parseAutoCompactConfig(obj.autoCompact),
   if (envPassthrough) config.env = envPassthrough;
   const plugins = parsePluginsConfig(obj.plugins);
   if (plugins) config.plugins = plugins;
+  const modelReasoningOverrides = parseModelReasoningOverrides(obj.modelReasoningOverrides);
+  if (modelReasoningOverrides) config.modelReasoningOverrides = modelReasoningOverrides;
   const pi = parsePiSettings(obj.pi);
   if (pi) config.pi = pi;
   return config;

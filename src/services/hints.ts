@@ -15,10 +15,10 @@ import { existsSync, readdirSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename as pathBasename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ModelRegistry, ModelRuntime, createCodingTools, type ToolsOptions } from "@earendil-works/pi-coding-agent";
-import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ThinkingLevel, Workspace } from "../core/types.js";
+import type { EditableFileContent, EditableFileDescriptor, EditableScope, FieldHint, FieldHintOption, FileHints, HarnessHintsMeta, ModelReasoningDescriptor, ThinkingLevel, Workspace } from "../core/types.js";
 import { agentPaths, gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { writeTextAtomic } from "../core/store.js";
-import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor } from "../harness/spec.js";
+import { capabilitiesFor, findHarness, harnessSpecs, nativeCommandsFor, reasoningForResolvedModel } from "../harness/spec.js";
 import { sandboxBackendIds } from "../harness/sandbox/spec.js";
 import { gaiaToolIds } from "../harness/tools.js";
 import { discoverSkills } from "../domain/skills.js";
@@ -60,6 +60,7 @@ export interface ModelChoice {
   label: string;
   configured: boolean;
   subscription: boolean;
+  reasoning: ModelReasoningDescriptor;
 }
 
 export interface HintSources {
@@ -191,14 +192,15 @@ export interface ModelCatalog {
 export async function readModelCatalog(): Promise<ModelCatalog> {
   const runtime = await ModelRuntime.create();
   const registry = new ModelRegistry(runtime);
-  const models = registry.getAll().map((model) => ({
+  const models = await Promise.all(registry.getAll().map(async (model) => ({
     provider: model.provider,
     providerLabel: registry.getProviderDisplayName(model.provider),
     id: model.id,
     label: model.name ?? model.id,
     configured: registry.hasConfiguredAuth(model),
     subscription: registry.isUsingOAuth(model),
-  }));
+    reasoning: await reasoningForResolvedModel(model),
+  })));
   return { models };
 }
 
@@ -444,6 +446,7 @@ function configJsonHints(sources: HintSources): FileHints {
     transcriptWindow: { input: "number" },
     harness: select(harnessSelectOptions(), { optional: true }),
     maxSummonsPerRoom: { input: "number", optional: true, description: "max concurrently running summons per room" },
+    modelReasoningOverrides: { input: "json", optional: true, description: "Exact provider/model reasoning choices and defaults; global base merged with workspace entries" },
     mcpServers: mcpServersHint(),
     ...sandboxHints(),
     ...hooksHints(),
