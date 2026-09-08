@@ -1,3 +1,4 @@
+import { AUTO_COMPACT_USAGE, parseAutoCompactThreshold } from "./auto-compact-command.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -340,22 +341,19 @@ export class RoomCommandsMixin {
     const state = await this.room.state();
     const workspaceConfig = this.workspace.config.autoCompact;
     if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
-    const off = value.toLowerCase() === "off";
-    const thresholdPct = Number(value);
-    if (!off && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100)) {
-      return "Usage: /autocompact <0-100|off> [cooldownTurns]";
-    }
+    const threshold = parseAutoCompactThreshold(value);
+    if (!threshold) return AUTO_COMPACT_USAGE;
     let cooldownTurns: number | undefined;
     if (cooldownRaw !== undefined) {
       cooldownTurns = Number(cooldownRaw);
-      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return AUTO_COMPACT_USAGE;
     }
     await this.room.updateState((current) => {
       // A changed policy supersedes any scheduled pass/cooldown from the old one.
-      const { pending: _pending, cooldowns: _cooldowns, ...override } = current.autoCompact ?? {};
+      const { pending: _pending, cooldowns: _cooldowns, thresholdPct: _pct, thresholdTokens: _tokens, ...override } = current.autoCompact ?? {};
       current.autoCompact = {
         ...override,
-        thresholdPct: off ? null : thresholdPct,
+        ...threshold,
         ...(cooldownTurns === undefined ? {} : { cooldownTurns }),
       };
     });

@@ -147,6 +147,7 @@ export interface RoomGoal {
 export interface RoomAutoCompactState {
 /** Per-room overrides; absent fields inherit WorkspaceConfig.autoCompact. */
 thresholdPct?: number | null;
+thresholdTokens?: number | null;
 cooldownTurns?: number;
 /** Durable next-turn passes, keyed by agent. */
 pending?: Record<string, number>;

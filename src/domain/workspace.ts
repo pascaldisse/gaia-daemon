@@ -3,10 +3,11 @@
 // runner subprocess, headless serve) uses to materialize a Workspace.
 
 import { existsSync } from "node:fs";
+import { parseAutoCompactConfig } from "../core/auto-compact.js";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { AUTO_COMPACT_DEFAULTS, DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
+import { DEFAULTS, MEMORY_DEFAULTS, parseWorkspaceConfig } from "../core/config.js";
 import { gaiaHome, globalPaths, workspacePaths } from "../core/paths.js";
 import { jsonText, readJson, writeJsonAtomic, writeText, writeTextIfMissing } from "../core/store.js";
 import type { ContextFile, Workspace, WorkspaceConfig } from "../core/types.js";
@@ -92,13 +93,12 @@ export async function setWorkspaceDefaultAgent(cwd: string, agentId: string): Pr
   });
 }
 
-function defaultConfigJson(): WorkspaceConfig {
+function defaultConfigJson(): Omit<WorkspaceConfig, "autoCompact"> {
   return {
     defaultAgent: DEFAULTS.defaultAgent,
     room: DEFAULTS.room,
     transcriptWindow: DEFAULTS.transcriptWindow,
     agentEndConversation: DEFAULTS.agentEndConversation,
-    autoCompact: AUTO_COMPACT_DEFAULTS,
     maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
     // Written out (not just implied) so the memory section is visible and
     // editable in the settings UI from day one.
@@ -129,14 +129,11 @@ export async function discoverContextFiles(cwd: string): Promise<ContextFile[]> 
   return existsSync(path) ? [{ path, content: await readFile(path, "utf8") }] : [];
 }
 
-/** Global (~/.gaia/config.json) `env` fallback so machine-level skill
- * credentials don't need duplicating into every workspace config. Global env
- * is the base, workspace env overrides same-key; only `env` merges, nothing
- * else from global config leaks into the workspace. Skipped when the
- * workspace root IS the home dir — same config.json, nothing to merge. */
-async function mergeGlobalEnv(cwd: string, config: WorkspaceConfig): Promise<void> {
+/** Global env fallback + daemon Pi policy + inherited auto-compaction. */
+async function mergeGlobalDefaults(cwd: string, config: WorkspaceConfig, workspaceRaw: unknown): Promise<void> {
   if (resolve(cwd) === resolve(homedir())) return;
   const globalConfig = parseWorkspaceConfig(await readJson(globalPaths.config()), () => true);
+  config.autoCompact = parseAutoCompactConfig(workspaceRaw && typeof workspaceRaw === "object" && "autoCompact" in workspaceRaw ? workspaceRaw.autoCompact : undefined, globalConfig.autoCompact);
   if (globalConfig.env) config.env = { ...globalConfig.env, ...config.env };
   // Pi's user-global extension policy is daemon-wide: ~/.gaia/config.json
   // wins over any legacy/workspace value.
@@ -156,10 +153,11 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
   // Harness ids are OPAQUE at this layer (domain cannot see harness specs —
   // layering points down); vocabulary is enforced where the registry lives
   // (services/harness resolve ids against registered specs).
-  const config = parseWorkspaceConfig(await readJson(configPath), () => true);
+  const workspaceRaw = await readJson(configPath);
+  const config = parseWorkspaceConfig(workspaceRaw, () => true);
   // maxSummonsPerRoom falls back through the default rather than staying unset.
   config.maxSummonsPerRoom ??= DEFAULTS.maxSummonsPerRoom;
-  await mergeGlobalEnv(cwd, config);
+  await mergeGlobalDefaults(cwd, config, workspaceRaw);
   const contextFiles = await discoverContextFiles(cwd);
   const agents = await loadAgentDefinitions(globalAgentsDir, workspacePaths.agentsOverrideDir(cwd));
 
@@ -185,6 +183,7 @@ export async function loadWorkspace(cwd: string): Promise<Workspace> {
  * cached `Workspace.config` that `loadWorkspace` returns once at boot. */
 export async function liveMaxSummonsPerRoom(cwd: string): Promise<number> {
   const configPath = workspacePaths.config(cwd);
-  const config = parseWorkspaceConfig(await readJson(configPath), () => true);
+  const workspaceRaw = await readJson(configPath);
+  const config = parseWorkspaceConfig(workspaceRaw, () => true);
   return config.maxSummonsPerRoom ?? DEFAULTS.maxSummonsPerRoom;
 }

@@ -2,11 +2,13 @@
 // for .gaia/config.json. Anything env-overridable is a function.
 
 import { readFileSync } from "node:fs";
-import type { AgentTtsConfig, AutoCompactConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PiSettings, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
+import type { AgentTtsConfig, CollabConfig, HookCommand, HooksConfig, McpServerConfig, MemoryConfig, MemoryConfigPatch, PiSettings, PluginsConfig, SandboxConfig, WorkspaceConfig } from "./types.js";
 import { PI_SETTINGS_DEFAULTS } from "./types/settings.js";
 import { env } from "./env.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
+import { parseAutoCompactConfig } from "./auto-compact.js";
+export { AUTO_COMPACT_DEFAULTS, parseAutoCompactConfig } from "./auto-compact.js";
 
 export const DEFAULTS = {
   harness: "pi",
@@ -57,7 +59,6 @@ export const DEFAULTS = {
 // Memory v4 defaults (MEMORY-DESIGN.md): everything on. `auto` embeddings =
 // LOCAL sidecar or off — never a cloud key that happens to be lying in the
 // environment (§6). Budget is chars (~600 tokens, the context-rot sweet spot).
-export const AUTO_COMPACT_DEFAULTS: AutoCompactConfig = { thresholdPct: null, cooldownTurns: 1 };
 export const MEMORY_DEFAULTS: MemoryConfig = {
   autoRecall: true,
   autoRecallBudget: 2_400,
@@ -444,18 +445,6 @@ autoCompact: parseAutoCompactConfig(obj.autoCompact),
   return config;
 }
 
-/** Parse workspace auto-compaction settings. Invalid fields fall back independently. */
-export function parseAutoCompactConfig(raw: unknown): AutoCompactConfig {
-const value = isRecord(raw) ? raw : {};
-const thresholdPct = value.thresholdPct === null ? null
-: typeof value.thresholdPct === "number" && Number.isFinite(value.thresholdPct) && value.thresholdPct >= 0 && value.thresholdPct <= 100
-? value.thresholdPct
-: AUTO_COMPACT_DEFAULTS.thresholdPct;
-const cooldownTurns = typeof value.cooldownTurns === "number" && Number.isInteger(value.cooldownTurns) && value.cooldownTurns >= 0
-? value.cooldownTurns
-: AUTO_COMPACT_DEFAULTS.cooldownTurns;
-return { thresholdPct, cooldownTurns };
-}
 function parseGrantList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const caps = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);

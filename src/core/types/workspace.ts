@@ -14,11 +14,18 @@ export interface PluginsConfig {
   grants?: Record<string, readonly string[]>;
 }
 
-export interface AutoCompactConfig {
-/** Percentage of an agent context window used after a turn; null disables. */
+export interface AutoCompactPolicy {
+/** Percentage threshold; null/absent token threshold + null percentage → off. */
 thresholdPct: number | null;
+/** Absolute used tokens after a completed turn; positive integer, wins over pct. */
+thresholdTokens?: number | null;
 /** Completed turns to suppress after an automatic pass is scheduled. */
 cooldownTurns: number;
+}
+
+export interface AutoCompactConfig extends AutoCompactPolicy {
+/** Exact provider → model id → partial policy; room policy wins last. */
+modelOverrides?: Record<string, Record<string, Partial<AutoCompactPolicy>>>;
 }
 
 export interface WorkspaceConfig {

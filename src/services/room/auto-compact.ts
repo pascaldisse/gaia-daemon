@@ -1,7 +1,6 @@
 import type { AutoCompactConfig, RoomAutoCompactState } from "../../core/types.js";
 
-/** Configuration defaults: disabled unless a workspace or room opts in. */
-const DEFAULT_AUTO_COMPACT: AutoCompactConfig = { thresholdPct: null, cooldownTurns: 1 };
+import { autoCompactEnabled, parseAutoCompactConfig } from "../../core/auto-compact.js";
 
 export interface ContextUsageProvider {
   usageFor(agentId: string): { usedTokens: number; maxTokens?: number } | undefined;
@@ -9,24 +8,25 @@ export interface ContextUsageProvider {
 
 export interface AutoCompactDecision {
   state: RoomAutoCompactState;
-  /** Integer percentage reported in the durable system line. */
+  /** Readiness marker; percentage when maxTokens known, otherwise zero. */
   scheduledPct?: number;
+  /** Token-mode durable system line: actual observed usage. */
+  scheduledTokens?: number;
 }
 
-/** Room values override the workspace defaults field-by-field. */
-export function resolveAutoCompactConfig(workspace: AutoCompactConfig | undefined, room?: RoomAutoCompactState): AutoCompactConfig {
-  const base = workspace ?? DEFAULT_AUTO_COMPACT;
-  return {
-    thresholdPct: room?.thresholdPct === undefined ? base.thresholdPct : room.thresholdPct,
-    cooldownTurns: room?.cooldownTurns === undefined ? base.cooldownTurns : room.cooldownTurns,
-  };
+/** Threshold pair overrides atomically; cooldown inherits independently. */
+export function resolveAutoCompactConfig(workspace: AutoCompactConfig | undefined, room?: RoomAutoCompactState, model?: { provider: string; model: string }): AutoCompactConfig {
+  const base = workspace ?? parseAutoCompactConfig(undefined);
+  const models = model && Object.hasOwn(base.modelOverrides ?? {}, model.provider) ? base.modelOverrides![model.provider] : undefined;
+  const override = models && model && Object.hasOwn(models, model.model) ? models[model.model] : undefined;
+  return parseAutoCompactConfig(room, parseAutoCompactConfig(override, base));
 }
 
 
 /** User-facing effective setting. `room` exposes whether each field inherits. */
 export function formatAutoCompactSetting(config: AutoCompactConfig, room?: RoomAutoCompactState): string {
-  const threshold = config.thresholdPct === null ? "off" : `${config.thresholdPct}%`;
-  const thresholdSource = room?.thresholdPct === undefined ? "workspace" : "room";
+  const threshold = config.thresholdTokens != null ? `${config.thresholdTokens} tokens` : config.thresholdPct === null ? "off" : `${config.thresholdPct}%`;
+  const thresholdSource = room?.thresholdPct === undefined && room?.thresholdTokens === undefined ? "workspace" : "room";
   const cooldownSource = room?.cooldownTurns === undefined ? "workspace" : "room";
   return `Auto-compact: ${threshold}; cooldown ${config.cooldownTurns} turn${config.cooldownTurns === 1 ? "" : "s"} (threshold: ${thresholdSource}, cooldown: ${cooldownSource}).`;
 }
@@ -43,6 +43,7 @@ export function scheduleAutoCompactAfterTurn(
 ): AutoCompactDecision {
   const state: RoomAutoCompactState = {
     ...(previous?.thresholdPct === undefined ? {} : { thresholdPct: previous.thresholdPct }),
+    ...(previous?.thresholdTokens === undefined ? {} : { thresholdTokens: previous.thresholdTokens }),
     ...(previous?.cooldownTurns === undefined ? {} : { cooldownTurns: previous.cooldownTurns }),
     ...(previous?.pending ? { pending: { ...previous.pending } } : {}),
     ...(previous?.cooldowns ? { cooldowns: { ...previous.cooldowns } } : {}),
@@ -52,15 +53,18 @@ export function scheduleAutoCompactAfterTurn(
     state.cooldowns![agentId] = remaining - 1;
     return { state };
   }
-  if (config.thresholdPct === null || state.pending?.[agentId] !== undefined) return { state };
+  if (!autoCompactEnabled(config) || state.pending?.[agentId] !== undefined) return { state };
   const usage = usageProvider.usageFor(agentId);
-  if (!usage?.maxTokens || usage.maxTokens <= 0) return { state };
-  const exactPct = (usage.usedTokens / usage.maxTokens) * 100;
-  if (exactPct < config.thresholdPct) return { state };
-  const scheduledPct = Math.floor(exactPct);
+  if (!usage || !Number.isFinite(usage.usedTokens) || usage.usedTokens < 0) return { state };
+  const exactPct = usage.maxTokens && Number.isFinite(usage.maxTokens) && usage.maxTokens > 0
+    ? (usage.usedTokens / usage.maxTokens) * 100 : undefined;
+  if (config.thresholdTokens != null) {
+    if (usage.usedTokens < config.thresholdTokens) return { state };
+  } else if (exactPct === undefined || exactPct < config.thresholdPct!) return { state };
+  const scheduledPct = exactPct === undefined ? 0 : Math.floor(exactPct);
   state.pending = { ...state.pending, [agentId]: scheduledPct };
   state.cooldowns = { ...state.cooldowns, [agentId]: config.cooldownTurns };
-  return { state, scheduledPct };
+  return { state, scheduledPct, ...(config.thresholdTokens == null ? {} : { scheduledTokens: usage.usedTokens }) };
 }
 
 /** Consume a pending pass immediately before the agent's next turn. */
@@ -68,6 +72,7 @@ export function takePendingAutoCompact(state: RoomAutoCompactState | undefined, 
   const pending = state?.pending?.[agentId];
   const next: RoomAutoCompactState = {
     ...(state?.thresholdPct === undefined ? {} : { thresholdPct: state.thresholdPct }),
+    ...(state?.thresholdTokens === undefined ? {} : { thresholdTokens: state.thresholdTokens }),
     ...(state?.cooldownTurns === undefined ? {} : { cooldownTurns: state.cooldownTurns }),
     ...(state?.pending ? { pending: { ...state.pending } } : {}),
     ...(state?.cooldowns ? { cooldowns: { ...state.cooldowns } } : {}),
