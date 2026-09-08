@@ -14,7 +14,7 @@ import { CompactBar, compactDetail } from "./compactprogress.js";
 import { clearComposerDraft, composerDraftKey, composerDraftStatus, loadComposerDraft, saveComposerDraft } from "./composer-drafts.js";
 import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
-import { agentReasoning, reasoningReturnLevel, reasoningView } from "./reasoning.js";
+import { agentReasoning, reasoningToggleTarget, reasoningView } from "./reasoning.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
@@ -1013,27 +1013,30 @@ function ThinkingControl(snapshot, text) {
   if (!agent) return null;
 
   const requestedFallback = onCall ? (state.voice?.thinking ?? agent.thinking ?? "off") : (agent.thinking ?? "off");
-  const view = reasoningView(agentReasoning(agent), requestedFallback, snapshot.thinkingLevels ?? []);
+  const view = reasoningView(agentReasoning(agent), requestedFallback, snapshot.thinkingLevels ?? [], onCall ? state.voice?.thinking : undefined);
   // Model supports no reasoning at all → no control.
   if (view.state === "none") return null;
 
   const unknown = view.state === "unknown";
   const effective = view.effective;
+  const displayed = effective ?? view.requested;
+  const toggleTarget = reasoningToggleTarget(view, thinkingReturnLevels.get(agent.id));
   const overridden = view.source === "override";
   const titleParts = [`thinking effort for @${agent.id}`];
   if (unknown) titleParts.push(`capability for ${agentReasoning(agent)?.model ?? "this model"} not discovered — level unverified`);
   if (view.diverged) titleParts.push(`requested #${view.requested} → effective #${effective}${view.resolution ? ` (${view.resolution})` : ""}`);
   if (overridden) titleParts.push("levels from a configured override");
-  titleParts.push(unknown ? "click toggles off" : "click toggles off, right-click for levels");
+  if (view.unverified) titleParts.push(`requested #${view.requested}; effective level unverified`);
+  titleParts.push(unknown ? "level controls unavailable" : toggleTarget ? "click toggles, right-click for levels" : "right-click for levels; toggle unavailable");
   if (onCall) titleParts.push("(this call only)");
 
-  const toggleClass = ["thinking-toggle", unknown ? "thinking-unknown" : "", view.diverged ? "thinking-diverged" : "", overridden ? "thinking-override" : ""]
+  const toggleClass = ["thinking-toggle", view.unverified ? "thinking-unknown" : "", view.diverged ? "thinking-diverged" : "", overridden ? "thinking-override" : ""]
     .filter(Boolean)
     .join(" ");
 
   const label = view.diverged
     ? `${KIND.thinking} #${view.requested}→#${effective}`
-    : `${KIND.thinking} #${effective}${unknown ? "?" : ""}`;
+    : `${KIND.thinking} #${displayed}${view.unverified ? "?" : ""}`;
 
   const toggle = h("button", {
     type: "button",
@@ -1041,23 +1044,9 @@ function ThinkingControl(snapshot, text) {
     title: titleParts.join(" · "),
     onclick: (event) => {
       event.preventDefault();
-      /** @type {string|undefined} */
-      let next;
-      if (effective === "off") {
-        // Turning ON: restore a model-valid level (never an invented one). For
-        // an unknown model we can only safely restore the remembered/requested
-        // value — the backend remains the validator and will reject anything
-        // it does not support.
-        const remembered = thinkingReturnLevels.get(agent.id);
-        next = unknown
-          ? (remembered ?? (view.requested !== "off" ? view.requested : undefined))
-          : reasoningReturnLevel(view, remembered);
-        if (!next) return;
-      } else {
-        thinkingReturnLevels.set(agent.id, effective);
-        next = "off";
-      }
-      void postThinking(snapshot, agent, next, onCall);
+      if (!toggleTarget) return;
+      if (displayed !== "off" && view.available.includes(displayed)) thinkingReturnLevels.set(agent.id, displayed);
+      void postThinking(snapshot, agent, toggleTarget, onCall);
     },
     oncontextmenu: (event) => {
       event.preventDefault();

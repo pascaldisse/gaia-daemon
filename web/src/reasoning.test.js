@@ -1,7 +1,7 @@
 // @ts-nocheck — bun test runtime; not app code, typecheck skipped like the other web tests.
 // Pure reasoning-view logic. No DOM. Run: bun test web/src/reasoning.test.js
 import { expect, test } from "bun:test";
-import { agentReasoning, reasoningReturnLevel, reasoningView } from "./reasoning.js";
+import { agentReasoning, reasoningReturnLevel, reasoningToggleTarget, reasoningView } from "./reasoning.js";
 
 const choices = (levels) => levels.map((level) => ({ level, providerValue: level }));
 
@@ -24,7 +24,8 @@ test("unknown status advertises NO level list and never invents one", () => {
   expect(v.state).toBe("unknown");
   expect(v.available).toEqual([]);
   expect(v.requested).toBe("high");
-  expect(v.effective).toBe("high");
+  expect(v.effective).toBeUndefined();
+  expect(v.unverified).toBe(true);
 });
 
 test("known model exposes only its own choices as menu options", () => {
@@ -87,4 +88,60 @@ test("agentReasoning reads the descriptor off an agent status", () => {
   const desc = { status: "known", provider: "p", model: "m", choices: choices(["off", "low"]), adaptive: false, source: "discovered" };
   expect(agentReasoning(/** @type {any} */ ({ id: "a", reasoning: desc }))).toBe(desc);
   expect(agentReasoning(/** @type {any} */ ({ id: "a" }))).toBeUndefined();
+});
+
+const known = (levels, requestedLevel = "high", effectiveLevel = requestedLevel) => ({
+  status: "known", provider: "p", model: "m", choices: choices(levels),
+  requestedLevel, effectiveLevel, adaptive: false, source: "discovered",
+});
+
+test("call request supersedes room level without inventing call-effective", () => {
+  const v = reasoningView(known(["off", "low", "high"]), "high", [], "low");
+  expect(v.requested).toBe("low");
+  expect(v.effective).toBeUndefined();
+  expect(v.unverified).toBe(true);
+  expect(v.diverged).toBe(false);
+  expect(v.resolution).toBeUndefined();
+  expect(v.available).toEqual(["off", "low", "high"]);
+});
+
+test("call without an override keeps the room descriptor", () => {
+  const v = reasoningView(known(["off", "low", "high"]), "low", [], undefined);
+  expect(v.effective).toBe("high");
+  expect(v.unverified).toBe(false);
+});
+
+test("unknown and legacy call requests never claim verified effective", () => {
+  for (const desc of [undefined, { status: "unknown", provider: "p", model: "m", requestedLevel: "high" }]) {
+    const v = reasoningView(desc, "high", ["off", "low", "high"], "off");
+    expect(v.requested).toBe("off");
+    expect(v.effective).toBeUndefined();
+    expect(v.unverified).toBe(true);
+  }
+});
+
+test("toggle posts off only when offered", () => {
+  expect(reasoningToggleTarget(reasoningView(known(["off", "low", "high"]), "high"))).toBe("off");
+  for (const level of ["low", "high"]) {
+    const v = reasoningView(known(["low", "high"], level), level);
+    expect(reasoningToggleTarget(v)).toBeUndefined();
+  }
+});
+
+test("toggle from off restores only a model-offered level", () => {
+  const v = reasoningView(known(["off", "low", "high"], "off"), "off");
+  expect(reasoningToggleTarget(v, "high")).toBe("high");
+  expect(reasoningToggleTarget(v, "max")).toBe("low");
+});
+
+test("unknown capabilities permit neither toggle direction", () => {
+  for (const level of ["off", "high"]) {
+    const v = reasoningView({ status: "unknown", provider: "p", model: "m", requestedLevel: level }, level);
+    expect(reasoningToggleTarget(v, "high")).toBeUndefined();
+  }
+});
+
+test("call-off toggle uses call request, not room high", () => {
+  const v = reasoningView(known(["off", "low", "high"]), "high", [], "off");
+  expect(reasoningToggleTarget(v, "low")).toBe("low");
 });
