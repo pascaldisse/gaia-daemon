@@ -77,10 +77,11 @@ export class RoomSnapshotMixin {
 
   async getSnapshot(): Promise<Snapshot> {
     await this.init();
-    const all = (await this.room.eventsFrom(0)).events;
+    const [{ events: all }, state] = await Promise.all([
+      this.room.eventsFrom(0),
+      this.room.state(),
+    ]);
     const events = this.displayEvents(all.slice(-this.workspace.config.transcriptWindow));
-    const state = await this.room.state();
-    const pluginPanels = await this.pluginPanels(state);
     // The selected agent plus any agents actively executing this room's turn
     // are the only identities that can spend here. This is deliberately not
     // the workspace roster: an unrelated agent/account in another room must
@@ -97,36 +98,13 @@ export class RoomSnapshotMixin {
       .map((id) => this.workspace.agents[id])
       .flatMap((agent) => (agent ? [usageAccountFor(agent, this.workspace)] : []))
       .filter((account): account is string => Boolean(account));
-    return {
-      workspace: {
-        id: this.workspaceId,
-        rootDir: this.workspace.rootDir,
-        configPath: this.workspace.configPath,
-        defaultAgent: this.workspace.config.defaultAgent,
-      },
-      room: {
-        id: this.roomId,
-        statePath: this.room.statePath,
-        events,
-        eventTotal: all.length,
-        ...(state.thanksDario ? { thanksDario: true } : {}),
-        ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
-        ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
-        ...(state.agentDialogue ? { agentDialogue: true } : {}),
-        ...(state.petBindings ? { petBindings: { ...state.petBindings } } : {}),
-        ...(pluginPanels ? { pluginPanels } : {}),
-        ...(this.incognito ? { incognito: true } : {}),
-        ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
-        ...(this.contextGate ? { contextGate: this.contextGate } : {}),
-        ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
-        ...(() => {
-          const ambient = readAmbientWatchdog(this.roomId);
-          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
-        })(),
-      },
-      rooms: await this.listRooms(),
-      commands: await this.paletteCommands(),
-      agents: await Promise.all(
+    // Independent snapshot facets should overlap their filesystem/plugin reads;
+    // room selection waits for the slowest facet rather than their sum.
+    const [pluginPanels, rooms, commands, agents, memoryChips] = await Promise.all([
+      this.pluginPanels(state),
+      this.listRooms(),
+      this.paletteCommands(),
+      Promise.all(
         ((Object.values(this.workspace.agents) as AgentDef[])).map(async (agent) => {
           const identity = this.runtimes[agent.id]?.effectiveModel ?? agent.model;
           const modelName = identity && ("model" in identity ? identity.model : identity.name);
@@ -162,12 +140,44 @@ export class RoomSnapshotMixin {
           };
         }),
       ),
+      this.memoryChips(),
+    ]);
+    return {
+      workspace: {
+        id: this.workspaceId,
+        rootDir: this.workspace.rootDir,
+        configPath: this.workspace.configPath,
+        defaultAgent: this.workspace.config.defaultAgent,
+      },
+      room: {
+        id: this.roomId,
+        statePath: this.room.statePath,
+        events,
+        eventTotal: all.length,
+        ...(state.thanksDario ? { thanksDario: true } : {}),
+        ...(state.activeAgent && this.workspace.agents[state.activeAgent] ? { activeAgent: state.activeAgent } : {}),
+        ...(usageAccounts.length > 0 ? { usageAccounts: [...new Set(usageAccounts)] } : {}),
+        ...(state.agentDialogue ? { agentDialogue: true } : {}),
+        ...(state.petBindings ? { petBindings: { ...state.petBindings } } : {}),
+        ...(pluginPanels ? { pluginPanels } : {}),
+        ...(this.incognito ? { incognito: true } : {}),
+        ...(this.sanitizeStatus ? { sanitize: this.sanitizeStatus } : {}),
+        ...(this.contextGate ? { contextGate: this.contextGate } : {}),
+        ...(this.liveTurn ? { liveTurn: this.liveTurn } : {}),
+        ...(() => {
+          const ambient = readAmbientWatchdog(this.roomId);
+          return ambient ? { ambientWatchdog: { toolCalls: ambient.toolCalls, ...(ambient.label ? { label: ambient.label } : {}) } } : {};
+        })(),
+      },
+      rooms,
+      commands,
+      agents,
       tasks: [...this.recentTasks, ...(this.activeTask ? [this.activeTask] : []), ...this.queuedTasks],
       backgroundTasks: state.backgroundTasks ?? [],
       thinkingLevels: sdkThinkingLevels(),
       // Degradation is loud (§10): the composer shows these like the
       // model-fallback warning. Best-effort — health can never break a snapshot.
-      ...(await this.memoryChips()),
+      ...memoryChips,
     };
   }
 

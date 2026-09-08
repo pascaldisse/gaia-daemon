@@ -18,6 +18,7 @@ import {
 import { spawnSync } from "node:child_process";
 // Single source of truth shared with the /rebuild atomic swap (src/server/http.ts).
 import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES } from "../src/core/bundle-assets.ts";
+import { rebuildSourceRoot } from "../src/core/build-source.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(scriptDir, "..");
@@ -35,6 +36,7 @@ const outDir = option(argv, "--out", join(repoRoot, "dist"));
 // Native by default: /rebuild must replace its executable with one for its own
 // host. Release builds select a deploy target explicitly (e.g. bun-linux-x64).
 const target = option(argv, "--target", `bun-${process.platform}-${process.arch}`);
+const rebuildRoot = rebuildSourceRoot(repoRoot);
 
 const timings = [];
 function timeStep(label, fn) {
@@ -136,7 +138,8 @@ timeStep("write-source-json", () => {
     join(outDir, "gaia-source.json"),
     JSON.stringify(
       {
-        root: repoRoot,
+        root: rebuildRoot,
+        buildRoot: repoRoot,
         bun: process.execPath,
         commit,
         dirty: status !== null && status !== "",

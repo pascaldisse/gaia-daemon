@@ -1,7 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { GaiaWebServer } from "../src/server/http.js";
 import { artifactRoutePrefix } from "../src/server/routes/artifacts.js";
@@ -10,7 +11,7 @@ import { stringArrayField } from "../src/server/routes/edit-retry.js";
 import { numberField } from "../src/server/routes/memory.js";
 import { attachmentRefs } from "../src/server/routes/rooms.js";
 import { summonCensusText } from "../src/server/routes/usage.js";
-import { initWorkspace } from "../src/domain/workspace.js";
+import { ensureWorkspaceRoom, initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { RoomHandle } from "../src/domain/rooms.js";
 import { registerHarness } from "../src/harness/spec.js";
 import { createTempDir } from "./helpers/temp.js";
@@ -66,6 +67,49 @@ test("route modules preserve parsing contracts and API auth JSON", async () => {
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     await web.daemon.dispose();
+    await temp.cleanup();
+  }
+});
+
+test("room snapshot GET reads an existing room without selecting, broadcasting, or creating", async () => {
+  const temp = await createTempDir("gaia-room-snapshot-");
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = join(temp.path, "home");
+  const workspace = join(temp.path, "workspace");
+  const web = new GaiaWebServer({ cwd: workspace, host: "127.0.0.1", port: 0 });
+  let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
+  try {
+    await initWorkspace(workspace);
+    await ensureWorkspaceRoom(workspace, "background");
+    live = await web.listen();
+    const internals = web as unknown as {
+      daemon: {
+        registry: { add(path: string): Promise<{ id: string }> };
+        subscribe(listener: (event: unknown) => void): () => void;
+      };
+    };
+    const record = await internals.daemon.registry.add(workspace);
+    const broadcasts: unknown[] = [];
+    const unsubscribe = internals.daemon.subscribe((event) => broadcasts.push(event));
+    const base = live.url.replace(/\/$/, "");
+
+    const response = await fetch(`${base}/api/workspaces/${encodeURIComponent(record.id)}/rooms/background/snapshot`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { snapshot: { workspace: { id: string }; room: { id: string } } };
+    assert.equal(body.snapshot.workspace.id, record.id);
+    assert.equal(body.snapshot.room.id, "background");
+    assert.equal((await loadWorkspace(workspace)).config.room, "default");
+    assert.deepEqual(broadcasts, []);
+
+    const missingPath = join(workspace, ".gaia", "rooms", "missing");
+    const missing = await fetch(`${base}/api/workspaces/${encodeURIComponent(record.id)}/rooms/missing/snapshot`);
+    assert.equal(missing.status, 400);
+    assert.equal(existsSync(missingPath), false);
+    unsubscribe();
+  } finally {
+    await live?.close();
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
     await temp.cleanup();
   }
 });
@@ -309,6 +353,11 @@ test("memory domain: GET workspace memory/status shape, POST harness memory writ
   let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
   try {
     await initWorkspace(workspace);
+    // Endpoint contract fixture → no optional model downloads/sidecars.
+    const configPath = join(workspace, ".gaia", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.memory = { ...config.memory, embeddings: "off", reranker: "off" };
+    await writeFile(configPath, JSON.stringify(config));
     live = await web.listen();
     const internals = web as unknown as {
       daemon: {

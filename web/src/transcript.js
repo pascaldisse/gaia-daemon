@@ -10,6 +10,7 @@
 import { deleteQueuedMessage, retryMessage } from "./actions.js";
 import { agentGlyph, KIND, STATE, UI } from "./glyphs.js";
 import { api } from "./api.js";
+import { navigation } from "./navigation.js";
 import { attachmentUrl } from "./attachments.js";
 import { detectArtifacts } from "./design/artifacts.js";
 import { beginEditMessage, humanSize } from "./composer.js";
@@ -149,12 +150,15 @@ export function syncOlderFromSnapshot() {
 }
 
 /** Page one chunk of older committed events in above the current history. */
-async function loadOlderEvents() {
+export async function loadOlderEvents() {
   const snapshot = state.snapshot;
   if (!snapshot || state.older.loading) return;
   const oldest = committedEvents()[0];
   if (!oldest) return;
-  state.older.loading = true;
+  const older = state.older;
+  const generation = navigation.generation;
+  const current = () => navigation.current(generation) && state.older === older;
+  older.loading = true;
   markDirty("transcript");
   const container = $("#transcript");
   const heightBefore = container ? container.scrollHeight : 0;
@@ -163,12 +167,13 @@ async function loadOlderEvents() {
     const body = await api(`${base}?before=${encodeURIComponent(oldest.id)}&limit=100`);
     /** @type {import("./types.js").RoomEvent[]} */
     const events = body.events ?? [];
-    if (state.older.roomId !== snapshot.room.id) state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+    if (!current()) return;
     const have = new Set(committedEvents().map((event) => event.id));
     state.older.events = [...events.filter((event) => !have.has(event.id)), ...state.older.events];
   } catch (error) {
-    setError(error instanceof Error ? error.message : String(error));
+    if (current()) setError(error instanceof Error ? error.message : String(error));
   } finally {
+    if (!current()) { older.loading = false; return; }
     // Insert the chunk, then re-anchor in the SAME frame it lands: markDirty
     // queues the transcript flush first, so this rAF runs after it and reading
     // scrollHeight already reflects the added height — grow scrollTop by exactly
@@ -178,6 +183,7 @@ async function loadOlderEvents() {
     // this programmatic scroll can't cascade the loader into draining everything.
     markDirty("transcript");
     requestAnimationFrame(() => {
+      if (!current()) { older.loading = false; return; }
       const el = $("#transcript");
       if (el && heightBefore) el.scrollTop += el.scrollHeight - heightBefore;
       state.older.loading = false;
@@ -888,7 +894,7 @@ function SummonResultActivity(view, summon) {
       title: `summon ${summon.childRoomId}`,
       extra: summon.failed ? "failed" : "finished",
     },
-    summon.body.trim() ? MarkdownMessage(summon.body) : h("pre", {}, "(no output)"),
+    () => [summon.body.trim() ? MarkdownMessage(summon.body) : h("pre", {}, "(no output)")],
   );
 }
 
@@ -979,14 +985,14 @@ function RedactedTag() {
 function ThinkingActivity(id, text, running) {
   return ActivityDetails(
     { id, className: "thinking", status: running ? "running" : "complete", icon: KIND.thinking, title: "thinking" },
-    text && text.trim()
+    () => [text && text.trim()
       ? MarkdownMessage(text)
       : running
         ? null
         : // Reasoning the provider never sent back in clear text (encrypted or
           // redacted thinking blocks). The row still opens and says so, rather
           // than being an unclickable stub or disappearing entirely.
-          h("p", { class: "activity-empty", text: "reasoning not returned by the model (encrypted/redacted)" }),
+          h("p", { class: "activity-empty", text: "reasoning not returned by the model (encrypted/redacted)" })],
   );
 }
 
@@ -1000,7 +1006,7 @@ function ThinkingActivity(id, text, running) {
 function GaiaThinkActivity(id, thought, running) {
   return ActivityDetails(
     { id, className: "thinking gaia-think", status: running ? "running" : "complete", icon: "鳴", title: "thinking" },
-    thought && thought.trim() ? MarkdownMessage(thought) : null,
+    () => [thought && thought.trim() ? MarkdownMessage(thought) : null],
   );
 }
 
@@ -1091,7 +1097,7 @@ function ToolActivityList(tools) {
 export function SkillInvocationActivity(skill) {
   return ActivityDetails(
     { id: `skill:${skill.location}`, className: "tool-call skill-call", status: "complete", icon: KIND.skill, title: `[skill] ${skill.name}` },
-    MarkdownMessage(skill.content),
+    () => [MarkdownMessage(skill.content)],
   );
 }
 
@@ -1109,10 +1115,10 @@ export function ToolActivity(tool) {
     : { id: `tool:${tool.id}`, className: "tool-call", status: tool.status, icon: KIND.tool, title: tool.toolName, extra: toolSummaryText(tool) };
   return ActivityDetails(
     options,
-    PayloadSection("CALL", { id: tool.id, name: tool.toolName, status: tool.status }),
+    () => [PayloadSection("CALL", { id: tool.id, name: tool.toolName, status: tool.status }),
     tool.args === undefined || tool.args === null ? null : PayloadSection("ARGS", tool.args),
     tool.partialResult === undefined || tool.partialResult === null ? null : PayloadSection("PARTIAL", tool.partialResult),
-    tool.result === undefined || tool.result === null ? null : ResultSection(tool),
+    tool.result === undefined || tool.result === null ? null : ResultSection(tool)],
   );
 }
 
@@ -1271,13 +1277,19 @@ function skillReadLabel(tool) {
  * state.expandedActivities keyed by a STABLE id — for streams the id carries
  * over to the committed event, so an expander stays open across the commit.
  * @param {{ id: string, className?: string, status?: string, icon?: string, title?: string, extra?: string }} options
- * @param {...(Node|null)} children
+ * @param {() => (Node|null)[]} renderBody
  */
-function ActivityDetails(options, ...children) {
+function ActivityDetails(options, renderBody) {
   const statusText = options.status === "running" ? "running" : options.status === "error" ? "error" : "complete";
   const id = options.id;
-  const body = children.filter(Boolean);
-  return h(
+  let mounted = false;
+  const mountBody = () => {
+    if (mounted) return;
+    const body = renderBody().filter(Boolean);
+    if (body.length) details.append(h("div", { class: "trace-body" }, body));
+    mounted = true;
+  };
+  const details = h(
     "details",
     {
       class: `activity-details ${options.className ?? ""} ${options.status ?? "complete"}`,
@@ -1285,7 +1297,10 @@ function ActivityDetails(options, ...children) {
       open: state.expandedActivities.has(id),
       ontoggle: (event) => {
         const el = /** @type {HTMLDetailsElement} */ (event.currentTarget);
-        if (el.open) state.expandedActivities.add(id);
+        if (el.open) {
+          mountBody();
+          state.expandedActivities.add(id);
+        }
         else state.expandedActivities.delete(id);
       },
     },
@@ -1302,11 +1317,11 @@ function ActivityDetails(options, ...children) {
         text: options.status === "running" ? "" : options.status === "error" ? STATE.error : STATE.done,
       }),
     ),
-    // One shaded, scrollable body per trace (LAW .trace-body) instead of the
-    // payload sections spilling directly under <details> — an open trace reads
-    // as ONE contained block, never a stack of bordered boxes.
-    body.length ? h("div", { class: "trace-body" }, body) : null,
   );
+  // Closed traces → summary only; restored-open traces → synchronous body
+  // before scroll restoration. Reopening the same node preserves its body.
+  if (state.expandedActivities.has(id)) mountBody();
+  return details;
 }
 
 // --- Tool one-line summaries: pick the most subject-like string from the

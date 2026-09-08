@@ -9,7 +9,8 @@ import { activeTask, markRoomRead, rememberLocation, runningSummonRooms, state, 
 import { closeTab, navigateTab, openTab, restoreTabs } from "./tabs.js";
 import { syncDarioFromSnapshot } from "./dario.js";
 import { adoptServerTheme, setThemePersist } from "./themes.js";
-import { pinTranscriptToBottom } from "./transcript.js";
+import { pinTranscriptToBottom, syncOlderFromSnapshot } from "./transcript.js";
+import { navigation } from "./navigation.js";
 
 /** @typedef {import("./types.js").AppPayload} AppPayload */
 /** @typedef {import("./types.js").SnapshotPayload} SnapshotPayload */
@@ -93,14 +94,83 @@ function applySnapshotPayload(body) {
 }
 /** @param {string} workspaceId */
 export async function loadWorkspace(workspaceId) {
-  try {
-    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/snapshot`);
-    applySnapshotPayload(body);
-    connectEvents();
+  return navigate(workspaceId);
+}
+
+/** @type {import("./navigation.js").CachedRoom|undefined} */
+let confirmedRoom;
+
+function cacheCurrentRoom() {
+  if (!state.snapshot) return;
+  const entry = {
+    snapshot: state.snapshot, voice: state.voice, workspaceFiles: state.settingsWorkspaceFiles,
+    streams: new Map(state.streams), older: { ...state.older, loading: false },
+  };
+  navigation.save(entry);
+  return entry;
+}
+
+/** @param {string} workspaceId @param {string} [roomId]
+ * @param {{ incognito?: boolean }} [opts] */
+async function navigate(workspaceId, roomId, opts = {}) {
+  const previous = cacheCurrentRoom();
+  if (!navigation.pending) confirmedRoom = previous;
+  const rollback = confirmedRoom;
+  const request = navigation.begin();
+  state.eventSource?.close();
+  state.eventSource = null;
+  let cached = navigation.get(workspaceId, roomId);
+  const rooms = state.workspaceRooms[workspaceId];
+  const cachedRoomId = cached?.snapshot.room.id;
+  if (cached && rooms && !rooms.some((room) => room.id === cachedRoomId)) {
+    navigation.forget(workspaceId, cached.snapshot.room.id);
+    cached = undefined;
+  }
+  const callBlocksTarget = state.snapshot?.workspace.id === workspaceId && state.voice && state.voice.roomId !== (roomId ?? cached?.snapshot.room.id);
+  if (cached && !callBlocksTarget) {
+    const voice = state.snapshot?.workspace.id === workspaceId ? state.voice : null;
+    applySnapshotPayload({ ...cached, voice });
+    state.streams = new Map(cached.streams);
+    state.older = cached.older;
+    // Activity summaries stay live across workspaces; cached room bodies do not.
+    if (rooms) cached.snapshot.rooms = rooms.map((room) => ({ ...room, isCurrent: room.id === cached.snapshot.room.id }));
+    openTab(cached.snapshot.room.id, workspaceId);
     state.error = "";
     markDirty();
+  }
+  let refreshed = false;
+  const targetRoom = roomId ?? cached?.snapshot.room.id;
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}`;
+  try {
+    /** @type {SnapshotPayload} */
+    const body = await api(targetRoom ? `${path}/rooms/${encodeURIComponent(targetRoom)}/select` : `${path}/snapshot`, {
+      signal: request.signal,
+      ...(targetRoom ? { method: "POST", body: JSON.stringify(opts.incognito ? { incognito: true } : {}) } : {}),
+    });
+    if (!navigation.current(request.id)) return;
+    applySnapshotPayload(body);
+    refreshed = true;
+    if (cached && cached.snapshot.room.id === body.snapshot.room.id) state.older = cached.older;
+    syncOlderFromSnapshot();
+    restoreTabs();
+    openTab(body.snapshot.room.id, body.snapshot.workspace.id);
+    state.error = "";
+    confirmedRoom = cacheCurrentRoom();
+    markDirty();
   } catch (error) {
+    if (!navigation.current(request.id)) return;
+    if (rollback) {
+      applySnapshotPayload(rollback);
+      state.streams = new Map(rollback.streams);
+      state.older = rollback.older;
+      markDirty();
+    }
     setError(error);
+  } finally {
+    if (navigation.current(request.id)) {
+      navigation.finish(request.id);
+      connectEvents(!refreshed);
+    }
   }
 }
 
@@ -130,21 +200,8 @@ export async function addWorkspace() {
  *   call creates the room (a no-op when selecting one that already exists).
  */
 export async function selectRoom(workspaceId, roomId, opts = {}) {
-  try {
-    // Read-aloud deliberately keeps playing across a room switch — it only
-    // stops when you play another message (or hit stop from the status-bar
-    // now-playing chip). So no stopReadAloud() here.
-    const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rooms/${encodeURIComponent(roomId)}/select`, {
-      method: "POST",
-      body: JSON.stringify(opts.incognito ? { incognito: true } : {}),
-    });
-    applySnapshotPayload(body);
-    connectEvents();
-    state.error = "";
-    markDirty();
-  } catch (error) {
-    setError(error);
-  }
+  // Read-aloud stays bound to its original message across navigation.
+  return navigate(workspaceId, roomId, opts);
 }
 
 /** @param {string} agentId */
@@ -435,6 +492,7 @@ export async function deleteRoom(roomId) {
       method: "DELETE",
       body: "{}",
     });
+    navigation.forget(snapshot.workspace.id, roomId);
     state.sidebarFocus = null; // the target is gone; fall back to the new current room
     applySnapshotPayload(body);
     connectEvents();
@@ -464,6 +522,7 @@ export async function deleteWorkspace(workspaceId) {
   try {
     const body = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE", body: "{}" });
     state.sidebarFocus = null; // the target is gone; fall back to the new current room
+    navigation.forget(workspaceId);
     await applyAppPayload(body);
   } catch (error) {
     setError(error);

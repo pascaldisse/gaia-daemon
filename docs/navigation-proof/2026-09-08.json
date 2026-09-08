@@ -1,0 +1,209 @@
+{
+  "baselineCommit": "9d6563d",
+  "baseline": {
+    "results": [
+      {
+        "id": "b",
+        "immediate": false,
+        "paintMs": 51,
+        "nodes": 784
+      },
+      {
+        "id": "c",
+        "immediate": false,
+        "paintMs": 198,
+        "nodes": 21481
+      },
+      {
+        "id": "a",
+        "immediate": false,
+        "paintMs": 115,
+        "nodes": 4613
+      },
+      {
+        "id": "b",
+        "immediate": false,
+        "paintMs": 65,
+        "nodes": 784
+      },
+      {
+        "id": "a",
+        "immediate": false,
+        "paintMs": 64,
+        "nodes": 4613
+      }
+    ],
+    "race": {
+      "expected": "b",
+      "client": "a",
+      "server": "b"
+    },
+    "longTasks": [
+      {
+        "start": 18589.600000000093,
+        "duration": 95
+      },
+      {
+        "start": 18832.30000000028,
+        "duration": 69
+      },
+      {
+        "start": 20583.80000000028,
+        "duration": 95
+      }
+    ]
+  },
+  "fixedDiagnostic": {
+    "results": [
+      {
+        "id": "b",
+        "immediate": false,
+        "paintMs": 51,
+        "nodes": 242
+      },
+      {
+        "id": "c",
+        "immediate": false,
+        "paintMs": 132,
+        "nodes": 1503
+      },
+      {
+        "id": "a",
+        "immediate": true,
+        "paintMs": 21,
+        "nodes": 988
+      },
+      {
+        "id": "b",
+        "immediate": true,
+        "paintMs": 10,
+        "nodes": 242
+      },
+      {
+        "id": "a",
+        "immediate": true,
+        "paintMs": 20,
+        "nodes": 988
+      }
+    ],
+    "race": {
+      "expected": "b",
+      "client": "b",
+      "server": "b"
+    },
+    "longTasks": [
+      {
+        "start": 2857.199999999255,
+        "duration": 50
+      }
+    ]
+  },
+  "visibleDesktopAcceptance": {
+    "results": [
+      {
+        "kind": "room",
+        "id": "a",
+        "immediate": true,
+        "paintMs": 41,
+        "activeAfterFrame": true,
+        "settledMs": 83
+      },
+      {
+        "kind": "room",
+        "id": "b",
+        "immediate": true,
+        "paintMs": 35,
+        "activeAfterFrame": true,
+        "settledMs": 67
+      },
+      {
+        "kind": "room",
+        "id": "c",
+        "immediate": true,
+        "paintMs": 80,
+        "activeAfterFrame": true,
+        "settledMs": 134
+      },
+      {
+        "kind": "room",
+        "id": "a",
+        "immediate": true,
+        "paintMs": 35,
+        "activeAfterFrame": true,
+        "settledMs": 67
+      },
+      {
+        "kind": "room",
+        "id": "b",
+        "immediate": true,
+        "paintMs": 34,
+        "activeAfterFrame": true,
+        "settledMs": 67
+      },
+      {
+        "kind": "room",
+        "id": "a",
+        "immediate": true,
+        "paintMs": 36,
+        "activeAfterFrame": true,
+        "settledMs": 67
+      },
+      {
+        "kind": "workspace",
+        "name": "two",
+        "immediate": true,
+        "paintMs": 33
+      },
+      {
+        "kind": "workspace",
+        "name": "one",
+        "immediate": true,
+        "paintMs": 35
+      },
+      {
+        "kind": "workspace",
+        "name": "two",
+        "immediate": true,
+        "paintMs": 34
+      },
+      {
+        "kind": "workspace",
+        "name": "one",
+        "immediate": true,
+        "paintMs": 34
+      }
+    ],
+    "race": {
+      "expected": "b",
+      "actual": "b",
+      "server": "b"
+    },
+    "rollback": {
+      "optimistic": true,
+      "room": "b",
+      "error": "injected navigation failure",
+      "channelConnected": true
+    },
+    "rapid": {
+      "workspace": "one",
+      "room": "b",
+      "error": ""
+    },
+    "transcriptMatches": true,
+    "transcriptNodes": 7
+  },
+  "expansion": {
+    "nodesBefore": 1503,
+    "closedBodies": 0,
+    "toolExpanded": true,
+    "reopenedSameBody": true,
+    "restoredAcrossNavigation": true,
+    "thinkingExpanded": true,
+    "error": ""
+  },
+  "console": {
+    "exceptions": [],
+    "consoleErrors": [],
+    "browserLog": []
+  }
+}

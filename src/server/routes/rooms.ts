@@ -20,6 +20,14 @@ async function selectRoom(ctx: RouteContext): Promise<boolean> {
   await respond(ctx.response, () => ctx.daemon.selectRoom(params[0], roomId.trim(), { incognito: boolField(body, "incognito") }));
   return true;
 }
+async function roomSnapshot(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/snapshot$/);
+  if (ctx.request.method !== "GET" || !params) return false;
+  if (!(await requireRoomAccess(ctx, params[0], params[1]))) return true;
+  await respond(ctx.response, () => ctx.daemon.roomSnapshot(params[0], params[1]));
+  return true;
+}
+
 async function selectNamedRoom(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/(?:select|activate)$/);
   if (ctx.request.method !== "POST" || !params) return false;
@@ -493,6 +501,7 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
 
 const roomHandlers = [
   selectRoom,
+  roomSnapshot,
   selectNamedRoom,
   roomRole,
   roomPlugin,
