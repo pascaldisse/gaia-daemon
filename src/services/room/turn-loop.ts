@@ -1,9 +1,10 @@
 import { newId } from "../../core/ids.js";
 import type { AgentDef, PendingTurn, RoomEvent, Task } from "../../core/types.js";
 import type { ContextDietPolicy } from "../../domain/context-diet.js";
+import { modelReasoningOverride, resolveReasoningLevel } from "../../domain/model-reasoning.js";
 import { newRoomEventId } from "../../domain/rooms.js";
 import { effectiveAgentSkills, effectiveAgentTools, effectiveRoleName, resolveAgentRole } from "../../domain/roles.js";
-import { contextWindowFor, harnessIdFor } from "../../harness/spec.js";
+import { contextWindowFor, harnessIdFor, reasoningFor } from "../../harness/spec.js";
 import { readUserNameSetting } from "../user-name.js";
 import type { RoomTurnLoopPort } from "./ports.js";
 import { finalizeInterruptedTools, runAgentTurn } from "../turns.js";
@@ -283,6 +284,15 @@ export class RoomTurnLoop {
       // cost/behavior change for every room that never opts in.
       const resolvedDietPolicy = await this.service.dietPolicyStore.effective(this.service.roomId);
       const dietPolicy = isContextDietPolicy(resolvedDietPolicy) ? resolvedDietPolicy : undefined;
+      // Resolve inherited reasoning before dispatch. Obsolete levels clamp to
+      // the model's lowest actual choice, never Pi's unsafe implicit high.
+      const modelIdentity = runtime.effectiveModel ?? agent.model;
+      const configuredModel = modelIdentity && ("model" in modelIdentity ? { provider: modelIdentity.provider, name: modelIdentity.model } : modelIdentity);
+      const requestedThinking = options.thinking ?? state.thinkingOverrides[target] ?? agent.thinking;
+      const reasoningOverride = modelReasoningOverride(this.service.workspace.config.modelReasoningOverrides, configuredModel);
+      const reasoning = await reasoningFor(harnessIdFor(agent, this.service.workspace), modelIdentity, reasoningOverride);
+      const resolvedReasoning = reasoning ? resolveReasoningLevel(reasoning, requestedThinking as import("../../core/types.js").ThinkingLevel | undefined, false) : undefined;
+      const effectiveThinking = resolvedReasoning?.status === "known" ? resolvedReasoning.effectiveLevel : requestedThinking;
 
       const run = async (): Promise<Awaited<ReturnType<typeof runAgentTurn>>> => runAgentTurn({
           runtime,
@@ -295,7 +305,7 @@ export class RoomTurnLoop {
             tools: effectiveAgentTools(agent, activeRole),
             skills: effectiveAgentSkills(agent, activeRole),
             channel: options.channel,
-            thinking: options.thinking ?? state.thinkingOverrides[target],
+            ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
             ...(state.thinkingLevel ? { protocolThinkingLevel: state.thinkingLevel } : {}),
             recall,
             ...(pluginContext ? { pluginContext } : {}),

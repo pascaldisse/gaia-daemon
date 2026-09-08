@@ -14,6 +14,7 @@ import { CompactBar, compactDetail } from "./compactprogress.js";
 import { clearComposerDraft, composerDraftKey, composerDraftStatus, loadComposerDraft, saveComposerDraft } from "./composer-drafts.js";
 import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
+import { agentReasoning, reasoningToggleTarget, reasoningView } from "./reasoning.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
@@ -991,10 +992,15 @@ async function postThinking(snapshot, agent, level, onCall) {
 }
 
 /**
- * Thinking-effort indicator: click toggles between the current level and
- * off; right-click opens a menu with all levels. On a call the change is
- * call-scoped (reverts on hang-up); otherwise it is room-scoped (matches
- * /role) — it never persists to agent.json.
+ * Thinking-effort indicator, driven by the target agent's per-model reasoning
+ * descriptor (never a universal level list): click toggles between the model's
+ * effective level and off; right-click opens a menu with ONLY the model's
+ * supported levels. A model with no reasoning renders nothing; an
+ * undiscovered ("unknown") capability shows an unverified indicator with no
+ * level menu. When the requested level is not what the model actually applies,
+ * the control shows `requested → effective` and its resolution. On a call the
+ * change is call-scoped (reverts on hang-up); otherwise it is room-scoped
+ * (matches /role) — it never persists to agent.json.
  * @param {Snapshot|null} snapshot
  * @param {string} text
  * @returns {HTMLElement|null}
@@ -1006,48 +1012,64 @@ function ThinkingControl(snapshot, text) {
   const agent = (snapshot.agents ?? []).find((candidate) => candidate.id === targetId);
   if (!agent) return null;
 
-  const effective = onCall ? (state.voice?.thinking ?? agent.thinking ?? "off") : (agent.thinking ?? "off");
-  const levels = snapshot.thinkingLevels ?? [];
-  if (levels.length === 0) return null;
+  const requestedFallback = onCall ? (state.voice?.thinking ?? agent.thinking ?? "off") : (agent.thinking ?? "off");
+  const view = reasoningView(agentReasoning(agent), requestedFallback, snapshot.thinkingLevels ?? [], onCall ? state.voice?.thinking : undefined);
+  // Model supports no reasoning at all → no control.
+  if (view.state === "none") return null;
+
+  const unknown = view.state === "unknown";
+  const effective = view.effective;
+  const displayed = effective ?? view.requested;
+  const toggleTarget = reasoningToggleTarget(view, thinkingReturnLevels.get(agent.id));
+  const overridden = view.source === "override";
+  const titleParts = [`thinking effort for @${agent.id}`];
+  if (unknown) titleParts.push(`capability for ${agentReasoning(agent)?.model ?? "this model"} not discovered — level unverified`);
+  if (view.diverged) titleParts.push(`requested #${view.requested} → effective #${effective}${view.resolution ? ` (${view.resolution})` : ""}`);
+  if (overridden) titleParts.push("levels from a configured override");
+  if (view.unverified) titleParts.push(`requested #${view.requested}; effective level unverified`);
+  titleParts.push(unknown ? "level controls unavailable" : toggleTarget ? "click toggles, right-click for levels" : "right-click for levels; toggle unavailable");
+  if (onCall) titleParts.push("(this call only)");
+
+  const toggleClass = ["thinking-toggle", view.unverified ? "thinking-unknown" : "", view.diverged ? "thinking-diverged" : "", overridden ? "thinking-override" : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  const label = view.diverged
+    ? `${KIND.thinking} #${view.requested}→#${effective}`
+    : `${KIND.thinking} #${displayed}${view.unverified ? "?" : ""}`;
 
   const toggle = h("button", {
     type: "button",
-    class: "thinking-toggle",
-    title: `thinking effort for @${agent.id} - click toggles off, right-click for levels${onCall ? " (this call only)" : ""}`,
+    class: toggleClass,
+    title: titleParts.join(" · "),
     onclick: (event) => {
       event.preventDefault();
-      /** @type {string} */
-      let next;
-      if (effective === "off") {
-        const remembered = thinkingReturnLevels.get(agent.id);
-        const configured = agent.thinking && agent.thinking !== "off" ? agent.thinking : undefined;
-        next = remembered ?? configured ?? "medium";
-      } else {
-        thinkingReturnLevels.set(agent.id, effective);
-        next = "off";
-      }
-      void postThinking(snapshot, agent, next, onCall);
+      if (!toggleTarget) return;
+      if (displayed !== "off" && view.available.includes(displayed)) thinkingReturnLevels.set(agent.id, displayed);
+      void postThinking(snapshot, agent, toggleTarget, onCall);
     },
     oncontextmenu: (event) => {
       event.preventDefault();
+      if (unknown) return; // no invented level list for an undiscovered model
       state.thinkingMenuOpen = !state.thinkingMenuOpen;
       markDirty("composer");
     },
-    text: `${KIND.thinking} #${effective}`,
+    text: label,
   });
 
   return h(
     "div",
     { class: "thinking-inner" },
     toggle,
-    state.thinkingMenuOpen
+    !unknown && state.thinkingMenuOpen
       ? h(
           "div",
           { class: "thinking-menu" },
-          levels.map((level) =>
+          view.available.map((level) =>
             h("button", {
               type: "button",
-              class: level === effective ? "active" : "",
+              class: [level === effective ? "active" : "", level === view.defaultLevel ? "default" : ""].filter(Boolean).join(" "),
+              title: level === view.defaultLevel ? "model default" : "",
               onclick: () => {
                 if (level !== "off") thinkingReturnLevels.set(agent.id, level);
                 void postThinking(snapshot, agent, level, onCall);

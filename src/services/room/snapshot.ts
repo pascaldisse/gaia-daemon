@@ -9,8 +9,9 @@ import type { AgentDef, AgentStatus, MessageAttachment, PendingTurn, RoomEvent, 
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
 import { displayEventText } from "../../domain/render-cap.js";
 import { normalizeRoomState, normalizeRoomTitle, roomAllowsHuman } from "../../domain/rooms.js";
+import { resolveReasoningLevel } from "../../domain/model-reasoning.js";
 import { listAgentRoles } from "../../domain/roles.js";
-import { harnessIdFor, usageAccountFor } from "../../harness/spec.js";
+import { harnessIdFor, reasoningFor, usageAccountFor } from "../../harness/spec.js";
 import { configuredModelLabel } from "../../harness/model-label.js";
 import { sdkThinkingLevels } from "../hints.js";
 
@@ -104,7 +105,14 @@ export class RoomSnapshotMixin {
       this.listRooms(),
       this.paletteCommands(),
       Promise.all(
-        ((Object.values(this.workspace.agents) as AgentDef[])).map(async (agent) => ({
+        ((Object.values(this.workspace.agents) as AgentDef[])).map(async (agent) => {
+          const identity = this.runtimes[agent.id]?.effectiveModel ?? agent.model;
+          const modelName = identity && ("model" in identity ? identity.model : identity.name);
+          const override = identity?.provider && modelName ? this.workspace.config.modelReasoningOverrides?.[identity.provider]?.[modelName] : undefined;
+          const baseReasoning = await reasoningFor(harnessIdFor(agent, this.workspace), identity, override);
+          const requested = state.thinkingOverrides[agent.id] ?? agent.thinking;
+          const reasoning = baseReasoning ? resolveReasoningLevel(baseReasoning, requested, false) : undefined;
+          return {
           id: agent.id,
           displayName: agent.displayName,
           icon: agent.icon,
@@ -114,7 +122,8 @@ export class RoomSnapshotMixin {
           ...(this.contextFor(agent) ? { context: this.contextFor(agent) } : {}),
           tools: agent.tools,
           voice: agent.voice,
-          thinking: state.thinkingOverrides[agent.id] ?? agent.thinking,
+          thinking: reasoning?.status === "known" ? reasoning.effectiveLevel : requested,
+          ...(reasoning ? { reasoning } : {}),
           activeRole: state.activeRoles[agent.id],
           defaultRole: agent.defaultRole,
           harness: harnessIdFor(agent, this.workspace),
@@ -128,7 +137,8 @@ export class RoomSnapshotMixin {
               : "idle") as AgentStatus["status"],
           ...(this.compactProgress.has(agent.id) ? { compact: this.compactProgress.get(agent.id) } : {}),
           isDefault: agent.id === this.workspace.config.defaultAgent,
-        })),
+          };
+        }),
       ),
       this.memoryChips(),
     ]);

@@ -46,7 +46,8 @@ import type {
   Workspace,
 } from "../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
-import { resolveAutoCompactConfig, scheduleAutoCompactAfterTurn, takePendingAutoCompact } from "./room/auto-compact.js";
+import { autoCompactEnabled } from "../core/auto-compact.js";
+import { autoCompactModelFor, resolveAutoCompactConfig, scheduleAutoCompactAfterTurn, takePendingAutoCompact } from "./room/auto-compact.js";
 import type { RenderCap } from "../domain/render-cap.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -552,36 +553,39 @@ export class RoomService {
     });
   }
 
-  /** Persist a next-turn Pi SDK compaction after a completed turn crosses the threshold. */
+  /** Completed-turn threshold → durable next-turn native compaction. */
   async scheduleAutoCompact(target: string): Promise<void> {
-    // Off is the default: do not take the room's serialized state-write lock
-    // after every ordinary turn.
+    // Explicit off → skip the serialized state-write lock.
     const current = await this.room.state();
-    if (resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact).thresholdPct === null) return;
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact, model))) return;
     let scheduledPct: number | undefined;
+    let scheduledTokens: number | undefined;
     await this.room.updateState((state) => {
-      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact, model);
       const decision = scheduleAutoCompactAfterTurn(config, state.autoCompact, target, {
         usageFor: (agentId) => this.contextUsage[agentId],
       });
       state.autoCompact = decision.state;
       scheduledPct = decision.scheduledPct;
+      scheduledTokens = decision.scheduledTokens;
     });
     if (scheduledPct === undefined) return;
-    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: "system", text: `auto-compact @${scheduledPct}%` };
+    const event: RoomEvent = { id: newRoomEventId(), timestamp: new Date().toISOString(), author: "system", text: `auto-compact @${scheduledTokens === undefined ? `${scheduledPct}%` : `${scheduledTokens} tokens`}` };
     await this.room.appendEvent(event);
     this.emit({ type: "room-event", workspaceId: this.workspaceId, roomId: this.roomId, event });
   }
   /** Consume the durable schedule before the agent receives its next prompt. */
   async runPendingAutoCompact(target: string): Promise<void> {
     const current = await this.room.state();
-    if (resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact).thresholdPct === null || current.autoCompact?.pending?.[target] === undefined) return;
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact, model)) || current.autoCompact?.pending?.[target] === undefined) return;
     let pct: number | undefined;
     await this.room.updateState((state) => {
-      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact, model);
       const pending = takePendingAutoCompact(state.autoCompact, target);
       state.autoCompact = pending.state;
-      if (config.thresholdPct !== null) pct = pending.pct;
+      if (autoCompactEnabled(config)) pct = pending.pct;
     });
     if (pct === undefined) return;
     // Same runtime.compact + durable floor path as /compact; no clean-summary override.

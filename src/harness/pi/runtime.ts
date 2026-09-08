@@ -65,6 +65,7 @@ export class PiRuntime implements AgentRuntime {
   private readonly compaction: PiCompaction;
   private readonly cleanCompaction: PiCleanCompaction;
   private readonly label: ModelLabel;
+  private _effectiveModel: { provider: string; model: string } | undefined;
   private readonly cwd: string;
   private readonly workDir: string;
   constructor(options: PiRuntimeOptions) {
@@ -141,6 +142,9 @@ export class PiRuntime implements AgentRuntime {
   get modelLabel(): string {
     return this.label.current;
   }
+  get effectiveModel(): { provider: string; model: string } | undefined {
+    return this._effectiveModel;
+  }
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
     const meta = await this.ensureSession(
       input.roomId,
@@ -165,6 +169,7 @@ export class PiRuntime implements AgentRuntime {
         subscription,
       } as const;
       this.label.observe(info);
+      this._effectiveModel = { provider: sessionModel.provider, model: sessionModel.id };
       yield info;
     }
     const channel = createEventChannel();

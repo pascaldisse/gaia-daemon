@@ -272,6 +272,7 @@ test("RunnerHost streams a turn's events and tracks the model label", async () =
     assert.ok(events.some((e) => e.type === "text-delta" && e.delta === "echo:hi"));
     assert.ok(events.some((e) => e.type === "model-info"));
     assert.equal(host.modelLabel, "stub/m");
+    assert.deepEqual(host.effectiveModel, { provider: "stub", model: "m" });
     await host.dispose();
   } finally {
     await temp.cleanup();

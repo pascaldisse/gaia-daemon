@@ -2617,11 +2617,13 @@ test("setAgentThinking (the global-default write path, e.g. the agent-config edi
 
 test("/thinking (runThinkingCommand, no active call) is room-scoped: it does NOT touch agent.json or fire a settings reload", async () => {
   const reloads: string[] = [];
-  const { service, root } = await makeService({
+  const { service, root, workspace } = await makeService({
     settingsChanged: async (scope) => {
       reloads.push(scope);
     },
   });
+  workspace.agents.gaia!.model = { provider: "fixture", name: "reasoning-model" };
+  workspace.config.modelReasoningOverrides = { fixture: { "reasoning-model": { supportedLevels: ["off", "high"], defaultLevel: "off" } } };
   await service.init();
 
   const reply = await service.runThinkingCommand("gaia", "high");
@@ -2647,6 +2649,8 @@ test("/thinking (runThinkingCommand, no active call) is room-scoped: it does NOT
 
 test("room-scoped thinking never leaks across rooms (mirrors role isolation) and never mutates the shared in-memory agent object", async () => {
   const { service: roomA, workspace, root } = await makeService({ roomId: "room-a" });
+  workspace.agents.gaia!.model = { provider: "fixture", name: "reasoning-model" };
+  workspace.config.modelReasoningOverrides = { fixture: { "reasoning-model": { supportedLevels: ["off", "high"], defaultLevel: "off" } } };
   await roomA.init();
   const roomB = await RoomService.open({
     workspaceId: "ws1",
@@ -2665,7 +2669,7 @@ test("room-scoped thinking never leaks across rooms (mirrors role isolation) and
   const snapA = await roomA.getSnapshot();
   const snapB = await roomB.getSnapshot();
   assert.equal(snapA.agents.find((a) => a.id === "gaia")?.thinking, "high");
-  assert.equal(snapB.agents.find((a) => a.id === "gaia")?.thinking, undefined);
+  assert.equal(snapB.agents.find((a) => a.id === "gaia")?.thinking, "off"); // model default; room A's high did not leak
 
   // The shared in-memory agent object (workspace.agents.gaia, read by every
   // room service on this workspace) is untouched — this is the actual bug:
@@ -2690,7 +2694,7 @@ test("room-scoped thinking never leaks across rooms (mirrors role isolation) and
   (roomB as unknown as { runtimes: Record<string, AgentRuntime> }).runtimes.gaia = bRuntime;
   await roomB.sendMessage("hello", { targets: ["gaia"] });
   await roomB.waitForIdle();
-  assert.equal(inputsB[0], undefined);
+  assert.equal(inputsB[0], "off"); // resolved model default; room A's high did not leak
 
   // agent.json was never written by the room-scoped path.
   assert.equal(await readJson(join(root, "agents", "gaia", "agent.json")), undefined);
@@ -3930,4 +3934,157 @@ test("auto-compact schedules on turn-end usage then uses the native /compact pat
   assert.equal(compactCalls, 1, "the pending pass invokes the same runtime.compact used by /compact");
   assert.ok((await (await RoomHandle.open(root, "default")).state()).contextFloors?.gaia, "native compaction advanced the durable floor");
   await service.dispose();
+});
+
+
+for (const maxTokens of [200_000, 1_000_000]) {
+  test(`auto-compact default180k waits for whole-turn completion at capacity${maxTokens}`, async () => {
+    let finishTurn!: () => void;
+    const hold = new Promise<void>(resolve => { finishTurn = resolve; });
+    let reported = false;
+    let compactCalls = 0;
+    let sends = 0;
+    const order: string[] = [];
+    const { service, root, events } = await makeService({
+      agents: ["gaia"],
+      runtimeFactory: agent => ({
+        ...scriptedRuntime(agent, () => []),
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
+        async *send() {
+          sends++;
+          order.push(`send${sends}`);
+          yield { type: "context-usage", usedTokens: 180_001, maxTokens } as AgentEvent;
+          reported = true;
+          if (sends === 1) await hold;
+          yield { type: "text-delta", delta: "complete" } as AgentEvent;
+        },
+        async compact() {
+          compactCalls++;
+          order.push("compact");
+          return { compacted: true, message: "compacted", summary: "native summary" };
+        },
+      }),
+    });
+    try {
+      const first = await service.sendMessage("first");
+      await waitFor(() => reported);
+      assert.equal((await service.room.state()).autoCompact?.pending?.gaia, undefined, "no schedule inside a streaming/tool-loop turn, even above threshold");
+      assert.equal(compactCalls, 0);
+      finishTurn();
+      await waitFor(() => first.status === "complete");
+      const reopened = await RoomHandle.open(root, "default");
+      assert.ok((await reopened.state()).autoCompact?.pending?.gaia !== undefined, "next-turn marker survives reopening");
+      assert.ok(events.some(event => event.type === "room-event" && event.event.text === "auto-compact @180001 tokens"));
+      assert.equal(compactCalls, 0, "completion schedules; it does not compact immediately");
+      const second = await service.sendMessage("second");
+      await waitFor(() => second.status === "complete");
+      assert.equal(compactCalls, 1);
+      assert.deepEqual(order, ["send1", "compact", "send2"]);
+      assert.ok((await reopened.state()).contextFloors?.gaia);
+      assert.equal(service.contextUsage.gaia.maxTokens, maxTokens, "true capacity untouched");
+    } finally {
+      finishTurn();
+      await service.waitForIdle();
+      await service.draining;
+      await service.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("auto-compact model override uses live identity, not configured name or display label", async () => {
+  let usedTokens = 249_999;
+  let compactCalls = 0;
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    config: { autoCompact: { thresholdPct: null, thresholdTokens: 180_000, cooldownTurns: 1, modelOverrides: {
+      provider: { configured: { thresholdTokens: null }, "live/model": { thresholdPct: 25 } },
+    } } },
+    runtimeFactory: agent => {
+      agent.model = { provider: "provider", name: "configured" };
+      return {
+        ...scriptedRuntime(agent, () => [
+          { type: "context-usage", usedTokens, maxTokens: 1_000_000 },
+          { type: "text-delta", delta: "reply" },
+        ]),
+        effectiveModel: { provider: "provider", model: "live/model" },
+        modelLabel: "not/the/identity (oauth)",
+        capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
+        async compact() { compactCalls++; return { compacted: true, message: "compacted", summary: "native summary" }; },
+      };
+    },
+  });
+  try {
+    assert.match(await service.runAutoCompactCommand(), /Auto-compact: 25%.*threshold: model/);
+    const first = await service.sendMessage("below percentage, above default token threshold");
+    await waitFor(() => first.status === "complete");
+    assert.equal((await service.room.state()).autoCompact?.pending?.gaia, undefined);
+    usedTokens = 250_000;
+    const second = await service.sendMessage("at percentage threshold");
+    await waitFor(() => second.status === "complete");
+    assert.equal((await service.room.state()).autoCompact?.pending?.gaia, 25);
+    assert.equal(compactCalls, 0);
+    await service.runAutoCompactCommand("off");
+    assert.equal((await service.room.state()).autoCompact?.pending, undefined);
+    const third = await service.sendMessage("room off beats model policy");
+    await waitFor(() => third.status === "complete");
+    assert.equal(compactCalls, 0);
+    assert.equal((await service.room.state()).autoCompact?.pending, undefined);
+    await service.runAutoCompactCommand("180k");
+    assert.match(await service.runAutoCompactCommand(), /180000 tokens.*threshold: room/);
+    const fourth = await service.sendMessage("room tokens beat model percentage");
+    await waitFor(() => fourth.status === "complete");
+    assert.ok((await service.room.state()).autoCompact?.pending?.gaia !== undefined);
+  } finally { await service.waitForIdle(); await service.draining; await service.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("auto-compact smaller model retains its native capacity and does not force180k into reserve", async () => {
+  let compactCalls = 0;
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    runtimeFactory: agent => ({
+      ...scriptedRuntime(agent, () => [
+        { type: "context-usage", usedTokens: 120_000, maxTokens: 128_000 },
+        { type: "text-delta", delta: "reply" },
+      ]),
+      capabilities: { gaiaTools: [], granularTools: true, supportsPermissionMode: false, supportsCompact: true },
+      async compact() { compactCalls++; return { compacted: true, message: "compacted", summary: "native summary" }; },
+    }),
+  });
+  try {
+    for (const text of ["first", "second"]) {
+      const turn = await service.sendMessage(text);
+      await waitFor(() => turn.status === "complete");
+    }
+    assert.equal(compactCalls, 0);
+    assert.deepEqual(service.contextUsage.gaia, { usedTokens: 120_000, maxTokens: 128_000 });
+    assert.equal((await service.room.state()).autoCompact?.pending, undefined);
+  } finally { await service.waitForIdle(); await service.draining; await service.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("auto-compact observes a session model switch before scheduling the completed turn", async () => {
+  let effectiveModel = { provider: "provider", model: "initial" };
+  const { service, root } = await makeService({
+    agents: ["gaia"],
+    config: { autoCompact: { thresholdPct: null, thresholdTokens: 180_000, cooldownTurns: 1, modelOverrides: {
+      provider: { initial: { thresholdTokens: null }, switched: { thresholdTokens: 150_000 } },
+    } } },
+    runtimeFactory: agent => ({
+      ...scriptedRuntime(agent, () => []),
+      get effectiveModel() { return effectiveModel; },
+      async *send() {
+        effectiveModel = { provider: "provider", model: "switched" };
+        yield { type: "model-info", provider: effectiveModel.provider, modelId: effectiveModel.model, subscription: false } as AgentEvent;
+        yield { type: "context-usage", usedTokens: 150_000, maxTokens: 200_000 } as AgentEvent;
+        yield { type: "text-delta", delta: "reply" } as AgentEvent;
+      },
+    }),
+  });
+  try {
+    assert.match(await service.runAutoCompactCommand(), /Auto-compact: off/);
+    const turn = await service.sendMessage("switch inside session");
+    await waitFor(() => turn.status === "complete");
+    assert.equal((await service.room.state()).autoCompact?.pending?.gaia, 75);
+    assert.match(await service.runAutoCompactCommand(), /150000 tokens.*threshold: model/);
+  } finally { await service.waitForIdle(); await service.draining; await service.dispose(); await rm(root, { recursive: true, force: true }); }
 });

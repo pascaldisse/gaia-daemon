@@ -7,6 +7,33 @@ export interface AgentModelConfig {
   provider?: string;
   name?: string;
 }
+export interface EffectiveModelIdentity {
+  provider: string;
+  model: string;
+}
+export interface ModelReasoningOverride {
+  supportedLevels?: ThinkingLevel[];
+  defaultLevel?: ThinkingLevel;
+}
+export interface NativeModelReasoning {
+  levels: Array<{ level: ThinkingLevel; providerValue: string }>;
+  defaultLevel?: ThinkingLevel;
+  adaptive: boolean;
+}
+export type ModelReasoningDescriptor =
+  | { status: "unknown"; provider: string; model: string; requestedLevel?: ThinkingLevel }
+  | {
+      status: "known";
+      provider: string;
+      model: string;
+      choices: Array<{ level: ThinkingLevel; providerValue: string; aliases?: ThinkingLevel[] }>;
+      defaultLevel?: ThinkingLevel;
+      adaptive: boolean;
+      source: "discovered" | "override";
+      requestedLevel?: ThinkingLevel;
+      effectiveLevel?: ThinkingLevel;
+      resolution?: "requested" | "inherited" | "conservative";
+    };
 
 // Memory v3 (MEMORY-DESIGN.md): auto-recall, embeddings, consolidation.
 // Workspace config resolves to a full MemoryConfig over the defaults; agents
