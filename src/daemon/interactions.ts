@@ -30,6 +30,9 @@ export class RoomInteractionLifecycle {
   voiceStarting = false;
   private ttsBridge: TtsCallBridge | undefined;
   private sttBridge: SttCallBridge | undefined;
+  private readonly selectionMutationTails = new Map<string, Promise<void>>();
+  private readonly latestSelectionRequest = new Map<string, number>();
+  private nextSelectionRequest = 0;
 
   constructor(private readonly host: RoomInteractionHost) {}
 
@@ -65,25 +68,54 @@ export class RoomInteractionLifecycle {
   }
 
   async selectRoom(workspaceId: string, roomId: string, opts?: { incognito?: boolean }): Promise<SelectionPayload> {
-    const record = await this.host.registry.find(workspaceId);
-    if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
+    // Enqueue synchronously, before this invocation's first await: a slow lookup
+    // must not let a later request for the same workspace persist first.
+    const requestId = ++this.nextSelectionRequest;
+    this.latestSelectionRequest.set(workspaceId, requestId);
+    const previous = this.selectionMutationTails.get(workspaceId) ?? Promise.resolve();
+    const mutation = previous.then(async () => {
+      const record = await this.host.registry.find(workspaceId);
+      if (!record) throw new Error(`Unknown workspace: ${workspaceId}`);
 
-    // Each room keeps its own long-lived service, so switching is always safe;
-    // only a live voice call (bound to one room) blocks it.
-    if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId !== roomId) {
-      throw new Error("Stop the active voice call before switching rooms.");
-    }
+      // Each room keeps its own long-lived service, so switching is always safe;
+      // only a live voice call (bound to one room) blocks it.
+      if (this.activeCall?.workspaceId === workspaceId && this.activeCall.info.roomId !== roomId) {
+        throw new Error("Stop the active voice call before switching rooms.");
+      }
 
-    // `incognito` only takes effect when this call CREATES the room (immutable
-    // seed in ensureWorkspaceRoom); selecting an existing room ignores it.
-    await ensureWorkspaceRoom(record.path, roomId, opts);
-    await setWorkspaceRoom(record.path, roomId);
-    this.host.currentRoom.set(workspaceId, roomId);
+      // `incognito` only takes effect when this call CREATES the room (immutable
+      // seed in ensureWorkspaceRoom); selecting an existing room ignores it.
+      await ensureWorkspaceRoom(record.path, roomId, opts);
+      await setWorkspaceRoom(record.path, roomId);
+      this.host.currentRoom.set(workspaceId, roomId);
+    });
+    // A failed mutation does not poison the workspace queue. Keep response reads
+    // outside this tail so a slow snapshot cannot delay a newer selection.
+    const tail = mutation.then(() => undefined, () => undefined);
+    this.selectionMutationTails.set(workspaceId, tail);
+    void tail.then(() => {
+      if (this.selectionMutationTails.get(workspaceId) === tail) this.selectionMutationTails.delete(workspaceId);
+    });
+    await mutation;
 
     const service = await this.host.serviceFor(workspaceId, roomId);
-    const snapshot = await service.getSnapshot();
-    this.host.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
-    return { snapshot, workspaceFiles: await this.host.files.listWorkspace(workspaceId), voice: this.voiceFor(workspaceId) };
+    // Snapshot assembly and workspace-file discovery are independent reads.
+    // Keep both in the response, but pay only the slower latency on selection.
+    const [snapshot, workspaceFiles] = await Promise.all([
+      service.getSnapshot(),
+      this.host.files.listWorkspace(workspaceId),
+    ]);
+    if (this.latestSelectionRequest.get(workspaceId) === requestId) {
+      this.host.broadcast({ type: "snapshot", workspaceId, roomId: service.roomId, snapshot });
+    }
+    return { snapshot, workspaceFiles, voice: this.voiceFor(workspaceId) };
+  }
+
+  /** Read one existing room without changing the workspace's durable/current
+   * selection or broadcasting a navigation event. Used by client resyncs. */
+  async roomSnapshot(workspaceId: string, roomId: string): Promise<{ snapshot: Snapshot }> {
+    const service = await this.serviceForExistingRoom(workspaceId, roomId);
+    return { snapshot: await service.getSnapshot() };
   }
 
   /** Rename a room's display title without changing its durable id/path. */

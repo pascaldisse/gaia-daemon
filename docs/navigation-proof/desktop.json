@@ -1,0 +1,94 @@
+{
+  "results": [
+    {
+      "kind": "room",
+      "id": "a",
+      "immediate": false,
+      "paintMs": 33,
+      "activeAfterFrame": false,
+      "settledMs": 110
+    },
+    {
+      "kind": "room",
+      "id": "b",
+      "immediate": true,
+      "paintMs": 134,
+      "activeAfterFrame": true,
+      "settledMs": 173
+    },
+    {
+      "kind": "room",
+      "id": "c",
+      "immediate": false,
+      "paintMs": 33,
+      "activeAfterFrame": false,
+      "settledMs": 83
+    },
+    {
+      "kind": "room",
+      "id": "a",
+      "immediate": true,
+      "paintMs": 52,
+      "activeAfterFrame": true,
+      "settledMs": 160
+    },
+    {
+      "kind": "room",
+      "id": "b",
+      "immediate": true,
+      "paintMs": 100,
+      "activeAfterFrame": true,
+      "settledMs": 140
+    },
+    {
+      "kind": "room",
+      "id": "a",
+      "immediate": true,
+      "paintMs": 52,
+      "activeAfterFrame": true,
+      "settledMs": 149
+    },
+    {
+      "kind": "workspace",
+      "name": "two",
+      "immediate": false,
+      "paintMs": 19
+    },
+    {
+      "kind": "workspace",
+      "name": "one",
+      "immediate": true,
+      "paintMs": 33
+    },
+    {
+      "kind": "workspace",
+      "name": "two",
+      "immediate": true,
+      "paintMs": 83
+    },
+    {
+      "kind": "workspace",
+      "name": "one",
+      "immediate": true,
+      "paintMs": 48
+    }
+  ],
+  "race": {
+    "expected": "b",
+    "actual": "b",
+    "server": "b"
+  },
+  "rollback": {
+    "optimistic": true,
+    "room": "b",
+    "error": "injected navigation failure",
+    "channelConnected": true
+  },
+  "rapid": {
+    "workspace": "one",
+    "room": "b",
+    "error": ""
+  },
+  "transcriptMatches": true,
+  "transcriptNodes": 7
+}
