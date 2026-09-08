@@ -19,3 +19,8 @@
 §Editor → generic config JSON surface + wildcard field hints; live editor acceptance OPEN.
 §Compaction → default180000 used tokens; exact-model patch→room precedence; whole-turn boundary, NOT mid-turn hard cap; native capacity/reserves unchanged. Schema→AUTO-COMPACT.md.
 §Deployment gate → main integration + Pascal reload + real changed-path summon/auto-compaction + owned-app UI acceptance pending; live app/global config untouched.
+
+§Landing 12:35+ → Pascal merge/push authorized; main26ca17b merged into room as e5b1260. Snapshot conflict resolved→retain main parallel facets + reasoning descriptors inside parallel agent facet.
+§Postmerge gate → checkPASS;349PASS/1FAIL across17 isolated files; sole failure same room-service stall5000ms timeout. Extra integration: select-room-race1, http-routes9, http-user-workspaces1, web-navigation17, build-source3, ordered-blocks4.
+§Navigation gate invocation → `bun test --preserve-symlinks test/web-navigation.test.ts` per test header; initial plain invocation module-resolution failure retained, corrected command17PASS.
+§Landing evidence → `.gaia/landing-proof/*.log`; source merge/push only; runtime/UI acceptance remains LIVE UNVERIFIED.
