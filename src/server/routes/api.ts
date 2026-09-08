@@ -1,3 +1,4 @@
+import { webTargetUrl } from "../../../web/shared/web-target.js";
 import { createReadStream } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve } from "node:path";
@@ -569,8 +570,8 @@ async function handleApiDictation(ctx: RouteContext): Promise<void> {
     json(response, 404, { error: "Not found" });
   }
 async function resolveOpenTarget(ctx: RouteContext, target: string, workspaceId?: string): Promise<string> {
-  if (/^https?:\/\//i.test(target)) return target;
-  if (/^www\./i.test(target)) return `https://${target}`;
+  const webUrl = webTargetUrl(target);
+  if (webUrl) return webUrl;
   const withoutFilePrefix = target.startsWith("file://") ? fileURLToPath(target) : target;
   const expanded = expandHome(withoutFilePrefix);
   const base = workspaceId ? (await ctx.daemon.workspaceForId(workspaceId))?.rootDir : undefined;

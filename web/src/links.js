@@ -1,5 +1,6 @@
 // Cmd/Ctrl+click opens paths and URLs from anywhere in the UI: web targets in
 // a new tab, local paths through the daemon's /api/open-target.
+import { webTargetUrl } from "../shared/web-target.js";
 import { api } from "./api.js";
 import { h } from "./dom.js";
 import { isNative } from "./native.js";
@@ -14,19 +15,9 @@ export function isOpenModifier(event) {
 }
 
 /** @param {string} target */
-function isWebTarget(target) {
-  return /^https?:\/\//i.test(target) || /^www\./i.test(target);
-}
-
-/** @param {string} target */
-function normalizeWebTarget(target) {
-  return /^www\./i.test(target) ? `https://${target}` : target;
-}
-
-/** @param {string} target */
 function looksOpenableTarget(target) {
   return (
-    isWebTarget(target) ||
+    webTargetUrl(target) !== null ||
     target.startsWith("/") ||
     target.startsWith("~/") ||
     target.startsWith("./") ||
@@ -49,7 +40,7 @@ function findLinkedSegments(text) {
   /** @type {LinkedSegment[]} */
   const segments = [];
   const pattern =
-    /(`[^`\n]+`|https?:\/\/[^\s<>"')\]}]+|www\.[^\s<>"')\]}]+|(?:~|\.{1,2}|\/)[^\s<>"')\]}]+|(?:[A-Za-z0-9_.-]+\/)+[^\s<>"')\]}]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)/gi;
+    /(`[^`\n]+`|https?:\/\/[^\s<>"')\]}]+|www\.[^\s<>"')\]}]+|(?:~|\.{1,2}|\/)[^\s<>"')\]}]+|(?<![A-Za-z0-9_@.\/-])(?:[A-Za-z0-9_.-]+\/)+[^\s<>"')\]}]+|(?<![A-Za-z0-9_@.\/-])[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,63}(?::\d+(?::\d+)?)?(?:[/?#][^\s<>"')\]}]*)?)/gi;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     const index = match.index ?? 0;
@@ -76,8 +67,8 @@ function findLinkedSegments(text) {
 /** @param {string} target */
 async function openLinkedTarget(target) {
   try {
-    if (isWebTarget(target)) {
-      const url = normalizeWebTarget(target);
+    const url = webTargetUrl(target);
+    if (url) {
       if (isNative()) {
         await api("/api/open-target", {
           method: "POST",
@@ -120,7 +111,7 @@ function linkToken(text, target) {
       onclick: (event) => {
         // Message URLs are ordinary links: a plain click opens them. Keep local
         // paths modifier-only so transcript text cannot unexpectedly open files.
-        if (!isOpenModifier(event) && !isWebTarget(target)) return;
+        if (!isOpenModifier(event) && webTargetUrl(target) === null) return;
         event.preventDefault();
         event.stopPropagation();
         if (openedOnMouseDown) {

@@ -117,3 +117,45 @@ test("native captures HTTP(S) anchors, including plain clicks, but leaves attach
   expect(attachmentClick.prevented).toBe(false);
   expect(requests).toHaveLength(1);
 });
+
+test("bare-domain Cmd clicks preserve the entire URL and open exactly once in browsers", () => {
+  delete globalThis.window.__TAURI__;
+  for (const target of ["kaufland.de", "paloptic.com/paloptic/", "example.io:8080/x?y=1#z", "kaufland.de?x=1#sale", "example.technology"]) {
+    opened.length = 0;
+    const root = LinkedText(`See (${target}).`);
+    const tokens = root.childNodes.filter((node) => node instanceof Element && node._class === "link-token");
+    expect(tokens).toHaveLength(1);
+    tokens[0].listeners.mousedown(mouseEvent("meta"));
+    tokens[0].listeners.click(mouseEvent("meta"));
+    expect(opened).toEqual([[`https://${target}`, "_blank", "noopener"]]);
+  }
+});
+
+test("native bare domains normalize before API dispatch; local paths remain modifier-only", () => {
+  const requests = [];
+  nativeFetch(requests);
+  for (const target of ["kaufland.de", "paloptic.com/paloptic/", "README.md", "web/src/links.js", "./kaufland.de"]) {
+    requests.length = 0;
+    const root = LinkedText(target);
+    const token = root.childNodes.find((node) => node instanceof Element && node._class === "link-token");
+    expect(token).toBeDefined();
+    const web = target === "kaufland.de" || target === "paloptic.com/paloptic/";
+    token.listeners.click(mouseEvent());
+    expect(requests).toHaveLength(web ? 1 : 0);
+    requests.length = 0;
+    token.listeners.mousedown(mouseEvent("meta"));
+    token.listeners.click(mouseEvent("meta"));
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(requests[0][1].body).target).toBe(web ? `https://${target}` : target);
+  }
+});
+
+test("email addresses do not acquire a browser-opening domain suffix", () => {
+  delete globalThis.window.__TAURI__;
+  opened.length = 0;
+  const root = LinkedText("Contact alice@kaufland.de.");
+  for (const token of root.childNodes.filter((node) => node instanceof Element && node._class === "link-token")) {
+    token.listeners.click(mouseEvent());
+  }
+  expect(opened).toEqual([]);
+});
