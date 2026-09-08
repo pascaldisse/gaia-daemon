@@ -12,7 +12,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 
-import { NodeCache, syncChildren } from "../web/src/reconcile.js";
+import { NodeCache, setAttr, setClass, setText, syncChildren } from "../web/src/reconcile.js";
+import { MElement } from "./helpers/mini-dom.js";
 
 // Minimal real DOM-node graph: insertBefore relocates (never clones) a node, so
 // carried-over instances keep identity — the property the whole fix rests on.
@@ -156,6 +157,45 @@ test("NodeCache.prune drops entries a render pass did not request (room removed)
   cache.prune();
   assert.equal(cache.map.size, 1);
   assert.equal(r1a, r1b); // surviving room kept its identity
+});
+
+test("NodeCache.component builds once and patches in place — the node instance is stable across updates", () => {
+  const cache = new NodeCache();
+  let builds = 0;
+  /** @param {{ label: string }} data */
+  const build = (data: { label: string }) => {
+    builds++;
+    const el = new MElement("button");
+    el.textContent = data.label;
+    return { node: el as unknown as Node, update: (d: { label: string }) => { (el as any).textContent = d.label; } };
+  };
+  const render = (label: string) => {
+    cache.begin();
+    const node = cache.component("row:r1", { label }, build as any) as unknown as MElement;
+    cache.prune();
+    return node;
+  };
+  const first = render("hello");
+  const second = render("world");
+  assert.equal(first, second, "same node instance — never rebuilt/detached");
+  assert.equal(builds, 1, "built exactly once");
+  assert.equal(second.textContent, "world", "patched in place to the latest data");
+});
+
+test("setClass / setText / setAttr write only the changed value; setAttr removes on null/false", () => {
+  const el = new MElement("button");
+  setClass(el as any, "a b");
+  assert.equal(el.className, "a b");
+  setText(el as any, "hi");
+  assert.equal(el.textContent, "hi");
+  setAttr(el as any, "title", "t1");
+  assert.equal(el.getAttribute("title"), "t1");
+  setAttr(el as any, "title", null);
+  assert.equal(el.hasAttribute("title"), false, "null removes the attribute");
+  setAttr(el as any, "style", "x:1");
+  assert.equal(el.getAttribute("style"), "x:1");
+  setAttr(el as any, "style", false);
+  assert.equal(el.hasAttribute("style"), false, "false removes the attribute");
 });
 
 test("end-to-end: an activity tick that toggles ONE room's running dot keeps every other row's node", () => {

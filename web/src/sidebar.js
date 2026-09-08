@@ -14,7 +14,7 @@ import { refreshAttention } from "./attention.js";
 import { openTab } from "./tabs.js";
 import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion, setError } from "./render.js";
-import { NodeCache, syncChildren } from "./reconcile.js";
+import { NodeCache, setAttr, setClass, setText, syncChildren } from "./reconcile.js";
 import { openSearch } from "./search.js";
 import { openSettings } from "./settings.js";
 import {
@@ -62,15 +62,62 @@ const DRAG_THRESHOLD = 6;
 const HOME_ZONE = { workspace: "workspaces", room: "rooms", favorite: "favorites" };
 
 // Keyed-node cache for the whole sidebar: section wrappers + list containers are
-// persistent (never detached), every row is reused while its version stamp is
-// unchanged. This is what keeps a hovered / focused / mid-press row alive across
-// the activity ticks that fire markDirty("sidebar") constantly — only rows whose
-// own visible/handler state changed rebuild. See reconcile.js.
+// persistent (never detached), every ROW is a component patched IN PLACE (the
+// button node is created once and never replaced). This is what keeps a hovered
+// / focused / mid-press row — and the active/streaming row whose lastActivity
+// ticks constantly — alive across the markDirty("sidebar") that fires every
+// activity tick: title / status / selection / activity updates mutate the same
+// node instead of detaching it. See reconcile.js.
 const cache = new NodeCache();
+
+// While the pointer is inside the sidebar, the room tree's ACTIVITY sort is
+// frozen to the order last rendered before the pointer entered — otherwise a
+// background room gaining activity re-sorts the list latest-first and slides the
+// row out from under a stationary pointer (parent live proof: hovered row stays
+// connected but its top jumps 259→284.75, so the click lands on the wrong room).
+// Statuses / titles / selection still update in place; only the ORDER is held.
+// Released on pointerleave; a workspace change or an explicit drag reorder
+// invalidates the frozen order so those always reflow correctly.
+let sidebarHoverHold = false;
+/** @type {{ workspaceId: string|null, ids: string[] }|null} */
+let frozenRoomOrder = null;
+
+/** @param {HTMLElement} slot A fixed-width icon slot; sets its single glyph child in place.
+ *  @param {{ cls: string, title?: string, text?: string }|null} spec */
+function setSlot(slot, spec) {
+  const sig = spec ? `${spec.cls}|${spec.title ?? ""}|${spec.text ?? ""}` : "";
+  if (slot.dataset.sig === sig) return; // unchanged — don't touch the DOM
+  slot.dataset.sig = sig;
+  slot.replaceChildren();
+  if (spec) slot.append(h("span", { class: spec.cls, title: spec.title ?? null, ...(spec.text ? { text: spec.text } : {}) }));
+}
+
+/** @param {HTMLElement} small The row's trailing <small>; sets imported-date | linked path in place.
+ *  @param {string} path @param {string|undefined} [imported] */
+function setPathSmall(small, path, imported) {
+  const sig = imported ? `i:${imported.slice(0, 10)}` : `p:${path}`;
+  if (small.dataset.sig === sig) return;
+  small.dataset.sig = sig;
+  small.replaceChildren(imported ? document.createTextNode(imported.slice(0, 10)) : PathText(path));
+}
 
 function renderSidebar() {
   const nav = $("#sidebar");
   if (!nav) return;
+  // Freeze the activity sort while the pointer is over the sidebar; release +
+  // reflow the moment it leaves (see frozenRoomOrder). Bound once on the
+  // persistent nav node.
+  if (!nav.dataset.hoverBound) {
+    nav.dataset.hoverBound = "1";
+    nav.addEventListener("pointerenter", () => {
+      sidebarHoverHold = true;
+    });
+    nav.addEventListener("pointerleave", () => {
+      if (!sidebarHoverHold) return;
+      sidebarHoverHold = false;
+      markDirty("sidebar");
+    });
+  }
   if (dragActive) return; // a live drag owns the list DOM — don't rebuild it
   const scrollTop = nav.scrollTop;
   cache.begin();
@@ -191,35 +238,12 @@ function localTime(timestamp) {
     ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
     : "";
 }
-/**
- * Running/unread-dot + optional incognito mark, each in its own fixed-width
- * slot so a row's name always starts at the same x whether or not an icon is
- * present — the icon appears/vanishes INSIDE its slot, the slot itself never
- * does. Pass `incognito` (room rows only; omit for workspace/favorite rows)
- * to render a second slot the same way. No favorite star here (removed
- * 2026-09 — favorite status now shows by an item's PRESENCE in the Favorites
- * section instead, Finder-style, not a per-row glyph).
- * @param {{running?: boolean, unread?: boolean, incognito?: boolean, runningTitle?: string, unreadTitle?: string}} opts
- */
-function StatusIcons({ running, unread, incognito, runningTitle = "agent running", unreadTitle = "unread messages" }) {
-  return [
-    h(
-      "span",
-      { class: "room-icon-slot" },
-      running
-        ? h("span", { class: "room-dot running", title: runningTitle })
-        : unread
-          // v2-parity `.unread-dot` class rides alongside the existing
-          // `.room-dot.unread` — same element, same behavior, native.css
-          // adds the v2 hook without touching styles.css's own rule.
-          ? h("span", { class: "room-dot unread unread-dot", title: unreadTitle })
-          : null,
-    ),
-    incognito === undefined
-      ? null
-      : h("span", { class: "room-icon-slot" }, incognito ? h("span", { class: "room-incognito", title: "incognito — no memory", text: UI.incognito }) : null),
-  ];
-}
+// Row status glyphs (running dot / unread dot / incognito mark) are now written
+// in place per fixed-width slot by setSlot() in each row's update() — the icon
+// appears/vanishes INSIDE its slot, the slot itself never does, and the row
+// button node is never detached. The old StatusIcons() builder was retired with
+// the move to in-place component rows. (Favorite status shows by an item's
+// PRESENCE in the Favorites section, Finder-style, not a per-row glyph.)
 
 /** Cmd/Ctrl-click follows browser tab semantics on every platform.
  * @param {MouseEvent|PointerEvent} event */
@@ -289,20 +313,22 @@ function FavoriteRow(entry) {
   const path = entry.kind === "workspace" ? entry.workspace.path : entry.room.path;
   const active = entry.kind === "workspace" ? entry.workspace.id === state.snapshot?.workspace.id : entry.room.id === state.snapshot?.room.id;
   const act = entry.kind === "workspace" ? workspaceActivity(entry.workspace.id) : { running: entry.room.running, unread: roomUnread(entry.room) };
-  // Version = every field the row RENDERS or a handler READS, so an unchanged
-  // version reuses the node (identity kept) and any change rebuilds it with
-  // fresh handlers (never a stale closure). lastActivity/isInitialized feed
-  // handlers (markRoomRead / loadWorkspace) though they aren't drawn.
-  const lastActivity = entry.kind === "room" ? (entry.room.lastActivity ?? 0) : 0;
-  const isInit = entry.kind === "workspace" ? entry.workspace.isInitialized : true;
-  const version = [entry.kind, name, path, active, act.running, act.unread, isInit, lastActivity, Boolean(snapshot)].join("|");
-  return cache.keyed(`fav:${favKey(entry.kind, id)}`, version, () => buildFavoriteRow(entry, id, snapshot, name, path, active, act));
+  // In-place component: the button node persists across every update; handlers
+  // read the LATEST entry/snapshot via the mutable ctx below, so a click after
+  // an activity/title update still acts on current data (no rebuild, no detach).
+  /** @type {FavRowData} */
+  const data = { entry, id, snapshot, name, path, active, act };
+  return cache.component(`fav:${favKey(entry.kind, id)}`, data, buildFavoriteRow);
 }
 
-/** @param {FavoriteEntry} entry @param {string} id @param {import("./types.js").Snapshot|null} snapshot @param {string} name @param {string} path @param {boolean} active @param {{running?: boolean, unread?: boolean}} act @returns {HTMLElement} */
-function buildFavoriteRow(entry, id, snapshot, name, path, active, act) {
+/** @typedef {{ entry: FavoriteEntry, id: string, snapshot: import("./types.js").Snapshot|null, name: string, path: string, active: boolean, act: {running?: boolean, unread?: boolean} }} FavRowData */
+
+/** @param {FavRowData} initial @returns {{ node: Node, update: (data: FavRowData) => void }} */
+function buildFavoriteRow(initial) {
+  const ctx = { d: initial };
   /** @param {MouseEvent|PointerEvent} [event] */
   const onClick = (event) => {
+    const { entry, snapshot } = ctx.d;
     if (entry.kind === "workspace") {
       state.sidebarFocus = { kind: "workspace", id: entry.workspace.id };
       if (entry.workspace.isInitialized) void loadWorkspace(entry.workspace.id);
@@ -318,6 +344,7 @@ function buildFavoriteRow(entry, id, snapshot, name, path, active, act) {
   };
   /** @param {MouseEvent} event */
   const onAuxClick = (event) => {
+    const { entry } = ctx.d;
     if (entry.kind !== "room" || event.button !== 1) return;
     const snapshot = state.snapshot;
     if (!snapshot) return;
@@ -328,30 +355,38 @@ function buildFavoriteRow(entry, id, snapshot, name, path, active, act) {
     markDirty("sidebar");
     closeSidebarOverlay();
   };
-  return h(
+  const slot = h("span", { class: "room-icon-slot" });
+  const nameSpan = h("span", { class: "room-name" });
+  const pathSmall = h("small", {});
+  const button = h(
     "button",
     {
-      class: `nav-item fav-item ${active ? "active" : ""}`,
-      title: path,
-      onpointerdown: (/** @type {PointerEvent} */ event) => beginDrag(event, "favorite", id, entry.kind),
+      class: "nav-item fav-item",
+      onpointerdown: (/** @type {PointerEvent} */ event) => beginDrag(event, "favorite", ctx.d.id, ctx.d.entry.kind),
       onpointermove: (/** @type {PointerEvent} */ event) => moveDrag(event),
       onpointerup: (/** @type {PointerEvent} */ event) => endDrag(event, onClick),
       onpointercancel: (/** @type {PointerEvent} */ event) => cancelDrag(event),
       onauxclick: onAuxClick,
       oncontextmenu: (/** @type {MouseEvent} */ event) => {
         event.preventDefault();
-        state.favoriteContextMenu = { kind: entry.kind, id, x: event.clientX, y: event.clientY };
+        state.favoriteContextMenu = { kind: ctx.d.entry.kind, id: ctx.d.id, x: event.clientX, y: event.clientY };
         markDirty("sidebar");
       },
     },
-    h(
-      "span",
-      { class: "room-label" },
-      ...StatusIcons({ running: act.running, unread: act.unread }),
-      h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: name }),
-    ),
-    h("small", {}, PathText(path)),
+    h("span", { class: "room-label" }, slot, nameSpan),
+    pathSmall,
   );
+  /** @param {FavRowData} d */
+  const update = (d) => {
+    ctx.d = d;
+    setClass(button, `nav-item fav-item ${d.active ? "active" : ""}`);
+    setAttr(button, "title", d.path);
+    setSlot(slot, d.act.running ? { cls: "room-dot running", title: "agent running" } : d.act.unread ? { cls: "room-dot unread unread-dot", title: "unread messages" } : null);
+    setClass(nameSpan, d.act.unread && !d.act.running ? "room-name unread" : "room-name");
+    setText(nameSpan, d.name);
+    setPathSmall(pathSmall, d.path);
+  };
+  return { node: button, update };
 }
 /** @returns {Node|null} */
 function FavoriteContextMenu() {
@@ -418,23 +453,30 @@ function WorkspaceRow(workspace, currentId, focus) {
   const act = workspaceActivity(workspace.id);
   const isCurrent = workspace.id === currentId;
   const focused = focus?.kind === "workspace" && focus.id === workspace.id;
-  const version = [workspace.name, workspace.path, isCurrent, workspace.isInitialized, focused, act.running, act.unread].join("|");
-  return cache.keyed(`ws:${workspace.id}`, version, () => buildWorkspaceRow(workspace, isCurrent, focused, act));
+  /** @type {WsRowData} */
+  const data = { workspace, isCurrent, focused, act };
+  return cache.component(`ws:${workspace.id}`, data, buildWorkspaceRow);
 }
 
-/** @param {WorkspaceRecord} workspace @param {boolean} isCurrent @param {boolean} focused @param {{running?: boolean, unread?: boolean}} act @returns {HTMLElement} */
-function buildWorkspaceRow(workspace, isCurrent, focused, act) {
+/** @typedef {{ workspace: WorkspaceRecord, isCurrent: boolean, focused: boolean, act: {running?: boolean, unread?: boolean} }} WsRowData */
+
+/** @param {WsRowData} initial @returns {{ node: Node, update: (data: WsRowData) => void }} */
+function buildWorkspaceRow(initial) {
+  const ctx = { d: initial };
   const onClick = () => {
+    const { workspace } = ctx.d;
     state.sidebarFocus = { kind: "workspace", id: workspace.id };
     if (workspace.isInitialized) void loadWorkspace(workspace.id);
     else setError(`Missing .gaia workspace: ${workspace.path}`);
     markDirty("sidebar");
   };
-  return h(
+  const slot = h("span", { class: "room-icon-slot" });
+  const nameSpan = h("span", { class: "room-name" });
+  const pathSmall = h("small", {});
+  const button = h(
     "button",
     {
-      class: `nav-item ws-item ${isCurrent ? "active" : ""} ${workspace.isInitialized ? "" : "muted"} ${focused ? "focused" : ""}`,
-      title: workspace.path,
+      class: "nav-item ws-item",
       // The muted state means its .gaia is missing. Removing a workspace is
       // right-click -> "Remove workspace" ONLY — never the ⌘⌫/Del chord
       // (that's rooms only, see keys.js), so an accidental keypress can't
@@ -443,29 +485,30 @@ function buildWorkspaceRow(workspace, isCurrent, focused, act) {
       // — same split as the tab strip, so a real click and a reorder drag
       // never both fire off one gesture. Dragged past the workspaces
       // section into Favorites pins it there (see endDrag/applyDrop).
-      onpointerdown: (/** @type {PointerEvent} */ event) => beginDrag(event, "workspace", workspace.id),
+      onpointerdown: (/** @type {PointerEvent} */ event) => beginDrag(event, "workspace", ctx.d.workspace.id),
       onpointermove: (/** @type {PointerEvent} */ event) => moveDrag(event),
       onpointerup: (/** @type {PointerEvent} */ event) => endDrag(event, onClick),
       onpointercancel: (/** @type {PointerEvent} */ event) => cancelDrag(event),
       oncontextmenu: (/** @type {MouseEvent} */ event) => {
         event.preventDefault();
-        state.workspaceContextMenu = { workspaceId: workspace.id, x: event.clientX, y: event.clientY };
+        state.workspaceContextMenu = { workspaceId: ctx.d.workspace.id, x: event.clientX, y: event.clientY };
         markDirty("sidebar");
       },
     },
-    h(
-      "span",
-      { class: "room-label" },
-      ...StatusIcons({
-        running: act.running,
-        unread: act.unread,
-        runningTitle: "agent running in this workspace",
-        unreadTitle: "unread messages in this workspace",
-      }),
-      h("span", { class: act.unread && !act.running ? "room-name unread" : "room-name", text: workspace.name }),
-    ),
-    h("small", {}, PathText(workspace.path)),
+    h("span", { class: "room-label" }, slot, nameSpan),
+    pathSmall,
   );
+  /** @param {WsRowData} d */
+  const update = (d) => {
+    ctx.d = d;
+    setClass(button, `nav-item ws-item ${d.isCurrent ? "active" : ""} ${d.workspace.isInitialized ? "" : "muted"} ${d.focused ? "focused" : ""}`);
+    setAttr(button, "title", d.workspace.path);
+    setSlot(slot, d.act.running ? { cls: "room-dot running", title: "agent running in this workspace" } : d.act.unread ? { cls: "room-dot unread unread-dot", title: "unread messages in this workspace" } : null);
+    setClass(nameSpan, d.act.unread && !d.act.running ? "room-name unread" : "room-name");
+    setText(nameSpan, d.workspace.name);
+    setPathSmall(pathSmall, d.workspace.path);
+  };
+  return { node: button, update };
 }
 
 registerRegion("sidebar", renderSidebar);
@@ -499,7 +542,7 @@ function RoomTree() {
   // Rooms ARE chats: the daemon lists them latest-activity first (or the
   // user's own drag order — see reorderRooms), so render a chunk at a time —
   // a 100-chat history import must not flood the sidebar.
-  const top = childrenOf.get(null) ?? [];
+  const top = holdRoomOrder(childrenOf.get(null) ?? []);
   const filteredTop = state.roomsFavoritesOnly ? top.filter((room) => room.favorite || hasFavoriteDescendant(room, childrenOf)) : top;
   const visible = filteredTop.slice(0, state.roomsShown);
   const current = top.find((room) => room.isCurrent);
@@ -524,6 +567,36 @@ function RoomTree() {
   }
   syncChildren(container, nodes);
   return container;
+}
+
+/**
+ * The top-level room display order, with the daemon's activity sort FROZEN while
+ * the pointer is over the sidebar so a background room gaining activity can't
+ * slide the row out from under the pointer. Frozen order = the order last
+ * rendered before the pointer entered; rooms that appeared since are appended in
+ * their natural order, rooms that vanished are dropped. When not held, the
+ * frozen order is kept refreshed so freezing always starts from the latest. A
+ * workspace change (different id) or an explicit drag reorder (which nulls
+ * frozenRoomOrder in applyDrop) reflows immediately.
+ * @param {RoomSummary[]} natural @returns {RoomSummary[]}
+ */
+function holdRoomOrder(natural) {
+  const workspaceId = state.snapshot?.workspace.id ?? null;
+  const naturalIds = natural.map((room) => room.id);
+  if (!frozenRoomOrder || frozenRoomOrder.workspaceId !== workspaceId) {
+    frozenRoomOrder = { workspaceId, ids: naturalIds };
+  } else if (!sidebarHoverHold) {
+    frozenRoomOrder.ids = naturalIds; // keep fresh until the pointer freezes it
+  }
+  if (!sidebarHoverHold) return natural;
+  const present = new Set(naturalIds);
+  const kept = frozenRoomOrder.ids.filter((id) => present.has(id));
+  const keptSet = new Set(kept);
+  const appended = naturalIds.filter((id) => !keptSet.has(id));
+  const mergedIds = [...kept, ...appended];
+  frozenRoomOrder.ids = mergedIds; // appended rooms keep their held slot next tick
+  const byId = new Map(natural.map((room) => [room.id, room]));
+  return mergedIds.map((id) => byId.get(id)).filter((/** @type {RoomSummary|undefined} */ room) => room !== undefined);
 }
 
 /**
@@ -614,6 +687,11 @@ function RoomNode(room, childrenOf, depth) {
 }
 
 /**
+ * The `.room-row` (row div holding the button + subdot + twisty). Built ONCE per
+ * room id and patched IN PLACE on every later render — the button node (and its
+ * native focus, :hover, pointer capture) is never replaced across title /
+ * status / selection / activity updates. Handlers read the latest data via the
+ * mutable ctx, so a click after an update acts on the current room/snapshot.
  * @param {RoomSummary} room @param {number} depth @param {boolean} expanded
  * @param {number} kidCount @param {boolean} subRunning @returns {Node}
  */
@@ -624,44 +702,20 @@ function RoomRow(room, depth, expanded, kidCount, subRunning) {
   const label = room.title ?? room.id;
   const since = localTime(room.runningSince);
   const unread = roomUnread(room);
-  // Every field the row renders OR a handler reads (lastActivity feeds
-  // selectSidebarRoom's markRoomRead though it isn't drawn). Unchanged → reuse
-  // node (identity kept); changed → rebuild with fresh handlers.
-  const version = [
-    depth,
-    room.isCurrent,
-    focused,
-    room.running,
-    since,
-    room.incognito,
-    unread,
-    label,
-    room.path ?? "",
-    room.imported ?? "",
-    kidCount,
-    expanded,
-    subRunning,
-    room.lastActivity ?? 0,
-    Boolean(snapshot),
-  ].join("|");
-  return cache.keyed(`room-row:${room.id}`, version, () => buildRoomRow(room, depth, expanded, kidCount, subRunning, snapshot, focused, label, since, unread));
+  const runningTitle = room.running && since ? `running since ${since}` : "agent running";
+  /** @type {RoomRowData} */
+  const data = { room, depth, isTop: depth === 0, expanded, kidCount, subRunning, snapshot, focused, label, since, unread, runningTitle };
+  return cache.component(`room-row:${room.id}`, data, buildRoomRow);
 }
 
-/**
- * @param {RoomSummary} room @param {number} depth @param {boolean} expanded
- * @param {number} kidCount @param {boolean} subRunning
- * @param {import("./types.js").Snapshot|null} snapshot @param {boolean} focused
- * @param {string} label @param {string} since @param {boolean} unread
- * @returns {HTMLElement}
- */
-function buildRoomRow(room, depth, expanded, kidCount, subRunning, snapshot, focused, label, since, unread) {
-  // Only TOP-LEVEL rooms are individually draggable (reorder among siblings,
-  // or drag into Favorites) — same scope as the server's reorderRooms (nested
-  // summon children keep their parent-relative position, never reordered).
-  const isTop = depth === 0;
-  const runningTitle = room.running && since ? `running since ${since}` : "agent running";
+/** @typedef {{ room: RoomSummary, depth: number, isTop: boolean, expanded: boolean, kidCount: number, subRunning: boolean, snapshot: import("./types.js").Snapshot|null, focused: boolean, label: string, since: string, unread: boolean, runningTitle: string }} RoomRowData */
+
+/** @param {RoomRowData} initial @returns {{ node: Node, update: (data: RoomRowData) => void }} */
+function buildRoomRow(initial) {
+  const ctx = { d: initial };
   /** @param {MouseEvent} event */
   const toggle = (event) => {
+    const { room, expanded } = ctx.d;
     event.stopPropagation();
     if (expanded) state.expandedRooms.delete(room.id);
     else state.expandedRooms.add(room.id);
@@ -669,6 +723,7 @@ function buildRoomRow(room, depth, expanded, kidCount, subRunning, snapshot, foc
   };
   /** @param {MouseEvent|PointerEvent} [event] */
   const onClick = (event) => {
+    const { snapshot, room } = ctx.d;
     if (!snapshot) return;
     state.roomContextMenu = null;
     state.sidebarFocus = { kind: "room", id: room.id };
@@ -678,6 +733,7 @@ function buildRoomRow(room, depth, expanded, kidCount, subRunning, snapshot, foc
   };
   /** @param {MouseEvent} event */
   const onAuxClick = (event) => {
+    const { snapshot, room } = ctx.d;
     if (event.button !== 1 || !snapshot) return;
     event.preventDefault();
     state.roomContextMenu = null;
@@ -686,67 +742,83 @@ function buildRoomRow(room, depth, expanded, kidCount, subRunning, snapshot, foc
     markDirty("sidebar");
     closeSidebarOverlay();
   };
-  return h(
-    "div",
-    { class: `room-row ${room.isCurrent ? "active" : ""}`, style: depth ? `padding-left:${depth * 14}px` : null },
-      // The room button leads so every label starts at the same left edge; the
-      // twisty trails on the right and never indents the names (a leaf keeps the
-      // right gutter aligned for childless rooms).
-      h(
-        "button",
-        {
-          class: `nav-item room-item ${isTop ? "room-row-top" : ""} ${room.isCurrent ? "active" : ""} ${focused ? "focused" : ""}`,
-          title: room.running && since ? runningTitle : `${label} — ${room.path}`,
-          // Top-level rows use the same pointer press/drag split as workspace
-          // rows (a press that never crosses the drag threshold = a click);
-          // nested rows (not draggable) keep a plain click. Clicking also makes
-          // this the delete target (the ⌘⌫ / Del chord acts on it).
-          ...(isTop
-            ? {
-                onpointerdown: !snapshot ? null : (/** @type {PointerEvent} */ event) => beginDrag(event, "room", room.id),
-                onpointermove: !snapshot ? null : (/** @type {PointerEvent} */ event) => moveDrag(event),
-                onpointerup: !snapshot ? null : (/** @type {PointerEvent} */ event) => endDrag(event, onClick),
-                onpointercancel: !snapshot ? null : (/** @type {PointerEvent} */ event) => cancelDrag(event),
-              }
-            : { onclick: !snapshot ? null : onClick }),
-
-          onauxclick: !snapshot ? null : onAuxClick,
-      oncontextmenu: snapshot
-            ? (/** @type {MouseEvent} */ event) => {
-                event.preventDefault();
-                state.sidebarFocus = { kind: "room", id: room.id };
-                state.roomContextMenu = { roomId: room.id, x: event.clientX, y: event.clientY };
-                markDirty("sidebar");
-              }
-            : undefined,
-          ondblclick: !snapshot
-            ? null
-            : (/** @type {MouseEvent} */ event) => {
-                event.preventDefault();
-                void renameRoom(room.id, label);
-              },
-        },
-        h(
-          "span",
-          { class: "room-label" },
-          ...StatusIcons({ running: room.running, unread: roomUnread(room), incognito: room.incognito, runningTitle }),
-          h("span", { class: roomUnread(room) && !room.running ? "room-name unread" : "room-name", text: label }),
-          depth && room.running && since ? h("small", { class: "room-running-since", text: `· since ${since}` }) : null,
-        ),
-        h("small", {}, room.imported ? document.createTextNode(room.imported.slice(0, 10)) : PathText(room.path)),
-      ),
-      // Collapsed-subtree RUNNING status rolls up into the right gutter (distinct
-      // from the room's own left dot) so a live summon sub-room is visible
-      // without expanding. Unread does not roll up here (see descendantActivity):
-      // a finished summon's own row still shows its dot once expanded, but the
-      // parent's single unread mark comes only from its own new activity.
-      subRunning ? h("span", { class: "room-subdot running", title: "a subroom has an agent running" }) : null,
-      // No per-row delete button: deletion is the OS delete chord (⌘⌫ on macOS,
-      // Del elsewhere) acting on the focused room — see keys.js.
-      kidCount > 0
-        ? h("button", { class: `room-twisty ${expanded ? "open" : ""}`, title: expanded ? "collapse" : "expand", onclick: toggle, text: expanded ? "▾" : "▸" })
-        : h("span", { class: "room-twisty leaf" }),
+  const slot1 = h("span", { class: "room-icon-slot" });
+  const slot2 = h("span", { class: "room-icon-slot" });
+  const nameSpan = h("span", { class: "room-name" });
+  const sinceSmall = h("small", { class: "room-running-since" });
+  const labelWrap = h("span", { class: "room-label" });
+  const pathSmall = h("small", {});
+  // Every handler is bound once and self-guards on the latest data (isTop /
+  // snapshot), so depth/top-level changes need no rebind. currentTarget stays
+  // this button (listeners live on it), so beginDrag captures the right node.
+  const button = h(
+    "button",
+    {
+      class: "nav-item room-item",
+      onpointerdown: (/** @type {PointerEvent} */ event) => {
+        if (ctx.d.isTop && ctx.d.snapshot) beginDrag(event, "room", ctx.d.room.id);
+      },
+      onpointermove: (/** @type {PointerEvent} */ event) => {
+        if (ctx.d.isTop && ctx.d.snapshot) moveDrag(event);
+      },
+      onpointerup: (/** @type {PointerEvent} */ event) => {
+        if (ctx.d.isTop && ctx.d.snapshot) endDrag(event, onClick);
+      },
+      onpointercancel: (/** @type {PointerEvent} */ event) => {
+        if (ctx.d.isTop && ctx.d.snapshot) cancelDrag(event);
+      },
+      onclick: (/** @type {MouseEvent} */ event) => {
+        if (!ctx.d.isTop && ctx.d.snapshot) onClick(event);
+      },
+      onauxclick: (/** @type {MouseEvent} */ event) => {
+        if (ctx.d.snapshot) onAuxClick(event);
+      },
+      oncontextmenu: (/** @type {MouseEvent} */ event) => {
+        if (!ctx.d.snapshot) return;
+        event.preventDefault();
+        state.sidebarFocus = { kind: "room", id: ctx.d.room.id };
+        state.roomContextMenu = { roomId: ctx.d.room.id, x: event.clientX, y: event.clientY };
+        markDirty("sidebar");
+      },
+      ondblclick: (/** @type {MouseEvent} */ event) => {
+        if (!ctx.d.snapshot) return;
+        event.preventDefault();
+        void renameRoom(ctx.d.room.id, ctx.d.label);
+      },
+    },
+    labelWrap,
+    pathSmall,
   );
+  const subdot = h("span", { class: "room-subdot running", title: "a subroom has an agent running" });
+  const twistyBtn = h("button", { class: "room-twisty", onclick: toggle });
+  const twistyLeaf = h("span", { class: "room-twisty leaf" });
+  const row = h("div", { class: "room-row" });
+  /** @param {RoomRowData} d */
+  const update = (d) => {
+    ctx.d = d;
+    setClass(row, `room-row ${d.room.isCurrent ? "active" : ""}`);
+    setAttr(row, "style", d.depth ? `padding-left:${d.depth * 14}px` : null);
+    setClass(button, `nav-item room-item ${d.isTop ? "room-row-top" : ""} ${d.room.isCurrent ? "active" : ""} ${d.focused ? "focused" : ""}`);
+    setAttr(button, "title", d.room.running && d.since ? d.runningTitle : `${d.label} — ${d.room.path}`);
+    setSlot(slot1, d.room.running ? { cls: "room-dot running", title: d.runningTitle } : d.unread ? { cls: "room-dot unread unread-dot", title: "unread messages" } : null);
+    setSlot(slot2, d.room.incognito ? { cls: "room-incognito", title: "incognito — no memory", text: UI.incognito } : null);
+    setClass(nameSpan, d.unread && !d.room.running ? "room-name unread" : "room-name");
+    setText(nameSpan, d.label);
+    const showSince = Boolean(d.depth && d.room.running && d.since);
+    if (showSince) setText(sinceSmall, `· since ${d.since}`);
+    // Label wrap: two fixed-width icon slots, the name, and (nested + running)
+    // the since stamp — reconciled so the stable slots/name are never detached.
+    syncChildren(labelWrap, [slot1, slot2, nameSpan, ...(showSince ? [sinceSmall] : [])]);
+    setPathSmall(pathSmall, d.room.path, d.room.imported);
+    setClass(twistyBtn, `room-twisty ${d.expanded ? "open" : ""}`);
+    setAttr(twistyBtn, "title", d.expanded ? "collapse" : "expand");
+    setText(twistyBtn, d.expanded ? "▾" : "▸");
+    // Row children: button (stable, holds focus) + optional subroom-running dot
+    // + the twisty (button when it has kids, leaf span otherwise). syncChildren
+    // never moves the button — only toggles the trailing nodes.
+    syncChildren(row, [button, ...(d.subRunning ? [subdot] : []), d.kidCount > 0 ? twistyBtn : twistyLeaf]);
+  };
+  return { node: row, update };
 }
 
 /** @returns {Node|null} */
@@ -1022,6 +1094,9 @@ function applyDrop(d) {
     const topSet = new Set(ids);
     const reorderedTop = ids.map((id) => byId.get(id)).filter((room) => room !== undefined);
     state.snapshot.rooms = [...reorderedTop, ...state.snapshot.rooms.filter((room) => !topSet.has(room.id))];
+    // An explicit drag reorder is the new authority — drop the hover freeze so
+    // the held order can't fight the order the user just set.
+    frozenRoomOrder = null;
     void reorderRooms(workspaceId, ids);
   }
 }
