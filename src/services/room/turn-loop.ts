@@ -47,14 +47,14 @@ export class RoomTurnLoop {
           eventId = newRoomEventId();
           await this.service.room.assignQueuedEventId(queued.taskId, eventId);
         }
-        userEvent = await this.service.room.addUserMessage(text, task.targets, channel, attachments, eventId, options.human);
+        userEvent = await this.service.room.addUserMessage(options.displayText ?? text, task.targets, channel, attachments, eventId, options.human);
       }
       if (userEvent) {
         this.service.emit({ type: "room-event", workspaceId: this.service.workspaceId, roomId: this.service.roomId, event: userEvent });
         // Auto-named rooms take their display title from their first human
         // message (never from a name dialog) — the Claude Code / Codex pattern.
         // Agent-dialogue turns don't count as the human naming the room.
-        if (!options.fromAgentDialogue) await this.service.maybeAutoTitle(text);
+        if (!options.fromAgentDialogue) await this.service.maybeAutoTitle(options.displayText ?? text);
       }
       // Authoritative refresh right after the commit: this snapshot has the
       // queued ghost dropped AND the committed user event present, so it
@@ -203,6 +203,8 @@ export class RoomTurnLoop {
           id: task.id,
           eventId,
           prompt: text,
+          ...(options.projectInit ? { projectInit: true } : {}),
+          ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(attachments ? { attachments } : {}),
           targets: [...remaining],
           agentId: target,
@@ -474,6 +476,8 @@ export class RoomTurnLoop {
           ? {
               id: task.id,
               prompt: text,
+              ...(options.projectInit ? { projectInit: true } : {}),
+              ...(options.displayText ? { displayText: options.displayText } : {}),
               ...(attachments ? { attachments } : {}),
               targets: rest,
               agentId: rest[0],
@@ -544,7 +548,10 @@ export class RoomTurnLoop {
       if (partialReply && options.goalStartedAt) await this.service.maybeContinueGoal(target, partialReply, options.goalStartedAt);
     }
 
-    if (!this.service.taskCancelled(task)) this.service.settleTask(task, "complete");
+    if (!this.service.taskCancelled(task)) {
+  if (options.projectInit) for (const runtime of Object.values(this.service.runtimes)) runtime.refreshContext?.(this.service.roomId);
+  this.service.settleTask(task, "complete");
+}
   }
 
   /** The ctx chip's usage figure for the snapshot. Live usage wins, but the

@@ -8,6 +8,8 @@ test("parseCommand: plain text is a message", () => {
 
 test("parseCommand: known commands and arguments", () => {
   assert.deepEqual(parseCommand("/help"), { type: "help" });
+assert.deepEqual(parseCommand("/init"), { type: "init" });
+assert.ok(SLASH_COMMANDS.some((command) => command.name === "init"), "/init is advertised to the command palette");
   assert.deepEqual(parseCommand("/agents"), { type: "agents" });
   assert.ok(SLASH_COMMANDS.some((command) => command.name === "design"), "/design is advertised to the command palette");
   assert.deepEqual(parseCommand("/roles @gaia"), { type: "roles", agent: "gaia" });

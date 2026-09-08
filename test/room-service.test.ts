@@ -999,6 +999,21 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
 });
 
+test("/init queues a model turn, preserves its display text, and refreshes all runtimes", async () => {
+  const { service, root, runtimes } = await makeService();
+  const task = await service.sendMessage("/init");
+  await service.waitForIdle();
+  assert.equal(task.status, "complete");
+  assert.deepEqual([...runtimes.values()].map((runtime) => runtime.refreshes), [1, 1]);
+
+  const room = await RoomHandle.open(root, "default");
+  const { events } = await room.eventsFrom(0);
+  assert.equal(events[0]?.author, "user");
+  assert.equal(events[0]?.text, "/init", "internal model prompt never leaks into the transcript");
+  assert.equal((await room.state()).queue, undefined);
+  assert.equal((await room.state()).pendingTurn, undefined);
+});
+
 test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {
   const { service, root, runtimes } = await makeService();
   await service.sendMessage("keep this history");

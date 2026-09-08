@@ -3,6 +3,7 @@ import type { RenderCap } from "../../domain/render-cap.js";
 import { newRoomEventId, type RoomHandle } from "../../domain/rooms.js";
 import { findHarness, harnessIdFor } from "../../harness/spec.js";
 import { parseCommand, planMentionRoute, type SlashCommand } from "../commands.js";
+import { PROJECT_INIT_PROMPT } from "../project-init.js";
 import type { PluginResult } from "../plugins.js";
 import type { SendMessageOptions } from "../room-service.js";
 
@@ -52,6 +53,13 @@ export class RoomQueue {
     await this.service.init();
 
     let command: RoomCommand = parseCommand(text);
+// `/init` is a normal durable agent turn: its model prompt is expanded, while the transcript preserves the command.
+if (command.type === "init") {
+  const target = await this.service.nativeCommandTarget();
+  command = { type: "message", text: PROJECT_INIT_PROMPT };
+  options = { ...options, targets: [target], queue: true, projectInit: true, displayText: "/init" };
+  text = PROJECT_INIT_PROMPT;
+}
     // Harness-native passthrough: an unrecognized `/command` becomes a command
     // TURN to the active agent when that agent has CHECKED that command as a
     // skill (claude builtins like deep-research) and its harness can run them.
@@ -269,6 +277,8 @@ export class RoomQueue {
       ...(options.channel === "voice" ? { channel: options.channel } : {}),
       ...(options.attachments?.length ? { attachments: options.attachments } : {}),
       ...(options.nativeCommand ? { nativeCommand: true } : {}),
+...(options.projectInit ? { projectInit: true } : {}),
+...(options.displayText ? { displayText: options.displayText } : {}),
       ...(options.pluginMessageTurn ? { pluginMessageTurn: true } : {}),
       ...(recordedEventId ? { eventId: recordedEventId } : {}),
       ...(recorded ? { recorded: true } : {}),
@@ -394,6 +404,8 @@ export class RoomQueue {
           ...(next.goalStartedAt ? { goalStartedAt: next.goalStartedAt } : {}),
           ...(next.recorded ? { recordUserMessage: false } : {}),
           ...(next.nativeCommand ? { nativeCommand: true } : {}),
+          ...(next.projectInit ? { projectInit: true } : {}),
+          ...(next.displayText ? { displayText: next.displayText } : {}),
           // Retried prompts are already on the transcript from the original
           // run — never re-record them. `queued: next` above carries retry
           // metadata through to runAgentTask's options.
@@ -475,6 +487,8 @@ export class RoomQueue {
         ...(pending.channel ? { channel: pending.channel } : {}),
         ...(pending.attachments?.length ? { attachments: pending.attachments } : {}),
         ...(pending.goalStartedAt ? { goalStartedAt: pending.goalStartedAt } : {}),
+        ...(pending.projectInit ? { projectInit: true } : {}),
+        ...(pending.displayText ? { displayText: pending.displayText } : {}),
       });
     }
   }

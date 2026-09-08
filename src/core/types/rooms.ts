@@ -13,6 +13,10 @@ export interface PendingTurn {
   eventId?: string;
   /** The prompt that drove the turn — replayed verbatim to resume it. */
   prompt: string;
+  /** Model-driven project initialization turn. */
+  projectInit?: boolean;
+  /** Visible user text when prompt is an internal expansion. */
+  displayText?: string;
   /** Files attached to the prompt — replayed with it on resume. */
   attachments?: MessageAttachment[];
   /** Agents still to run (the in-flight one stays until it completes). */
@@ -52,6 +56,10 @@ export interface QueuedMessage {
    * busy turn — drain must run it as a command turn to its pinned target, not
    * re-parse it as a slash command (which would just error). */
   nativeCommand?: boolean;
+  /** Model-driven project initialization turn; retained through queue/WAL replay. */
+  projectInit?: boolean;
+  /** Visible user text when text is an internal prompt expansion. */
+  displayText?: string;
   /** A command-plugin verb rewritten into a message turn before queueing (see
    * RoomService's SendMessageOptions.pluginMessageTurn / PluginResult.
    * rewriteAsMessage) — drain must NOT re-parse this text as a slash command,
