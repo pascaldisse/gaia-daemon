@@ -8,7 +8,8 @@
 
 import { DEFAULTS } from "../core/config.js";
 import { canonicalHarnessId } from "../core/harness-id.js";
-import type { AgentDef, AgentEvent, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, MessageAttachment, RoomEvent, UiPromptReplyValue, UsageProbeResult, Workspace } from "../core/types.js";
+import type { AgentDef, AgentEvent, AgentModelConfig, BackgroundTaskInfo, CompactProgressUpdate, CompactResult, EffectiveModelIdentity, MessageAttachment, ModelReasoningDescriptor, ModelReasoningOverride, NativeModelReasoning, RoomEvent, UiPromptReplyValue, UsageProbeResult, Workspace } from "../core/types.js";
+import { describeModelReasoning } from "../domain/model-reasoning.js";
 import { listAccounts, type AccountRecord } from "../domain/accounts.js";
 import type { MemoryStore } from "../domain/memory.js";
 import type { MemorySearchHit } from "../domain/workspace-index.js";
@@ -76,6 +77,8 @@ export interface AgentInput {
 export interface AgentRuntime {
   readonly agent: AgentDef;
   readonly modelLabel: string;
+  /** Exact model most recently reported by the live runtime; never parsed from a label. */
+  readonly effectiveModel?: EffectiveModelIdentity;
   readonly capabilities: HarnessCapabilities;
   /** Stream one turn. Clean iterable exhaustion means the harness delivered a
    * proper completion record. Every other teardown — process exit without a
@@ -511,6 +514,10 @@ export interface HarnessSpec {
    * id-branched. Absent ⇒ the harness's model names ARE registry ids already
    * (pass through unchanged). */
   resolveApiModelId?(name: string): string;
+  /** Current native reasoning metadata for an exact provider/model. The shared
+   * resolver overlays GAIA config and computes choices; harness differences
+   * remain data here. Undefined means unknown, never guessed. */
+  modelReasoning?(model: AgentModelConfig, resolvedModel?: unknown): Promise<NativeModelReasoning | undefined>;
   /** Native passthrough commands this harness advertises for `/`-autocomplete
    * (claude: its builtins + discoverable skills). Data on the spec, read
    * uniformly: surfaced as pickable Skills options, and a checked FILELESS one
@@ -612,7 +619,29 @@ export function capabilitiesFor(id: string): HarnessCapabilities {
 export function contextWindowFor(id: string, model: string | undefined): number | undefined {
   return registry.get(canonicalHarnessId(id))?.contextWindow?.(model);
 }
+/** Current exact model reasoning capability + generic GAIA override. */
+export async function reasoningFor(
+  harnessId: string,
+  model: AgentModelConfig | EffectiveModelIdentity | undefined,
+  override?: ModelReasoningOverride,
+): Promise<ModelReasoningDescriptor | undefined> {
+  const provider = model?.provider;
+  const name = model && ("model" in model ? model.model : model.name);
+  if (!provider || !name) return undefined;
+  const native = await registry.get(canonicalHarnessId(harnessId))?.modelReasoning?.({ provider, name });
+  return describeModelReasoning(provider, name, native, override);
+}
 
+/** Describe a catalog model through the first harness that recognizes its native metadata. */
+export async function reasoningForResolvedModel(
+  model: { provider: string; id: string },
+): Promise<ModelReasoningDescriptor> {
+  for (const spec of registry.values()) {
+    const native = await spec.modelReasoning?.({ provider: model.provider, name: model.id }, model);
+    if (native) return describeModelReasoning(model.provider, model.id, native);
+  }
+  return describeModelReasoning(model.provider, model.id, undefined);
+}
 /** Native passthrough commands a harness advertises for autocomplete ([] when
  * none / unregistered). Read uniformly by the snapshot builder. */
 export function nativeCommandsFor(id: string): NativeCommandDef[] {

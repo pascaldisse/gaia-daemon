@@ -185,6 +185,7 @@ export class RunnerHost implements AgentRuntime {
    * this acknowledgement is an abnormal teardown, never a successful turn. */
   private activeTurnEndedNormally = false;
   private _modelLabel: string;
+  private _effectiveModel: { provider: string; model: string } | undefined;
   private disposed = false;
   // Launch breaker, keyed by target so a down provider/harness fast-fails for
   // every room, not just the one that tripped it. Per-spawn handshake flags: a
@@ -235,6 +236,9 @@ export class RunnerHost implements AgentRuntime {
 
   get modelLabel(): string {
     return this._modelLabel;
+  }
+  get effectiveModel(): { provider: string; model: string } | undefined {
+    return this._effectiveModel;
   }
 
   async *send(input: AgentInput): AsyncIterable<AgentEvent> {
@@ -752,6 +756,7 @@ export class RunnerHost implements AgentRuntime {
       case "event":
         if (message.event.type === "model-info") {
           this._modelLabel = liveModelLabel(message.event.provider, message.event.modelId, message.event.subscription);
+          this._effectiveModel = { provider: message.event.provider, model: message.event.modelId };
         }
         // Sign of life from the harness stream — the idle backstop starts over.
         this.armTurnIdle();

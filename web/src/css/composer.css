@@ -124,6 +124,13 @@
 .thinking-menu { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 30; display: grid; min-width: 110px; border: 1px solid var(--border); border-radius: 0; background: var(--bg); box-shadow: none; }
 .thinking-menu button { padding: 3px 8px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--muted); font-style: italic; text-align: left; }
 .thinking-menu button.active { color: var(--accent); }
+.thinking-menu button.default::after { content: " ·"; color: var(--muted); }
+/* Requested level the model does not apply as-is (clamped/inherited/conservative). */
+.thinking-toggle.thinking-diverged { color: var(--danger); }
+/* Reasoning capability not discovered for this model — unverified indicator. */
+.thinking-toggle.thinking-unknown { color: var(--muted); opacity: 0.7; }
+/* Levels supplied by a configured per-model override rather than discovery. */
+.thinking-toggle.thinking-override { text-decoration: underline dotted; text-underline-offset: 2px; }
 .model-wrap { display: flex; align-items: center; gap: 1ch; min-width: 0; }
 .model-chip,
 .context-chip { color: var(--muted); white-space: nowrap; }

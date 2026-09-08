@@ -36,6 +36,42 @@
 /** @typedef {import("../../src/core/types.js").HarnessHintsMeta} HarnessHintsMeta */
 /** @typedef {import("../../src/core/types.js").FileHints} FileHints */
 
+// Model-reasoning descriptor. The daemon adds AgentStatus.reasoning /
+// ModelChoice.reasoning in parallel; these local typedefs mirror the agreed
+// wire union so web/src typechecks independently of that landing (structurally
+// compatible once it does). See reasoning.js for the render-view derivation.
+/** @typedef {"off"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"} ThinkingLevel */
+/**
+ * One model-supported reasoning level. `providerValue` is the raw value the
+ * provider expects; `aliases` are the extra canonical levels that collapse onto
+ * this same providerValue (the UI advertises only the primary `level`).
+ * @typedef {Object} ReasoningChoice
+ * @property {ThinkingLevel} level
+ * @property {string} providerValue
+ * @property {ThinkingLevel[]} [aliases]
+ */
+/**
+ * @typedef {Object} ReasoningDescriptorUnknown
+ * @property {"unknown"} status
+ * @property {string} provider
+ * @property {string} model
+ * @property {ThinkingLevel} [requestedLevel]
+ */
+/**
+ * @typedef {Object} ReasoningDescriptorKnown
+ * @property {"known"} status
+ * @property {string} provider
+ * @property {string} model
+ * @property {ReasoningChoice[]} choices
+ * @property {ThinkingLevel} [defaultLevel]
+ * @property {boolean} adaptive
+ * @property {"discovered"|"override"} source
+ * @property {ThinkingLevel} [requestedLevel]
+ * @property {ThinkingLevel} [effectiveLevel]
+ * @property {"requested"|"inherited"|"conservative"} [resolution]
+ */
+/** @typedef {ReasoningDescriptorUnknown|ReasoningDescriptorKnown} ModelReasoningDescriptor */
+
 /**
  * One SSE payload, narrowed by its `type` tag.
  * @template {UiEvent["type"]} T
