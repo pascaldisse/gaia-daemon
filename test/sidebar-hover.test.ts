@@ -27,6 +27,7 @@ function room(id: string, over: RoomOver = {}) {
   return { id, path: `/ws/${id}`, title: id, isCurrent: false, running: false, lastActivity: 0, ...over } as any;
 }
 function setup(rooms: any[], currentId: string) {
+  dom.nav.dispatch("pointerleave");
   state.snapshot = { workspace: { id: "ws", path: "/ws" }, room: { id: currentId, events: [], eventTotal: 0 }, rooms, agents: [], tasks: [] } as any;
   state.workspaces = [];
   state.workspaceRooms = {};
@@ -135,6 +136,33 @@ test("a workspace change reflows immediately even while the pointer is held insi
   state.snapshot = { workspace: { id: "ws2", path: "/ws2" }, room: { id: "z", events: [], eventTotal: 0 }, rooms: [room("z"), room("y"), room("x")], agents: [], tasks: [] } as any;
   render();
   assert.deepEqual(labels(), ["z", "y", "x"], "workspace switch is not held by the freeze");
+});
+
+test("expanded sibling activity order stays held until pointerleave", () => {
+  setup([room("p"), room("x", { parentRoomId: "p" }), room("y", { parentRoomId: "p" })], "p");
+  state.expandedRooms.add("p");
+  render();
+  const x = buttonFor("x");
+  dom.nav.dispatch("pointerenter");
+  state.snapshot!.rooms = [room("y", { parentRoomId: "p", lastActivity: 99 }), room("p"), room("x", { parentRoomId: "p" })];
+  render();
+  assert.deepEqual(labels(), ["p", "x", "y"]);
+  assert.equal(buttonFor("x"), x);
+  dom.nav.dispatch("pointerleave");
+  assert.deepEqual(labels(), ["p", "y", "x"]);
+  assert.equal(buttonFor("x"), x);
+});
+
+test("optional incognito slot preserves prior row spacing without replacing its button", () => {
+  setup([room("a")], "a");
+  render();
+  const a = buttonFor("a")!;
+  assert.equal(a.querySelectorAll(".room-icon-slot").length, 1);
+  state.snapshot!.rooms = [room("a", { incognito: true })];
+  render();
+  assert.equal(buttonFor("a"), a);
+  assert.equal(a.querySelectorAll(".room-icon-slot").length, 2);
+  assert.ok(a.querySelector(".room-incognito"));
 });
 
 test("a bound click handler on a carried-over node acts on the LATEST data (fresh, not stale)", () => {

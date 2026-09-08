@@ -43,7 +43,12 @@ export function syncChildren(parent, nodes) {
       ref = node.nextSibling;
       continue;
     }
+    const focus = /** @type {HTMLElement|null|undefined} */ (node.ownerDocument?.activeElement);
+    const restoreFocus = focus && node.contains(focus);
     parent.insertBefore(node, ref);
+    if (restoreFocus && focus?.isConnected && focus.ownerDocument.activeElement !== focus) {
+      focus.focus({ preventScroll: true });
+    }
   }
 }
 

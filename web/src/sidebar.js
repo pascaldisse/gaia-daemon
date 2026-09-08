@@ -79,7 +79,7 @@ const cache = new NodeCache();
 // Released on pointerleave; a workspace change or an explicit drag reorder
 // invalidates the frozen order so those always reflow correctly.
 let sidebarHoverHold = false;
-/** @type {{ workspaceId: string|null, ids: string[] }|null} */
+/** @type {{ workspaceId: string|null, buckets: Map<string|null, string[]> }|null} */
 let frozenRoomOrder = null;
 
 /** @param {HTMLElement} slot A fixed-width icon slot; sets its single glyph child in place.
@@ -109,6 +109,7 @@ function renderSidebar() {
   // persistent nav node.
   if (!nav.dataset.hoverBound) {
     nav.dataset.hoverBound = "1";
+    sidebarHoverHold = document.querySelector("#sidebar:hover") === nav;
     nav.addEventListener("pointerenter", () => {
       sidebarHoverHold = true;
     });
@@ -121,8 +122,7 @@ function renderSidebar() {
   if (dragActive) return; // a live drag owns the list DOM — don't rebuild it
   const scrollTop = nav.scrollTop;
   cache.begin();
-  // Keyed sync (never replaceChildren): persistent skeleton nodes stay put, only
-  // changed rows rebuild — a hovered / focused / mid-press row survives the tick.
+  // Persistent containers + in-place rows: no detach on data-only updates.
   const children = [
     cache.persistent("nav-search", () =>
       h("button", {
@@ -523,7 +523,7 @@ const ROOMS_CHUNK = 8;
 function topLevelRoomIds() {
   const rooms = state.snapshot?.rooms ?? [];
   const ids = new Set(rooms.map((room) => room.id));
-  return rooms.filter((room) => !(room.parentRoomId && ids.has(room.parentRoomId))).map((room) => room.id);
+  return holdRoomOrder(rooms.filter((room) => !(room.parentRoomId && ids.has(room.parentRoomId)))).map((room) => room.id);
 }
 
 function RoomTree() {
@@ -538,6 +538,11 @@ function RoomTree() {
     const list = childrenOf.get(parent);
     if (list) list.push(room);
     else childrenOf.set(parent, [room]);
+  }
+  if (frozenRoomOrder && frozenRoomOrder.workspaceId === state.snapshot?.workspace.id) {
+    for (const parent of frozenRoomOrder.buckets.keys()) {
+      if (parent !== null && !ids.has(parent)) frozenRoomOrder.buckets.delete(parent);
+    }
   }
   // Rooms ARE chats: the daemon lists them latest-activity first (or the
   // user's own drag order — see reorderRooms), so render a chunk at a time —
@@ -570,7 +575,7 @@ function RoomTree() {
 }
 
 /**
- * The top-level room display order, with the daemon's activity sort FROZEN while
+ * Each sibling group's display order, with the daemon's activity sort FROZEN while
  * the pointer is over the sidebar so a background room gaining activity can't
  * slide the row out from under the pointer. Frozen order = the order last
  * rendered before the pointer entered; rooms that appeared since are appended in
@@ -578,23 +583,24 @@ function RoomTree() {
  * frozen order is kept refreshed so freezing always starts from the latest. A
  * workspace change (different id) or an explicit drag reorder (which nulls
  * frozenRoomOrder in applyDrop) reflows immediately.
- * @param {RoomSummary[]} natural @returns {RoomSummary[]}
+ * @param {RoomSummary[]} natural @param {string|null} [parentId] @returns {RoomSummary[]}
  */
-function holdRoomOrder(natural) {
+function holdRoomOrder(natural, parentId = null) {
   const workspaceId = state.snapshot?.workspace.id ?? null;
   const naturalIds = natural.map((room) => room.id);
   if (!frozenRoomOrder || frozenRoomOrder.workspaceId !== workspaceId) {
-    frozenRoomOrder = { workspaceId, ids: naturalIds };
-  } else if (!sidebarHoverHold) {
-    frozenRoomOrder.ids = naturalIds; // keep fresh until the pointer freezes it
+    frozenRoomOrder = { workspaceId, buckets: new Map() };
+  }
+  if (!sidebarHoverHold || !frozenRoomOrder.buckets.has(parentId)) {
+    frozenRoomOrder.buckets.set(parentId, naturalIds);
   }
   if (!sidebarHoverHold) return natural;
   const present = new Set(naturalIds);
-  const kept = frozenRoomOrder.ids.filter((id) => present.has(id));
+  const kept = (frozenRoomOrder.buckets.get(parentId) ?? []).filter((id) => present.has(id));
   const keptSet = new Set(kept);
   const appended = naturalIds.filter((id) => !keptSet.has(id));
   const mergedIds = [...kept, ...appended];
-  frozenRoomOrder.ids = mergedIds; // appended rooms keep their held slot next tick
+  frozenRoomOrder.buckets.set(parentId, mergedIds);
   const byId = new Map(natural.map((room) => [room.id, room]));
   return mergedIds.map((id) => byId.get(id)).filter((/** @type {RoomSummary|undefined} */ room) => room !== undefined);
 }
@@ -659,9 +665,7 @@ function descendantActivity(room, childrenOf) {
 /**
  * A room row + (when expanded) its children. The `.room-node` wrapper and the
  * `.room-children` container are PERSISTENT per room id so they are never
- * detached; the `.room-row` itself is keyed by a version stamp of everything it
- * renders / a handler reads, so an activity tick that does not touch this room
- * leaves its node (and any live hover / focus / mid-press) intact.
+ * detached by data-only updates; each row patches its data in place.
  * @param {RoomSummary} room
  * @param {Map<string|null, RoomSummary[]>} childrenOf
  * @param {number} depth
@@ -669,7 +673,7 @@ function descendantActivity(room, childrenOf) {
  */
 function RoomNode(room, childrenOf, depth) {
   const node = cache.persistent(`room-node:${room.id}`, () => h("div", { class: "room-node" }));
-  const kids = (childrenOf.get(room.id) ?? []).filter((kid) => favoriteVisible(kid, childrenOf));
+  const kids = holdRoomOrder(childrenOf.get(room.id) ?? [], room.id).filter((kid) => favoriteVisible(kid, childrenOf));
   const expanded = state.expandedRooms.has(room.id);
   // A collapsed parent hides its subrooms, so bubble their RUNNING status up
   // here (unread deliberately does not bubble — see descendantActivity).
@@ -808,7 +812,7 @@ function buildRoomRow(initial) {
     if (showSince) setText(sinceSmall, `· since ${d.since}`);
     // Label wrap: two fixed-width icon slots, the name, and (nested + running)
     // the since stamp — reconciled so the stable slots/name are never detached.
-    syncChildren(labelWrap, [slot1, slot2, nameSpan, ...(showSince ? [sinceSmall] : [])]);
+    syncChildren(labelWrap, [slot1, ...(d.room.incognito !== undefined ? [slot2] : []), nameSpan, ...(showSince ? [sinceSmall] : [])]);
     setPathSmall(pathSmall, d.room.path, d.room.imported);
     setClass(twistyBtn, `room-twisty ${d.expanded ? "open" : ""}`);
     setAttr(twistyBtn, "title", d.expanded ? "collapse" : "expand");
