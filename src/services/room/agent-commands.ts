@@ -159,8 +159,8 @@ export class RoomAgentCommandsMixin {
       const identity = this.runtimes[agent.id]?.effectiveModel ?? agent.model;
       const override = modelReasoningOverride(this.workspace.config.modelReasoningOverrides, identity && ("model" in identity ? { provider: identity.provider, name: identity.model } : identity));
       const descriptor = await reasoningFor(harnessIdFor(agent, this.workspace), identity, override);
-      if (identity && (!descriptor || descriptor.status === "unknown")) throw new Error(`Reasoning capabilities are unknown for ${identity.provider ?? "unknown"}/${"model" in identity ? identity.model : identity.name ?? "unknown"}; refusing an unchecked thinking level.`);
-      if (descriptor?.status === "known") {
+      if (!descriptor || descriptor.status === "unknown") throw new Error(`Reasoning capabilities are unknown for ${identity?.provider ?? "unknown"}/${identity && "model" in identity ? identity.model : identity?.name ?? "unknown"}; refusing an unchecked thinking level.`);
+      if (descriptor.status === "known") {
         const resolved = resolveReasoningLevel(descriptor, level as ThinkingLevel, true);
         level = resolved.status === "known" ? resolved.effectiveLevel ?? level : level;
       }

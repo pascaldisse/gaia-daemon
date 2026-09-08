@@ -2532,11 +2532,13 @@ test("setAgentThinking (the global-default write path, e.g. the agent-config edi
 
 test("/thinking (runThinkingCommand, no active call) is room-scoped: it does NOT touch agent.json or fire a settings reload", async () => {
   const reloads: string[] = [];
-  const { service, root } = await makeService({
+  const { service, root, workspace } = await makeService({
     settingsChanged: async (scope) => {
       reloads.push(scope);
     },
   });
+  workspace.agents.gaia!.model = { provider: "fixture", name: "reasoning-model" };
+  workspace.config.modelReasoningOverrides = { fixture: { "reasoning-model": { supportedLevels: ["off", "high"], defaultLevel: "off" } } };
   await service.init();
 
   const reply = await service.runThinkingCommand("gaia", "high");
@@ -2562,6 +2564,8 @@ test("/thinking (runThinkingCommand, no active call) is room-scoped: it does NOT
 
 test("room-scoped thinking never leaks across rooms (mirrors role isolation) and never mutates the shared in-memory agent object", async () => {
   const { service: roomA, workspace, root } = await makeService({ roomId: "room-a" });
+  workspace.agents.gaia!.model = { provider: "fixture", name: "reasoning-model" };
+  workspace.config.modelReasoningOverrides = { fixture: { "reasoning-model": { supportedLevels: ["off", "high"], defaultLevel: "off" } } };
   await roomA.init();
   const roomB = await RoomService.open({
     workspaceId: "ws1",
@@ -2580,7 +2584,7 @@ test("room-scoped thinking never leaks across rooms (mirrors role isolation) and
   const snapA = await roomA.getSnapshot();
   const snapB = await roomB.getSnapshot();
   assert.equal(snapA.agents.find((a) => a.id === "gaia")?.thinking, "high");
-  assert.equal(snapB.agents.find((a) => a.id === "gaia")?.thinking, undefined);
+  assert.equal(snapB.agents.find((a) => a.id === "gaia")?.thinking, "off"); // model default; room A's high did not leak
 
   // The shared in-memory agent object (workspace.agents.gaia, read by every
   // room service on this workspace) is untouched — this is the actual bug:
@@ -2605,7 +2609,7 @@ test("room-scoped thinking never leaks across rooms (mirrors role isolation) and
   (roomB as unknown as { runtimes: Record<string, AgentRuntime> }).runtimes.gaia = bRuntime;
   await roomB.sendMessage("hello", { targets: ["gaia"] });
   await roomB.waitForIdle();
-  assert.equal(inputsB[0], undefined);
+  assert.equal(inputsB[0], "off"); // resolved model default; room A's high did not leak
 
   // agent.json was never written by the room-scoped path.
   assert.equal(await readJson(join(root, "agents", "gaia", "agent.json")), undefined);
