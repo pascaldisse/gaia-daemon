@@ -60,7 +60,6 @@ import { capabilitiesFor, contextWindowFor, findHarness, harnessIdFor, usageAcco
 import { readOptional, renderAttachmentLines, renderRoomTranscript } from "../harness/prompt.js";
 import { readUserNameSetting } from "./user-name.js";
 import { HELP_TEXT, hasExplicitMention, parseCommand, planMentionRoute, type SlashCommand } from "./commands.js";
-import { PROJECT_INIT_PROMPT } from "./project-init.js";
 import { loadCommandPlugins, pluginStateKey, type CommandPlugin, type CommandPluginRegistry, type PluginContext, type PluginPanel, type PluginResult } from "./plugins.js";
 import type { PluginTurnBoundary } from "./plugins/registry.js";
 import { SANITIZE_REVIEWER_ID, buildSanitizePrompt, parseSanitizeProposal, type SanitizeContext } from "./sanitize.js";
@@ -298,7 +297,8 @@ type CommandHandler = (service: RoomService, command: RoomCommand) => Promise<Co
 const COMMANDS: Record<string, CommandHandler> = {
   help: async () => HELP_TEXT,
   agents: (service) => service.renderAgentsList(),
-  init: () => Promise.resolve(""),
+  // RoomQueue rewrites /init into a durable agent turn before command dispatch.
+  init: () => Promise.resolve("Could not start project initialization. Please retry /init."),
   roles: (service, command) => service.renderRoles(command.type === "roles" ? command.agent : undefined),
   role: (service, command) => (command.type === "role" ? service.setRole(command.agent, command.role) : Promise.resolve("")),
   thinking: (service, command) => (command.type === "thinking" ? service.runThinkingCommand(command.agent, command.level) : Promise.resolve("")),

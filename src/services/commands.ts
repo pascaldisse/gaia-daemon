@@ -5,7 +5,7 @@ import type { SlashCommandDefinition } from "../core/types.js";
 
 export type SlashCommand =
   | { type: "help" }
-| { type: "init" }
+  | { type: "init"; instructions?: string }
   | { type: "agents" }
   | { type: "roles"; agent?: string }
   | { type: "role"; agent?: string; role?: string }
@@ -54,8 +54,8 @@ export function validateThinkingLevel(level: number): string | null {
 }
 
 export const SLASH_COMMANDS: SlashCommandDefinition[] = [
-{ name: "init", type: "init", description: "scan the project and maintain AGENTS.md" },
   { name: "help", type: "help", description: "show command help" },
+  { name: "init", type: "init", description: "scan the project and create or update AGENTS.md" },
   {
     name: "goal",
     type: "goal",
@@ -134,8 +134,8 @@ export function parseCommand(input: string): SlashCommand {
 
   const stripped = args.map((arg) => arg.replace(/^@/, ""));
   switch (command.type) {
-case "init":
-return { type: "init" };
+    case "init":
+      return { type: "init", ...(args.length ? { instructions: args.join(" ") } : {}) };
     case "roles":
       return { type: "roles", agent: stripped[0] };
     case "role":

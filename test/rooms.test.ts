@@ -117,6 +117,41 @@ test("normalizeRoomState retains only valid agent conversation-end markers", () 
   assert.deepEqual(state.conversationEndedAgents, { gaia: "2026-08-29T12:00:00.000Z" });
 });
 
+test("normalizeRoomState preserves /init queue and WAL metadata across restart", () => {
+  const state = normalizeRoomState({
+    activeRoles: {},
+    agentCursors: {},
+    pendingTurn: {
+      id: "turn-init",
+      eventId: "evt-init",
+      prompt: "hidden prompt",
+      projectInit: true,
+      displayText: "/init",
+      targets: ["gaia"],
+      agentId: "gaia",
+      partialReply: "",
+      startedAt: "2026-09-08T10:00:00.000Z",
+      futurePendingField: { kept: true },
+    },
+    queue: [{
+      taskId: "queue-init",
+      text: "hidden prompt",
+      projectInit: true,
+      displayText: "/init",
+      targets: ["gaia"],
+      queuedAt: "2026-09-08T10:00:00.000Z",
+      futureQueueField: { kept: true },
+    }],
+  });
+
+  assert.equal(state.pendingTurn?.projectInit, true);
+  assert.equal(state.pendingTurn?.displayText, "/init");
+  assert.deepEqual((state.pendingTurn as Record<string, unknown>)?.futurePendingField, { kept: true });
+  assert.equal(state.queue?.[0]?.projectInit, true);
+  assert.equal(state.queue?.[0]?.displayText, "/init");
+  assert.deepEqual(state.queue?.[0]?.futureQueueField, { kept: true });
+});
+
 test("normalizeRoomState preserves queue hand-off markers across restart", () => {
   const state = normalizeRoomState({
     activeRoles: {},

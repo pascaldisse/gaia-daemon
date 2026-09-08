@@ -13,7 +13,7 @@ export interface RoomQueuePort {
   readonly workspace: Workspace;
   readonly workspaceId: string;
   readonly roomId: string;
-  readonly runtimes: Record<string, { capabilities: { supportsSteer: boolean } }>;
+  readonly runtimes: Record<string, { capabilities: { supportsSteer: boolean }; refreshContext?(roomId: string): void }>;
   activeTask: Task | undefined;
   activeAgentTurn: Task | undefined;
   queuedTasks: Task[];
@@ -53,13 +53,20 @@ export class RoomQueue {
     await this.service.init();
 
     let command: RoomCommand = parseCommand(text);
-// `/init` is a normal durable agent turn: its model prompt is expanded, while the transcript preserves the command.
-if (command.type === "init") {
-  const target = await this.service.nativeCommandTarget();
-  command = { type: "message", text: PROJECT_INIT_PROMPT };
-  options = { ...options, targets: [target], queue: true, projectInit: true, displayText: "/init" };
-  text = PROJECT_INIT_PROMPT;
-}
+    // Core command precedence is intentional: `/init` has identical behavior
+    // for every harness rather than inheriting a harness-native command.
+    if (command.type === "init") {
+      // One active agent owns the AGENTS.md edit. Explicit targets also bypass
+      // monad fan-out, avoiding concurrent writers racing on the same file.
+      const target = await this.service.nativeCommandTarget();
+      const displayText = text.trim();
+      const prompt = command.instructions
+        ? `${PROJECT_INIT_PROMPT}\n\nAdditional guidance from the user: ${command.instructions}`
+        : PROJECT_INIT_PROMPT;
+      command = { type: "message", text: prompt };
+      options = { ...options, targets: [target], queue: true, projectInit: true, displayText };
+      text = prompt;
+    }
     // Harness-native passthrough: an unrecognized `/command` becomes a command
     // TURN to the active agent when that agent has CHECKED that command as a
     // skill (claude builtins like deep-research) and its harness can run them.
@@ -165,7 +172,7 @@ if (command.type === "init") {
       }
     }
 
-    const task = this.service.createTask(text, targets);
+    const task = this.service.createTask(options.displayText ?? text, targets);
     // A human can always call an agent back. Only actual user messages clear
     // this durable suppression; agent dialogue, goals, and WAL replays do not.
     if (command.type === "message" && options.recordUserMessage !== false && !options.fromAgentDialogue) {
@@ -362,7 +369,7 @@ if (command.type === "init") {
       }
       const chip = this.service.queuedTasks.find((task) => task.id === next.taskId);
       this.service.queuedTasks = this.service.queuedTasks.filter((task) => task.id !== next.taskId);
-      const task = chip ?? this.service.createTask(next.text, next.targets);
+      const task = chip ?? this.service.createTask(next.displayText ?? next.text, next.targets);
       // From this point on, activeTask is set SYNCHRONOUSLY (no intervening
       // await) by both branches below — safe to resolve now, so a
       // sendMessage() that was awaiting `draining` sees the correct busy
@@ -490,6 +497,10 @@ if (command.type === "init") {
         ...(pending.projectInit ? { projectInit: true } : {}),
         ...(pending.displayText ? { displayText: pending.displayText } : {}),
       });
+    } else if (pending.projectInit) {
+      // The reply was already committed before the daemon stopped. There is no
+      // replayed turn whose normal completion path could refresh this process.
+      for (const runtime of Object.values(this.service.runtimes)) runtime.refreshContext?.(this.service.roomId);
     }
   }
 

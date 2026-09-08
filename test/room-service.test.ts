@@ -18,6 +18,7 @@ import type { ConsolidateLlm } from "../src/services/consolidate.js";
 import type { CommandPluginRegistry } from "../src/services/plugins.js";
 import { PluginRegistry, type PluginTurnBoundary } from "../src/services/plugins/registry.js";
 import { CapabilityBroker, resolveWorkspaceGrantPolicy, resolveWorkspaceTrust } from "../src/services/capabilities/index.js";
+import { PROJECT_INIT_PROMPT } from "../src/services/project-init.js";
 
 process.env.GAIA_HOME = await mkdtemp(join(tmpdir(), "gaia-home-"));
 
@@ -999,11 +1000,24 @@ test("/clear wipes transcript + cursors and /fork branches with reset cursors", 
   assert.deepEqual((await forkRoom.state()).agentCursors, {}, "cursors reset so the branch replays history");
 });
 
-test("/init queues a model turn, preserves its display text, and refreshes all runtimes", async () => {
-  const { service, root, runtimes } = await makeService();
+test("/init runs the active agent with a hidden project prompt, preserves its display text, and refreshes all runtimes", async () => {
+  let received: AgentInput | undefined;
+  const { service, root, runtimes } = await makeService({
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => []);
+      runtime.send = async function* (input: AgentInput) {
+        runtime.sends += 1;
+        received = input;
+        yield { type: "text-delta", delta: "AGENTS.md updated" };
+      };
+      return runtime;
+    },
+  });
   const task = await service.sendMessage("/init");
   await service.waitForIdle();
   assert.equal(task.status, "complete");
+  assert.equal(task.text, "/init", "queued/running task chrome does not expose the expanded prompt");
+  assert.equal(received?.message, PROJECT_INIT_PROMPT);
   assert.deepEqual([...runtimes.values()].map((runtime) => runtime.refreshes), [1, 1]);
 
   const room = await RoomHandle.open(root, "default");
@@ -1012,6 +1026,62 @@ test("/init queues a model turn, preserves its display text, and refreshes all r
   assert.equal(events[0]?.text, "/init", "internal model prompt never leaks into the transcript");
   assert.equal((await room.state()).queue, undefined);
   assert.equal((await room.state()).pendingTurn, undefined);
+});
+
+test("a queued /init survives reopening with its hidden prompt and visible command intact", async () => {
+  let received: AgentInput | undefined;
+  const { service, root, runtimes } = await makeService({
+    agents: ["gaia"],
+    queued: [{
+      taskId: "task_init_recovery",
+      text: PROJECT_INIT_PROMPT,
+      displayText: "/init",
+      projectInit: true,
+      targets: ["gaia"],
+      queuedAt: "2026-09-08T10:00:00.000Z",
+    }],
+    runtimeFactory: (agent) => {
+      const runtime = scriptedRuntime(agent, () => []);
+      runtime.send = async function* (input: AgentInput) {
+        runtime.sends += 1;
+        received = input;
+        yield { type: "text-delta", delta: "recovered init" };
+      };
+      return runtime;
+    },
+  });
+
+  await service.getSnapshot();
+  await service.waitForIdle();
+  assert.equal(received?.message, PROJECT_INIT_PROMPT);
+  assert.equal(runtimes.get("gaia")?.refreshes, 1);
+  const events = (await (await RoomHandle.open(root, "default")).eventsFrom(0)).events;
+  assert.equal(events[0]?.text, "/init");
+  assert.equal(events.filter((event) => event.author === "user").length, 1);
+});
+
+test("/init finish-commit recovery refreshes context without rerunning the agent", async () => {
+  const { service, root, runtimes } = await makeService({ agents: ["gaia"] });
+  const room = await RoomHandle.open(root, "default");
+  await room.appendEvent({ id: "evt_init_reply", timestamp: new Date().toISOString(), author: "gaia", text: "already committed" });
+  await room.updateState((state) => {
+    state.pendingTurn = {
+      id: "task_init_finish",
+      eventId: "evt_init_reply",
+      prompt: PROJECT_INIT_PROMPT,
+      displayText: "/init",
+      projectInit: true,
+      targets: ["gaia"],
+      agentId: "gaia",
+      partialReply: "already committed",
+      startedAt: new Date().toISOString(),
+    };
+  });
+
+  await service.getSnapshot();
+  await waitForState(root, (state) => state.pendingTurn === undefined);
+  assert.equal(runtimes.get("gaia")?.sends, 0);
+  assert.equal(runtimes.get("gaia")?.refreshes, 1);
 });
 
 test("/refresh invalidates every agent context without resetting sessions or transcript", async () => {

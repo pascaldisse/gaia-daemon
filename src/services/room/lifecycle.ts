@@ -129,7 +129,7 @@ export class RoomLifecycle {
         .map((message) => ({
           id: message.taskId,
           roomId: service.room.roomId,
-          text: message.text,
+          text: message.displayText ?? message.text,
           targets: message.targets,
           status: "queued" as const,
           startedAt: message.queuedAt,

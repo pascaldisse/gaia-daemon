@@ -24,6 +24,10 @@ function isContextDietPolicy(value: unknown): value is ContextDietPolicy {
 export class RoomTurnLoop {
   constructor(private readonly service: RoomTurnLoopPort) {}
   async runAgentTask(task: Task, text: string, options: SendMessageOptions): Promise<void> {
+    const refreshProjectContext = (): void => {
+      if (!options.projectInit) return;
+      for (const runtime of Object.values(this.service.runtimes)) runtime.refreshContext?.(this.service.roomId);
+    };
     // A native command is already pinned to the active agent — it never fans out
     // through the monad.
     if (!options.nativeCommand && (await this.service.isMonadMessage(text, options))) {
@@ -435,6 +439,7 @@ export class RoomTurnLoop {
           await this.service.maybeRequeueAuth(remaining, target, text, error, partial, channel, attachments, options);
         await this.service.captureEpisode(target, text, partial, "error", {}, channel);
         this.service.settlePetTarget(task, target, "failed");
+        refreshProjectContext();
         throw error;
       }
 
@@ -519,6 +524,7 @@ export class RoomTurnLoop {
           await this.service.maybeRequeueAuth(remaining, target, text, turn.error, partialReply, channel, attachments, options);
         await this.service.captureEpisode(target, text, partialReply, "error", turn.details, channel);
         this.service.settlePetTarget(task, target, "failed");
+        refreshProjectContext();
         throw turn.error;
       }
 
@@ -533,10 +539,12 @@ export class RoomTurnLoop {
 
       if (cancelled) {
         this.service.settlePetTarget(task, target, "failed");
+        refreshProjectContext();
         return;
       }
       if (endedConversation) {
         this.service.settlePetTarget(task, target, "done");
+        refreshProjectContext();
         return;
       }
       this.service.settlePetTarget(task, target, "done");
@@ -549,9 +557,9 @@ export class RoomTurnLoop {
     }
 
     if (!this.service.taskCancelled(task)) {
-  if (options.projectInit) for (const runtime of Object.values(this.service.runtimes)) runtime.refreshContext?.(this.service.roomId);
-  this.service.settleTask(task, "complete");
-}
+      refreshProjectContext();
+      this.service.settleTask(task, "complete");
+    }
   }
 
   /** The ctx chip's usage figure for the snapshot. Live usage wins, but the
