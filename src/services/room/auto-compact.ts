@@ -1,4 +1,5 @@
-import type { AutoCompactConfig, RoomAutoCompactState } from "../../core/types.js";
+import type { AgentRuntime } from "../../harness/spec.js";
+import type { AgentDef, AutoCompactConfig, EffectiveModelIdentity, RoomAutoCompactState } from "../../core/types.js";
 
 import { autoCompactEnabled, parseAutoCompactConfig } from "../../core/auto-compact.js";
 
@@ -14,20 +15,30 @@ export interface AutoCompactDecision {
   scheduledTokens?: number;
 }
 
-/** Threshold pair overrides atomically; cooldown inherits independently. */
-export function resolveAutoCompactConfig(workspace: AutoCompactConfig | undefined, room?: RoomAutoCompactState, model?: { provider: string; model: string }): AutoCompactConfig {
+/** Exact live identity first; configured identity only when both parts known. */
+export function autoCompactModelFor(runtime: AgentRuntime | undefined, configured?: AgentDef["model"]): EffectiveModelIdentity | undefined {
+  return runtime?.effectiveModel ?? (configured?.provider && configured.name ? { provider: configured.provider, model: configured.name } : undefined);
+}
+
+function modelAutoCompactOverride(config: AutoCompactConfig, model?: EffectiveModelIdentity) {
+  const models = model && Object.hasOwn(config.modelOverrides ?? {}, model.provider) ? config.modelOverrides![model.provider] : undefined;
+  return models && model && Object.hasOwn(models, model.model) ? models[model.model] : undefined;
+}
+
+/** Defaults → exact-model patch → room; threshold pair atomic, cooldown independent. */
+export function resolveAutoCompactConfig(workspace: AutoCompactConfig | undefined, room?: RoomAutoCompactState, model?: EffectiveModelIdentity): AutoCompactConfig {
   const base = workspace ?? parseAutoCompactConfig(undefined);
-  const models = model && Object.hasOwn(base.modelOverrides ?? {}, model.provider) ? base.modelOverrides![model.provider] : undefined;
-  const override = models && model && Object.hasOwn(models, model.model) ? models[model.model] : undefined;
-  return parseAutoCompactConfig(room, parseAutoCompactConfig(override, base));
+  return parseAutoCompactConfig(room, parseAutoCompactConfig(modelAutoCompactOverride(base, model), base));
 }
 
 
 /** User-facing effective setting. `room` exposes whether each field inherits. */
-export function formatAutoCompactSetting(config: AutoCompactConfig, room?: RoomAutoCompactState): string {
+export function formatAutoCompactSetting(config: AutoCompactConfig, room?: RoomAutoCompactState, model?: EffectiveModelIdentity): string {
+  const modelOverride = modelAutoCompactOverride(config, model);
   const threshold = config.thresholdTokens != null ? `${config.thresholdTokens} tokens` : config.thresholdPct === null ? "off" : `${config.thresholdPct}%`;
-  const thresholdSource = room?.thresholdPct === undefined && room?.thresholdTokens === undefined ? "workspace" : "room";
-  const cooldownSource = room?.cooldownTurns === undefined ? "workspace" : "room";
+  const inheritedThreshold = modelOverride?.thresholdPct !== undefined || modelOverride?.thresholdTokens !== undefined ? "model" : "workspace";
+  const thresholdSource = room?.thresholdPct === undefined && room?.thresholdTokens === undefined ? inheritedThreshold : "room";
+  const cooldownSource = room?.cooldownTurns === undefined ? modelOverride?.cooldownTurns === undefined ? "workspace" : "model" : "room";
   return `Auto-compact: ${threshold}; cooldown ${config.cooldownTurns} turn${config.cooldownTurns === 1 ? "" : "s"} (threshold: ${thresholdSource}, cooldown: ${cooldownSource}).`;
 }
 

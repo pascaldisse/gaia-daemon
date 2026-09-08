@@ -47,7 +47,7 @@ import type {
 } from "../core/types.js";
 import { DEFAULTS, DEFAULT_CONTEXT_WARN_TOKENS } from "../core/config.js";
 import { autoCompactEnabled } from "../core/auto-compact.js";
-import { resolveAutoCompactConfig, scheduleAutoCompactAfterTurn, takePendingAutoCompact } from "./room/auto-compact.js";
+import { autoCompactModelFor, resolveAutoCompactConfig, scheduleAutoCompactAfterTurn, takePendingAutoCompact } from "./room/auto-compact.js";
 import type { RenderCap } from "../domain/render-cap.js";
 import { estimateTokens } from "../core/tokens.js";
 import { deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle, RoomHandle } from "../domain/rooms.js";
@@ -549,14 +549,14 @@ export class RoomService {
 
   /** Completed-turn threshold → durable next-turn native compaction. */
   async scheduleAutoCompact(target: string): Promise<void> {
-    // Off is the default: do not take the room's serialized state-write lock
-    // after every ordinary turn.
+    // Explicit off → skip the serialized state-write lock.
     const current = await this.room.state();
-    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact))) return;
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact, model))) return;
     let scheduledPct: number | undefined;
     let scheduledTokens: number | undefined;
     await this.room.updateState((state) => {
-      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact, model);
       const decision = scheduleAutoCompactAfterTurn(config, state.autoCompact, target, {
         usageFor: (agentId) => this.contextUsage[agentId],
       });
@@ -572,10 +572,11 @@ export class RoomService {
   /** Consume the durable schedule before the agent receives its next prompt. */
   async runPendingAutoCompact(target: string): Promise<void> {
     const current = await this.room.state();
-    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact)) || current.autoCompact?.pending?.[target] === undefined) return;
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (!autoCompactEnabled(resolveAutoCompactConfig(this.workspace.config.autoCompact, current.autoCompact, model)) || current.autoCompact?.pending?.[target] === undefined) return;
     let pct: number | undefined;
     await this.room.updateState((state) => {
-      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact);
+      const config = resolveAutoCompactConfig(this.workspace.config.autoCompact, state.autoCompact, model);
       const pending = takePendingAutoCompact(state.autoCompact, target);
       state.autoCompact = pending.state;
       if (autoCompactEnabled(config)) pct = pending.pct;

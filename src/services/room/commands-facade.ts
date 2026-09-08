@@ -80,7 +80,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-import { formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
+import { autoCompactModelFor, formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
 import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
@@ -340,7 +340,9 @@ export class RoomCommandsMixin {
   async runAutoCompactCommand(value?: string, cooldownRaw?: string): Promise<string> {
     const state = await this.room.state();
     const workspaceConfig = this.workspace.config.autoCompact;
-    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
+    const target = await this.roomDefaultTarget();
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact, model), state.autoCompact, model);
     const threshold = parseAutoCompactThreshold(value);
     if (!threshold) return AUTO_COMPACT_USAGE;
     let cooldownTurns: number | undefined;
@@ -359,7 +361,7 @@ export class RoomCommandsMixin {
     });
     const updated = await this.room.state();
     await this.emitSnapshot();
-    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact), updated.autoCompact);
+    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact, model), updated.autoCompact, model);
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply

@@ -47,7 +47,9 @@ test("/autocompact parses, persists its room override, and shows the effective s
     const room = await RoomHandle.open(temp.path, "default");
     const command = RoomCommandsMixin.prototype.runAutoCompactCommand.bind({
       room,
-      workspace: { config: { autoCompact: { thresholdPct: 15, cooldownTurns: 1 } } },
+      workspace: { agents: {}, config: { autoCompact: { thresholdPct: 15, cooldownTurns: 1 } } },
+      runtimes: {},
+      roomDefaultTarget: async () => "gaia",
       emitSnapshot: async () => {},
     });
     assert.match(await command(), /Auto-compact: 15%; cooldown 1 turn \(threshold: workspace, cooldown: workspace\)/);
@@ -153,7 +155,7 @@ test("token commands persist/reopen, switch modes, clear pending, and reject inv
   const temp = await createTempDir();
   try {
     const room = await RoomHandle.open(temp.path, "default");
-    const command = RoomCommandsMixin.prototype.runAutoCompactCommand.bind({ room, workspace: { config: { autoCompact: tokensConfig } }, emitSnapshot: async () => {} });
+    const command = RoomCommandsMixin.prototype.runAutoCompactCommand.bind({ room, workspace: { agents: {}, config: { autoCompact: tokensConfig } }, runtimes: {}, roomDefaultTarget: async () => "gaia", emitSnapshot: async () => {} });
     assert.match(await command("180k", "2"), /180000 tokens; cooldown 2 turns/);
     assert.deepEqual((await (await RoomHandle.open(temp.path, "default")).state()).autoCompact, { thresholdPct: null, thresholdTokens: 180_000, cooldownTurns: 2 });
     await room.updateState(state => { state.autoCompact!.pending = { gaia: 90 }; state.autoCompact!.cooldowns = { gaia: 1 }; });
@@ -167,4 +169,15 @@ test("token commands persist/reopen, switch modes, clear pending, and reject inv
     assert.match(await command("off"), /Auto-compact: off/);
     assert.deepEqual((await (await RoomHandle.open(temp.path, "default")).state()).autoCompact, { thresholdPct: null, cooldownTurns: 2 });
   } finally { await temp.cleanup(); }
+});
+
+
+test("model identity fallback requires exact configured pair; runtime change wins immediately", async () => {
+  const { autoCompactModelFor } = await import("../src/services/room/auto-compact.js");
+  const configured = { provider: "provider", name: "configured" };
+  assert.deepEqual(autoCompactModelFor(undefined, configured), { provider: "provider", model: "configured" });
+  assert.equal(autoCompactModelFor(undefined, { name: "configured" }), undefined);
+  assert.equal(autoCompactModelFor(undefined, { provider: "provider" }), undefined);
+  const runtime = { effectiveModel: { provider: "other", model: "live/id" } } as import("../src/harness/spec.js").AgentRuntime;
+  assert.deepEqual(autoCompactModelFor(runtime, configured), { provider: "other", model: "live/id" });
 });
