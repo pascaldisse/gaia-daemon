@@ -41,6 +41,13 @@ test("Pi hints retain model, tool, and account configuration", () => {
   assert.ok(accounts?.["accounts.[].credentials.oauthToken"]);
 });
 
+test("model reasoning overrides expose common settings field hints", () => {
+  const hints = buildFileHints({ label: ".gaia/config.json", kind: "json" }, sources);
+  assert.equal(hint(hints, "modelReasoningOverrides").input, "json");
+  assert.deepEqual(hint(hints, "modelReasoningOverrides.*.*.supportedLevels").options?.map((option) => option.value), ["off", "medium"]);
+  assert.deepEqual(hint(hints, "modelReasoningOverrides.*.*.defaultLevel").options?.map((option) => option.value), ["off", "medium"]);
+});
+
 test("tool and thinking vocabularies remain available through Pi", () => {
   const names = sdkToolNames(process.cwd());
   for (const expected of ["read", "memory", "recall", "summon", "web"]) assert.ok(names.includes(expected), `${expected} present`);

@@ -447,6 +447,8 @@ function configJsonHints(sources: HintSources): FileHints {
     harness: select(harnessSelectOptions(), { optional: true }),
     maxSummonsPerRoom: { input: "number", optional: true, description: "max concurrently running summons per room" },
     modelReasoningOverrides: { input: "json", optional: true, description: "Exact provider/model reasoning choices and defaults; global base merged with workspace entries" },
+    "modelReasoningOverrides.*.*.supportedLevels": { input: "multiselect", options: values(sources.thinkingLevels), optional: true },
+    "modelReasoningOverrides.*.*.defaultLevel": select(values(sources.thinkingLevels), { optional: true }),
     mcpServers: mcpServersHint(),
     ...sandboxHints(),
     ...hooksHints(),

@@ -227,14 +227,8 @@ export function readOnlyPiSettings(cwd: string): SettingsManager {
 export function skillPathsKey(paths: string[]): string {
   return JSON.stringify(paths);
 }
-// GAIA's ThinkingLevel adds "max" on top of pi's own ceiling (pi-agent-core's
-// ThinkingLevel tops at "xhigh" — Claude CLI is the only harness that has a
-// literal "max" effort). Clamp at the pi SDK boundary so a session never gets
-// handed a level pi doesn't know: an unmapped string falls back to pi-ai's
-// internal default ("high") inside mapThinkingLevelToEffort, which is WORSE
-// than xhigh, not a safe no-op. Used both for session creation (thinkingLevel)
-// and the hot per-turn override (setThinkingLevel) so pi always receives the
-// same clamped vocabulary either way.
+// Keep GAIA and the current Pi SDK vocabulary identical. In particular,
+// `max` is a distinct native effort and must never be silently aliased to xhigh.
 export function toPiThinking(level: ThinkingLevel | string | undefined): any {
-  return level === "max" ? "xhigh" : level;
+  return level;
 }

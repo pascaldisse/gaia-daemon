@@ -32,7 +32,11 @@ export function mergeModelReasoningOverrides(
   if (!base && !patch) return undefined;
   const merged: Record<string, Record<string, ModelReasoningOverride>> = {};
   for (const provider of new Set([...Object.keys(base ?? {}), ...Object.keys(patch ?? {})])) {
-    merged[provider] = { ...(base?.[provider] ?? {}), ...(patch?.[provider] ?? {}) };
+    const models: Record<string, ModelReasoningOverride> = {};
+    for (const model of new Set([...Object.keys(base?.[provider] ?? {}), ...Object.keys(patch?.[provider] ?? {})])) {
+      models[model] = { ...(base?.[provider]?.[model] ?? {}), ...(patch?.[provider]?.[model] ?? {}) };
+    }
+    merged[provider] = models;
   }
   return merged;
 }

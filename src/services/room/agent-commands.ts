@@ -159,9 +159,11 @@ export class RoomAgentCommandsMixin {
       const identity = this.runtimes[agent.id]?.effectiveModel ?? agent.model;
       const override = modelReasoningOverride(this.workspace.config.modelReasoningOverrides, identity && ("model" in identity ? { provider: identity.provider, name: identity.model } : identity));
       const descriptor = await reasoningFor(harnessIdFor(agent, this.workspace), identity, override);
-      if (!descriptor || descriptor.status === "unknown") throw new Error(`Reasoning capabilities are unknown for ${identity?.provider ?? "unknown"}/${identity && "model" in identity ? identity.model : identity?.name ?? "unknown"}; refusing an unchecked thinking level.`);
-      const resolved = resolveReasoningLevel(descriptor, level as ThinkingLevel, true);
-      level = resolved.status === "known" ? resolved.effectiveLevel ?? level : level;
+      if (identity && (!descriptor || descriptor.status === "unknown")) throw new Error(`Reasoning capabilities are unknown for ${identity.provider ?? "unknown"}/${"model" in identity ? identity.model : identity.name ?? "unknown"}; refusing an unchecked thinking level.`);
+      if (descriptor?.status === "known") {
+        const resolved = resolveReasoningLevel(descriptor, level as ThinkingLevel, true);
+        level = resolved.status === "known" ? resolved.effectiveLevel ?? level : level;
+      }
       // Routes through the daemon closure so an active voice CALL still gets
       // call-scoped thinking (reverts on hang-up); the non-call path resolves
       // to THIS room's scope via daemon.applyThinking → setRoomThinking below.
