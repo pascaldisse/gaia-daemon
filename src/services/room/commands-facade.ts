@@ -1,3 +1,4 @@
+import { AUTO_COMPACT_USAGE, parseAutoCompactThreshold } from "./auto-compact-command.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -79,7 +80,7 @@ import { installRoomUi, RoomUiMixin } from "../room/ui.js";
 import { installRoomSnapshot, RoomSnapshotMixin } from "../room/snapshot.js";
 export { readAmbientWatchdog, scanRoomActivity } from "../room/snapshot.js";
 import { readVoiceSettings } from "../voice.js";
-import { formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
+import { autoCompactModelFor, formatAutoCompactSetting, resolveAutoCompactConfig } from "./auto-compact.js";
 import type { RoomCommandsFacadePort } from "./ports.js";
 
 const RECALL_COMMAND_LIMIT = 8;
@@ -339,29 +340,28 @@ export class RoomCommandsMixin {
   async runAutoCompactCommand(value?: string, cooldownRaw?: string): Promise<string> {
     const state = await this.room.state();
     const workspaceConfig = this.workspace.config.autoCompact;
-    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact), state.autoCompact);
-    const off = value.toLowerCase() === "off";
-    const thresholdPct = Number(value);
-    if (!off && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100)) {
-      return "Usage: /autocompact <0-100|off> [cooldownTurns]";
-    }
+    const target = await this.roomDefaultTarget();
+    const model = autoCompactModelFor(this.runtimes[target], this.workspace.agents[target]?.model);
+    if (value === undefined) return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, state.autoCompact, model), state.autoCompact, model);
+    const threshold = parseAutoCompactThreshold(value);
+    if (!threshold) return AUTO_COMPACT_USAGE;
     let cooldownTurns: number | undefined;
     if (cooldownRaw !== undefined) {
       cooldownTurns = Number(cooldownRaw);
-      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return "Usage: /autocompact <0-100|off> [cooldownTurns]";
+      if (!Number.isInteger(cooldownTurns) || cooldownTurns < 0) return AUTO_COMPACT_USAGE;
     }
     await this.room.updateState((current) => {
       // A changed policy supersedes any scheduled pass/cooldown from the old one.
-      const { pending: _pending, cooldowns: _cooldowns, ...override } = current.autoCompact ?? {};
+      const { pending: _pending, cooldowns: _cooldowns, thresholdPct: _pct, thresholdTokens: _tokens, ...override } = current.autoCompact ?? {};
       current.autoCompact = {
         ...override,
-        thresholdPct: off ? null : thresholdPct,
+        ...threshold,
         ...(cooldownTurns === undefined ? {} : { cooldownTurns }),
       };
     });
     const updated = await this.room.state();
     await this.emitSnapshot();
-    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact), updated.autoCompact);
+    return formatAutoCompactSetting(resolveAutoCompactConfig(workspaceConfig, updated.autoCompact, model), updated.autoCompact, model);
   }
 
   /** /compact: native harness compaction; --edit adds Pi's review/apply

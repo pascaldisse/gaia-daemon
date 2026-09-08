@@ -1,3 +1,4 @@
+import { parseAutoCompactOverrides } from "../core/auto-compact.js";
 // RoomHandle — the single writer for one room's transcript.jsonl + state.json,
 // and the home of the durability protocol. Nothing else in the system writes
 // these files.
@@ -148,12 +149,11 @@ function cursorRecord(value: unknown): Record<string, number> {
  * finite positive maxTokens is carried when present. */
 function autoCompactFrom(value: unknown): RoomAutoCompactState | undefined {
 if (!isRecord(value)) return undefined;
-const thresholdPct = value.thresholdPct === null ? null : typeof value.thresholdPct === "number" && Number.isFinite(value.thresholdPct) && value.thresholdPct >= 0 && value.thresholdPct <= 100 ? value.thresholdPct : undefined;
-const cooldownTurns = typeof value.cooldownTurns === "number" && Number.isInteger(value.cooldownTurns) && value.cooldownTurns >= 0 ? value.cooldownTurns : undefined;
+const overrides = parseAutoCompactOverrides(value);
 const numberRecord = (raw: unknown): Record<string, number> | undefined => !isRecord(raw) ? undefined : (() => { const entries = Object.entries(raw).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0).map(([key, number]) => [key, Math.floor(number)] as const); return entries.length ? Object.fromEntries(entries) : undefined; })();
 const pending = numberRecord(value.pending);
 const cooldowns = numberRecord(value.cooldowns);
-return thresholdPct === undefined && cooldownTurns === undefined && !pending && !cooldowns ? undefined : { ...(thresholdPct === undefined ? {} : { thresholdPct }), ...(cooldownTurns === undefined ? {} : { cooldownTurns }), ...(pending ? { pending } : {}), ...(cooldowns ? { cooldowns } : {}) };
+return !Object.keys(overrides).length && !pending && !cooldowns ? undefined : { ...overrides, ...(pending ? { pending } : {}), ...(cooldowns ? { cooldowns } : {}) };
 }
 function contextUsageFrom(value: unknown): Record<string, { usedTokens: number; maxTokens?: number }> | undefined {
   if (!isRecord(value)) return undefined;
