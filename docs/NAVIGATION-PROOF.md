@@ -1,4 +1,6 @@
-# Navigation · 2026-09-05
+# Navigation · 2026-09-05 · historical
+
+Latest → [NAVIGATION-PROOF-2026-09-08.md](NAVIGATION-PROOF-2026-09-08.md)
 
 § Scope
 Room/workspace switching → shared latest-intent epoch + abort/deadline; session-only bounded LRU → synchronous revisit adoption; rejected optimistic chains → last confirmed room.

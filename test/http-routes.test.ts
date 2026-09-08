@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { GaiaWebServer } from "../src/server/http.js";
 import { artifactRoutePrefix } from "../src/server/routes/artifacts.js";
@@ -353,6 +353,11 @@ test("memory domain: GET workspace memory/status shape, POST harness memory writ
   let live: Awaited<ReturnType<GaiaWebServer["listen"]>> | undefined;
   try {
     await initWorkspace(workspace);
+    // Endpoint contract fixture → no optional model downloads/sidecars.
+    const configPath = join(workspace, ".gaia", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.memory = { ...config.memory, embeddings: "off", reranker: "off" };
+    await writeFile(configPath, JSON.stringify(config));
     live = await web.listen();
     const internals = web as unknown as {
       daemon: {
