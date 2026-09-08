@@ -1,6 +1,6 @@
 import type { BackgroundTask, UiDeviceCodeInfo, UiPromptField } from "./harness.js";
 import type { EventDetails, LiveTurn, MessageAttachment, ModelFallback, RoomEvent, SkillInvocation } from "./events.js";
-import type { AgentDef } from "./agents.js";
+import type { AgentDef, ModelReasoningDescriptor } from "./agents.js";
 import type { ContextGatePending, RoomState } from "./rooms.js";
 import type { SanitizeStatus } from "./sanitize.js";
 import type { FieldHintOption } from "./settings.js";
@@ -53,6 +53,7 @@ export interface AgentStatus {
   tools: string[];
   voice?: string;
   thinking?: string;
+  reasoning?: ModelReasoningDescriptor;
   activeRole?: string;
   defaultRole?: string;
   /** Effective harness id (agent.json's own, else the workspace/global default) —

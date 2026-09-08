@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
-import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { gaiaHome } from "../core/paths.js";
-import type { UsageProbeResult } from "../core/types.js";
+import type { NativeModelReasoning, ThinkingLevel, UsageProbeResult } from "../core/types.js";
+import { REASONING_LEVELS } from "../core/model-reasoning-config.js";
+import { findModelWithAlias } from "./model-aliases.js";
 import { registerHarness } from "./spec.js";
 import { emailFromJwt, expiryMsFromJwt, fetchAnthropicUsage, fetchChatGptUsage } from "./usage.js";
 import { PI_CAPABILITIES, PiRuntime } from "./pi/runtime.js";
@@ -18,6 +21,26 @@ export type { PiRuntimeOptions, PiRuntimeSessionFactory, PiRuntimeSessionFactory
 export { redirectProviderFetch, rewriteProviderUrl } from "./pi/tools.js";
 registerBunOAuthFlows();
 function realPiAuthJson(): string { return join(homedir(), ".pi", "agent", "auth.json"); }
+async function piModelReasoning(model: { provider?: string; name?: string }, current?: unknown): Promise<NativeModelReasoning | undefined> {
+  if (!model.provider || !model.name) return undefined;
+  let resolved = current as Model<any> | undefined;
+  if (!resolved) {
+    const runtime = await ModelRuntime.create();
+    const registry = new ModelRegistry(runtime);
+    resolved = findModelWithAlias(registry, model.provider, model.name);
+  }
+  if (!resolved) return undefined;
+  if (!resolved.reasoning) return { levels: [{ level: "off", providerValue: "off" }], defaultLevel: "off", adaptive: false };
+  const adaptive = Boolean(resolved.compat && "forceAdaptiveThinking" in resolved.compat && resolved.compat.forceAdaptiveThinking === true);
+  const standard = REASONING_LEVELS.slice(0, 5);
+  const levels = REASONING_LEVELS.flatMap((level): Array<{ level: ThinkingLevel; providerValue: string }> => {
+    const mapped = resolved.thinkingLevelMap?.[level];
+    if (mapped === null || (mapped === undefined && !standard.includes(level))) return [];
+    const providerValue = mapped ?? (adaptive && level === "minimal" ? "low" : level);
+    return [{ level, providerValue }];
+  });
+  return { levels, adaptive };
+}
 async function probePiUsage(provider: "anthropic" | "openai-codex"): Promise<UsageProbeResult> {
   let cred: { type?: string; accountId?: unknown } | undefined; let token: string | undefined;
   try { cred = readStoredCredential(provider); if (!cred || cred.type !== "oauth") return { status: "none" }; const runtime = await ModelRuntime.create(); token = (await runtime.getAuth(provider))?.auth.apiKey; } catch { return { status: "error" }; }
@@ -43,6 +66,7 @@ registerHarness({
   // than a harness-id branch.
   extensions: { discover: true },
   create: (ctx) => new PiRuntime(ctx),
+  modelReasoning: piModelReasoning,
   // Pi self-persists sessions as files under the room's pi-sessions/<agent>/
   // dir (SessionManager.continueRecent resumes the most recent one). Any file
   // there means the conversation behind the cursor is resumable; an empty or
