@@ -272,6 +272,14 @@ export class Daemon {
   get cwd(): string {
     return this.options.cwd;
   }
+  /** Default HTTP workspace: the daemon process cwd, registered on demand. */
+  async defaultWorkspaceId(): Promise<string> {
+    return (await this.registry.add(this.options.cwd)).id;
+  }
+  /** Agent ids available to headless OpenAI-compatible chat in the cwd workspace. */
+  async defaultWorkspaceAgentIds(): Promise<string[]> {
+    return Object.keys((await loadWorkspace(this.options.cwd)).agents).sort();
+  }
 
   log(message: string): void {
     (this.options.log ?? console.log)(`[gaia] ${message}`);

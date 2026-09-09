@@ -35,7 +35,7 @@ export interface AgentInput {
   tools?: string[];
   skills?: string[];
   /** "voice" turns come from a live call: the reply is spoken aloud by TTS. */
-  channel?: "text" | "voice";
+  channel?: "text" | "voice" | "chat";
   /** Per-turn thinking override (e.g. voice forcing it off). */
   thinking?: string;
   /** Room-wide GAIA-THINK protocol level (0-10) from RoomState.thinkingLevel;

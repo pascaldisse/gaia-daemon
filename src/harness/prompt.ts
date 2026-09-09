@@ -91,7 +91,7 @@ export interface TurnPromptInput {
   recall?: string;
   /** Context returned by room-local command plugins. */
   pluginContext?: string;
-  channel?: "text" | "voice";
+  channel?: "text" | "voice" | "chat";
   /** Files attached to the newest message (pasted into the composer). */
   attachments?: MessageAttachment[];
   /** Where this agent's child process actually runs (RunnerHost's cwd) and

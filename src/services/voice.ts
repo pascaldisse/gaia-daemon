@@ -841,18 +841,19 @@ export function classifyVoiceTurn(body: unknown): VoiceTurn | undefined {
 
 const COMPLETION_MODEL = "gaia";
 
-export function modelListPayload(): unknown {
+export function modelListPayload(models: readonly string[] = [COMPLETION_MODEL]): unknown {
   // unmute autoselects its model from this list when KYUTAI_LLM_MODEL is not
-  // set; it requires exactly one entry.
-  return { object: "list", data: [{ id: COMPLETION_MODEL, object: "model", created: 0, owned_by: "gaia" }] };
+  // set; the voice path keeps its single `gaia` entry. Headless chat exposes
+  // the workspace agent ids instead.
+  return { object: "list", data: models.map((id) => ({ id, object: "model", created: 0, owned_by: "gaia" })) };
 }
 
-export function completionChunk(id: string, delta: string | undefined, finishReason: "stop" | null): string {
+export function completionChunk(id: string, delta: string | undefined, finishReason: "stop" | null, model = COMPLETION_MODEL): string {
   const chunk = {
     id,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
-    model: COMPLETION_MODEL,
+    model,
     choices: [
       {
         index: 0,
@@ -868,12 +869,12 @@ export function completionDone(): string {
   return "data: [DONE]\n\n";
 }
 
-export function completionPayload(id: string, text: string): unknown {
+export function completionPayload(id: string, text: string, model = COMPLETION_MODEL): unknown {
   return {
     id,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: COMPLETION_MODEL,
+    model,
     choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
   };
 }
