@@ -1,0 +1,31 @@
+bun test v1.3.14 (0d9b296a)
+
+test/monad.test.ts:
+(pass) policies self-register via the barrel [1.10ms]
+Usage: gaia serve <room> [--port N] [--host H] [--adapter id] [--warm|--no-warm]
+(pass) serve CLI registers the pi harness before dispatch [8.59ms]
+(pass) warm serve reuses one worker and falls back after worker death [0.46ms]
+(pass) replyAccepts: leading token, tolerant of markdown [0.09ms]
+(pass) extractJsonObject: pulls the first balanced object out of prose/fences [0.06ms]
+(pass) engine: Thinker→Worker→Verifier loop, REVISE then ACCEPT, answers the last worker [0.79ms]
+(pass) engine: model-led routing is honored when the coordinator returns a decision [0.21ms]
+(pass) engine: direct dispatches one worker without a coordinator round [0.16ms]
+(pass) engine: blank direct reply falls back to prompt-driven [0.10ms]
+(pass) engine: GAIA_SERVE_DIRECT fast-path is limited to one-slot prompt-driven rooms [0.08ms]
+(pass) engine: multi-slot prompt-driven still invokes its coordinator [0.09ms]
+(pass) engine: workers see original request content by default [0.10ms]
+(pass) engine: workerSeesRequest false keeps request out of worker tasks [0.11ms]
+(pass) engine: stops at maxTurns and still returns the last worker result [0.12ms]
+(pass) engine: cancellation stops the loop and reports 'stop' [0.07ms]
+(pass) engine + conductor-dag: a later step provably sees only its access_list [0.32ms]
+(pass) engine: inlined rolePrompts win over resolveRolePrompt [0.09ms]
+(pass) normalizeRoomState: a valid monad block round-trips; a malformed one is dropped [0.60ms]
+(pass) setup: discover the bundled monad setup, activate it, then deactivate [35.68ms]
+(pass) setup: activation accepts the direct policy [15.78ms]
+(pass) setup: activating with an unknown policy or missing agents fails clearly [14.60ms]
+(pass) loadWorkspace: global config.json env is a base, workspace env overrides same key [11.02ms]
+(pass) loadWorkspace: missing global config.json leaves workspace env untouched [13.23ms]
+
+ 23 pass
+ 0 fail
+Ran 23 tests across 1 file. [585.00ms]
