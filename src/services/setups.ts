@@ -387,23 +387,26 @@ export async function runSetupCli(args: string[], cwd = process.cwd()): Promise<
 // OpenAI-compatible surface in here — the --adapter flag stays for the CLI
 // contract and rejects anything else.)
 
-const SERVE_USAGE = `Usage: gaia serve <room> [--port N] [--host H] [--adapter id]`;
+const SERVE_USAGE = `Usage: gaia serve <room> [--port N] [--host H] [--adapter id] [--warm|--no-warm]`;
 const SERVE_ADAPTER = "openai-compatible";
 
-function parseServeArgs(args: string[]): { room?: string; port: number; host: string; adapter: string } {
+function parseServeArgs(args: string[]): { room?: string; port: number; host: string; adapter: string; warm: boolean } {
   let room: string | undefined;
   let port = 8799;
   let host = "127.0.0.1";
   let adapter = SERVE_ADAPTER;
+  let warm = process.env.GAIA_SERVE_WARM !== "0";
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--port") port = Number.parseInt(args[++i] ?? "", 10);
     else if (arg === "--host") host = args[++i] ?? host;
     else if (arg === "--adapter") adapter = args[++i] ?? adapter;
+    else if (arg === "--warm") warm = true;
+    else if (arg === "--no-warm") warm = false;
     else if (!arg.startsWith("--") && !room) room = arg;
   }
   if (!Number.isInteger(port) || port < 0 || port > 65535) port = 8799;
-  return { room, port, host, adapter };
+  return { room, port, host, adapter, warm };
 }
 
 function chatMessagesFrom(body: unknown): ChatMessage[] {
@@ -476,13 +479,77 @@ interface ServeRoomService extends SummonRoomAccess {
   init(): Promise<void>;
   dispose(): void | Promise<void>;
 }
+interface ServeWarmRoomService extends ServeRoomService {
+  readonly roomId: string;
+  readonly runtimes: Record<string, { resetRoom(roomId: string): void }>;
+}
+export interface ServeWarmWorker {
+  run(task: string): Promise<string>;
+  dispose(): void | Promise<void>;
+}
+/** Reuses a reset-before-turn worker per agent. A failed warm worker is discarded
+ * and the exact task is retried through the original fresh-summon path. */
+export class WarmServeDispatcher {
+  private readonly workers = new Map<string, ServeWarmWorker>();
+  private readonly tails = new Map<string, Promise<void>>();
+  constructor(
+    private readonly createWorker: (agentId: string) => Promise<ServeWarmWorker>,
+    private readonly freshDispatch: (agentId: string, task: string) => Promise<string>,
+    private readonly trace: (event: string, fields?: Record<string, string>) => void = () => {},
+  ) {}
+  dispatch(agentId: string, task: string): Promise<string> {
+    const prior = this.tails.get(agentId) ?? Promise.resolve();
+    const run = prior.catch(() => {}).then(() => this.dispatchOne(agentId, task));
+    this.tails.set(agentId, run.then(() => {}, () => {}));
+    return run;
+  }
+  private async dispatchOne(agentId: string, task: string): Promise<string> {
+    let worker = this.workers.get(agentId);
+    try {
+      if (!worker) {
+        worker = await this.createWorker(agentId);
+        this.workers.set(agentId, worker);
+        this.trace("warm worker created", { agent: agentId });
+      }
+      return await worker.run(task);
+    } catch (error) {
+      if (worker && this.workers.get(agentId) === worker) this.workers.delete(agentId);
+      await Promise.resolve(worker?.dispose()).catch(() => {});
+      this.trace("warm worker failed; fresh fallback", { agent: agentId, error: error instanceof Error ? error.message : String(error) });
+      return this.freshDispatch(agentId, task);
+    }
+  }
+  async dispose(): Promise<void> {
+    await Promise.all([...this.workers.values()].map((worker) => Promise.resolve(worker.dispose()).catch(() => {})));
+    this.workers.clear();
+  }
+}
+class RoomWarmWorker implements ServeWarmWorker {
+  constructor(private readonly service: ServeWarmRoomService, private readonly agentId: string) {}
+  async run(task: string): Promise<string> {
+    // RunnerHost orders reset before turn: warm process/model, blank model session.
+    this.service.runtimes[this.agentId]?.resetRoom(this.service.roomId);
+    const turn = await this.service.sendMessage(task, { targets: [this.agentId] });
+    await this.service.waitForSettled();
+    if (turn.status !== "complete") throw new Error(turn.error ?? `warm worker turn ${turn.status}`);
+    return this.service.latestReplyFrom(this.agentId);
+  }
+  dispose(): void | Promise<void> {
+    return this.service.dispose();
+  }
+}
+function serveTrace(event: string, fields: Record<string, string | number | boolean> = {}): void {
+  if (process.env.GAIA_SERVE_TRACE !== "1") return;
+  const detail = Object.entries(fields).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+  console.error(`[gaia serve ${new Date().toISOString()}] ${event}${detail ? ` ${detail}` : ""}`);
+}
 
 /** Dispatches `gaia serve …`. Returns a process exit code (long-running on success). */
 export async function runServeCli(args: string[], cwd = process.cwd()): Promise<number> {
   // The CLI deliberately imports this module without the daemon runtime graph.
   // Serve opens RoomService itself, so it must register harness specs on demand.
   await import("../harness/index.js");
-  const { room, port, host, adapter } = parseServeArgs(args);
+  const { room, port, host, adapter, warm } = parseServeArgs(args);
   if (!room) {
     console.error(SERVE_USAGE);
     return 1;
@@ -522,18 +589,51 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
     await ensureWorkspaceRoom(cwd, roomId);
     const service = await RoomService.open({ workspaceId: "serve", workspace, roomId, memoryStore, summonHost: coordinator });
     await service.init();
+    if (process.env.GAIA_SERVE_TRACE === "1") {
+      let runnerReady = false;
+      const firstTokenTurns = new Set<string>();
+      service.subscribe((event) => {
+        if (event.type === "model-info") {
+          serveTrace(runnerReady ? "model request started" : "runner spawned/model ready", { room: roomId, agent: event.agentId });
+          runnerReady = true;
+        }
+        if (event.type === "text-delta" && !firstTokenTurns.has(event.eventId)) {
+          firstTokenTurns.add(event.eventId);
+          serveTrace("first model token", { room: roomId, agent: event.agentId });
+        }
+      });
+    }
     services.set(roomId, service);
     return service;
   };
   coordinator = new SummonCoordinator(workspace, cwd, serviceForRoom, () => liveMaxSummonsPerRoom(cwd));
 
   await ensureWorkspaceRoom(cwd, room);
-
+  let warmSequence = 0;
+  const freshDispatch = (agentId: string, task: string): Promise<string> => {
+    serveTrace("summon dispatched", { mode: "fresh", agent: agentId });
+    return coordinator.summonAndWait(room, agentId, task);
+  };
+  const warmDispatcher = warm
+    ? new WarmServeDispatcher(
+        async (agentId) => {
+          const warmRoomId = `serve-${agentId}-${Date.now().toString(36)}${(++warmSequence).toString(36)}`.slice(0, 64);
+          await ensureWorkspaceRoom(cwd, warmRoomId, { incognito: true });
+          return new RoomWarmWorker((await serviceForRoom(warmRoomId)) as unknown as ServeWarmRoomService, agentId);
+        },
+        freshDispatch,
+        (event, fields) => serveTrace(event, fields ?? {}),
+      )
+    : undefined;
   const run = async (messages: ChatMessage[]): Promise<string> => {
+    serveTrace("engine.run start", { messages: messages.length, warm });
     const engine = new MonadEngine({
       config: monad,
       parentRoomId: room,
-      dispatch: (agentId, task) => coordinator.summonAndWait(room, agentId, task),
+      dispatch: (agentId, task) => {
+        serveTrace("summon dispatched", { mode: warmDispatcher ? "warm" : "fresh", agent: agentId });
+        return warmDispatcher ? warmDispatcher.dispatch(agentId, task) : freshDispatch(agentId, task);
+      },
       resolveRolePrompt: async (agentId, role) => {
         const agent = workspace.agents[agentId];
         if (!agent) return "";
@@ -541,6 +641,7 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
       },
     });
     const result = await engine.run(messages);
+    serveTrace("done", { steps: result.steps.length });
     return result.final;
   };
 
@@ -548,6 +649,7 @@ export async function runServeCli(args: string[], cwd = process.cwd()): Promise<
   console.log(`gaia serve — monad room '${room}' as one model via ${adapter}`);
   console.log(`  endpoint: ${handle.url}`);
   console.log(`  policy: ${monad.policy}   pool: ${monad.slots.map((slot) => `@${slot.agentId}`).join(" · ")}`);
+  console.log(`  warm workers: ${warm ? "on" : "off"} (${warm ? "reset session per request" : "fresh summon per step"})`);
   console.log("Press Ctrl+C to stop.");
 
   await new Promise<void>((resolveStop) => {

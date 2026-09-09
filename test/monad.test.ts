@@ -7,7 +7,7 @@ import { MonadEngine } from "../src/services/monad.js";
 import { extractJsonObject, replyAccepts, routingPolicyIds } from "../src/services/policies/index.js";
 import type { MonadConfig } from "../src/core/types.js";
 import { normalizeRoomState } from "../src/domain/rooms.js";
-import { activateSetup, deactivateMonad, discoverSetups, readRoomMonad, runServeCli } from "../src/services/setups.js";
+import { activateSetup, deactivateMonad, discoverSetups, readRoomMonad, runServeCli, WarmServeDispatcher, type ServeWarmWorker } from "../src/services/setups.js";
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { harnessSpecFor } from "../src/harness/spec.js";
 
@@ -32,6 +32,26 @@ test("serve CLI registers the pi harness before dispatch", async () => {
   const exitCode = await runServeCli(["--adapter", "not-a-real-adapter"]);
   assert.equal(exitCode, 1);
   assert.equal(harnessSpecFor("pi").id, "pi");
+});
+test("warm serve reuses one worker and falls back after worker death", async () => {
+  let created = 0;
+  const runs: string[] = [];
+  const fresh: string[] = [];
+  const workers: ServeWarmWorker[] = [
+    { run: async (task) => { runs.push(task); return `warm:${task}`; }, dispose: () => {} },
+    { run: async () => { throw new Error("runner died"); }, dispose: () => {} },
+  ];
+  const dispatcher = new WarmServeDispatcher(
+    async () => workers[created++]!,
+    async (_agent, task) => { fresh.push(task); return `fresh:${task}`; },
+  );
+  assert.equal(await dispatcher.dispatch("dario", "one"), "warm:one");
+  assert.equal(await dispatcher.dispatch("dario", "two"), "warm:two");
+  assert.equal(created, 1, "two requests reuse the same warm worker");
+  await dispatcher.dispose();
+  assert.equal(await dispatcher.dispatch("dario", "after-death"), "fresh:after-death");
+  assert.deepEqual(runs, ["one", "two"]);
+  assert.deepEqual(fresh, ["after-death"]);
 });
 
 // ---------- util ----------
