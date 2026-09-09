@@ -1,0 +1,25 @@
+gaia serve — monad room 'serve-warm-room' as one model via openai-compatible
+  endpoint: http://127.0.0.1:47913/v1
+  policy: prompt-driven   pool: @dario
+  warm workers: on (reset session per request)
+Press Ctrl+C to stop.
+[gaia serve 2026-09-09T15:47:25.728Z] engine.run start messages=1 warm=true
+[gaia serve 2026-09-09T15:47:25.729Z] summon dispatched mode="warm" agent="dario"
+[gaia serve 2026-09-09T15:47:25.737Z] warm worker created agent="dario"
+[runner dario] [runner-plugins] loaded anthropic-oauth
+[runner dario] pi extensions: user-global loaded=[none] skipped=[/Users/pascaldisse/.pi/agent/extensions/clean-compact.ts, /Users/pascaldisse/.pi/agent/extensions/cmd-backspace-macos.ts, /Users/pascaldisse/.pi/agent/extensions/dsc-compact.ts, /Users/pascaldisse/.pi/agent/extensions/execute.ts, /Users/pascaldisse/.pi/agent/extensions/persona.ts]
+[gaia serve 2026-09-09T15:47:26.593Z] runner spawned/model ready room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:29.094Z] first model token room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:29.602Z] done steps=1
+[gaia serve 2026-09-09T15:47:29.618Z] engine.run start messages=1 warm=true
+[gaia serve 2026-09-09T15:47:29.619Z] summon dispatched mode="warm" agent="dario"
+[runner dario] pi extensions: user-global loaded=[none] skipped=[/Users/pascaldisse/.pi/agent/extensions/clean-compact.ts, /Users/pascaldisse/.pi/agent/extensions/cmd-backspace-macos.ts, /Users/pascaldisse/.pi/agent/extensions/dsc-compact.ts, /Users/pascaldisse/.pi/agent/extensions/execute.ts, /Users/pascaldisse/.pi/agent/extensions/persona.ts]
+[gaia serve 2026-09-09T15:47:30.005Z] model request started room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:30.953Z] first model token room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:31.578Z] done steps=1
+[gaia serve 2026-09-09T15:47:31.595Z] engine.run start messages=1 warm=true
+[gaia serve 2026-09-09T15:47:31.595Z] summon dispatched mode="warm" agent="dario"
+[runner dario] pi extensions: user-global loaded=[none] skipped=[/Users/pascaldisse/.pi/agent/extensions/clean-compact.ts, /Users/pascaldisse/.pi/agent/extensions/cmd-backspace-macos.ts, /Users/pascaldisse/.pi/agent/extensions/dsc-compact.ts, /Users/pascaldisse/.pi/agent/extensions/execute.ts, /Users/pascaldisse/.pi/agent/extensions/persona.ts]
+[gaia serve 2026-09-09T15:47:31.973Z] model request started room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:34.524Z] first model token room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:35.176Z] done steps=1

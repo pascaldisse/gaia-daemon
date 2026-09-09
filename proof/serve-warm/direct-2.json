@@ -1,0 +1,1 @@
+{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi again! How can I help?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}

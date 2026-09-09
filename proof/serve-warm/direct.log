@@ -1,0 +1,21 @@
+--- direct (GAIA_SERVE_DIRECT=1, warm on) ---
+direct-1 wall=3.875138
+{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! How can you help today?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+direct-2 wall=1.961010
+{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi again! How can I help?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+direct-3 wall=3.581502
+{"id":"chatcmpl-3","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! What can I help you with?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+--- prompt-driven (warm on) ---
+prompt-1 wall=6.843481
+{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! How can I help?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+prompt-2 wall=9.028243
+{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"ACCEPT"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+prompt-3 wall=2.526435
+{"id":"chatcmpl-3","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+--- direct request 2 trace ---
+[gaia serve 2026-09-09T15:47:29.618Z] engine.run start messages=1 warm=true
+[gaia serve 2026-09-09T15:47:29.619Z] summon dispatched mode="warm" agent="dario"
+[runner dario] pi extensions: user-global loaded=[none] skipped=[/Users/pascaldisse/.pi/agent/extensions/clean-compact.ts, /Users/pascaldisse/.pi/agent/extensions/cmd-backspace-macos.ts, /Users/pascaldisse/.pi/agent/extensions/dsc-compact.ts, /Users/pascaldisse/.pi/agent/extensions/execute.ts, /Users/pascaldisse/.pi/agent/extensions/persona.ts]
+[gaia serve 2026-09-09T15:47:30.005Z] model request started room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:30.953Z] first model token room="serve-dario-mtu9uzs11" agent="dario"
+[gaia serve 2026-09-09T15:47:31.578Z] done steps=1

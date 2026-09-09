@@ -1,0 +1,30 @@
+bun test v1.3.14 (0d9b296a)
+
+test/monad.test.ts:
+(pass) policies self-register via the barrel [0.82ms]
+Usage: gaia serve <room> [--port N] [--host H] [--adapter id] [--warm|--no-warm]
+(pass) serve CLI registers the pi harness before dispatch [8.01ms]
+(pass) warm serve reuses one worker and falls back after worker death [0.48ms]
+(pass) replyAccepts: leading token, tolerant of markdown [0.19ms]
+(pass) extractJsonObject: pulls the first balanced object out of prose/fences [0.09ms]
+(pass) engine: Thinker→Worker→Verifier loop, REVISE then ACCEPT, answers the last worker [0.87ms]
+(pass) engine: model-led routing is honored when the coordinator returns a decision [0.22ms]
+(pass) engine: direct dispatches one worker without a coordinator round [0.16ms]
+(pass) engine: blank direct reply falls back to prompt-driven [0.11ms]
+(pass) engine: GAIA_SERVE_DIRECT fast-path is limited to one-slot prompt-driven rooms [0.10ms]
+(pass) engine: multi-slot prompt-driven still invokes its coordinator [0.09ms]
+(pass) engine: workers see original request content by default [0.09ms]
+(pass) engine: workerSeesRequest false keeps request out of worker tasks [0.09ms]
+(pass) engine: stops at maxTurns and still returns the last worker result [0.10ms]
+(pass) engine: cancellation stops the loop and reports 'stop' [0.09ms]
+(pass) engine + conductor-dag: a later step provably sees only its access_list [0.37ms]
+(pass) engine: inlined rolePrompts win over resolveRolePrompt [0.10ms]
+(pass) normalizeRoomState: a valid monad block round-trips; a malformed one is dropped [0.64ms]
+(pass) setup: discover the bundled monad setup, activate it, then deactivate [35.80ms]
+(pass) setup: activating with an unknown policy or missing agents fails clearly [13.16ms]
+(pass) loadWorkspace: global config.json env is a base, workspace env overrides same key [10.76ms]
+(pass) loadWorkspace: missing global config.json leaves workspace env untouched [12.59ms]
+
+ 22 pass
+ 0 fail
+Ran 22 tests across 1 file. [514.00ms]
