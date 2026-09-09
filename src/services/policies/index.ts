@@ -5,6 +5,7 @@
 // (exactly the harness barrel pattern).
 
 import "./prompt-driven.js";
+import "./direct.js";
 import "./conductor-dag.js";
 import "./trinity-head.js";
 

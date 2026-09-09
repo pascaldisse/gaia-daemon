@@ -45,11 +45,43 @@ export class MonadEngine {
 
   async run(request: string | ChatMessage[], runOptions: MonadRunOptions = {}): Promise<MonadResult> {
     const messages = typeof request === "string" ? [{ role: "user", content: request }] : request;
-    const query = lastUserMessage(messages);
+    const obs: MonadObservation = { query: lastUserMessage(messages), messages, steps: [] };
     const isCancelled = runOptions.isCancelled ?? (() => false);
-    const policy = this.options.policy ?? routingPolicySpecFor(this.config.policy).create(this.config.policyConfig);
-    const obs: MonadObservation = { query, messages, steps: [] };
 
+    if (this.usesDirectDispatch()) {
+      const direct = await this.dispatchDirect(obs, isCancelled, runOptions);
+      if (direct) return direct;
+      // A blank direct reply must retain the established coordinator behavior.
+      return this.runRouted(obs, isCancelled, runOptions, routingPolicySpecFor("prompt-driven").create(undefined));
+    }
+
+    const policy = this.options.policy ?? routingPolicySpecFor(this.config.policy).create(this.config.policyConfig);
+    return this.runRouted(obs, isCancelled, runOptions, policy);
+  }
+
+  private usesDirectDispatch(): boolean {
+    return this.config.policy === "direct" || (
+      process.env.GAIA_SERVE_DIRECT === "1" &&
+      this.config.policy === "prompt-driven" &&
+      this.config.slots.length === 1 &&
+      this.config.maxTurns <= 1
+    );
+  }
+
+  private async dispatchDirect(obs: MonadObservation, isCancelled: () => boolean, runOptions: MonadRunOptions): Promise<MonadResult | undefined> {
+    const slot = this.config.slots[0];
+    if (!slot || isCancelled()) return isCancelled() ? this.finalize(obs, "stop") : undefined;
+    const role = slot.defaultRole ?? slot.label ?? "worker";
+    const decision: RouteDecision = { agentId: slot.agentId, role, subtask: "Answer the user's request directly and completely.", sees: [] };
+    const reply = await this.options.dispatch(decision.agentId, await this.assembleTask(decision, obs));
+    if (!reply.trim()) return undefined;
+    const step: MonadStep = { index: 0, agentId: decision.agentId, role, subtask: decision.subtask, sees: [], reply };
+    obs.steps.push(step);
+    runOptions.onStep?.(step);
+    return this.finalize(obs, "accept");
+  }
+
+  private async runRouted(obs: MonadObservation, isCancelled: () => boolean, runOptions: MonadRunOptions, policy: RoutingPolicy): Promise<MonadResult> {
     for (let turn = 0; turn < this.config.maxTurns; turn++) {
       if (isCancelled()) return this.finalize(obs, "stop");
 

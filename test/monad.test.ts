@@ -26,7 +26,7 @@ const TRIO: MonadConfig = {
 // ---------- registries ----------
 
 test("policies self-register via the barrel", () => {
-  for (const id of ["prompt-driven", "conductor-dag", "trinity-head"]) assert.ok(routingPolicyIds().includes(id), `missing policy ${id}`);
+  for (const id of ["prompt-driven", "direct", "conductor-dag", "trinity-head"]) assert.ok(routingPolicyIds().includes(id), `missing policy ${id}`);
 });
 test("serve CLI registers the pi harness before dispatch", async () => {
   const exitCode = await runServeCli(["--adapter", "not-a-real-adapter"]);
@@ -112,6 +112,95 @@ test("engine: model-led routing is honored when the coordinator returns a decisi
   assert.equal(result.terminatedBy, "accept");
 });
 
+test("engine: direct dispatches one worker without a coordinator round", async () => {
+  const calls: string[] = [];
+  let task = "";
+  const engine = new MonadEngine({
+    config: {
+      policy: "direct",
+      slots: [{ index: 0, agentId: "terry", defaultRole: "worker" }],
+      roles: ["worker"],
+      maxTurns: 5,
+      rolePrompts: { worker: "DIRECT ROLE" },
+    },
+    parentRoomId: "r",
+    dispatch: async (agentId, workerTask) => {
+      calls.push(agentId);
+      task = workerTask;
+      return "direct answer";
+    },
+    invoke: async () => {
+      throw new Error("direct must not coordinate");
+    },
+  });
+  const result = await engine.run([{ role: "system", content: "SYS" }, { role: "user", content: "hello" }]);
+  assert.deepEqual(calls, ["terry"]);
+  assert.equal(result.final, "direct answer");
+  assert.equal(result.steps.length, 1);
+  assert.ok(task.startsWith("DIRECT ROLE"));
+  assert.ok(task.includes("system: SYS\n\nuser: hello"));
+});
+test("engine: blank direct reply falls back to prompt-driven", async () => {
+  const calls: string[] = [];
+  let invokes = 0;
+  const engine = new MonadEngine({
+    config: { policy: "direct", slots: [{ index: 0, agentId: "terry", defaultRole: "worker" }], roles: ["worker"], maxTurns: 1 },
+    parentRoomId: "r",
+    dispatch: async (_agentId) => {
+      calls.push("dispatch");
+      return calls.length === 1 ? "" : "fallback answer";
+    },
+    invoke: async () => {
+      invokes++;
+      return '{"action":"dispatch","agent":"terry","role":"worker","subtask":"answer","sees":[]}';
+    },
+  });
+  const result = await engine.run("answer");
+  assert.equal(invokes, 1);
+  assert.deepEqual(calls, ["dispatch", "dispatch"]);
+  assert.equal(result.final, "fallback answer");
+});
+test("engine: GAIA_SERVE_DIRECT fast-path is limited to one-slot prompt-driven rooms", async () => {
+  const previous = process.env.GAIA_SERVE_DIRECT;
+  process.env.GAIA_SERVE_DIRECT = "1";
+  try {
+    let invokes = 0;
+    const engine = new MonadEngine({
+      config: { policy: "prompt-driven", slots: [{ index: 0, agentId: "terry", defaultRole: "worker" }], roles: ["worker"], maxTurns: 1 },
+      parentRoomId: "r",
+      dispatch: async () => "fast answer",
+      invoke: async () => {
+        invokes++;
+        return "";
+      },
+    });
+    const result = await engine.run("answer");
+    assert.equal(invokes, 0);
+    assert.equal(result.final, "fast answer");
+  } finally {
+    if (previous === undefined) delete process.env.GAIA_SERVE_DIRECT;
+    else process.env.GAIA_SERVE_DIRECT = previous;
+  }
+});
+test("engine: multi-slot prompt-driven still invokes its coordinator", async () => {
+  let invokes = 0;
+  const dispatches: string[] = [];
+  const engine = new MonadEngine({
+    config: { ...TRIO, maxTurns: 1 },
+    parentRoomId: "r",
+    dispatch: async (agentId) => {
+      dispatches.push(agentId);
+      return "RESULT";
+    },
+    invoke: async () => {
+      invokes++;
+      return '{"action":"dispatch","agent":"terry","role":"worker","subtask":"answer","sees":[]}';
+    },
+  });
+  await engine.run("answer");
+  assert.equal(invokes, 1);
+  assert.deepEqual(dispatches, ["terry"]);
+});
 test("engine: workers see original request content by default", async () => {
   let task = "";
   const engine = new MonadEngine({
