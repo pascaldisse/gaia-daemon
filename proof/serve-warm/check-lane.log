@@ -1,0 +1,227 @@
+$ tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json && tsc -p src/server/graphql.tsconfig.json --noEmit && bun run check:dead
+$ knip --no-exit-code
+Unused files (6)
+src/services/room/room-maintenance.ts
+web/src/composer-drafts.test.js      
+web/src/gaia-think.test.js           
+web/src/links.test.js                
+web/src/pet-window.js                
+web/src/reasoning.test.js            
+Unused dependencies (1)
+@earendil-works/pi-agent-core  package.json:29:6
+Unlisted dependencies (5)
+@silvia-odwyer/photon-node  src/core/image.ts:2:30         
+@silvia-odwyer/photon-node  src/harness/image-read.ts:3:30 
+@silvia-odwyer/photon-node  test/gaia-tool.test.ts:4:29    
+@silvia-odwyer/photon-node  test/image-proxy.test.ts:5:29  
+@silvia-odwyer/photon-node  test/image-request.test.ts:7:29
+Unlisted binaries (3)
+osascript  src/server/http.ts       
+osascript  src/server/routes/api.ts 
+swiftc     src/services/stt-apple.ts
+Unused exports (119)
+nativeImageAttachments        function  src/core/attachments.ts:50:17               
+AUTO_COMPACT_DEFAULTS                   src/core/auto-compact.ts:3:14               
+AUTO_COMPACT_DEFAULTS                   src/core/config.ts:12:10                    
+parseEnvPassthrough           function  src/core/config.ts:215:17                   
+COLLAB_BRANCH_PREFIX                    src/core/config.ts:259:14                   
+parsePluginsConfig            function  src/core/config.ts:462:17                   
+PI_HARNESS_ID                           src/core/harness-id.ts:2:14                 
+writeBytesAtomic              function  src/core/store.ts:156:23                    
+LEGACY_DEFAULT_AGENT_TOOLS              src/domain/agents.ts:56:14                  
+GAIA_ROUTED_NATIVE_TOOLS                src/domain/agents.ts:60:14                  
+titleCase                     function  src/domain/agents.ts:122:17                 
+normalizePermissionMode       function  src/domain/agents.ts:153:17                 
+ARTIFACT_KINDS                          src/domain/artifacts.ts:1:14                
+isValidPetPackageName         function  src/domain/pets.ts:33:17                    
+codexPetsRoot                 function  src/domain/pets.ts:37:17                    
+applyRenderCap                function  src/domain/render-cap.ts:22:17              
+AUTO_ROOM_PREFIX                        src/domain/rooms.ts:52:14                   
+ROOM_TITLE_MAX                          src/domain/rooms.ts:58:14                   
+nextCronMatch                 function  src/domain/schedules.ts:197:17              
+globalSkillsPath              function  src/domain/skills.ts:48:17                  
+projectSkillsPath             function  src/domain/skills.ts:52:17                  
+skillRoots                    function  src/domain/skills.ts:66:17                  
+scanSkillRoot                 function  src/domain/skills.ts:101:17                 
+sha256Hex                     function  src/domain/workspace-index.ts:33:17         
+cosine                        function  src/domain/workspace-index.ts:37:17         
+EMBED_STORE_DIM                         src/domain/workspace-index.ts:145:14        
+WORKSPACE_DIRNAME                       src/domain/workspace.ts:19:14               
+gaiaHome                                src/domain/workspace.ts:22:10               
+DEFAULT_CIRCUIT_CONFIG                  src/harness/breaker.ts:32:14                
+PROVIDER_KEY_ENV_VARS                   src/harness/host.ts:45:14                   
+stripProviderKeys             function  src/harness/host.ts:77:17                   
+mayBeImageReadPath            function  src/harness/image-read.ts:27:17             
+redirectProviderFetch                   src/harness/pi.ts:21:10                     
+rewriteProviderUrl                      src/harness/pi.ts:21:33                     
+cleanCompactExtension         function  src/harness/pi/clean-compact.ts:8:17        
+rewriteProviderUrl            function  src/harness/pi/tools.ts:5:17                
+isMissingBinary               function  src/harness/proc.ts:107:17                  
+resolveCliEntry               function  src/harness/proc.ts:121:17                  
+buildInlineSystemPrompt       function  src/harness/prompt.ts:359:23                
+resolvePointer                function  src/harness/prompt.ts:387:17                
+currentInstallId              function  src/harness/reaper.ts:34:17                 
+sandboxBackend                function  src/harness/sandbox/spec.ts:139:17          
+ANTHROPIC_USAGE_ACCOUNT                 src/harness/usage.ts:40:14                  
+OPENAI_USAGE_ACCOUNT                    src/harness/usage.ts:42:14                  
+USAGE_TIMEOUT_MS                        src/harness/usage.ts:45:14                  
+parseRetryAfterMs             function  src/harness/usage.ts:53:17                  
+forwardedPrefix               function  src/server/http.ts:14:17                    
+requestReload                 function  src/server/http.ts:138:17                   
+codexPetsRoot                           src/server/pet.ts:5:3                       
+isValidPetPackageName                   src/server/pet.ts:6:3                       
+errorJson                     function  src/server/route.ts:16:17                   
+RESERVED_AUTHORS                        src/services/commands.ts:314:14             
+CONSOLIDATE_STATE_FILE                  src/services/consolidate.ts:19:14           
+runsInLastDay                 function  src/services/consolidate.ts:50:17           
+DEFAULT_MAX_FACT_ADDS                   src/services/consolidate.ts:186:14          
+DEFAULT_MAX_FACT_CHARS                  src/services/consolidate.ts:187:14          
+EMBED_MODELS                            src/services/embed-sidecar.ts:51:14         
+DEFAULT_EMBED_MODEL                     src/services/embed-sidecar.ts:87:14         
+DEFAULT_RERANK_MODEL                    src/services/embed-sidecar.ts:88:14         
+embedModelRow                 function  src/services/embed-sidecar.ts:312:17        
+LOCAL_EMBED_URL_ENV                     src/services/embeddings.ts:38:14            
+LOCAL_RERANK_URL_ENV                    src/services/embeddings.ts:40:14            
+EMBED_PROMPTS                           src/services/embeddings.ts:53:14            
+KEEP_AWAKE_DEFAULT                      src/services/keep-awake.ts:29:14            
+keepAwakeSupported            function  src/services/keep-awake.ts:38:17            
+PI_EXTENSION_ENTRY_FILENAME             src/services/plugins/migrate.ts:18:14       
+migratePluginsRoot            function  src/services/plugins/migrate.ts:115:23      
+TrinityHeadPolicy                       src/services/policies/trinity-head.ts:140:10
+RESUME_EPOCH_SEQ_SEP                    src/services/resume-epoch.ts:22:14          
+parseResumeEpoch              function  src/services/resume-epoch.ts:28:17          
+readAmbientWatchdog                     src/services/room/commands-facade.ts:81:10  
+scanRoomActivity                        src/services/room/commands-facade.ts:81:31  
+readAmbientWatchdog                     src/services/room/sanitize-facade.ts:78:10  
+scanRoomActivity                        src/services/room/sanitize-facade.ts:78:31  
+resolveSetup                  function  src/services/setups.ts:116:23               
+buildMonadConfig              function  src/services/setups.ts:173:23               
+CENSUS_GIT_STATUS_TIMEOUT_MS            src/services/summons.ts:315:14              
+TURN_TRANSIENT_RETRIES                  src/services/transient-upstream.ts:2:14     
+TURN_TRANSIENT_BACKOFF_MS               src/services/transient-upstream.ts:4:14     
+USAGE_POLL_MS                           src/services/usage-service.ts:24:14         
+USAGE_REFRESH_DEBOUNCE_MS               src/services/usage-service.ts:25:14         
+USAGE_MIN_INTERVAL_MS                   src/services/usage-service.ts:30:14         
+STT_SILENCE_MS                          src/services/voice-stt-bridge.ts:18:14      
+STT_ENERGY_THRESHOLD                    src/services/voice-stt-bridge.ts:19:14      
+WEB_SEARCH_PROVIDERS                    src/services/web-search.ts:4:14             
+webSearchCredentials          function  src/services/web-search.ts:50:17            
+stopSummons                   function  web/src/actions.js:797:23                   
+roomHumans                    function  web/src/actions.js:909:23                   
+BASE_PATH                               web/src/api.js:8:14                         
+rendererIds                   function  web/src/archtree/port.js:38:17              
+createWebglRenderer           function  web/src/archtree/renderer.js:291:17         
+LIGHT_STATUS_GLOW                       web/src/archtree/theme.js:34:14             
+SHADOW_STATUS_GLOW                      web/src/archtree/theme.js:37:14             
+compactFraction               function  web/src/compactprogress.js:45:17            
+sendArtifactPrompt            function  web/src/composer.js:503:23                  
+capturePastedFiles            function  web/src/composer.js:603:17                  
+focusComposer                 function  web/src/composer.js:1306:17                 
+isEditableElement             function  web/src/composer.js:1318:17                 
+openDario                     function  web/src/dario.js:29:17                      
+closeDario                    function  web/src/dario.js:35:17                      
+runDario                      function  web/src/dario.js:60:17                      
+transcribe                    function  web/src/dictation.js:240:23                 
+AGENT_GLYPHS                            web/src/glyphs.js:14:14                     
+isOpenModifier                function  web/src/links.js:13:17                      
+currentLabel                  function  web/src/native.js:92:17                     
+AudioTransport                class     web/src/readaloud.js:29:14                  
+reasoningReturnLevel          function  web/src/reasoning.js:116:17                 
+syntaxHtml                    function  web/src/rich.js:45:17                       
+wordDiff                      function  web/src/rich.js:74:17                       
+diffTokenNode                 function  web/src/rich.js:111:17                      
+codeBlock                     function  web/src/rich.js:217:17                      
+isWindowFocused               function  web/src/state.js:445:17                     
+statusbarVisible              function  web/src/statusbar.js:216:17                 
+setStatusbarVisible           function  web/src/statusbar.js:226:17                 
+openUsagePopover              function  web/src/statusbar.js:337:17                 
+openBgTasks                   function  web/src/statusbar.js:383:17                 
+applyTheme                    function  web/src/themes.js:95:17                     
+splitLeadingGaiaThink                   web/src/transcript.js:26:10                 
+AgentText                     function  web/src/transcript.js:1021:17               
+Unused exported types (72)
+SqliteStatement                  interface  src/core/sqlite.ts:11:18                    
+MemoryEmbeddingsProviderConfig   interface  src/core/types/agents.ts:41:18              
+MemoryConsolidateConfig          interface  src/core/types/agents.ts:48:18              
+SummonResultMeta                 interface  src/core/types/events.ts:111:18             
+FieldInput                       type       src/core/types/settings.ts:6:13             
+EditableCategory                 type       src/core/types/settings.ts:67:13            
+PiExtensionsSettings             interface  src/core/types/settings.ts:89:18            
+TaskStatus                       type       src/core/types/ui.ts:14:13                  
+ArtifactManifest                 interface  src/domain/artifacts.ts:5:18                
+StoredArtifact                   interface  src/domain/artifacts.ts:18:18               
+PetManifest                      interface  src/domain/pets.ts:16:18                    
+RoleWatchdog                     interface  src/domain/roles.ts:19:18                   
+SkillSource                      type       src/domain/skills.ts:22:13                  
+SkillRoot                        interface  src/domain/skills.ts:56:18                  
+BreakerState                     type       src/harness/breaker.ts:19:13                
+PiRuntimeOptions                 type       src/harness/pi.ts:20:15                     
+PiRuntimeSessionFactoryOptions   type       src/harness/pi.ts:20:58                     
+PiRuntimeSessionFactoryOptions   interface  src/harness/pi/session.ts:121:18            
+PiAuthPrompt                     type       src/harness/pi/ui-context.ts:258:13         
+PiAuthEvent                      type       src/harness/pi/ui-context.ts:265:13         
+RunnerPluginContributionKind     type       src/harness/protocol.ts:19:13               
+RunnerPluginContributionRequest  interface  src/harness/protocol.ts:20:18               
+RunnerPluginContributionResult   type       src/harness/protocol.ts:28:13               
+RunnerPlugin                     interface  src/harness/runner-plugins.ts:22:18         
+HarnessUi                        interface  src/harness/spec.ts:250:18                  
+CredentialProxyContext           interface  src/harness/spec.ts:385:18                  
+AccountFieldDef                  interface  src/harness/spec.ts:403:18                  
+AccountLoginSpec                 interface  src/harness/spec.ts:418:18                  
+HarnessAccountsSpec              interface  src/harness/spec.ts:446:18                  
+UsageAccountProbe                interface  src/harness/spec.ts:559:18                  
+LoadedPet                        type       src/server/pet.ts:8:8                       
+PetManifest                      type       src/server/pet.ts:9:8                       
+CapabilityBrokerOptions          type       src/services/capabilities/index.ts:7:15     
+CapabilityDecision               type       src/services/capabilities/index.ts:10:3     
+CapabilityGrantPolicy            type       src/services/capabilities/index.ts:11:3     
+CapabilityGrantSource            type       src/services/capabilities/index.ts:12:3     
+CapabilityTrustSource            type       src/services/capabilities/index.ts:14:3     
+DreamProposal                    interface  src/services/consolidate.ts:152:18          
+ConsolidateApplyDeps             interface  src/services/consolidate.ts:305:18          
+EmbedKind                        type       src/services/embeddings.ts:62:13            
+Embedder                         interface  src/services/embeddings.ts:73:18            
+Reranker                         interface  src/services/embeddings.ts:269:18           
+EditableCategory                 type       src/services/hints.ts:33:15                 
+EditableScope                    type       src/services/hints.ts:33:78                 
+FieldInput                       type       src/services/hints.ts:33:121                
+HarnessHintsMeta                 type       src/services/hints.ts:33:144                
+EvalProbe                        interface  src/services/memory-eval.ts:55:18           
+PluginContributionKind           type       src/services/plugins/contracts.ts:15:13     
+PluginContributionValue          type       src/services/plugins/contracts.ts:16:13     
+PluginAgent                      interface  src/services/plugins/contracts.ts:18:18     
+PluginPanelField                 interface  src/services/plugins/contracts.ts:19:18     
+PluginCommandContribution        interface  src/services/plugins/contracts.ts:57:18     
+PluginToolContribution           interface  src/services/plugins/contracts.ts:64:18     
+PluginChannelBridgeContribution  interface  src/services/plugins/contracts.ts:72:18     
+PluginProviderContribution       interface  src/services/plugins/contracts.ts:79:18     
+MigrateStatus                    type       src/services/plugins/migrate.ts:20:13       
+PluginRegisterContext            interface  src/services/plugins/registry.ts:30:18      
+PluginRegistration               interface  src/services/plugins/registry.ts:36:18      
+RegisteredPlugin                 interface  src/services/plugins/registry.ts:43:18      
+TtsAudio                         interface  src/services/read-aloud.ts:281:18           
+TtsDuplexContext                 type       src/services/read-aloud.ts:317:13           
+RoomSchedulerHooks               interface  src/services/room-service.ts:140:18         
+CommandReply                     type       src/services/room/command-execution.ts:10:13
+SetupManifest                    interface  src/services/setups.ts:54:18                
+VideoTranscriptEntry             interface  src/services/video-transcript.ts:11:18      
+VideoTranscriptResult            interface  src/services/video-transcript.ts:17:18      
+VideoCommentsResult              interface  src/services/video-transcript.ts:35:18      
+VideoProviderFetchOptions        interface  src/services/video-transcript.ts:45:18      
+VideoProviderCommentsOptions     interface  src/services/video-transcript.ts:53:18      
+VoiceTurnKind                    type       src/services/voice.ts:781:13                
+VoiceTurnRoom                    interface  src/services/voice.ts:889:18                
+WebSearchResult                  interface  src/services/web-search.ts:13:18            
+Duplicate exports (1)
+closeOverlays|closeSidebarOverlay  web/src/chrome.js
+Configuration hints (10)
+design/**      knip.json  Remove from ignore            
+unmute/**      knip.json  Remove from ignore            
+dist/**        knip.json  Remove from ignore            
+web/dist/**    knip.json  Remove from ignore            
+.gaia/**       knip.json  Remove from ignore            
+setups/**      knip.json  Remove from ignore            
+knip           knip.json  Remove from ignoreDependencies
+tauri          knip.json  Remove from ignoreBinaries    
+gaia           knip.json  Remove from ignoreBinaries    
+src/cli.ts     knip.json  Remove redundant entry pattern

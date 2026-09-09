@@ -1,0 +1,10 @@
+warm-1 wall=8.742021
+{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! How can I help?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+warm-2 wall=8.496783
+{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"ACCEPT"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+warm-3 wall=3.516006
+{"id":"chatcmpl-3","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+stateless-a wall=10.051678
+{"id":"chatcmpl-4","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hallo Otto, schön, dich kennenzulernen!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+stateless-b wall=6.107183
+{"id":"chatcmpl-5","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Du heißt Otto."},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}

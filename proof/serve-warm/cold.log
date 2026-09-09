@@ -1,0 +1,6 @@
+cold-1 wall=10.560798
+{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! How can I help you today?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+cold-2 wall=8.117327
+{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! How can you help today?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+cold-3 wall=8.751762
+{"id":"chatcmpl-3","object":"chat.completion","created":0,"model":"gaia-monad","choices":[{"index":0,"message":{"role":"assistant","content":"Hi! Lovely to see you — how can I help?"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}

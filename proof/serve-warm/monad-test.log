@@ -1,0 +1,26 @@
+bun test v1.3.14 (0d9b296a)
+
+test/monad.test.ts:
+(pass) policies self-register via the barrel [0.89ms]
+Usage: gaia serve <room> [--port N] [--host H] [--adapter id] [--warm|--no-warm]
+(pass) serve CLI registers the pi harness before dispatch [7.70ms]
+(pass) warm serve reuses one worker and falls back after worker death [0.44ms]
+(pass) replyAccepts: leading token, tolerant of markdown [0.09ms]
+(pass) extractJsonObject: pulls the first balanced object out of prose/fences [0.06ms]
+(pass) engine: Thinker→Worker→Verifier loop, REVISE then ACCEPT, answers the last worker [0.77ms]
+(pass) engine: model-led routing is honored when the coordinator returns a decision [0.21ms]
+(pass) engine: workers see original request content by default [0.10ms]
+(pass) engine: workerSeesRequest false keeps request out of worker tasks [0.08ms]
+(pass) engine: stops at maxTurns and still returns the last worker result [0.09ms]
+(pass) engine: cancellation stops the loop and reports 'stop' [0.09ms]
+(pass) engine + conductor-dag: a later step provably sees only its access_list [0.36ms]
+(pass) engine: inlined rolePrompts win over resolveRolePrompt [0.09ms]
+(pass) normalizeRoomState: a valid monad block round-trips; a malformed one is dropped [0.60ms]
+(pass) setup: discover the bundled monad setup, activate it, then deactivate [35.87ms]
+(pass) setup: activating with an unknown policy or missing agents fails clearly [11.08ms]
+(pass) loadWorkspace: global config.json env is a base, workspace env overrides same key [11.81ms]
+(pass) loadWorkspace: missing global config.json leaves workspace env untouched [11.28ms]
+
+ 18 pass
+ 0 fail
+Ran 18 tests across 1 file. [628.00ms]
