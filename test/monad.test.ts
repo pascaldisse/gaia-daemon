@@ -370,6 +370,27 @@ test("setup: discover the bundled monad setup, activate it, then deactivate", as
   }
 });
 
+test("setup: activation accepts the direct policy", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "gaia-direct-"));
+  const home = join(tmp, "home");
+  const proj = join(tmp, "proj");
+  const prevHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = home;
+  try {
+    await mkdir(join(proj, ".gaia", "setups", "direct"), { recursive: true });
+    await initWorkspace(proj);
+    await writeFile(join(proj, ".gaia", "setups", "direct", "setup.json"), JSON.stringify({
+      id: "direct",
+      monad: { policy: "direct", slots: [{ agentId: "gaia", defaultRole: "worker" }], roles: ["worker"], maxTurns: 1 },
+    }));
+    const result = await activateSetup(await loadWorkspace(proj), "direct", "direct-room");
+    assert.equal(result.monad.policy, "direct");
+  } finally {
+    if (prevHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = prevHome;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
 test("setup: activating with an unknown policy or missing agents fails clearly", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "gaia-monad-bad-"));
   const home = join(tmp, "home");
