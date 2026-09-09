@@ -117,6 +117,7 @@
 .completion-row span { color: var(--accent2); }
 .completion-row small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 
+.thinking-wrap { flex: 0 0 auto; }
 .thinking-wrap,
 .thinking-inner { position: relative; }
 .thinking-toggle { padding: 0 2px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--muted); font-style: italic; white-space: nowrap; }

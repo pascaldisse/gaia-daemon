@@ -231,7 +231,10 @@ export function initComposer() {
     h(
       "div",
       { class: "composer-meta-row" },
-      h("div", { class: "composer-meta" }, targetStatusEl, modelWrapEl, thinkingWrapEl, ultrawhipWrapEl),
+      h("div", { class: "composer-meta" }, targetStatusEl, modelWrapEl),
+      // Popup owner outside the text-clipping metadata row.
+      thinkingWrapEl,
+      ultrawhipWrapEl,
       draftStatusEl,
       retranscribeEl,
       micLevelEl,
