@@ -47,6 +47,32 @@ import { numberField } from "./routes/memory.js";
 import { summonCensusText } from "./routes/usage.js";
 import { artifactRoutePrefix } from "./routes/artifacts.js";
 import { handleApi } from "./routes/api.js";
+interface HeadlessTarget { agentId: string; roomId: string; }
+function headlessTarget(body: unknown): HeadlessTarget | undefined {
+  if (!body || typeof body !== "object" || typeof (body as { model?: unknown }).model !== "string") return undefined;
+  const model = (body as { model: string }).model.trim();
+  const separator = model.indexOf("@");
+  const agentId = (separator < 0 ? model : model.slice(0, separator)).trim();
+  const roomId = (separator < 0 ? `chat-${agentId}` : model.slice(separator + 1)).trim();
+  return agentId && roomId ? { agentId, roomId } : undefined;
+}
+function lastUserMessage(body: unknown): string | undefined {
+  if (!body || typeof body !== "object" || !Array.isArray((body as { messages?: unknown }).messages)) return undefined;
+  const messages = (body as { messages: unknown[] }).messages;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message && typeof message === "object" && (message as { role?: unknown }).role === "user" && typeof (message as { content?: unknown }).content === "string") {
+      const content = (message as { content: string }).content.trim();
+      if (content) return content;
+    }
+  }
+  return undefined;
+}
+function isLoopbackRequest(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress;
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
 export interface WebServerOptions {
   cwd: string;
   host?: string;
@@ -501,7 +527,8 @@ export class GaiaWebServer {
   // --- /v1 (the unmute backend speaks to GAIA as an OpenAI-compatible server) -----
   private async handleOpenAi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (request.method === "GET" && url.pathname === "/v1/models") {
-      json(response, 200, modelListPayload());
+      const models = this.daemon.activeCall ? undefined : await this.daemon.defaultWorkspaceAgentIds();
+      json(response, 200, modelListPayload(models));
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
@@ -511,10 +538,41 @@ export class GaiaWebServer {
   }
   private async handleChatCompletions(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const call = this.daemon.activeCall;
-    if (!call) {
+    if (call) return this.handleVoiceChatCompletions(request, response, call);
+
+    const body = await parseBody(request);
+    const target = headlessTarget(body);
+    if (!target) {
       json(response, 503, { error: { message: "No active GAIA voice call. Start one from the GAIA web UI.", type: "unavailable" } });
       return;
     }
+    // /v1 has no daemon token/auth middleware. Headless agent dispatch is
+    // therefore deliberately loopback-only; reverse proxies must not expose it.
+    if (!isLoopbackRequest(request)) {
+      json(response, 403, { error: { message: "Headless chat is available only from loopback.", type: "forbidden" } });
+      return;
+    }
+    // The room, not this OpenAI-shaped request, owns conversation memory:
+    // send only the last user message; all earlier `messages` are ignored.
+    const message = lastUserMessage(body);
+    if (!message) {
+      json(response, 400, { error: { message: "Request contains no user message", type: "invalid_request_error" } });
+      return;
+    }
+    const workspaceId = await this.daemon.defaultWorkspaceId();
+    const service = await this.daemon.serviceFor(workspaceId, target.roomId);
+    if (!service.workspace.agents[target.agentId]) {
+      json(response, 400, { error: { message: `Unknown agent: ${target.agentId}`, type: "invalid_request_error" } });
+      return;
+    }
+    await service.waitForIdle(20000);
+    // `reset: true` is a cheap native room clear: transcript + harness session
+    // reset before this turn, retaining the caller-selected room id.
+    if (body && typeof body === "object" && (body as { reset?: unknown }).reset === true) await service.runClearCommand();
+    const task = await service.sendMessage(message, { targets: [target.agentId], channel: "chat", recordUserMessage: true });
+    return this.collectCompletion(response, service, task.id, isStreamingRequest(body), newCompletionId(), target.agentId);
+  }
+  private async handleVoiceChatCompletions(request: IncomingMessage, response: ServerResponse, call: NonNullable<Daemon["activeCall"]>): Promise<void> {
     const body = await parseBody(request);
     const turn = this.daemon.classifyTurn(body);
     if (!turn) {
@@ -543,6 +601,10 @@ export class GaiaWebServer {
       recordUserMessage: turn.kind === "user",
       thinking: call.info.thinking,
     });
+    return this.collectCompletion(response, service, task.id, streaming, completionId);
+  }
+  /** Shared SSE/non-stream collection for voice and direct CORE chat turns. */
+  private async collectCompletion(response: ServerResponse, service: Awaited<ReturnType<Daemon["serviceFor"]>>, taskId: string, streaming: boolean, completionId: string, model?: string): Promise<void> {
     if (streaming) beginSse(response);
     let reply = "";
     let settled = false;
@@ -554,25 +616,25 @@ export class GaiaWebServer {
         resolveTurn();
       };
       const unsubscribe = service.subscribe((event) => {
-        if (event.type === "text-delta" && event.taskId === task.id) {
+        if (event.type === "text-delta" && event.taskId === taskId) {
           reply += event.delta;
-          if (streaming) response.write(completionChunk(completionId, event.delta, null));
+          if (streaming) response.write(completionChunk(completionId, event.delta, null, model));
         }
-        if ((event.type === "task-end" || event.type === "task-error") && event.task.id === task.id) finish();
+        if ((event.type === "task-end" || event.type === "task-error") && event.task.id === taskId) finish();
       });
       // unmute aborts the request when the user interrupts the agent.
       response.on("close", () => {
         if (settled) return;
-        if (service.activeTaskId === task.id) void service.cancelActiveTask().catch(() => {});
+        if (service.activeTaskId === taskId) void service.cancelActiveTask().catch(() => {});
         finish();
       });
     });
     if (response.writableEnded) return;
-    if (streaming) return this.endCompletionStream(response, completionId);
-    json(response, 200, completionPayload(completionId, reply));
+    if (streaming) return this.endCompletionStream(response, completionId, model);
+    json(response, 200, completionPayload(completionId, reply, model));
   }
-  private endCompletionStream(response: ServerResponse, completionId: string): void {
-    response.write(completionChunk(completionId, undefined, "stop"));
+  private endCompletionStream(response: ServerResponse, completionId: string, model?: string): void {
+    response.write(completionChunk(completionId, undefined, "stop", model));
     response.write(completionDone());
     response.end();
   }

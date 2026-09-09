@@ -17,7 +17,7 @@ export interface Episode {
   reply: string;
   outcome: EpisodeOutcome;
   tools?: string[];
-  channel?: "text" | "voice";
+  channel?: "text" | "voice" | "chat";
   /** Added later by the consolidator, never at capture time. */
   lesson?: string;
 }

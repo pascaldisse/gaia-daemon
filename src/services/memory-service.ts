@@ -84,7 +84,7 @@ export interface EpisodeCapture {
   reply: string;
   outcome: EpisodeOutcome;
   tools?: string[];
-  channel?: "text" | "voice";
+  channel?: "text" | "voice" | "chat";
 }
 
 export interface MemorySearchRequest {

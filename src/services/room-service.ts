@@ -170,7 +170,7 @@ export interface SendMessageOptions {
    * Cmd/Ctrl+Enter shortcut). Steer-by-default otherwise injects a message
    * aimed at the busy agent into its live turn. */
   queue?: boolean;
-  channel?: "text" | "voice";
+  channel?: "text" | "voice" | "chat";
   /** Synthetic prompts (call greetings, silence nudges) skip the user event. */
   recordUserMessage?: boolean;
   /** Logged-in human posting this (domain/users.ts) — rides the RoomEvent as
