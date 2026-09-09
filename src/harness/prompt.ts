@@ -49,29 +49,32 @@ function protocolEnabled(protocols: AgentDef["protocols"] | undefined, filename:
   return protocols?.[filename.slice(0, -".md".length)] !== false;
 }
 
-/** The `# Protocols` section (or "" when no protocol text is loaded). When
- * GAIA-THINK is enabled, its trailing line states the room's level: level 0
- * (or unset) disables thought blocks, level N announces `N/10`. */
+/** Filtered protocol text → section; positive GAIA-THINK level → footer.
+ * Zero/unset → no thinking instructions, including no disabled footer. */
 export function buildProtocolsSection(protocolsText?: string, thinkingLevel?: number, thinkingEnabled = true): string {
   const body = protocolsText?.trim();
   if (!body) return "";
-  if (!thinkingEnabled) return `# Protocols\n\n${body}`;
+  const section = `# Protocols\n\n${body}`;
   const level = thinkingLevel ?? 0;
-  const levelLine = level > 0 ? `Current thinking level: ${level}/10` : "Thinking disabled — do not emit <gaia:think> blocks.";
-  return `# Protocols\n\n${body}\n\n${levelLine}`;
+  return thinkingEnabled && level > 0
+    ? `${section}\n\nCurrent thinking level: ${level}/10`
+    : section;
 }
 
-/** Read enabled *.md files in the protocols dir (sorted by filename) and join
- * their verbatim contents with blank lines. A missing config key enables its
- * matching filename; missing dir / no enabled *.md files → "". */
-export async function readProtocolsText(dir: string = globalPaths.protocolsDir(), protocols?: AgentDef["protocols"]): Promise<string> {
+/** Enabled *.md → sorted, verbatim; missing dir/files → "".
+ * GAIA-THINK → positive room level AND no agent opt-out; zero/unset → no read.
+ * Other protocols → existing per-agent switches unchanged. */
+export async function readProtocolsText(dir: string = globalPaths.protocolsDir(), protocols?: AgentDef["protocols"], thinkingLevel = 0): Promise<string> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => name.toLowerCase().endsWith(".md")).sort();
   } catch {
     return "";
   }
-  const enabledNames = names.filter((name) => protocolEnabled(protocols, name));
+  const enabledNames = names.filter((name) =>
+    protocolEnabled(protocols, name) &&
+    (name.toUpperCase() !== `${THINKING_PROTOCOL}.MD` || thinkingLevel > 0),
+  );
   const parts = await Promise.all(enabledNames.map((name) => readOptional(join(dir, name))));
   return parts.map((part) => part.trim()).filter(Boolean).join("\n\n");
 }
@@ -337,7 +340,7 @@ export async function buildBaseSystemPrompt(params: {
     readFile(params.agent.soulPath, "utf8"),
     readOptional(params.agent.projectIntentPath),
     discoverContextFiles(params.workspaceRoot),
-    readProtocolsText(params.protocolsDir, params.agent.protocols),
+    readProtocolsText(params.protocolsDir, params.agent.protocols, params.thinkingLevel),
   ]);
   return buildSystemPrompt({
     agent: params.agent,

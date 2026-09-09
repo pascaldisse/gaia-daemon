@@ -18,6 +18,7 @@ import type { AgentDef, AgentRoomEvent, ToolDetail } from "../src/core/types.js"
 import { toolSummaryText } from "../web/shared/tool-summary.js";
 import { splitLeadingGaiaThink } from "../web/shared/gaia-think.js";
 import { DEFAULT_CONTEXT_DIET_POLICY, type ContextDietPolicy } from "../src/domain/context-diet.js";
+import { SessionMap } from "../src/harness/sessions.js";
 
 const AGENT = { id: "tester" } as unknown as AgentDef;
 const PROTOCOL_FIXTURE_DIR = fileURLToPath(new URL("./fixtures/protocols", import.meta.url));
@@ -39,12 +40,10 @@ test("buildProtocolsSection: no text = empty section (zero change)", () => {
   assert.equal(buildProtocolsSection("   ", 5), "");
 });
 
-test("buildProtocolsSection: level 0 (and unset) disables thought blocks", () => {
-  const zero = buildProtocolsSection("PROTOCOL BODY", 0);
-  assert.match(zero, /^# Protocols\n\nPROTOCOL BODY\n\n/);
-  assert.match(zero, /Thinking disabled — do not emit <gaia:think> blocks\.$/);
-  // unset level behaves as 0
-  assert.equal(buildProtocolsSection("PROTOCOL BODY"), zero);
+test("buildProtocolsSection: zero/unset preserves other protocols without thinking instructions", () => {
+  const zero = buildProtocolsSection("ALWAYS-ON BODY", 0);
+  assert.equal(zero, "# Protocols\n\nALWAYS-ON BODY");
+  assert.equal(buildProtocolsSection("ALWAYS-ON BODY"), zero);
 });
 
 test("buildProtocolsSection: level N announces N/10", () => {
@@ -88,12 +87,19 @@ test("readProtocolsText: missing dir = empty; *.md sorted + concatenated verbati
   assert.equal(text, "FIRST\n\nSECOND"); // filename sort, .txt ignored
 });
 
-test("readProtocolsText: missing protocol config enables every file", async () => {
-  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR), "ALWAYS-ON BODY\n\nGAIA-THINK BODY");
+test("readProtocolsText: zero/unset excludes GAIA-THINK even with explicit agent opt-in", async () => {
+  for (const protocols of [undefined, { "GAIA-THINK": true }]) {
+    for (const level of [undefined, 0]) {
+      assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, protocols, level), "ALWAYS-ON BODY");
+    }
+  }
 });
 
-test("readProtocolsText: explicit true leaves a protocol enabled", async () => {
-  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, { "GAIA-THINK": true }), "ALWAYS-ON BODY\n\nGAIA-THINK BODY");
+test("readProtocolsText: positive room level enables GAIA-THINK unless agent opts out", async () => {
+  for (const protocols of [undefined, { "GAIA-THINK": true }]) {
+    assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, protocols, 3), "ALWAYS-ON BODY\n\nGAIA-THINK BODY");
+  }
+  assert.equal(await readProtocolsText(PROTOCOL_FIXTURE_DIR, { "GAIA-THINK": false }, 3), "ALWAYS-ON BODY");
 });
 
 test("readProtocolsText: explicit false excludes its filename before concatenation", async () => {
@@ -120,6 +126,42 @@ test("buildBaseSystemPrompt: agent protocol opt-out filters files before assembl
   });
   assert.match(prompt, /ALWAYS-ON BODY/);
   assert.doesNotMatch(prompt, /GAIA-THINK BODY|Current thinking level|Thinking disabled/);
+});
+
+test("buildBaseSystemPrompt: zero/unset removes protocol body and footer, keeps unrelated protocols", async () => {
+  for (const thinkingLevel of [undefined, 0]) {
+    for (const protocols of [undefined, { "GAIA-THINK": true }]) {
+      const prompt = await buildBaseSystemPrompt({
+        agent: { id: "tester", soulPath: PROTOCOL_FIXTURE_SOUL, protocols } as AgentDef,
+        role: undefined,
+        workspaceRoot: PROTOCOL_FIXTURE_ROOT,
+        protocolsDir: PROTOCOL_FIXTURE_DIR,
+        thinkingLevel,
+      });
+      assert.match(prompt, /ALWAYS-ON BODY/);
+      assert.doesNotMatch(prompt, /GAIA-THINK|gaia:think|Current thinking level|Thinking disabled/);
+    }
+  }
+});
+
+test("session prompt: positive → zero → positive rebuilds without stale protocol", async () => {
+  const sessions = new SessionMap();
+  for (const level of [5, 0, 0, 3]) {
+    const prompt = await sessions.systemPrompt("test-room", promptCacheKey(undefined, level), () => buildBaseSystemPrompt({
+      agent: { id: "tester", soulPath: PROTOCOL_FIXTURE_SOUL } as AgentDef,
+      role: undefined,
+      workspaceRoot: PROTOCOL_FIXTURE_ROOT,
+      protocolsDir: PROTOCOL_FIXTURE_DIR,
+      thinkingLevel: level,
+    }));
+    assert.match(prompt, /ALWAYS-ON BODY/);
+    if (level > 0) {
+      assert.match(prompt, /GAIA-THINK BODY/);
+      assert.ok(prompt.includes(`Current thinking level: ${level}/10`));
+    } else {
+      assert.doesNotMatch(prompt, /GAIA-THINK|gaia:think|Current thinking level|Thinking disabled/);
+    }
+  }
 });
 
 test("buildSystemPrompt: promptLaw is the very first tokens; absent when unset", () => {
