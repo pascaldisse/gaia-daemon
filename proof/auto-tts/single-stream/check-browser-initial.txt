@@ -1,0 +1,5 @@
+$ tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json && tsc -p src/server/graphql.tsconfig.json --noEmit && bun run check:dead
+src/services/read-aloud.ts(1095,91): error TS2352: Conversion of type '{ signal?: AbortSignal | undefined; method: string; headers: { "content-type": string; "x-gaia-tts-request-id": string; }; body: AsyncGenerator<Uint8Array<ArrayBufferLike>, any, any>; duplex: "half"; }' to type 'RequestInit & { duplex: "half"; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ signal?: AbortSignal | undefined; method: string; headers: { "content-type": string; "x-gaia-tts-request-id": string; }; body: AsyncGenerator<Uint8Array<ArrayBufferLike>, any, any>; duplex: "half"; }' is not comparable to type 'RequestInit'.
+    Types of property 'body' are incompatible.
+      Type 'AsyncGenerator<Uint8Array<ArrayBufferLike>, any, any>' is not comparable to type 'BodyInit | null | undefined'.

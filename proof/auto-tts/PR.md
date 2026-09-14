@@ -1,4 +1,6 @@
-# Auto TTS
+# Auto TTS — historical c5b25c3 handoff
+
+Current browser-owned implementation/proof → SINGLE-STREAM.md; daemon playback plan below superseded.
 
 § Recon — base ccf1b9e
 - Manual trigger → web/src/readaloud.js:351 `toggleReadAloud(eventId)` → :410 `startReadAloud` → existing `/read-aloud/stream` + chunk routes.

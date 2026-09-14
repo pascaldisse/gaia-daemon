@@ -798,7 +798,7 @@ interface ClaudeVoiceHealth {
   detail?: string;
 }
 
-export async function claudeVoiceHealth(baseUrl: string, timeoutMs = 2000): Promise<ClaudeVoiceHealth> {
+async function claudeVoiceHealth(baseUrl: string, timeoutMs = 2000): Promise<ClaudeVoiceHealth> {
   try {
     const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return { ok: false, reachable: false, ready: false, detail: `HTTP ${response.status}` };

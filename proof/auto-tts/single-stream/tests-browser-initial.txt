@@ -1,0 +1,53 @@
+bun test v1.3.14 (0d9b296a)
+
+test/readaloud-transport.test.ts:
+(pass) a late append is not stranded when the finish check races it [2.82ms]
+(pass) audio arriving after a finish re-arms playback (the 1:55-of-2:03 stall) [1.40ms]
+(pass) a user pause stays paused when more audio arrives [1.35ms]
+(pass) play() clears userPaused so a resumed run re-arms again [0.15ms]
+(pass) a pending append blocks the finish [2.53ms]
+(pass) a context that stops running mid-play migrates instead of going silent [1.55ms]
+(pass) a paused context is left alone (no migration behind the user's back) [1.31ms]
+(pass) a failed migration reports an error instead of leaving a closed context [2.71ms]
+
+test/readaloud-auto.test.ts:
+auto-tts: selected-room subscription; background rooms skipped
+(pass) auto and manual → identical request, formatter, one synthesis + AudioTransport; hidden tab plays [11.30ms]
+auto-tts: selected-room subscription; background rooms skipped
+(pass) two replies → two full syntheses, second starts only after first audio ends (not HTTP EOF) [7.16ms]
+auto-tts: selected-room subscription; background rooms skipped
+(pass) manual playing → auto skipped; manual interrupt of auto → queued auto skipped [5.88ms]
+auto-tts: selected-room subscription; background rooms skipped
+(pass) HTTP error and stop → queue settles; later reply still uses shared player [3.57ms]
+auto-tts: selected-room subscription; background rooms skipped
+(pass) setting off / room switch while queued → no second synthesis [3.36ms]
+
+test/auto-tts.test.ts:
+(pass) committed broadcast: event delivery only; no daemon auto playback hook [1.78ms]
+(pass) daemon auto audio service removed, not retained as dead code [0.13ms]
+(pass) manual stream service: long full reply → one synthesis; no second formatting or text cap [3.56ms]
+
+web/src/auto-tts.test.js:
+(pass) off/non-final/empty/user/system/tool/special-kind → no playback [0.28ms]
+(pass) one full reply → one event-ID playback; no auto-side text preparation [0.13ms]
+(pass) two replies → FIFO includes actual playback completion [0.15ms]
+(pass) manual busy on arrival → skip, not deferred until manual ends [0.04ms]
+(pass) background workspace/room → skip + console-compatible log [0.10ms]
+(pass) queued reply rechecks room, setting, ownership, manual priority, disposal [0.24ms]
+(pass) non-owner and duplicate final events → never duplicate speech [0.05ms]
+(pass) playback/acquisition/log failures → next reply remains usable [0.16ms]
+
+web/src/auto-tts-owner.test.js:
+(pass) Web Locks grants one owner and denies another without waiting for release [0.30ms]
+(pass) Web Lock release allows reacquire [0.08ms]
+(pass) concurrent acquire calls share arbitration and do not await held-lock release [0.06ms]
+(pass) fallback lease heartbeat renews expiry [0.50ms]
+(pass) expired fallback lease is lost and another owner recovers it [0.13ms]
+(pass) fallback conflict event revokes ownership and reports loss once [0.12ms]
+(pass) fallback arbitration permits only the verified lease writer [0.12ms]
+(pass) storage failures fail closed during acquire and validation [0.13ms]
+
+ 32 pass
+ 0 fail
+ 113 expect() calls
+Ran 32 tests across 5 files. [726.00ms]
