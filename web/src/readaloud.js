@@ -18,6 +18,8 @@ import { apiUrl } from "./api.js";
 import { markDirty, setError } from "./render.js";
 import { h } from "./dom.js";
 import { state } from "./state.js";
+import { AutoTtsQueue } from "./auto-tts.js";
+import { AutoTtsOwner } from "./auto-tts-owner.js";
 
 /** @typedef {"loading"|"playing"|"paused"|"ended"} ReadAloudPhase */
 
@@ -326,6 +328,51 @@ let fetchController = null;
 let activeEventId = "";
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
+/** @type {'manual'|'auto'|null} */
+let playbackKind = null;
+/** @type {(() => void)|null} */
+let finishPlayback = null;
+/** @type {AutoTtsOwner|null} */
+let autoOwner = null;
+/** @type {AutoTtsQueue|null} */
+let autoQueue = null;
+
+// First connected tab → ownership retained through hidden/unfocused states.
+export function initializeAutoReadAloud() {
+  if (autoOwner) return;
+  const owner = new AutoTtsOwner({ onLost: () => {
+    if (playbackKind === 'auto') stopReadAloud();
+  } });
+  autoOwner = owner;
+  autoQueue = new AutoTtsQueue({
+    enabled: () => state.general.autoTts,
+    current: () => state.snapshot ? { workspaceId: state.snapshot.workspace.id, roomId: state.snapshot.room.id } : null,
+    acquire: () => owner.acquire(),
+    owns: () => owner.owns(),
+    manualBusy: () => playbackKind === 'manual' && state.readAloud?.phase !== 'ended',
+    play: (id, origin) => startReadAloud(id, false, origin, 'auto'),
+  });
+  void owner.acquire().catch((error) => console.info('auto-tts: ownership unavailable', error));
+  console.info('auto-tts: selected-room subscription; background rooms skipped');
+}
+
+/** @param {import('./types.js').UiEvent} event */
+export function enqueueAutoReadAloud(event) {
+  initializeAutoReadAloud();
+  return autoQueue?.enqueue(event) ?? Promise.resolve();
+}
+
+export function disposeAutoReadAloud() {
+  autoQueue?.dispose();
+  autoQueue = null;
+  if (playbackKind === 'auto') stopReadAloud();
+  autoOwner?.dispose();
+  autoOwner = null;
+}
+
+// pagehide includes BFCache; pageshow reclaims without replaying old replies.
+window.addEventListener?.('pagehide', disposeAutoReadAloud);
+window.addEventListener?.('pageshow', () => { if (state.snapshot) initializeAutoReadAloud(); });
 
 // When the set of audio devices changes (headphones plugged/unplugged, a
 // Bluetooth output vanishes), re-bind the playing transport to the new default
@@ -358,6 +405,9 @@ export function toggleReadAloud(eventId) {
 
 /** Tear everything down and hide the player. */
 export function stopReadAloud() {
+  finishPlayback?.();
+  finishPlayback = null;
+  playbackKind = null;
   stopTick();
   if (fetchController) {
     try {
@@ -385,8 +435,9 @@ export function stopReadAloud() {
 
 /** @param {string} eventId @param {boolean} [regenerate] skip the server cache and
  * re-synthesize (the ⟳ button), replacing a bad cached clip.
- * @param {{workspaceId: string, roomId: string}|null} [playbackOrigin] */
-async function startReadAloud(eventId, regenerate = false, playbackOrigin = null) {
+ * @param {{workspaceId: string, roomId: string}|null} [playbackOrigin]
+ * @param {'manual'|'auto'} [kind] */
+async function startReadAloud(eventId, regenerate = false, playbackOrigin = null, kind = 'manual') {
   stopReadAloud();
   const snapshot = state.snapshot;
   const origin = playbackOrigin ?? (snapshot ? { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id } : null);
@@ -398,12 +449,23 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   activeEventId = eventId;
   activeOrigin = origin;
 
-  const t = new AudioTransport();
+  /** @type {AudioTransport} */
+  let t;
+  try { t = new AudioTransport(); }
+  catch (error) { stopReadAloud(); setError(error); return; }
   transport = t;
+  playbackKind = kind;
+  /** @type {() => void} */
+  let complete;
+  const playbackDone = new Promise((resolve) => { complete = () => resolve(undefined); });
+  finishPlayback = () => complete();
   t.onFirstAudio = () => {
     if (activeEventId === eventId && state.readAloud?.phase === "loading") setPhase("playing");
   };
   t.onEnded = () => {
+    complete();
+    if (transport !== t) return;
+    finishPlayback = null;
     stopTick();
     if (activeEventId === eventId) setPhase("ended");
     updatePlayerUi();
@@ -420,10 +482,9 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   // Re-resolve voice/model/text on every replay; eventId alone is not audio identity.
   const controller = new AbortController();
   fetchController = controller;
-  t.play(0); // arm the transport; audio schedules as soon as the first bytes land
-  startTick();
-
   try {
+    t.play(0); // Arm once; playback begins with the first PCM.
+    startTick();
     const response = await fetch(`${base}/read-aloud/stream`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -447,6 +508,8 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
     stopReadAloud();
     if (!(error instanceof DOMException && error.name === "AbortError")) setError(error);
   }
+  // Download EOF != playback EOF; auto FIFO waits for onEnded/stop/error.
+  await playbackDone;
 }
 
 /** Continuous PCM: decode each s16le frame to mono and append as it arrives.
@@ -669,6 +732,7 @@ function attachTrackHandlers(track) {
 /** Play/pause/resume/replay from the player or the message button. */
 function playerToggle() {
   if (!transport) return;
+  playbackKind = 'manual';
   if (transport.playing) {
     transport.pause();
     setPhase("paused");

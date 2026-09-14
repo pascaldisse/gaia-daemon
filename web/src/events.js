@@ -12,6 +12,7 @@ import { markDirty, setError } from "./render.js";
 import { recordHarnessEvent, state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
+import { initializeAutoReadAloud, enqueueAutoReadAloud } from "./readaloud.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
@@ -46,6 +47,7 @@ export function connectEvents(resyncOnReady = false) {
     state.eventSource = null;
   }
   if (!snapshot || navigation.pending) return;
+  initializeAutoReadAloud();
   syncLiveTimers();
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
@@ -147,6 +149,7 @@ export function connectEvents(resyncOnReady = false) {
       markStreamsStalled(payload.event.text);
     }
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
+    void enqueueAutoReadAloud(payload);
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
