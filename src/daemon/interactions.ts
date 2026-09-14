@@ -1,3 +1,4 @@
+import { AutoTtsQueue } from "../services/auto-tts.js";
 import { globalPaths } from "../core/paths.js";
 import type { AgentDef, Snapshot, UiEvent, VoiceCallInfo, Workspace, WorkspaceRecord } from "../core/types.js";
 import { DEFAULT_ROOM, ensureWorkspaceRoom, initWorkspace, isValidRoomId, loadWorkspace, setWorkspaceDefaultAgent, setWorkspaceRoom, trashWorkspaceRoom } from "../domain/workspace.js";
@@ -33,10 +34,31 @@ export class RoomInteractionLifecycle {
   private readonly selectionMutationTails = new Map<string, Promise<void>>();
   private readonly latestSelectionRequest = new Map<string, number>();
   private nextSelectionRequest = 0;
+  private readonly autoTts = new AutoTtsQueue({
+    request: async (reply) => {
+      const service = await this.host.serviceFor(reply.workspaceId, reply.roomId);
+      const agent = service.workspace.agents[reply.event.author];
+      if (!agent) return undefined;
+      const settings = await readVoiceSettings();
+      return {
+        event: reply.event,
+        agent,
+        settings,
+        ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
+        log: (message) => this.host.log(message),
+      };
+    },
+    log: (message) => this.host.log(message),
+  });
+
+  onCommittedEvent(event: UiEvent): void {
+    void this.autoTts.enqueue(event);
+  }
 
   constructor(private readonly host: RoomInteractionHost) {}
 
   dispose(): void {
+    this.autoTts.dispose();
     this.ttsBridge?.stop();
     this.sttBridge?.stop();
     this.voiceStack.stop();

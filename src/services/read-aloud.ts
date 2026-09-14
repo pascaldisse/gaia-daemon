@@ -792,27 +792,30 @@ let claudeVoiceChild: ChildProcess | undefined;
 let claudeVoiceExitHooked = false;
 
 interface ClaudeVoiceHealth {
+  ok: boolean;
   reachable: boolean;
   ready: boolean;
   detail?: string;
 }
 
-async function claudeVoiceHealth(baseUrl: string): Promise<ClaudeVoiceHealth> {
+export async function claudeVoiceHealth(baseUrl: string, timeoutMs = 2000): Promise<ClaudeVoiceHealth> {
   try {
-    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
-    if (!response.ok) return { reachable: false, ready: false, detail: `HTTP ${response.status}` };
-    const body = (await response.json().catch(() => undefined)) as { loggedIn?: unknown; ready?: unknown } | undefined;
+    const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return { ok: false, reachable: false, ready: false, detail: `HTTP ${response.status}` };
+    const body = (await response.json().catch(() => undefined)) as { ok?: unknown; loggedIn?: unknown; ready?: unknown } | undefined;
+    const ok = body?.ok === true;
+    if (body?.ok === false) return { ok, reachable: true, ready: false, detail: "health not ok" };
     // Newer claude-voice answers immediately even while the browser session is
     // still relaunching: { ok:true, loggedIn:false }. Treat that as alive but
     // NOT ready, so GAIA waits (and never spawns a competing daemon) instead of
     // handing /stream to a browser session that is guaranteed to 500.
-    if (typeof body?.loggedIn === "boolean") return { reachable: true, ready: body.loggedIn, detail: body.loggedIn ? undefined : "browser session not ready" };
-    if (typeof body?.ready === "boolean") return { reachable: true, ready: body.ready, detail: body.ready ? undefined : "browser session not ready" };
+    if (typeof body?.loggedIn === "boolean") return { ok, reachable: true, ready: body.loggedIn, detail: body.loggedIn ? undefined : "browser session not ready" };
+    if (typeof body?.ready === "boolean") return { ok, reachable: true, ready: body.ready, detail: body.ready ? undefined : "browser session not ready" };
     // Back-compat with older claude-voice checkouts whose /health was a plain
     // liveness probe.
-    return { reachable: true, ready: true };
+    return { ok, reachable: true, ready: true };
   } catch {
-    return { reachable: false, ready: false };
+    return { ok: false, reachable: false, ready: false };
   }
 }
 

@@ -872,9 +872,7 @@ export async function saveSettingsFile(content) {
   markDirty("settings");
 }
 
-/** "Keep laptop awake while GAIA runs" (Settings ▸ general): persist + apply
- * immediately via the daemon (services/keep-awake.ts, macOS-only — the toggle
- * hides itself elsewhere via state.keepAwake.supported).
+/** Auto TTS → persisted daemon preference.
  * @param {boolean} enabled */
 export async function setAutoTts(enabled) {
   try {
