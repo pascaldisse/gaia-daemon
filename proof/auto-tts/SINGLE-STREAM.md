@@ -32,3 +32,10 @@
 - Keeping daemon FIFO + using readAloudStream + collecting PCM into WAV/afplay → synthesis corrected, playback still divergent; NOT exact compliance.
 - Required clarification before risky ownership change → browser-owned auto playback acceptable, or daemon-host playback mandatory?
 - Live → UNVERIFIED-LIVE; no restart/audio test.
+
+§ Baseline verification — NOT fix proof
+- `bun run check` → exit 0; raw → single-stream/check.txt; existing Knip advisories retained.
+- `bun test test/auto-tts.test.ts` → exit 0; 14 pass / 0 fail / 36 expectations; raw → single-stream/tests.txt.
+- Source/tests unchanged; existing chunk-sequence regression still passes → defect remains.
+- Verdict → BLOCKED-PLAYBACK-OWNERSHIP; clarification requested before browser migration / alternative sink.
+- Merge (recon/proof only, NOT a fix) → `git -C "$HOME/projects/gaia-daemon" merge --ff-only lane/auto-tts`; dirty main refusal → stop, no force/reset/stash.

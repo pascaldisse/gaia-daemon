@@ -1,0 +1,22 @@
+bun test v1.3.14 (0d9b296a)
+
+test/auto-tts.test.ts:
+(pass) setting off: no read-aloud, health, or playback calls [1.73ms]
+(pass) setting on: one existing read-aloud call with stripped final text [2.62ms]
+(pass) two room replies: FIFO waits for playback completion before second synthesis [0.37ms]
+(pass) non-final events, special kinds, blank and thinking-only text: ignored [0.17ms]
+(pass) unhealthy claude-voice: skip and log without starting synthesis [0.18ms]
+(pass) read-aloud failures are logged; next reply still speaks [0.57ms]
+(pass) playback failure plus failing logger cannot poison queue [0.12ms]
+(pass) existing chunk count drives sequential playback of the whole reply [0.12ms]
+(pass) disable while playing: queued replies discarded [0.09ms]
+(pass) dispose aborts active playback and discards queued replies [0.15ms]
+(pass) health probe: configured URL, ok false, logged-out, malformed, HTTP failure [7.43ms]
+(pass) audio sink: player spawn failure cleans temporary audio [5.03ms]
+(pass) default health guard rejects ok:false without invoking read-aloud [3.55ms]
+(pass) settings/request failures resolve safely without poisoning later replies [0.24ms]
+
+ 14 pass
+ 0 fail
+ 36 expect() calls
+Ran 14 tests across 1 file. [55.00ms]
