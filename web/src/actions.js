@@ -41,6 +41,7 @@ async function applyAppPayload(body) {
   // (loadSettingsFile below), made on demand as the modal selects a file.
   state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
   state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
+  state.general = body.general ?? state.general;
   state.keepAwake = body.keepAwake ?? state.keepAwake;
   state.userName = body.userName ?? state.userName;
   // Theme is a daemon setting (v2 parity, services/theme.ts): the payload is
@@ -875,6 +876,17 @@ export async function saveSettingsFile(content) {
  * immediately via the daemon (services/keep-awake.ts, macOS-only — the toggle
  * hides itself elsewhere via state.keepAwake.supported).
  * @param {boolean} enabled */
+export async function setAutoTts(enabled) {
+  try {
+    const body = await api("/api/app/auto-tts", { method: "POST", body: JSON.stringify({ enabled }) });
+    state.general = body.general ?? state.general;
+    markDirty("settings");
+  } catch (error) {
+    setError(error);
+  }
+}
+
+/** @param {boolean} enabled */
 export async function setKeepAwake(enabled) {
   try {
     const body = await api("/api/app/keep-awake", { method: "POST", body: JSON.stringify({ enabled }) });

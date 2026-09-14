@@ -102,6 +102,11 @@ export async function handleApi(ctx: RouteContext): Promise<void> {
     // immediately. `enabled` off-macOS still persists the preference (inert
     // there — services/keep-awake.ts) so it takes effect if this daemon later
     // runs on a Mac.
+    if (method === "POST" && path === "/api/app/auto-tts") {
+      const body = await parseBody(request);
+      const enabled = boolField(body, "enabled");
+      return respond(response, async () => ({ general: { autoTts: await daemon.setAutoTts(enabled) } }));
+    }
     if (method === "POST" && path === "/api/app/keep-awake") {
       const body = await parseBody(request);
       const enabled = boolField(body, "enabled");

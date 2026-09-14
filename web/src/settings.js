@@ -4,7 +4,7 @@
 // field hints (state.settingsFileHints) — a raw textarea remains the escape
 // hatch (view toggle) and the only option for files with no hints or
 // unparseable JSON (persona/memory markdown included).
-import { deleteAgent, loadSettingsFile, saveSettingsFile, sendUiLogin, sendUiReply, setKeepAwake, setUserName } from "./actions.js";
+import { deleteAgent, loadSettingsFile, saveSettingsFile, sendUiLogin, sendUiReply, setAutoTts, setKeepAwake, setUserName } from "./actions.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { PathText } from "./links.js";
@@ -269,6 +269,18 @@ function GeneralTab() {
       ),
     );
   }
+  rows.push(
+    h(
+      "label",
+      { class: "settings2-row" },
+      h("span", { text: "Auto TTS (speak agent replies)" }),
+      h("input", {
+        type: "checkbox",
+        checked: state.general.autoTts,
+        onchange: (event) => void setAutoTts(/** @type {HTMLInputElement} */ (event.target).checked),
+      }),
+    ),
+  );
   // Theme lives in Settings too (v2 parity), not only behind Alt+T: same
   // preview-on-hover / commit-on-click contract, same palettes, one source of
   // colour (each swatch carries data-theme; styles.css does the rest).
