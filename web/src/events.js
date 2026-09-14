@@ -72,6 +72,13 @@ export function connectEvents(resyncOnReady = false) {
   // gone are lost — so a ready that isn't the first one resyncs with a
   // fresh snapshot.
   let connectedBefore = false;
+  let settingsRevision = 0;
+  listen("app-settings", (event) => {
+    const payload = /** @type {Ev<"app-settings">} */ (JSON.parse(event.data));
+    settingsRevision++;
+    state.general = payload.general;
+    markDirty("settings");
+  });
   listen("ready", (event) => {
     const payload = JSON.parse(event.data);
     const bootId = payload && typeof payload === "object" && typeof payload.bootId === "string" ? payload.bootId : undefined;
@@ -84,6 +91,13 @@ export function connectEvents(resyncOnReady = false) {
     }
     if (connectedBefore || resyncOnReady) void resyncSnapshot(snapshot.workspace.id);
     connectedBefore = true;
+    // Reconnect/room switch → recover missed global preference changes.
+    const revision = settingsRevision;
+    void api("/api/app").then((body) => {
+      if (state.eventSource !== source || settingsRevision !== revision) return;
+      state.general = body.general ?? state.general;
+      markDirty("settings");
+    }).catch((error) => console.info("auto-tts: preference refresh failed", error));
   });
 
   // Named server keepalive: EventSource does not expose comment-only pings.

@@ -7,7 +7,7 @@ import { readAloudStream, registerTtsEngine, speakableText } from '../src/servic
 import { VOICE_SETTINGS_DEFAULTS } from '../src/services/voice.ts';
 
 let player, state, root, requests, syntheses, contexts, events, failures;
-const saved = Object.fromEntries(['window', 'AudioContext', 'fetch', 'requestAnimationFrame', 'cancelAnimationFrame', 'navigator', 'document'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+const saved = Object.fromEntries(['window', 'AudioContext', 'fetch', 'requestAnimationFrame', 'cancelAnimationFrame', 'navigator', 'document', 'localStorage', 'addEventListener', 'removeEventListener'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
 const setGlobal = (name, value) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
 class FakeSource {
   onended = null;
@@ -174,4 +174,49 @@ test('setting off / room switch while queued → no second synthesis', async () 
   finish();
   await Promise.all([first, second]);
   expect(requests).toHaveLength(1);
+});
+
+test('another tab owns Web Lock → no request or AudioTransport', async () => {
+  setGlobal('navigator', { locks: { request: async (name, options, callback) => {
+    expect(name).toBe('gaia-auto-tts');
+    expect(options).toEqual({ ifAvailable: true });
+    return callback(null);
+  } } });
+  await enqueue('not-owned', 'Skip.');
+  expect(requests).toHaveLength(0);
+  expect(contexts).toHaveLength(0);
+});
+
+test('fallback ownership lost during audio → stop active transport + skip queued reply', async () => {
+  const values = new Map(), listeners = new Map();
+  setGlobal('navigator', {});
+  setGlobal('localStorage', { getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) });
+  setGlobal('addEventListener', (type, listener) => listeners.set(type, listener));
+  setGlobal('removeEventListener', type => listeners.delete(type));
+  const first = enqueue('first', 'First.');
+  const second = enqueue('second', 'Second.');
+  await until(() => contexts[0]?.sources.length);
+  values.set('gaia-auto-tts-owner', JSON.stringify({ owner: 'other-tab', expiresAt: Date.now() + 60000 }));
+  listeners.get('storage')({ key: 'gaia-auto-tts-owner' });
+  await Promise.all([first, second]);
+  expect(contexts[0].sources.every(source => source.stopped)).toBe(true);
+  expect(contexts[0].state).toBe('closed');
+  expect(state.readAloud).toBe(null);
+  expect(requests).toHaveLength(1);
+});
+
+test('room navigation stops active auto but preserves active manual playback', async () => {
+  const auto = enqueue('auto', 'Auto speech.');
+  await until(() => contexts[0]?.sources.length);
+  state.snapshot.room.id = 'other';
+  player.initializeAutoReadAloud();
+  await auto;
+  expect(contexts[0].state).toBe('closed');
+  events.set('manual', reply('manual', 'Manual speech.').event);
+  player.toggleReadAloud('manual');
+  await until(() => contexts[1]?.sources.length);
+  state.snapshot.room.id = 'third';
+  player.initializeAutoReadAloud();
+  expect(contexts[1].state).toBe('running');
 });

@@ -339,6 +339,9 @@ let autoQueue = null;
 
 // First connected tab → ownership retained through hidden/unfocused states.
 export function initializeAutoReadAloud() {
+  // Room navigation → stop only auto; manual playback keeps its bound origin.
+  if (playbackKind === 'auto' && activeOrigin &&
+      (activeOrigin.workspaceId !== state.snapshot?.workspace.id || activeOrigin.roomId !== state.snapshot?.room.id)) stopReadAloud();
   if (autoOwner) return;
   const owner = new AutoTtsOwner({ onLost: () => {
     if (playbackKind === 'auto') stopReadAloud();

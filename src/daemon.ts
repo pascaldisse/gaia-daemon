@@ -482,7 +482,9 @@ export class Daemon {
 
   async setAutoTts(enabled: boolean): Promise<boolean> {
     await writeAutoTtsSetting(enabled);
-    return (await readAppSettings()).general.autoTts;
+    const autoTts = (await readAppSettings()).general.autoTts;
+    this.broadcast({ type: "app-settings", general: { autoTts } });
+    return autoTts;
   }
 
   async keepAwake(): Promise<KeepAwakeCapability> {

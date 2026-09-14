@@ -49,3 +49,20 @@ test("manual stream service: long full reply → one synthesis; no second format
     expect(synthesizeStream.mock.calls[0][0].text.endsWith('END')).toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("setting change broadcasts authoritative preference to every tab; no playback", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gaia-auto-preference-test-'));
+  const previousHome = process.env.GAIA_HOME;
+  process.env.GAIA_HOME = root;
+  const broadcast = mock((_event: UiEvent) => {});
+  try {
+    for (const enabled of [true, false]) {
+      expect(await Daemon.prototype.setAutoTts.call({ broadcast } as unknown as Daemon, enabled)).toBe(enabled);
+      expect(broadcast.mock.calls.at(-1)?.[0]).toEqual({ type: 'app-settings', general: { autoTts: enabled } });
+    }
+    expect(broadcast).toHaveBeenCalledTimes(2);
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME; else process.env.GAIA_HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
