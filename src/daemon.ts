@@ -358,7 +358,6 @@ export class Daemon {
 
   broadcast(event: UiEvent): void {
     this.bus.emit(event);
-    this.interactions.onCommittedEvent(event);
   }
 
   // --- account usage limits (account-keyed; see services/usage-service.ts) ------
