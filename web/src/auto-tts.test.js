@@ -2,7 +2,7 @@
 import { expect, mock, test } from 'bun:test';
 import { AutoTtsQueue } from './auto-tts.js';
 
-const reply = (id = 'one', text = 'Hello.') => ({ type: 'room-event', workspaceId: 'ws', roomId: 'room', event: { id, author: 'astra', text } });
+const reply = (id = 'one', text = 'Hello.') => ({ type: 'room-event', workspaceId: 'ws', roomId: 'room', event: { id, author: 'astra', text, timestamp: new Date().toISOString() } });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function setup() {
   const state = { enabled: true, owns: true, manual: false, origin: { workspaceId: 'ws', roomId: 'room' } };
@@ -124,4 +124,41 @@ test('default replace → pending burst plays latest only; disposal suppresses l
   ownership.resolve(true); await Promise.all([first,next]); expect(played).toEqual(['next']);
   const stopped = new AutoTtsQueue(deps); const pending = stopped.enqueue(reply('stopped'));
   stopped.dispose(); await pending; expect(played).toEqual(['next']);
+});
+
+test('TTS_MAX_AGE_S → creation age checked at arrival AND after asynchronous ownership', async () => {
+  let now = 100000;
+  const played = [], gate = deferred();
+  const queue = new AutoTtsQueue({ enabled:()=>true,current:()=>({workspaceId:'ws',roomId:'room'}),owns:()=>true,
+    manualBusy:()=>false,acquire:()=>gate.promise,play:async id=>{played.push(id);},now:()=>now,TTS_MAX_AGE_S:60 });
+  const event = (id, time) => ({...reply(id),event:{...reply(id).event,timestamp:new Date(time).toISOString()}});
+  await queue.enqueue(event('already-old', now-60001));
+  const waiting = queue.enqueue(event('waited',now));
+  now+=60001;gate.resolve(true);await waiting;
+  expect(played).toEqual([]);
+  await queue.enqueue(event('current',now));expect(played).toEqual(['current']);
+});
+
+test('90s recovery → FIFO flushed; only latest fresh reply plays, never stale history', async () => {
+  let now = 100000; const played = [], firstDone = deferred();
+  const queue = new AutoTtsQueue({ policy:'enqueue',enabled:()=>true,current:()=>({workspaceId:'ws',roomId:'room'}),owns:()=>true,
+    manualBusy:()=>false,acquire:async()=>true,play:async id=>{played.push(id);if(id==='one')await firstDone.promise;},
+    stop:()=>firstDone.resolve(),now:()=>now });
+  const event=id=>({...reply(id),event:{...reply(id).event,timestamp:new Date(now).toISOString()}});
+  const one=queue.enqueue(event('one'));await new Promise(r=>setTimeout(r,0));
+  const two=queue.enqueue(event('two'));
+  now+=90000;const three=queue.enqueue(event('three'));
+  expect(queue.resumeNewest()).toBe(false);
+  await Promise.all([one,two,three]);expect(played).toEqual(['one','three']);
+});
+
+test('90s recovery → every reply expired means silence, not replaying the newest stale reply', async () => {
+  let now=100000;const played=[],firstDone=deferred();
+  const queue=new AutoTtsQueue({policy:'enqueue',enabled:()=>true,current:()=>({workspaceId:'ws',roomId:'room'}),owns:()=>true,
+    manualBusy:()=>false,acquire:async()=>true,play:async id=>{played.push(id);if(id==='one')await firstDone.promise;},
+    stop:()=>firstDone.resolve(),now:()=>now});
+  const event=id=>({...reply(id),event:{...reply(id).event,timestamp:new Date(now).toISOString()}});
+  const one=queue.enqueue(event('one'));await new Promise(r=>setTimeout(r,0));
+  const two=queue.enqueue(event('two')),three=queue.enqueue(event('three'));now+=90000;
+  queue.resumeNewest();await Promise.all([one,two,three]);expect(played).toEqual(['one']);
 });

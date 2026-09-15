@@ -83,6 +83,8 @@ export class AudioTransport {
     this.status = "";
     /** @type {(() => void)|null} */
     this.onStatus = null;
+    /** @type {(() => boolean)|null} */
+    this.beforeRecovery = null;
     /** @type {ReturnType<typeof setInterval>|null} */
     this._watchdog = null;
     this._lastProgressAt = performance.now();
@@ -115,8 +117,9 @@ export class AudioTransport {
   recover(reason = 'audio recovery', reschedule = false) {
     if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
     const ctx = this.ctx;
-    if (ctx.state === 'closed') { void this.migrateContext(); return; }
     if (ctx.state === 'running' && !reschedule) return;
+    if (this.beforeRecovery?.() === false) return;
+    if (ctx.state === 'closed') { void this.migrateContext(); return; }
     this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
     const seq = ++this._resumeSeq;
     void ctx.resume().then(() => {
@@ -156,6 +159,7 @@ export class AudioTransport {
     }
     if (now - this._lastProgressAt < this.stallSeconds * 1000) return;
     this._lastProgressAt = now;
+    if (this.beforeRecovery?.() === false) return;
     if (this.ctx.state === 'running') {
       this._status(`clock stalled ${this.stallSeconds}s — rebinding audio output`);
       void this.migrateContext();
@@ -353,7 +357,7 @@ export class AudioTransport {
    * buffered PCM (this.segments) survives — only the ctx + scheduled sources
    * are rebuilt. No-op unless we are actually playing. */
   async migrateContext() {
-    if (this._destroyed || !this.playing || this._migrating) return;
+    if (this._destroyed || !this.playing || this._migrating || this.beforeRecovery?.() === false) return;
     this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._migrating = true;
     this._status('rebinding audio output');
@@ -418,8 +422,8 @@ let autoOwner = null;
 let autoQueue = null;
 
 // First connected tab → ownership retained through hidden/unfocused states.
-/** @param {{policy?: "replace"|"enqueue"}} [options] */
-export function initializeAutoReadAloud({ policy = "replace" } = {}) {
+/** @param {{policy?: "replace"|"enqueue", TTS_MAX_AGE_S?: number}} [options] */
+export function initializeAutoReadAloud({ policy = state.general.ttsPolicy ?? "replace", TTS_MAX_AGE_S = state.general.TTS_MAX_AGE_S } = {}) {
   // Room navigation → stop only auto; manual playback keeps its bound origin.
   if (playbackKind === 'auto' && activeOrigin &&
       (activeOrigin.workspaceId !== state.snapshot?.workspace.id || activeOrigin.roomId !== state.snapshot?.room.id)) stopReadAloud();
@@ -430,6 +434,8 @@ export function initializeAutoReadAloud({ policy = "replace" } = {}) {
   autoOwner = owner;
   autoQueue = new AutoTtsQueue({
     policy,
+    TTS_MAX_AGE_S,
+    stop: stopReadAloud,
     enabled: () => state.general.autoTts,
     current: () => state.snapshot ? { workspaceId: state.snapshot.workspace.id, roomId: state.snapshot.room.id } : null,
     acquire: () => owner.acquire(),
@@ -549,10 +555,11 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
 
   /** @type {AudioTransport} */
   let t;
-  try { t = new AudioTransport({ context }); }
+  try { t = new AudioTransport({ context, stallSeconds: state.general.ttsStallSeconds }); }
   catch (error) { stopReadAloud(); setError(error); return; }
   transport = t;
   t.onStatus = updatePlayerUi;
+  t.beforeRecovery = () => playbackKind !== 'auto' || (autoQueue?.resumeNewest() ?? false);
   playbackKind = kind;
   /** @type {() => void} */
   let complete;
@@ -583,6 +590,7 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   fetchController = controller;
   try {
     t.play(0); // Arm once; playback begins with the first PCM.
+    if (transport !== t) return; // Stale auto reply retired by recovery policy.
     startTick();
     const response = await fetch(`${base}/read-aloud/stream`, {
       method: "POST",

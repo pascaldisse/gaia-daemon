@@ -24,7 +24,7 @@ class FakeContext {
   resume() { return Promise.resolve(); }
   close() { this.state = 'closed'; return Promise.resolve(); }
 }
-const reply = (id, text = 'Reply.') => ({ type: 'room-event', workspaceId: 'workspace', roomId: 'room', event: { id, author: 'astra', text } });
+const reply = (id, text = 'Reply.') => ({ type: 'room-event', workspaceId: 'workspace', roomId: 'room', event: { id, author: 'astra', text, timestamp: new Date().toISOString() } });
 const tick = () => new Promise(r => setTimeout(r, 0));
 async function until(predicate) {
   for (let i = 0; i < 200; i++) { if (predicate()) return; await tick(); }
