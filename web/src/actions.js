@@ -41,7 +41,7 @@ async function applyAppPayload(body) {
   // (loadSettingsFile below), made on demand as the modal selects a file.
   state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
   state.settingsGlobalFiles = body.globalFiles ?? state.settingsGlobalFiles;
-  state.general = { ...state.general, ...body.general };
+  state.general = body.general ?? state.general;
   state.keepAwake = body.keepAwake ?? state.keepAwake;
   state.userName = body.userName ?? state.userName;
   // Theme is a daemon setting (v2 parity, services/theme.ts): the payload is

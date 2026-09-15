@@ -100,7 +100,18 @@ export class AudioTransport {
     const ctx = this.ctx;
     ctx.onstatechange = () => {
       if (this.ctx !== ctx || this._destroyed || this._migrating || !this.playing || this.userPaused) return;
-      if (ctx.state !== "running") this.recover(`audio ${ctx.state}`);
+      if (ctx.state === 'running') {
+        if (this.status && this.beforeRecovery?.() === false) return;
+        this._pump();
+        return;
+      }
+      // Retire scheduled nodes before an OS auto-resume can speak stale PCM.
+      this.pausedSample = Math.round(this.currentTime * this.sampleRate);
+      this._stopSources();
+      this.frontier = this.pausedSample;
+      this.anchorSample = this.frontier;
+      this.anchorCtx = ctx.currentTime + 0.08;
+      this.recover(`audio ${ctx.state}`);
     };
   }
 
@@ -228,7 +239,7 @@ export class AudioTransport {
 
   /** Schedule every buffered-but-unscheduled sample ahead of the playhead. */
   _pump() {
-    if (this._destroyed || this._migrating || !this.playing) return;
+    if (this._destroyed || this._migrating || !this.playing || this.ctx.state !== "running") return;
     while (this.frontier < this.total) {
       const start = this.frontier;
       const end = this.total;
@@ -501,7 +512,7 @@ function setPhase(phase) {
  * @param {string} eventId */
 export function toggleReadAloud(eventId) {
   if (activeEventId === eventId && transport && activeOrigin?.workspaceId === state.snapshot?.workspace.id && activeOrigin?.roomId === state.snapshot?.room.id) {
-    if (state.readAloud?.phase === "loading") stopReadAloud();
+    if (state.readAloud?.phase === "loading" && transport.duration === 0) stopReadAloud();
     else playerToggle();
     return;
   }
@@ -853,6 +864,11 @@ function attachTrackHandlers(track) {
 function playerToggle() {
   if (!transport) return;
   playbackKind = 'manual';
+  if (transport.playing && transport.ctx.state !== 'running') {
+    transport.recover('play button');
+    updatePlayerUi();
+    return;
+  }
   if (transport.playing) {
     transport.pause();
     setPhase("paused");
@@ -918,7 +934,7 @@ function updatePlayerUi(overrideFrac) {
   const generating = !transport.done;
   durTimeEl.textContent = `${generating ? "~" : ""}${fmtTime(dur)}`;
   liveEl.hidden = !generating;
-  const playing = transport.playing;
+  const playing = transport.playing && transport.ctx.state === 'running';
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.title = playing ? "pause" : "play";
   playerRoot.classList.toggle("loading", state.readAloud?.phase === "loading" && dur === 0);

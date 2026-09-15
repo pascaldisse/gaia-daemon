@@ -277,3 +277,19 @@ test('a hung context close becomes a bounded visible failure, not an immortal mi
   expect(String(errors[0])).toContain('rebind timed out');expect(t.playing).toBe(false);
   expect(t._watchdog).toBe(null);expect(contexts).toHaveLength(1);
 });
+
+test('autoplay-blocked PCM remains unscheduled until output is actually running', async () => {
+  contexts=[];const ctx=new FakeContext();ctx.state='suspended';let grant!:()=>void;
+  ctx.resume=()=>new Promise<void>(r=>{grant=r;});
+  const t=new AudioTransport({context:ctx});transports.push(t);t.setFormat(16000,1);t.play();t.append(pcm(16000));t.markDone();
+  expect(t.sources.size).toBe(0);expect(t.frontier).toBe(0);expect(t.playing).toBe(true);
+  ctx.setState('running');grant();await flush();expect(t.sources.size).toBe(1);expect(t.frontier).toBe(16000);
+});
+
+test('interruption unschedules PCM; resumed context cannot bypass expired-reply policy', async () => {
+  const {t,ctx}=armed();t.append(pcm(160000));ctx.currentTime=4.08;
+  ctx.resume=()=>new Promise<void>(()=>{});ctx.setState('suspended');
+  expect(t.sources.size).toBe(0);expect(t.frontier).toBe(64000);
+  t.beforeRecovery=()=>{t.destroy();return false;};ctx.setState('running');
+  expect(t.sources.size).toBe(0);expect(t.playing).toBe(false);expect(ctx.state).toBe('closed');
+});

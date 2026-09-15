@@ -95,7 +95,7 @@ export function connectEvents(resyncOnReady = false) {
     const revision = settingsRevision;
     void api("/api/app").then((body) => {
       if (state.eventSource !== source || settingsRevision !== revision) return;
-      state.general = { ...state.general, ...body.general };
+      state.general = body.general ?? state.general;
       markDirty("settings");
     }).catch((error) => console.info("auto-tts: preference refresh failed", error));
   });
