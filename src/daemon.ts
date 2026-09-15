@@ -40,7 +40,6 @@ import { resolveUpstreamCredential, type UpstreamCredential } from "./services/p
 import { EditableFileRegistry, buildFileHints, readModelCatalog, sdkThinkingLevels, sdkToolNames, skillHintOptions, type EditableFileContent, type EditableFileDescriptor, type FileHints, type HintSources, type ModelChoice } from "./services/hints.js";
 import { ensureVoiceSettingsFile, sweepOrphanOverrides } from "./services/voice.js";
 import { KeepAwakeManager, keepAwakeCapability, migrateLegacyLaunchdAgent, readKeepAwakeSetting, writeKeepAwakeSetting } from "./services/keep-awake.js";
-import { readAppSettings, writeAutoTtsSetting } from "./services/app-settings.js";
 import { readThemeSetting, writeThemeSetting } from "./services/theme.js";
 import { readUserNameSetting, writeUserNameSetting } from "./services/user-name.js";
 import { createToolProviders } from "./services/tool-providers.js";
@@ -480,13 +479,6 @@ export class Daemon {
 
   // --- workspace/room operations ---------------------------------------------------
 
-  async setAutoTts(enabled: boolean): Promise<boolean> {
-    await writeAutoTtsSetting(enabled);
-    const autoTts = (await readAppSettings()).general.autoTts;
-    this.broadcast({ type: "app-settings", general: { autoTts } });
-    return autoTts;
-  }
-
   async keepAwake(): Promise<KeepAwakeCapability> {
     return keepAwakeCapability();
   }
@@ -707,7 +699,6 @@ export class Daemon {
     workspaceFiles: EditableFileDescriptor[];
     voice: VoiceCallInfo | null;
     workspaceRooms: Record<string, Snapshot["rooms"]>;
-    general: { autoTts: boolean };
     keepAwake: KeepAwakeCapability;
     userName: string;
     theme: string;
@@ -740,7 +731,6 @@ export class Daemon {
       workspaceFiles: current ? await this.files.listWorkspace(current) : [],
       voice: this.voiceFor(current),
       workspaceRooms,
-      general: (await readAppSettings()).general,
       keepAwake: await this.keepAwake(),
       userName: await this.userName(),
       theme: await this.theme(),
