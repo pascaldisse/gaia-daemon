@@ -904,7 +904,8 @@ function updatePlayerUi(overrideFrac) {
   if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
   if (diagEl) {
     diagEl.hidden = localStorage.getItem("TTS_DIAG") !== "1";
-    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds} · request=${transport.requestId}`;
+    diagEl.title = `AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds · request=${transport.requestId}`;
+    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds}`;
   }
   const dur = transport.duration;
   const cur = overrideFrac != null ? overrideFrac * dur : transport.currentTime;
