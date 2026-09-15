@@ -1,0 +1,323 @@
+{
+  "bar": "▶\n0:21\n0:21\n⟳\n✕",
+  "timeline": [
+    {
+      "at": 1789478914129,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:09\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 9.76
+        }
+      ]
+    },
+    {
+      "at": 1789478915128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:10\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 10.762666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789478916129,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:11\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 11.76
+        }
+      ]
+    },
+    {
+      "at": 1789478917129,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:12\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 12.762666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789478918129,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:13\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 13.76
+        }
+      ]
+    },
+    {
+      "at": 1789478919128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:14\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 14.762666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789478920128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:15\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 15.76
+        }
+      ]
+    },
+    {
+      "at": 1789478921129,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 16.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478922128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 17.76
+        }
+      ]
+    },
+    {
+      "at": 1789478923128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 18.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478924128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 19.76
+        }
+      ]
+    },
+    {
+      "at": 1789478925129,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 20.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478926128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 21.76
+        }
+      ]
+    },
+    {
+      "at": 1789478927128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 22.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478928129,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 23.76
+        }
+      ]
+    },
+    {
+      "at": 1789478929128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 24.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478930128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 25.76
+        }
+      ]
+    },
+    {
+      "at": 1789478931128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 26.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478932128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 27.76
+        }
+      ]
+    },
+    {
+      "at": 1789478933129,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 28.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478934128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 29.76
+        }
+      ]
+    },
+    {
+      "at": 1789478935128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 30.762666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789478936128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 31.76
+        }
+      ]
+    },
+    {
+      "at": 1789478937127,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 32.757333333333335
+        }
+      ]
+    },
+    {
+      "at": 1789478938128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 33.76
+        }
+      ]
+    },
+    {
+      "at": 1789478939128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:21\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "running",
+          "clock": 34.76266666666667
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "duration": 10,
+      "bytes": 685018
+    }
+  ]
+}

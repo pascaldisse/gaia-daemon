@@ -29,9 +29,10 @@ import { AutoTtsOwner } from "./auto-tts-owner.js";
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  constructor() {
+  /** @param {{context?: AudioContext, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number}} [options] */
+  constructor({ context, stallSeconds = 3, watchdogMs = 500, contextCloseTimeoutMs = 3000 } = {}) {
     /** @type {AudioContext} */
-    this.ctx = new AudioContext();
+    this.ctx = context ?? new AudioContext();
     /** Engine sample rate; buffers are created at it and Web Audio resamples to
      * the context on playback. 0 until the first audio sets the format. */
     this.rate = 0;
@@ -77,22 +78,104 @@ export class AudioTransport {
     this.onEnded = null;
     /** @type {((error: unknown) => void)|null} visible AudioContext failures */
     this.onError = null;
+    this.stallSeconds = Number.isFinite(stallSeconds) && stallSeconds > 0 ? stallSeconds : 3;
+    this.watchdogMs = Number.isFinite(watchdogMs) && watchdogMs > 0 ? watchdogMs : 500;
+    this.contextCloseTimeoutMs = Number.isFinite(contextCloseTimeoutMs) && contextCloseTimeoutMs > 0 ? contextCloseTimeoutMs : 3000;
+    this.status = "";
+    /** @type {(() => void)|null} */
+    this.onStatus = null;
+    /** @type {(() => boolean)|null} */
+    this.beforeRecovery = null;
+    /** @type {ReturnType<typeof setInterval>|null} */
+    this._watchdog = null;
+    this._lastProgressAt = performance.now();
+    this._lastPosition = 0;
+    this._destroyed = false;
+    this._resumeSeq = 0;
     this._bindContextState();
   }
 
-  /** Watch the context for going non-running under us. WebKit (the native
-   * shell) suspends/interrupts a context when the macOS audio session changes
-   * hands; ctx.currentTime keeps ticking into silence and nothing ever notices.
-   * Only play() checked state before, i.e. never again after start. */
+  // Interruptions retain unlocked context + PCM; route changes/frozen running clocks migrate.
   _bindContextState() {
     const ctx = this.ctx;
     ctx.onstatechange = () => {
-      if (this.ctx !== ctx) return; // stale context from a previous migration
-      if (this._migrating || ctx.state === "closed") return; // our own teardown
-      if (!this.playing || this.userPaused) return;
-      if (ctx.state === "running") return;
-      void this.migrateContext();
+      if (this.ctx !== ctx || this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+      if (ctx.state === 'running') {
+        if (this.status && this.beforeRecovery?.() === false) return;
+        this._pump();
+        return;
+      }
+      // Retire scheduled nodes before an OS auto-resume can speak stale PCM.
+      this.pausedSample = Math.round(this.currentTime * this.sampleRate);
+      this._stopSources();
+      this.frontier = this.pausedSample;
+      this.anchorSample = this.frontier;
+      this.anchorCtx = ctx.currentTime + 0.08;
+      this.recover(`audio ${ctx.state}`);
     };
+  }
+
+  /** @param {string} reason */
+  _status(reason) {
+    if (this.status === reason) return;
+    this.status = reason;
+    console.info('read-aloud:', JSON.stringify({ reason: reason || 'clock advancing',
+      context: this.ctx.state, position: this.currentTime, buffered: this.duration, done: this.done }));
+    this.onStatus?.();
+  }
+
+  /** Resume synchronously in the gesture task; a previous pending resume must not swallow activation.
+   * @param {string} [reason] @param {boolean} [reschedule] */
+  recover(reason = 'audio recovery', reschedule = false) {
+    if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+    const ctx = this.ctx;
+    if (ctx.state === 'running' && !reschedule) return;
+    if (this.beforeRecovery?.() === false) return;
+    if (ctx.state === 'closed') { void this.migrateContext(); return; }
+    this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
+    const seq = ++this._resumeSeq;
+    void ctx.resume().then(() => {
+      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing || this.userPaused) return;
+      if (ctx.state !== 'running') return; // Browser policy may resolve without granting output.
+      if (reschedule) this.play(Math.round(this.currentTime * this.sampleRate));
+      else this._pump();
+    }).catch((error) => {
+      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing) return;
+      this._status(`${reason} — ${error instanceof Error ? error.message : String(error)}; click to retry`);
+    });
+  }
+
+  _startWatchdog() {
+    this._stopWatchdog();
+    this._lastPosition = this.currentTime;
+    this._lastProgressAt = performance.now();
+    this._watchdog = setInterval(() => this.checkProgress(), this.watchdogMs);
+  }
+
+  _stopWatchdog() {
+    if (this._watchdog !== null) clearInterval(this._watchdog);
+    this._watchdog = null;
+  }
+
+  /** Independent of rAF (hidden tabs); timers may still be OS-throttled.
+   * @param {number} [now] monotonic milliseconds */
+  checkProgress(now = performance.now()) {
+    if (this._destroyed || !this.playing || this.userPaused || this._migrating) return;
+    const position = this.currentTime;
+    if (position > this._lastPosition + 1 / this.sampleRate || this.duration <= position) {
+      if (position > this._lastPosition + 1 / this.sampleRate && this.status) this._status('');
+      this._lastPosition = position;
+      this._lastProgressAt = now;
+      this._maybeFinish();
+      return;
+    }
+    if (now - this._lastProgressAt < this.stallSeconds * 1000) return;
+    this._lastProgressAt = now;
+    if (this.beforeRecovery?.() === false) return;
+    if (this.ctx.state === 'running') {
+      this._status(`clock stalled ${this.stallSeconds}s — rebinding audio output`);
+      void this.migrateContext();
+    } else this.recover(`clock stalled ${this.stallSeconds}s`);
   }
 
   /** @returns {number} */
@@ -107,7 +190,7 @@ export class AudioTransport {
 
   /** Current playhead in seconds, clamped to what is buffered. */
   get currentTime() {
-    if (!this.playing) return this.pausedSample / this.sampleRate;
+    if (!this.playing || this._migrating) return this.pausedSample / this.sampleRate;
     const s = this.anchorSample + (this.ctx.currentTime - this.anchorCtx) * this.sampleRate;
     return Math.min(this.total, Math.max(0, s)) / this.sampleRate;
   }
@@ -120,7 +203,7 @@ export class AudioTransport {
   /** Append a mono PCM segment; schedule it if we are playing.
    * @param {Float32Array} mono */
   append(mono) {
-    if (!mono.length) return;
+    if (this._destroyed || !mono.length) return;
     this.segStart.push(this.total);
     this.segments.push(mono);
     this.total += mono.length;
@@ -156,6 +239,7 @@ export class AudioTransport {
 
   /** Schedule every buffered-but-unscheduled sample ahead of the playhead. */
   _pump() {
+    if (this._destroyed || this._migrating || !this.playing || this.ctx.state !== "running") return;
     while (this.frontier < this.total) {
       const start = this.frontier;
       const end = this.total;
@@ -188,7 +272,7 @@ export class AudioTransport {
 
   /** Every condition that must hold for playback to be over. */
   _canFinish() {
-    return this.playing
+    return this.playing && !this._migrating && !this._destroyed
       && this.done
       && this.frontier >= this.total
       && this.sources.size === 0
@@ -207,6 +291,7 @@ export class AudioTransport {
       this._finishQueued = false;
       if (this._appendSeq !== seq || !this._canFinish()) return;
       this.playing = false;
+      this._stopWatchdog();
       this.userPaused = false;
       // _armed stays true on purpose: finishing is OUR decision, not the
       // user's, and a truncated stream can still deliver its tail afterwards.
@@ -219,17 +304,18 @@ export class AudioTransport {
   /** Start (or resume/seek) playback from a sample index.
    * @param {number} [fromSample] defaults to the current playhead */
   play(fromSample) {
+    if (this._destroyed) return;
     const from = fromSample ?? Math.round(this.currentTime * this.sampleRate);
     this._stopSources();
     this.playing = true;
     this.userPaused = false;
     this._armed = true;
     this.frontier = Math.min(Math.max(0, from), this.total);
+    this.pausedSample = this.frontier;
     this.anchorCtx = this.ctx.currentTime + 0.08;
     this.anchorSample = this.frontier;
-    void this.ctx.resume().then(() => {
-      if (this.ctx.state !== "running") throw new Error(`Audio output is ${this.ctx.state}`);
-    }).catch((error) => this.onError?.(error));
+    this._startWatchdog();
+    this.recover('playback');
     this._pump();
     this._maybeFinish();
   }
@@ -243,6 +329,8 @@ export class AudioTransport {
     this.playing = false;
     this.userPaused = true;
     this._armed = false;
+    this._resumeSeq++;
+    this._stopWatchdog();
   }
 
   /** @param {number} seconds */
@@ -281,35 +369,48 @@ export class AudioTransport {
    * buffered PCM (this.segments) survives — only the ctx + scheduled sources
    * are rebuilt. No-op unless we are actually playing. */
   async migrateContext() {
-    if (!this.playing || this._migrating) return;
+    if (this._destroyed || !this.playing || this._migrating || this.beforeRecovery?.() === false) return;
+    this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._migrating = true;
+    this._status('rebinding audio output');
     try {
-      const resumeAt = Math.round(this.currentTime * this.sampleRate);
       this._stopSources();
+      const ctx = this.ctx;
+      /** @type {ReturnType<typeof setTimeout>|undefined} */
+      let deadline;
       try {
-        await this.ctx.close();
-      } catch {
-        // Already closed.
-      }
+        await Promise.race([
+          ctx.close().catch(error => { if (ctx.state !== 'closed') throw error; }),
+          new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Audio output rebind timed out')), this.contextCloseTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(deadline); }
+      if (this._destroyed) return;
       this.ctx = new AudioContext();
       this._bindContextState();
-      this.play(resumeAt);
+      this._migrating = false;
+      if (this.playing && !this.userPaused) this.play(this.pausedSample);
     } catch (error) {
       // Never leave this.ctx closed and silent: the old context is dead, a new
       // one could not be built. Say so instead of freezing the playhead.
       this.playing = false;
       this._armed = false;
-      this.onError?.(error);
+      this._stopWatchdog();
+      if (!this._destroyed) this.onError?.(error);
     } finally {
       this._migrating = false;
     }
   }
 
-  destroy() {
+  /** @param {boolean} [closeContext] false only for immediate shared-player handoff */
+  destroy(closeContext = true) {
+    this._destroyed = true;
+    this.playing = false;
     this._armed = false;
+    this._resumeSeq++;
+    this._stopWatchdog();
     this.ctx.onstatechange = null;
     this._stopSources();
-    void this.ctx.close().catch(() => {});
+    if (closeContext) void this.ctx.close().catch(() => {});
   }
 
   /** The whole buffered PCM as one Float32Array (for the client cache). */
@@ -338,7 +439,8 @@ let autoOwner = null;
 let autoQueue = null;
 
 // First connected tab → ownership retained through hidden/unfocused states.
-export function initializeAutoReadAloud() {
+/** @param {{policy?: "replace"|"enqueue", TTS_MAX_AGE_S?: number}} [options] */
+export function initializeAutoReadAloud({ policy = state.general.ttsPolicy ?? "replace", TTS_MAX_AGE_S = state.general.TTS_MAX_AGE_S } = {}) {
   // Room navigation → stop only auto; manual playback keeps its bound origin.
   if (playbackKind === 'auto' && activeOrigin &&
       (activeOrigin.workspaceId !== state.snapshot?.workspace.id || activeOrigin.roomId !== state.snapshot?.room.id)) stopReadAloud();
@@ -348,6 +450,9 @@ export function initializeAutoReadAloud() {
   } });
   autoOwner = owner;
   autoQueue = new AutoTtsQueue({
+    policy,
+    TTS_MAX_AGE_S,
+    stop: stopReadAloud,
     enabled: () => state.general.autoTts,
     current: () => state.snapshot ? { workspaceId: state.snapshot.workspace.id, roomId: state.snapshot.room.id } : null,
     acquire: () => owner.acquire(),
@@ -386,6 +491,14 @@ navigator.mediaDevices?.addEventListener?.("devicechange", () => {
   transport?.migrateContext().catch((error) => transport?.onError?.(error));
 });
 
+// All input stays browser-owned; paused/ended transports are never auto-resumed.
+for (const event of ['pointerdown', 'keydown', 'touchend', 'click', 'focus']) {
+  window.addEventListener?.(event, () => { transport?.recover(event); updatePlayerUi(); }, { capture: true, passive: true });
+}
+window.addEventListener?.('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { transport?.recover('tab visible'); updatePlayerUi(); }
+});
+
 /** @param {ReadAloudPhase} phase */
 function setPhase(phase) {
   if (state.readAloud?.eventId === activeEventId && activeOrigin) {
@@ -399,7 +512,7 @@ function setPhase(phase) {
  * @param {string} eventId */
 export function toggleReadAloud(eventId) {
   if (activeEventId === eventId && transport && activeOrigin?.workspaceId === state.snapshot?.workspace.id && activeOrigin?.roomId === state.snapshot?.room.id) {
-    if (state.readAloud?.phase === "loading") stopReadAloud();
+    if (state.readAloud?.phase === "loading" && transport.duration === 0) stopReadAloud();
     else playerToggle();
     return;
   }
@@ -407,7 +520,10 @@ export function toggleReadAloud(eventId) {
 }
 
 /** Tear everything down and hide the player. */
-export function stopReadAloud() {
+export function stopReadAloud() { teardownReadAloud(); }
+
+/** @param {boolean} [preserveContext] immediate replacement only */
+function teardownReadAloud(preserveContext = false) {
   finishPlayback?.();
   finishPlayback = null;
   playbackKind = null;
@@ -424,7 +540,8 @@ export function stopReadAloud() {
     transport.onEnded = null;
     transport.onFirstAudio = null;
     transport.onError = null;
-    transport.destroy();
+    transport.onStatus = null;
+    transport.destroy(!preserveContext);
     transport = null;
   }
   activeEventId = "";
@@ -441,10 +558,11 @@ export function stopReadAloud() {
  * @param {{workspaceId: string, roomId: string}|null} [playbackOrigin]
  * @param {'manual'|'auto'} [kind] */
 async function startReadAloud(eventId, regenerate = false, playbackOrigin = null, kind = 'manual') {
-  stopReadAloud();
+  const context = transport && !transport._migrating && transport.ctx.state !== 'closed' ? transport.ctx : undefined;
+  teardownReadAloud(!!context);
   const snapshot = state.snapshot;
   const origin = playbackOrigin ?? (snapshot ? { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id } : null);
-  if (!origin) return;
+  if (!origin) { void context?.close().catch(() => {}); return; }
 
   const base = apiUrl(`/api/workspaces/${encodeURIComponent(origin.workspaceId)}/rooms/${encodeURIComponent(origin.roomId)}`);
   // Bind playback to the room it started in, so switching rooms mid-play never
@@ -454,9 +572,11 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
 
   /** @type {AudioTransport} */
   let t;
-  try { t = new AudioTransport(); }
+  try { t = new AudioTransport({ context, stallSeconds: state.general.ttsStallSeconds }); }
   catch (error) { stopReadAloud(); setError(error); return; }
   transport = t;
+  t.onStatus = updatePlayerUi;
+  t.beforeRecovery = () => playbackKind !== 'auto' || (autoQueue?.resumeNewest() ?? false);
   playbackKind = kind;
   /** @type {() => void} */
   let complete;
@@ -487,6 +607,7 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   fetchController = controller;
   try {
     t.play(0); // Arm once; playback begins with the first PCM.
+    if (transport !== t) return; // Stale auto reply retired by recovery policy.
     startTick();
     const response = await fetch(`${base}/read-aloud/stream`, {
       method: "POST",
@@ -499,6 +620,8 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
       const body = await response.json().catch(() => ({}));
       throw new Error(body.error ?? `Read aloud failed: ${response.status}`);
     }
+    console.info('read-aloud: response', JSON.stringify({ eventId, status: response.status,
+      mode: response.headers.get('x-tts-mode'), rate: response.headers.get('x-tts-rate') }));
     if (response.headers.get("x-tts-mode") === "stream" && response.body) {
       await feedStream(t, response, controller);
     } else {
@@ -564,6 +687,7 @@ async function feedStream(t, response, controller) {
     t.append(s16leToMono(buf.subarray(0, usable), channels));
   }
   if (!pcmFrames) throw new Error("Read aloud stream ended without audio frames");
+  console.info('read-aloud: stream EOF', JSON.stringify({ frames: pcmFrames, seconds: t.duration, position: t.currentTime, context: t.ctx.state }));
   t.markDone();
 }
 
@@ -643,6 +767,8 @@ let durTimeEl = null;
 /** @type {HTMLElement|null} */
 let liveEl = null;
 /** @type {HTMLElement|null} */
+let recoveryEl = null;
+/** @type {HTMLElement|null} */
 let trackEl = null;
 /** @type {HTMLElement|null} */
 let playedEl = null;
@@ -668,6 +794,7 @@ export function buildAudioPlayer() {
   // and grows in real-time (claude-voice generates at ~speaking speed), so this
   // says "still generating" instead of letting a partial length look truncated.
   liveEl = h("span", { class: "ap-live", hidden: true, title: "still generating — the length grows until synthesis finishes" }, "⋯ live");
+  recoveryEl = h("span", { class: "ap-recovery", role: "status", hidden: true });
   playerRoot = h(
     "div",
     { class: "audio-player", hidden: true },
@@ -676,8 +803,9 @@ export function buildAudioPlayer() {
     trackEl,
     durTimeEl,
     liveEl,
+    recoveryEl,
     h("button", { type: "button", class: "ap-regen", title: "regenerate audio (re-synthesize, replaces the cached clip)", text: "⟳", onclick: regenerateAudio }),
-    h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: stopReadAloud }),
+    h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: () => stopReadAloud() }),
   );
   attachTrackHandlers(trackEl);
   return playerRoot;
@@ -736,6 +864,11 @@ function attachTrackHandlers(track) {
 function playerToggle() {
   if (!transport) return;
   playbackKind = 'manual';
+  if (transport.playing && transport.ctx.state !== 'running') {
+    transport.recover('play button');
+    updatePlayerUi();
+    return;
+  }
   if (transport.playing) {
     transport.pause();
     setPhase("paused");
@@ -788,6 +921,7 @@ function updatePlayerUi(overrideFrac) {
     return;
   }
   playerRoot.hidden = false;
+  if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
   const dur = transport.duration;
   const cur = overrideFrac != null ? overrideFrac * dur : transport.currentTime;
   const frac = dur > 0 ? Math.min(1, cur / dur) : 0;
@@ -800,7 +934,7 @@ function updatePlayerUi(overrideFrac) {
   const generating = !transport.done;
   durTimeEl.textContent = `${generating ? "~" : ""}${fmtTime(dur)}`;
   liveEl.hidden = !generating;
-  const playing = transport.playing;
+  const playing = transport.playing && transport.ctx.state === 'running';
   toggleBtn.textContent = playing ? "⏸" : "▶";
   toggleBtn.title = playing ? "pause" : "play";
   playerRoot.classList.toggle("loading", state.readAloud?.phase === "loading" && dur === 0);

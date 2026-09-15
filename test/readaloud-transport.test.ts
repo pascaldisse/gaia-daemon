@@ -2,12 +2,14 @@
 // here: playback stopped while audio was still arriving and nothing re-armed
 // it. These tests drive the transport with a fake AudioContext, so they assert
 // STATE (playing / userPaused / frontier), never sound.
-import { test, expect, beforeAll } from "bun:test";
+import { test, expect, beforeAll, afterEach } from "bun:test";
 
 /** @type {any} */
 let AudioTransport: any;
 let ctxFailures = 0;
 let contexts: FakeContext[] = [];
+const transports: any[] = [];
+afterEach(() => { for (const t of transports.splice(0)) t.destroy(); ctxFailures = 0; });
 
 class FakeSource {
   buffer: unknown = null;
@@ -36,7 +38,8 @@ class FakeContext {
     return { length, getChannelData: () => data };
   }
   createBufferSource(): FakeSource { const src = new FakeSource(); this.sources.push(src); return src; }
-  resume(): Promise<void> { return Promise.resolve(); }
+  resumes = 0;
+  resume(): Promise<void> { this.resumes++; this.state = "running"; return Promise.resolve(); }
   close(): Promise<void> { this.state = "closed"; return Promise.resolve(); }
   /** Fire the state-change listener the transport installs. */
   setState(next: string): void { this.state = next; this.onstatechange?.(); }
@@ -56,6 +59,7 @@ beforeAll(async () => {
 function armed(): { t: any; ctx: FakeContext } {
   contexts = [];
   const t = new AudioTransport();
+  transports.push(t);
   t.setFormat(16000, 1);
   t.play(0);
   return { t, ctx: contexts[0] as FakeContext };
@@ -129,13 +133,14 @@ test("a pending append blocks the finish", async () => {
   expect(t.playing).toBe(false);
 });
 
-test("a context that stops running mid-play migrates instead of going silent", async () => {
+test("an interruption resumes the same unlocked context without migration", async () => {
   const { t, ctx } = armed();
   t.append(pcm(16000));
   ctx.setState("interrupted");
   await flush();
-  expect(contexts.length).toBe(2);
-  expect(t.ctx).toBe(contexts[1]);
+  expect(contexts.length).toBe(1);
+  expect(t.ctx).toBe(ctx);
+  expect(ctx.resumes).toBe(1);
   expect(t.ctx.state).toBe("running");
   expect(t.playing).toBe(true);
 });
@@ -157,10 +162,134 @@ test("a failed migration reports an error instead of leaving a closed context", 
   const errors: unknown[] = [];
   t.onError = (error: unknown) => { errors.push(error); };
   ctxFailures = 1; // the replacement AudioContext cannot be built
-  ctx.setState("interrupted");
-  await flush();
+  await t.migrateContext();
   ctxFailures = 0;
   expect(errors.length).toBe(1);
   expect(String((errors[0] as Error).message)).toContain("AudioContext unavailable");
   expect(t.playing).toBe(false);
+});
+
+
+test("pending autoplay resumes are retried inside a later gesture; PCM survives", async () => {
+  const { t, ctx } = armed();
+  t.append(pcm(160000));
+  ctx.state = 'suspended';
+  let grant!: () => void;
+  ctx.resume = () => new Promise<void>(resolve => { grant = resolve; });
+  t.recover('focus');
+  const pending = grant;
+  t.recover('pointerdown');
+  expect(grant).not.toBe(pending);
+  ctx.state = 'running'; grant(); await flush();
+  expect(t.total).toBe(160000);
+  expect(t.sources.size).toBe(1);
+  expect(contexts).toHaveLength(1);
+});
+
+test("watchdog frozen clock + buffered PCM resumes after configured threshold", async () => {
+  const { t, ctx } = armed();
+  t.stallSeconds = 2;
+  t.append(pcm(160000));
+  ctx.state = 'suspended';
+  t.checkProgress(t._lastProgressAt + 1999);
+  expect(ctx.resumes).toBe(0);
+  t.checkProgress(t._lastProgressAt + 2001);
+  expect(ctx.resumes).toBe(1);
+  expect(t.status).toContain('clock stalled 2s');
+  await flush();
+  ctx.currentTime = 1;
+  t.checkProgress();
+  expect(t.status).toBe('');
+});
+
+test("watchdog ignores download underruns and intentional pauses", async () => {
+  const { t, ctx } = armed();
+  t.checkProgress(t._lastProgressAt + 10000); // No PCM yet.
+  expect(ctx.resumes).toBe(0);
+  t.append(pcm(160000)); t.pause(); ctx.state = 'suspended';
+  t.checkProgress(t._lastProgressAt + 10000); t.recover('pointerdown');
+  expect(ctx.resumes).toBe(0);
+  expect(t._watchdog).toBe(null);
+});
+
+test("running-but-frozen clock rebinds once, preserving the unsounded tail", async () => {
+  const { t, ctx } = armed();
+  t.append(pcm(160000)); ctx.currentTime = 4.08;
+  t.checkProgress();
+  t.checkProgress(t._lastProgressAt + 3001);
+  await flush();
+  expect(contexts).toHaveLength(2);
+  expect(t.anchorSample).toBe(64000);
+  expect(t.frontier).toBe(160000);
+  expect(ctx.state).toBe('closed');
+});
+
+test("destroy during device migration cannot resurrect an obsolete player", async () => {
+  const { t, ctx } = armed();
+  t.append(pcm(16000));
+  let closed!: () => void;
+  ctx.close = () => new Promise<void>(r => { closed = r; });
+  const moving = t.migrateContext();
+  t.destroy(false); closed(); await moving;
+  expect(contexts).toHaveLength(1);
+  expect(t.playing).toBe(false);
+  t.append(pcm(8000)); t.play();
+  expect(t.total).toBe(16000);
+  expect(t.sources.size).toBe(0);
+});
+
+test("append + EOF during migration cannot finish before rebound audio", async () => {
+  const { t, ctx } = armed();
+  t.append(pcm(16000));
+  let closed!: () => void;
+  ctx.close = () => new Promise<void>(r => { closed = r; });
+  const moving = t.migrateContext();
+  t.append(pcm(8000)); t.markDone(); await flush();
+  expect(t.playing).toBe(true);
+  expect(t.sources.size).toBe(0);
+  closed(); await moving;
+  expect(t.frontier).toBe(24000);
+  expect(t.sources.size).toBe(1);
+});
+
+test("user pause during migration survives completion; explicit resume remains possible", async () => {
+  const { t, ctx } = armed(); t.append(pcm(160000)); ctx.currentTime = 3.08;
+  let closed!: () => void;
+  ctx.close = () => new Promise<void>(r => { closed = r; });
+  const moving = t.migrateContext(); t.pause(); closed(); await moving;
+  expect(t.playing).toBe(false); expect(t.userPaused).toBe(true);
+  expect(t.sources.size).toBe(0); expect(t.currentTime).toBe(3);
+  t.play(); expect(t.anchorSample).toBe(48000);
+});
+
+test("a replacement transport adopts the unlocked context; old callbacks stay retired", () => {
+  const { t, ctx } = armed(); t.append(pcm(16000)); t.destroy(false);
+  const next = new AudioTransport({ context: ctx }); transports.push(next);
+  next.append(pcm(16000)); next.play();
+  expect(contexts).toHaveLength(1); expect(t.sources.size).toBe(0);
+  expect(next.sources.size).toBe(1); expect(ctx.state).toBe('running');
+});
+
+test('a hung context close becomes a bounded visible failure, not an immortal migrating player', async () => {
+  const {t,ctx}=armed();t.append(pcm(16000));t.contextCloseTimeoutMs=5;
+  ctx.close=()=>new Promise<void>(()=>{});const errors:unknown[]=[];t.onError=(e:unknown)=>errors.push(e);
+  await t.migrateContext();expect(errors).toHaveLength(1);
+  expect(String(errors[0])).toContain('rebind timed out');expect(t.playing).toBe(false);
+  expect(t._watchdog).toBe(null);expect(contexts).toHaveLength(1);
+});
+
+test('autoplay-blocked PCM remains unscheduled until output is actually running', async () => {
+  contexts=[];const ctx=new FakeContext();ctx.state='suspended';let grant!:()=>void;
+  ctx.resume=()=>new Promise<void>(r=>{grant=r;});
+  const t=new AudioTransport({context:ctx});transports.push(t);t.setFormat(16000,1);t.play();t.append(pcm(16000));t.markDone();
+  expect(t.sources.size).toBe(0);expect(t.frontier).toBe(0);expect(t.playing).toBe(true);
+  ctx.setState('running');grant();await flush();expect(t.sources.size).toBe(1);expect(t.frontier).toBe(16000);
+});
+
+test('interruption unschedules PCM; resumed context cannot bypass expired-reply policy', async () => {
+  const {t,ctx}=armed();t.append(pcm(160000));ctx.currentTime=4.08;
+  ctx.resume=()=>new Promise<void>(()=>{});ctx.setState('suspended');
+  expect(t.sources.size).toBe(0);expect(t.frontier).toBe(64000);
+  t.beforeRecovery=()=>{t.destroy();return false;};ctx.setState('running');
+  expect(t.sources.size).toBe(0);expect(t.playing).toBe(false);expect(ctx.state).toBe('closed');
 });

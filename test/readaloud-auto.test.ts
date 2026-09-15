@@ -24,7 +24,7 @@ class FakeContext {
   resume() { return Promise.resolve(); }
   close() { this.state = 'closed'; return Promise.resolve(); }
 }
-const reply = (id, text = 'Reply.') => ({ type: 'room-event', workspaceId: 'workspace', roomId: 'room', event: { id, author: 'astra', text } });
+const reply = (id, text = 'Reply.') => ({ type: 'room-event', workspaceId: 'workspace', roomId: 'room', event: { id, author: 'astra', text, timestamp: new Date().toISOString() } });
 const tick = () => new Promise(r => setTimeout(r, 0));
 async function until(predicate) {
   for (let i = 0; i < 200; i++) { if (predicate()) return; await tick(); }
@@ -90,6 +90,7 @@ afterAll(() => { for (const [key, descriptor] of Object.entries(saved)) {
 } });
 
 function enqueue(id, text) {
+  player.initializeAutoReadAloud({ policy: 'enqueue' });
   const event = reply(id, text);
   events.set(id, event.event);
   return player.enqueueAutoReadAloud(event);
@@ -130,10 +131,11 @@ test('two replies → two full syntheses, second starts only after first audio e
   expect(requests).toHaveLength(1);
   expect(syntheses).toHaveLength(1);
   finish(0);
-  await until(() => contexts[1]?.sources.length);
-  expect(contexts[0].state).toBe('closed');
+  await until(() => requests.length === 2 && contexts[0]?.sources.length === 2);
+  expect(contexts).toHaveLength(1);
+  expect(contexts[0].state).toBe('running');
   expect(syntheses).toEqual([speakableText(events.get('first').text), speakableText(events.get('second').text)]);
-  finish(1);
+  finish(0);
   await Promise.all([first, second]);
   expect(requests).toHaveLength(2);
 });
@@ -219,4 +221,20 @@ test('room navigation stops active auto but preserves active manual playback', a
   state.snapshot.room.id = 'third';
   player.initializeAutoReadAloud();
   expect(contexts[1].state).toBe('running');
+});
+
+test('default replacement aborts old fetch/sources, retains one unlocked context, settles both replies', async () => {
+  player.initializeAutoReadAloud(); // Default replace; enqueue helper cannot change an initialized queue.
+  const first = enqueue('first', 'First speech.');
+  await until(() => contexts[0]?.sources.length);
+  const oldSources = [...contexts[0].sources];
+  const second = enqueue('second', 'Replacement speech.');
+  await until(() => requests.length === 2 && contexts[0].sources.length > oldSources.length);
+  await first;
+  expect(requests[0].init.signal.aborted).toBe(true);
+  expect(oldSources.every(s => s.stopped)).toBe(true);
+  expect(contexts).toHaveLength(1);
+  expect(state.readAloud.eventId).toBe('second');
+  finish(); await second;
+  expect(state.readAloud.phase).toBe('ended');
 });

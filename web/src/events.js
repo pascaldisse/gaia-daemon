@@ -76,7 +76,7 @@ export function connectEvents(resyncOnReady = false) {
   listen("app-settings", (event) => {
     const payload = /** @type {Ev<"app-settings">} */ (JSON.parse(event.data));
     settingsRevision++;
-    state.general = payload.general;
+    state.general = { ...state.general, ...payload.general };
     markDirty("settings");
   });
   listen("ready", (event) => {

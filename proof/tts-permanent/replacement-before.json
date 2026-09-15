@@ -1,0 +1,23 @@
+{
+  "bar": "⏸\n0:02\n0:21\n⟳\n✕",
+  "playback": {
+    "eventId": "evt_mu2p18sp_jlag1x39",
+    "phase": "playing",
+    "workspaceId": "2eea5d39c53e79ad",
+    "roomId": "default"
+  },
+  "contexts": [
+    {
+      "state": "closed",
+      "clock": 63.408
+    },
+    {
+      "state": "closed",
+      "clock": 59.552
+    },
+    {
+      "state": "running",
+      "clock": 3.013333333333333
+    }
+  ]
+}

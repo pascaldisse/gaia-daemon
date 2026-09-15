@@ -96,7 +96,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   settingsDraft: any,
  *   settingsView: "form"|"raw",
  *   settingsError: string,
- *   general: { autoTts: boolean },
+ *   general: { autoTts: boolean, TTS_MAX_AGE_S?: number, ttsStallSeconds?: number, ttsPolicy?: "replace"|"enqueue" },
  *   keepAwake: KeepAwakeCapability,
  *   userName: string,
  *   uiWidgets: Map<string, UiWidgetEvent>,
