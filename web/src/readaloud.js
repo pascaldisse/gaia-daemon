@@ -27,10 +27,13 @@ import { state } from "./state.js";
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  /** @param {{context?: AudioContext, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
-  constructor({ context, stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
+  /** @param {{context?: AudioContext, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
+  constructor({ context, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
     /** @type {AudioContext} */
     this.ctx = context ?? new AudioContext();
+    this.requestId = requestId;
+    /** @type {WeakMap<AudioBufferSourceNode, string>} */
+    this.sourceRequests = new WeakMap();
     /** Engine sample rate; buffers are created at it and Web Audio resamples to
      * the context on playback. 0 until the first audio sets the format. */
     this.rate = 0;
@@ -129,6 +132,7 @@ export class AudioTransport {
   recover(reason = 'audio recovery', reschedule = false) {
     if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
     const ctx = this.ctx;
+    this._dropForeignSources();
     if (ctx.state === 'running' && !reschedule) return;
     if (ctx.state === 'closed') { void this.rebuildDeadOutput(); return; }
     this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
@@ -225,9 +229,9 @@ export class AudioTransport {
   }
 
   /** Append a mono PCM segment; schedule it if we are playing.
-   * @param {Float32Array} mono */
-  append(mono) {
-    if (this._destroyed || !mono.length) return;
+   * @param {Float32Array} mono @param {string} [requestId] */
+  append(mono, requestId = this.requestId) {
+    if (this._destroyed || requestId !== this.requestId || !mono.length) return;
     this.segStart.push(this.total);
     this.segments.push(mono);
     this.total += mono.length;
@@ -279,12 +283,14 @@ export class AudioTransport {
       buf.getChannelData(0).set(this._read(start, end));
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
+      this.sourceRequests.set(src, this.requestId);
       src.connect(this.ctx.destination);
       src.start(startCtx);
       this.frontier = end;
       this.sources.add(src);
       src.onended = () => {
         this.sources.delete(src);
+        this._retireSource(src);
         this._maybeFinish();
       };
     }
@@ -364,20 +370,32 @@ export class AudioTransport {
     else this.pausedSample = sample;
   }
 
-  markDone() {
+  /** @param {string} [requestId] */
+  markDone(requestId = this.requestId) {
+    if (this._destroyed || requestId !== this.requestId) return;
     this.done = true;
     this._maybeFinish();
   }
 
-  _stopSources() {
+  /** @param {AudioBufferSourceNode} src */
+  _retireSource(src) {
+    src.onended = null;
+    try { src.stop(); } catch { /* already stopped */ }
+    try { src.disconnect(); } catch { /* already disconnected */ }
+    src.buffer = null;
+    this.sourceRequests.delete(src);
+  }
+
+  _dropForeignSources() {
     for (const src of this.sources) {
-      src.onended = null;
-      try {
-        src.stop();
-      } catch {
-        // Not started / already stopped.
-      }
+      if (this.sourceRequests.get(src) === this.requestId) continue;
+      this._retireSource(src);
+      this.sources.delete(src);
     }
+  }
+
+  _stopSources() {
+    for (const src of this.sources) this._retireSource(src);
     this.sources.clear();
   }
 
@@ -442,10 +460,13 @@ export class AudioTransport {
     this.ctx.onstatechange = null;
     this._mediaDevices?.removeEventListener?.("devicechange", this._onDeviceChange);
     this._stopSources();
+    this.segments = [];
+    this.segStart = [];
+    this.total = this.frontier = this.pausedSample = 0;
     if (closeContext) void this.ctx.close().catch(() => {});
   }
 
-  /** The whole buffered PCM as one Float32Array (for the client cache). */
+  /** The current request PCM as one Float32Array. No client replay cache. */
   concatPcm() {
     return this._read(0, this.total);
   }
@@ -594,6 +615,7 @@ export async function startReadAloud(eventId, regenerate = false, playbackOrigin
 /** Continuous PCM: decode each s16le frame to mono and append as it arrives.
  * @param {AudioTransport} t @param {Response} response @param {AbortController} controller */
 async function feedStream(t, response, controller) {
+  const requestId = t.requestId;
   const rate = Number(response.headers.get("x-tts-rate")) || 16000;
   const channels = Number(response.headers.get("x-tts-channels")) || 1;
   t.setFormat(rate, channels);
@@ -637,10 +659,10 @@ async function feedStream(t, response, controller) {
     if (usable < buf.length) leftover = buf.slice(usable);
     if (usable === 0) continue;
     pcmFrames += usable / frameBytes;
-    t.append(s16leToMono(buf.subarray(0, usable), channels));
+    t.append(s16leToMono(buf.subarray(0, usable), channels), requestId);
   }
   if (!pcmFrames) throw new Error("Read aloud stream ended without audio frames");
-  t.markDone();
+  t.markDone(requestId);
 }
 
 /** Batch WAV chunks: fetch each, decode to PCM, append. append() is
@@ -649,6 +671,7 @@ async function feedStream(t, response, controller) {
  * @param {AudioTransport} t @param {string} base @param {string} eventId
  * @param {number} total @param {AbortController} controller @param {boolean} [regenerate] @param {{engine?: string}} [options] */
 async function feedChunks(t, base, eventId, total, controller, regenerate = false, options = {}) {
+  const requestId = t.requestId;
   const endpoint = `${base}/read-aloud`;
   for (let index = 0; index < total; index++) {
     const response = await fetch(endpoint, {
@@ -671,12 +694,12 @@ async function feedChunks(t, base, eventId, total, controller, regenerate = fals
       const decoded = await t.ctx.decodeAudioData(await response.arrayBuffer());
       if (controller.signal.aborted || transport !== t) return;
       t.setFormat(decoded.sampleRate, decoded.numberOfChannels);
-      t.append(downmix(decoded));
+      t.append(downmix(decoded), requestId);
     } finally {
       t.pendingAppends -= 1;
     }
   }
-  t.markDone();
+  t.markDone(requestId);
 }
 
 /** @param {Uint8Array} bytes whole s16le frames @param {number} channels @returns {Float32Array} */
@@ -881,7 +904,7 @@ function updatePlayerUi(overrideFrac) {
   if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
   if (diagEl) {
     diagEl.hidden = localStorage.getItem("TTS_DIAG") !== "1";
-    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds}`;
+    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds} · request=${transport.requestId}`;
   }
   const dur = transport.duration;
   const cur = overrideFrac != null ? overrideFrac * dur : transport.currentTime;

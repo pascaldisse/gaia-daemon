@@ -16,7 +16,9 @@ class FakeSource {
   onended: (() => void) | null = null;
   started = false;
   stopped = false;
+  disconnected = false;
   connect(): void {}
+  disconnect(): void { this.disconnected = true; }
   start(): void { this.started = true; }
   stop(): void { this.stopped = true; }
   /** Simulate this scheduled buffer finishing playback. */
@@ -237,7 +239,7 @@ test("destroy during device migration cannot resurrect an obsolete player", asyn
   expect(contexts).toHaveLength(1);
   expect(t.playing).toBe(false);
   t.append(pcm(8000)); t.play();
-  expect(t.total).toBe(16000);
+  expect(t.total).toBe(0); // destroyed request PCM released, not retained
   expect(t.sources.size).toBe(0);
 });
 
@@ -371,4 +373,33 @@ test('context construction/close failures expose dead status rather than silentl
   const {t}=armed();t.append(pcm(160000));ctxFailures=1;
   await t.rebuildDeadOutput();expect(t.outputDead).toBe(true);expect(t.status).toBe('audio dead — click ⟳');
   expect(t.playing).toBe(false);expect(t.sources.size).toBe(0);
+});
+
+
+test("A frozen → B starts → old resume/decode cannot emit A; stopped nodes disconnect and release PCM", async () => {
+  const a = new AudioTransport({ requestId: "A" }); transports.push(a);
+  a.setFormat(16000, 1); a.append(new Float32Array(16000).fill(0.25), "A"); a.play();
+  const old = a.ctx.sources[0];
+  let resume!: () => void;
+  a.ctx.state = "suspended";
+  a.ctx.resume = () => new Promise<void>(resolve => { resume = resolve; });
+  a.recover();
+  a.destroy(false); // exercise even the strongest hazard: shared resurrected context
+  const b = new AudioTransport({ context: a.ctx, requestId: "B" }); transports.push(b);
+  b.setFormat(16000, 1);
+  b.append(new Float32Array(16000).fill(0.25), "A");
+  expect(b.total).toBe(0);
+  b.append(new Float32Array(16000).fill(-0.5), "B");
+  b.markDone("A"); expect(b.done).toBe(false);
+  a.append(new Float32Array(16000).fill(0.25), "A");
+  a.ctx.state = "running"; resume(); await flush(); b.play();
+  expect(old.stopped).toBe(true); expect(old.disconnected).toBe(true); expect(old.buffer).toBeNull();
+  expect(a.segments.length).toBe(0); expect(a.total).toBe(0);
+  expect(a.playing).toBe(false); expect(b.total).toBe(16000);
+  const live = [...b.sources] as FakeSource[];
+  expect(live.length).toBe(1);
+  expect([...(live[0].buffer as {getChannelData(): Float32Array}).getChannelData()]).toEqual([...new Float32Array(16000).fill(-0.5)]);
+  await b.rebuildDeadOutput();
+  expect(live[0].disconnected).toBe(true); expect(live[0].buffer).toBeNull();
+  expect([...b._read(0, b.total)]).toEqual([...new Float32Array(16000).fill(-0.5)]);
 });
