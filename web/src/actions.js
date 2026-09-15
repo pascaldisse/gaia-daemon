@@ -877,7 +877,7 @@ export async function saveSettingsFile(content) {
 export async function setAutoTts(enabled) {
   try {
     const body = await api("/api/app/auto-tts", { method: "POST", body: JSON.stringify({ enabled }) });
-    state.general = { ...state.general, ...body.general };
+    state.general = body.general ?? state.general;
     markDirty("settings");
   } catch (error) {
     setError(error);

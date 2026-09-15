@@ -97,7 +97,7 @@
  * @property {Record<string, RoomSummary[]>} [workspaceRooms] per-workspace room
  *   activity (running/last-activity), seeding the sidebar's workspace-level dots
  *   so activity in a workspace you're not viewing is still visible.
- * @property {{ autoTts: boolean, TTS_MAX_AGE_S?: number, ttsStallSeconds?: number, ttsPolicy?: "replace"|"enqueue" }} [general]
+ * @property {{ autoTts: boolean }} [general]
  * @property {KeepAwakeCapability} [keepAwake] "keep laptop awake" — daemon-managed,
  *   macOS-only (see services/keep-awake.ts). `supported` false elsewhere.
  * @property {string} [userName] "Your name" (see services/user-name.ts) — the

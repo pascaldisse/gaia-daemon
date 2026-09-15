@@ -17,14 +17,11 @@ export function normalizeAppSettings(value: unknown): AppSettings {
 }
 
 export async function readAppSettings(path = globalPaths.appSettings()): Promise<AppSettings> {
-  const settings = normalizeAppSettings(await readJson(path));
-  const age = Number(process.env.TTS_MAX_AGE_S);
-  if (Number.isFinite(age) && age > 0) settings.general.TTS_MAX_AGE_S = age;
-  return settings;
+  return normalizeAppSettings(await readJson(path));
 }
 
 export async function writeAutoTtsSetting(enabled: boolean, path = globalPaths.appSettings()): Promise<void> {
-  const settings = normalizeAppSettings(await readJson(path));
+  const settings = await readAppSettings(path);
   settings.general.autoTts = enabled;
   await writeJsonAtomic(path, settings);
 }

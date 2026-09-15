@@ -27,22 +27,3 @@ test("autoTts migration and true/false roundtrip preserve existing settings", as
     await rm(dir, { recursive: true, force: true });
   }
 });
-
-test('TTS_MAX_AGE_S environment override reaches app payload without persisting process policy', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'gaia-tts-age-'));
-  const path = join(dir, 'app.json'), previous = process.env.TTS_MAX_AGE_S;
-  try {
-    await writeFile(path, JSON.stringify({ general: { autoTts: true, TTS_MAX_AGE_S: 45 } }));
-    process.env.TTS_MAX_AGE_S = '12';
-    expect((await readAppSettings(path)).general.TTS_MAX_AGE_S).toBe(12);
-    await writeAutoTtsSetting(false, path);
-    expect(JSON.parse(await readFile(path, 'utf8')).general.TTS_MAX_AGE_S).toBe(45);
-    for (const invalid of ['0','-1','bad','Infinity']) {
-      process.env.TTS_MAX_AGE_S = invalid;
-      expect((await readAppSettings(path)).general.TTS_MAX_AGE_S).toBe(45);
-    }
-  } finally {
-    if (previous === undefined) delete process.env.TTS_MAX_AGE_S; else process.env.TTS_MAX_AGE_S = previous;
-    await rm(dir, {recursive:true,force:true});
-  }
-});
