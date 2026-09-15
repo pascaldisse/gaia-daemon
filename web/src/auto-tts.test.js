@@ -9,7 +9,7 @@ function setup() {
   const play = mock(async () => {});
   const log = mock(() => {});
   const acquire = mock(async () => state.owns);
-  const queue = new AutoTtsQueue({ enabled: () => state.enabled, current: () => state.origin, acquire,
+  const queue = new AutoTtsQueue({ policy: "enqueue", enabled: () => state.enabled, current: () => state.origin, acquire,
     owns: () => state.owns, manualBusy: () => state.manual, play, log });
   return { state, play, log, acquire, queue };
 }
@@ -102,4 +102,26 @@ test('playback/acquisition/log failures → next reply remains usable', async ()
   await s.queue.enqueue(reply('audio'));
   await s.queue.enqueue(reply('next'));
   expect(s.play.mock.calls.map(([id]) => id)).toEqual(['audio', 'next']);
+});
+
+test('default replace → latest arrival supersedes pending ownership without waiting for old audio', async () => {
+  const played = [], ownership = deferred(), oldAudio = deferred();
+  const queue = new AutoTtsQueue({ enabled: () => true, current: () => ({workspaceId:'ws',roomId:'room'}),
+    acquire: () => ownership.promise, owns: () => true, manualBusy: () => false,
+    play: async id => { played.push(id); if(id === 'old') await oldAudio.promise; } });
+  const old = queue.enqueue(reply('old')); ownership.resolve(true);
+  await new Promise(r => setTimeout(r, 0)); expect(played).toEqual(['old']);
+  await queue.enqueue(reply('new')); expect(played).toEqual(['old','new']);
+  oldAudio.resolve(); await old;
+});
+
+test('default replace → pending burst plays latest only; disposal suppresses late ownership', async () => {
+  const played = [], ownership = deferred();
+  const deps = { enabled: () => true, current: () => ({workspaceId:'ws',roomId:'room'}),
+    acquire: () => ownership.promise, owns: () => true, manualBusy: () => false, play: async id => { played.push(id); } };
+  const queue = new AutoTtsQueue(deps);
+  const first = queue.enqueue(reply('first')), next = queue.enqueue(reply('next'));
+  ownership.resolve(true); await Promise.all([first,next]); expect(played).toEqual(['next']);
+  const stopped = new AutoTtsQueue(deps); const pending = stopped.enqueue(reply('stopped'));
+  stopped.dispose(); await pending; expect(played).toEqual(['next']);
 });

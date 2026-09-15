@@ -9,6 +9,7 @@
  * owns: () => boolean,
  * manualBusy: () => boolean,
  * play: (eventId: string, origin: Origin) => Promise<void>,
+ * policy?: "replace"|"enqueue",
  * log?: (message: string) => void
  * }} QueueDeps */
 export class AutoTtsQueue {
@@ -17,6 +18,7 @@ export class AutoTtsQueue {
     this.deps = deps;
     this.tail = Promise.resolve();
     this.disposed = false;
+    this.generation = 0;
     // Duplicate live deliveries → same room event once; no snapshot replay.
     this.seen = new Set();
   }
@@ -32,10 +34,15 @@ export class AutoTtsQueue {
     this.seen.add(key);
     // Eligibility captured on arrival; queued work rechecked before playback.
     const ownership = this.deps.acquire().catch((error) => { this.log(error); return false; });
-    this.tail = this.tail.then(async () => {
+    const generation = ++this.generation;
+    const replace = (this.deps.policy ?? "replace") === "replace";
+    const run = async () => {
       if (!await ownership || this.disposed || !this.deps.enabled() || !this.inRoom(event) || !this.deps.owns() || this.deps.manualBusy()) return;
+      if (replace && generation !== this.generation) return;
+      // Shared player synchronously retires previous fetch + sources before starting this reply.
       await this.deps.play(reply.id, { workspaceId: event.workspaceId, roomId: event.roomId });
-    }).catch((error) => this.log(error));
+    };
+    this.tail = (replace ? run() : this.tail.then(run)).catch((error) => this.log(error));
     return this.tail;
   }
 
