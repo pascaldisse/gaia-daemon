@@ -175,3 +175,7 @@
   .command-suggestions,
   .autocomplete { right: 10px; left: 10px; }
 }
+
+.audio-player.audio-dead .ap-recovery { color: var(--danger); font-weight: bold; }
+
+.audio-player .ap-diag { white-space: nowrap; font-variant-numeric: tabular-nums; }

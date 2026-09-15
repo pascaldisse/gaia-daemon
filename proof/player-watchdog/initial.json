@@ -1,0 +1,19 @@
+{
+  "phase": "dead",
+  "playing": false,
+  "dead": true,
+  "position": 0,
+  "duration": 17.9258125,
+  "ctxTime": 0,
+  "rebuilds": 2,
+  "stalledRebuilds": 2,
+  "sources": 0,
+  "samples": 286813,
+  "peak": 0,
+  "bar": "width: 0%;",
+  "red": true,
+  "status": "audio dead — click ⟳",
+  "color": "rgb(224, 95, 157)",
+  "diag": "suspended · ctxTime=0.00 · cursor=0 · rebuilds=2",
+  "errors": []
+}

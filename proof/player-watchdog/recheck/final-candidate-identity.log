@@ -1,0 +1,13 @@
+{
+  "root": "/Users/pascaldisse/projects/gaia-daemon",
+  "buildRoot": "/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog",
+  "bun": "/Users/pascaldisse/.bun/bin/bun",
+  "commit": "2f19aeccb202b9426623a6af69a8189f5a56e4d6",
+  "dirty": true,
+  "target": "bun-darwin-arm64",
+  "builtAt": "2026-09-15T16:57:53.619Z"
+}
+
+1858c7a3de9b1958ca78af6c09cc4d29f05ede616256a2003b9d9738d357ae50  -
+1858c7a3de9b1958ca78af6c09cc4d29f05ede616256a2003b9d9738d357ae50  web/src/readaloud.js
+1858c7a3de9b1958ca78af6c09cc4d29f05ede616256a2003b9d9738d357ae50  .gaia/player-watchdog-build/web/src/readaloud.js

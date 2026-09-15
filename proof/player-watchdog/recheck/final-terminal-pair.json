@@ -1,0 +1,42 @@
+{
+  "a": {
+    "phase": "dead",
+    "playing": false,
+    "dead": true,
+    "requestId": "85ea5f69-4292-43f0-af59-2c6624a88cf0",
+    "position": 3.184,
+    "duration": 41.470875,
+    "ctxTime": 0,
+    "rebuilds": 3,
+    "stalledRebuilds": 2,
+    "sources": 0,
+    "samples": 663534,
+    "peak": 0,
+    "bar": "width: 7.68%;",
+    "red": true,
+    "status": "audio dead — click ⟳",
+    "color": "rgb(224, 95, 157)",
+    "diag": "running · ctxTime=0.00 · cursor=663534 · rebuilds=3",
+    "errors": []
+  },
+  "b": {
+    "phase": "dead",
+    "playing": false,
+    "dead": true,
+    "requestId": "85ea5f69-4292-43f0-af59-2c6624a88cf0",
+    "position": 3.184,
+    "duration": 41.470875,
+    "ctxTime": 0,
+    "rebuilds": 3,
+    "stalledRebuilds": 2,
+    "sources": 0,
+    "samples": 663534,
+    "peak": 0,
+    "bar": "width: 7.68%;",
+    "red": true,
+    "status": "audio dead — click ⟳",
+    "color": "rgb(224, 95, 157)",
+    "diag": "running · ctxTime=0.00 · cursor=663534 · rebuilds=3",
+    "errors": []
+  }
+}

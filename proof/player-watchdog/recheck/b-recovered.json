@@ -1,0 +1,20 @@
+{
+  "phase": "playing",
+  "playing": true,
+  "dead": false,
+  "requestId": "85ea5f69-4292-43f0-af59-2c6624a88cf0",
+  "position": 3.0933333333333333,
+  "duration": 41.470875,
+  "ctxTime": 2.2293333333333334,
+  "rebuilds": 1,
+  "stalledRebuilds": 0,
+  "sources": 1,
+  "samples": 663534,
+  "peak": 0.34356689453125,
+  "bar": "width: 7.43%;",
+  "red": false,
+  "status": "",
+  "color": "rgb(95, 93, 112)",
+  "diag": "running · ctxTime=2.22 · cursor=663534 · rebuilds=1",
+  "errors": []
+}

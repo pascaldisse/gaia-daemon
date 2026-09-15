@@ -1,0 +1,12 @@
+{
+  "installed": true,
+  "event": {
+    "eventId": "evt_mu2sgxe9_m1ljp7qa",
+    "phase": "loading",
+    "workspaceId": "c209a6881504af67",
+    "roomId": "player-proof"
+  },
+  "classes": [
+    "audio-player loading generating"
+  ]
+}

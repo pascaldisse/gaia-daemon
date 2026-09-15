@@ -1,0 +1,88 @@
+bun test v1.3.14 (0d9b296a)
+
+test/readaloud-transport.test.ts:
+(pass) a late append is not stranded when the finish check races it [3.30ms]
+(pass) audio arriving after a finish re-arms playback (the 1:55-of-2:03 stall) [1.47ms]
+(pass) a user pause stays paused when more audio arrives [1.30ms]
+(pass) play() clears userPaused so a resumed run re-arms again [0.14ms]
+(pass) a pending append blocks the finish [2.51ms]
+read-aloud: {"reason":"rebinding audio output","context":"interrupted","position":0,"buffered":1,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) an interruption rebuilds the context and retains buffered PCM [1.72ms]
+(pass) a paused context is left alone (no migration behind the user's back) [1.29ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":1,"done":false}
+(pass) a failed migration reports an error instead of leaving a closed context [1.56ms]
+read-aloud: {"reason":"focus — resume pending; click to enable audio","context":"suspended","position":0,"buffered":10,"done":false}
+read-aloud: {"reason":"pointerdown — resume pending; click to enable audio","context":"suspended","position":0,"buffered":10,"done":false}
+(pass) pending autoplay resumes are retried inside a later gesture; PCM survives [1.83ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+read-aloud: {"reason":"clock advancing","context":"running","position":0.92,"buffered":10,"done":false}
+(pass) watchdog frozen running clock rebuilds after configured observation window [1.75ms]
+(pass) watchdog ignores download underruns and intentional pauses [0.51ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":4,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) running-but-frozen clock rebinds once, preserving the unsounded tail [2.15ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":1,"done":false}
+(pass) destroy during device migration cannot resurrect an obsolete player [0.43ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":1,"done":false}
+(pass) append + EOF during migration cannot finish before rebound audio [1.42ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":3,"buffered":10,"done":false}
+(pass) user pause during migration survives completion; explicit resume remains possible [0.50ms]
+(pass) a replacement transport adopts the unlocked context; old callbacks stay retired [0.11ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":1,"done":false}
+(pass) a hung context close becomes a bounded visible failure, not an immortal migrating player [5.92ms]
+read-aloud: {"reason":"playback — resume pending; click to enable audio","context":"suspended","position":0,"buffered":0,"done":false}
+(pass) autoplay-blocked PCM remains unscheduled until output is actually running [1.38ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":2,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+read-aloud: output dead → context rebuilt (#2)
+read-aloud: {"reason":"audio dead — click ⟳","context":"running","position":2,"buffered":10,"done":false}
+(pass) two consecutive frozen replacements → terminal dead status; no third rebuild or rearm [5.01ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+read-aloud: {"reason":"clock advancing","context":"running","position":0.42,"buffered":10,"done":false}
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0.42,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#2)
+(pass) successful replacement output resets the consecutive failure budget [0.62ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0.41,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) clock advance below minimum → rebuild; sample captures state, wall, latency and scheduled cursor [1.70ms]
+read-aloud: {"reason":"rebinding audio output","context":"suspended","position":0,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) non-running context → immediate rebuild even before observation window [1.40ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+read-aloud: output dead → context rebuilt (#2)
+read-aloud: {"reason":"audio dead — click ⟳","context":"running","position":0,"buffered":10,"done":false}
+(pass) real watchdog timer fires without rAF or direct checkProgress calls [34.05ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":3,"buffered":10,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) devicechange shares rebuild guard, preserves tail, ignores pause, detaches on destroy [6.95ms]
+(pass) frozen clock + incoming bytes/wall time → no progress; only scheduled ctx time advances [0.35ms]
+(pass) unscheduled PCM and scheduling lead cannot advance or rewind the playhead [0.34ms]
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":10,"done":false}
+read-aloud: context rebuild failed 30 |   currentTime = 0;
+31 |   destination = {};
+32 |   onstatechange: (() => void) | null = null;
+33 |   sources: FakeSource[] = [];
+34 |   constructor() {
+35 |     if (ctxFailures > 0) { ctxFailures -= 1; throw new Error("AudioContext unavailable"); }
+                                                            ^
+error: AudioContext unavailable
+      at new FakeContext (/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/test/readaloud-transport.test.ts:35:56)
+      at migrateContext (/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/web/src/readaloud.js:432:18)
+      at async rebuildDeadOutput (/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/web/src/readaloud.js:204:16)
+      at async <anonymous> (/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/test/readaloud-transport.test.ts:374:11)
+
+read-aloud: {"reason":"audio dead — click ⟳","context":"closed","position":0,"buffered":10,"done":false}
+(pass) context construction/close failures expose dead status rather than silently advancing [0.53ms]
+read-aloud: {"reason":"audio recovery — resume pending; click to enable audio","context":"suspended","position":0,"buffered":1,"done":false}
+read-aloud: {"reason":"rebinding audio output","context":"running","position":0,"buffered":1,"done":false}
+read-aloud: output dead → context rebuilt (#1)
+(pass) A frozen → B starts → old resume/decode cannot emit A; stopped nodes disconnect and release PCM [4.69ms]
+
+ 28 pass
+ 0 fail
+ 130 expect() calls
+Ran 28 tests across 1 file. [114.00ms]

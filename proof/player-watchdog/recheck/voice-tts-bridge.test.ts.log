@@ -1,0 +1,19 @@
+bun test v1.3.14 (0d9b296a)
+
+test/voice-tts-bridge.test.ts:
+(pass) packMsg round-trips string maps and float pcm through unpackMessage [0.82ms]
+(pass) Resampler is an identity when the rates match [0.14ms]
+(pass) Resampler upsamples 16k→24k by ~1.5x, continuously across frames [0.21ms]
+(fail) bridge speaks Text+Eos back as Ready then 24kHz Audio frames, then closes [5000.10ms]
+  ^ this test timed out after 5000ms.
+(fail) bridge aborts the in-flight synthesis when the caller barges in (socket close) [5001.16ms]
+  ^ this test timed out after 5000ms.
+(fail) bridge feeds whole sentences to a duplex engine as they stream, ends on Eos [5001.34ms]
+  ^ this test timed out after 5000ms.
+(pass) the claude duplex engine streams NDJSON text in (duplex request) and PCM out [13.33ms]
+(pass) the claude duplex engine waits for browser-session readiness before opening stream-in [36.78ms]
+(pass) the claude read-aloud engine advertises callBridge (calls can use it) [0.02ms]
+
+ 6 pass
+ 3 fail
+Ran 9 tests across 1 file. [15.09s]

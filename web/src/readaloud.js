@@ -19,7 +19,7 @@ import { markDirty, setError } from "./render.js";
 import { h } from "./dom.js";
 import { state } from "./state.js";
 
-/** @typedef {"loading"|"playing"|"paused"|"ended"} ReadAloudPhase */
+/** @typedef {"loading"|"playing"|"paused"|"ended"|"dead"} ReadAloudPhase */
 
 // ---------------------------------------------------------------------------
 // The transport. Owns one AudioContext and a growing list of mono PCM segments;
@@ -27,9 +27,13 @@ import { state } from "./state.js";
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  constructor() {
+  /** @param {{context?: AudioContext, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
+  constructor({ context, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
     /** @type {AudioContext} */
-    this.ctx = new AudioContext();
+    this.ctx = context ?? new AudioContext();
+    this.requestId = requestId;
+    /** @type {WeakMap<AudioBufferSourceNode, string>} */
+    this.sourceRequests = new WeakMap();
     /** Engine sample rate; buffers are created at it and Web Audio resamples to
      * the context on playback. 0 until the first audio sets the format. */
     this.rate = 0;
@@ -75,22 +79,129 @@ export class AudioTransport {
     this.onEnded = null;
     /** @type {((error: unknown) => void)|null} visible AudioContext failures */
     this.onError = null;
+    this.stallSeconds = Number.isFinite(stallSeconds) && stallSeconds > 0 ? stallSeconds : 2;
+    this.watchdogMs = Number.isFinite(watchdogMs) && watchdogMs > 0 ? watchdogMs : 1000;
+    this.contextCloseTimeoutMs = Number.isFinite(contextCloseTimeoutMs) && contextCloseTimeoutMs > 0 ? contextCloseTimeoutMs : 3000;
+    this.minClockAdvanceSeconds = Number.isFinite(minClockAdvanceSeconds) && minClockAdvanceSeconds > 0 ? minClockAdvanceSeconds : 0.5;
+    this.maxStalledRebuilds = Number.isFinite(maxStalledRebuilds) && maxStalledRebuilds > 0 ? Math.floor(maxStalledRebuilds) : 2;
+    this.rebuilds = 0;
+    this.stalledRebuilds = 0;
+    this.outputDead = false;
+    /** @type {(() => void)|null} */
+    this.onDead = null;
+    this.status = "";
+    /** @type {(() => void)|null} */
+    this.onStatus = null;
+    /** @type {ReturnType<typeof setInterval>|null} */
+    this._watchdog = null;
+    this._lastProgressAt = performance.now();
+    this._lastCtxTime = this.ctx.currentTime;
+    this.outputSample = { state: this.ctx.state, ctxTime: this.ctx.currentTime, wallTime: performance.now(), outputLatency: this.ctx.outputLatency ?? 0, cursor: this.frontier };
+    this._destroyed = false;
+    this._resumeSeq = 0;
     this._bindContextState();
+    this._mediaDevices = navigator.mediaDevices;
+    this._onDeviceChange = () => { void this.rebuildDeadOutput(); };
+    this._mediaDevices?.addEventListener?.("devicechange", this._onDeviceChange);
   }
 
-  /** Watch the context for going non-running under us. WebKit (the native
-   * shell) suspends/interrupts a context when the macOS audio session changes
-   * hands; ctx.currentTime keeps ticking into silence and nothing ever notices.
-   * Only play() checked state before, i.e. never again after start. */
+  // State/device/watchdog failures → one bounded rebuild path; PCM retained.
   _bindContextState() {
     const ctx = this.ctx;
     ctx.onstatechange = () => {
-      if (this.ctx !== ctx) return; // stale context from a previous migration
-      if (this._migrating || ctx.state === "closed") return; // our own teardown
-      if (!this.playing || this.userPaused) return;
-      if (ctx.state === "running") return;
-      void this.migrateContext();
+      if (this.ctx !== ctx || this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+      if (ctx.state === 'running') {
+        this._pump();
+        return;
+      }
+      void this.rebuildDeadOutput();
     };
+  }
+
+  /** @param {string} reason */
+  _status(reason) {
+    if (this.status === reason) return;
+    this.status = reason;
+    console.info('read-aloud:', JSON.stringify({ reason: reason || 'clock advancing',
+      context: this.ctx.state, position: this.currentTime, buffered: this.duration, done: this.done }));
+    this.onStatus?.();
+  }
+
+  /** Resume synchronously in the gesture task; a previous pending resume must not swallow activation.
+   * @param {string} [reason] @param {boolean} [reschedule] */
+  recover(reason = 'audio recovery', reschedule = false) {
+    if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+    const ctx = this.ctx;
+    this._dropForeignSources();
+    if (ctx.state === 'running' && !reschedule) return;
+    if (ctx.state === 'closed') { void this.rebuildDeadOutput(); return; }
+    this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
+    const seq = ++this._resumeSeq;
+    void ctx.resume().then(() => {
+      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing || this.userPaused) return;
+      if (ctx.state !== 'running') return; // Browser policy may resolve without granting output.
+      if (reschedule) this.play(Math.round(this.currentTime * this.sampleRate));
+      else this._pump();
+    }).catch((error) => {
+      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing) return;
+      this._status(`${reason} — ${error instanceof Error ? error.message : String(error)}; click to retry`);
+    });
+  }
+
+  _startWatchdog() {
+    this._stopWatchdog();
+    this._lastCtxTime = this.ctx.currentTime;
+    this._lastProgressAt = performance.now();
+    this._watchdog = setInterval(() => this.checkProgress(), this.watchdogMs);
+  }
+
+  _stopWatchdog() {
+    if (this._watchdog !== null) clearInterval(this._watchdog);
+    this._watchdog = null;
+  }
+
+  /** Independent of rAF (hidden tabs); timers may still be OS-throttled.
+   * @param {number} [now] monotonic milliseconds */
+  checkProgress(now = performance.now()) {
+    if (this._destroyed || !this.playing || this.userPaused || this._migrating) return;
+    const ctxTime = this.ctx.currentTime;
+    this.outputSample = { state: this.ctx.state, ctxTime, wallTime: now,
+      outputLatency: this.ctx.outputLatency ?? 0, cursor: this.frontier };
+    this.onStatus?.();
+    if (this.ctx.state !== 'running') { void this.rebuildDeadOutput(); return; }
+    // No scheduled PCM → download underrun, not dead output.
+    if (!this.sources.size && this.frontier >= this.total) {
+      this._lastCtxTime = ctxTime;
+      this._lastProgressAt = now;
+      this._maybeFinish();
+      return;
+    }
+    if (now - this._lastProgressAt < this.stallSeconds * 1000) return;
+    const advance = ctxTime - this._lastCtxTime;
+    this._lastCtxTime = ctxTime;
+    this._lastProgressAt = now;
+    if (advance < this.minClockAdvanceSeconds) { void this.rebuildDeadOutput(); return; }
+    this.stalledRebuilds = 0;
+    if (this.status) this._status('');
+    this._maybeFinish();
+  }
+
+  _deadOutput() {
+    this.pausedSample = Math.round(this.currentTime * this.sampleRate);
+    this.outputDead = true;
+    this.playing = false;
+    this._armed = false;
+    this._stopSources();
+    this._stopWatchdog();
+    this._status('audio dead — click ⟳');
+    this.onDead?.();
+  }
+
+  async rebuildDeadOutput() {
+    if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+    if (this.stalledRebuilds >= this.maxStalledRebuilds) { this._deadOutput(); return; }
+    this.stalledRebuilds++;
+    await this.migrateContext(true);
   }
 
   /** @returns {number} */
@@ -105,9 +216,11 @@ export class AudioTransport {
 
   /** Current playhead in seconds, clamped to what is buffered. */
   get currentTime() {
-    if (!this.playing) return this.pausedSample / this.sampleRate;
-    const s = this.anchorSample + (this.ctx.currentTime - this.anchorCtx) * this.sampleRate;
-    return Math.min(this.total, Math.max(0, s)) / this.sampleRate;
+    if (!this.playing || this._migrating) return this.pausedSample / this.sampleRate;
+    // Context clock only → never wall time, download bytes, or unscheduled PCM.
+    // Scheduling lead → hold at resume sample; no backwards jump on rebuild.
+    const s = this.anchorSample + Math.max(0, this.ctx.currentTime - this.anchorCtx) * this.sampleRate;
+    return Math.min(this.frontier, this.total, Math.max(0, s)) / this.sampleRate;
   }
 
   /** @param {number} rate @param {number} _channels */
@@ -116,9 +229,9 @@ export class AudioTransport {
   }
 
   /** Append a mono PCM segment; schedule it if we are playing.
-   * @param {Float32Array} mono */
-  append(mono) {
-    if (!mono.length) return;
+   * @param {Float32Array} mono @param {string} requestId */
+  append(mono, requestId) {
+    if (this._destroyed || requestId !== this.requestId || !mono.length) return;
     this.segStart.push(this.total);
     this.segments.push(mono);
     this.total += mono.length;
@@ -154,6 +267,7 @@ export class AudioTransport {
 
   /** Schedule every buffered-but-unscheduled sample ahead of the playhead. */
   _pump() {
+    if (this._destroyed || this._migrating || !this.playing || this.ctx.state !== "running") return;
     while (this.frontier < this.total) {
       const start = this.frontier;
       const end = this.total;
@@ -169,12 +283,14 @@ export class AudioTransport {
       buf.getChannelData(0).set(this._read(start, end));
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
+      this.sourceRequests.set(src, this.requestId);
       src.connect(this.ctx.destination);
       src.start(startCtx);
       this.frontier = end;
       this.sources.add(src);
       src.onended = () => {
         this.sources.delete(src);
+        this._retireSource(src);
         this._maybeFinish();
       };
     }
@@ -186,7 +302,7 @@ export class AudioTransport {
 
   /** Every condition that must hold for playback to be over. */
   _canFinish() {
-    return this.playing
+    return this.playing && !this._migrating && !this._destroyed
       && this.done
       && this.frontier >= this.total
       && this.sources.size === 0
@@ -205,6 +321,7 @@ export class AudioTransport {
       this._finishQueued = false;
       if (this._appendSeq !== seq || !this._canFinish()) return;
       this.playing = false;
+      this._stopWatchdog();
       this.userPaused = false;
       // _armed stays true on purpose: finishing is OUR decision, not the
       // user's, and a truncated stream can still deliver its tail afterwards.
@@ -217,17 +334,18 @@ export class AudioTransport {
   /** Start (or resume/seek) playback from a sample index.
    * @param {number} [fromSample] defaults to the current playhead */
   play(fromSample) {
+    if (this._destroyed || this.outputDead) return;
     const from = fromSample ?? Math.round(this.currentTime * this.sampleRate);
     this._stopSources();
     this.playing = true;
     this.userPaused = false;
     this._armed = true;
     this.frontier = Math.min(Math.max(0, from), this.total);
+    this.pausedSample = this.frontier;
     this.anchorCtx = this.ctx.currentTime + 0.08;
     this.anchorSample = this.frontier;
-    void this.ctx.resume().then(() => {
-      if (this.ctx.state !== "running") throw new Error(`Audio output is ${this.ctx.state}`);
-    }).catch((error) => this.onError?.(error));
+    this._startWatchdog();
+    this.recover('playback');
     this._pump();
     this._maybeFinish();
   }
@@ -241,6 +359,8 @@ export class AudioTransport {
     this.playing = false;
     this.userPaused = true;
     this._armed = false;
+    this._resumeSeq++;
+    this._stopWatchdog();
   }
 
   /** @param {number} seconds */
@@ -250,20 +370,32 @@ export class AudioTransport {
     else this.pausedSample = sample;
   }
 
-  markDone() {
+  /** @param {string} requestId */
+  markDone(requestId) {
+    if (this._destroyed || requestId !== this.requestId) return;
     this.done = true;
     this._maybeFinish();
   }
 
-  _stopSources() {
+  /** @param {AudioBufferSourceNode} src */
+  _retireSource(src) {
+    src.onended = null;
+    try { src.stop(); } catch { /* already stopped */ }
+    try { src.disconnect(); } catch { /* already disconnected */ }
+    src.buffer = null;
+    this.sourceRequests.delete(src);
+  }
+
+  _dropForeignSources() {
     for (const src of this.sources) {
-      src.onended = null;
-      try {
-        src.stop();
-      } catch {
-        // Not started / already stopped.
-      }
+      if (this.sourceRequests.get(src) === this.requestId) continue;
+      this._retireSource(src);
+      this.sources.delete(src);
     }
+  }
+
+  _stopSources() {
+    for (const src of this.sources) this._retireSource(src);
     this.sources.clear();
   }
 
@@ -277,40 +409,64 @@ export class AudioTransport {
    * playhead moves, and there is no sound. We recreate the context so it
    * re-binds to the live default, resuming from the current playhead. The
    * buffered PCM (this.segments) survives — only the ctx + scheduled sources
-   * are rebuilt. No-op unless we are actually playing. */
-  async migrateContext() {
-    if (!this.playing || this._migrating) return;
+   * are rebuilt. No-op unless we are actually playing.
+   * @param {boolean} [deadOutput] watchdog/state failure */
+  async migrateContext(deadOutput = false) {
+    if (this._destroyed || !this.playing || this._migrating) return;
+    this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._migrating = true;
+    this._status('rebinding audio output');
     try {
-      const resumeAt = Math.round(this.currentTime * this.sampleRate);
       this._stopSources();
+      const ctx = this.ctx;
+      ctx.onstatechange = null;
+      /** @type {ReturnType<typeof setTimeout>|undefined} */
+      let deadline;
       try {
-        await this.ctx.close();
-      } catch {
-        // Already closed.
-      }
+        await Promise.race([
+          ctx.close().catch(error => { if (ctx.state !== 'closed') throw error; }),
+          new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Audio output rebind timed out')), this.contextCloseTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(deadline); }
+      if (this._destroyed) return;
       this.ctx = new AudioContext();
+      this.rebuilds++;
+      if (deadOutput) console.info(`read-aloud: output dead → context rebuilt (#${this.rebuilds})`);
       this._bindContextState();
-      this.play(resumeAt);
+      this._migrating = false;
+      if (this.playing && !this.userPaused) this.play(this.pausedSample);
     } catch (error) {
       // Never leave this.ctx closed and silent: the old context is dead, a new
       // one could not be built. Say so instead of freezing the playhead.
       this.playing = false;
       this._armed = false;
-      this.onError?.(error);
+      this._stopWatchdog();
+      if (!this._destroyed) {
+        if (deadOutput) { console.error('read-aloud: context rebuild failed', error); this._deadOutput(); }
+        else this.onError?.(error);
+      }
     } finally {
       this._migrating = false;
     }
   }
 
-  destroy() {
+  /** @param {boolean} [closeContext] false only for immediate shared-player handoff */
+  destroy(closeContext = true) {
+    this._destroyed = true;
+    this.playing = false;
     this._armed = false;
+    this._resumeSeq++;
+    this._stopWatchdog();
     this.ctx.onstatechange = null;
+    this._mediaDevices?.removeEventListener?.("devicechange", this._onDeviceChange);
     this._stopSources();
-    void this.ctx.close().catch(() => {});
+    this.segments = [];
+    this.segStart = [];
+    this.total = this.frontier = this.pausedSample = 0;
+    if (closeContext) void this.ctx.close().catch(() => {});
   }
 
-  /** The whole buffered PCM as one Float32Array (for the client cache). */
+  /** The current request PCM as one Float32Array. No client replay cache. */
   concatPcm() {
     return this._read(0, this.total);
   }
@@ -328,13 +484,12 @@ let activeEventId = "";
 let activeOptions = {};
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
-// When the set of audio devices changes (headphones plugged/unplugged, a
-// Bluetooth output vanishes), re-bind the playing transport to the new default
-// output. Harness-agnostic: matters on WebKit (the native shell) where a
-// context does not follow the default device on its own, harmless on Chromium
-// where it already does. Registered once; fires only while something plays.
-navigator.mediaDevices?.addEventListener?.("devicechange", () => {
-  transport?.migrateContext().catch((error) => transport?.onError?.(error));
+// All input stays browser-owned; paused/ended transports are never auto-resumed.
+for (const event of ['pointerdown', 'keydown', 'touchend', 'click', 'focus']) {
+  window.addEventListener?.(event, () => { transport?.recover(event); updatePlayerUi(); }, { capture: true, passive: true });
+}
+window.addEventListener?.('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { transport?.recover('tab visible'); updatePlayerUi(); }
 });
 
 /** @param {ReadAloudPhase} phase */
@@ -406,6 +561,8 @@ export async function startReadAloud(eventId, regenerate = false, playbackOrigin
   try { t = new AudioTransport(); }
   catch (error) { stopReadAloud(); setError(error); return; }
   transport = t;
+  t.onStatus = updatePlayerUi;
+  t.onDead = () => { if (transport !== t) return; stopTick(); setPhase("dead"); updatePlayerUi(); };
   t.onFirstAudio = () => {
     if (activeEventId === eventId && state.readAloud?.phase === "loading") setPhase("playing");
   };
@@ -458,6 +615,7 @@ export async function startReadAloud(eventId, regenerate = false, playbackOrigin
 /** Continuous PCM: decode each s16le frame to mono and append as it arrives.
  * @param {AudioTransport} t @param {Response} response @param {AbortController} controller */
 async function feedStream(t, response, controller) {
+  const requestId = t.requestId;
   const rate = Number(response.headers.get("x-tts-rate")) || 16000;
   const channels = Number(response.headers.get("x-tts-channels")) || 1;
   t.setFormat(rate, channels);
@@ -501,10 +659,10 @@ async function feedStream(t, response, controller) {
     if (usable < buf.length) leftover = buf.slice(usable);
     if (usable === 0) continue;
     pcmFrames += usable / frameBytes;
-    t.append(s16leToMono(buf.subarray(0, usable), channels));
+    t.append(s16leToMono(buf.subarray(0, usable), channels), requestId);
   }
   if (!pcmFrames) throw new Error("Read aloud stream ended without audio frames");
-  t.markDone();
+  t.markDone(requestId);
 }
 
 /** Batch WAV chunks: fetch each, decode to PCM, append. append() is
@@ -513,6 +671,7 @@ async function feedStream(t, response, controller) {
  * @param {AudioTransport} t @param {string} base @param {string} eventId
  * @param {number} total @param {AbortController} controller @param {boolean} [regenerate] @param {{engine?: string}} [options] */
 async function feedChunks(t, base, eventId, total, controller, regenerate = false, options = {}) {
+  const requestId = t.requestId;
   const endpoint = `${base}/read-aloud`;
   for (let index = 0; index < total; index++) {
     const response = await fetch(endpoint, {
@@ -535,12 +694,12 @@ async function feedChunks(t, base, eventId, total, controller, regenerate = fals
       const decoded = await t.ctx.decodeAudioData(await response.arrayBuffer());
       if (controller.signal.aborted || transport !== t) return;
       t.setFormat(decoded.sampleRate, decoded.numberOfChannels);
-      t.append(downmix(decoded));
+      t.append(downmix(decoded), requestId);
     } finally {
       t.pendingAppends -= 1;
     }
   }
-  t.markDone();
+  t.markDone(requestId);
 }
 
 /** @param {Uint8Array} bytes whole s16le frames @param {number} channels @returns {Float32Array} */
@@ -583,6 +742,10 @@ let durTimeEl = null;
 /** @type {HTMLElement|null} */
 let liveEl = null;
 /** @type {HTMLElement|null} */
+let recoveryEl = null;
+/** @type {HTMLElement|null} */
+let diagEl = null;
+/** @type {HTMLElement|null} */
 let trackEl = null;
 /** @type {HTMLElement|null} */
 let playedEl = null;
@@ -608,6 +771,8 @@ export function buildAudioPlayer() {
   // and grows in real-time (claude-voice generates at ~speaking speed), so this
   // says "still generating" instead of letting a partial length look truncated.
   liveEl = h("span", { class: "ap-live", hidden: true, title: "still generating — the length grows until synthesis finishes" }, "⋯ live");
+  recoveryEl = h("span", { class: "ap-recovery", role: "status", hidden: true });
+  diagEl = h("span", { class: "ap-diag", hidden: true, title: "AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds" });
   playerRoot = h(
     "div",
     { class: "audio-player", hidden: true },
@@ -616,6 +781,8 @@ export function buildAudioPlayer() {
     trackEl,
     durTimeEl,
     liveEl,
+    recoveryEl,
+    diagEl,
     h("button", { type: "button", class: "ap-regen", title: "regenerate audio (re-synthesize, replaces the cached clip)", text: "⟳", onclick: regenerateAudio }),
     h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: stopReadAloud }),
   );
@@ -675,6 +842,12 @@ function attachTrackHandlers(track) {
 /** Play/pause/resume/replay from the player or the message button. */
 function playerToggle() {
   if (!transport) return;
+  if (transport.outputDead) { regenerateAudio(); return; }
+  if (transport.playing && transport.ctx.state !== 'running') {
+    transport.recover('play button');
+    updatePlayerUi();
+    return;
+  }
   if (transport.playing) {
     transport.pause();
     setPhase("paused");
@@ -727,6 +900,13 @@ function updatePlayerUi(overrideFrac) {
     return;
   }
   playerRoot.hidden = false;
+  playerRoot.classList.toggle("audio-dead", transport.outputDead);
+  if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
+  if (diagEl) {
+    diagEl.hidden = localStorage.getItem("TTS_DIAG") !== "1";
+    diagEl.title = `AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds · request=${transport.requestId}`;
+    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds}`;
+  }
   const dur = transport.duration;
   const cur = overrideFrac != null ? overrideFrac * dur : transport.currentTime;
   const frac = dur > 0 ? Math.min(1, cur / dur) : 0;

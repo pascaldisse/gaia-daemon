@@ -1,0 +1,20 @@
+{
+  "call": {
+    "workspaceId": "c209a6881504af67",
+    "roomId": "player-proof",
+    "startedAt": 1789486421011
+  },
+  "status": 202,
+  "body": {
+    "task": {
+      "id": "task_mu2u0g82_4u3r1n3q",
+      "roomId": "player-proof",
+      "text": "Reply with exactly two paragraphs, about ninety words total, describing stars and distant galaxies. Start with Watchdog call acceptance.",
+      "targets": [
+        "voice-proof"
+      ],
+      "status": "running",
+      "startedAt": "2026-09-15T15:33:42.053Z"
+    }
+  }
+}
