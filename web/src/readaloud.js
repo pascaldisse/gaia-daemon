@@ -723,13 +723,15 @@ let durTimeEl = null;
 /** @type {HTMLElement|null} */
 let liveEl = null;
 /** @type {HTMLElement|null} */
+let recoveryEl = null;
+/** @type {HTMLElement|null} */
+let diagEl = null;
+/** @type {HTMLElement|null} */
 let trackEl = null;
 /** @type {HTMLElement|null} */
 let playedEl = null;
 /** @type {HTMLElement|null} */
 let thumbEl = null;
-/** @type {HTMLElement|null} */
-let recoveryEl = null;
 
 let rafId = 0;
 let dragging = false;
@@ -750,7 +752,8 @@ export function buildAudioPlayer() {
   // and grows in real-time (claude-voice generates at ~speaking speed), so this
   // says "still generating" instead of letting a partial length look truncated.
   liveEl = h("span", { class: "ap-live", hidden: true, title: "still generating — the length grows until synthesis finishes" }, "⋯ live");
-  recoveryEl = h("span", { class: "ap-recovery", hidden: true });
+  recoveryEl = h("span", { class: "ap-recovery", role: "status", hidden: true });
+  diagEl = h("span", { class: "ap-diag", hidden: true, title: "AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds" });
   playerRoot = h(
     "div",
     { class: "audio-player", hidden: true },
@@ -760,6 +763,7 @@ export function buildAudioPlayer() {
     durTimeEl,
     liveEl,
     recoveryEl,
+    diagEl,
     h("button", { type: "button", class: "ap-regen", title: "regenerate audio (re-synthesize, replaces the cached clip)", text: "⟳", onclick: regenerateAudio }),
     h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: stopReadAloud }),
   );
@@ -879,6 +883,10 @@ function updatePlayerUi(overrideFrac) {
   playerRoot.hidden = false;
   playerRoot.classList.toggle("audio-dead", transport.outputDead);
   if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
+  if (diagEl) {
+    diagEl.hidden = localStorage.getItem("TTS_DIAG") !== "1";
+    diagEl.textContent = diagEl.hidden ? "" : `${transport.ctx.state} · ctxTime=${transport.ctx.currentTime.toFixed(2)} · cursor=${transport.frontier} · rebuilds=${transport.rebuilds}`;
+  }
   const dur = transport.duration;
   const cur = overrideFrac != null ? overrideFrac * dur : transport.currentTime;
   const frac = dur > 0 ? Math.min(1, cur / dur) : 0;
