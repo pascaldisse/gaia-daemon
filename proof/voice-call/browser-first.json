@@ -1,0 +1,26 @@
+{
+  "call": {
+    "workspaceId": "d5c46e127bc032ec",
+    "roomId": "voice-acceptance",
+    "startedAt": 1789483778038
+  },
+  "error": "",
+  "events": [
+    {
+      "id": "before-call",
+      "author": "voice-proof",
+      "text": "This old reply must never be spoken by the call."
+    },
+    {
+      "id": "evt_mu2sgfqu_fsumjnan",
+      "author": "user",
+      "text": "Reply with one paragraph about stars, starting with First call reply."
+    },
+    {
+      "id": "evt_mu2sgft0_y93yf9yq",
+      "author": "voice-proof",
+      "text": "First call reply. Stars are luminous spheres of plasma that brighten the cosmos, forge many of the elements around us, and trace constellations across the night"
+    }
+  ],
+  "proof": []
+}

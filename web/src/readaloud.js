@@ -324,6 +324,8 @@ let transport = null;
 /** @type {AbortController|null} */
 let fetchController = null;
 let activeEventId = "";
+/** @type {{engine?: string}} */
+let activeOptions = {};
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
 // When the set of audio devices changes (headphones plugged/unplugged, a
@@ -385,8 +387,8 @@ export function stopReadAloud() {
 /** @param {string} eventId @param {boolean} [regenerate] skip the server cache and
  * re-synthesize (the ⟳ button), replacing a bad cached clip.
  * @param {{workspaceId: string, roomId: string}|null} [playbackOrigin]
- */
-async function startReadAloud(eventId, regenerate = false, playbackOrigin = null) {
+ * @param {{engine?: string}} [options] */
+export async function startReadAloud(eventId, regenerate = false, playbackOrigin = null, options = {}) {
   stopReadAloud();
   const snapshot = state.snapshot;
   const origin = playbackOrigin ?? (snapshot ? { workspaceId: snapshot.workspace.id, roomId: snapshot.room.id } : null);
@@ -395,6 +397,7 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
   const base = apiUrl(`/api/workspaces/${encodeURIComponent(origin.workspaceId)}/rooms/${encodeURIComponent(origin.roomId)}`);
   // Bind playback to the room it started in, so switching rooms mid-play never
   // re-points fetches and the now-playing chip can jump back to this message.
+  activeOptions = options;
   activeEventId = eventId;
   activeOrigin = origin;
 
@@ -430,7 +433,7 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
     const response = await fetch(`${base}/read-aloud/stream`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ eventId, ...(regenerate ? { regenerate: true } : {}) }),
+      body: JSON.stringify({ eventId, ...options, ...(regenerate ? { regenerate: true } : {}) }),
       signal: controller.signal,
     });
     if (transport !== t) return; // stopped/replaced while awaiting
@@ -443,7 +446,7 @@ async function startReadAloud(eventId, regenerate = false, playbackOrigin = null
     } else {
       const info = await response.json().catch(() => ({}));
       const total = Number.isInteger(info?.chunks) && info.chunks > 0 ? info.chunks : 1;
-      await feedChunks(t, base, eventId, total, controller, regenerate);
+      await feedChunks(t, base, eventId, total, controller, regenerate, options);
     }
   } catch (error) {
     if (transport !== t || controller.signal.aborted) return;
@@ -508,14 +511,14 @@ async function feedStream(t, response, controller) {
  * non-blocking (it just schedules), so the next chunk fetches while the current
  * one plays — natural pipelining, no explicit prefetch needed.
  * @param {AudioTransport} t @param {string} base @param {string} eventId
- * @param {number} total @param {AbortController} controller @param {boolean} [regenerate] */
-async function feedChunks(t, base, eventId, total, controller, regenerate = false) {
+ * @param {number} total @param {AbortController} controller @param {boolean} [regenerate] @param {{engine?: string}} [options] */
+async function feedChunks(t, base, eventId, total, controller, regenerate = false, options = {}) {
   const endpoint = `${base}/read-aloud`;
   for (let index = 0; index < total; index++) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ eventId, chunk: index, ...(regenerate ? { regenerate: true } : {}) }),
+      body: JSON.stringify({ eventId, ...options, chunk: index, ...(regenerate ? { regenerate: true } : {}) }),
       signal: controller.signal,
     });
     if (controller.signal.aborted || transport !== t) return;
@@ -682,7 +685,7 @@ function playerToggle() {
   // Resume, or replay from the top if we were sitting at the end.
   const atEnd = transport.done && transport.currentTime >= transport.duration - 0.05;
   if (atEnd) {
-    void startReadAloud(activeEventId, false, activeOrigin);
+    void startReadAloud(activeEventId, false, activeOrigin, activeOptions);
     return;
   }
   transport.play();
@@ -696,7 +699,7 @@ function playerToggle() {
 function regenerateAudio() {
   const id = activeEventId;
   if (!id) return;
-  void startReadAloud(id, true, activeOrigin);
+  void startReadAloud(id, true, activeOrigin, activeOptions);
 }
 
 function startTick() {

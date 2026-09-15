@@ -574,6 +574,7 @@ function schedulesJsonHints(sources: HintSources): FileHints {
 
 function voiceJsonHints(): FileHints {
   return {
+    call: { input: "json", optional: true, label: "Chat call", description: "Tab-local call: rmsThreshold, silenceMs, minSpeechMs, maxUtteranceMs, meterIntervalMs, fftSize, transcriptionTimeoutMs, ttsEngine. Reload/hangup ends call. STT uses sttEngine below." },
     ttsEngine: select(values(ttsEngineIds()), {
       optional: true,
       label: "Voice mode (default TTS engine)",

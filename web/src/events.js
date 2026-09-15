@@ -11,7 +11,7 @@ import { forwardNativePetProgress, syncNativePets } from "./pet.js";
 import { markDirty, setError } from "./render.js";
 import { recordHarnessEvent, state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
-import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
+import { callReply, syncCallRoom } from "./voice.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
@@ -146,14 +146,11 @@ export function connectEvents(resyncOnReady = false) {
       setError(payload.event.text);
       markStreamsStalled(payload.event.text);
     }
-    if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
+    callReply(payload);
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
 
-  listen("voice-status", (event) => {
-    applyVoiceStatus(/** @type {Ev<"voice-status">} */ (JSON.parse(event.data)));
-  });
 
   listen("model-info", (event) => {
     const payload = /** @type {Ev<"model-info">} */ (JSON.parse(event.data));

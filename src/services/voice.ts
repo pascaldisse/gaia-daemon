@@ -1,3 +1,4 @@
+import { voiceCallConfig } from "../../web/shared/voice-call-config.js";
 // ONE voice module (v1 scattered this over voice-stack.ts, voice-bridge.ts,
 // voice-settings.ts and the web server's routes):
 //   1. settings   — ~/.gaia/voice.json, defaults + runtime-resolved unmute dir
@@ -35,6 +36,7 @@ export function bundledUnmuteDir(): string {
 }
 
 export interface VoiceSettings {
+  call: ReturnType<typeof voiceCallConfig>;
   /** unmute backend the browser connects to (and GAIA health-checks). */
   unmuteUrl: string;
   /** Local unmute checkout used to auto-start services. */
@@ -109,6 +111,7 @@ export interface VoiceSettings {
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
+  call: voiceCallConfig(undefined),
   unmuteUrl: "ws://127.0.0.1:8000",
   // Empty = use the bundled checkout, resolved at runtime by readVoiceSettings.
   // Never seed an absolute path here: it would go stale if the repo is moved.
@@ -178,6 +181,7 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   const settings = { ...VOICE_SETTINGS_DEFAULTS };
   // Missing or malformed file: defaults apply.
   const raw = ((await readJson(globalPaths.voiceSettings())) ?? {}) as Record<string, unknown>;
+  settings.call = voiceCallConfig(raw.call);
   if (typeof raw.unmuteUrl === "string" && raw.unmuteUrl) settings.unmuteUrl = raw.unmuteUrl;
   if (typeof raw.unmuteDir === "string" && raw.unmuteDir) settings.unmuteDir = raw.unmuteDir;
   if (typeof raw.autoStart === "boolean") settings.autoStart = raw.autoStart;

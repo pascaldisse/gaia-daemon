@@ -1,0 +1,40 @@
+[mkdir-out] 0.1ms
+ [216ms]  bundle  3168 modules
+ [149ms] compile  .gaia/voice-call-build/gaia-daemon.new
+[daemon-compile] 388.4ms
+[daemon-install] 0.2ms
+   [4ms]  bundle  9 modules
+  [93ms] compile  .gaia/voice-call-build/gaia-telegram-bridge.new
+[telegram-bridge-compile] 107.2ms
+[telegram-bridge-install] 0.1ms
+Bundled 646 modules in 50ms
+
+  graphql.js  4.0 MB  (entry point)
+
+[graphql-bundle] 58.0ms
+[snapshot-web] 1.3ms
+[snapshot-setups] 0.4ms
+[snapshot-design] 1.3ms
+[snapshot-addons] 0.2ms
+[snapshot-vendor] 0.2ms
+[snapshot-plugins] 1.5ms
+[write-source-json] 41.9ms
+---
+mkdir-out: 0.1ms
+daemon-compile: 388.4ms
+daemon-install: 0.2ms
+telegram-bridge-compile: 107.2ms
+telegram-bridge-install: 0.1ms
+graphql-bundle: 58.0ms
+snapshot-web: 1.3ms
+snapshot-setups: 0.4ms
+snapshot-design: 1.3ms
+snapshot-addons: 0.2ms
+snapshot-vendor: 0.2ms
+snapshot-plugins: 1.5ms
+write-source-json: 41.9ms
+total: 601.2ms
+target: bun-darwin-arm64
+binary: .gaia/voice-call-build/gaia-daemon (79528802 bytes)
+telegram-bridge: 63479138 bytes
+graphql asset: .gaia/voice-call-build/graphql.js (4027516 bytes)

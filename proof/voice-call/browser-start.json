@@ -1,0 +1,9 @@
+{
+  "room": "voice-acceptance",
+  "call": {
+    "workspaceId": "d5c46e127bc032ec",
+    "roomId": "voice-acceptance",
+    "startedAt": 1789483778038
+  },
+  "buttons": 1
+}

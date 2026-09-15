@@ -1,3 +1,4 @@
+import { endCall } from "./voice.js";
 // Every server mutation goes through these small action functions: they call
 // the API, update state, and mark the affected regions. Views never mutate
 // state directly.
@@ -35,7 +36,6 @@ async function applyAppPayload(body) {
   syncReadMarks();
   syncDarioFromSnapshot(); // surface a pending Dario proposal on initial load
   state.older = { roomId: state.snapshot?.room.id ?? "", events: [], loading: false, lastTotal: state.snapshot?.room.eventTotal ?? 0 };
-  state.voice = body.voice ?? null;
   // Settings modal catalogs — file LISTS ride along on the payloads that already
   // fetch everything else; only individual file content is a separate call
   // (loadSettingsFile below), made on demand as the modal selects a file.
@@ -89,7 +89,6 @@ function applySnapshotPayload(body) {
   // Workspace/room switch: paged-in older history belongs to the old room.
   state.older = { roomId: body.snapshot.room.id, events: [], loading: false, lastTotal: body.snapshot.room.eventTotal };
   state.settingsWorkspaceFiles = body.workspaceFiles ?? [];
-  state.voice = body.voice ?? null;
   rememberLocation(state.snapshot);
 }
 /** @param {string} workspaceId */
@@ -113,6 +112,7 @@ function cacheCurrentRoom() {
 /** @param {string} workspaceId @param {string} [roomId]
  * @param {{ incognito?: boolean }} [opts] */
 async function navigate(workspaceId, roomId, opts = {}) {
+  if (state.call) endCall();
   const previous = cacheCurrentRoom();
   if (!navigation.pending) confirmedRoom = previous;
   const rollback = confirmedRoom;
