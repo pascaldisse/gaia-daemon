@@ -99,9 +99,12 @@ export class AudioTransport {
     this._destroyed = false;
     this._resumeSeq = 0;
     this._bindContextState();
+    this._mediaDevices = navigator.mediaDevices;
+    this._onDeviceChange = () => { void this.rebuildDeadOutput(); };
+    this._mediaDevices?.addEventListener?.("devicechange", this._onDeviceChange);
   }
 
-  // Interruptions retain unlocked context + PCM; route changes/frozen running clocks migrate.
+  // State/device/watchdog failures → one bounded rebuild path; PCM retained.
   _bindContextState() {
     const ctx = this.ctx;
     ctx.onstatechange = () => {
@@ -111,13 +114,7 @@ export class AudioTransport {
         this._pump();
         return;
       }
-      // Retire scheduled nodes before an OS auto-resume can speak stale PCM.
-      this.pausedSample = Math.round(this.currentTime * this.sampleRate);
-      this._stopSources();
-      this.frontier = this.pausedSample;
-      this.anchorSample = this.frontier;
-      this.anchorCtx = ctx.currentTime + 0.08;
-      this.recover(`audio ${ctx.state}`);
+      void this.rebuildDeadOutput();
     };
   }
 
@@ -137,7 +134,7 @@ export class AudioTransport {
     const ctx = this.ctx;
     if (ctx.state === 'running' && !reschedule) return;
     if (this.beforeRecovery?.() === false) return;
-    if (ctx.state === 'closed') { void this.migrateContext(); return; }
+    if (ctx.state === 'closed') { void this.rebuildDeadOutput(); return; }
     this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
     const seq = ++this._resumeSeq;
     void ctx.resume().then(() => {
@@ -445,6 +442,7 @@ export class AudioTransport {
     this._resumeSeq++;
     this._stopWatchdog();
     this.ctx.onstatechange = null;
+    this._mediaDevices?.removeEventListener?.("devicechange", this._onDeviceChange);
     this._stopSources();
     if (closeContext) void this.ctx.close().catch(() => {});
   }
@@ -467,13 +465,12 @@ let activeEventId = "";
 let activeOptions = {};
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
-// When the set of audio devices changes (headphones plugged/unplugged, a
-// Bluetooth output vanishes), re-bind the playing transport to the new default
-// output. Harness-agnostic: matters on WebKit (the native shell) where a
-// context does not follow the default device on its own, harmless on Chromium
-// where it already does. Registered once; fires only while something plays.
-navigator.mediaDevices?.addEventListener?.("devicechange", () => {
-  transport?.migrateContext().catch((error) => transport?.onError?.(error));
+// All input stays browser-owned; paused/ended transports are never auto-resumed.
+for (const event of ['pointerdown', 'keydown', 'touchend', 'click', 'focus']) {
+  window.addEventListener?.(event, () => { transport?.recover(event); updatePlayerUi(); }, { capture: true, passive: true });
+}
+window.addEventListener?.('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { transport?.recover('tab visible'); updatePlayerUi(); }
 });
 
 /** @param {ReadAloudPhase} phase */
