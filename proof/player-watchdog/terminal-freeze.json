@@ -1,0 +1,19 @@
+{
+  "phase": "playing",
+  "playing": true,
+  "dead": false,
+  "position": 0.4693333333333333,
+  "duration": 17.9258125,
+  "ctxTime": 0.5493333333333333,
+  "rebuilds": 0,
+  "stalledRebuilds": 0,
+  "sources": 2,
+  "samples": 286813,
+  "peak": 0.37457275390625,
+  "bar": "width: 2.56%;",
+  "red": false,
+  "status": "",
+  "color": "rgb(95, 93, 112)",
+  "diag": "running · ctxTime=0.54 · cursor=286813 · rebuilds=0",
+  "errors": []
+}

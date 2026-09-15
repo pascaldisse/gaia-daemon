@@ -1,0 +1,22 @@
+{
+  "id": 1,
+  "result": {
+    "result": {
+      "type": "object",
+      "value": {}
+    },
+    "exceptionDetails": {
+      "exceptionId": 1,
+      "text": "Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'click')",
+      "lineNumber": 0,
+      "columnNumber": 0,
+      "exception": {
+        "type": "object",
+        "subtype": "error",
+        "className": "TypeError",
+        "description": "TypeError: Cannot read properties of undefined (reading 'click')\n    at <anonymous>:1:147",
+        "objectId": "-2900042352182710924.1.1"
+      }
+    }
+  }
+}

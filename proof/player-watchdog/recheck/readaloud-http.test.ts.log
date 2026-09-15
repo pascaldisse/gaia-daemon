@@ -1,0 +1,29 @@
+bun test v1.3.14 (0d9b296a)
+
+test/readaloud-http.test.ts:
+[gaia] 2026-09-15T16:46:58.024Z daemon up pid=6193 ppid=6155 at http://127.0.0.1:63640
+[plugins] gaia.defaults: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/plugins/defaults`). See docs/PLUGIN-FORMAT.md.
+[plugins] gaia.rpg: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/plugins/rpg`). See docs/PLUGIN-FORMAT.md.
+[gaia] plugin registry: staged generation=1 plugins=gaia.defaults,gaia.rpg
+[gaia] plugin registry: swapped generation=1 previousGeneration=0 plugins=gaia.defaults,gaia.rpg
+[gaia] keep-awake: caffeinate started (pid 6203, watching daemon pid 6193)
+[gaia] voice: TTS request=tts_mu2wmock_tx6xl003 engine=http-cache-http-ffu6VI voice=airy model=fixture-v2
+FIXTURE read-aloud status=200 voice=airy model=fixture-v2 bytes=3244 sha256=bbbf7a6f8227fea0c391b27cd4bf86cde9f47b3b63820ac6630e6a6d677d69b2
+[gaia] voice: TTS request=tts_mu2wmocn_9x9q33kh engine=http-cache-http-ffu6VI voice=mellow model=fixture-v2
+FIXTURE read-aloud status=200 voice=mellow model=fixture-v2 bytes=3244 sha256=ea4949cba40a35eccb57e61879718a00a6d5ab36dce2d4d31e19791e8b168318
+[gaia] voice: TTS request=tts_mu2wmocp_3fdd59d8 engine=http-cache-http-ffu6VI voice=airy model=fixture-v2
+FIXTURE read-aloud status=200 voice=airy model=fixture-v2 bytes=3244 sha256=bbbf7a6f8227fea0c391b27cd4bf86cde9f47b3b63820ac6630e6a6d677d69b2
+[gaia] voice: TTS request=tts_mu2wmocr_ysmbnfxc engine=http-cache-http-ffu6VI voice=airy model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=airy model=fixture-v2 bytes=3200 sha256=5b2a02af13d50112ad2d8dc2046a0975d40f39488e194a92107102bb40852eeb
+[gaia] voice: TTS request=tts_mu2wmocu_tcejertr engine=http-cache-http-ffu6VI voice=mellow model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=mellow model=fixture-v2 bytes=3200 sha256=3f45d206ad315c29449f9e672e5c5ceae3281bbe8c10867ed321d877f388cd9b
+[gaia] voice: TTS request=tts_mu2wmocy_5n17jtxt engine=http-cache-http-ffu6VI voice=airy model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=airy model=fixture-v2 bytes=3200 sha256=5b2a02af13d50112ad2d8dc2046a0975d40f39488e194a92107102bb40852eeb
+[gaia] keep-awake: caffeinate stopped (pid 6203)
+[gaia] keep-awake: caffeinate exited (code null, signal SIGTERM)
+(pass) headless daemon: both TTS routes echo effective voice/model and isolate cached audio [328.93ms]
+
+ 1 pass
+ 0 fail
+ 37 expect() calls
+Ran 1 test across 1 file. [1071.00ms]

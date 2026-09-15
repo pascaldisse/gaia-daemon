@@ -1,0 +1,19 @@
+{
+  "phase": "playing",
+  "playing": true,
+  "dead": false,
+  "position": 1.4826875,
+  "duration": 17.9258125,
+  "ctxTime": 0.608,
+  "rebuilds": 1,
+  "stalledRebuilds": 1,
+  "sources": 1,
+  "samples": 286813,
+  "peak": 0.003021240234375,
+  "bar": "width: 8.18%;",
+  "red": false,
+  "status": "rebinding audio output",
+  "color": "rgb(95, 93, 112)",
+  "diag": "running · ctxTime=0.59 · cursor=286813 · rebuilds=1",
+  "errors": []
+}

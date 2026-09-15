@@ -1,0 +1,7 @@
+DEBUG: Found 1 targets
+DEBUG: Using target 52473D4D15C6204DE40C7D5F25F09A2B
+DEBUG: Connecting to ws://127.0.0.1:54116/devtools/page/52473D4D15C6204DE40C7D5F25F09A2B
+DEBUG: Message id = 1
+DEBUG: WS open
+DEBUG: Got message id=1, expecting 1
+/Users/pascaldisse/projects/gaia-daemon-wt/player-watchdog/proof/player-watchdog/terminal.png
