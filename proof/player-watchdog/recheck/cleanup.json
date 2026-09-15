@@ -1,0 +1,9 @@
+{
+  "ownedDaemonStopped": 7935,
+  "daemonShutdown": "SIGTERM closed listener; process remained >30s; verified private executable then SIGKILL",
+  "ownedBrowserStopped": 13353,
+  "ownedBrowserProfileRemoved": "/Users/pascaldisse/.gaia/app-sandbox/13351",
+  "liveUserProcessesTouched": false,
+  "unrelatedMainDirtyHashesUnchangedAfterMerge": true,
+  "codeMerge": "0ed05c8"
+}
