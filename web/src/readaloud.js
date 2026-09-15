@@ -89,8 +89,6 @@ export class AudioTransport {
     this.status = "";
     /** @type {(() => void)|null} */
     this.onStatus = null;
-    /** @type {(() => boolean)|null} */
-    this.beforeRecovery = null;
     /** @type {ReturnType<typeof setInterval>|null} */
     this._watchdog = null;
     this._lastProgressAt = performance.now();
@@ -110,7 +108,6 @@ export class AudioTransport {
     ctx.onstatechange = () => {
       if (this.ctx !== ctx || this._destroyed || this._migrating || !this.playing || this.userPaused) return;
       if (ctx.state === 'running') {
-        if (this.status && this.beforeRecovery?.() === false) return;
         this._pump();
         return;
       }
@@ -133,7 +130,6 @@ export class AudioTransport {
     if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
     const ctx = this.ctx;
     if (ctx.state === 'running' && !reschedule) return;
-    if (this.beforeRecovery?.() === false) return;
     if (ctx.state === 'closed') { void this.rebuildDeadOutput(); return; }
     this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
     const seq = ++this._resumeSeq;
@@ -198,7 +194,7 @@ export class AudioTransport {
   }
 
   async rebuildDeadOutput() {
-    if (this._destroyed || this._migrating || !this.playing || this.userPaused || this.beforeRecovery?.() === false) return;
+    if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
     if (this.stalledRebuilds >= this.maxStalledRebuilds) { this._deadOutput(); return; }
     this.stalledRebuilds++;
     await this.migrateContext(true);
@@ -398,7 +394,7 @@ export class AudioTransport {
    * are rebuilt. No-op unless we are actually playing.
    * @param {boolean} [deadOutput] watchdog/state failure */
   async migrateContext(deadOutput = false) {
-    if (this._destroyed || !this.playing || this._migrating || this.beforeRecovery?.() === false) return;
+    if (this._destroyed || !this.playing || this._migrating) return;
     this.pausedSample = Math.round(this.currentTime * this.sampleRate);
     this._migrating = true;
     this._status('rebinding audio output');
@@ -417,7 +413,7 @@ export class AudioTransport {
       if (this._destroyed) return;
       this.ctx = new AudioContext();
       this.rebuilds++;
-      if (deadOutput) console.info(`auto-tts: output dead → context rebuilt (#${this.rebuilds})`);
+      if (deadOutput) console.info(`read-aloud: output dead → context rebuilt (#${this.rebuilds})`);
       this._bindContextState();
       this._migrating = false;
       if (this.playing && !this.userPaused) this.play(this.pausedSample);
@@ -428,7 +424,7 @@ export class AudioTransport {
       this._armed = false;
       this._stopWatchdog();
       if (!this._destroyed) {
-        if (deadOutput) { console.error('auto-tts: context rebuild failed', error); this._deadOutput(); }
+        if (deadOutput) { console.error('read-aloud: context rebuild failed', error); this._deadOutput(); }
         else this.onError?.(error);
       }
     } finally {

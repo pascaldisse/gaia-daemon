@@ -289,14 +289,6 @@ test('autoplay-blocked PCM remains unscheduled until output is actually running'
   ctx.setState('running');grant();await flush();expect(t.sources.size).toBe(1);expect(t.frontier).toBe(16000);
 });
 
-test('interruption cannot bypass expired-reply recovery policy', async () => {
-  const {t,ctx}=armed();t.append(pcm(160000));ctx.currentTime=4.08;
-  t.beforeRecovery=()=>{t.destroy();return false;};ctx.setState('suspended');
-  await flush();
-  expect(t.sources.size).toBe(0);expect(t.playing).toBe(false);expect(ctx.state).toBe('closed');
-  expect(contexts).toHaveLength(1);
-});
-
 test('two consecutive frozen replacements → terminal dead status; no third rebuild or rearm', async () => {
   const {t,ctx}=armed();t.append(pcm(160000));ctx.currentTime=2.08;
   t.checkProgress(t._lastProgressAt+2001);
