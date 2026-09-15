@@ -146,7 +146,7 @@ function renderStatusbar() {
       cls: running ? "seg-run on" : "seg-run",
       title: "rooms with a live turn (this room + any running summons)",
     });
-    if (state.voice) segs.push({ text: `${UI.call} @${state.voice.agentId}`, cls: "seg-voice", title: "on a voice call" });
+    if (state.call) segs.push({ text: `${UI.call} call`, cls: "seg-voice", title: "on a voice call in this chat" });
   } else {
     segs.push({ text: "no workspace", cls: "seg-head" });
   }

@@ -385,7 +385,7 @@ export function resolveTtsChoice(
   settings: VoiceSettings,
   overrides: TtsOverrides = {},
 ): { engine: TtsEngineSpec; voice?: string; model: string } {
-  const engineId = agent?.tts?.engine ?? settings.ttsEngine;
+  const engineId = overrides.engine ?? agent?.tts?.engine ?? settings.ttsEngine;
   const engine = findTtsEngine(engineId);
   if (!engine) throw new Error(`Unknown TTS engine "${engineId}" (available: ${ttsEngineIds().join(", ")})`);
   const requestedVoice = overrides.voice ?? agent?.tts?.voice ?? agent?.voice;
@@ -403,6 +403,7 @@ export function resolveTtsChoice(
 const TTS_CACHE_MAX_ENTRIES = 500;
 
 export interface TtsOverrides {
+  engine?: string;
   voice?: string;
   model?: string;
 }

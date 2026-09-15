@@ -19,7 +19,7 @@ import { markDirty, registerRegion, setError } from "./render.js";
 import { buildAudioPlayer } from "./readaloud.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
 import { setArtifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
-import { endCall, setMicMuted } from "./voice.js";
+import { toggleCall } from "./voice.js";
 import {
   abortActiveTranscription,
   cancelDictation,
@@ -1249,31 +1249,21 @@ function DictationDraftChips() {
 
 /** @returns {HTMLElement[]} */
 function VoiceButtons() {
-  // On a call: mute + hang-up (live STT already fills the composer as you talk).
-  if (state.voice) {
-    return [
-      h("button", {
-        type: "button",
-        class: state.micMuted ? "voice-button muted" : "voice-button",
-        title: state.micMuted ? "unmute microphone" : "mute microphone",
-        onclick: () => setMicMuted(!state.micMuted),
-        text: state.micMuted ? UI.micMuted : UI.mic,
-      }),
-      h("button", {
-        type: "button",
-        class: "voice-button end-call",
-        title: `hang up @${state.voice.agentId}`,
-        onclick: () => void endCall(),
-        text: UI.stop,
-      }),
-    ];
-  }
+  const callButton = h("button", {
+    type: "button", class: `call-button voice-button${state.call ? " active" : ""}`,
+    title: state.call ? "end call (Esc)" : "start call in this chat",
+    "aria-label": state.call ? "End call" : "Start call",
+    "aria-pressed": String(Boolean(state.call)),
+    onclick: () => void toggleCall(), text: state.call ? UI.stop : UI.call,
+  });
+  if (state.call) return [callButton];
   // Off a call: the dictation (voice-input) button. One click records, the next
   // stops and transcribes into the composer; right-click cancels a recording.
   if (!state.snapshot) return [];
   const recording = state.dictating;
   const busy = state.dictationBusy;
   return [
+    callButton,
     h("button", {
       type: "button",
       class: `mic-button voice-button dictation${recording ? " recording" : ""}${busy ? " busy" : ""}`,

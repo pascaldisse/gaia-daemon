@@ -1,3 +1,4 @@
+import { readVoiceSettings } from "../../services/voice.js";
 import { webTargetUrl } from "../../../web/shared/web-target.js";
 import { createReadStream } from "node:fs";
 import { access, appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -415,7 +416,10 @@ async function handleApiVoice(ctx: RouteContext): Promise<void> {
       }
       return;
     }
-    return handleApiDictation(ctx);
+    if (method === "GET" && path === "/api/voice/call-settings") {
+    return respond(response, async () => ({ call: (await readVoiceSettings()).call }));
+  }
+  return handleApiDictation(ctx);
 }
 async function handleApiDictation(ctx: RouteContext): Promise<void> {
   const { request, response, url, daemon, human, humanScope } = ctx;

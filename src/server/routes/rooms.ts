@@ -405,7 +405,7 @@ async function roomReadAloud(ctx: RouteContext): Promise<boolean> {
   const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   try {
-    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
+    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate, { engine: stringField(body, "engine"), voice: stringField(body, "voice"), model: stringField(body, "model") });
     ctx.response.writeHead(200, {
       "content-type": audio.contentType,
       "content-length": audio.audio.length,
@@ -438,7 +438,7 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
   const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
   let delivery: ReadAloudDelivery;
   try {
-    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate, { voice: stringField(body, "voice"), model: stringField(body, "model") });
+    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate, { engine: stringField(body, "engine"), voice: stringField(body, "voice"), model: stringField(body, "model") });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     json(

@@ -9,7 +9,6 @@ import { shortModel } from "./models.js";
 import { markDirty, registerRegion } from "./render.js";
 import { openAgentSettings } from "./settings.js";
 import { activeTask, state } from "./state.js";
-import { toggleCall } from "./voice.js";
 
 /** Draft text for the todo-section's quick-add row. Module-level (like
  * accountsCatalogValue above) so it survives the full-subtree replace every
@@ -100,8 +99,6 @@ function renderPanel() {
       "div",
       { class: "agent-list" },
       agents.map((agent) => {
-        const onCall = state.voice?.agentId === agent.id;
-        const connecting = state.voicePendingAgentId === agent.id;
         const roles = agent.roles ?? [];
         // "none" is an explicit opt-out; otherwise a room override wins, falling
         // back to the agent's global default role.
@@ -117,7 +114,7 @@ function renderPanel() {
             // roster-row (v2 parity class) rides ALONGSIDE the existing
             // agent-row layout — never replaces it, so the role/account
             // selects below keep their current markup and behavior untouched.
-            class: `agent-row roster-row roster-agent ${onCall ? "on-call" : ""} ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
+            class: `agent-row roster-row roster-agent ${agent.status === "running" || agent.status === "compacting" ? "running" : ""} ${effectiveRole ? "has-role" : ""} ${agent.id === activeAgent ? "active-agent" : ""}`,
             oncontextmenu: (/** @type {MouseEvent} */ event) => {
               event.preventDefault();
               state.agentContextMenu = { agentId: agent.id, x: event.clientX, y: event.clientY };
@@ -199,13 +196,6 @@ function renderPanel() {
             disabled: agent.isDefault,
             onclick: () => void setDefaultAgent(agent.id),
             text: agent.isDefault ? UI.favorite : UI.favoriteOff,
-          }),
-          h("button", {
-            class: `call-button ${onCall ? "active" : ""}`,
-            title: onCall ? `hang up @${agent.id}` : `start voice call with @${agent.id}`,
-            disabled: connecting || (Boolean(state.voice) && !onCall),
-            onclick: () => void toggleCall(agent.id),
-            text: connecting ? "…" : onCall ? UI.stop : UI.call,
           }),
         );
       }),

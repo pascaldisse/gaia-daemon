@@ -54,6 +54,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   sidebarCollapsed: boolean,
  *   rightCollapsed: boolean,
  *   themePaletteOpen: boolean,
+ *   call: {workspaceId: string, roomId: string, startedAt: number}|null,
  *   voice: VoiceCallInfo|null,
  *   voicePendingAgentId: string|null,
  *   voiceStatusText: string,
@@ -172,6 +173,7 @@ export const state = {
   themePaletteOpen: false,
   // Active voice call binding from the server (visible to every tab); the
   // tab that started the call also holds the audio session (see voice.js).
+  call: null,
   voice: null,
   voicePendingAgentId: null,
   voiceStatusText: "",

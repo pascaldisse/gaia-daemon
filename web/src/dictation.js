@@ -82,8 +82,8 @@ export async function toggleDictation() {
 async function startDictation() {
   // A live call already transcribes speech into the composer; a second mic
   // stream would just fight it.
-  if (state.voice) {
-    setError(new Error(`You're on a call with @${state.voice.agentId} — just speak, it transcribes live.`));
+  if (state.call) {
+    setError(new Error("You are on a call — just speak."));
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -103,9 +103,7 @@ async function startDictation() {
   /** @type {MediaStream} */
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
+    stream = await openDictationMicrophone();
   } catch {
     state.dictationError = "microphone permission denied or unavailable";
     markDirty("composer", "tabs");
@@ -345,7 +343,7 @@ async function postClipTranscribe(clipId, mimeType, signal) {
  * @param {AbortSignal} [signal]
  * @returns {Promise<{ok: boolean, text: string, error: string}>}
  */
-async function postClip(blob, signal) {
+export async function postClip(blob, signal) {
   try {
     // Not via api.js: the body is raw audio, not JSON, so the content-type
     // must be the clip's MIME.
@@ -596,7 +594,7 @@ function newClipId() {
 }
 
 /** Prefer opus in webm/ogg (small, widely accepted), fall back to mp4/mpeg. */
-function pickMimeType() {
+export function pickMimeType() {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4", "audio/mpeg"];
   for (const candidate of candidates) {
     if (MediaRecorder.isTypeSupported?.(candidate)) return candidate;
@@ -664,4 +662,8 @@ function stopStreamTracks(stream) {
       // Track already ended.
     }
   }
+}
+
+export function openDictationMicrophone() {
+  return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
 }
