@@ -1,0 +1,38 @@
+{
+  "capturedAt": "2026-09-15T13:48:31.662Z",
+  "source": ".gaia/tts-permanent/final-network-console.jsonl",
+  "records": 85,
+  "errors": [],
+  "ttsResponses": [
+    {
+      "id": "15122.85",
+      "status": 200
+    },
+    {
+      "id": "15122.86",
+      "status": 200
+    },
+    {
+      "id": "15122.87",
+      "status": 200
+    },
+    {
+      "id": "15122.89",
+      "status": 200
+    },
+    {
+      "id": "15122.90",
+      "status": 200
+    }
+  ],
+  "staleDrops": [
+    {
+      "at": "2026-09-15T13:46:08.677Z",
+      "method": "Runtime.consoleAPICalled",
+      "type": "info",
+      "args": [
+        "auto-tts: stale reply discarded: evt_mu2p18sp_jlag1x39; age=1891.964s; TTS_MAX_AGE_S=60"
+      ]
+    }
+  ]
+}
