@@ -1,0 +1,58 @@
+{
+  "clientReplayStore": "none in readaloud.js; per-request transport segments only",
+  "serverKey": "tts-v2 + engine + voice + model + SHA256(speakable text); full identity metadata checked",
+  "backendAccountIdentity": "not in key; same named voice/text/model can reuse old render across backend account changes",
+  "entries": [
+    {
+      "file": "ad9a2765ac7514a9d10ac443814a895fce10d7b6cde35d192c20cd9db5a6a67f.json",
+      "identity": {
+        "engine": "claude:stream",
+        "voice": "airy",
+        "model": "default",
+        "textHash": "5405ba5a016baaea5a94d9b74239b4bb4d59f83ba9a2b4c4d7eaa1189e832ce5"
+      },
+      "audioMtime": "2026-09-15T16:50:07.469Z",
+      "events": [
+        {
+          "id": "evt_mu2wqalf_3gi4mfcf",
+          "author": "voice-proof",
+          "excerpt": "Frozen clock call verification. Stars are luminous spheres of plasma, shaped by gravity and powered by nuclear fusion deep within their cores. They va"
+        }
+      ]
+    },
+    {
+      "file": "47b2e3b2bc11cb59fe79712552b2107835c7780502506f00a9a54a9aae6f3035.json",
+      "identity": {
+        "engine": "claude:stream",
+        "voice": "airy",
+        "model": "default",
+        "textHash": "e305402b1366cd7641c73f09430e8bcbd88bcf817107eaa3ba0afb43cfcdc142"
+      },
+      "audioMtime": "2026-09-15T15:33:54.363Z",
+      "events": [
+        {
+          "id": "evt_mu2u0gaj_c2uf39vg",
+          "author": "voice-proof",
+          "excerpt": "Watchdog call acceptance. Stars are radiant spheres of plasma, kindled by gravity and sustained by nuclear fusion. Their light reveals temperatures, a"
+        }
+      ]
+    },
+    {
+      "file": "078392b6c9071cacdfb86f0b4848cfb7f21fe042a5820aa8f4310956ded7ed11.json",
+      "identity": {
+        "engine": "claude:stream",
+        "voice": "airy",
+        "model": "default",
+        "textHash": "066fa5344ba11d850ade7340b9796e24fe2c9a700eb1f5c5fffe5bd72616f405"
+      },
+      "audioMtime": "2026-09-15T15:30:37.121Z",
+      "events": [
+        {
+          "id": "evt_mu2sgxe9_m1ljp7qa",
+          "author": "voice-proof",
+          "excerpt": "Third call reply. Galaxies are immense systems of stars, planets, gas, dust, and dark matter bound together by gravity.\n\nThey take many forms, includi"
+        }
+      ]
+    }
+  ]
+}

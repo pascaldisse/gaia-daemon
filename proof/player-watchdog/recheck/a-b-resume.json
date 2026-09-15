@@ -1,0 +1,40 @@
+{
+  "a": {
+    "requestId": "e0acb24f-a1d6-46a1-927b-77347cac24f6",
+    "destroyed": true,
+    "total": 0,
+    "segments": 0,
+    "sources": 0,
+    "retired": [
+      {
+        "stopped": true,
+        "disconnected": true,
+        "bufferReleased": true
+      }
+    ]
+  },
+  "b": {
+    "phase": "playing",
+    "playing": true,
+    "dead": false,
+    "requestId": "85ea5f69-4292-43f0-af59-2c6624a88cf0",
+    "position": 0.912,
+    "duration": 41.470875,
+    "ctxTime": 0.992,
+    "rebuilds": 0,
+    "stalledRebuilds": 0,
+    "sources": 1,
+    "samples": 663534,
+    "peak": 0.226837158203125,
+    "bar": "width: 2.19%;",
+    "red": false,
+    "status": "",
+    "color": "rgb(95, 93, 112)",
+    "diag": "running · ctxTime=0.99 · cursor=663534 · rebuilds=0",
+    "errors": []
+  },
+  "before": 663534,
+  "after": 663534,
+  "oldResume": "InvalidStateError",
+  "onlyCurrentSources": true
+}

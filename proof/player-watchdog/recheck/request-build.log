@@ -1,0 +1,40 @@
+[mkdir-out] 0.0ms
+ [365ms]  bundle  3168 modules
+ [292ms] compile  .gaia/player-watchdog-build/gaia-daemon.new
+[daemon-compile] 691.5ms
+[daemon-install] 0.3ms
+  [13ms]  bundle  9 modules
+ [130ms] compile  .gaia/player-watchdog-build/gaia-telegram-bridge.new
+[telegram-bridge-compile] 156.5ms
+[telegram-bridge-install] 10.9ms
+Bundled 646 modules in 71ms
+
+  graphql.js  4.0 MB  (entry point)
+
+[graphql-bundle] 80.9ms
+[snapshot-web] 7.6ms
+[snapshot-setups] 2.2ms
+[snapshot-design] 7.0ms
+[snapshot-addons] 0.5ms
+[snapshot-vendor] 0.6ms
+[snapshot-plugins] 7.5ms
+[write-source-json] 53.3ms
+---
+mkdir-out: 0.0ms
+daemon-compile: 691.5ms
+daemon-install: 0.3ms
+telegram-bridge-compile: 156.5ms
+telegram-bridge-install: 10.9ms
+graphql-bundle: 80.9ms
+snapshot-web: 7.6ms
+snapshot-setups: 2.2ms
+snapshot-design: 7.0ms
+snapshot-addons: 0.5ms
+snapshot-vendor: 0.6ms
+snapshot-plugins: 7.5ms
+write-source-json: 53.3ms
+total: 1020.7ms
+target: bun-darwin-arm64
+binary: .gaia/player-watchdog-build/gaia-daemon (79528802 bytes)
+telegram-bridge: 63479138 bytes
+graphql asset: .gaia/player-watchdog-build/graphql.js (4027516 bytes)

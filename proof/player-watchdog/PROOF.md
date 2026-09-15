@@ -1,3 +1,25 @@
+# Player watchdog · latest request-isolation acceptance
+
+§ LATEST → `2f19aec` compiled candidate; `ec8241e` request ownership/retirement + `a171e3a` mandatory frame/EOF IDs + `2f19aec` diagnostic layout.
+`bun run check` EXIT0; final separate tests transport28/cache7/HTTP1/call5/voice25 = 66PASS/0FAIL; legacy bridge baseline unchanged4TIMEOUT (§prior).
+Identity → `recheck/final-candidate-identity.log`; served/source/snapshot hashes identical.
+Fresh final A→native clock freeze→actual B button→old context resume: A nodes stopped+disconnected+buffer=null; A segments/total/sources0; stale-ID + untagged frames rejected; B663534 samples, only current-request sources. Real AudioTransport; no replacement implementation.
+B freeze→timer rebuild1→nonzero analysed speech; freeze replacements→two consecutive failures→terminal status/progress stationary over2s. Cumulative rebuilds3 includes earlier healthy rebuild; not three consecutive failures.
+Final screenshot `recheck/final-terminal.png` visually inspected; error state readable; full request ID in diagnostic title, not layout.
+`bun proof/player-watchdog/recheck/verify-request-evidence.mjs` → PASS over captured browser evidence.
+Final browser physical output muted AFTER analyser → no further test speech in Pascal's game; digital native playback verified, physical speaker/NMS root cause UNVERIFIED.
+Voice-call live recovery → prior `d25cfe9` (§prior); final voice-call unit tests PASS, shared module unchanged except transport admission/retirement.
+
+§ Stale-audio audit
+Before patch: `_stopSources` called stop only; no disconnect/buffer release. Destroy retained segments. Frames implicitly belonged to transport; outer fetch/abort guards already existed. These ownership/retirement gaps now closed; no proof they caused Pascal's live incident.
+Client replay cache: NONE — no IndexedDB/blob/in-memory message cache in current read-aloud path; only current transport segments. Stale flatten() cache comment corrected.
+Server cache: SHA256(speakable text)+engine+voice+model; metadata full identity checked; text changes miss. No cross-message key collision found; cache tests cover changed text/voice/model.
+Backend account identity absent from cache key → same named voice/text/model may reuse a prior render after account switch. Account-switch invalidation NOT implemented; no backend identity source established in this task.
+Confirmed old galaxies audio → lane-private `home/cache/tts/078392b6…audio`, rendered17:30:37CEST; hash matches `Third call reply. Galaxies…` exactly. `recheck/cache-audit.json` metadata/mtime/text joins.
+Audible lane tests18:48–18:50 are a confound for Pascal's report; no claim of proving stale main-player nodes or pre17:00 synthesis. Later tests muted.
+
+§ PRIOR WATCHDOG ACCEPTANCE → below; original task before stale-audio amendment
+
 # Player watchdog · 2026-09-15
 
 § Candidate
