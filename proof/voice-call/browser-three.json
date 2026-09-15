@@ -1,0 +1,63 @@
+{
+  "call": {
+    "workspaceId": "d5c46e127bc032ec",
+    "roomId": "voice-acceptance",
+    "startedAt": 1789483778038
+  },
+  "error": "",
+  "events": [
+    {
+      "id": "before-call",
+      "author": "voice-proof",
+      "text": "This old reply must never be spoken by the call."
+    },
+    {
+      "id": "evt_mu2sgfqu_fsumjnan",
+      "author": "user",
+      "text": "Reply with one paragraph about stars, starting with First call reply."
+    },
+    {
+      "id": "evt_mu2sgft0_y93yf9yq",
+      "author": "voice-proof",
+      "text": "First call reply. Stars are luminous spheres of plasma that brighten the cosmos, forge many of the e"
+    },
+    {
+      "id": "evt_mu2sgu8s_cbq22dax",
+      "author": "user",
+      "text": "Reply with two paragraphs about planets, starting with Second call reply."
+    },
+    {
+      "id": "evt_mu2sgual_6l46tc6k",
+      "author": "voice-proof",
+      "text": "Second call reply. Planets are worlds that orbit stars, ranging from small rocky bodies to enormous "
+    },
+    {
+      "id": "evt_mu2sgxcv_8nl946lh",
+      "author": "user",
+      "text": "Reply with two paragraphs about galaxies, starting with Third call reply."
+    },
+    {
+      "id": "evt_mu2sgxe9_m1ljp7qa",
+      "author": "voice-proof",
+      "text": "Third call reply. Galaxies are immense systems of stars, planets, gas, dust, and dark matter bound t"
+    }
+  ],
+  "proof": [
+    {
+      "kind": "pcm",
+      "id": "evt_mu2sgft0_y93yf9yq",
+      "samples": 163469,
+      "at": 1789483817409
+    },
+    {
+      "kind": "destroy",
+      "id": "evt_mu2sgft0_y93yf9yq",
+      "at": 1789483831094
+    },
+    {
+      "kind": "destroy",
+      "id": "evt_mu2sgual_6l46tc6k",
+      "at": 1789483834244
+    }
+  ]
+}

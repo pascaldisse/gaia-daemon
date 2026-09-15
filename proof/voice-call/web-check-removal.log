@@ -1,0 +1,3 @@
+web/src/composer.js(21,59): error TS2307: Cannot find module './design/artifacts.js' or its corresponding type declarations.
+web/src/statusbar.js(7,56): error TS2307: Cannot find module './design/artifacts.js' or its corresponding type declarations.
+web/src/transcript.js(15,33): error TS2307: Cannot find module './design/artifacts.js' or its corresponding type declarations.

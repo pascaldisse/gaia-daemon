@@ -1,0 +1,123 @@
+bun test v1.3.14 (0d9b296a)
+
+test/readaloud-transport.test.ts:
+(pass) a late append is not stranded when the finish check races it [2.26ms]
+(pass) audio arriving after a finish re-arms playback (the 1:55-of-2:03 stall) [1.36ms]
+(pass) a user pause stays paused when more audio arrives [1.27ms]
+(pass) play() clears userPaused so a resumed run re-arms again [0.11ms]
+(pass) a pending append blocks the finish [2.40ms]
+(pass) a context that stops running mid-play migrates instead of going silent [1.31ms]
+(pass) a paused context is left alone (no migration behind the user's back) [1.20ms]
+(pass) a failed migration reports an error instead of leaving a closed context [2.37ms]
+
+test/read-aloud.test.ts:
+(pass) speakableText: code fences are omitted, inline code keeps its content [1.27ms]
+(pass) speakableText: links speak their label, bare URLs collapse, images speak alt text [0.04ms]
+(pass) speakableText: headings, lists, blockquotes, emphasis and rules are stripped [0.03ms]
+(pass) speakableText: tables turn into comma pauses without separator rows [0.02ms]
+(pass) speakableText: leading <gaia:think> reasoning block is never spoken [0.11ms]
+(pass) speakableText: emojis vanish and whitespace collapses [0.02ms]
+(pass) speakableText: long messages are spoken in full, never truncated (like the desktop app) [0.27ms]
+(pass) msgpack: pack/unpack round-trips string maps (incl. long strings) [0.49ms]
+(pass) msgpack: decodes the server's Audio frames (fixmap + array + float32) [0.17ms]
+(pass) msgpack: decodes ints, negative fixints, bools, nil and float64 [0.07ms]
+(pass) pcmToWav: writes a correct RIFF header around the samples [0.13ms]
+(pass) engines: kyutai, claude and elevenlabs are registered [0.08ms]
+(pass) elevenlabs: streams whole-message PCM and can drive live calls (callBridge) [0.02ms]
+(pass) elevenlabs synthesize: POSTs text+model to the voice endpoint, wraps PCM as WAV [0.43ms]
+(pass) elevenlabs synthesizeStream: hits the /stream endpoint and yields raw PCM frames [1.08ms]
+(pass) elevenlabs: a missing API key is a clear, actionable error [0.34ms]
+(pass) resolveTtsChoice: workspace default engine, agent tts override, voice fallback chain [0.15ms]
+(pass) parseTtsConfig: object form, string shorthand, junk rejected [0.11ms]
+(pass) splitSpeechChunks: short text is one chunk, sentences never split [0.13ms]
+(pass) splitSpeechChunks: sentences pack up to the cap and overlong sentences break on commas/spaces [0.14ms]
+(pass) splitSpeechChunks: the first chunks ramp up small so playback starts fast [0.07ms]
+(pass) readAloud: refuses user messages and empty speakable text, then routes to the engine [2.36ms]
+(pass) readAloud: archives new renders without replacing the first archived hash [1.96ms]
+(pass) readAloud: chunked messages synthesize per chunk, cache replays without the engine [1.58ms]
+(pass) readAloudStream: a batch-only engine reports chunks, so the client keeps the per-chunk path [0.52ms]
+(pass) readAloudStream: a streaming engine synthesizes the whole message once, frames stream through, then replay hits the cache [1.20ms]
+(pass) readAloudStream: an aborted stream is not cached (no truncated replay) [0.82ms]
+(pass) claude synthesize: retries a zero-byte HTTP-success response once [9.35ms]
+(pass) claude readAloudStream: missing first PCM frame fails and retries once [6.15ms]
+(pass) readAloudStream cache key includes the effective voice [1.68ms]
+(pass) claude readAloudStream waits for browser-session readiness before opening stream [35.77ms]
+(pass) claude readAloudStream reuses a healthy external claude-voice daemon [6.94ms]
+(pass) ensureTts: reuses an external TTS service without spawning [0.72ms]
+(pass) ensureTts: spawns the TTS service when its port is free and waits for health [11.89ms]
+(pass) ensureTts: refuses to spawn when auto-start is disabled [0.48ms]
+
+test/readaloud-cache.test.ts:
+(pass) cache key separates voice, model, text, engine and framing; model defaults explicitly [0.13ms]
+(pass) chunks: voice change busts cache; identical voice replays; model/text changes miss [4.77ms]
+(pass) chunks: legacy metadata without voice is a miss even at the current filename [2.03ms]
+(pass) stream: voice change busts cache; identical voice replays; model/text changes miss [3.76ms]
+(pass) stream: legacy metadata without voice is a miss even at the current filename [2.26ms]
+(pass) ElevenLabs resolves configured fallback voice and model before cache lookup [0.19ms]
+(pass) browser replay and close/reopen re-resolve server voice instead of eventId-only PCM [56.65ms]
+
+test/voice-call.test.ts:
+(pass) explicit call only; cutoff, known events, author and room filters; three replies replace immediately without queue [0.63ms]
+(pass) STT posts normal text to bound room; late STT after hangup is discarded [0.17ms]
+(pass) hangup during permission prompt retires late microphone; new call cannot revive old one [1.49ms]
+(pass) navigation ends call; fresh instance/reload has no session and replays nothing [0.10ms]
+(pass) voice.json call parameters are validated; malformed values cannot disable stop detection [0.23ms]
+
+test/voice.test.ts:
+(pass) stack: does nothing when the unmute backend is already healthy [0.82ms]
+(pass) stack: refuses to auto-start when disabled or remote [0.46ms]
+(pass) stack: spawns only missing services and waits until healthy, then stop() kills them [12.00ms]
+(pass) stack: falls back to a free port when a foreign process occupies the backend port [0.91ms]
+(pass) stack: fails fast and cleans up when a spawned service dies during startup [0.90ms]
+(pass) stack: times out with a pointer to the logs [109.80ms]
+(pass) wsToHttp converts websocket urls [0.07ms]
+(pass) settings: defaults apply and the bundled unmute dir resolves at runtime [0.88ms]
+(pass) settings: ensureVoiceSettingsFile seeds once and readVoiceSettings tolerates junk [1.41ms]
+(pass) bridge: classifies unmute's synthetic greeting turn [0.17ms]
+(pass) bridge: a literal 'Hello.' later in the call is a real user turn [0.03ms]
+(pass) bridge: classifies the silence marker as a nudge, not a user message [0.03ms]
+(pass) bridge: classifies a normal spoken turn [0.03ms]
+(pass) bridge: returns undefined when there is no user message [0.05ms]
+(pass) bridge: detects streaming requests [0.03ms]
+(pass) bridge: model list payload offers exactly one model for unmute autoselection [0.08ms]
+(pass) bridge: streams OpenAI-compatible chunks [0.13ms]
+(pass) bridge: builds a non-streaming completion payload [0.04ms]
+(pass) overrides: apply → crash (no restore) → sweepOrphanOverrides restores exactly once [1.50ms]
+(pass) overrides: a clean hang-up clears the record, so the sweep is a no-op [1.23ms]
+(pass) overrides: a failing restore keeps the record for the next boot [0.84ms]
+(pass) call: startCall records the override durably, binds one call, stopCall restores [1.96ms]
+(pass) chat-completions: no active call answers 503 without touching the room [0.50ms]
+(pass) chat-completions: a silence nudge with speakOnSilence off answers an empty completion [0.80ms]
+(pass) chat-completions: a user turn runs through the room and streams deltas back [6.07ms]
+
+test/dictation.test.ts:
+(pass) dictation client budget outlives the daemon STT deadline [0.05ms]
+(pass) dictation timeout accepts a caller override and rejects invalid values [0.02ms]
+
+test/readaloud-http.test.ts:
+[gaia] 2026-09-15T14:31:50.761Z daemon up pid=21890 ppid=21861 at http://127.0.0.1:51850
+[plugins] gaia.defaults: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/voice-call/plugins/defaults`). See docs/PLUGIN-FORMAT.md.
+[plugins] gaia.rpg: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/voice-call/plugins/rpg`). See docs/PLUGIN-FORMAT.md.
+[gaia] plugin registry: staged generation=1 plugins=gaia.defaults,gaia.rpg
+[gaia] plugin registry: swapped generation=1 previousGeneration=0 plugins=gaia.defaults,gaia.rpg
+[gaia] keep-awake: caffeinate started (pid 21897, watching daemon pid 21890)
+[gaia] voice: TTS request=tts_mu2rswp3_l7su9rxp engine=http-cache-http-nVSCXq voice=airy model=fixture-v2
+FIXTURE read-aloud status=200 voice=airy model=fixture-v2 bytes=3244 sha256=bbbf7a6f8227fea0c391b27cd4bf86cde9f47b3b63820ac6630e6a6d677d69b2
+[gaia] voice: TTS request=tts_mu2rswp5_82xc8alr engine=http-cache-http-nVSCXq voice=mellow model=fixture-v2
+FIXTURE read-aloud status=200 voice=mellow model=fixture-v2 bytes=3244 sha256=ea4949cba40a35eccb57e61879718a00a6d5ab36dce2d4d31e19791e8b168318
+[gaia] voice: TTS request=tts_mu2rswp7_msxpjbi0 engine=http-cache-http-nVSCXq voice=airy model=fixture-v2
+FIXTURE read-aloud status=200 voice=airy model=fixture-v2 bytes=3244 sha256=bbbf7a6f8227fea0c391b27cd4bf86cde9f47b3b63820ac6630e6a6d677d69b2
+[gaia] voice: TTS request=tts_mu2rswp8_ahxqqucq engine=http-cache-http-nVSCXq voice=airy model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=airy model=fixture-v2 bytes=3200 sha256=5b2a02af13d50112ad2d8dc2046a0975d40f39488e194a92107102bb40852eeb
+[gaia] voice: TTS request=tts_mu2rswpa_eibk7amt engine=http-cache-http-nVSCXq voice=mellow model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=mellow model=fixture-v2 bytes=3200 sha256=3f45d206ad315c29449f9e672e5c5ceae3281bbe8c10867ed321d877f388cd9b
+[gaia] voice: TTS request=tts_mu2rswpb_na1yjew9 engine=http-cache-http-nVSCXq voice=airy model=fixture-v2
+FIXTURE read-aloud/stream status=200 voice=airy model=fixture-v2 bytes=3200 sha256=5b2a02af13d50112ad2d8dc2046a0975d40f39488e194a92107102bb40852eeb
+[gaia] keep-awake: caffeinate stopped (pid 21897)
+[gaia] keep-awake: caffeinate exited (code null, signal SIGTERM)
+(pass) headless daemon: both TTS routes echo effective voice/model and isolate cached audio [230.30ms]
+
+ 83 pass
+ 0 fail
+ 131 expect() calls
+Ran 83 tests across 7 files. [1103.00ms]

@@ -1,0 +1,2 @@
+✗ Could not reach debug server at http://127.0.0.1:58006/console
+  Is the app running with GAIA_SHELL_DEBUG_PORT=58006?

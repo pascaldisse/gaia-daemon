@@ -1,0 +1,17 @@
+[gaia] 2026-09-15T14:48:57.164Z daemon up pid=33121 ppid=33118 at http://127.0.0.1:57922
+[plugins] gaia.defaults: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/voice-call/.gaia/voice-call-build/plugins/defaults`). See docs/PLUGIN-FORMAT.md.
+[plugins] gaia.rpg: commands contribution use the DEPRECATED gaia manifest format — migrate to a pi package (`gaia plugin migrate /Users/pascaldisse/projects/gaia-daemon-wt/voice-call/.gaia/voice-call-build/plugins/rpg`). See docs/PLUGIN-FORMAT.md.
+[gaia] plugin registry: staged generation=1 plugins=gaia.defaults,gaia.rpg
+[gaia] plugin registry: swapped generation=1 previousGeneration=0 plugins=gaia.defaults,gaia.rpg
+GAIA web UI: http://127.0.0.1:57922/
+Press Ctrl+C to stop.
+[runner voice-proof] pi extensions: user-global loaded=[none] skipped=[/Users/pascaldisse/.pi/agent/extensions/clean-compact.ts, /Users/pascaldisse/.pi/agent/extensions/cmd-backspace-macos.ts, /Users/pascaldisse/.pi/agent/extensions/dsc-compact.ts, /Users/pascaldisse/.pi/agent/extensions/execute.ts, /Users/pascaldisse/.pi/agent/extensions/persona.ts]
+[gaia] voice: TTS request=tts_mu2sgimm_zsged21n engine=claude voice=airy model=default
+[gaia] voice: Claude stream request=tts_mu2sgimm_zsged21n voice=airy attempt=1
+[gaia] voice: Claude stream first-frame request=tts_mu2sgimm_zsged21n voice=airy
+[gaia] voice: TTS request=tts_mu2sgx39_3681by9q engine=claude voice=airy model=default
+[gaia] voice: Claude stream request=tts_mu2sgx39_3681by9q voice=airy attempt=1
+[gaia] voice: TTS request=tts_mu2sgzif_d20rv3ld engine=claude voice=airy model=default
+[gaia] voice: Claude stream request=tts_mu2sgzif_d20rv3ld voice=airy attempt=1
+[gaia] voice: Claude stream first-frame request=tts_mu2sgx39_3681by9q voice=airy
+[gaia] voice: Claude stream first-frame request=tts_mu2sgzif_d20rv3ld voice=airy

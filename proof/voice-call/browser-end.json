@@ -1,0 +1,86 @@
+{
+  "before": {
+    "call": {
+      "workspaceId": "d5c46e127bc032ec",
+      "roomId": "voice-acceptance",
+      "startedAt": 1789483778038
+    },
+    "audio": {
+      "eventId": "evt_mu2sgxe9_m1ljp7qa",
+      "phase": "ended",
+      "workspaceId": "d5c46e127bc032ec",
+      "roomId": "voice-acceptance"
+    },
+    "proof": [
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgft0_y93yf9yq",
+        "samples": 163469,
+        "at": 1789483817409
+      },
+      {
+        "kind": "destroy",
+        "id": "evt_mu2sgft0_y93yf9yq",
+        "at": 1789483831094
+      },
+      {
+        "kind": "destroy",
+        "id": "evt_mu2sgual_6l46tc6k",
+        "at": 1789483834244
+      },
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgxe9_m1ljp7qa",
+        "samples": 196140,
+        "at": 1789483842162
+      },
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgxe9_m1ljp7qa",
+        "samples": 65410,
+        "at": 1789483842163
+      }
+    ]
+  },
+  "after": {
+    "call": null,
+    "audio": null,
+    "postStopAppends": [],
+    "proof": [
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgft0_y93yf9yq",
+        "samples": 163469,
+        "at": 1789483817409
+      },
+      {
+        "kind": "destroy",
+        "id": "evt_mu2sgft0_y93yf9yq",
+        "at": 1789483831094
+      },
+      {
+        "kind": "destroy",
+        "id": "evt_mu2sgual_6l46tc6k",
+        "at": 1789483834244
+      },
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgxe9_m1ljp7qa",
+        "samples": 196140,
+        "at": 1789483842162
+      },
+      {
+        "kind": "pcm",
+        "id": "evt_mu2sgxe9_m1ljp7qa",
+        "samples": 65410,
+        "at": 1789483842163
+      },
+      {
+        "kind": "destroy",
+        "id": "evt_mu2sgxe9_m1ljp7qa",
+        "at": 1789483860597
+      }
+    ],
+    "error": ""
+  }
+}
