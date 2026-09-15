@@ -51,3 +51,7 @@ Physical loudspeaker/NMS fullscreen recurrence/native WKWebView → UNVERIFIED; 
 `recheck/` = fresh relaunch evidence; sibling files = retained prior-lane evidence, not fresh acceptance.
 Live daemon/Brave/claude-voice/NMS untouched; no main-room posts; isolated room `player-proof` only.
 Deployment → Pascal: `/rebuild` in a non-main room, then Cmd-R.
+
+§ Sweep
+`recheck/cleanup.json` → owned candidate daemon + isolated browser stopped; private browser profile removed; user processes untouched.
+Code-only `git diff --check` PASS; raw knip proof logs retain upstream trailing spaces (full-tree whitespace check flags logs only).
