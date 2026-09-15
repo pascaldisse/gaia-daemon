@@ -306,7 +306,6 @@ interface StreamScope {
 }
 
 export type UiEvent =
-  | { type: "app-settings"; general: { autoTts: boolean } }
   | { type: "snapshot"; workspaceId: string; roomId: string; snapshot: Snapshot }
   | { type: "room-event"; workspaceId: string; roomId: string; event: RoomEvent }
   | { type: "task-start"; workspaceId: string; roomId: string; task: Task }

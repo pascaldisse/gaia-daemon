@@ -12,7 +12,6 @@ import { markDirty, setError } from "./render.js";
 import { recordHarnessEvent, state, syncReadMarks } from "./state.js";
 import { isStallNotice, syncOlderFromSnapshot } from "./transcript.js";
 import { applyVoiceStatus, voiceTurnCommitted } from "./voice.js";
-import { initializeAutoReadAloud, enqueueAutoReadAloud } from "./readaloud.js";
 
 /** @typedef {import("./types.js").UiEvent} UiEvent */
 /** @typedef {import("./types.js").StreamEntry} StreamEntry */
@@ -47,7 +46,6 @@ export function connectEvents(resyncOnReady = false) {
     state.eventSource = null;
   }
   if (!snapshot || navigation.pending) return;
-  initializeAutoReadAloud();
   syncLiveTimers();
 
   const params = new URLSearchParams({ workspaceId: snapshot.workspace.id, roomId: snapshot.room.id });
@@ -72,13 +70,6 @@ export function connectEvents(resyncOnReady = false) {
   // gone are lost — so a ready that isn't the first one resyncs with a
   // fresh snapshot.
   let connectedBefore = false;
-  let settingsRevision = 0;
-  listen("app-settings", (event) => {
-    const payload = /** @type {Ev<"app-settings">} */ (JSON.parse(event.data));
-    settingsRevision++;
-    state.general = payload.general;
-    markDirty("settings");
-  });
   listen("ready", (event) => {
     const payload = JSON.parse(event.data);
     const bootId = payload && typeof payload === "object" && typeof payload.bootId === "string" ? payload.bootId : undefined;
@@ -91,13 +82,6 @@ export function connectEvents(resyncOnReady = false) {
     }
     if (connectedBefore || resyncOnReady) void resyncSnapshot(snapshot.workspace.id);
     connectedBefore = true;
-    // Reconnect/room switch → recover missed global preference changes.
-    const revision = settingsRevision;
-    void api("/api/app").then((body) => {
-      if (state.eventSource !== source || settingsRevision !== revision) return;
-      state.general = body.general ?? state.general;
-      markDirty("settings");
-    }).catch((error) => console.info("auto-tts: preference refresh failed", error));
   });
 
   // Named server keepalive: EventSource does not expose comment-only pings.
@@ -163,7 +147,6 @@ export function connectEvents(resyncOnReady = false) {
       markStreamsStalled(payload.event.text);
     }
     if (payload.event.author === "user" && payload.event.channel === "voice") voiceTurnCommitted();
-    void enqueueAutoReadAloud(payload);
     maybeAutoDario(payload.event);
     markDirty("transcript", "panel", "status", "tabs", "sidebar");
   });
