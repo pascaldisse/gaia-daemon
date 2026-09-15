@@ -229,8 +229,8 @@ export class AudioTransport {
   }
 
   /** Append a mono PCM segment; schedule it if we are playing.
-   * @param {Float32Array} mono @param {string} [requestId] */
-  append(mono, requestId = this.requestId) {
+   * @param {Float32Array} mono @param {string} requestId */
+  append(mono, requestId) {
     if (this._destroyed || requestId !== this.requestId || !mono.length) return;
     this.segStart.push(this.total);
     this.segments.push(mono);
@@ -370,8 +370,8 @@ export class AudioTransport {
     else this.pausedSample = sample;
   }
 
-  /** @param {string} [requestId] */
-  markDone(requestId = this.requestId) {
+  /** @param {string} requestId */
+  markDone(requestId) {
     if (this._destroyed || requestId !== this.requestId) return;
     this.done = true;
     this._maybeFinish();
