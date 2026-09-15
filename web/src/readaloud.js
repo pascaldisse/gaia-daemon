@@ -217,8 +217,10 @@ export class AudioTransport {
   /** Current playhead in seconds, clamped to what is buffered. */
   get currentTime() {
     if (!this.playing || this._migrating) return this.pausedSample / this.sampleRate;
-    const s = this.anchorSample + (this.ctx.currentTime - this.anchorCtx) * this.sampleRate;
-    return Math.min(this.total, Math.max(0, s)) / this.sampleRate;
+    // Context clock only → never wall time, download bytes, or unscheduled PCM.
+    // Scheduling lead → hold at resume sample; no backwards jump on rebuild.
+    const s = this.anchorSample + Math.max(0, this.ctx.currentTime - this.anchorCtx) * this.sampleRate;
+    return Math.min(this.frontier, this.total, Math.max(0, s)) / this.sampleRate;
   }
 
   /** @param {number} rate @param {number} _channels */
