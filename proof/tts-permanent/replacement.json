@@ -1,0 +1,857 @@
+{
+  "bar": "▶\n0:19\n0:19\n⟳\n✕",
+  "playback": {
+    "eventId": "evt_mu2p7rwg_w52fbuxt",
+    "phase": "ended",
+    "workspaceId": "2eea5d39c53e79ad",
+    "roomId": "default"
+  },
+  "contexts": [
+    {
+      "state": "closed",
+      "clock": 63.408
+    },
+    {
+      "state": "closed",
+      "clock": 59.552
+    },
+    {
+      "state": "suspended",
+      "clock": 24.858666666666668
+    }
+  ],
+  "timeline": [
+    {
+      "at": 1789479030127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:00\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 0.592
+        }
+      ]
+    },
+    {
+      "at": 1789479031126,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:01\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 1.5946666666666667
+        }
+      ]
+    },
+    {
+      "at": 1789479032127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:02\n0:21\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 2.592
+        }
+      ]
+    },
+    {
+      "at": 1789479033126,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:00\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 3.5946666666666665
+        }
+      ]
+    },
+    {
+      "at": 1789479034128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:01\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 4.592
+        }
+      ]
+    },
+    {
+      "at": 1789479035127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:02\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 5.594666666666667
+        }
+      ]
+    },
+    {
+      "at": 1789479036128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:03\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 6.592
+        }
+      ]
+    },
+    {
+      "at": 1789479037128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:04\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 7.669333333333333
+        }
+      ]
+    },
+    {
+      "at": 1789479038127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:05\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 8.736
+        }
+      ]
+    },
+    {
+      "at": 1789479039127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:06\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 9.733333333333333
+        }
+      ]
+    },
+    {
+      "at": 1789479040128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:07\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 10.730666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789479041128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:08\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 11.733333333333333
+        }
+      ]
+    },
+    {
+      "at": 1789479042128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:09\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 12.730666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789479043127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:10\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 13.733333333333333
+        }
+      ]
+    },
+    {
+      "at": 1789479044126,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:11\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 14.730666666666666
+        }
+      ]
+    },
+    {
+      "at": 1789479045127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:12\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 15.733333333333333
+        }
+      ]
+    },
+    {
+      "at": 1789479046127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:13\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 16.730666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479047127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:14\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 17.733333333333334
+        }
+      ]
+    },
+    {
+      "at": 1789479048127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:15\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 18.730666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479049127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:16\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 19.733333333333334
+        }
+      ]
+    },
+    {
+      "at": 1789479050127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:17\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 20.730666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479051126,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "⏸\n0:18\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 21.733333333333334
+        }
+      ]
+    },
+    {
+      "at": 1789479052127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 22.730666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479053128,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 23.696
+        }
+      ]
+    },
+    {
+      "at": 1789479054127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "running",
+          "clock": 24.64
+        }
+      ]
+    },
+    {
+      "at": 1789479055127,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479056126,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479057130,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479058203,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479059128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479060128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479061127,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479062128,
+      "visibility": "hidden",
+      "focus": false,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479063127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479064127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479065127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479066127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479067127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479068127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    },
+    {
+      "at": 1789479069127,
+      "visibility": "visible",
+      "focus": true,
+      "bar": "▶\n0:19\n0:19\n⟳\n✕",
+      "contexts": [
+        {
+          "state": "closed",
+          "clock": 63.408
+        },
+        {
+          "state": "closed",
+          "clock": 59.552
+        },
+        {
+          "state": "suspended",
+          "clock": 24.858666666666668
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "at": 1789478904347,
+      "state": "running",
+      "clock": 0.005333333333333333
+    },
+    {
+      "at": 1789478967773,
+      "state": "closed",
+      "clock": 63.408
+    },
+    {
+      "at": 1789478969809,
+      "state": "running",
+      "clock": 0.005333333333333333
+    },
+    {
+      "at": 1789479029406,
+      "state": "closed",
+      "clock": 59.552
+    },
+    {
+      "at": 1789479029518,
+      "state": "running",
+      "clock": 0.005333333333333333
+    },
+    {
+      "at": 1789479054346,
+      "state": "suspended",
+      "clock": 24.858666666666668
+    }
+  ]
+}

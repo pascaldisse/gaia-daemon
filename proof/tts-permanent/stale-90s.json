@@ -1,0 +1,1108 @@
+{
+  "kind": "actual compiled app + real Web Audio; copied real reply text persisted in isolated room; enqueue seam, not SSE delivery; actual 90s browser-tab absence, NOT OS/NMS alt-tab or audible proof",
+  "started": 1789479777018,
+  "fixtureEvents": [
+    {
+      "id": "evt_mu2q20vu_36febrs3",
+      "timestamp": "2026-09-15T13:42:57.018Z",
+      "source": "evt_mu2p18sp_jlag1x39"
+    },
+    {
+      "id": "evt_mu2q24qr_5zn3qhkr",
+      "timestamp": "2026-09-15T13:43:02.019Z",
+      "source": "evt_mu2p7rwg_w52fbuxt"
+    },
+    {
+      "id": "evt_mu2q3mr7_etn9kj9v",
+      "timestamp": "2026-09-15T13:44:12.019Z",
+      "source": "evt_mu2p18sp_jlag1x39"
+    }
+  ],
+  "before": {
+    "at": 1789479867043,
+    "visibility": "hidden",
+    "playback": {
+      "eventId": "evt_mu2q3mr7_etn9kj9v",
+      "phase": "loading",
+      "workspaceId": "2eea5d39c53e79ad",
+      "roomId": "default"
+    },
+    "bar": "▶\n0:00\n0:21\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+    "contexts": [
+      {
+        "state": "suspended",
+        "clock": 0
+      }
+    ]
+  },
+  "after": {
+    "at": 1789479893214,
+    "playback": {
+      "eventId": "evt_mu2q3mr7_etn9kj9v",
+      "phase": "ended",
+      "workspaceId": "2eea5d39c53e79ad",
+      "roomId": "default"
+    },
+    "bar": "▶\n0:21\n0:21\n⟳\n✕",
+    "contexts": [
+      {
+        "state": "running",
+        "clock": 25.861333333333334
+      }
+    ],
+    "events": [
+      {
+        "at": 1789479867244,
+        "index": 0,
+        "state": "running",
+        "clock": 0.005333333333333333
+      }
+    ],
+    "timeline": [
+      {
+        "at": 1789479778194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479779195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479780195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:21\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479781195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:21\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479782194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479783195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479784194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479785195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479786194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479787194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479788196,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479789195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479790195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479791194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479792195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479793194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479794193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479795195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479796195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479797195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479798194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479799195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479800195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479801195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479802195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479803194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479804194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479805195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479806195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479807194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479808194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479809196,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479810195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479811195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479812195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479813195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479814193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479815194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479816195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479817193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479818194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479819194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479820195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479821194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479822194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479823193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479824194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479825194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479826194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479827194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479828195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479829195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479830195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479831195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479832193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479833193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479834195,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479835194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479836194,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n0:19\nclock stalled 3s — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479854193,
+        "visibility": "hidden",
+        "focus": false,
+        "bar": "▶\n0:00\n~0:00\n⋯ live\nplayback — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479867068,
+        "visibility": "visible",
+        "focus": false,
+        "bar": "▶\n0:00\n0:21\ntab visible — resume pending; click to enable audio\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "suspended",
+            "clock": 0
+          }
+        ]
+      },
+      {
+        "at": 1789479868015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:00\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 0.72
+          }
+        ]
+      },
+      {
+        "at": 1789479869015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:01\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 1.7226666666666666
+          }
+        ]
+      },
+      {
+        "at": 1789479870015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:02\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 2.72
+          }
+        ]
+      },
+      {
+        "at": 1789479871015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:03\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 3.7226666666666666
+          }
+        ]
+      },
+      {
+        "at": 1789479872015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:04\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 4.72
+          }
+        ]
+      },
+      {
+        "at": 1789479873015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:05\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 5.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479874015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:06\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 6.72
+          }
+        ]
+      },
+      {
+        "at": 1789479875015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:07\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 7.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479876015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:08\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 8.72
+          }
+        ]
+      },
+      {
+        "at": 1789479877015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:09\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 9.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479878015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:10\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 10.72
+          }
+        ]
+      },
+      {
+        "at": 1789479879015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:11\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 11.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479880015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:12\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 12.725333333333333
+          }
+        ]
+      },
+      {
+        "at": 1789479881015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:13\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 13.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479882015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:14\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 14.72
+          }
+        ]
+      },
+      {
+        "at": 1789479883015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:15\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 15.722666666666667
+          }
+        ]
+      },
+      {
+        "at": 1789479884014,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:16\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 16.72
+          }
+        ]
+      },
+      {
+        "at": 1789479885015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:17\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 17.722666666666665
+          }
+        ]
+      },
+      {
+        "at": 1789479886015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:18\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 18.72
+          }
+        ]
+      },
+      {
+        "at": 1789479887015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:19\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 19.722666666666665
+          }
+        ]
+      },
+      {
+        "at": 1789479888015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "⏸\n0:20\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 20.72
+          }
+        ]
+      },
+      {
+        "at": 1789479889016,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "▶\n0:21\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 21.722666666666665
+          }
+        ]
+      },
+      {
+        "at": 1789479890028,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "▶\n0:21\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 22.698666666666668
+          }
+        ]
+      },
+      {
+        "at": 1789479891015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "▶\n0:21\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 23.664
+          }
+        ]
+      },
+      {
+        "at": 1789479892016,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "▶\n0:21\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 24.661333333333335
+          }
+        ]
+      },
+      {
+        "at": 1789479893015,
+        "visibility": "visible",
+        "focus": true,
+        "bar": "▶\n0:21\n0:21\n⟳\n✕",
+        "contexts": [
+          {
+            "state": "running",
+            "clock": 25.664
+          }
+        ]
+      }
+    ]
+  }
+}

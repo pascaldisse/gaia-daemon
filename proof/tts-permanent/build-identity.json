@@ -1,0 +1,14 @@
+{
+  "servedEqualsSource": true,
+  "sourceSHA256": "83cc07b7ac861eeac60224494cebd4c761a2357a14d69cf9842187d7c8ce35b7",
+  "servedSHA256": "83cc07b7ac861eeac60224494cebd4c761a2357a14d69cf9842187d7c8ce35b7",
+  "manifest": {
+    "root": "/Users/pascaldisse/projects/gaia-daemon",
+    "buildRoot": "/Users/pascaldisse/projects/gaia-daemon-wt/tts-permanent",
+    "bun": "/Users/pascaldisse/.bun/bin/bun",
+    "commit": "3c11aa1f043d500927327ec049392c1fb603c095",
+    "dirty": true,
+    "target": "bun-darwin-arm64",
+    "builtAt": "2026-09-15T13:41:31.098Z"
+  }
+}
