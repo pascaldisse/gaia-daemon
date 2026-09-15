@@ -29,8 +29,8 @@ import { AutoTtsOwner } from "./auto-tts-owner.js";
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  /** @param {{context?: AudioContext, stallSeconds?: number, watchdogMs?: number}} [options] */
-  constructor({ context, stallSeconds = 3, watchdogMs = 500 } = {}) {
+  /** @param {{context?: AudioContext, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number}} [options] */
+  constructor({ context, stallSeconds = 3, watchdogMs = 500, contextCloseTimeoutMs = 3000 } = {}) {
     /** @type {AudioContext} */
     this.ctx = context ?? new AudioContext();
     /** Engine sample rate; buffers are created at it and Web Audio resamples to
@@ -80,6 +80,7 @@ export class AudioTransport {
     this.onError = null;
     this.stallSeconds = Number.isFinite(stallSeconds) && stallSeconds > 0 ? stallSeconds : 3;
     this.watchdogMs = Number.isFinite(watchdogMs) && watchdogMs > 0 ? watchdogMs : 500;
+    this.contextCloseTimeoutMs = Number.isFinite(contextCloseTimeoutMs) && contextCloseTimeoutMs > 0 ? contextCloseTimeoutMs : 3000;
     this.status = "";
     /** @type {(() => void)|null} */
     this.onStatus = null;
@@ -363,11 +364,15 @@ export class AudioTransport {
     this._status('rebinding audio output');
     try {
       this._stopSources();
+      const ctx = this.ctx;
+      /** @type {ReturnType<typeof setTimeout>|undefined} */
+      let deadline;
       try {
-        await this.ctx.close();
-      } catch {
-        // Already closed.
-      }
+        await Promise.race([
+          ctx.close().catch(error => { if (ctx.state !== 'closed') throw error; }),
+          new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Audio output rebind timed out')), this.contextCloseTimeoutMs); }),
+        ]);
+      } finally { clearTimeout(deadline); }
       if (this._destroyed) return;
       this.ctx = new AudioContext();
       this._bindContextState();
@@ -378,6 +383,7 @@ export class AudioTransport {
       // one could not be built. Say so instead of freezing the playhead.
       this.playing = false;
       this._armed = false;
+      this._stopWatchdog();
       if (!this._destroyed) this.onError?.(error);
     } finally {
       this._migrating = false;

@@ -269,3 +269,11 @@ test("a replacement transport adopts the unlocked context; old callbacks stay re
   expect(contexts).toHaveLength(1); expect(t.sources.size).toBe(0);
   expect(next.sources.size).toBe(1); expect(ctx.state).toBe('running');
 });
+
+test('a hung context close becomes a bounded visible failure, not an immortal migrating player', async () => {
+  const {t,ctx}=armed();t.append(pcm(16000));t.contextCloseTimeoutMs=5;
+  ctx.close=()=>new Promise<void>(()=>{});const errors:unknown[]=[];t.onError=(e:unknown)=>errors.push(e);
+  await t.migrateContext();expect(errors).toHaveLength(1);
+  expect(String(errors[0])).toContain('rebind timed out');expect(t.playing).toBe(false);
+  expect(t._watchdog).toBe(null);expect(contexts).toHaveLength(1);
+});
