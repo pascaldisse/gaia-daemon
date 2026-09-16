@@ -80,6 +80,11 @@ export interface VoiceSettings {
   elevenLabsModel: string;
   /** Default ElevenLabs voice id when an agent sets no tts.voice. */
   elevenLabsVoice: string;
+  /** Shared Replicate API token, checked first by replicateKey() for every
+   * Replicate-backed engine (dictation's "replicate" STT and the "minimax"
+   * read-aloud TTS). Empty falls back to the legacy sttReplicateApiKey, then
+   * REPLICATE_API_TOKEN, then REPLICATE_API_KEY. */
+  replicateApiToken: string;
   /** Speech-to-text engine for composer dictation (voice INPUT), by id. Swap it
    * like ttsEngine — the shared transcribe path never branches on the engine.
    * "replicate" is the default; "elevenlabs" remains available as a fallback
@@ -108,6 +113,11 @@ export interface VoiceSettings {
   sttReplicateFallbackModel: string;
   /** STT service for live calls: bundled kyutai or the Replicate bridge. */
   callSttEngine: string;
+  /** Cloned voice id for the "minimax" read-aloud engine (MiniMax speech-02-hd
+   * via Replicate). Pascal's cloned voice by default. */
+  minimaxVoice: string;
+  /** Replicate model slug for the "minimax" read-aloud engine (owner/name). */
+  minimaxModel: string;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -135,6 +145,7 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   elevenLabsModel: "eleven_v3",
   // Premade "Rachel" — a neutral default; agents set their own tts.voice.
   elevenLabsVoice: "21m00Tcm4TlvDq8ikWAM",
+  replicateApiToken: "",
   // Replicate hosts Whisper off-process, avoiding local-model memory pressure
   // and the blocked ElevenLabs STT endpoint.
   sttEngine: "replicate",
@@ -152,6 +163,8 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   sttReplicateModel: "openai/gpt-4o-mini-transcribe",
   sttReplicateFallbackModel: "openai/whisper",
   callSttEngine: "kyutai",
+  minimaxVoice: "R8_TM8IFFQG",
+  minimaxModel: "minimax/speech-02-hd",
 };
 
 /** The ElevenLabs API key (xi-api-key), shared by the TTS and STT engines:
@@ -163,11 +176,13 @@ export function elevenLabsKey(settings: VoiceSettings): string {
   return key;
 }
 
-/** Replicate token for the dictation engine: voice.json first, then the
- * standard REPLICATE_API_TOKEN / legacy REPLICATE_API_KEY environment names. */
+/** Shared Replicate token for every Replicate-backed engine (dictation's
+ * "replicate" STT and the "minimax" read-aloud TTS): voice.json
+ * replicateApiToken first, then the legacy per-engine sttReplicateApiKey, then
+ * the standard REPLICATE_API_TOKEN / legacy REPLICATE_API_KEY environment names. */
 export function replicateKey(settings: VoiceSettings): string {
-  const key = settings.sttReplicateApiKey?.trim() || process.env.REPLICATE_API_TOKEN?.trim() || process.env.REPLICATE_API_KEY?.trim();
-  if (!key) throw new Error("Replicate STT API key not set (voice.json sttReplicateApiKey, REPLICATE_API_TOKEN, or REPLICATE_API_KEY env)");
+  const key = settings.replicateApiToken?.trim() || settings.sttReplicateApiKey?.trim() || process.env.REPLICATE_API_TOKEN?.trim() || process.env.REPLICATE_API_KEY?.trim();
+  if (!key) throw new Error("Replicate API token not set (voice.json replicateApiToken or sttReplicateApiKey, REPLICATE_API_TOKEN, or REPLICATE_API_KEY env)");
   return key;
 }
 
@@ -201,6 +216,7 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
   if (typeof raw.elevenLabsModel === "string" && raw.elevenLabsModel.trim()) settings.elevenLabsModel = raw.elevenLabsModel.trim();
   if (typeof raw.elevenLabsVoice === "string" && raw.elevenLabsVoice.trim()) settings.elevenLabsVoice = raw.elevenLabsVoice.trim();
+  if (typeof raw.replicateApiToken === "string" && raw.replicateApiToken.trim()) settings.replicateApiToken = raw.replicateApiToken.trim();
   if (typeof raw.sttEngine === "string" && raw.sttEngine.trim()) settings.sttEngine = raw.sttEngine.trim();
   // Language is intentionally allowed to be "" (auto-detect), so accept any string.
   if (typeof raw.sttLanguage === "string") settings.sttLanguage = raw.sttLanguage.trim();
@@ -212,6 +228,8 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.sttReplicateModel === "string" && raw.sttReplicateModel.trim()) settings.sttReplicateModel = raw.sttReplicateModel.trim();
   if (typeof raw.sttReplicateFallbackModel === "string" && raw.sttReplicateFallbackModel.trim()) settings.sttReplicateFallbackModel = raw.sttReplicateFallbackModel.trim();
   if (typeof raw.callSttEngine === "string" && raw.callSttEngine.trim()) settings.callSttEngine = raw.callSttEngine.trim();
+  if (typeof raw.minimaxVoice === "string" && raw.minimaxVoice.trim()) settings.minimaxVoice = raw.minimaxVoice.trim();
+  if (typeof raw.minimaxModel === "string" && raw.minimaxModel.trim()) settings.minimaxModel = raw.minimaxModel.trim();
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();

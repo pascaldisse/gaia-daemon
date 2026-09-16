@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { newId } from "../core/ids.js";
 import { globalPaths } from "../core/paths.js";
 import type { AgentTtsConfig } from "../core/types.js";
-import { elevenLabsKey, type VoiceSettings, type VoiceStackSettings } from "./voice.js";
+import { elevenLabsKey, replicateKey, type VoiceSettings, type VoiceStackSettings } from "./voice.js";
 import { stripGaiaThinking } from "../../web/shared/gaia-think.js";
 
 // ---------------------------------------------------------------------------
@@ -1219,4 +1219,89 @@ registerTtsEngine({
   synthesizeStream: elevenLabsSynthesizeStream,
   // Streams whole-message PCM → can drive a live call through the bridge.
   callBridge: true,
+});
+
+// ---------------------------------------------------------------------------
+// minimax — MiniMax speech-02-hd through Replicate predictions (cloned voice_id)
+// Replicate models run async: POST creates a prediction (short-poll header asks
+// it to wait up to 60s inline), and anything not finished by then is polled by
+// id until it settles. Output is a rendered mp3 URL we fetch and hand back as
+// one buffer — no streaming/duplex/callBridge, read-aloud only (like kyutai).
+
+const MINIMAX_POLL_MS = 1_000;
+const MINIMAX_TIMEOUT_MS = 120_000;
+
+interface MinimaxPrediction {
+  id: string;
+  status: string;
+  output?: string | string[] | null;
+  error?: string | null;
+}
+
+async function minimaxParsePrediction(response: Response): Promise<MinimaxPrediction> {
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`MiniMax synthesis failed (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  return (await response.json()) as MinimaxPrediction;
+}
+
+async function minimaxSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
+async function minimaxPollPrediction(context: TtsSynthesisContext, key: string, prediction: MinimaxPrediction): Promise<MinimaxPrediction> {
+  const deadline = Date.now() + MINIMAX_TIMEOUT_MS;
+  let current = prediction;
+  while (current.status !== "succeeded" && current.status !== "failed" && current.status !== "canceled") {
+    if (Date.now() >= deadline) throw new Error(`MiniMax synthesis failed (timeout): prediction ${current.id} did not finish within ${MINIMAX_TIMEOUT_MS}ms`);
+    await minimaxSleep(MINIMAX_POLL_MS, context.signal);
+    current = await minimaxParsePrediction(await fetch(`https://api.replicate.com/v1/predictions/${current.id}`, {
+      headers: { Authorization: `Bearer ${key}` },
+      ...(context.signal ? { signal: context.signal } : {}),
+    }));
+    context.log(`minimax poll ${current.id}: ${current.status}${context.requestId ? ` [${context.requestId}]` : ""}`);
+  }
+  return current;
+}
+
+async function minimaxSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
+  const key = replicateKey(context.settings);
+  const model = context.model ?? context.settings.minimaxModel;
+  const voice = context.voice || context.settings.minimaxVoice;
+  const response = await fetch(`https://api.replicate.com/v1/models/${model}/predictions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "wait=60" },
+    body: JSON.stringify({ input: { text: context.text, voice_id: voice, language_boost: "English" } }),
+    ...(context.signal ? { signal: context.signal } : {}),
+  });
+  let prediction = await minimaxParsePrediction(response);
+  context.log(`minimax predict ${prediction.id}: ${prediction.status}${context.requestId ? ` [${context.requestId}]` : ""}`);
+  if (prediction.status !== "succeeded" && prediction.status !== "failed" && prediction.status !== "canceled") {
+    prediction = await minimaxPollPrediction(context, key, prediction);
+  }
+  if (prediction.status !== "succeeded") {
+    throw new Error(`MiniMax synthesis failed (${prediction.status}): ${prediction.error ?? "unknown error"}`);
+  }
+  const output = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
+  if (!output) throw new Error(`MiniMax synthesis failed (succeeded): no output URL returned`);
+  const audioResponse = await fetch(output, context.signal ? { signal: context.signal } : undefined);
+  if (!audioResponse.ok) {
+    const detail = await audioResponse.text().catch(() => "");
+    throw new Error(`MiniMax synthesis failed (${audioResponse.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const audio = Buffer.from(await audioResponse.arrayBuffer());
+  return { audio, contentType: "audio/mpeg" };
+}
+
+registerTtsEngine({
+  id: "minimax",
+  resolveVoice: (voice, settings) => voice?.trim() || settings.minimaxVoice,
+  resolveModel: (model, settings) => model?.trim() || settings.minimaxModel,
+  // Voices are account-specific cloned voice ids; free-form.
+  voices: [],
+  synthesize: minimaxSynthesize,
 });
