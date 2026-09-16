@@ -22,6 +22,7 @@ import {
   persistCallOverride,
   readCallOverride,
   readVoiceSettings,
+  replicateKey,
   sweepOrphanOverrides,
   wsToHttp,
   type ActiveVoiceCall,
@@ -267,6 +268,23 @@ test("settings: defaults apply and the bundled unmute dir resolves at runtime", 
     assert.equal(loaded.disableThinking, true);
     assert.equal(loaded.unmuteDir, bundledUnmuteDir()); // "" in defaults → resolved live
     assert.equal(loaded.ttsArchiveDir, join(home, "voice-archive", "tts"));
+    assert.equal(loaded.minimaxVoice, VOICE_SETTINGS_DEFAULTS.minimaxVoice);
+    assert.equal(loaded.minimaxModel, VOICE_SETTINGS_DEFAULTS.minimaxModel);
+  });
+});
+
+test("settings: minimaxVoice/minimaxModel and the shared replicateApiToken parse from voice.json", async () => {
+  await withTempHome(async (home) => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      join(home, "voice.json"),
+      JSON.stringify({ minimaxVoice: "CLONED123", minimaxModel: "minimax/speech-02-turbo", replicateApiToken: "r8_shared" }),
+      "utf8",
+    );
+    const loaded = await readVoiceSettings();
+    assert.equal(loaded.minimaxVoice, "CLONED123");
+    assert.equal(loaded.minimaxModel, "minimax/speech-02-turbo");
+    assert.equal(replicateKey(loaded), "r8_shared"); // preferred over sttReplicateApiKey/env
   });
 });
 

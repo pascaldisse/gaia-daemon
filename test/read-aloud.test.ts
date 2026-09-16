@@ -285,6 +285,128 @@ test("elevenlabs: a missing API key is a clear, actionable error", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// minimax — MiniMax speech-02-hd through Replicate predictions (fetch stubbed)
+
+function minimaxContext(overrides: Partial<TtsSynthesisContext> = {}): TtsSynthesisContext {
+  return {
+    text: "Home. Same voice, right account.",
+    voice: "R8_TM8IFFQG",
+    settings: voiceSettings({ replicateApiToken: "r8_test", minimaxModel: "minimax/speech-02-hd" }),
+    ensureTts: async () => ({ ttsUrl: "" }),
+    log: () => {},
+    ...overrides,
+  };
+}
+
+test("engines: minimax is registered, read-aloud only (no stream/duplex/callBridge)", () => {
+  const spec = findTtsEngine("minimax");
+  assert.ok(spec, "minimax engine registered");
+  assert.ok(ttsEngineIds().includes("minimax"));
+  assert.equal(spec?.synthesizeStream, undefined);
+  assert.equal(spec?.synthesizeDuplex, undefined);
+  assert.equal(spec?.callBridge, undefined);
+});
+
+test("minimax synthesize: an immediately-succeeded prediction downloads the mp3 output", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  const calls: { url: string; init: RequestInit }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const href = String(url);
+    calls.push({ url: href, init: init ?? {} });
+    if (href.includes("/predictions") && !href.includes("replicate.delivery")) {
+      return new Response(JSON.stringify({ id: "pred_1", status: "succeeded", output: "https://replicate.delivery/out.mp3" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) as typeof fetch;
+  try {
+    const audio = await spec.synthesize(minimaxContext());
+    assert.equal(audio.contentType, "audio/mpeg");
+    assert.deepEqual([...audio.audio], [1, 2, 3, 4]);
+
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].url.includes("/v1/models/minimax/speech-02-hd/predictions"));
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer r8_test");
+    assert.equal(headers.Prefer, "wait=60");
+    const body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.input.text, "Home. Same voice, right account.");
+    assert.equal(body.input.voice_id, "R8_TM8IFFQG");
+    assert.equal(body.input.language_boost, "English");
+    assert.equal(calls[1].url, "https://replicate.delivery/out.mp3");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("minimax synthesize: polls a pending prediction by id until it succeeds", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  let polls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const href = String(url);
+    if (href.endsWith("/predictions")) {
+      return new Response(JSON.stringify({ id: "pred_2", status: "starting" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (href.includes("/predictions/pred_2")) {
+      polls += 1;
+      const status = polls < 2 ? "processing" : "succeeded";
+      const output = polls < 2 ? undefined : "https://replicate.delivery/poll.mp3";
+      return new Response(JSON.stringify({ id: "pred_2", status, output }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(new Uint8Array([9, 9]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) as typeof fetch;
+  try {
+    const audio = await spec.synthesize(minimaxContext());
+    assert.equal(audio.contentType, "audio/mpeg");
+    assert.equal(polls, 2);
+  } finally {
+    globalThis.fetch = original;
+  }
+}, 10_000);
+
+test("minimax synthesize: a failed prediction is a clear, actionable error", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ id: "pred_3", status: "failed", error: "voice_id not found" }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => spec.synthesize(minimaxContext()),
+      /MiniMax synthesis failed \(failed\): voice_id not found/,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("minimax: a missing Replicate token is a clear, actionable error", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  const prevToken = process.env.REPLICATE_API_TOKEN;
+  const prevKey = process.env.REPLICATE_API_KEY;
+  delete process.env.REPLICATE_API_TOKEN;
+  delete process.env.REPLICATE_API_KEY;
+  try {
+    await assert.rejects(
+      () => spec.synthesize(minimaxContext({ settings: voiceSettings() })),
+      /Replicate API token not set/,
+    );
+  } finally {
+    if (prevToken !== undefined) process.env.REPLICATE_API_TOKEN = prevToken;
+    if (prevKey !== undefined) process.env.REPLICATE_API_KEY = prevKey;
+  }
+});
+
 test("resolveTtsChoice: workspace default engine, agent tts override, voice fallback chain", () => {
   const settings = voiceSettings();
   assert.equal(resolveTtsChoice(undefined, settings).engine.id, "kyutai");
