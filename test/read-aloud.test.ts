@@ -1052,6 +1052,63 @@ test("readAloudStream cache key includes the effective voice", async () => {
   }
 });
 
+test("ttsCacheKey: fingerprint changes the key; omitting it (fingerprint-less engines) matches the pre-fingerprint key exactly", () => {
+  const noFingerprint = ttsCacheKey("minimax", "v1", "hello", "m1");
+  assert.equal(ttsCacheKey("minimax", "v1", "hello", "m1", ""), noFingerprint, "an empty fingerprint must not change the key — old on-disk cache stays reachable");
+  const withFp = ttsCacheKey("minimax", "v1", "hello", "m1", "1.0:0:1:auto:true");
+  assert.notEqual(withFp, noFingerprint, "a non-empty fingerprint must produce a different key than no fingerprint");
+  const withOtherFp = ttsCacheKey("minimax", "v1", "hello", "m1", "1.15:0:1:auto:true");
+  assert.notEqual(withOtherFp, withFp, "two different fingerprints must produce different keys");
+  // A fingerprint-less engine (no 5th arg anywhere it's called from readAloud)
+  // must be byte-identical to how it hashed before this field existed.
+  assert.equal(ttsCacheKey("kyutai", "v1", "hello"), ttsCacheKey("kyutai", "v1", "hello", "default", ""));
+});
+
+test("readAloud: an engine's cacheFingerprint change (e.g. editing minimaxSpeed/minimaxEmotion in voice.json) invalidates the old cached clip instead of replaying it forever", async () => {
+  const temp = await createTempDir();
+  const spoken: string[] = [];
+  registerTtsEngine({
+    id: "test-fingerprint",
+    voices: [],
+    synthesize: async (context) => {
+      spoken.push(context.text);
+      return { audio: Buffer.from(`AUDIO:${context.text}:${spoken.length}`), contentType: "audio/test" };
+    },
+    // Mirrors the minimax engine: settings outside voice/model still change
+    // the rendered audio, so they must be part of the cache identity.
+    cacheFingerprint: (settings) => `${settings.minimaxSpeed}:${settings.minimaxEmotion}`,
+  });
+  const request = (settings: VoiceSettings) => readAloud({
+    event: { author: "gaia", text: "Same message, different settings." },
+    settings, ensureTts: async () => ({ ttsUrl: "" }), cacheDir: temp.path,
+  });
+
+  try {
+    const base = voiceSettings({ ttsEngine: "test-fingerprint", minimaxSpeed: 1.0, minimaxEmotion: "auto" });
+    const a1 = await request(base);
+    const a2 = await request(base);
+    assert.equal(spoken.length, 1, "identical settings replay from cache, not a fresh render");
+    assert.equal(a1.audio.toString(), a2.audio.toString());
+
+    // The user tunes emotion away from "auto" (the monotone complaint) — the
+    // SAME message must now re-synthesize instead of silently serving the old
+    // (now stale) cached clip under the new settings.
+    const tuned = voiceSettings({ ttsEngine: "test-fingerprint", minimaxSpeed: 1.0, minimaxEmotion: "fluent" });
+    const b1 = await request(tuned);
+    assert.equal(spoken.length, 2, "a fingerprint change must force a fresh render, not a stale cache hit");
+    assert.notEqual(b1.audio.toString(), a1.audio.toString());
+
+    // Reverting to the original settings replays ITS OWN still-cached entry
+    // (the old render was orphaned, not deleted, by the key change) rather
+    // than re-rendering a third time.
+    const back = await request(base);
+    assert.equal(spoken.length, 2, "reverted settings replay the original cache entry, no extra render");
+    assert.equal(back.audio.toString(), a1.audio.toString());
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("claude readAloudStream waits for browser-session readiness before opening stream", async () => {
   const temp = await createTempDir();
   let streamHits = 0;

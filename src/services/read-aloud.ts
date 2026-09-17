@@ -375,6 +375,14 @@ export interface TtsEngineSpec {
    * request). 0/absent = no prefetch. Pure capability: the shared readAloud
    * path reads it generically, never branching on an engine id. */
   prefetchChunks?(settings: VoiceSettings): number;
+  /** Optional: a short string summarizing whatever settings besides voice/model
+   * change the rendered AUDIO for this engine (e.g. minimax speed/pitch/volume/
+   * emotion/normalization) — folded into the cache identity so editing
+   * ~/.gaia/voice.json invalidates stale cached clips instead of silently
+   * keeping serving them forever under the old settings. Absent/"" = the
+   * engine has no such settings (voice+model+text is the whole identity).
+   * Pure capability, read by presence — never an engine id check. */
+  cacheFingerprint?(settings: VoiceSettings): string;
 }
 
 const engines = new Map<string, TtsEngineSpec>();
@@ -426,23 +434,39 @@ export interface TtsCacheIdentity {
   voice: string;
   model: string;
   textHash: string;
+  /** Optional fingerprint of engine settings that change the AUDIO but live
+   * outside voice/model (e.g. minimax speed/pitch/emotion) — see
+   * `TtsEngineSpec.cacheFingerprint`. "" for engines without the capability;
+   * always "" on cache entries written before this field existed, so old
+   * entries for engines that still don't declare it keep matching (RULE #0:
+   * read by presence, never by engine id). */
+  fingerprint: string;
 }
 
-function cacheIdentity(engine: string, voice: string | undefined, text: string, model = "default"): TtsCacheIdentity {
-  return { engine, voice: voice ?? "default", model, textHash: createHash("sha256").update(text).digest("hex") };
+function cacheIdentity(engine: string, voice: string | undefined, text: string, model = "default", fingerprint = ""): TtsCacheIdentity {
+  return { engine, voice: voice ?? "default", model, textHash: createHash("sha256").update(text).digest("hex"), fingerprint };
 }
 
-export function ttsCacheKey(engine: string, voice: string | undefined, text: string, model = "default"): string {
-  return identityKey(cacheIdentity(engine, voice, text, model));
+export function ttsCacheKey(engine: string, voice: string | undefined, text: string, model = "default", fingerprint = ""): string {
+  return identityKey(cacheIdentity(engine, voice, text, model, fingerprint));
 }
 
 function identityKey(identity: TtsCacheIdentity): string {
-  return createHash("sha256").update(JSON.stringify(["tts-v2", identity.engine, identity.voice, identity.model, identity.textHash])).digest("hex");
+  // Fingerprint only joins the hash input when an engine actually declares one
+  // (RULE #0: capability, never engine id) — keeps the key byte-identical to
+  // before this field existed for every fingerprint-less engine, so their
+  // whole existing on-disk cache keeps matching. Only minimax (the one engine
+  // whose emotion/speed/pitch didn't change the key) gets new keys going
+  // forward, self-healing the stale-after-a-voice.json-edit bug this fixes.
+  const parts: unknown[] = ["tts-v2", identity.engine, identity.voice, identity.model, identity.textHash];
+  if (identity.fingerprint) parts.push(identity.fingerprint);
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
 function matchesIdentity(actual: TtsCacheIdentity | undefined, expected: TtsCacheIdentity): boolean {
   return !!actual?.voice && actual.engine === expected.engine && actual.voice === expected.voice
-    && actual.model === expected.model && actual.textHash === expected.textHash;
+    && actual.model === expected.model && actual.textHash === expected.textHash
+    && (actual.fingerprint ?? "") === (expected.fingerprint ?? "");
 }
 
 async function readCachedAudio(dir: string, key: string, identity: TtsCacheIdentity): Promise<TtsAudio | undefined> {
@@ -608,7 +632,7 @@ async function prefetchOneChunk(
   archiveDir: string,
   log: (message: string) => void,
 ): Promise<void> {
-  const identity = cacheIdentity(engine.id, choice.voice, chunks[index], choice.model);
+  const identity = cacheIdentity(engine.id, choice.voice, chunks[index], choice.model, engine.cacheFingerprint?.(request.settings) ?? "");
   const key = identityKey(identity);
   try {
     // Never inherit the REQUESTED chunk's `regenerate` flag here: the user's
@@ -664,7 +688,7 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
   log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
-  const identity = cacheIdentity(engine.id, voice, chunks[index], model);
+  const identity = cacheIdentity(engine.id, voice, chunks[index], model, engine.cacheFingerprint?.(request.settings) ?? "");
   const key = identityKey(identity);
   // Fired now, NOT after this chunk's own result lands: a fire-and-forget
   // background render of the following chunks runs concurrently WITH this
@@ -760,7 +784,7 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
   text = engine.prepareText?.(text, request.settings) ?? text;
   const requestId = newId("tts");
   log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
-  const identity = cacheIdentity(engine.synthesizeStream ? `${engine.id}:stream` : engine.id, voice, text, model);
+  const identity = cacheIdentity(engine.synthesizeStream ? `${engine.id}:stream` : engine.id, voice, text, model, engine.cacheFingerprint?.(request.settings) ?? "");
   // Batch-only engine (local TTS): the client uses the chunked path unchanged.
   if (!engine.synthesizeStream) return { mode: "chunks", chunks: splitSpeechChunks(text).length, identity };
 
@@ -1430,4 +1454,10 @@ registerTtsEngine({
   // Slow Replicate engine: get a head start on the chunks the client hasn't
   // asked for yet instead of rendering every one cold on demand.
   prefetchChunks: (settings) => settings.minimaxPrefetch,
+  // speed/pitch/volume/emotion/normalization all change the rendered audio
+  // but live outside voice/model, so without this an edit to ~/.gaia/voice.json
+  // (e.g. tuning emotion away from "auto" for less monotone speech) silently
+  // kept serving the OLD cached clip forever for any already-spoken message.
+  cacheFingerprint: (settings) =>
+    `${settings.minimaxSpeed}:${settings.minimaxPitch}:${settings.minimaxVolume}:${settings.minimaxEmotion}:${settings.minimaxNormalize}`,
 });
