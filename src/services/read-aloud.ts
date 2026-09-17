@@ -611,7 +611,14 @@ async function prefetchOneChunk(
   const identity = cacheIdentity(engine.id, choice.voice, chunks[index], choice.model);
   const key = identityKey(identity);
   try {
-    if (!request.regenerate && (await readCachedAudio(cacheDir, key, identity))) return;
+    // Never inherit the REQUESTED chunk's `regenerate` flag here: the user's
+    // ⟳ only flags THIS chunk as bad. Force-regenerating the chunks ahead of
+    // it too (as this used to do) triples the concurrent Replicate calls on
+    // every regen click and was measured stalling an unrelated, already-cached
+    // chunk 0 read from ~0.4s to 5.6s (event-loop/socket contention) — see
+    // fix/tts-latency. Prefetch is background fill-in; it must stay cache-first
+    // regardless of what the foreground request is doing.
+    if (await readCachedAudio(cacheDir, key, identity)) return;
     const result = await engine.synthesize({
       text: chunks[index],
       voice: choice.voice,

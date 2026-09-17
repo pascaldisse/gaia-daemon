@@ -585,6 +585,45 @@ test("readAloud: prefetchChunks renders FOLLOWING chunks into the cache in the b
   }
 });
 
+test("readAloud: regenerating ONE chunk does not force-regenerate already-cached FOLLOWING chunks (prefetch stays cache-first)", async () => {
+  const temp = await createTempDir();
+  const spoken: string[] = [];
+  registerTtsEngine({
+    id: "test-prefetch-regen",
+    voices: [],
+    synthesize: async (context) => {
+      spoken.push(context.text);
+      return { audio: Buffer.from(`AUDIO:${context.text}:${spoken.filter((s) => s === context.text).length}`), contentType: "audio/test" };
+    },
+    prefetchChunks: () => 2,
+  });
+  const settings = voiceSettings({ ttsEngine: "test-prefetch-regen" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two. ${"gamma ".repeat(60)}three. ${"delta ".repeat(60)}four.`;
+  const chunks = splitSpeechChunks(speakableText(text));
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+  const cacheFile = (chunkText: string) => join(temp.path, `${ttsCacheKey("test-prefetch-regen", undefined, chunkText)}.audio`);
+
+  try {
+    assert.ok(chunks.length >= 3, "test text must produce at least 3 chunks");
+    // Prime the cache: chunk 0's own request prefetches chunks 1-2 (cap=2).
+    await readAloud({ ...request, chunk: 0 });
+    const deadline = Date.now() + 2000;
+    while (!existsSync(cacheFile(chunks[2])) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(existsSync(cacheFile(chunks[1])) && existsSync(cacheFile(chunks[2])), "chunks 1-2 prefetched before the regen");
+    spoken.length = 0;
+
+    // The user flags chunk 0 as bad and hits regenerate. Chunk 0 must
+    // re-synthesize; chunks 1-2 (already cached, not the flagged chunk) must
+    // NOT be force-regenerated as a side effect of chunk 0's own flag.
+    await readAloud({ ...request, chunk: 0, regenerate: true });
+    await new Promise((resolve) => setTimeout(resolve, 200)); // let any (wrongly) fired prefetch settle
+    assert.deepEqual(spoken, [chunks[0]], "only the flagged chunk (0) was re-synthesized — prefetch left the cached following chunks alone");
+  } finally {
+    await temp.cleanup();
+  }
+});
+
 test("readAloud: a chunk's own result is never mixed up with a faster background-prefetched later chunk", async () => {
   const temp = await createTempDir();
   registerTtsEngine({
