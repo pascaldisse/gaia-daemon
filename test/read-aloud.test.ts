@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseTtsConfig } from "../src/core/config.js";
@@ -16,6 +17,7 @@ import {
   resolveTtsChoice,
   speakableText,
   splitSpeechChunks,
+  ttsCacheKey,
   ttsEngineIds,
   unpackMessage,
   type TtsStream,
@@ -404,6 +406,212 @@ test("minimax: a missing Replicate token is a clear, actionable error", async ()
   } finally {
     if (prevToken !== undefined) process.env.REPLICATE_API_TOKEN = prevToken;
     if (prevKey !== undefined) process.env.REPLICATE_API_KEY = prevKey;
+  }
+});
+
+test("minimax synthesize: passes speed/pitch/volume/emotion/english_normalization from settings", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  const calls: { url: string; init: RequestInit }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const href = String(url);
+    calls.push({ url: href, init: init ?? {} });
+    if (href.includes("/predictions") && !href.includes("replicate.delivery")) {
+      return new Response(JSON.stringify({ id: "pred_x", status: "succeeded", output: "https://replicate.delivery/x.mp3" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(new Uint8Array([1]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) as typeof fetch;
+  try {
+    // Defaults.
+    await spec.synthesize(minimaxContext());
+    let body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.input.speed, 1.0);
+    assert.equal(body.input.pitch, 0);
+    assert.equal(body.input.volume, 1);
+    assert.equal(body.input.emotion, "auto");
+    assert.equal(body.input.english_normalization, true);
+
+    // Overridden via settings (as read from voice.json / readVoiceSettings).
+    calls.length = 0;
+    await spec.synthesize(minimaxContext({
+      settings: voiceSettings({
+        replicateApiToken: "r8_test",
+        minimaxSpeed: 1.4,
+        minimaxPitch: -3,
+        minimaxVolume: 4,
+        minimaxEmotion: "happy",
+        minimaxNormalize: false,
+      }),
+    }));
+    body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.input.speed, 1.4);
+    assert.equal(body.input.pitch, -3);
+    assert.equal(body.input.volume, 4);
+    assert.equal(body.input.emotion, "happy");
+    assert.equal(body.input.english_normalization, false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("minimax synthesize: polls at settings.minimaxPollMs, not a hardcoded 1000ms", async () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec) throw new Error("minimax not registered");
+  let polls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const href = String(url);
+    if (href.endsWith("/predictions")) {
+      return new Response(JSON.stringify({ id: "pred_fast", status: "starting" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (href.includes("/predictions/pred_fast")) {
+      polls += 1;
+      const status = polls < 2 ? "processing" : "succeeded";
+      const output = polls < 2 ? undefined : "https://replicate.delivery/fast.mp3";
+      return new Response(JSON.stringify({ id: "pred_fast", status, output }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(new Uint8Array([1]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) as typeof fetch;
+  try {
+    const started = Date.now();
+    await spec.synthesize(minimaxContext({ settings: voiceSettings({ replicateApiToken: "r8_test", minimaxPollMs: 20 }) }));
+    const elapsed = Date.now() - started;
+    assert.equal(polls, 2);
+    // 2 polls at 20ms apart: comfortably under the old 1000ms-per-poll floor.
+    assert.ok(elapsed < 500, `expected ~40ms of polling, took ${elapsed}ms`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("minimax prepareText: inserts <#Ns#> pause markers at speakableText's block boundaries; 0 disables", () => {
+  const spec = findTtsEngine("minimax");
+  if (!spec?.prepareText) throw new Error("minimax prepareText not registered");
+  const text = speakableText("# Title\n\nFirst paragraph.\n\nSecond paragraph.");
+  assert.equal(text, "Title\nFirst paragraph.\nSecond paragraph.");
+
+  assert.equal(
+    spec.prepareText(text, voiceSettings({ minimaxParagraphPauseS: 0.3 })),
+    "Title <#0.3#> First paragraph. <#0.3#> Second paragraph.",
+  );
+  assert.equal(
+    spec.prepareText(text, voiceSettings({ minimaxParagraphPauseS: 0.75 })),
+    "Title <#0.75#> First paragraph. <#0.75#> Second paragraph.",
+  );
+  // 0 disables: text passes through untouched (no \n → space collapse either,
+  // since splitSpeechChunks does that collapse itself downstream).
+  assert.equal(spec.prepareText(text, voiceSettings({ minimaxParagraphPauseS: 0 })), text);
+  // Other engines never see minimax's markers — no prepareText registered.
+  assert.equal(findTtsEngine("claude")?.prepareText, undefined);
+});
+
+test("readAloud: minimax's pause markers land in the actual chunk text the engine synthesizes", async () => {
+  const temp = await createTempDir();
+  const spoken: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const href = String(url);
+    if (href.includes("/predictions") && !href.includes("replicate.delivery")) {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      spoken.push(body?.input?.text ?? "");
+      return new Response(JSON.stringify({ id: "pred_pause", status: "succeeded", output: "https://replicate.delivery/pause.mp3" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(new Uint8Array([1]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) as typeof fetch;
+  try {
+    const result = await readAloud({
+      event: { author: "gaia", text: "First paragraph.\n\nSecond paragraph." },
+      settings: voiceSettings({ ttsEngine: "minimax", replicateApiToken: "r8_test", minimaxPrefetch: 0 }),
+      ensureTts: async () => ({ ttsUrl: "" }),
+      cacheDir: temp.path,
+    });
+    assert.equal(result.chunks, 1);
+    assert.equal(spoken[0], "First paragraph. <#0.3#> Second paragraph.");
+  } finally {
+    globalThis.fetch = original;
+    await temp.cleanup();
+  }
+});
+
+test("readAloud: prefetchChunks renders FOLLOWING chunks into the cache in the background, up to the declared cap", async () => {
+  const temp = await createTempDir();
+  const spoken: string[] = [];
+  registerTtsEngine({
+    id: "test-prefetch",
+    voices: [],
+    synthesize: async (context) => {
+      spoken.push(context.text);
+      return { audio: Buffer.from(`AUDIO:${context.text}`), contentType: "audio/test" };
+    },
+    prefetchChunks: () => 2,
+  });
+  const settings = voiceSettings({ ttsEngine: "test-prefetch" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two. ${"gamma ".repeat(60)}three. ${"delta ".repeat(60)}four.`;
+  const chunks = splitSpeechChunks(speakableText(text));
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+  const cacheFile = (chunkText: string) => join(temp.path, `${ttsCacheKey("test-prefetch", undefined, chunkText)}.audio`);
+
+  try {
+    assert.ok(chunks.length >= 4, "test text must produce at least 4 chunks");
+    const first = await readAloud({ ...request, chunk: 0 });
+    assert.equal(first.chunks, chunks.length);
+
+    // Fire-and-forget prefetch of chunks 1 and 2 (cap=2) runs in the background
+    // of this SAME call — poll the disk cache directly (not another readAloud()
+    // call, which would itself trigger further prefetching and muddy the count).
+    const deadline = Date.now() + 2000;
+    while (!existsSync(cacheFile(chunks[2])) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(existsSync(cacheFile(chunks[1])), "chunk 1 prefetched into the cache");
+    assert.ok(existsSync(cacheFile(chunks[2])), "chunk 2 prefetched into the cache");
+    assert.ok(!existsSync(cacheFile(chunks[3])), "chunk 3 sits beyond the prefetch cap (2) and was not rendered yet");
+    assert.deepEqual(new Set(spoken), new Set([chunks[0], chunks[1], chunks[2]]), "exactly chunks 0-2 were synthesized, each once");
+
+    // Chunks 1 and 2 now come from the prefetch cache — no new synthesize calls
+    // FOR THOSE TWO CHUNKS (each still appears exactly once in `spoken`).
+    await readAloud({ ...request, chunk: 1 });
+    await readAloud({ ...request, chunk: 2 });
+    assert.equal(spoken.filter((s) => s === chunks[1]).length, 1);
+    assert.equal(spoken.filter((s) => s === chunks[2]).length, 1);
+  } finally {
+    await temp.cleanup();
+  }
+});
+
+test("readAloud: a chunk's own result is never mixed up with a faster background-prefetched later chunk", async () => {
+  const temp = await createTempDir();
+  registerTtsEngine({
+    id: "test-prefetch-race",
+    voices: [],
+    synthesize: async (context) => {
+      // The REQUESTED chunk (0) is slow; the prefetched chunk (1) resolves
+      // first — proves the two in-flight synthesis calls never cross wires.
+      const delay = context.text.startsWith("alpha") ? 60 : 5;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return { audio: Buffer.from(`AUDIO:${context.text}`), contentType: "audio/test" };
+    },
+    prefetchChunks: () => 1,
+  });
+  const settings = voiceSettings({ ttsEngine: "test-prefetch-race" });
+  const ensureTts = async () => ({ ttsUrl: "http://127.0.0.1:1" });
+  const text = `${"alpha ".repeat(60)}one. ${"beta ".repeat(60)}two.`;
+  const request = { event: { author: "gaia", text }, settings, ensureTts, cacheDir: temp.path };
+
+  try {
+    const chunks = splitSpeechChunks(speakableText(text));
+    assert.ok(chunks.length >= 2, "test text must produce at least 2 chunks");
+    const first = await readAloud({ ...request, chunk: 0 });
+    assert.equal(first.chunk, 0);
+    assert.equal(first.audio.toString(), `AUDIO:${chunks[0]}`, "chunk 0's own (slower) audio, not chunk 1's");
+  } finally {
+    await temp.cleanup();
   }
 });
 

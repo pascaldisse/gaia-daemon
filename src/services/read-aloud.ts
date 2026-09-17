@@ -362,6 +362,19 @@ export interface TtsEngineSpec {
    * the call path reads this flag, never an engine id (same law as harnesses).
    * Requires synthesizeStream. */
   callBridge?: boolean;
+  /** Optional: transform the FULL speech-ready text (before chunking) for this
+   * engine only — e.g. inserting engine-specific pause markers at the block
+   * boundaries `speakableText` leaves as `\n`. Applied once, ahead of
+   * `splitSpeechChunks`, so inserted markers still land at chunk boundaries.
+   * Pure capability, read by presence — never an engine id check. */
+  prepareText?(text: string, settings: VoiceSettings): string;
+  /** Optional: how many FOLLOWING chunks to synthesize into the cache in the
+   * background while this chunk is being requested/played (batch `synthesize`
+   * engines only — the client still fetches one chunk per call, but a Replicate-
+   * style slow engine gets a head start instead of starting cold on every
+   * request). 0/absent = no prefetch. Pure capability: the shared readAloud
+   * path reads it generically, never branching on an engine id. */
+  prefetchChunks?(settings: VoiceSettings): number;
 }
 
 const engines = new Map<string, TtsEngineSpec>();
@@ -564,16 +577,61 @@ export interface ReadAloudResult extends TtsAudio {
   chunk: number;
 }
 
+/** Fire-and-forget: synthesize the chunks AFTER `index` into the cache in the
+ * background (only when the engine declares `prefetchChunks` > 0) so a slow
+ * batch engine (Replicate) has a head start by the time the client's next
+ * per-chunk request lands, instead of starting cold every time. Best-effort:
+ * a prefetch failure only costs a cold synthesis later, never surfaced here. */
+function prefetchFollowingChunks(
+  engine: TtsEngineSpec,
+  chunks: string[],
+  index: number,
+  choice: { voice?: string; model: string },
+  request: ReadAloudRequest,
+  cacheDir: string,
+  archiveDir: string,
+  log: (message: string) => void,
+): void {
+  const ahead = engine.prefetchChunks?.(request.settings) ?? 0;
+  for (let i = index + 1; i <= Math.min(index + ahead, chunks.length - 1); i++) {
+    void prefetchOneChunk(engine, chunks, i, choice, request, cacheDir, archiveDir, log);
+  }
+}
+
+async function prefetchOneChunk(
+  engine: TtsEngineSpec,
+  chunks: string[],
+  index: number,
+  choice: { voice?: string; model: string },
+  request: ReadAloudRequest,
+  cacheDir: string,
+  archiveDir: string,
+  log: (message: string) => void,
+): Promise<void> {
+  const identity = cacheIdentity(engine.id, choice.voice, chunks[index], choice.model);
+  const key = identityKey(identity);
+  try {
+    if (!request.regenerate && (await readCachedAudio(cacheDir, key, identity))) return;
+    const result = await engine.synthesize({
+      text: chunks[index],
+      voice: choice.voice,
+      model: choice.model,
+      settings: request.settings,
+      ensureTts: request.ensureTts,
+      log,
+      requestId: newId("tts"),
+    });
+    await writeCachedAudio(cacheDir, key, { ...result, identity }, undefined, archiveDir, log);
+    log(`voice: TTS prefetch chunk=${index} engine=${engine.id} cached`);
+  } catch (error) {
+    log(`voice: TTS prefetch chunk=${index} engine=${engine.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudResult> {
   if (request.event.author === "user") throw new Error("Only agent messages can be read aloud");
-  const text = speakableText(request.event.text);
+  let text = speakableText(request.event.text);
   if (!text) throw new Error("Nothing to read aloud in this message");
-
-  const chunks = splitSpeechChunks(text);
-  const index = request.chunk ?? 0;
-  if (!Number.isInteger(index) || index < 0 || index >= chunks.length) {
-    throw new Error(`Unknown chunk ${index} (message has ${chunks.length})`);
-  }
 
   const log = request.log ?? (() => {});
   let choice: ReturnType<typeof resolveTtsChoice>;
@@ -584,12 +642,31 @@ export async function readAloud(request: ReadAloudRequest): Promise<ReadAloudRes
     throw error;
   }
   const { engine, voice, model } = choice;
+  // Engine-specific pause markers etc. must run on the WHOLE message, before
+  // chunking, so a marker inserted at a block boundary still lands at a chunk
+  // boundary (RULE #0: dispatched on capability presence, never the engine id).
+  text = engine.prepareText?.(text, request.settings) ?? text;
+
+  const chunks = splitSpeechChunks(text);
+  const index = request.chunk ?? 0;
+  if (!Number.isInteger(index) || index < 0 || index >= chunks.length) {
+    throw new Error(`Unknown chunk ${index} (message has ${chunks.length})`);
+  }
+
   const requestId = newId("tts");
   log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
   const cacheDir = request.cacheDir ?? globalPaths.ttsCacheDir();
   const archiveDir = (request.archiveDir ?? request.settings.ttsArchiveDir) || globalPaths.ttsArchiveDir();
   const identity = cacheIdentity(engine.id, voice, chunks[index], model);
   const key = identityKey(identity);
+  // Fired now, NOT after this chunk's own result lands: a fire-and-forget
+  // background render of the following chunks runs concurrently WITH this
+  // chunk's own synthesis (not merely after it), so a slow batch engine's next
+  // chunks get a real head start instead of only starting once this HTTP
+  // response has already gone out. Independent cache keys (different chunk
+  // index) — no coupling with this request's own cache read/write below.
+  prefetchFollowingChunks(engine, chunks, index, { voice, model }, request, cacheDir, archiveDir, log);
+
   if (!request.regenerate) {
     const cached = await readCachedAudio(cacheDir, key, identity);
     if (cached) return { ...cached, chunks: chunks.length, chunk: index, identity };
@@ -659,7 +736,7 @@ async function* teeFramesToCache(
 
 export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAloudDelivery> {
   if (request.event.author === "user") throw new Error("Only agent messages can be read aloud");
-  const text = speakableText(request.event.text);
+  let text = speakableText(request.event.text);
   if (!text) throw new Error("Nothing to read aloud in this message");
 
   const log = request.log ?? (() => {});
@@ -671,6 +748,9 @@ export async function readAloudStream(request: ReadAloudRequest): Promise<ReadAl
     throw error;
   }
   const { engine, voice, model } = choice;
+  // Same pre-chunk transform as readAloud() (see its comment) — kept in sync so
+  // the chunk COUNT reported here matches what readAloud() will actually cut.
+  text = engine.prepareText?.(text, request.settings) ?? text;
   const requestId = newId("tts");
   log(`voice: TTS request=${requestId} engine=${engine.id} voice=${voice ?? "default"} model=${model}`);
   const identity = cacheIdentity(engine.synthesizeStream ? `${engine.id}:stream` : engine.id, voice, text, model);
@@ -1222,13 +1302,19 @@ registerTtsEngine({
 });
 
 // ---------------------------------------------------------------------------
-// minimax — MiniMax speech-02-hd through Replicate predictions (cloned voice_id)
-// Replicate models run async: POST creates a prediction (short-poll header asks
-// it to wait up to 60s inline), and anything not finished by then is polled by
-// id until it settles. Output is a rendered mp3 URL we fetch and hand back as
-// one buffer — no streaming/duplex/callBridge, read-aloud only (like kyutai).
+// minimax — MiniMax speech-02-turbo/-hd through Replicate predictions (cloned
+// voice_id). Replicate models run async: POST creates a prediction with
+// `Prefer: wait=60` (Replicate's sync mode — the response IS the finished
+// prediction when it settles inside 60s, no poll round-trip at all), and
+// anything not finished by then is polled by id every `minimaxPollMs` (default
+// 250 — was a hardcoded 1000ms) until it settles. Output is a rendered audio
+// URL we fetch and hand back as one buffer — no streaming/duplex/callBridge,
+// read-aloud only (like kyutai). Latency has a second lever the per-request
+// path can't reach: `readAloud()` prefetches the next `minimaxPrefetch` chunks
+// into the cache in the background (see `prefetchChunks` below) the moment one
+// chunk is requested, so by the time the client asks for chunk N+1 it is
+// usually already rendered instead of starting cold.
 
-const MINIMAX_POLL_MS = 1_000;
 const MINIMAX_TIMEOUT_MS = 120_000;
 
 interface MinimaxPrediction {
@@ -1255,10 +1341,11 @@ async function minimaxSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function minimaxPollPrediction(context: TtsSynthesisContext, key: string, prediction: MinimaxPrediction): Promise<MinimaxPrediction> {
   const deadline = Date.now() + MINIMAX_TIMEOUT_MS;
+  const pollMs = context.settings.minimaxPollMs;
   let current = prediction;
   while (current.status !== "succeeded" && current.status !== "failed" && current.status !== "canceled") {
     if (Date.now() >= deadline) throw new Error(`MiniMax synthesis failed (timeout): prediction ${current.id} did not finish within ${MINIMAX_TIMEOUT_MS}ms`);
-    await minimaxSleep(MINIMAX_POLL_MS, context.signal);
+    await minimaxSleep(pollMs, context.signal);
     current = await minimaxParsePrediction(await fetch(`https://api.replicate.com/v1/predictions/${current.id}`, {
       headers: { Authorization: `Bearer ${key}` },
       ...(context.signal ? { signal: context.signal } : {}),
@@ -1268,6 +1355,20 @@ async function minimaxPollPrediction(context: TtsSynthesisContext, key: string, 
   return current;
 }
 
+/** MiniMax input fields sourced from settings — speed/pitch/volume/emotion/
+ * normalization all pass through to the Replicate `speech-02-*` schema, no
+ * per-request override plumbed yet (TtsSynthesisContext carries no generic
+ * options bag; voice/model are the only per-request overrides that exist). */
+function minimaxExpressionInput(settings: VoiceSettings): Record<string, unknown> {
+  return {
+    speed: settings.minimaxSpeed,
+    pitch: settings.minimaxPitch,
+    volume: settings.minimaxVolume,
+    emotion: settings.minimaxEmotion,
+    english_normalization: settings.minimaxNormalize,
+  };
+}
+
 async function minimaxSynthesize(context: TtsSynthesisContext): Promise<TtsAudio> {
   const key = replicateKey(context.settings);
   const model = context.model ?? context.settings.minimaxModel;
@@ -1275,7 +1376,9 @@ async function minimaxSynthesize(context: TtsSynthesisContext): Promise<TtsAudio
   const response = await fetch(`https://api.replicate.com/v1/models/${model}/predictions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "wait=60" },
-    body: JSON.stringify({ input: { text: context.text, voice_id: voice, language_boost: "English" } }),
+    body: JSON.stringify({
+      input: { text: context.text, voice_id: voice, language_boost: "English", ...minimaxExpressionInput(context.settings) },
+    }),
     ...(context.signal ? { signal: context.signal } : {}),
   });
   let prediction = await minimaxParsePrediction(response);
@@ -1297,6 +1400,18 @@ async function minimaxSynthesize(context: TtsSynthesisContext): Promise<TtsAudio
   return { audio, contentType: "audio/mpeg" };
 }
 
+/** Sentence-pause markers: every block boundary `speakableText` leaves as a
+ * literal `\n` (paragraph, heading, list item, ...) becomes a MiniMax
+ * `<#Ns#>` pause tag instead of the plain space `splitSpeechChunks` would
+ * otherwise collapse it to. Runs on the whole message before chunking (see
+ * `prepareText` doc on TtsEngineSpec) so a tag always lands at a natural
+ * break. `minimaxParagraphPauseS` 0 disables (marker never inserted). */
+function minimaxPrepareText(text: string, settings: VoiceSettings): string {
+  const pauseS = settings.minimaxParagraphPauseS;
+  if (!(pauseS > 0)) return text;
+  return text.replace(/\n+/g, ` <#${pauseS}#> `);
+}
+
 registerTtsEngine({
   id: "minimax",
   resolveVoice: (voice, settings) => voice?.trim() || settings.minimaxVoice,
@@ -1304,4 +1419,8 @@ registerTtsEngine({
   // Voices are account-specific cloned voice ids; free-form.
   voices: [],
   synthesize: minimaxSynthesize,
+  prepareText: minimaxPrepareText,
+  // Slow Replicate engine: get a head start on the chunks the client hasn't
+  // asked for yet instead of rendering every one cold on demand.
+  prefetchChunks: (settings) => settings.minimaxPrefetch,
 });

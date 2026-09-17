@@ -116,8 +116,35 @@ export interface VoiceSettings {
   /** Cloned voice id for the "minimax" read-aloud engine (MiniMax speech-02-hd
    * via Replicate). Pascal's cloned voice by default. */
   minimaxVoice: string;
-  /** Replicate model slug for the "minimax" read-aloud engine (owner/name). */
+  /** Replicate model slug for the "minimax" read-aloud engine (owner/name);
+   * speech-02-turbo trades a little quality for materially lower latency than
+   * speech-02-hd — see the read-aloud test proof for measured numbers. */
   minimaxModel: string;
+  /** MiniMax speech rate, Replicate `speed` (0.5-2, default 1). */
+  minimaxSpeed: number;
+  /** MiniMax pitch shift, Replicate `pitch` (-12..12 semitones, default 0). */
+  minimaxPitch: number;
+  /** MiniMax output loudness, Replicate `volume` (0-10, default 1). */
+  minimaxVolume: number;
+  /** MiniMax emotion, Replicate `emotion` enum (auto/happy/sad/angry/fearful/
+   * disgusted/surprised/calm/fluent/neutral, default "auto"). */
+  minimaxEmotion: string;
+  /** MiniMax `english_normalization` (spells out numbers/abbreviations; default true). */
+  minimaxNormalize: boolean;
+  /** How many chunks AFTER the one just requested `readAloud()` renders into
+   * the cache in the background while this one is synthesizing/playing (0 =
+   * no prefetch, default 2). Latency lever for the serial "chunks" playback
+   * mode — minimax has no synthesizeStream/duplex, so this is the only way a
+   * slow chunk doesn't leave playback waiting on a cold Replicate call. */
+  minimaxPrefetch: number;
+  /** Poll interval (ms) while waiting on a MiniMax Replicate prediction that
+   * didn't finish within the `Prefer: wait=60` inline window (default 250;
+   * was a hardcoded 1000). */
+  minimaxPollMs: number;
+  /** Pause length (seconds) inserted as a MiniMax `<#Ns#>` tag at every block
+   * boundary (paragraph, heading, list item, ...) `speakableText` leaves as a
+   * `\n` (default 0.3; 0 disables the markers entirely). */
+  minimaxParagraphPauseS: number;
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
@@ -165,7 +192,18 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   callSttEngine: "kyutai",
   minimaxVoice: "R8_TM8IFFQG",
   minimaxModel: "minimax/speech-02-hd",
+  minimaxSpeed: 1.0,
+  minimaxPitch: 0,
+  minimaxVolume: 1,
+  minimaxEmotion: "auto",
+  minimaxNormalize: true,
+  minimaxPrefetch: 2,
+  minimaxPollMs: 250,
+  minimaxParagraphPauseS: 0.3,
 };
+
+/** Valid Replicate `emotion` values for the "minimax" read-aloud engine. */
+export const MINIMAX_EMOTIONS = ["auto", "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "fluent", "neutral"];
 
 /** The ElevenLabs API key (xi-api-key), shared by the TTS and STT engines:
  * voice.json `elevenLabsApiKey` first, else the ELEVENLABS_API_KEY env var.
@@ -230,6 +268,14 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.callSttEngine === "string" && raw.callSttEngine.trim()) settings.callSttEngine = raw.callSttEngine.trim();
   if (typeof raw.minimaxVoice === "string" && raw.minimaxVoice.trim()) settings.minimaxVoice = raw.minimaxVoice.trim();
   if (typeof raw.minimaxModel === "string" && raw.minimaxModel.trim()) settings.minimaxModel = raw.minimaxModel.trim();
+  if (typeof raw.minimaxSpeed === "number" && raw.minimaxSpeed >= 0.5 && raw.minimaxSpeed <= 2) settings.minimaxSpeed = raw.minimaxSpeed;
+  if (typeof raw.minimaxPitch === "number" && raw.minimaxPitch >= -12 && raw.minimaxPitch <= 12) settings.minimaxPitch = raw.minimaxPitch;
+  if (typeof raw.minimaxVolume === "number" && raw.minimaxVolume >= 0 && raw.minimaxVolume <= 10) settings.minimaxVolume = raw.minimaxVolume;
+  if (typeof raw.minimaxEmotion === "string" && MINIMAX_EMOTIONS.includes(raw.minimaxEmotion.trim())) settings.minimaxEmotion = raw.minimaxEmotion.trim();
+  if (typeof raw.minimaxNormalize === "boolean") settings.minimaxNormalize = raw.minimaxNormalize;
+  if (typeof raw.minimaxPrefetch === "number" && Number.isInteger(raw.minimaxPrefetch) && raw.minimaxPrefetch >= 0) settings.minimaxPrefetch = raw.minimaxPrefetch;
+  if (typeof raw.minimaxPollMs === "number" && raw.minimaxPollMs > 0) settings.minimaxPollMs = raw.minimaxPollMs;
+  if (typeof raw.minimaxParagraphPauseS === "number" && raw.minimaxParagraphPauseS >= 0) settings.minimaxParagraphPauseS = raw.minimaxParagraphPauseS;
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
   if (!settings.unmuteDir) settings.unmuteDir = bundledUnmuteDir();
