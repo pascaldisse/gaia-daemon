@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
-import { ModelRegistry, ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { statSync } from "node:fs";
 import { gaiaHome } from "../core/paths.js";
 import type { NativeModelReasoning, ThinkingLevel, UsageProbeResult } from "../core/types.js";
 import { REASONING_LEVELS } from "../core/model-reasoning-config.js";
@@ -21,13 +22,40 @@ export type { PiRuntimeOptions, PiRuntimeSessionFactory, PiRuntimeSessionFactory
 export { redirectProviderFetch, rewriteProviderUrl } from "./pi/tools.js";
 registerBunOAuthFlows();
 function realPiAuthJson(): string { return join(homedir(), ".pi", "agent", "auth.json"); }
+// Reasoning capability is a pure READ of the model catalog (builtin providers +
+// ~/.pi/agent/models.json). ModelRuntime.create() rebuilds that whole catalog
+// (~18ms), and a snapshot asks for it ONCE PER AGENT — 30 agents turned room
+// selection into a ~0.7s floor (whip 427). Build it once per catalog VERSION
+// instead: the models.json stat below is the version stamp, so editing the file
+// still takes effect on the next call without re-reading it 30 times a second.
+let catalogReady: { stamp: string; registry: Promise<ModelRegistry> } | undefined;
+function modelCatalogStamp(): string {
+  try {
+    const info = statSync(join(getAgentDir(), "models.json"));
+    return `${info.mtimeMs}:${info.size}`;
+  } catch {
+    return "none";
+  }
+}
+function sharedModelRegistry(): Promise<ModelRegistry> {
+  const stamp = modelCatalogStamp();
+  if (catalogReady?.stamp !== stamp) {
+    // Never cache a rejection: a transient create() failure must not pin the
+    // catalog as broken for the process lifetime.
+    const registry = ModelRuntime.create().then((runtime) => new ModelRegistry(runtime));
+    const entry = { stamp, registry };
+    catalogReady = entry;
+    void registry.catch(() => {
+      if (catalogReady === entry) catalogReady = undefined;
+    });
+  }
+  return catalogReady.registry;
+}
 async function piModelReasoning(model: { provider?: string; name?: string }, current?: unknown): Promise<NativeModelReasoning | undefined> {
   if (!model.provider || !model.name) return undefined;
   let resolved = current as Model<any> | undefined;
   if (!resolved) {
-    const runtime = await ModelRuntime.create();
-    const registry = new ModelRegistry(runtime);
-    resolved = findModelWithAlias(registry, model.provider, model.name);
+    resolved = findModelWithAlias(await sharedModelRegistry(), model.provider, model.name);
   }
   if (!resolved) return undefined;
   if (!resolved.reasoning) return { levels: [{ level: "off", providerValue: "off" }], defaultLevel: "off", adaptive: false };
