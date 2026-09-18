@@ -284,6 +284,22 @@ async function roomEvents(ctx: RouteContext): Promise<boolean> {
 // returns his proposal (slow — a real agent turn); GET returns the last
 // saved proposal; POST /apply rewrites the approved events (originals
 // preserved in redactions.jsonl) and resets sessions.
+// The full, UNCAPPED display form of one event. Snapshots and the older-paging
+// window bound tool payload bytes (domain/transport-cap.ts); this is where the
+// UI gets the rest back when a human opens a truncated tool call.
+async function roomEventById(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/events\/([^/]+)$/);
+  if (ctx.request.method !== "GET" || !params) return false;
+  const service = await ctx.daemon.serviceFor(params[0], params[1]);
+  if (!(await service.canAccessRoom(ctx.human?.id))) { json(ctx.response, 403, { error: "Not a member of this room." }); return true; }
+  await respond(ctx.response, async () => {
+    const event = await service.displayEventById(decodeURIComponent(params[2]));
+    if (!event) throw new Error("Unknown event");
+    return { event };
+  });
+  return true;
+}
+
 async function roomSanitize(ctx: RouteContext): Promise<boolean> {
   const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/sanitize$/);
   if (!params) return false;
@@ -500,6 +516,7 @@ async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
 }
 
 const roomHandlers = [
+  roomEventById,
   selectRoom,
   roomSnapshot,
   selectNamedRoom,

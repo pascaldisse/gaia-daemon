@@ -99,6 +99,8 @@ function defaultConfigJson(): Omit<WorkspaceConfig, "autoCompact"> {
     defaultAgent: DEFAULTS.defaultAgent,
     room: DEFAULTS.room,
     transcriptWindow: DEFAULTS.transcriptWindow,
+    snapshotToolBytes: DEFAULTS.snapshotToolBytes,
+    snapshotEventBytes: DEFAULTS.snapshotEventBytes,
     agentEndConversation: DEFAULTS.agentEndConversation,
     maxSummonsPerRoom: DEFAULTS.maxSummonsPerRoom,
     // Written out (not just implied) so the memory section is visible and

@@ -89,7 +89,10 @@ function viewOfEvent(event) {
     agentEvent?.kind ?? (event.author === "system" && isCompactionConfirmation(event.text) ? "compact-complete" : undefined);
   return {
     id: event.id,
-    version: `${event.redacted ? "c-redacted" : "c"}:${kind ?? ""}`,
+    // A committed event is immutable, EXCEPT that its byte-capped tool payloads
+    // can be swapped for the full ones on demand (loadFullEvent). That swap must
+    // invalidate the cached node, so it joins the version stamp.
+    version: `${event.redacted ? "c-redacted" : "c"}:${kind ?? ""}${state.fullEvents.has(event.id) ? ":full" : ""}`,
     timestamp: event.timestamp,
     author: event.author,
     kind,
@@ -121,9 +124,33 @@ function committedEvents() {
   for (const event of [...older, ...snapshot.room.events]) {
     if (seen.has(event.id)) continue;
     seen.add(event.id);
-    merged.push(event);
+    // An event whose full payload was fetched back (see loadFullEvent) wins over
+    // the byte-capped transport copy the snapshot/pager carries.
+    merged.push(state.fullEvents.get(event.id) ?? event);
   }
   return merged;
+}
+
+/**
+ * Re-fetch ONE event with its tool payloads uncapped, for a human who opened a
+ * truncated tool call. The snapshot deliberately ships a bounded copy (whip
+ * 427: one gaia-love event carries 11.5 MB of tool results); this is the opt-in
+ * path back to the rest, and it costs one event, not a whole transcript.
+ * @param {string} eventId
+ */
+export async function loadFullEvent(eventId) {
+  const snapshot = state.snapshot;
+  if (!snapshot || state.fullEvents.has(eventId)) return;
+  const generation = navigation.generation;
+  const base = `/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/rooms/${encodeURIComponent(snapshot.room.id)}/events`;
+  try {
+    const body = await api(`${base}/${encodeURIComponent(eventId)}`);
+    if (!navigation.current(generation) || !body.event) return;
+    state.fullEvents.set(eventId, body.event);
+    markDirty("transcript");
+  } catch (error) {
+    setError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 /** How many committed events exist before the oldest one the client holds. */
@@ -144,6 +171,9 @@ export function syncOlderFromSnapshot() {
   const older = state.older;
   if (older.roomId !== snapshot.room.id || snapshot.room.eventTotal < older.lastTotal) {
     state.older = { roomId: snapshot.room.id, events: [], loading: false, lastTotal: snapshot.room.eventTotal };
+    // Expanded full payloads belong to the room that was open; carrying them
+    // across a switch would pin megabytes per visited room for nothing.
+    state.fullEvents.clear();
   } else {
     older.lastTotal = snapshot.room.eventTotal;
   }
@@ -767,7 +797,7 @@ function Message(view) {
     summon || orderedBlocks || !showThinking
       ? null
       : ThinkingActivity(`thinking:${view.id}:0`, details.thinking ?? "", Boolean(view.streaming)),
-    summon || orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools) : null,
+    summon || orderedBlocks ? null : details.tools?.length ? ToolActivityList(details.tools, view.id) : null,
     view.attachments?.length ? AttachmentGallery(view.attachments) : null,
     summon || orderedBlocks
       ? null
@@ -941,7 +971,7 @@ export function OrderedBlocks(view, blocks, tools) {
     }
     if (block.kind === "skill") return SkillInvocationActivity(block.skill);
     const tool = toolsById.get(block.id);
-    return tool ? ToolActivity(tool) : null;
+    return tool ? ToolActivity(tool, view.id) : null;
   });
 }
 
@@ -1086,9 +1116,36 @@ function ReadAloudButton(eventId) {
   });
 }
 
-/** @param {ToolDetail[]} tools */
-function ToolActivityList(tools) {
-  return h("div", { class: "tool-activity" }, tools.map(ToolActivity));
+/** @param {ToolDetail[]} tools @param {string} [eventId] */
+function ToolActivityList(tools, eventId) {
+  return h("div", { class: "tool-activity" }, tools.map((tool) => ToolActivity(tool, eventId)));
+}
+
+/**
+ * Footer on a tool whose payload was bounded for transport, with the way back:
+ * one click re-fetches this event uncapped (see loadFullEvent). Never silent —
+ * the withheld byte count is stated.
+ * @param {ToolDetail} tool @param {string} [eventId]
+ */
+function TruncatedPayloadNotice(tool, eventId) {
+  const truncated = tool.truncated;
+  if (!truncated) return null;
+  const fields = truncated.fields.join(", ");
+  const loaded = eventId ? state.fullEvents.has(eventId) : false;
+  return h(
+    "section",
+    { class: "payload-section payload-truncated" },
+    h("h4", { text: "TRUNCATED" }),
+    h("small", { text: `${fields} shortened for transport — ${humanSize(truncated.bytes)} withheld` }),
+    eventId && !loaded
+      ? h("button", {
+          type: "button",
+          class: "msg-action",
+          text: "load full payload",
+          onclick: () => void loadFullEvent(eventId),
+        })
+      : null,
+  );
 }
 
 /** Pi's expanded `/skill:name` user message, mirrored as its native chip.
@@ -1106,9 +1163,10 @@ export function SkillInvocationActivity(skill) {
  * layout, where a single tool sits inline between prose blocks. A read of a
  * SKILL.md file renders as a skill invocation chip instead of a plain read,
  * mirroring pi's TUI classifier (see skillReadLabel doc comment).
- * @param {ToolDetail} tool
+ * @param {ToolDetail} tool @param {string} [eventId] the event this tool belongs
+ * to, so a byte-capped payload can be fetched back in full
  */
-export function ToolActivity(tool) {
+export function ToolActivity(tool, eventId) {
   const skillLabel = skillReadLabel(tool);
   const options = skillLabel
     ? { id: `tool:${tool.id}`, className: "tool-call skill-call", status: tool.status, icon: KIND.skill, title: `[skill] ${skillLabel}` }
@@ -1118,7 +1176,8 @@ export function ToolActivity(tool) {
     () => [PayloadSection("CALL", { id: tool.id, name: tool.toolName, status: tool.status }),
     tool.args === undefined || tool.args === null ? null : PayloadSection("ARGS", tool.args),
     tool.partialResult === undefined || tool.partialResult === null ? null : PayloadSection("PARTIAL", tool.partialResult),
-    tool.result === undefined || tool.result === null ? null : ResultSection(tool)],
+    tool.result === undefined || tool.result === null ? null : ResultSection(tool),
+    TruncatedPayloadNotice(tool, eventId)],
   );
 }
 

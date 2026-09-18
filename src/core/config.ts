@@ -19,6 +19,11 @@ export const DEFAULTS = {
   room: "default",
   thinking: "medium",
   transcriptWindow: 20,
+  /** Client-facing payload bound (domain/transport-cap.ts). Event COUNT is
+   * already bounded by transcriptWindow; these bound BYTES, which is what
+   * actually made room selection ship megabytes (whip 427). */
+  snapshotToolBytes: 4_096,
+  snapshotEventBytes: 262_144,
   agentEndConversation: true,
   maxSummonsPerRoom: 8,
   /** Unified-tool gaiago formatting threshold; GAIA_TOOL_FORMAT_BYTES overrides. */
@@ -405,6 +410,11 @@ export function resolveMemoryConfig(base: MemoryConfig, patch: MemoryConfigPatch
   };
 }
 
+/** A positive whole number, or the default when the field is absent/invalid. */
+function positiveInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 /** Parse a raw config.json value over the defaults. Unknown/bad fields drop. */
 export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) => boolean): WorkspaceConfig {
   const obj = isRecord(raw) ? raw : {};
@@ -415,6 +425,8 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
       typeof obj.transcriptWindow === "number" && Number.isInteger(obj.transcriptWindow) && obj.transcriptWindow > 0
         ? obj.transcriptWindow
         : DEFAULTS.transcriptWindow,
+    snapshotToolBytes: positiveInt(obj.snapshotToolBytes, DEFAULTS.snapshotToolBytes),
+    snapshotEventBytes: positiveInt(obj.snapshotEventBytes, DEFAULTS.snapshotEventBytes),
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
     agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
 autoCompact: parseAutoCompactConfig(obj.autoCompact),

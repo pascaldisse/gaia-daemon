@@ -32,6 +32,12 @@ export interface WorkspaceConfig {
   defaultAgent: string;
   room: string;
   transcriptWindow: number;
+  /** Client-facing payload bound, in serialized bytes (domain/transport-cap.ts).
+   * `snapshotToolBytes` caps ONE tool payload field; `snapshotEventBytes` caps
+   * one event's whole tools array, newest tool first. Neither touches what is
+   * stored, replayed into prompts, or recalled — only what a client is sent. */
+  snapshotToolBytes: number;
+  snapshotEventBytes: number;
   /** Enables the agent-initiated graceful conversation-ending tool. Default on;
    * agents choose whether to invoke it. */
   agentEndConversation: boolean;

@@ -50,6 +50,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   favoritesOrder: string[],
  *   favoriteContextMenu: {kind: "workspace"|"room", id: string, x: number, y: number}|null,
  *   older: {roomId: string, events: RoomEvent[], loading: boolean, lastTotal: number},
+ *   fullEvents: Map<string, RoomEvent>,
  *   openTabs: {roomId: string, workspaceId: string}[],
  *   sidebarCollapsed: boolean,
  *   rightCollapsed: boolean,
@@ -163,6 +164,12 @@ export const state = {
   // strictly preceding the snapshot's tail window. Cleared on room switch and
   // whenever the transcript shrinks (rewind/truncate → lastTotal drops).
   older: { roomId: "", events: [], loading: false, lastTotal: 0 },
+  // Events re-fetched UNCAPPED after a human opened a truncated tool payload.
+  // Snapshots and older-pages bound tool bytes (domain/transport-cap.ts); this
+  // is the opt-in, per-event way back to the whole thing. Keyed by event id,
+  // substituted in committedEvents(); cleared on room switch.
+  /** @type {Map<string, RoomEvent>} */
+  fullEvents: new Map(),
   // The tmux-style working set: room/workspace pairs open as tabs, in user order.
   // Global across workspaces; the sidebar tree remains the full list of every room.
   openTabs: [],

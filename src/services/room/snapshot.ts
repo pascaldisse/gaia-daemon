@@ -8,6 +8,7 @@ import { globalPaths, workspacePaths } from "../../core/paths.js";
 import type { AgentDef, AgentStatus, MessageAttachment, PendingTurn, RoomEvent, Snapshot } from "../../core/types.js";
 import type { MemoryAction, MemoryMutationResult } from "../../domain/memory.js";
 import { displayEventText } from "../../domain/render-cap.js";
+import { capEventsForTransport } from "../../domain/transport-cap.js";
 import { normalizeRoomState, normalizeRoomTitle, roomAllowsHuman } from "../../domain/rooms.js";
 import { resolveReasoningLevel } from "../../domain/model-reasoning.js";
 import { listAgentRoles } from "../../domain/roles.js";
@@ -46,7 +47,20 @@ export class RoomSnapshotMixin {
    * replies; the fix moves the cap to every read-out-for-display call site
    * instead of commit time). */
   displayEvents(events: RoomEvent[]): RoomEvent[] {
-    return this.withRenderCapNotes(events);
+    return capEventsForTransport(this.withRenderCapNotes(events), {
+      toolBytes: this.workspace.config.snapshotToolBytes,
+      eventBytes: this.workspace.config.snapshotEventBytes,
+    });
+  }
+
+  /** The UNCAPPED display form of one event — what the "load full payload"
+   * affordance on a truncated tool asks for. Same render-cap derivation as
+   * #displayEvents, minus the transport byte bound. */
+  async displayEventById(eventId: string): Promise<RoomEvent | undefined> {
+    await this.init();
+    const { events } = await this.room.eventsFrom(0);
+    const found = events.find((event: RoomEvent) => event.id === eventId);
+    return found ? this.withRenderCapNotes([found])[0] : undefined;
   }
 
   /** Shared expansion used by both the live commit-time emit (#commitReply)

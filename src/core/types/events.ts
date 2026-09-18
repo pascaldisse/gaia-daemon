@@ -6,6 +6,17 @@
 // ---------------------------------------------------------------------------
 // Room events (transcript.jsonl lines)
 
+/** Provenance for a tool payload shortened on the way OUT to a client (see
+ * domain/transport-cap.ts). Never written to the transcript: it exists only on
+ * the transport copy, so a reader can say how much was withheld and ask for the
+ * full event (GET .../rooms/:room/events/:eventId). */
+export interface ToolTruncation {
+  /** Serialized size of the ORIGINAL payloads, summed over `fields`. */
+  bytes: number;
+  /** Fields replaced by a preview, or dropped entirely on a header-only stub. */
+  fields: Array<"args" | "partialResult" | "result">;
+}
+
 export interface ToolDetail {
   id: string;
   toolName: string;
@@ -13,6 +24,8 @@ export interface ToolDetail {
   args?: unknown;
   partialResult?: unknown;
   result?: unknown;
+  /** Set only on a transport copy whose payload was capped. */
+  truncated?: ToolTruncation;
 }
 
 /** A provider-side model switch during a turn (capacity fallback, safety
